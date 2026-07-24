@@ -12,10 +12,26 @@ export const SERVER_UNREACHABLE_MESSAGE =
  * the client is offline. A tRPC error that actually came from the server always carries a `data`
  * payload with a code; a fetch-level failure (or an edge backend-down 503 with a non-tRPC body)
  * does not. Says nothing about the session — callers must NOT treat this as a sign-out signal.
+ *
+ * Caveat the wrapper chain creates: when our errorLink emits an ApiError, tRPC's client re-wraps
+ * it into a fresh TRPCClientError with no `data`, keeping the original as `cause`. So a missing
+ * `data` on the outer error proves nothing by itself — only a chain with no server-authored error
+ * anywhere in it means the server never answered.
  */
 export function isServerUnreachable(error: unknown): boolean {
   if (error instanceof ApiError) return isServerUnreachable(error.originalError);
-  return error instanceof TRPCClientError && error.data == null;
+  return error instanceof TRPCClientError && !hasServerAuthoredError(error, 0);
+}
+
+const MAX_CAUSE_DEPTH = 5;
+
+/** Walks cause/originalError links looking for a tRPC error that carries a server `data` payload. */
+function hasServerAuthoredError(error: unknown, depth: number): boolean {
+  if (depth > MAX_CAUSE_DEPTH || error == null) return false;
+  if (error instanceof TRPCClientError && error.data != null) return true;
+  if (error instanceof ApiError) return hasServerAuthoredError(error.originalError, depth + 1);
+  if (error instanceof Error) return hasServerAuthoredError(error.cause, depth + 1);
+  return false;
 }
 
 /**

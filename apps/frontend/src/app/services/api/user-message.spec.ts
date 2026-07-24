@@ -2,9 +2,26 @@ import { describe, it, expect } from 'vitest';
 import { TRPCClientError } from '@trpc/client';
 import { JSendServerError } from '../../../../../../libs/common/src';
 import { ApiError } from './api-error';
-import { getUserErrorMessage } from './user-message';
+import { getUserErrorMessage, isServerUnreachable } from './user-message';
 
 const FALLBACK = 'Something went wrong, please try again';
+
+/** A tRPC error that actually came from the server always carries a `data` payload with a code. */
+function serverAuthoredTRPCError(message: string, code = 'UNAUTHORIZED'): TRPCClientError<never> {
+  const err = new TRPCClientError(message);
+  (err as unknown as { data: unknown }).data = { code, httpStatus: 401 };
+  return err;
+}
+
+/**
+ * tRPC's client re-wraps whatever our errorLink throws into a fresh, data-less TRPCClientError,
+ * keeping the original underneath as `cause`. This mirrors what reaches the sign-in page.
+ */
+function reWrappedError(inner: unknown): TRPCClientError<never> {
+  const outer = new TRPCClientError('Please check your email and password and try again.');
+  (outer as unknown as { cause: unknown }).cause = inner;
+  return outer;
+}
 
 describe('getUserErrorMessage', () => {
   it('shows an ApiError message as-is (backend-sanitized copy)', () => {
@@ -50,5 +67,39 @@ describe('getUserErrorMessage', () => {
     expect(getUserErrorMessage('raw string error', FALLBACK)).toBe(FALLBACK);
     expect(getUserErrorMessage({ message: 'not a real Error' }, FALLBACK)).toBe(FALLBACK);
     expect(getUserErrorMessage(42, FALLBACK)).toBe(FALLBACK);
+  });
+
+  it('shows the server message for a re-wrapped 401, not the unreachable copy', () => {
+    // tRPC re-wraps the errorLink's error into a data-less outer TRPCClientError; the server-
+    // authored 401 survives as its cause. This is exactly a wrong-password sign-in.
+    const err = reWrappedError(serverAuthoredTRPCError('Please check your email and password and try again.'));
+    expect(getUserErrorMessage(err, FALLBACK)).toBe('Please check your email and password and try again.');
+  });
+});
+
+describe('isServerUnreachable', () => {
+  it('is true for a data-less tRPC error with no server-authored cause (real outage)', () => {
+    expect(isServerUnreachable(new TRPCClientError('Failed to fetch'))).toBe(true);
+  });
+
+  it('is false when a server-authored error is present directly', () => {
+    expect(isServerUnreachable(serverAuthoredTRPCError('Please check your email and password and try again.'))).toBe(
+      false,
+    );
+  });
+
+  it('is false when the server-authored error survives under a re-wrapping outer error', () => {
+    const err = reWrappedError(serverAuthoredTRPCError('Please check your email and password and try again.'));
+    expect(isServerUnreachable(err)).toBe(false);
+  });
+
+  it('is false when the server error is wrapped in an ApiError (errorLink output)', () => {
+    const err = new ApiError('Please check your email and password and try again.', serverAuthoredTRPCError('bad'));
+    expect(isServerUnreachable(err)).toBe(false);
+  });
+
+  it('is true for a non-tRPC error', () => {
+    expect(isServerUnreachable(new Error('boom'))).toBe(false);
+    expect(isServerUnreachable(null)).toBe(false);
   });
 });

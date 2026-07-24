@@ -407,9 +407,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Extract the tRPC error `data` payload (e.g. rate-limit metadata) from a caught error. */
-function getTRPCData(err: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(err)) return undefined;
+function getTRPCData(err: unknown, depth = 0): Record<string, unknown> | undefined {
+  const MAX_CAUSE_DEPTH = 5;
+  if (depth > MAX_CAUSE_DEPTH || !isRecord(err)) return undefined;
   const originalError = err['originalError'];
   if (isRecord(originalError) && isRecord(originalError['data'])) return originalError['data'];
-  return isRecord(err['data']) ? err['data'] : undefined;
+  if (isRecord(err['data'])) return err['data'];
+  // tRPC re-wraps the errorLink's ApiError into a data-less TRPCClientError; the server-authored
+  // error (and its data payload) survives underneath as `cause`/`originalError`.
+  return getTRPCData(err['cause'] ?? originalError, depth + 1);
 }
