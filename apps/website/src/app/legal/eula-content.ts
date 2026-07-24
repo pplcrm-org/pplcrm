@@ -11,7 +11,7 @@ export const EULA_DOC: LegalDoc = {
   title: 'End user license agreement',
   intro:
     'The agreement between you and pplCRM when you use the service. Plain language where the law allows it, and no surprises hiding in the numbered clauses.',
-  updated: 'July 23, 2026',
+  updated: 'July 24, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -140,6 +140,7 @@ export const EULA_DOC: LegalDoc = {
         'Each plan includes a monthly newsletter-email allowance (shown on the [pricing page](/pricing)), and it is enforced at send time: a send larger than what remains of your allowance is declined with the exact numbers, and the allowance resets each billing month. Emails sent by automations count toward the same allowance. Growing your list raises your bracket — and your allowance — automatically.',
         'Every newsletter passes a deliverability check before it sends. Content that scores in the blocked band — phishing-shaped links, scam patterns, or commercial marketing unrelated to your organization’s cause — will not send until fixed. Fundraising, auctions and event promotion are normal newsletter content and are not affected.',
         'Sending pauses automatically if your hard-bounce rate exceeds 5%, and is suspended if your spam-complaint rate exceeds 1%. We do this to protect both your sending reputation and everyone else’s; write to us to review and resume.',
+        'Imported contact lists are checked on the way in: each address’s domain is verified and disposable addresses are flagged. Undeliverable addresses are suppressed automatically, and an import with an unusually high rate of them — the hallmark of a purchased or scraped list — pauses your sending pending review.',
       ],
     },
     {

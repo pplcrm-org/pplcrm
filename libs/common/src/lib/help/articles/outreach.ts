@@ -187,6 +187,7 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
         items: [
           'If a send’s **hard-bounce rate passes 5%**, sending is paused automatically — a bounce rate that high almost always means the list contains addresses that never opted in. Even a send already in progress stops.',
           'If a send’s **spam-complaint rate passes 1%**, the account is suspended pending a human review.',
+          'If a **contact import** comes back with an unusually high rate of **undeliverable addresses** (dead domains or disposable-email services), sending is paused pending review — the same purchased/scraped-list signal, caught before you ever hit send. Every people import checks each address’s domain and quietly suppresses the bad ones; see [Import from CSV](/help/import).',
         ],
       },
       {

@@ -70,6 +70,17 @@ export const DATA_ARTICLES: HelpArticle[] = [
           'The import history row shows what type each import was and keeps the original file downloadable for 90 days; for people imports, skipped rows are downloadable with the reason each was skipped.',
         ],
       },
+      { kind: 'h2', id: 'email-checkup', text: 'Email check-up' },
+      {
+        kind: 'p',
+        text: 'Every people import runs a quiet check on each email address — no extra step, no third-party service. It looks up whether the address’s **domain can actually receive mail** (its DNS records) and whether it belongs to a known **disposable-email** provider. Addresses that fail either check are **suppressed**: they stay on the contact, but they’re left out of newsletters and automated emails. The completion email reports the numbers — checked, valid, suppressed, and any **likely typos** (for example `name@gmial.com`, which we flag but never change for you) and **role addresses** (`info@`, `admin@` — kept, never suppressed, since shared inboxes are legitimate contacts). Addresses we couldn’t verify (a slow or flaky DNS lookup) are always kept.',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'A dirty list can pause your sending',
+        text: 'If a large import comes back with an unusually high rate of undeliverable addresses — the signature of a purchased or scraped list — sending is paused pending review, the same way a high [bounce rate](/help/sending-protections) does. Import only contacts who opted in.',
+      },
       {
         kind: 'callout',
         tone: 'tip',

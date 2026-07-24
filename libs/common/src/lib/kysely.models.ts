@@ -245,6 +245,7 @@ interface EmailSuppressions {
   id: Generated<string>;
   tenant_id: string;
   email: string;
+  /** hard_bounce | spam_complaint | manual | invalid (import DNS/disposable check). All consumers are existence checks (reason-agnostic). */
   reason: string;
   occurred_at: Generated<Timestamp>;
   created_at: Generated<Timestamp>;
@@ -1023,6 +1024,8 @@ interface DataImports extends RecordType {
   source_file_size: number | null;
   /** Per-row reasons for skipped rows, so History can offer a "download skipped rows" CSV. */
   skip_reasons: Generated<Json>;
+  /** Email-verification summary (EmailVerificationSummary) written by the import job's DNS/disposable checkup. */
+  email_verification: Json | null;
 }
 
 export interface DataExports {

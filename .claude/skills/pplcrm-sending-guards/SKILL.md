@@ -107,11 +107,33 @@ tenantId, newsletterRow)` (`modules/newsletters/preflight.service.ts`), called i
    bounces never stamp). Pause reason strings: `automation_hard_bounce_rate` /
    `automation_spam_complaint_rate`.
 
+4. **Import list-quality tripwire (2026-07-24)** — the contact-import background job verifies the
+   imported email list in-house (no third-party service) and pauses sending on an egregious
+   bad-email rate. `runImportEmailVerification` (`lib/jobs/handlers/import-verification.ts`) runs
+   inside `handleImportJob` for **persons imports only**, after `processImportRows` and before the
+   completion email, fail-open (a thrown check never fails the import). It uses
+   `EmailVerifierService` (`lib/mail/email-verifier.service.ts`): per unique domain an MX→A/AAAA
+   DNS lookup (`node:dns/promises`, injectable resolver for tests, cached, ≤10 concurrent, 5s/lookup,
+   2-min whole-import budget) — **only** ENOTFOUND/ENODATA on MX+A+AAAA is `dead`; timeouts/SERVFAIL
+   are `unknown` → treated valid. Dead-domain + disposable (`isDisposableEmail`) addresses get an
+   `email_suppressions` row with the new **`reason: 'invalid'`** (migration
+   `2026-07-24-f-import-email-verification.ts` widened `chk_esup_reason`; the sendability + automation
+   consent checks are reason-agnostic so suppression is automatic). The address STAYS on the person.
+   Typo domains (gmial.com) and role accounts (info@) are **report-only, never suppressed/rewritten**.
+   Constants at top of `email-verifier.service.ts`: `IMPORT_TRIPWIRE_MIN_EMAILS=100`,
+   `IMPORT_BAD_EMAIL_WARN_RATE=0.08` (warn: `logger.warn` + report caution), `IMPORT_BAD_EMAIL_PAUSE_RATE=0.20`
+   (pause: `pauseTenantSending(db, tenantId, 'import_bad_email_rate:{import_id}')` + `[abuse-tripwire]`
+   error). Looser than the 5% bounce band on purpose — no-MX is a weaker signal than a real bounce.
+   The per-import summary (counts + typo suspects + tripwire) is stored on `data_imports.email_verification`
+   (jsonb) and rendered into the import-completion email. Pure logic (`evaluateImportListQuality`,
+   `classifyEmails`, `classifyDomainError`) is unit-tested in `email-verifier.service.spec.ts` — no DNS.
+
 **To un-pause / un-suspend** (support action, no UI): clear `tenants.sending_paused_at` (+
 `sending_paused_reason`) or `tenants.suspended_at` in the DB. A paused newsletter is then
 re-sent from the UI and resumes at its `send_offset`.
 
-**Website claims:** the 5% bounce / 1% complaint tripwires, the warm-up cap, the
+**Website claims:** the 5% bounce / 1% complaint tripwires, the **import list-quality pause + DNS/disposable
+suppression on import** (EULA §8, security page — both updated 2026-07-24), the warm-up cap, the
 verified-domain requirement and the enforced monthly allowance (2×/8×/12× multipliers on the
 security page; "enforced at send time" in EULA §8) are quoted verbatim on the marketing site
 (EULA §8, security page, FAQ). The preflight is also stated publicly: the "below 50 cannot send" threshold (security page,
