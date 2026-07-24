@@ -11,7 +11,7 @@ export const PRIVACY_DOC: LegalDoc = {
   title: 'Privacy policy',
   intro:
     'What we collect, why, where it lives, and the things we will never do with it. Written to be read, not skimmed past.',
-  updated: 'July 21, 2026',
+  updated: 'July 24, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -165,6 +165,7 @@ export const PRIVACY_DOC: LegalDoc = {
       items: [
         '**Records you delete** are removed from the live database immediately. Automated backups expire within 7 days, at which point deleted data is gone from those too.',
         '**Workspace deletion** can be scheduled by an organization admin. After a 30-day grace window (cancelable at any time), every record in the workspace is permanently deleted, and we confirm by email when it is done.',
+        "**Login deletion** (deleting an individual user account) permanently removes the person's email address, name, password and sign-in credentials after the same 30-day cancelable window. Work they contributed inside a workspace (records, notes, activity history) belongs to that organization and stays in its workspace, attributed to “Deleted user”.",
         '**Activity logs** are kept for 90 days, then pruned automatically.',
         '**Export files** are downloadable for 30 days, then removed. **Import source files** are kept for 90 days so you can audit an import, then removed.',
         '**Sessions** expire after 24 hours, or 30 days if you chose “remember me”. Volunteer device sessions expire after 30 days.',

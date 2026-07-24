@@ -30,6 +30,9 @@ export class AuthUsersRepo extends BaseRepository<'authusers'> {
       qb
         .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
         .where('authusers.tenant_id', '=', tenantId)
+        // Tombstoned (deleted) users keep their row for FK integrity but never appear in the
+        // users grid or assignee pickers — both read through this query.
+        .where('authusers.deleted_at', 'is', null)
         .$if(!!searchStr, (builder) => {
           const text = searchStr;
           return builder.where(

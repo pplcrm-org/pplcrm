@@ -148,6 +148,7 @@ export async function checkTenantUsage(tenantId: string, db: Kysely<any>): Promi
     .where('tenant_id', '=', tenantId)
     .where('deletion_scheduled_at', 'is', null)
     .where('deactivated_at', 'is', null)
+    .where('deleted_at', 'is', null)
     .executeTakeFirst();
   const currentSeats = Number(seatsCountRow?.cnt || 0);
 
@@ -503,6 +504,7 @@ async function getAdmins(
       )
       .where('deletion_scheduled_at', 'is', null)
       .where('deactivated_at', 'is', null)
+      .where('deleted_at', 'is', null)
       .execute();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped-handle query result; see pplcrm-any-exceptions
     adminsCache.push(...(admins as any));

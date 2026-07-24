@@ -84,7 +84,7 @@ export class FaqPage {
         },
         {
           q: 'What happens when I delete something?',
-          a: 'Delete means deleted. Records are purged, not quietly archived for us to keep.',
+          a: 'Delete means deleted. Records are purged, not quietly archived for us to keep. Deleting a user login removes their personal details for good; the work they contributed stays with your workspace, shown as “Deleted user”.',
         },
       ],
     },

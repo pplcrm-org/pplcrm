@@ -189,6 +189,36 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
     };
   }
 
+  /**
+   * The household's open (new/approved) request with its campaign name, regardless of campaign —
+   * the open-per-household unique index guarantees at most one tenant-wide. Backs the conflict
+   * message when another campaign holds the open request, and the cross-campaign note in the
+   * yard-sign standing control.
+   */
+  public async getOpenForHousehold(
+    tenantId: string,
+    householdId: string,
+    trx?: Transaction<Models>,
+  ): Promise<{ id: string; status: string; campaign_id: string; campaign_name: string } | null> {
+    const db = trx ?? this.db;
+    const row = await db
+      .selectFrom('delivery_requests as dr')
+      .innerJoin('campaigns as c', 'c.id', 'dr.campaign_id')
+      .where('dr.tenant_id', '=', tenantId)
+      .where('dr.household_id', '=', householdId)
+      .where('dr.status', 'in', ['new', 'approved'])
+      .select(['dr.id as id', 'dr.status as status', 'dr.campaign_id as campaign_id', 'c.name as campaign_name'])
+      .limit(1)
+      .executeTakeFirst();
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      status: String(row.status),
+      campaign_id: String(row.campaign_id),
+      campaign_name: String(row.campaign_name),
+    };
+  }
+
   /** Tab counts for the requests grid (spec §4.1): Open = new + approved. */
   public async getStatusCounts(tenantId: string, trx?: Transaction<Models>): Promise<Record<string, number>> {
     const db = trx ?? this.db;

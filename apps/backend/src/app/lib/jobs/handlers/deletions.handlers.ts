@@ -1,6 +1,7 @@
 import type { Kysely, Transaction } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../../logger';
+import { tombstoneAuthUser } from '../../tombstone-user';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { DAY_MS, scheduleNextRun } from '../reschedule';
 
@@ -131,7 +132,8 @@ export async function handlePerformScheduledDeletions(db: Kysely<Models>): Promi
   }
 }
 
-async function performScheduledDeletions(db: Kysely<Models>): Promise<void> {
+/** Exported for tests; production entry is handlePerformScheduledDeletions (adds the reschedule). */
+export async function performScheduledDeletions(db: Kysely<Models>): Promise<void> {
   const now = new Date();
 
   // Each user/tenant is deleted in its own transaction wrapped in its own try/catch so one failure
@@ -141,24 +143,24 @@ async function performScheduledDeletions(db: Kysely<Models>): Promise<void> {
 
   const expiredUsers = await db
     .selectFrom('authusers')
-    .select('id')
+    .select(['id', 'tenant_id'])
     .where('deletion_scheduled_at', '<=', now)
+    .where('deleted_at', 'is', null)
     .execute();
 
   for (const user of expiredUsers) {
     const userId = String(user.id);
     try {
+      // Tombstone, not hard delete: ~61 NO ACTION FKs (createdby_id etc.) reference authusers, so
+      // a DELETE 23503s for anyone who ever acted in the app — which used to make this loop re-fail
+      // the same users silently every day, forever. The identity is scrubbed in place and the row
+      // stays; authored content remains with the tenant, attributed to "Deleted user".
       await db.transaction().execute(async (trx) => {
-        // notifications/passkeys/email_drafts/task_comments cascade from authusers; profiles + sessions
-        // are removed explicitly. Content the member authored (createdby_id etc.) stays with the tenant
-        // and is NOT reassigned here — see the note in handlePerformScheduledDeletions' doc comment.
-        await trx.deleteFrom('sessions').where('user_id', '=', userId).execute();
-        await trx.deleteFrom('profiles').where('auth_id', '=', userId).execute();
-        await trx.deleteFrom('authusers').where('id', '=', userId).execute();
+        await tombstoneAuthUser(trx, { tenantId: String(user.tenant_id), userId, updatedbyId: userId });
       });
     } catch (err) {
       failures.push(`user ${userId}`);
-      logger.error({ err, userId }, 'Failed to hard-delete scheduled user; continuing with remaining deletions');
+      logger.error({ err, userId }, 'Failed to tombstone scheduled user; continuing with remaining deletions');
     }
   }
 
@@ -221,6 +223,11 @@ async function performScheduledDeletions(db: Kysely<Models>): Promise<void> {
     .execute();
 
   if (failures.length > 0) {
-    logger.error({ failures }, `Scheduled deletions completed with ${failures.length} failure(s); will retry next run`);
+    logger.error({ failures }, `Scheduled deletions completed with ${failures.length} failure(s)`);
+    // Rethrow so the worker retries and then marks the job 'failed' — the ops digest only reports
+    // failed jobs, and a swallowed failure here is invisible forever (the pre-2026-07-24 user-branch
+    // bug). The next daily run is already scheduled by handlePerformScheduledDeletions' finally, and
+    // re-running is idempotent: succeeded deletions no longer match the framing queries.
+    throw new Error(`Scheduled deletions failed for: ${failures.join(', ')}`);
   }
 }

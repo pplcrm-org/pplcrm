@@ -515,6 +515,90 @@ describe('DeliveriesController — one open request per household', () => {
       controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId }),
     ).rejects.toThrow(/deadlock detected/i);
   });
+
+  /** A second, active election campaign in the seeded tenant. */
+  const secondCampaign = async (name: string): Promise<string> => {
+    const id = rand();
+    await db
+      .insertInto('campaigns')
+      .values({
+        id,
+        tenant_id: s.tenantId,
+        admin_id: s.adminId,
+        name,
+        kind: 'election',
+        status: 'active',
+        createdby_id: s.adminId,
+        updatedby_id: s.adminId,
+      })
+      .execute();
+    return id;
+  };
+
+  it('the conflict names the campaign that holds the open request', async () => {
+    const householdId = await freshHousehold();
+    const otherCampaignId = await secondCampaign('Fall Election');
+    await controller.addRequest(staffAuth, { household_id: householdId, campaign_id: otherCampaignId });
+
+    // The guard is per-household across campaigns; from campaign C the blocking record is
+    // invisible (campaign-scoped reads), so the message must say which campaign holds it.
+    await expect(
+      controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId }),
+    ).rejects.toThrow(/open delivery request in Fall Election\./);
+  });
+
+  it('getSignStatus surfaces an open request held by another campaign', async () => {
+    const householdId = await freshHousehold();
+    const otherCampaignId = await secondCampaign('Fall Election');
+    await controller.addRequest(staffAuth, { household_id: householdId, campaign_id: otherCampaignId });
+
+    // Viewed from campaign C: no local request, but the other campaign's hold is disclosed.
+    const fromC = await controller.getSignStatus(staffAuth, {
+      household_id: householdId,
+      campaign_id: s.campaignId,
+    });
+    expect(fromC.request).toBeNull();
+    expect(fromC.open_in_other_campaign).toMatchObject({
+      campaign_id: otherCampaignId,
+      campaign_name: 'Fall Election',
+      status: 'new',
+    });
+
+    // Viewed from the holding campaign: the request itself, no cross-campaign note.
+    const fromOther = await controller.getSignStatus(staffAuth, {
+      household_id: householdId,
+      campaign_id: otherCampaignId,
+    });
+    expect(fromOther.request?.status).toBe('new');
+    expect(fromOther.open_in_other_campaign).toBeNull();
+  });
+
+  it('reopening a request while another campaign holds the open one is a named 409, not a 500', async () => {
+    const householdId = await freshHousehold();
+    const otherCampaignId = await secondCampaign('Fall Election');
+    await controller.addRequest(staffAuth, { household_id: householdId, campaign_id: otherCampaignId });
+
+    // A terminal (declined) request in campaign C can coexist — the partial index only covers
+    // open statuses…
+    const declined = await db
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        household_id: householdId,
+        source: 'manual',
+        status: 'declined',
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    // …but flipping it back to open collides with the real index and must surface as a conflict.
+    await expect(controller.setRequestStatus(staffAuth, { ids: [String(declined.id)], status: 'new' })).rejects.toThrow(
+      /open delivery request in Fall Election\./,
+    );
+  });
 });
 
 describe('DeliveriesController — reorderStops (drag-to-reorder)', () => {

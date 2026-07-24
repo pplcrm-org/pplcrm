@@ -5,7 +5,7 @@
   <select
     class="select select-bordered select-sm w-full"
     [value]="request()?.status ?? ''"
-    [disabled]="saving() || readonlyContext()"
+    [disabled]="saving() || readonlyContext() || blockedByOtherCampaign()"
     (change)="onStatusChange($event)"
   >
     @if (!request()) {
@@ -14,7 +14,13 @@
     <option [value]="status">{{ labels[status] }}</option>
     }
   </select>
-  } @else {
+  @if (blockedByOtherCampaign()) {
+  <!-- One open request per household, tenant-wide — say who holds it instead of a dead 409. -->
+  <p class="text-[11px] text-base-content/40">
+    <ng-container i18n>Sign already requested in</ng-container> {{ openElsewhere()?.campaign_name }}
+    <ng-container i18n>— one open request per household.</ng-container>
+  </p>
+  } } @else {
   <!-- No address, no lawn — guide to the fix instead of a dead disabled control. -->
   <p class="py-1 text-[11px] text-base-content/40" i18n>Needs an address. Assign a household first.</p>
   }

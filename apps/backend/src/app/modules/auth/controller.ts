@@ -43,6 +43,7 @@ import { isDisposableEmail } from '../../lib/mail/disposable-email-domains';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { hashPassword, verifyPasswordConstantTime } from '../../lib/password-hash';
 import { StorageService } from '../../lib/storage.service';
+import { tombstoneAuthUser } from '../../lib/tombstone-user';
 import { generateToken, hashToken } from '../../lib/token-hash';
 import { logger } from '../../logger';
 import { EmailRepo } from '../emails/repositories/email.repo';
@@ -145,6 +146,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     if (!user) throw new NotFoundError('User not found');
     const authUser = user as AuthUsersType;
 
+    // A tombstoned row is not an account — its identity is gone; clearing deactivated_at would
+    // resurrect a credential-less shell. The grid hides tombstones, so guard the endpoint too.
+    if (authUser.deleted_at) throw new NotFoundError('User not found');
     if (callerRole === 'admin' && authUser.role === 'owner') {
       throw new ForbiddenError('Admins cannot reactivate owner accounts.');
     }
@@ -564,43 +568,20 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     const user = await repo.getOneBy('id', { tenant_id: auth.tenant_id, value: userIdToDelete });
     if (!user) throw new NotFoundError('User not found');
     const authUser = user as AuthUsersType;
+    if (authUser.deleted_at) throw new NotFoundError('User not found');
 
     if (callerRole === 'admin' && authUser.role === 'owner') {
       throw new ForbiddenError('Admins cannot delete owner accounts.');
     }
 
     return await repo.transaction().execute(async (trx) => {
-      const profile = await this.profiles.getOneByAuthId(userIdToDelete);
-      if (profile?.avatar_file_id) {
-        try {
-          const oldFile = await trx
-            .selectFrom('files')
-            .select('storage_key')
-            .where('tenant_id', '=', auth.tenant_id)
-            .where('id', '=', profile.avatar_file_id)
-            .executeTakeFirst();
-          if (oldFile?.storage_key) await this.storage.delete(oldFile.storage_key);
-          await trx
-            .deleteFrom('files')
-            .where('tenant_id', '=', auth.tenant_id)
-            .where('id', '=', profile.avatar_file_id)
-            .execute();
-        } catch (err) {
-          logger.error({ err }, 'Failed to clean up user avatar on delete');
-        }
-      }
-
-      await trx
-        .deleteFrom('profiles')
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('auth_id', '=', userIdToDelete)
-        .execute();
-      await this.sessions.deleteByUserId(userIdToDelete, auth.tenant_id, trx);
-      await trx
-        .deleteFrom('authusers')
-        .where('id', '=', userIdToDelete)
-        .where('tenant_id', '=', auth.tenant_id)
-        .execute();
+      // Tombstone, not hard delete: ~61 NO ACTION FKs (createdby_id etc.) reference authusers,
+      // so a DELETE 23503s for any user who ever authored content — which reached the admin as a
+      // generic 500. The identity (email, name, credentials, avatar, sessions, passkeys) is
+      // scrubbed/removed; their contributions stay with the workspace as "Deleted user". Same
+      // semantics as self-service scheduled deletion. entity_label below was captured from
+      // authUser BEFORE the scrub.
+      await tombstoneAuthUser(trx, { tenantId: auth.tenant_id, userId: userIdToDelete, updatedbyId: auth.user_id });
 
       await this.ensureAtLeastOneOwner(auth.tenant_id, trx, false, userIdToDelete);
 
@@ -649,19 +630,21 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       )
       .where('deletion_scheduled_at', 'is', null)
       .where('deactivated_at', 'is', null)
+      .where('deleted_at', 'is', null)
       .execute();
 
     if (activeOwners.length > 0) {
       return;
     }
 
-    // Find the oldest active user to promote
+    // Find the oldest active user to promote — never a tombstoned (deleted) row.
     let query = trx
       .selectFrom('authusers')
       .select(['id'])
       .where('tenant_id', '=', tenantId)
       .where('deletion_scheduled_at', 'is', null)
-      .where('deactivated_at', 'is', null);
+      .where('deactivated_at', 'is', null)
+      .where('deleted_at', 'is', null);
 
     if (excludeUserId) {
       query = query.where('id', '!=', excludeUserId);
@@ -728,6 +711,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       .where('tenant_id', '=', auth.tenant_id)
       .where('deletion_scheduled_at', 'is', null)
       .where('deactivated_at', 'is', null)
+      .where('deleted_at', 'is', null)
       .executeTakeFirst();
 
     return { plan, seatLimit: limits.seats, seatsUsed: Number(seatRow?.cnt ?? 0) };
@@ -1184,7 +1168,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
           html: `<h2>Account scheduled for deletion</h2>
 <p>Hi ${authUser.first_name},</p>
 <p>As requested, your pplCRM account has been scheduled for permanent deletion on <strong>${deletionDate.toLocaleDateString()}</strong>.</p>
-<p>All of your data will be permanently removed. If you change your mind, you can cancel this request at any time before the deletion date by simply signing back in.</p>
+<p>Your sign-in and personal details (email, name, credentials) will be permanently removed. Work you contributed to your organization's workspace stays with that workspace, attributed to "Deleted user". If you change your mind, you can cancel this request at any time before the deletion date by simply signing back in.</p>
 <p class="warning">If you did not make this request, please sign in immediately to cancel the deletion and secure your account.</p>`,
         },
         trx,

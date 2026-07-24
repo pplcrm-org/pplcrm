@@ -432,7 +432,7 @@ export class UserViewComponent {
 
     const confirmed = await this.dialogs.confirm({
       title: 'Delete user',
-      message: `Delete ${this.displayName()}? Their sign-in is removed permanently. This cannot be undone. To keep their history but block access, deactivate instead.`,
+      message: `Delete ${this.displayName()}? Their sign-in is removed permanently and cannot be undone. Their past contributions remain, shown as 'Deleted user'. To keep their history but block access, deactivate instead.`,
       variant: 'danger',
       confirmText: 'Delete user',
     });

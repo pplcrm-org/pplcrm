@@ -64,6 +64,15 @@ Every internal query is tenant-scoped. Key behaviours:
   advances/auto-completes the route); `declined`/`new` are blocked while a pending stop exists.
   Standing flips and `addRequest` log activity to the `households` entity and, when a requester is
   set, `persons` too (`logRequestStanding`).
+- **One open request per household is TENANT-wide, not per-campaign** (the
+  `uq_delivery_requests_open_per_household` partial index has no `campaign_id` — deliberate: one
+  house, one open logistics task). Two seams are handled explicitly: (1) conflict messages name
+  the campaign holding the open request (`getOpenForHousehold` + `openHouseholdConflictError` in
+  `addRequest`/`setRequestStatus`), and `getSignStatus` returns `open_in_other_campaign` so the
+  yard-sign control can disable + explain instead of 409ing; (2) archiving a campaign calls
+  `DeliveriesController.closeCampaignDeliveries` (inside the archive transaction) — cancels the
+  campaign's live routes (`cancelRouteInTrx`), skips stray pending stops, declines its open
+  requests — otherwise an archived (read-only) campaign would hold the household's slot forever.
 - **Plan is preview-then-commit.** `previewPlan` is pure — geocodes the start, runs the engine, returns
   routes + `unroutable` + ineligible buckets, **writes nothing**. `commitPlan` re-verifies eligibility
   in-transaction (concurrent-planner guard → `skipped` list), recomputes legs server-side, inserts

@@ -240,11 +240,39 @@ describe('AuthController', () => {
     await expect(controller.deleteUser(adminAuth, owner.id)).rejects.toThrow(ForbiddenError);
     await expect(controller.deleteUser(authFor(owner), rand())).rejects.toThrow(NotFoundError);
 
+    // Authored content (a NO ACTION FK into authusers) used to make the hard delete 23503 —
+    // the tombstone must succeed anyway and leave the content in place.
+    const tag = await db
+      .insertInto('tags')
+      .values({
+        tenant_id: owner.tenant_id,
+        name: `authored-${rand()}`,
+        createdby_id: member.id,
+        updatedby_id: member.id,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
     const result = await controller.deleteUser(authFor(owner), member.id);
     expect(result.success).toBe(true);
 
-    const row = await db.selectFrom('authusers').selectAll().where('id', '=', member.id).executeTakeFirst();
-    expect(row).toBeUndefined();
+    // The row is tombstoned in place: identity scrubbed, real email freed, marker set.
+    const row = await db.selectFrom('authusers').selectAll().where('id', '=', member.id).executeTakeFirstOrThrow();
+    expect(row.deleted_at).not.toBeNull();
+    expect(row.email).toBe(`deleted-${member.id}@deleted.invalid`);
+    expect(row.first_name).toBe('Deleted user');
+    expect(row.password).toBe('');
+    expect(row.deletion_scheduled_at).toBeNull();
+
+    // Their contribution survives, still attributed to the (now tombstoned) row.
+    const authored = await db.selectFrom('tags').select('createdby_id').where('id', '=', tag.id).executeTakeFirst();
+    expect(String(authored?.createdby_id)).toBe(String(member.id));
+
+    // Tombstones are invisible to the grid and pickers, un-deletable and un-reactivatable.
+    const list = await controller.getUsersList(authFor(owner));
+    expect(list.some((u) => String(u.id) === String(member.id))).toBe(false);
+    await expect(controller.deleteUser(authFor(owner), member.id)).rejects.toThrow(NotFoundError);
+    await expect(controller.adminReactivateUser(authFor(owner), member.id)).rejects.toThrow(NotFoundError);
 
     await cleanup(db, owner.id, owner.tenant_id);
   });

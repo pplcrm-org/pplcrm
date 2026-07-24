@@ -393,6 +393,7 @@ export class CompanionAccessController {
       .where('tenant_id', '=', link.tenant_id)
       .where('role', 'in', ['admin', 'owner'])
       .where('deactivated_at', 'is', null)
+      .where('deleted_at', 'is', null)
       .execute();
     const approvePath = '/volunteer-access';
     const approveUrl = `${env.appUrl}${approvePath}`;

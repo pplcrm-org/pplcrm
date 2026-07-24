@@ -1,7 +1,8 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { TENANT_SCOPED_TABLES } from './deletions.handlers';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BaseRepository } from '../../base.repo';
+import { performScheduledDeletions, TENANT_SCOPED_TABLES } from './deletions.handlers';
 
 /**
  * Guard against the 2026-07-24 regression: a tenant-scoped table left out of the wipe list holds a
@@ -80,5 +81,118 @@ describe('tenant deletion completeness', () => {
 
   it('has no duplicate entries', () => {
     expect(TENANT_SCOPED_TABLES.length).toBe(new Set(TENANT_SCOPED_TABLES).size);
+  });
+});
+
+describe('scheduled user deletion (tombstone)', () => {
+  const db = BaseRepository.dbInstance;
+  const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);
+
+  let tenantId: string;
+  let userId: string;
+
+  beforeEach(async () => {
+    tenantId = rand();
+    userId = rand();
+    await db.insertInto('tenants').values({ id: tenantId, name: 'Tombstone Test' }).execute();
+    await db
+      .insertInto('authusers')
+      .values({
+        id: userId,
+        tenant_id: tenantId,
+        email: `tomb-${userId}@example.com`,
+        password: 'hash',
+        first_name: 'Trish',
+        last_name: 'Leaving',
+        role: 'user',
+        verified: true,
+        two_factor_enabled: true,
+        two_factor_code: '123456',
+        deletion_scheduled_at: new Date(Date.now() - 1000),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    await db.insertInto('profiles').values({ id: rand(), tenant_id: tenantId, auth_id: userId }).execute();
+    await db
+      .insertInto('sessions')
+      .values({ id: rand(), session_id: `sess-${userId}`, user_id: userId, tenant_id: tenantId, ip_address: '::1' })
+      .execute();
+    await db
+      .insertInto('passkeys')
+      .values({
+        user_id: userId,
+        tenant_id: tenantId,
+        credential_id: `cred-${userId}`,
+        public_key: 'pk',
+        device_type: 'singleDevice',
+      })
+      .execute();
+    // Authored content — the NO ACTION FK that made the old hard delete 23503 forever.
+    await db
+      .insertInto('tags')
+      .values({ tenant_id: tenantId, name: `authored-${userId}`, createdby_id: userId, updatedby_id: userId })
+      .execute();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await db.deleteFrom('tags').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('passkeys').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('sessions').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('profiles').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
+  });
+
+  it('tombstones an expired user who authored content, and a re-run is a no-op', async () => {
+    await performScheduledDeletions(db);
+
+    const row = await db.selectFrom('authusers').selectAll().where('id', '=', userId).executeTakeFirstOrThrow();
+    expect(row.deleted_at).not.toBeNull();
+    expect(row.email).toBe(`deleted-${userId}@deleted.invalid`);
+    expect(row.first_name).toBe('Deleted user');
+    expect(row.last_name).toBe('');
+    expect(row.password).toBe('');
+    expect(row.verified).toBe(false);
+    expect(row.two_factor_enabled).toBe(false);
+    expect(row.two_factor_code).toBeNull();
+    // Cleared so the daily cron never re-selects this user (the old infinite-retry loop).
+    expect(row.deletion_scheduled_at).toBeNull();
+    expect(row.deactivated_at).not.toBeNull();
+
+    // Personal satellites are gone; authored content stays with the tenant.
+    for (const [table, column] of [
+      ['profiles', 'auth_id'],
+      ['sessions', 'user_id'],
+      ['passkeys', 'user_id'],
+    ] as const) {
+      const rows = await db.selectFrom(table).select('id').where(column, '=', userId).execute();
+      expect(rows, `${table} not cleared`).toHaveLength(0);
+    }
+    const tags = await db.selectFrom('tags').select('createdby_id').where('tenant_id', '=', tenantId).execute();
+    expect(tags).toHaveLength(1);
+    expect(String(tags[0]?.createdby_id)).toBe(userId);
+
+    // Second run: nothing left to select (deletion_scheduled_at null + deleted_at set), no throw.
+    const before = row.updated_at;
+    await performScheduledDeletions(db);
+    const after = await db.selectFrom('authusers').select('updated_at').where('id', '=', userId).executeTakeFirst();
+    expect(after?.updated_at).toEqual(before);
+  });
+
+  it('rethrows per-user failures so the job can go failed and reach the ops digest', async () => {
+    // Force the per-user transaction to blow up — the loop must swallow it per-user (other
+    // deletions continue) but the run as a whole must FAIL, not complete silently.
+    vi.spyOn(db, 'transaction').mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+
+    await expect(performScheduledDeletions(db)).rejects.toThrow(`Scheduled deletions failed for: user ${userId}`);
+
+    // The user was not tombstoned and is still scheduled — the next (retried) run picks them up.
+    const row = await db.selectFrom('authusers').selectAll().where('id', '=', userId).executeTakeFirstOrThrow();
+    expect(row.deleted_at).toBeNull();
+    expect(row.deletion_scheduled_at).not.toBeNull();
   });
 });

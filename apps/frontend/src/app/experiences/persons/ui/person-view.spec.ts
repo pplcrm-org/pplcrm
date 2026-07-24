@@ -70,7 +70,7 @@ describe('PersonView', () => {
     };
 
     mockDeliveriesSvc = {
-      getSignStatus: vi.fn().mockResolvedValue({ request: null }),
+      getSignStatus: vi.fn().mockResolvedValue({ request: null, open_in_other_campaign: null }),
       add: vi.fn().mockResolvedValue({ id: 'dr1' }),
       setStatus: vi.fn().mockResolvedValue({ updated: 1 }),
     };

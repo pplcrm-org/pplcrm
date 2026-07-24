@@ -45,7 +45,10 @@ The single choke point is `NewslettersController.buildRecipientQuery` — change
   invite dialog (`InviteAuthUserObj`/`UpdateAuthUserObj.campaign_id`, validated by
   `AuthController.resolveAssignableCampaignId`: must be a live tenant campaign; office stores as
   NULL). Admins/owners are never scoped by it ("All campaigns"). Archiving a campaign clears its
-  members' `campaign_id` back to NULL in the same transaction (`CampaignsController.archive`).
+  members' `campaign_id` back to NULL and closes its deliveries — cancels live routes and declines
+  open yard-sign requests via `DeliveriesController.closeCampaignDeliveries` (the open-request slot
+  is per-household tenant-wide; see `pplcrm-deliveries`) — all in the same transaction
+  (`CampaignsController.archive`).
 - No campaign in the auth token. For **admins/owners** the active context lives in
   `profiles.preferences.active_campaign_id`; `campaigns.getContext` returns every campaign + active
   id (falls back to the office), `setActiveCampaign` (admin/owner-only) persists it. For

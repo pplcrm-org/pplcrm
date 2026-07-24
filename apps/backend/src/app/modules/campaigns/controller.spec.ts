@@ -56,6 +56,9 @@ async function cleanTenant(db: any, tenantId: string) {
   await db.deleteFrom('campaign_subscriptions').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('email_suppressions').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('campaign_person_facts').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('delivery_route_stops').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('delivery_requests').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('delivery_routes').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
@@ -181,6 +184,119 @@ describe('CampaignsController', () => {
     expect(me?.campaign_id).toBeNull();
     ctx = await controller.getContext(editorAuth);
     expect(ctx.active_campaign_id).toBe(officeId);
+  });
+
+  it('archiving declines the campaign’s open yard-sign requests and cancels its live routes', async () => {
+    await controller.addCampaign(
+      { name: 'Sweep Race', kind: 'election', description: null, notes: null, startdate: null, enddate: null },
+      auth,
+    );
+    const rows = await controller.getSwitcherList(auth);
+    const electionId = String(rows.find((c) => c.name === 'Sweep Race')?.id);
+
+    // One open request sitting on a live (assigned) route of the same campaign.
+    const household = await db
+      .insertInto('households')
+      .values({ tenant_id: tenantId, campaign_id: electionId, createdby_id: userId, updatedby_id: userId })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const request = await db
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: tenantId,
+        campaign_id: electionId,
+        household_id: household.id,
+        source: 'manual',
+        status: 'approved',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const route = await db
+      .insertInto('delivery_routes')
+      .values({
+        tenant_id: tenantId,
+        campaign_id: electionId,
+        name: 'Sweep route',
+        status: 'assigned',
+        start_address: '1 Test Way',
+        start_lat: 45.0,
+        start_lng: -75.0,
+        est_minutes: 10,
+        est_km: 2,
+        params: JSON.stringify({}),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const stop = await db
+      .insertInto('delivery_route_stops')
+      .values({
+        tenant_id: tenantId,
+        route_id: route.id,
+        request_id: request.id,
+        seq: 1,
+        leg_minutes: 2,
+        status: 'pending',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await controller.archive(electionId, auth);
+
+    // Archived campaign no longer holds the household's one-open-request slot: the request is
+    // declined, its stop skipped, and the route canceled.
+    const afterRequest = await db
+      .selectFrom('delivery_requests')
+      .select('status')
+      .where('id', '=', request.id)
+      .executeTakeFirstOrThrow();
+    expect(afterRequest.status).toBe('declined');
+    const afterStop = await db
+      .selectFrom('delivery_route_stops')
+      .select('status')
+      .where('id', '=', stop.id)
+      .executeTakeFirstOrThrow();
+    expect(afterStop.status).toBe('skipped');
+    const afterRoute = await db
+      .selectFrom('delivery_routes')
+      .select('status')
+      .where('id', '=', route.id)
+      .executeTakeFirstOrThrow();
+    expect(afterRoute.status).toBe('canceled');
+
+    // The household's activity feed records the auto-decline (honest attribution).
+    const activity = await db
+      .selectFrom('user_activity')
+      .select(['metadata'])
+      .where('tenant_id', '=', tenantId)
+      .where('entity', '=', 'households')
+      .where('entity_id', '=', String(household.id))
+      .execute();
+    const declines = activity.filter(
+      (r: { metadata: unknown }) => (r.metadata as { action?: string })?.action === 'yard_sign_status',
+    );
+    expect(declines.length).toBeGreaterThan(0);
+
+    // The household is free again: a new campaign can record a fresh request.
+    const fresh = await db
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: tenantId,
+        campaign_id: officeId,
+        household_id: household.id,
+        source: 'manual',
+        status: 'new',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    expect(fresh.id).toBeTruthy();
   });
 
   it('never hard-deletes campaigns', async () => {

@@ -212,6 +212,11 @@ interface AuthUsers extends RecordType {
   deletion_scheduled_at: Timestamp | null;
   /** Admin deactivation: set = can't sign in until an admin/owner reactivates. NULL = active. */
   deactivated_at: Timestamp | null;
+  /**
+   * Deletion tombstone: identity scrubbed in place (email/name/credentials), row retained
+   * because ~61 NO ACTION FKs (createdby_id etc.) reference it. NULL = live user.
+   */
+  deleted_at: Timestamp | null;
   previous_email: string | null;
   previous_role: string | null;
   passkey_setup_dismissed_at: Timestamp | null;

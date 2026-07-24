@@ -111,20 +111,37 @@ export class DeliveriesController {
   /** Yard-sign standing for one household in one campaign context (household/person pages). */
   public async getSignStatus(auth: IAuthKeyPayload, input: GetSignStatusType) {
     const request = await this.requestsRepo.getSignStatus(auth.tenant_id, input.household_id, input.campaign_id);
-    return { request };
+    // The open-request guard is per-household across ALL campaigns, but this read is
+    // campaign-scoped — so when another campaign holds the open request, say so instead of
+    // leaving the UI to offer a create that can only 409 (disclosure over suppression).
+    let open_in_other_campaign: { campaign_id: string; campaign_name: string; status: string } | null = null;
+    if (!request || request.status === 'declined' || request.status === 'delivered') {
+      const open = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id);
+      if (open && open.campaign_id !== String(input.campaign_id)) {
+        open_in_other_campaign = {
+          campaign_id: open.campaign_id,
+          campaign_name: open.campaign_name,
+          status: open.status,
+        };
+      }
+    }
+    return { request, open_in_other_campaign };
+  }
+
+  /** The 409 for "one open request per household", naming the campaign that holds it when known. */
+  private openHouseholdConflictError(open: { campaign_name: string } | null): ConflictError {
+    return new ConflictError(
+      open
+        ? `This household already has an open delivery request in ${open.campaign_name}.`
+        : 'This household already has an open delivery request.',
+    );
   }
 
   public async addRequest(auth: IAuthKeyPayload, input: AddDeliveryRequestType) {
     // Guard: a household with an OPEN request (new/approved, incl. routed) can't have a second.
-    const open = await this.requestsRepo.db
-      .selectFrom('delivery_requests')
-      .select(['id'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('household_id', '=', input.household_id)
-      .where('status', 'in', ['new', 'approved'])
-      .executeTakeFirst();
+    const open = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id);
     if (open) {
-      throw new ConflictError('This household already has an open delivery request.');
+      throw this.openHouseholdConflictError(open);
     }
     const personId = input.person_id ? String(input.person_id) : null;
     const row = {
@@ -151,7 +168,8 @@ export class DeliveriesController {
       // the partial unique index uq_delivery_requests_open_per_household (23505). Treat the race as
       // exactly what it is — an open request already exists — a 409, never an unhandled 500.
       if (isOpenHouseholdConflict(err)) {
-        throw new ConflictError('This household already has an open delivery request.');
+        const winner = await this.requestsRepo.getOpenForHousehold(auth.tenant_id, input.household_id);
+        throw this.openHouseholdConflictError(winner);
       }
       throw err;
     }
@@ -188,6 +206,33 @@ export class DeliveriesController {
         throw new BadRequestError('Remove these requests from their route first, or cancel that route.');
       }
     }
+    try {
+      return await this.doSetRequestStatus(auth, input);
+    } catch (err) {
+      // Reopening a declined/delivered request (→ new/approved) can collide with the
+      // open-per-household index when another campaign already holds the open request.
+      if (isOpenHouseholdConflict(err)) {
+        const holder =
+          input.ids.length === 1 ? await this.openRequestBlockingReopen(auth.tenant_id, input.ids[0] ?? '') : null;
+        throw this.openHouseholdConflictError(holder);
+      }
+      throw err;
+    }
+  }
+
+  /** The open request on the same household as `requestId` — the row a reopen collided with. */
+  private async openRequestBlockingReopen(tenantId: string, requestId: string) {
+    const row = await this.requestsRepo.db
+      .selectFrom('delivery_requests')
+      .select(['household_id'])
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', requestId)
+      .executeTakeFirst();
+    if (!row) return null;
+    return this.requestsRepo.getOpenForHousehold(tenantId, String(row.household_id));
+  }
+
+  private async doSetRequestStatus(auth: IAuthKeyPayload, input: SetDeliveryRequestStatusType) {
     return this.requestsRepo.transaction().execute(async (trx) => {
       let directIds = input.ids;
       if (input.status === 'delivered') {
@@ -617,50 +662,107 @@ export class DeliveriesController {
   }
 
   private async cancelRoute(auth: IAuthKeyPayload, routeId: string) {
-    return this.routesRepo.transaction().execute(async (trx) => {
-      // Undelivered (pending) stops return their requests to the pool; delivered stay delivered.
-      const pending = await trx
-        .selectFrom('delivery_route_stops')
-        .select(['id', 'request_id'])
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('route_id', '=', routeId)
-        .where('status', '=', 'pending')
-        .execute();
-      const requestIds = pending.map((p) => String(p.request_id));
-      if (requestIds.length > 0) {
-        await trx
-          .updateTable('delivery_requests')
-          .set({ status: 'approved', updatedby_id: auth.user_id, updated_at: new Date() })
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('id', 'in', requestIds)
-          .execute();
-        await trx
-          .updateTable('delivery_route_stops')
-          .set({ status: 'skipped', reason: 'Other', updatedby_id: auth.user_id, updated_at: new Date() })
-          .where('tenant_id', '=', auth.tenant_id)
-          .where(
-            'id',
-            'in',
-            pending.map((p) => String(p.id)),
-          )
-          .execute();
-      }
+    return this.routesRepo.transaction().execute((trx) => this.cancelRouteInTrx(trx, auth, routeId));
+  }
+
+  private async cancelRouteInTrx(trx: Transaction<Models>, auth: IAuthKeyPayload, routeId: string) {
+    // Undelivered (pending) stops return their requests to the pool; delivered stay delivered.
+    const pending = await trx
+      .selectFrom('delivery_route_stops')
+      .select(['id', 'request_id'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('route_id', '=', routeId)
+      .where('status', '=', 'pending')
+      .execute();
+    const requestIds = pending.map((p) => String(p.request_id));
+    if (requestIds.length > 0) {
       await trx
-        .updateTable('delivery_routes')
-        .set({ status: 'canceled', updatedby_id: auth.user_id, updated_at: new Date() })
+        .updateTable('delivery_requests')
+        .set({ status: 'approved', updatedby_id: auth.user_id, updated_at: new Date() })
         .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', routeId)
+        .where('id', 'in', requestIds)
         .execute();
-      await this.logRouteActivity(
-        trx,
-        auth,
-        routeId,
-        'update',
-        'route_canceled',
-        `Route canceled. ${requestIds.length} undelivered stops returned to the pool`,
-      );
-      return { id: routeId, status: 'canceled' as const, returned: requestIds.length };
-    });
+      await trx
+        .updateTable('delivery_route_stops')
+        .set({ status: 'skipped', reason: 'Other', updatedby_id: auth.user_id, updated_at: new Date() })
+        .where('tenant_id', '=', auth.tenant_id)
+        .where(
+          'id',
+          'in',
+          pending.map((p) => String(p.id)),
+        )
+        .execute();
+    }
+    await trx
+      .updateTable('delivery_routes')
+      .set({ status: 'canceled', updatedby_id: auth.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('id', '=', routeId)
+      .execute();
+    await this.logRouteActivity(
+      trx,
+      auth,
+      routeId,
+      'update',
+      'route_canceled',
+      `Route canceled. ${requestIds.length} undelivered stops returned to the pool`,
+    );
+    return { id: routeId, status: 'canceled' as const, returned: requestIds.length };
+  }
+
+  /**
+   * Campaign archive sweep (§15): an archived campaign is read-only, so its open requests would
+   * otherwise hold the one-open-request-per-household slot forever. Cancel its live routes, then
+   * decline its open requests — all on the caller's (archive) transaction. Stops belonging to
+   * this campaign's requests that sit on ANOTHER campaign's route are skipped defensively, so a
+   * declined request never remains on a pending stop.
+   */
+  public async closeCampaignDeliveries(
+    trx: Transaction<Models>,
+    auth: IAuthKeyPayload,
+    campaignId: string,
+  ): Promise<{ declined: number; routesCanceled: number }> {
+    const liveRoutes = await trx
+      .selectFrom('delivery_routes')
+      .select(['id'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('campaign_id', '=', campaignId)
+      .where('status', 'in', ['draft', 'assigned', 'in_progress'])
+      .execute();
+    for (const route of liveRoutes) {
+      await this.cancelRouteInTrx(trx, auth, String(route.id));
+    }
+
+    // Stray pending stops: eligibility doesn't filter by campaign, so a request of this campaign
+    // can sit on a route named after another campaign. Skip those stops without touching the route.
+    const openRequestIds = (
+      await trx
+        .selectFrom('delivery_requests')
+        .select(['id'])
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('campaign_id', '=', campaignId)
+        .where('status', 'in', ['new', 'approved'])
+        .execute()
+    ).map((r) => String(r.id));
+    if (openRequestIds.length === 0) {
+      return { declined: 0, routesCanceled: liveRoutes.length };
+    }
+    await trx
+      .updateTable('delivery_route_stops')
+      .set({ status: 'skipped', reason: 'Other', updatedby_id: auth.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('request_id', 'in', openRequestIds)
+      .where('status', '=', 'pending')
+      .execute();
+
+    await trx
+      .updateTable('delivery_requests')
+      .set({ status: 'declined', updatedby_id: auth.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('id', 'in', openRequestIds)
+      .execute();
+    await this.logRequestStanding(trx, auth, openRequestIds, 'declined');
+    return { declined: openRequestIds.length, routesCanceled: liveRoutes.length };
   }
 
   public async deleteRoute(auth: IAuthKeyPayload, id: string) {

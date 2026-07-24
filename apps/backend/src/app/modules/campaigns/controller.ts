@@ -12,6 +12,7 @@ import { BadRequestError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
 import { logger } from '../../logger';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
+import { DeliveriesController } from '../deliveries/controller';
 import { WorkflowsController } from '../workflows/controller';
 import { UserProfiles } from '../userprofiles/repositories/userprofiles.repo';
 import { CampaignPersonFactsRepo } from './repositories/campaign-person-facts.repo';
@@ -136,6 +137,9 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
           .where('tenant_id', '=', auth.tenant_id)
           .where('campaign_id', '=', id)
           .execute();
+        // Open yard-sign requests would otherwise hold the one-open-request-per-household
+        // slot forever (archived = read-only, so they can never reach a terminal status).
+        await new DeliveriesController().closeCampaignDeliveries(trx, auth, id);
         return this.getRepo().update(
           {
             tenant_id: auth.tenant_id,
