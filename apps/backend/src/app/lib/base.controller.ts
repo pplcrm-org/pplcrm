@@ -324,6 +324,7 @@ export class BaseController<T extends keyof Models, R extends BaseRepository<T>>
             await mailService.sendMail({
               to: user.email,
               subject: `Your export is ready: ${response.fileName}`,
+              notificationSettingsLink: true,
               text: `Hi ${auth.name},\n\nYour export of ${response.rowCount} records from the ${String(this.repo.getTableName())} table is ready.\n\nFile name: ${response.fileName}\nDownload it here: ${env.appUrl}/downloads/${response.fileName}`,
               html: `<h2>Your export is ready</h2>
 <p>Hi ${auth.name},</p>

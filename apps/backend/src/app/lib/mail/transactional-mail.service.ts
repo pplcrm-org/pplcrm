@@ -12,6 +12,9 @@ export interface SendMailOptions {
   text: string;
   html: string;
   tenant_id?: string | null;
+  /** Adds a "choose what you're notified about" footer link to /settings/notifications.
+   *  Set only on preference-gated notification emails, never account/security mail. */
+  notificationSettingsLink?: boolean;
 }
 
 export class TransactionalEmailService {
@@ -20,7 +23,11 @@ export class TransactionalEmailService {
   // Postmark sender-signature name instead of the product name.
   private from = `"${env.postmarkFromName}" <${env.postmarkFromEmail}>`;
 
-  private wrapInTemplate(title: string, contentHtml: string): string {
+  private wrapInTemplate(title: string, contentHtml: string, notificationSettingsLink?: boolean): string {
+    const settingsLinkHtml = notificationSettingsLink
+      ? `<p>Choose what you're notified about in your <a href="${env.appUrl}/settings/notifications">notification settings</a>.</p>
+        `
+      : '';
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -167,7 +174,7 @@ export class TransactionalEmailService {
         ${contentHtml}
       </div>
       <div class="footer">
-        <p>This is a transactional message about your account or a request made through pplCRM. It is not marketing, so it has no unsubscribe link.</p>
+        ${settingsLinkHtml}<p>This is a transactional message about your account or a request made through pplCRM. It is not marketing, so it has no unsubscribe link.</p>
         <p>&copy; ${new Date().getFullYear()} pplCRM. All rights reserved.</p>
       </div>
     </div>
@@ -177,8 +184,10 @@ export class TransactionalEmailService {
   }
 
   public async sendMail(options: SendMailOptions): Promise<void> {
-    const wrappedHtml = this.wrapInTemplate(options.subject, options.html);
-    const text = options.text;
+    const wrappedHtml = this.wrapInTemplate(options.subject, options.html, options.notificationSettingsLink);
+    const text = options.notificationSettingsLink
+      ? `${options.text}\n\nChoose what you're notified about: ${env.appUrl}/settings/notifications`
+      : options.text;
 
     if (!this.serverToken) {
       logger.info(
@@ -244,6 +253,7 @@ export class TransactionalEmailService {
           text: options.text,
           html: options.html,
           tenant_id: options.tenant_id ?? null,
+          notificationSettingsLink: options.notificationSettingsLink ?? null,
         }),
         run_at: new Date(),
         max_attempts: 5,

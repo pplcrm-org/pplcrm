@@ -115,6 +115,7 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     text: z.string().nullish(),
     html: z.string().nullish(),
     tenant_id: idSchema.nullish(),
+    notificationSettingsLink: z.boolean().nullish(),
   }),
   z.object({
     type: z.literal('send-sms'),

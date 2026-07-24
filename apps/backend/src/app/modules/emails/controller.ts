@@ -127,6 +127,7 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
               await this.mailService.sendMail({
                 to: assignee.email,
                 subject: `New email assigned: ${subject}`,
+                notificationSettingsLink: true,
                 text: `Hi ${assignee.first_name},\n\nAn inbox conversation has been assigned to you: "${subject}".\n\nView it: ${env.appUrl}/inbox?email=${id}`,
                 html: `<h2>Email assigned to you</h2>
 <p>Hi ${assignee.first_name},</p>

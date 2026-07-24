@@ -78,6 +78,7 @@ export async function processMentions(
           await mailService.sendMail({
             to: user.email,
             subject: 'You were mentioned in pplCRM',
+            notificationSettingsLink: true,
             text: `Hi ${user.first_name || 'there'},\n\nYou were mentioned in a comment:\n\n"${commentText}"\n\nView the comment: ${commentLink}`,
             html: `<h2>You were mentioned</h2>
 <p>Hi ${user.first_name || 'there'},</p>

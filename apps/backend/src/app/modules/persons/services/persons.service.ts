@@ -142,6 +142,7 @@ export class PersonsService {
               await mailService.sendMail({
                 to: assignee.email,
                 subject: `Contact assigned to you: ${personName}`,
+                notificationSettingsLink: true,
                 text: `Hi ${assignee.first_name},\n\n${auth.name} assigned you ownership of the contact ${personName}.\n\nContact details:\nEmail: ${createdPerson['email'] || 'None'}\nPhone: ${createdPerson['mobile'] || createdPerson['home_phone'] || 'None'}\n\nView the contact: ${link}`,
                 html: `<h2>Contact assigned to you</h2>
 <p>Hi ${assignee.first_name},</p>
@@ -253,6 +254,7 @@ export class PersonsService {
                 await mailService.sendMail({
                   to: assignee.email,
                   subject: `Contact assigned to you: ${personName}`,
+                  notificationSettingsLink: true,
                   text: `Hi ${assignee.first_name},\n\n${auth.name} assigned you ownership of the contact ${personName}.\n\nContact details:\nEmail: ${updatedPerson['email'] || 'None'}\nPhone: ${updatedPerson['mobile'] || updatedPerson['home_phone'] || 'None'}\n\nView the contact: ${link}`,
                   html: `<h2>Contact assigned to you</h2>
 <p>Hi ${assignee.first_name},</p>

@@ -356,6 +356,7 @@ export async function handleSendTransactionalEmail(payload: JobPayloadOf<'send-t
     text: payload.text ?? '',
     html: payload.html ?? '',
     tenant_id: payload.tenant_id ?? null,
+    notificationSettingsLink: payload.notificationSettingsLink ?? undefined,
   });
 }
 
@@ -459,6 +460,7 @@ export async function checkDueTasks(db: Kysely<Models>): Promise<void> {
           subject: `You have ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} due or overdue`,
           text: textContent,
           html: htmlContent,
+          notificationSettingsLink: true,
         });
       }
     }

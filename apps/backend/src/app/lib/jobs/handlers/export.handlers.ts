@@ -210,6 +210,7 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
             await mailService.sendMail({
               to: user.email,
               subject: `Your export is ready: ${payload.file_name || 'export.csv'}`,
+              notificationSettingsLink: true,
               text: `Hi ${user.first_name || 'there'},\n\nYour export of ${count} records from the ${displayLabel} table is ready.\n\nFile name: ${payload.file_name || 'export.csv'}\nDownload it from the Exports page: ${env.appUrl}/exports`,
               html: `<h2>Your export is ready</h2>
 <p>Hi ${user.first_name || 'there'},</p>

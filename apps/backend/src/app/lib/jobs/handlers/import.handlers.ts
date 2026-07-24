@@ -121,6 +121,7 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
           await mailService.sendMail({
             to: user.email,
             subject: `Spreadsheet import complete: ${payload.file_name || 'import.csv'}`,
+            notificationSettingsLink: true,
             text: `Hi ${user.first_name || 'there'},\n\nYour contact spreadsheet import has completed.\n\nStatistics:\n- Inserted: ${inserted}\n- Errors: ${errors}\n- Skipped: ${skipped}\n\nView imported rows: ${env.appUrl}/imports/${payload.import_id}`,
             html: `<h2>Spreadsheet import complete</h2>
 <p>Hi ${user.first_name || 'there'},</p>

@@ -81,6 +81,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
             await this.mailService.sendMail({
               to: assignee.email,
               subject: `New task assigned: ${payload.name}`,
+              notificationSettingsLink: true,
               text: `Hi ${assignee.first_name},\n\n${auth.name} assigned you the task "${payload.name}".\n\nDetails:\n${payload.details || 'None'}\n\nView the task: ${env.appUrl}/tasks/${task.id}`,
               html: `<h2>New task assigned</h2>
 <p>Hi ${assignee.first_name},</p>
@@ -203,6 +204,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
             await this.mailService.sendMail({
               to: assignee.email,
               subject: `New task assigned: ${updated.name}`,
+              notificationSettingsLink: true,
               text: `Hi ${assignee.first_name},\n\n${auth.name} assigned you the task "${updated.name}".\n\nDetails:\n${updated.details || 'None'}\n\nView the task: ${env.appUrl}/tasks/${id}`,
               html: `<h2>New task assigned</h2>
 <p>Hi ${assignee.first_name},</p>
