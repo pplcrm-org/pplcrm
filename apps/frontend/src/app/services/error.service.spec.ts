@@ -25,7 +25,7 @@ function badRequestClientError(message = 'Name is required'): TRPCClientError<an
 
 describe('ErrorService', () => {
   let service: ErrorService;
-  let mockAlerts: { showError: ReturnType<typeof vi.fn> };
+  let mockAlerts: { showError: ReturnType<typeof vi.fn>; muteErrorsFor: ReturnType<typeof vi.fn> };
   let mockRouter: { url: string; navigate: ReturnType<typeof vi.fn> };
   let mockTokenSvc: { clearAll: ReturnType<typeof vi.fn> };
 
@@ -36,7 +36,7 @@ describe('ErrorService', () => {
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     vi.spyOn(console, 'error').mockImplementation((): void => undefined);
 
-    mockAlerts = { showError: vi.fn() };
+    mockAlerts = { showError: vi.fn(), muteErrorsFor: vi.fn() };
     mockRouter = { url: '/persons/42', navigate: vi.fn() };
     mockTokenSvc = { clearAll: vi.fn() };
 
@@ -72,6 +72,8 @@ describe('ErrorService', () => {
       expect(mockTokenSvc.clearAll).toHaveBeenCalledTimes(1);
       expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin'], { queryParams: { returnUrl: '/persons/42' } });
       expect(mockAlerts.showError).not.toHaveBeenCalled();
+      // Mute the misleading "Failed to load …" toasts the other failing queries would raise.
+      expect(mockAlerts.muteErrorsFor).toHaveBeenCalledTimes(1);
     });
   });
 

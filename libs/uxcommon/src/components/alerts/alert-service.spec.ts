@@ -95,4 +95,25 @@ describe('AlertService', () => {
     vi.advanceTimersByTime(EXIT_ANIMATION_MS);
     expect(service.getAlerts()).toHaveLength(1);
   });
+
+  describe('muteErrorsFor', () => {
+    it('drops error toasts within the mute window but still shows info and success', () => {
+      service.muteErrorsFor(DEFAULT_DURATION_MS);
+
+      service.showError('Failed to load dashboard metrics');
+      expect(service.getAlerts()).toHaveLength(0);
+
+      service.showInfo('Your session has expired. Please sign in again.');
+      service.showSuccess('Saved');
+      expect(service.getAlerts().map((a) => a.type)).toEqual(['success', 'info']);
+    });
+
+    it('shows error toasts again once the mute window has elapsed', () => {
+      service.muteErrorsFor(DEFAULT_DURATION_MS);
+      vi.advanceTimersByTime(DEFAULT_DURATION_MS);
+
+      service.showError('Something went wrong');
+      expect(service.getAlerts()).toHaveLength(1);
+    });
+  });
 });

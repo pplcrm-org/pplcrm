@@ -93,6 +93,10 @@ export class SignInPage implements OnInit, OnDestroy {
         this.emailForm.email().value.set(emailVal);
         this.step.set('password');
       }
+    } else if (params.get('returnUrl')) {
+      // A returnUrl is only ever set when an expired/revoked session bounced the user here
+      // (the auth guard redirects without one), so explain the involuntary sign-out.
+      this.alertSvc.showInfo('Your session has expired. Please sign in again.');
     }
   }
 

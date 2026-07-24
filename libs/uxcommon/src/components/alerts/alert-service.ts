@@ -29,6 +29,15 @@ const MAX_TOAST_STACK = 3;
 export class AlertService {
   private readonly alertsSignal = signal<AlertMessage[]>([]);
 
+  /**
+   * Epoch-ms deadline until which {@link showError} drops error toasts. Armed by the app on a
+   * sign-out redirect: a dead session makes every in-flight query fail with UNAUTHORIZED at once,
+   * and each caller would otherwise raise its own misleading "Failed to load …" error — noise that
+   * is both wrong (the real cause is the expired session) and redundant with the sign-in redirect.
+   * Only errors are muted; info/success toasts (e.g. the "please sign in again" nudge) still show.
+   */
+  private errorsMutedUntil = 0;
+
   public readonly alertList = this.alertsSignal.asReadonly();
   public readonly alerts$ = toObservable(this.alertsSignal);
 
@@ -52,6 +61,11 @@ export class AlertService {
 
   public getAlerts(): AlertMessage[] {
     return this.alertsSignal();
+  }
+
+  /** Suppress error toasts for the next `ms` (see {@link errorsMutedUntil}). Used on sign-out. */
+  public muteErrorsFor(ms: number): void {
+    this.errorsMutedUntil = Date.now() + ms;
   }
 
   public show(alert: Partial<AlertMessage>): void {
@@ -80,6 +94,8 @@ export class AlertService {
   }
 
   public showError(text: string): void {
+    // A sign-out in progress mutes the burst of "Failed to load …" toasts its 401s would raise.
+    if (Date.now() < this.errorsMutedUntil) return;
     this.show(new AlertMessage({ text, type: 'error' }));
   }
 

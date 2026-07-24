@@ -9,6 +9,14 @@ import { SERVER_UNREACHABLE_MESSAGE, getUserErrorMessage, isServerUnreachable } 
 import { TokenService } from './api/token-service';
 import { isCurrentRoutePublic } from '../routing/public-routes';
 
+/**
+ * Window after a 401 sign-out redirect during which we (a) dedupe further 401s into the same
+ * sign-out and (b) mute the "Failed to load …" error toasts that the burst of failing in-flight
+ * queries would otherwise raise. Long enough to cover the cascade, short enough not to swallow an
+ * unrelated error the user triggers next.
+ */
+const SIGNOUT_QUIET_MS = 3000;
+
 @Service()
 export class ErrorService {
   private readonly alerts = inject(AlertService);
@@ -77,10 +85,13 @@ export class ErrorService {
     const now = Date.now();
     // A sign-out redirect is already in flight from a 401 moments ago — report the
     // duplicate as handled so it stays silent instead of falling through to a toast.
-    if (now - this.lastRedirect < 3000) return true;
+    if (now - this.lastRedirect < SIGNOUT_QUIET_MS) return true;
     this.lastRedirect = now;
 
     this.tokenSvc.clearAll();
+    // Mute the misleading "Failed to load …" toasts the other in-flight queries are about to raise;
+    // the sign-in page tells the user what actually happened. Info/success toasts still show.
+    this.alerts.muteErrorsFor(SIGNOUT_QUIET_MS);
     const returnUrl = this.router.url;
     void this.router.navigate(['/signin'], { queryParams: { returnUrl } });
     return true;
