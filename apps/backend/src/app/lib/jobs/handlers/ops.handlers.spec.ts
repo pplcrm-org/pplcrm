@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 
 vi.mock('../../../../env', () => ({
-  env: { opsAlertEmail: 'ops@test' as string | undefined },
+  env: { opsAlertEmail: 'ops@test' as string | undefined, postmarkFromEmail: 'hello@pplcrm.com' },
 }));
 
 vi.mock('../reschedule', () => ({
@@ -15,8 +15,9 @@ import type { Models } from '../../../../../../../libs/common/src/lib/kysely.mod
 import { env } from '../../../../env';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import type { SendMailOptions } from '../../mail/transactional-mail.service';
+import { StorageService } from '../../storage.service';
 import { FIVE_MINUTES_MS, scheduleNextRun } from '../reschedule';
-import { handleOpsWatchdog } from './ops.handlers';
+import { handleOpsWatchdog, handleSendBugReportEmail } from './ops.handlers';
 
 /**
  * Minimal Kysely stand-in: each table maps to a QUEUE of results, consumed one per executed
@@ -29,7 +30,7 @@ function makeFakeDb(queues: Record<string, unknown[]>) {
   const makeBuilder = (table: string): Record<string, unknown> => {
     const b: Record<string, unknown> = {};
     const chain = (): Record<string, unknown> => b;
-    for (const m of ['select', 'where', 'groupBy', 'onConflict']) b[m] = vi.fn(chain);
+    for (const m of ['select', 'selectAll', 'where', 'groupBy', 'onConflict']) b[m] = vi.fn(chain);
     b['values'] = vi.fn((values: Record<string, unknown>): Record<string, unknown> => {
       inserts.push({ table, values });
       return b;
@@ -169,5 +170,121 @@ describe('handleOpsWatchdog', () => {
     expect(inserts).toHaveLength(1);
     expect(inserts[0]?.table).toBe('ops_heartbeats');
     expect(scheduleNextRun).toHaveBeenCalled();
+  });
+});
+
+describe('handleSendBugReportEmail', () => {
+  let sendMail: MockInstance<(options: SendMailOptions) => Promise<void>>;
+
+  const PAYLOAD = { type: 'send-bug-report-email', bugReportId: '42', tenant_id: '7' } as const;
+
+  function bugReportRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: '42',
+      tenant_id: '7',
+      created_by: '9',
+      description: 'The save button does nothing',
+      page_url: '/people/1',
+      user_agent: 'TestBrowser/1.0',
+      viewport: '1512x982',
+      screenshot_file_id: null,
+      created_at: new Date('2026-07-24T12:00:00Z'),
+      ...overrides,
+    };
+  }
+
+  const reporterRow = {
+    email: 'zee@example.com',
+    first_name: 'Zee',
+    last_name: 'Tester',
+    role: 'admin',
+    campaign_id: null,
+  };
+
+  beforeEach(() => {
+    env.opsAlertEmail = 'ops@test';
+    sendMail = vi.spyOn(TransactionalEmailService.prototype, 'sendMail').mockResolvedValue(undefined);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('emails the report with reference, reporter, and context (no screenshot)', async () => {
+    const { db } = makeFakeDb({
+      bug_reports: [bugReportRow()],
+      authusers: [reporterRow],
+      tenants: [{ name: 'Acme Campaign' }],
+    });
+
+    await handleSendBugReportEmail(PAYLOAD, db);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const mail = sendMail.mock.calls[0][0];
+    expect(mail.to).toBe('ops@test');
+    expect(mail.subject).toBe('pplCRM bug report BR-42 (tenant 7)');
+    expect(mail.text).toContain('The save button does nothing');
+    expect(mail.text).toContain('Zee Tester <zee@example.com>');
+    expect(mail.text).toContain('Acme Campaign');
+    expect(mail.text).toContain('Screenshot: none');
+    expect(mail.attachments).toEqual([]);
+  });
+
+  it('falls back to the Postmark from-address when OPS_ALERT_EMAIL is unset', async () => {
+    env.opsAlertEmail = undefined;
+    const { db } = makeFakeDb({
+      bug_reports: [bugReportRow()],
+      authusers: [reporterRow],
+      tenants: [{ name: 'Acme Campaign' }],
+    });
+
+    await handleSendBugReportEmail(PAYLOAD, db);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0][0].to).toBe('hello@pplcrm.com');
+  });
+
+  it('attaches the screenshot downloaded from storage', async () => {
+    vi.spyOn(StorageService.prototype, 'download').mockResolvedValue(Buffer.from('fake-image-bytes'));
+    const { db } = makeFakeDb({
+      bug_reports: [bugReportRow({ screenshot_file_id: '55' })],
+      authusers: [reporterRow],
+      tenants: [{ name: 'Acme Campaign' }],
+      files: [{ filename: 'shot.png', mime_type: 'image/png', size_bytes: 1234, storage_key: 'k/shot.png' }],
+    });
+
+    await handleSendBugReportEmail(PAYLOAD, db);
+
+    const mail = sendMail.mock.calls[0][0];
+    expect(mail.attachments).toEqual([
+      {
+        name: 'shot.png',
+        contentBase64: Buffer.from('fake-image-bytes').toString('base64'),
+        contentType: 'image/png',
+      },
+    ]);
+    expect(mail.text).toContain('Screenshot: attached (shot.png)');
+  });
+
+  it('still sends (with a note) when the screenshot is too large to attach', async () => {
+    const download = vi.spyOn(StorageService.prototype, 'download');
+    const { db } = makeFakeDb({
+      bug_reports: [bugReportRow({ screenshot_file_id: '55' })],
+      authusers: [reporterRow],
+      tenants: [{ name: 'Acme Campaign' }],
+      files: [{ filename: 'huge.png', mime_type: 'image/png', size_bytes: 8 * 1024 * 1024, storage_key: 'k/huge.png' }],
+    });
+
+    await handleSendBugReportEmail(PAYLOAD, db);
+
+    expect(download).not.toHaveBeenCalled();
+    const mail = sendMail.mock.calls[0][0];
+    expect(mail.attachments).toEqual([]);
+    expect(mail.text).toContain('too large to attach');
+  });
+
+  it('skips quietly when the report row no longer exists', async () => {
+    const { db } = makeFakeDb({ bug_reports: [] });
+
+    await handleSendBugReportEmail(PAYLOAD, db);
+
+    expect(sendMail).not.toHaveBeenCalled();
   });
 });

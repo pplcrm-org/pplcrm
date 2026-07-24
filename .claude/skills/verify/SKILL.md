@@ -48,8 +48,10 @@ await page.addInitScript(() => {
 3. **Sign-in is two-step**: fill email → click **Continue** → password field appears →
    click **Sign in**. When the email is remembered, the password step shows immediately —
    check for an existing `input[type="password"]` before hunting for the email field.
-   After sign-in a **passkey upsell interstitial** may appear (still on `/signin`) — click
-   **"Skip for now"**.
+   **Trap — passkey sign-in branch**: after **Continue**, the page may show a
+   "Sign in with passkey" step instead of the password field — click **"Use password
+   instead"** (ghost button) to get to it. Distinct from the post-sign-in **passkey upsell
+   interstitial** (still on `/signin`) — dismiss that one with **"Skip for now"**.
 
 **Trap — rate limits (per IP, in-memory)**: `signUp` allows **5/hour**, `signIn` **10/15min**
 ("Too many attempts" banner with a countdown). Failed attempts count, so don't burn signups
