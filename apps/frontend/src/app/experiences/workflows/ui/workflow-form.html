@@ -16,7 +16,7 @@
     </div>
     @if (triggerSelected()) {
     <pc-form-actions
-      [isLoading]="isLoading()"
+      [isLoading]="isLoading() || saving()"
       [signalForm]="form"
       [saveAlwaysEnabled]="true"
       (btn1Clicked)="save($event)"

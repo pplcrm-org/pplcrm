@@ -17,6 +17,7 @@ import { DetailRow } from '@uxcommon/components/detail-row/detail-row';
 import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
 import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
 import { createLoadingGate } from '@uxcommon/loading-gate';
+import { createRequestGuard } from '@uxcommon/request-guard';
 import { environment } from '../../../../environments/environment';
 import { AuthService } from '../../../auth/auth-service';
 import { donationPageUrl, publicPageUrl } from '../../../shared/public-pages';
@@ -54,6 +55,7 @@ export class FormViewComponent {
   readonly id = input.required<string>();
   protected readonly recordNav = injectRecordNavigation('form', this.id);
   private readonly _loading = createLoadingGate();
+  private readonly _requestGuard = createRequestGuard();
   protected readonly isLoading = this._loading.visible;
   protected readonly initialized = signal(false);
   protected readonly formRecord = signal<any | null>(null);
@@ -227,14 +229,17 @@ ${
   }
 
   protected async loadAllData(id: string) {
+    const isCurrent = this._requestGuard.begin();
     const end = this._loading.begin();
     try {
       // 1. Load Form details
       const record = await this.formsSvc.getById(id);
+      if (!isCurrent()) return; // superseded — do not land stale data
       this.formRecord.set(record);
 
       // 2. Load available Lists to resolve list names
       const result = await this.listsSvc.getAll({ limit: 100 });
+      if (!isCurrent()) return;
       const rows = Array.isArray(result?.rows) ? result.rows : [];
       this.availableLists.set(
         rows.map((row: any) => ({
@@ -245,6 +250,7 @@ ${
 
       // 3. Load submissions count
       const subCount = await this.formsSvc.getSubmissionsCount(id);
+      if (!isCurrent()) return;
       this.submissionsCount.set(subCount);
     } catch (err) {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the form. Please try again.'));

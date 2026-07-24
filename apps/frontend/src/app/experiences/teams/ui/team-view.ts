@@ -11,6 +11,7 @@ import { StatCard } from '@uxcommon/components/stat-card/stat-card';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
 import { PcTabOption, TabPanel, Tabs } from '@uxcommon/components/tabs/tabs';
 import { createLoadingGate } from '@uxcommon/loading-gate';
+import { createRequestGuard } from '@uxcommon/request-guard';
 import type { IAuthUser } from '../../../../../../../libs/common/src';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { UserService } from '../../../services/user.service';
@@ -51,6 +52,7 @@ export class TeamViewComponent {
   private readonly dialogs = inject(ConfirmDialogService);
 
   private readonly _loading = createLoadingGate();
+  private readonly _requestGuard = createRequestGuard();
   protected readonly isLoading = this._loading.visible;
   protected readonly initialized = signal(false);
   protected readonly team = signal<any>(null);
@@ -110,16 +112,19 @@ export class TeamViewComponent {
   }
 
   protected async loadAllData(id: string) {
+    const isCurrent = this._requestGuard.begin();
     const end = this._loading.begin();
     try {
       // 1. Load team detail
       const data = await this.teamsSvc.getById(id);
+      if (!isCurrent()) return; // superseded — do not land stale data
       this.team.set(data);
 
       // 2. Load associated tasks
       const res = await this.tasksSvc.getAll({
         filterModel: { team_id: { value: id } },
       } as any);
+      if (!isCurrent()) return;
       this.teamTasks.set(res?.rows ?? []);
     } catch (err) {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the team. Please try again.'));

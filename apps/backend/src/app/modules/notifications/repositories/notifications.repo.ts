@@ -41,6 +41,20 @@ export class NotificationsRepo extends BaseRepository<'notifications'> {
       .execute();
   }
 
+  /**
+   * Mark ONE notification read — scoped by user_id as well as tenant_id + id. The id is a global
+   * bigserial (enumerable), so scoping by tenant + id alone would let a user mark (and, via a
+   * returning-all update, read) another tenant-mate's notification. Returns nothing sensitive.
+   */
+  public async markRead(tenant_id: string, user_id: string, id: string, trx?: Transaction<Models>): Promise<void> {
+    await this.getUpdate(trx)
+      .set({ read: true })
+      .where('tenant_id', '=', tenant_id)
+      .where('user_id', '=', user_id)
+      .where('id', '=', id)
+      .execute();
+  }
+
   public async pushNotification(
     input: {
       tenant_id: string;

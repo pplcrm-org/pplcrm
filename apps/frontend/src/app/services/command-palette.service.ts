@@ -3,6 +3,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
 import { ThemeService } from '../layout/theme/theme-service';
+import { BugReportDialogService } from './bug-report-dialog.service';
 
 /** A single command-palette action. `run` performs it; the palette closes afterward. */
 export interface CommandAction {
@@ -24,6 +25,7 @@ export interface CommandAction {
 export class CommandPaletteService {
   private readonly router = inject(Router);
   private readonly theme = inject(ThemeService);
+  private readonly bugReportDialog = inject(BugReportDialogService);
 
   private readonly _isOpen = signal(false);
   public readonly isOpen = this._isOpen.asReadonly();
@@ -66,6 +68,13 @@ export class CommandPaletteService {
       icon: 'plus',
       keywords: 'new campaign send',
       run: () => this.go('/newsletters/add'),
+    },
+    {
+      id: 'report-bug',
+      label: 'Report a bug',
+      icon: 'bug-ant',
+      keywords: 'issue problem feedback broken error crash',
+      run: () => this.bugReportDialog.open(),
     },
     {
       id: 'toggle-theme',

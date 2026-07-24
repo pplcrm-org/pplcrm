@@ -11,7 +11,7 @@
         </div>
       </div>
       <pc-form-actions
-        [isLoading]="isLoading()"
+        [isLoading]="isLoading() || saving()"
         [signalForm]="form"
         (btn1Clicked)="save($event)"
         [btn1Text]="'Save List'"
@@ -273,7 +273,7 @@
       <div class="flex items-center justify-between">
         <button type="button" class="btn" (click)="back()">Back</button>
         <pc-form-actions
-          [isLoading]="isLoading()"
+          [isLoading]="isLoading() || saving()"
           [signalForm]="form"
           [btn1Text]="createLabel()"
           (btn1Clicked)="save($event)"

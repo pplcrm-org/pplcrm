@@ -27,7 +27,8 @@ export async function resolveAutomationSendConsent(
     .selectFrom('email_suppressions')
     .select('id')
     .where('tenant_id', '=', tenantId)
-    .where('email', '=', person.email)
+    // Case-insensitive: suppressions are stored lowercased but persons keep mixed case.
+    .where(sql<boolean>`lower(email) = ${person.email.toLowerCase()}`)
     .executeTakeFirst();
   if (suppressed) return { ok: false, reason: 'Address previously bounced or complained — suppressed' };
 

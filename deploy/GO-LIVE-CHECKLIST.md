@@ -202,26 +202,26 @@ update` has no probe flags, so YAML is the only path. Liveness must stay on `GET
       outage; readiness on `GET /healthz` correctly pulls it from ingress instead. For reference
       (probes survive image deploys; this only ever needs re-doing on an app re-create):
 
-                ```bash
-                az containerapp show -n pplcrm-api -g pplcrm-cad-prod -o yaml > /tmp/pplcrm-api.yaml
-                # edit: under properties.template.containers[0] add
-                #   probes:
-                #   - type: Startup
-                #     httpGet: { path: /, port: 3000 }
-                #     periodSeconds: 5
-                #     failureThreshold: 30
-                #   - type: Liveness
-                #     httpGet: { path: /, port: 3000 }
-                #     periodSeconds: 30
-                #     failureThreshold: 3
-                #   - type: Readiness
-                #     httpGet: { path: /healthz, port: 3000 }
-                #     periodSeconds: 30
-                #     failureThreshold: 3
-                az containerapp update -n pplcrm-api -g pplcrm-cad-prod --yaml /tmp/pplcrm-api.yaml
-                ```
+                      ```bash
+                      az containerapp show -n pplcrm-api -g pplcrm-cad-prod -o yaml > /tmp/pplcrm-api.yaml
+                      # edit: under properties.template.containers[0] add
+                      #   probes:
+                      #   - type: Startup
+                      #     httpGet: { path: /, port: 3000 }
+                      #     periodSeconds: 5
+                      #     failureThreshold: 30
+                      #   - type: Liveness
+                      #     httpGet: { path: /, port: 3000 }
+                      #     periodSeconds: 30
+                      #     failureThreshold: 3
+                      #   - type: Readiness
+                      #     httpGet: { path: /healthz, port: 3000 }
+                      #     periodSeconds: 30
+                      #     failureThreshold: 3
+                      az containerapp update -n pplcrm-api -g pplcrm-cad-prod --yaml /tmp/pplcrm-api.yaml
+                      ```
 
-                One-time op — later `az containerapp update --image` deploys don't touch probes.
+                      One-time op — later `az containerapp update --image` deploys don't touch probes.
 
 - [x] Review backups/retention on Postgres and Blob; confirm they match the retention windows the marketing
       site claims (see `pplcrm-website-claims`). **Verified 2026-07-21:** PG Flexible Server = 7-day

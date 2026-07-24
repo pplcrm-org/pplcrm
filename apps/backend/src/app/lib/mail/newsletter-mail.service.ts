@@ -35,6 +35,10 @@ export interface SendNewsletterOptions {
   /** Set false when the body carries its own unsubscribe link (automation emails use the
    * app's HMAC unsubscribe route) instead of SendGrid's `<% unsubscribe %>` substitution. */
   subscriptionTracking?: boolean;
+  /** RFC 8058 one-click target for sends that bypass SendGrid subscription tracking (the
+   * automation path). Emits `List-Unsubscribe` + `List-Unsubscribe-Post` message headers.
+   * Only meaningful for single-recipient sends — the URL is per-recipient. */
+  listUnsubscribeUrl?: string;
 }
 
 export class NewsletterEmailService {
@@ -119,6 +123,14 @@ export class NewsletterEmailService {
           };
           return Object.keys(customArgs).length > 0 ? { custom_args: customArgs } : {};
         })(),
+        ...(options.listUnsubscribeUrl
+          ? {
+              headers: {
+                'List-Unsubscribe': `<${options.listUnsubscribeUrl}>`,
+                'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+              },
+            }
+          : {}),
         ...(options.attachments?.length
           ? {
               attachments: options.attachments.map((a) => ({

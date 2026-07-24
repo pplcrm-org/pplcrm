@@ -21,6 +21,7 @@ import { env } from '../../../env';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { logger } from '../../logger';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
+import { sendWindow } from '../newsletters/send-guards';
 import { syncSubscriptionQuantity } from './subscription-sync';
 
 export interface PlanLimits {
@@ -95,7 +96,13 @@ function bytesToGB(bytes: number): number {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- BigInt tenant_id filter needs an untyped handle; see pplcrm-any-exceptions
 export async function countEmailableSubscribers(tenantId: string, db: Kysely<any>): Promise<number> {
-  const suppressedEmails = db.selectFrom('email_suppressions').select('email').where('tenant_id', '=', tenantId);
+  // Case-insensitive suppression match: suppressions are stored lowercased but persons keep mixed
+  // case, so compare lower(email) on both sides — otherwise a mixed-case bounced address is counted
+  // as emailable and inflates the Stripe bracket.
+  const suppressedEmails = db
+    .selectFrom('email_suppressions')
+    .select(sql<string>`lower(email)`.as('email'))
+    .where('tenant_id', '=', tenantId);
   const row = await db
     .selectFrom('persons')
     .select(db.fn.countAll().as('cnt'))
@@ -103,7 +110,7 @@ export async function countEmailableSubscribers(tenantId: string, db: Kysely<any
     .where('email', 'is not', null)
     .where('email', '<>', '')
     .where('do_not_contact', '=', false)
-    .where('email', 'not in', suppressedEmails)
+    .where(sql<boolean>`lower(persons.email) NOT IN ${suppressedEmails}`)
     .executeTakeFirst();
   return Number(row?.cnt || 0);
 }
@@ -151,12 +158,10 @@ export async function checkTenantUsage(tenantId: string, db: Kysely<any>): Promi
   let billingCycleStart = new Date();
   billingCycleStart.setDate(billingCycleStart.getDate() - 30); // fallback: last 30 days
   if (endsAt) {
-    const candidateStart = new Date(endsAt);
-    candidateStart.setMonth(candidateStart.getMonth() - 1);
-    while (candidateStart > new Date()) {
-      candidateStart.setMonth(candidateStart.getMonth() - 1);
-    }
-    billingCycleStart = candidateStart;
+    // Reuse the canonical, drift-free billing-cycle window (send-guards.ts). Computing the monthly
+    // anniversary by chaining setMonth (as this did) corrupts a 29th–31st billing day when it steps
+    // through a shorter month, so the metered cycle landed days off the real anniversary.
+    billingCycleStart = sendWindow(endsAt, new Date()).start;
   }
 
   const emailsCountRow = await db

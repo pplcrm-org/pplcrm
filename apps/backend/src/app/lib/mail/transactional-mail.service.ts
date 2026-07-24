@@ -6,12 +6,20 @@ import { logger } from '../../logger';
 import { BaseRepository } from '../base.repo';
 import { LOGO_CID, LOGO_PNG_BASE64 } from './logo-asset';
 
+export interface MailAttachment {
+  name: string;
+  contentBase64: string;
+  contentType: string;
+}
+
 export interface SendMailOptions {
   to: string;
   subject: string;
   text: string;
   html: string;
   tenant_id?: string | null;
+  /** Extra attachments (sendMail only — enqueueMail payloads must stay small). */
+  attachments?: MailAttachment[];
   /** Adds a "choose what you're notified about" footer link to /settings/notifications.
    *  Set only on preference-gated notification emails, never account/security mail. */
   notificationSettingsLink?: boolean;
@@ -220,6 +228,11 @@ export class TransactionalEmailService {
               ContentType: 'image/png',
               ContentID: `cid:${LOGO_CID}`,
             },
+            ...(options.attachments ?? []).map((a) => ({
+              Name: a.name,
+              Content: a.contentBase64,
+              ContentType: a.contentType,
+            })),
           ],
           // Round-trips to the bounce/complaint webhook so suppressions can be tenant-scoped.
           ...(options.tenant_id ? { Metadata: { tenant_id: String(options.tenant_id) } } : {}),

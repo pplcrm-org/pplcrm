@@ -119,6 +119,22 @@ describe('sendWindow', () => {
     expect(start.toISOString()).toBe('2026-06-19T09:00:00.000Z');
     expect(resetsAt.toISOString()).toBe('2026-07-19T09:00:00.000Z');
   });
+
+  // Regression: a 29th–31st billing anchor must not drift when stepping back through shorter months
+  // (the old iterative setMonth turned "Feb 31" into early March, landing the meter days off cycle).
+  it('does not drift a month-end anchor stepping through shorter months (annual, ends on the 31st)', () => {
+    const endsAt = new Date('2027-05-31T09:00:00Z');
+    const { start, resetsAt } = sendWindow(endsAt, new Date('2026-07-14T12:00:00Z'));
+    expect(start.toISOString()).toBe('2026-06-30T09:00:00.000Z'); // June has 30 days → clamped, not July 1
+    expect(resetsAt.toISOString()).toBe('2026-07-31T09:00:00.000Z');
+  });
+
+  it('clamps a 31st anchor to the target month length (February)', () => {
+    const endsAt = new Date('2026-03-31T09:00:00Z');
+    const { start, resetsAt } = sendWindow(endsAt, new Date('2026-02-15T12:00:00Z'));
+    expect(start.toISOString()).toBe('2026-01-31T09:00:00.000Z');
+    expect(resetsAt.toISOString()).toBe('2026-02-28T09:00:00.000Z'); // clamped to Feb 28, no overflow
+  });
 });
 
 describe('hasPaymentHold', () => {

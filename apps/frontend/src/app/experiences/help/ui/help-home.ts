@@ -1,4 +1,4 @@
-import { afterNextRender, Component, computed, signal, viewChild } from '@angular/core';
+import { afterNextRender, Component, computed, inject, signal, viewChild } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { Icon } from '@icons/icon';
 
@@ -11,6 +11,8 @@ import {
   readingMinutes,
   searchHelp,
 } from '@common';
+
+import { BugReportDialogService } from '../../../services/bug-report-dialog.service';
 
 import type { ElementRef } from '@angular/core';
 import type { HelpArticle, HelpCategory, HelpCategoryId } from '@common';
@@ -47,6 +49,7 @@ const HELP_CATEGORY_ICONS: Record<HelpCategoryId, PcIconNameType> = {
 })
 export class HelpHomePage {
   private readonly searchBox = viewChild<ElementRef<HTMLInputElement>>('searchBox');
+  private readonly bugReportDialog = inject(BugReportDialogService);
 
   protected readonly query = signal('');
   protected readonly searching = computed(() => this.query().trim().length > 0);
@@ -81,5 +84,9 @@ export class HelpHomePage {
 
   protected onSearchInput(event: Event): void {
     this.query.set((event.target as HTMLInputElement).value);
+  }
+
+  protected openBugReport(): void {
+    this.bugReportDialog.open();
   }
 }

@@ -47,9 +47,9 @@ describe('TaskView', () => {
       triggerRefresh: vi.fn(),
       api: {
         tasks: {
-          getComments: vi.fn().mockResolvedValue([]),
-          getAttachments: vi.fn().mockResolvedValue([]),
-          getSubtasks: vi.fn().mockResolvedValue([]),
+          getComments: { query: vi.fn().mockResolvedValue([]) },
+          getAttachments: { query: vi.fn().mockResolvedValue([]) },
+          getSubtasks: { query: vi.fn().mockResolvedValue([]) },
         },
       },
     };
@@ -104,6 +104,30 @@ describe('TaskView', () => {
     expect(mockTasks.getById).toHaveBeenCalledWith('t1');
     expect(component['task']()).toBeDefined();
     expect(component['task']().id).toBe('t1');
+  });
+
+  it('should reload the task when the id input changes (record navigation reuses the component)', async () => {
+    await new Promise((r) => setTimeout(r, 10));
+    expect(mockTasks.getById).toHaveBeenCalledWith('t1');
+
+    mockTasks.getById.mockResolvedValue({
+      id: 't2',
+      name: 'Task 2',
+      status: 'todo',
+      priority: 'low',
+      assigned_to: null,
+      due_at: null,
+      details: null,
+    });
+
+    fixture.componentRef.setInput('id', 't2');
+    fixture.detectChanges();
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockTasks.getById).toHaveBeenCalledWith('t2');
+    expect(component['task']().id).toBe('t2');
+    // Children reload for the new id too, so mutations hit the displayed task.
+    expect(mockTasks.api.tasks.getSubtasks.query).toHaveBeenCalledWith('t2');
   });
 
   it('should update task and trigger refresh', async () => {

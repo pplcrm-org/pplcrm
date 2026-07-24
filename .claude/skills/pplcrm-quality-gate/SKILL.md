@@ -39,7 +39,9 @@ If that exits 0, the pre-commit hook's `*.{ts,html}` step will pass. This is the
 Heads-up on **pre-existing failures** — check whether the flagged lines/tests are yours before burning time:
 
 - ~~`nx lint backend` fails on 2 `donation_pledges` `no-unscoped-db-query` errors~~ — fixed; `nx lint backend` passes clean as of 2026-07-21.
-- `nx test backend` has **18 pre-existing failing tests** (verified failing at HEAD `88743bda` on 2026-07-21): the public-submission specs in `modules/web-forms/controller.spec.ts`, `web-forms/routes/web-forms-public.route.spec.ts`, `events/controller.spec.ts` (rsvpPublic), and `volunteer-events/controller.spec.ts` (signupVolunteerPublic). Root cause: commit `47221fe0` ("require API keys for all public form/event submissions") changed the public submission paths without updating their specs. `job-claim.spec.ts` can also fail in the full parallel run but passes in isolation (test-parallelism flake). Deploy CI has **no test step**, which is how these landed on main.
+- ~~`nx test backend` has 18 pre-existing failing tests (web-forms/events/volunteer-events public-submission specs)~~ — fixed; those all pass as of 2026-07-24. `job-claim.spec.ts` can still fail in the full parallel run but passes in isolation (test-parallelism flake). Deploy CI has **no test step**, which is how broken specs land on main.
+- `nx test frontend` has **2 pre-existing failing tests** (verified failing at HEAD `42aac912` on 2026-07-24, files untouched since): `services/api/user-message.spec.ts` ("shows a TRPCClientError message as-is" — a directly-constructed `TRPCClientError` has `data == null`, so `isServerUnreachable` classifies it as an outage and returns the unreachable message; spec predates the outage-message commit `303d096f`) and `layout/sidebar/sidebar.spec.ts` ("should honor collapse state…" — stale since the mobile-nav rework `fa816a4e`).
+- Stray `vitest` worker processes from an interrupted run can hold test-DB connections and make subsequent backend runs hang until timeout — `pkill -f vitest` before rerunning.
 
 The other hook step is formatting only:
 

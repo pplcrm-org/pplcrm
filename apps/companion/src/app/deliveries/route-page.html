@@ -11,6 +11,16 @@
         <p class="text-sm text-base-content/60">Ask your organizer for a new one.</p>
       </div>
     </div>
+    } @case ('error') {
+    <div class="flex min-h-screen items-center justify-center px-6">
+      <div class="w-full max-w-[400px] rounded-2xl border border-base-300 bg-base-100 p-8 text-center">
+        <h1 class="mb-2 text-lg font-semibold">Can't reach the server</h1>
+        <p class="text-sm text-base-content/60">
+          Your route link is still good; this is usually a weak connection. Check your signal and try again.
+        </p>
+        <button type="button" class="btn btn-primary mt-4 min-h-11" (click)="retryLoad()">Try again</button>
+      </div>
+    </div>
     } @case ('session-expired') {
     <div class="flex min-h-screen items-center justify-center px-6">
       <div class="w-full max-w-[400px] rounded-2xl border border-base-300 bg-base-100 p-8 text-center">

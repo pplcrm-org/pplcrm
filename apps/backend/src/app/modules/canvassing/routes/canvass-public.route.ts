@@ -1,6 +1,6 @@
 import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastify';
 
-import { CompanionResultsObj, LogKnockObj } from '../../../../../../../libs/common/src';
+import { CompanionResultsObj } from '../../../../../../../libs/common/src';
 import { CanvassingController } from '../controller';
 
 /**
@@ -82,23 +82,6 @@ const canvassPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     } catch (err: unknown) {
       fastify.log.error(err);
       return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to record these results.') });
-    }
-  });
-
-  // Legacy single-knock endpoint (pre-companion-app). Still validated and
-  // idempotent; the new app syncs through /t/:token/results.
-  fastify.post('/knock', async (req: FastifyRequest, reply: FastifyReply) => {
-    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
-    const parsed = LogKnockObj.safeParse(req.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: 'Invalid knock payload.' });
-    }
-    try {
-      const result = await controller.logKnock(parsed.data);
-      return reply.status(200).send(result);
-    } catch (err: unknown) {
-      fastify.log.error(err);
-      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to record this knock.') });
     }
   });
 

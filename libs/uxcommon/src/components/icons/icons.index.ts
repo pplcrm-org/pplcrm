@@ -91,6 +91,7 @@ export const icons = {
   'bookmark-plus': 'assets/icons/bookmark-plus.svg',
   'bookmark-filled': 'assets/icons/bookmark-filled.svg',
   'bookmark-slash': 'assets/icons/bookmark-slash.svg',
+  'bug-ant': 'assets/icons/bug-ant.svg',
   briefcase: 'assets/icons/briefcase.svg',
   calendar: 'assets/icons/calendar.svg',
   'chart-pie': 'assets/icons/chart-pie.svg',

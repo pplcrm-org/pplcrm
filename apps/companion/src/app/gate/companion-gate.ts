@@ -12,13 +12,14 @@ import {
 import { FormsModule } from '@angular/forms';
 
 import type { CompanionAccessPayload, CompanionLinkKind, CompanionVerifyChannel } from '@common';
+import { Icon } from '@icons/icon';
 
 import { CompanionApiError, CompanionSessionService } from './companion-api';
 
 const POLL_MS = 20_000;
 const RESEND_COOLDOWN_S = 30;
 
-type GateView = 'loading' | 'dead' | 'unassigned' | 'verify' | 'pending' | 'ready';
+type GateView = 'loading' | 'dead' | 'unassigned' | 'verify' | 'pending' | 'ready' | 'unreachable';
 
 /**
  * The verify + approve gate both companions sit behind (COMPANION-APPS-PLAN.md
@@ -32,7 +33,7 @@ type GateView = 'loading' | 'dead' | 'unassigned' | 'verify' | 'pending' | 'read
 @Component({
   selector: 'pc-companion-gate',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule],
+  imports: [FormsModule, Icon],
   template: `
     @switch (view()) {
       @case ('ready') {
@@ -55,6 +56,23 @@ type GateView = 'loading' | 'dead' | 'unassigned' | 'verify' | 'pending' | 'read
               It may have expired or been replaced. Ask your organizer to send a new one.
             </p>
           }
+        </div>
+      }
+      @case ('unreachable') {
+        <div class="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
+          <pc-icon name="exclamation-triangle" [size]="8" class="text-warning"></pc-icon>
+          <h1 class="text-lg font-semibold">Can't reach the server</h1>
+          <p class="text-base-content/70">
+            Your link is still good; this is usually a weak connection. This page keeps retrying on its own, or you can
+            try now.
+          </p>
+          <button type="button" class="btn btn-primary" [disabled]="checking()" (click)="checkNow()">
+            @if (checking()) {
+              Trying…
+            } @else {
+              Try again
+            }
+          </button>
         </div>
       }
       @case ('unassigned') {
@@ -185,11 +203,12 @@ export class CompanionGate implements OnInit {
   protected readonly error = signal<string | null>(null);
   protected readonly sending = signal(false);
   protected readonly sentTo = signal<string | null>(null);
-  protected readonly state = signal<'loading' | CompanionAccessPayload['state']>('loading');
+  protected readonly state = signal<'loading' | 'unreachable' | CompanionAccessPayload['state']>('loading');
 
   protected readonly view = computed<GateView>(() => {
     const state = this.state();
     if (state === 'loading') return 'loading';
+    if (state === 'unreachable') return 'unreachable';
     if (state === 'ready') return 'ready';
     if (state === 'pending_approval') return 'pending';
     if (state === 'need_verification') return 'verify';
@@ -268,16 +287,30 @@ export class CompanionGate implements OnInit {
     }
   }
 
+  /**
+   * Never rejects: getAccess maps every failure to the transient
+   * 'unreachable' state, so the `void this.refresh()` calls in ngOnInit and
+   * the approval poll can't become unhandled rejections on an offline tick.
+   */
   private async refresh(): Promise<void> {
     const access = await this.session.getAccess(this.kind(), this.token());
+    if (access.state === 'unreachable') {
+      // Transient failure: never demote a real state (a pending screen stays
+      // pending through an offline poll tick). Keep polling so the gate
+      // recovers on its own once the connection returns.
+      const current = this.state();
+      if (current === 'loading' || current === 'unreachable') this.state.set('unreachable');
+      this.startPolling();
+      return;
+    }
     this.access.set(access);
     const wasReady = this.state() === 'ready';
     this.state.set(access.state);
-    if (access.state === 'ready') {
-      this.stopPolling();
-      if (!wasReady) this.ready.emit();
-    } else if (access.state === 'pending_approval') {
+    if (access.state === 'pending_approval') {
       this.startPolling();
+    } else {
+      this.stopPolling();
+      if (access.state === 'ready' && !wasReady) this.ready.emit();
     }
   }
 

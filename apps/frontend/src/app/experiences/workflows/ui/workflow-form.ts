@@ -111,6 +111,10 @@ export class WorkflowFormComponent implements OnInit {
   private readonly _loading = createLoadingGate();
   protected readonly isLoading = this._loading.visible;
 
+  /** Disables Save immediately on click — the loading gate stays false for its first
+   *  300ms by design, which would leave a double-click window. */
+  protected readonly saving = signal(false);
+
   protected readonly triggerCards = TRIGGER_CARDS;
   protected readonly stepKinds = STEP_KINDS;
 
@@ -416,55 +420,63 @@ export class WorkflowFormComponent implements OnInit {
   // ── Save / delete ──────────────────────────────────────────────────────────
   protected async save(done?: (() => void) | Event): Promise<void> {
     if (done instanceof Event) done.preventDefault();
+    if (this.saving()) return;
     this.form().markAsTouched();
     if (!this.form().valid()) {
       this.alertSvc.showError('Please give the automation a name.');
       return;
     }
 
-    await submit(this.form, {
-      action: async () => {
-        const end = this._loading.begin();
-        try {
-          const raw = this.payload();
-          const conditions = this.hasConditions() ? this.conditions() : null;
-          const data = {
-            ...raw,
-            trigger_event_id: raw.trigger_event_id ? raw.trigger_event_id : null,
-            conditions,
-            exit_conditions: this.exitConditions().length > 0 ? this.exitConditions() : null,
-          };
-          const stepPayload = this.toStepPayload();
+    this.saving.set(true);
+    try {
+      await submit(this.form, {
+        action: async () => {
+          const end = this._loading.begin();
+          try {
+            const raw = this.payload();
+            const conditions = this.hasConditions() ? this.conditions() : null;
+            const data = {
+              ...raw,
+              trigger_event_id: raw.trigger_event_id ? raw.trigger_event_id : null,
+              conditions,
+              exit_conditions: this.exitConditions().length > 0 ? this.exitConditions() : null,
+            };
+            const stepPayload = this.toStepPayload();
 
-          if (this.isNew()) {
-            const result = await this.workflowsSvc.add(data);
-            const newId = String(result['id']);
-            this.workflowId.set(newId);
-            this.isNew.set(false);
-            await this.workflowsSvc.saveSteps(newId, stepPayload);
-            this.workflowsSvc.triggerRefresh();
-            this.alertSvc.showSuccess('Automation created');
-            if (typeof done === 'function') done();
-            else void this.router.navigate(['/automations', newId]);
-          } else {
-            const id = this.workflowId();
-            if (id) {
-              await this.workflowsSvc.update(id, data);
-              await this.workflowsSvc.saveSteps(id, stepPayload);
+            if (this.isNew()) {
+              const result = await this.workflowsSvc.add(data);
+              const newId = String(result['id']);
+              this.workflowId.set(newId);
+              this.isNew.set(false);
+              await this.workflowsSvc.saveSteps(newId, stepPayload);
+              this.workflowsSvc.triggerRefresh();
+              this.alertSvc.showSuccess('Automation created');
+              if (typeof done === 'function') done();
+              else void this.router.navigate(['/automations', newId]);
+            } else {
+              const id = this.workflowId();
+              if (id) {
+                await this.workflowsSvc.update(id, data);
+                await this.workflowsSvc.saveSteps(id, stepPayload);
+              }
+              this.workflowsSvc.triggerRefresh();
+              this.alertSvc.showSuccess('Automation saved');
+              if (typeof done === 'function') done();
+              else void this.loadRuns();
             }
-            this.workflowsSvc.triggerRefresh();
-            this.alertSvc.showSuccess('Automation saved');
-            if (typeof done === 'function') done();
-            else void this.loadRuns();
+          } catch (err) {
+            this.alertSvc.showError(
+              err instanceof Error && err.message ? err.message : 'Could not save the automation.',
+            );
+          } finally {
+            end();
           }
-        } catch (err) {
-          this.alertSvc.showError(err instanceof Error && err.message ? err.message : 'Could not save the automation.');
-        } finally {
-          end();
-        }
-        return null;
-      },
-    });
+          return null;
+        },
+      });
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   protected async deleteWorkflow(): Promise<void> {

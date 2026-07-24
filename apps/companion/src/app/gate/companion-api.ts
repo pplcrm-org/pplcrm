@@ -26,6 +26,19 @@ export class CompanionApiError extends Error {
   }
 }
 
+/**
+ * Client-side marker for "couldn't reach the server". Distinct from the
+ * backend's authoritative 'dead': the access endpoint answers 200 for every
+ * resolved outcome (including `{ state: 'dead' }`), so a non-ok response (edge
+ * 503 during a deploy, 429 rate limit, proxy 5xx) or a network throw is a
+ * transient failure on a phone with poor signal, never proof the link is dead.
+ */
+export interface CompanionAccessUnreachable {
+  state: 'unreachable';
+}
+
+export type CompanionAccessResult = CompanionAccessPayload | CompanionAccessUnreachable;
+
 interface StoredSession {
   token: string;
   expiresAt: string;
@@ -71,11 +84,21 @@ export class CompanionSessionService {
     this.sessionToken.set(null);
   }
 
-  public async getAccess(kind: CompanionLinkKind, token: string): Promise<CompanionAccessPayload> {
+  /**
+   * Resolve what the gate should render for this link. Only a 200 body may
+   * declare a link dead; any non-ok response or network failure comes back as
+   * the transient 'unreachable' state so the gate can retry instead of showing
+   * the dead-link screen.
+   */
+  public async getAccess(kind: CompanionLinkKind, token: string): Promise<CompanionAccessResult> {
     const params = new URLSearchParams({ kind, token });
-    const res = await fetch(`/api/companion/access?${params}`, { headers: this.headers() });
-    if (!res.ok) return { state: 'dead' };
-    return (await res.json()) as CompanionAccessPayload;
+    try {
+      const res = await fetch(`/api/companion/access?${params}`, { headers: this.headers() });
+      if (!res.ok) return { state: 'unreachable' };
+      return (await res.json()) as CompanionAccessPayload;
+    } catch {
+      return { state: 'unreachable' };
+    }
   }
 
   /** Headers to attach to every companion data request. */

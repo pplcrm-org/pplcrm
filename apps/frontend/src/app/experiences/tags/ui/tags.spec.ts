@@ -55,19 +55,32 @@ describe('Tags Component', () => {
     expect(views.find((v) => v.name === 'New')?.color).toBeNull();
   });
 
-  it('should add a new tag and emit events', () => {
-    fixture.componentRef.setInput('tags', ['VIP']);
+  it('should preserve the parent array order on init (no re-add reversal)', () => {
+    fixture.componentRef.setInput('tags', ['A', 'B', 'C']);
+    fixture.detectChanges();
+
+    expect(component.tags()).toEqual(['A', 'B', 'C']);
+  });
+
+  it('should add a new tag immutably and emit events', () => {
+    const parentArr = ['VIP'];
+    fixture.componentRef.setInput('tags', parentArr);
     fixture.detectChanges();
 
     const addSpy = vi.spyOn(component.tagAdded, 'emit');
-    const changeSpy = vi.spyOn(component.tagsChange, 'emit');
+    const changes: string[][] = [];
+    const sub = component.tags.subscribe((v) => changes.push(v));
 
     // act
     component['add']('NewTag');
+    sub.unsubscribe();
 
     expect(addSpy).toHaveBeenCalledWith('newtag');
-    expect(changeSpy).toHaveBeenCalledWith(['newtag', 'VIP']);
+    expect(changes).toEqual([['newtag', 'VIP']]);
     expect(component.tags()).toEqual(['newtag', 'VIP']);
+    // The parent's array is never mutated in place — a NEW reference is produced,
+    // so parent computed()s re-run (the person-form tagSuggestions regression).
+    expect(parentArr).toEqual(['VIP']);
   });
 
   it('should move an existing tag to the front if added again', () => {
@@ -75,31 +88,35 @@ describe('Tags Component', () => {
     fixture.detectChanges();
 
     const addSpy = vi.spyOn(component.tagAdded, 'emit');
-    const changeSpy = vi.spyOn(component.tagsChange, 'emit');
+    const before = component.tags();
 
     // act
     component['add']('B');
 
     // Should not emit tagAdded since it already exists
     expect(addSpy).not.toHaveBeenCalled();
-    // But it should move 'B' to the front and emit tagsChange
-    expect(component.tags()).toEqual(['B', 'C', 'A']);
-    expect(changeSpy).toHaveBeenCalledWith(['B', 'C', 'A']);
+    // But it should move 'B' to the front with a new array reference
+    expect(component.tags()).toEqual(['B', 'A', 'C']);
+    expect(component.tags()).not.toBe(before);
   });
 
-  it('should remove a tag and emit events', () => {
-    fixture.componentRef.setInput('tags', ['A', 'B']);
+  it('should remove a tag immutably and emit events', () => {
+    const parentArr = ['A', 'B'];
+    fixture.componentRef.setInput('tags', parentArr);
     fixture.detectChanges();
 
     const removeSpy = vi.spyOn(component.tagRemoved, 'emit');
-    const changeSpy = vi.spyOn(component.tagsChange, 'emit');
+    const changes: string[][] = [];
+    const sub = component.tags.subscribe((v) => changes.push(v));
 
     // act
     component['remove']('A');
+    sub.unsubscribe();
 
     expect(removeSpy).toHaveBeenCalledWith('A');
-    expect(changeSpy).toHaveBeenCalledWith(['B']);
+    expect(changes).toEqual([['B']]);
     expect(component.tags()).toEqual(['B']);
+    expect(parentArr).toEqual(['A', 'B']); // input array untouched
   });
 
   it('should filter suggestions via tags service', async () => {

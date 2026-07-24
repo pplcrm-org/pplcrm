@@ -34,6 +34,10 @@ export class FastifyServer {
       trustProxy: env.trustProxy,
       routerOptions: {
         ignoreTrailingSlash: true,
+        // find-my-way's default is 100 chars, silently 404ing any longer path param. The
+        // unsubscribe token (base64url JSON payload + HMAC, /api/unsubscribe/:token) runs
+        // ~140-490 chars depending on email length — 1024 leaves comfortable headroom.
+        maxParamLength: 1024,
       },
       exposeHeadRoutes: false,
     });

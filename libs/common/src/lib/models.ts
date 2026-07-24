@@ -11,6 +11,7 @@ import type {
   AddMarketingEmailObj,
   AddTaskObj,
   AddTeamObj,
+  AddBugReportObj,
   AddTurfObj,
   UpdateTurfObj,
   CutTurfsObj,
@@ -164,6 +165,8 @@ export type SetCampaignSubscriptionType = z.infer<typeof SetCampaignSubscription
 export type CarryOverCampaignType = z.infer<typeof CarryOverCampaignObj>;
 
 export type AddTeamType = z.infer<typeof AddTeamObj>;
+
+export type AddBugReportType = z.infer<typeof AddBugReportObj>;
 
 export type InviteAuthUserType = z.infer<typeof InviteAuthUserObj>;
 

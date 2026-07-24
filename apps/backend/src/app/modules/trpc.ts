@@ -34,6 +34,7 @@ import { CanvassingRouter } from './canvassing/trpc.router';
 import { DeliveriesRouter } from './deliveries/trpc.router';
 import { CompanionAccessRouter } from './companion-access/trpc.router';
 import { DemoRouter } from './demo/trpc.router';
+import { BugReportsRouter } from './bug-reports/trpc.router';
 
 export type TRPCRouter = typeof trpcRouter;
 
@@ -74,6 +75,7 @@ export const trpcRouter = router({
   deliveries: DeliveriesRouter,
   companionAccess: CompanionAccessRouter,
   demo: DemoRouter,
+  bugReports: BugReportsRouter,
 });
 
 // Re-export individual routers for convenience.

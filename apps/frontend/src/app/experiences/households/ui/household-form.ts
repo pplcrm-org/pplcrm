@@ -22,6 +22,7 @@ import { TagOptionsService } from '@frontend/shared/components/datagrid/services
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { PersonsService } from '../../persons/services/persons-service';
 import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+import { getUserErrorMessage } from '@frontend/services/api/user-message';
 
 @Component({
   selector: 'pc-household-form',
@@ -49,6 +50,10 @@ export class HouseholdForm implements OnInit {
 
   private _loading = createLoadingGate();
 
+  /** Disables Save immediately on click — the loading gate stays false for its first
+   *  300ms by design, which would leave a double-click window. */
+  protected readonly saving = signal(false);
+
   protected readonly household = signal<Selectable<Households> | null>(null);
 
   /** Member count for the Overview rail — loaded alongside the household (§6). */
@@ -65,9 +70,10 @@ export class HouseholdForm implements OnInit {
 
   protected addressVerified = false;
 
-  protected tags: string[] = [];
+  /** Signals so pc-tags' two-way binding propagates new array references back here. */
+  protected readonly tags = signal<string[]>([]);
 
-  protected issues: string[] = [];
+  protected readonly issues = signal<string[]>([]);
 
   protected readonly payload = signal({
     formatted_address: '',
@@ -255,6 +261,7 @@ export class HouseholdForm implements OnInit {
   }
 
   protected save(done?: () => void) {
+    if (this.saving()) return;
     const raw = this.payload();
     const data: UpdateHouseholdsType = {
       home_phone: raw.home_phone,
@@ -273,12 +280,26 @@ export class HouseholdForm implements OnInit {
       lng: raw.lng || null,
     };
     if (!this.id()) {
-      return this.householdsSvc.add(data).then(async (result: any) => {
-        this.alertSvc.showSuccess('Household added successfully.');
-        this.householdsSvc.triggerRefresh();
-        done?.();
-        await this.router.navigate(['/households', result.id]);
-      });
+      this.saving.set(true);
+      const end = this._loading.begin();
+      return this.householdsSvc
+        .add(data)
+        .then(async (result) => {
+          this.alertSvc.showSuccess('Household added successfully.');
+          this.householdsSvc.triggerRefresh();
+          // Mark the form pristine so the deactivate guard doesn't prompt
+          // "Leave without saving?" on the post-save navigation.
+          this.form().reset();
+          done?.();
+          await this.router.navigate(['/households', result.id]);
+        })
+        .catch((err: unknown) => {
+          this.alertSvc.showError(getUserErrorMessage(err, 'Could not add the household. Please try again.'));
+        })
+        .finally(() => {
+          end();
+          this.saving.set(false);
+        });
     }
     return this.update(data, done);
   }
@@ -332,8 +353,8 @@ export class HouseholdForm implements OnInit {
     if (!this.household() || !id) {
       return;
     }
-    this.tags = await this.householdsSvc.getTags(id, 'tag');
-    this.issues = await this.householdsSvc.getTags(id, 'issue');
+    this.tags.set(await this.householdsSvc.getTags(id, 'tag'));
+    this.issues.set(await this.householdsSvc.getTags(id, 'issue'));
   }
 
   private async loadHousehold() {
@@ -385,6 +406,7 @@ export class HouseholdForm implements OnInit {
       return;
     }
 
+    this.saving.set(true);
     const end = this._loading.begin();
     void this.householdsSvc
       .update(id, data)
@@ -396,7 +418,13 @@ export class HouseholdForm implements OnInit {
           done();
         }
       })
-      .finally(() => end());
+      .catch((err: unknown) => {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the household. Please try again.'));
+      })
+      .finally(() => {
+        end();
+        this.saving.set(false);
+      });
   }
 }
 

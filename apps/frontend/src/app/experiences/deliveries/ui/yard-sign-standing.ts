@@ -53,11 +53,19 @@ export class YardSignStanding {
     if (!r) return '';
     const parts: string[] = [];
     if (r.person_name) parts.push(`Requested by ${r.person_name}`);
-    parts.push(r.source === 'web_form' ? 'web form' : 'manual');
+    parts.push(this.sourceLabel(r.source));
     const date = this.formatDate(r.updated_at);
     if (date) parts.push(date);
     return parts.join(' · ');
   });
+
+  /** Human label for a request's origin. Typed `string` so a widened source union
+   *  (web_form | manual | canvass) needs no change here. */
+  private sourceLabel(source: string): string {
+    if (source === 'web_form') return 'web form';
+    if (source === 'canvass') return 'canvass';
+    return 'manual';
+  }
 
   constructor() {
     effect(() => {

@@ -35,7 +35,17 @@ interface PublicRouteData {
   stops: PublicStop[];
 }
 
-type PageState = 'loading' | 'ready' | 'notfound' | 'session-expired' | 'ended';
+type PageState = 'loading' | 'ready' | 'notfound' | 'session-expired' | 'ended' | 'error';
+
+/**
+ * The backend keeps dead/unknown/expired tokens a uniform 404 (NOT_ACTIVE in
+ * deliveries-public.route.ts) and reserves 401/403 for device-session issues.
+ * Anything else (edge 503 during a deploy, 429, proxy 5xx) is transient on a
+ * flaky mobile network and must never be treated as a dead link.
+ */
+function isDeadLinkStatus(status: number): boolean {
+  return status === 404 || status === 410;
+}
 type ViewMode = 'list' | 'map' | 'me';
 
 /**
@@ -177,8 +187,9 @@ export class RoutePage {
   }
 
   protected async skip(stopId: string, reason: string): Promise<void> {
-    await this.post(stopId, 'skip', reason);
-    this.reasonPickerFor.set(null);
+    const saved = await this.post(stopId, 'skip', reason);
+    // Keep the picker open on a failed save so a re-tap retries the same reason.
+    if (saved) this.reasonPickerFor.set(null);
   }
 
   protected async defer(stopId: string): Promise<void> {
@@ -193,6 +204,11 @@ export class RoutePage {
     window.location.reload();
   }
 
+  protected retryLoad(): void {
+    this.state.set('loading');
+    void this.load();
+  }
+
   protected async load(): Promise<void> {
     const token = this.token();
     if (!token) {
@@ -204,13 +220,16 @@ export class RoutePage {
         headers: { Accept: 'application/json', ...this.session.headers() },
       });
       if (!res.ok) {
-        this.state.set(res.status === 401 || res.status === 403 ? 'session-expired' : 'notfound');
+        if (res.status === 401 || res.status === 403) this.state.set('session-expired');
+        else if (isDeadLinkStatus(res.status)) this.state.set('notfound');
+        else this.state.set('error');
         return;
       }
       this.data.set((await res.json()) as PublicRouteData);
       this.state.set('ready');
     } catch {
-      this.state.set('notfound');
+      // Network failure: the link may be fine, so offer a retry, not a dead end.
+      this.state.set('error');
     }
   }
 
@@ -221,8 +240,9 @@ export class RoutePage {
     return 'muted';
   }
 
-  private async post(stopId: string, action: 'deliver' | 'skip' | 'defer' | 'undo', reason?: string): Promise<void> {
-    if (this.busy()) return;
+  /** Returns true when the action was saved and the fresh route payload applied. */
+  private async post(stopId: string, action: 'deliver' | 'skip' | 'defer' | 'undo', reason?: string): Promise<boolean> {
+    if (this.busy()) return false;
     this.busy.set(true);
     try {
       const res = await fetch(
@@ -235,14 +255,26 @@ export class RoutePage {
         },
       );
       if (!res.ok) {
-        this.state.set(res.status === 401 || res.status === 403 ? 'session-expired' : 'notfound');
-        return;
+        // A device-session problem (401/403) still routes back through the gate.
+        // Every other failure must NOT discard the loaded route: the backend
+        // collapses transient errors (5xx/429) into the SAME uniform 404 it uses
+        // for a dead token, so a 404 here is ambiguous and treating it as
+        // notfound would throw away a live route on a passing network blip. Keep
+        // the route on screen, tell the volunteer, and leave the stop unchanged
+        // so a re-tap retries. notfound stays reserved for the initial load().
+        if (res.status === 401 || res.status === 403) this.state.set('session-expired');
+        else this.alerts.showError("Couldn't save that stop. Check your connection and try again.");
+        return false;
       }
       this.data.set((await res.json()) as PublicRouteData);
       if (action === 'deliver' || action === 'skip') this.lastActioned.set(stopId);
       else if (action === 'undo') this.lastActioned.set(null);
+      return true;
     } catch {
-      // Leave state as-is; the volunteer can retry.
+      // Network failure: nothing changed server-side that we know of; say so
+      // instead of losing the tap silently, and leave the stop retriable.
+      this.alerts.showError("Couldn't save that stop. Check your connection and try again.");
+      return false;
     } finally {
       this.busy.set(false);
     }

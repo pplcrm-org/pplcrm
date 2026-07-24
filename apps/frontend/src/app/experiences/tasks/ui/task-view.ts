@@ -12,6 +12,7 @@ import {
 } from '@angular/core';
 import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, type CdkDragDrop } from '@angular/cdk/drag-drop';
 import { createLoadingGate } from '@uxcommon/loading-gate';
+import { createRequestGuard } from '@uxcommon/request-guard';
 import { Router, RouterModule } from '@angular/router';
 import { IAuthUser, TASK_BOARD_STATUSES, TASK_STATUS_LABELS, isTaskStatus } from '../../../../../../../libs/common/src';
 import { TasksService } from '@experiences/tasks/services/tasks-service';
@@ -77,6 +78,7 @@ export class TaskView {
   protected readonly attachments = signal<any[]>([]);
   protected readonly subtasks = signal<any[]>([]);
   private readonly _loading = createLoadingGate();
+  private readonly _requestGuard = createRequestGuard();
   protected readonly isLoading = this._loading.visible;
   protected readonly users = signal<IAuthUser[]>([]);
   protected readonly assignedTo = signal<string>('');
@@ -133,20 +135,24 @@ export class TaskView {
   protected readonly statusLabels = TASK_STATUS_LABELS;
 
   constructor() {
+    // Track id() so record navigation (prev/next reuses this component) reloads the task.
     effect(() => {
-      void untracked(() => this.load());
+      const currentId = this.id();
+      void untracked(() => this.load(currentId));
     });
   }
 
   // Load task and its children
-  private async load() {
+  private async load(id: string) {
+    const isCurrent = this._requestGuard.begin();
     const end = this._loading.begin();
     try {
       const [t, us, ts] = await Promise.all([
-        this.tasks.getById(this.id()),
+        this.tasks.getById(id),
         this.userService.getUsers(),
         this.teams.getAll({ limit: 1000 }),
       ]);
+      if (!isCurrent()) return; // superseded — do not land stale data
       if (!t) {
         this.alertSvc.showError('Task not found.');
         return;
@@ -160,7 +166,15 @@ export class TaskView {
       this.teamId.set(team == null ? '' : String(team));
 
       // Load subtasks, comments, attachments
-      await Promise.all([this.loadComments(), this.loadAttachments(), this.loadSubtasks()]);
+      const [comments, attachments, subtasks] = await Promise.all([
+        this.tasks.api.tasks.getComments.query(id),
+        this.tasks.api.tasks.getAttachments.query(id),
+        this.tasks.api.tasks.getSubtasks.query(id),
+      ]);
+      if (!isCurrent()) return;
+      this.comments.set(comments);
+      this.attachments.set(attachments);
+      this.subtasks.set(subtasks);
     } catch (err) {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the task. Please try again.'));
     } finally {

@@ -50,17 +50,28 @@ describe('NotificationsController', () => {
     expect(spy).toHaveBeenCalledWith('tenant-1', 'user-1');
   });
 
-  it('should update notification read status on markRead', async () => {
+  it('markRead scopes by user_id (not just the enumerable global id) and returns only the id', async () => {
     const auth = { tenant_id: 'tenant-1', user_id: 'user-1' } as any;
-    const spy = vi.spyOn(controller, 'update').mockResolvedValue({ id: '1', read: true } as any);
+    const repoSpy = vi.spyOn((controller as any).repo, 'markRead').mockResolvedValue(undefined as any);
+    // Guard the old vulnerable path: markRead must NOT fall back to BaseController.update, which
+    // scopes only tenant_id + id and leaks the full row via returningAll.
+    const updateSpy = vi.spyOn(controller, 'update');
 
-    const result = await controller.markRead('1', auth);
+    const result = await controller.markRead('99', auth);
 
-    expect(spy).toHaveBeenCalledWith({
-      tenant_id: 'tenant-1',
-      id: '1',
-      row: { read: true },
-    });
-    expect(result).toEqual({ id: '1', read: true });
+    // The caller's own user_id is threaded through, so one user can never mark-read — or, via a
+    // returning-all update, read — another user's notification (ids are a global bigserial).
+    expect(repoSpy).toHaveBeenCalledWith('tenant-1', 'user-1', '99');
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ id: '99' });
+  });
+
+  it('markRead threads a second user through unchanged (no cross-user reach)', async () => {
+    const repoSpy = vi.spyOn((controller as any).repo, 'markRead').mockResolvedValue(undefined as any);
+
+    await controller.markRead('42', { tenant_id: 'tenant-1', user_id: 'user-2' } as any);
+
+    // user-2's request updates only rows scoped to user-2 — never user-1's notification #42.
+    expect(repoSpy).toHaveBeenCalledWith('tenant-1', 'user-2', '42');
   });
 });

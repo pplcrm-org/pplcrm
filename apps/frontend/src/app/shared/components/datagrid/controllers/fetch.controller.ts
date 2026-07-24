@@ -14,11 +14,16 @@ export class FetchController {
   private readonly store = inject(GridStoreService);
   private readonly alertSvc = inject(AlertService);
 
+  /** Monotonic sequence for loadPage calls — search/filter/sort/pagination fetches can
+   *  resolve out of order, and a stale response must never repaint newer rows. */
+  private loadSeq = 0;
+
   private get grid(): DataGrid<keyof Models, unknown> {
     return this.store.grid as unknown as DataGrid<keyof Models, unknown>;
   }
 
   async loadPage(index: number, append?: boolean): Promise<void> {
+    const requestId = ++this.loadSeq;
     // The gate flips its `loaded` signal (which the grid reads as hasLoaded) when
     // this fetch completes — via the disposer below. No separate bookkeeping here.
     const end = this.grid._loading.begin();
@@ -43,6 +48,7 @@ export class FetchController {
       const data = this.grid.archiveMode()
         ? await this.gridSvc.getAllArchived(options)
         : await this.gridSvc.getAll(options);
+      if (requestId !== this.loadSeq) return; // stale response — a newer request owns the grid state
       const incoming = data.rows ?? [];
       if (append && this.store.rows().length > 0) {
         const next = [...this.store.rows(), ...incoming];
@@ -55,7 +61,10 @@ export class FetchController {
       this.grid.totalCountAll.set(data.count ?? this.store.rows().length);
       this.store.pageIndex.set(index);
     } catch {
-      this.alertSvc.showError(this.grid.config.messages.loadFailed);
+      // A stale failure must not toast over the newer request that superseded it.
+      if (requestId === this.loadSeq) {
+        this.alertSvc.showError(this.grid.config.messages.loadFailed);
+      }
     } finally {
       end();
     }

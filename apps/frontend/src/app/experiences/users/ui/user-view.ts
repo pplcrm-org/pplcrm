@@ -2,6 +2,7 @@ import { Component, computed, effect, inject, input, signal, untracked } from '@
 import { DatePipe } from '@angular/common';
 import { Router } from '@angular/router';
 import { createLoadingGate } from '@uxcommon/loading-gate';
+import { createRequestGuard } from '@uxcommon/request-guard';
 import { form, required, email } from '@angular/forms/signals';
 import {
   IAuthUserDetail,
@@ -62,6 +63,7 @@ export class UserViewComponent {
   private readonly campaignContext = inject(CampaignContextService);
 
   private readonly _loading = createLoadingGate();
+  private readonly _requestGuard = createRequestGuard();
   protected readonly loading = this._loading.visible;
   protected readonly initialized = signal(false);
   protected readonly error = signal<string | null>(null);
@@ -464,10 +466,12 @@ export class UserViewComponent {
   }
 
   private async load() {
+    const isCurrent = this._requestGuard.begin();
     const end = this._loading.begin();
     this.error.set(null);
     try {
       const [user] = await Promise.all([this.users.getById(this.id()), this.campaignContext.ensureLoaded()]);
+      if (!isCurrent()) return; // superseded — do not land stale data
       this.detail.set(user);
       this.stats.set(user.stats);
       this.setForm(user);

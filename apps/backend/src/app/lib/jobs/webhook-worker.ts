@@ -7,8 +7,16 @@ import { BillingController } from '../../modules/billing/controller';
 import { WebhookEventsRepo } from '../../modules/billing/repositories/webhook-events.repo';
 import { DonationsController } from '../../modules/donations/controller';
 import { updateCachedAccountStatus } from '../../modules/donations/stripe-connect';
+import { sql } from 'kysely';
 import { getStripe, isMockMode } from '../stripe-platform-client';
 import { logger } from '../../logger';
+
+// A 'processing' webhook event whose lock is older than this is treated as abandoned (its worker
+// crashed between claim and completion — OOM, SIGKILL, container replacement mid-deploy). Without a
+// reclaim the event wedges in 'processing' forever, so a donor is charged but no donation is ever
+// recorded (or a plan is never activated / a refund never reverses) until someone edits the row by hand.
+const STALE_EVENT_THRESHOLD_MS = 30 * 60 * 1000;
+const STALE_EVENT_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 
 export class WebhookEventWorker {
   private isRunning = false;
@@ -17,6 +25,7 @@ export class WebhookEventWorker {
   private shutdownResolver: (() => void) | null = null;
   private pgClient: Client | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private recoveryInterval: NodeJS.Timeout | null = null;
 
   private readonly webhookEventsRepo = new WebhookEventsRepo();
   private readonly db = this.webhookEventsRepo.db; // Kysely DB instance
@@ -26,6 +35,15 @@ export class WebhookEventWorker {
     this.isRunning = true;
     logger.info('Webhook Event Worker started.');
     void this.setupListener();
+
+    // Reclaim events abandoned in 'processing' by a crashed worker, on startup and every 5 minutes.
+    this.recoverStaleEvents().catch((err) =>
+      logger.error({ err }, 'Failed to recover stale webhook events on startup'),
+    );
+    this.recoveryInterval = setInterval(() => {
+      this.recoverStaleEvents().catch((err) => logger.error({ err }, 'Failed to recover stale webhook events'));
+    }, STALE_EVENT_RECOVERY_INTERVAL_MS);
+
     this.poll();
   }
 
@@ -38,6 +56,10 @@ export class WebhookEventWorker {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.recoveryInterval) {
+      clearInterval(this.recoveryInterval);
+      this.recoveryInterval = null;
     }
     if (this.pgClient) {
       try {
@@ -226,9 +248,15 @@ export class WebhookEventWorker {
         stripeObj?.metadata?.personId &&
         stripeObj?.metadata?.isRecurring === 'true';
       const isInvoicePaid = eventType === 'invoice.payment_succeeded' && stripeObj?.subscription;
-      const isSubscriptionUpdated = eventType === 'customer.subscription.updated';
-      const isSubscriptionDeleted = eventType === 'customer.subscription.deleted';
-      const isInvoiceFailed = eventType === 'invoice.payment_failed' && stripeObj?.subscription;
+      // `customer.subscription.updated/deleted` and `invoice.payment_failed` are emitted for BOTH a
+      // donation pledge (on the connected account) AND a tenant's own billing subscription (on the
+      // platform account). Only the connected-account variant belongs to the donation branches below.
+      // Gate them on isConnectEvent so the platform variant falls through to BillingController — without
+      // this, a failed renewal never triggers a payment hold and a Stripe-side cancellation never
+      // downgrades the tenant (the billing handlers become unreachable via webhook).
+      const isSubscriptionUpdated = isConnectEvent && eventType === 'customer.subscription.updated';
+      const isSubscriptionDeleted = isConnectEvent && eventType === 'customer.subscription.deleted';
+      const isInvoiceFailed = isConnectEvent && eventType === 'invoice.payment_failed' && stripeObj?.subscription;
       const isChargeRefunded = eventType === 'charge.refunded';
       const isDisputeCreated = eventType === 'charge.dispute.created';
       const isDisputeClosed = eventType === 'charge.dispute.closed';
@@ -514,5 +542,52 @@ export class WebhookEventWorker {
     }
 
     return true;
+  }
+
+  /**
+   * Recover webhook events left in 'processing' by a worker that crashed between claim and
+   * completion. Mirrors the background-job worker's `recoverStaleJobs`: dead-letter an event that
+   * has already been claimed max_attempts times (so a poison event can't re-crash the worker every
+   * window), and requeue the rest so they get retried instead of silently lost.
+   */
+  private async recoverStaleEvents(): Promise<void> {
+    try {
+      const staleTime = new Date(Date.now() - STALE_EVENT_THRESHOLD_MS);
+
+      await this.db
+        .updateTable('webhook_events')
+        .set({
+          status: 'failed',
+          locked_at: null,
+          locked_by: null,
+          error: 'Webhook event processing timed out after maximum attempts',
+          updated_at: new Date(),
+        })
+        .where('status', '=', 'processing')
+        .where('locked_at', '<', staleTime)
+        .where(sql<boolean>`attempts >= coalesce(max_attempts, 3)`)
+        .execute();
+
+      const requeued = await this.db
+        .updateTable('webhook_events')
+        .set({
+          status: 'pending',
+          locked_at: null,
+          locked_by: null,
+          error: 'Webhook event processing timed out',
+          run_at: new Date(),
+          updated_at: new Date(),
+        })
+        .where('status', '=', 'processing')
+        .where('locked_at', '<', staleTime)
+        .where(sql<boolean>`attempts < coalesce(max_attempts, 3)`)
+        .executeTakeFirst();
+
+      if (Number(requeued?.numUpdatedRows ?? 0) > 0) {
+        this.wakeUp();
+      }
+    } catch (err) {
+      logger.error({ err }, 'Failed to recover stale webhook events');
+    }
   }
 }

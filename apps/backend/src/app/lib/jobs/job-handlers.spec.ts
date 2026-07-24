@@ -90,6 +90,28 @@ describe('perform_scheduled_deletions Job Handler', () => {
 });
 
 describe('process_drip_workflows Job Handler', () => {
+  // scheduleNextRun opens a transaction, takes a pg advisory lock via raw sql`…`.execute(trx)
+  // (which needs a minimal Kysely executor on the trx), dedup-checks for a pending run, then
+  // inserts the next one — this trx mock mirrors that shape and captures the inserted run_at.
+  const makeSchedulerTrx = (captureRunAt: (runAt: Date) => void): any => ({
+    getExecutor: () => ({
+      transformQuery: (node: any) => node,
+      compileQuery: () => ({ sql: '', parameters: [] }),
+      executeQuery: async () => ({ rows: [] }),
+    }),
+    selectFrom: () => ({
+      select: () => ({
+        where: () => ({ where: () => ({ executeTakeFirst: async () => undefined }) }),
+      }),
+    }),
+    insertInto: () => ({
+      values: (vals: any) => {
+        captureRunAt(vals.run_at);
+        return { execute: async () => undefined };
+      },
+    }),
+  });
+
   it('should limit initial fetch to 500 and reschedule instantly if exactly 500 records are found', async () => {
     let limitValue: number | null = null;
     let insertedRunAt: Date | null = null;
@@ -110,22 +132,12 @@ describe('process_drip_workflows Job Handler', () => {
         }),
       }),
       transaction: () => ({
-        // scheduleNextRun now runs its dedup-check + insert inside a transaction; route the
-        // callback to a trx whose dedup lookup finds nothing and whose insert captures run_at.
         execute: async (cb: any) =>
-          cb({
-            selectFrom: () => ({
-              select: () => ({
-                where: () => ({ where: () => ({ forUpdate: () => ({ executeTakeFirst: async () => undefined }) }) }),
-              }),
+          cb(
+            makeSchedulerTrx((runAt) => {
+              insertedRunAt = runAt;
             }),
-            insertInto: () => ({
-              values: (vals: any) => {
-                insertedRunAt = vals.run_at;
-                return { execute: async () => undefined };
-              },
-            }),
-          }),
+          ),
       }),
       insertInto: () => ({
         values: (vals: any) => {
@@ -164,22 +176,12 @@ describe('process_drip_workflows Job Handler', () => {
         }),
       }),
       transaction: () => ({
-        // scheduleNextRun now runs its dedup-check + insert inside a transaction; route the
-        // callback to a trx whose dedup lookup finds nothing and whose insert captures run_at.
         execute: async (cb: any) =>
-          cb({
-            selectFrom: () => ({
-              select: () => ({
-                where: () => ({ where: () => ({ forUpdate: () => ({ executeTakeFirst: async () => undefined }) }) }),
-              }),
+          cb(
+            makeSchedulerTrx((runAt) => {
+              insertedRunAt = runAt;
             }),
-            insertInto: () => ({
-              values: (vals: any) => {
-                insertedRunAt = vals.run_at;
-                return { execute: async () => undefined };
-              },
-            }),
-          }),
+          ),
       }),
       insertInto: () => ({
         values: (vals: any) => {

@@ -18,12 +18,13 @@ import { Sidebar } from '../sidebar/sidebar';
 import { SidebarService } from 'apps/frontend/src/app/layout/sidebar/sidebar-service';
 import { CommandPalette } from '../command-palette/command-palette';
 import { KeyboardShortcutsHelp } from '../keyboard-shortcuts/keyboard-shortcuts-help';
+import { ReportBugDialog } from '../report-bug/report-bug-dialog';
 import { KeyboardShortcutsService } from '../../services/keyboard-shortcuts.service';
 import { BreadcrumbDefaultsService } from '../../services/breadcrumb-defaults.service';
 
 @Component({
   selector: 'pc-dashboard',
-  imports: [Navbar, Sidebar, RouterModule, Alerts, Icon, KeyboardShortcutsHelp, CommandPalette],
+  imports: [Navbar, Sidebar, RouterModule, Alerts, Icon, KeyboardShortcutsHelp, CommandPalette, ReportBugDialog],
   templateUrl: './dashboard.html',
   host: {
     '(window:keydown)': 'onKeydown($event)',

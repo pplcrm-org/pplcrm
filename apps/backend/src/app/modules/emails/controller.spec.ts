@@ -30,7 +30,8 @@ describe('EmailsController Comments', () => {
 
     const addSpy = vi.spyOn((controller as any).commentsRepo, 'add').mockResolvedValue(mockCommentRow);
 
-    const result = await controller.addComment('tenant-1', 'email-1', 'author-1', 'This is a test comment');
+    // role 'owner' short-circuits the campaign-scope check (these fake ids aren't real DB rows)
+    const result = await controller.addComment('tenant-1', 'email-1', 'author-1', 'This is a test comment', 'owner');
 
     expect(addSpy).toHaveBeenCalledWith({
       row: {
@@ -48,7 +49,7 @@ describe('EmailsController Comments', () => {
   it('should throw InternalError if commentsRepo.add returns null or undefined', async () => {
     vi.spyOn((controller as any).commentsRepo, 'add').mockResolvedValue(undefined);
 
-    await expect(controller.addComment('tenant-1', 'email-1', 'author-1', 'Some comment')).rejects.toThrow(
+    await expect(controller.addComment('tenant-1', 'email-1', 'author-1', 'Some comment', 'owner')).rejects.toThrow(
       InternalError,
     );
   });

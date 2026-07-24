@@ -126,5 +126,19 @@
     </section>
     }
   </div>
+
+  <!-- Report a bug -->
+  <div class="mt-10 flex items-center justify-between gap-3 rounded-2xl border border-base-300 bg-base-100 p-5">
+    <div class="flex items-center gap-3 min-w-0">
+      <div class="flex h-10 w-10 flex-none items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <pc-icon name="bug-ant" [size]="5"></pc-icon>
+      </div>
+      <div class="min-w-0">
+        <h2 class="text-base font-semibold text-base-content">Something broken?</h2>
+        <p class="text-sm text-base-content/60">Tell us what happened and we'll chase it down.</p>
+      </div>
+    </div>
+    <button type="button" class="btn btn-primary btn-sm flex-none" (click)="openBugReport()">Report a bug</button>
+  </div>
   }
 </div>

@@ -129,17 +129,44 @@ export function sendWindow(subscriptionEndsAt: Date | null, now: Date): { start:
       resetsAt: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)),
     };
   }
-  // Step to the last monthly anniversary at or before `now`, then forward if the subscription
-  // has lapsed (endsAt in the past) so the window always contains `now`.
-  const start = new Date(subscriptionEndsAt);
-  while (start > now) start.setMonth(start.getMonth() - 1);
-  const resetsAt = new Date(start);
-  resetsAt.setMonth(resetsAt.getMonth() + 1);
-  while (resetsAt <= now) {
-    start.setMonth(start.getMonth() + 1);
-    resetsAt.setMonth(resetsAt.getMonth() + 1);
-  }
-  return { start, resetsAt };
+  // The monthly anniversaries are `subscriptionEndsAt` shifted by whole months. Each anniversary is
+  // computed from the ORIGINAL anchor (never by chaining setMonth off the previous result) and the
+  // day is clamped to the target month's length — otherwise a 29th–31st anchor drifts every time it
+  // steps through a shorter month (Mar 31 → "Feb 31" → Mar 3), landing the meter days off the real
+  // billing anniversary and letting a tenant double-dip the monthly cap near the boundary.
+  const anniversary = (k: number): Date => shiftMonthsUTC(subscriptionEndsAt, k);
+
+  // Start from the coarse month difference, then nudge so anniversary(k) <= now < anniversary(k+1).
+  let k =
+    (now.getUTCFullYear() - subscriptionEndsAt.getUTCFullYear()) * 12 +
+    (now.getUTCMonth() - subscriptionEndsAt.getUTCMonth());
+  while (anniversary(k) > now) k--;
+  while (anniversary(k + 1) <= now) k++;
+  return { start: anniversary(k), resetsAt: anniversary(k + 1) };
+}
+
+/**
+ * `base` shifted by `months` (may be negative) in UTC, with the day-of-month clamped to the target
+ * month's length so the anchor day never overflows into the next month. Always call with the
+ * original anchor date and an absolute month delta — do NOT chain, or the clamp compounds into drift.
+ */
+function shiftMonthsUTC(base: Date, months: number): Date {
+  const monthIndex = base.getUTCMonth() + months;
+  const targetYear = base.getUTCFullYear() + Math.floor(monthIndex / 12);
+  const targetMonth = ((monthIndex % 12) + 12) % 12;
+  const daysInTargetMonth = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  const day = Math.min(base.getUTCDate(), daysInTargetMonth);
+  return new Date(
+    Date.UTC(
+      targetYear,
+      targetMonth,
+      day,
+      base.getUTCHours(),
+      base.getUTCMinutes(),
+      base.getUTCSeconds(),
+      base.getUTCMilliseconds(),
+    ),
+  );
 }
 
 /** Which tripwire, if any, a send's engagement stats have crossed. Pure for unit tests. */

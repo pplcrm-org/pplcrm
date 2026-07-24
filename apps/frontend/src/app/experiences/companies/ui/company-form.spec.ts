@@ -188,6 +188,38 @@ describe('CompanyForm', () => {
     expect(mockRouter.navigate).toHaveBeenCalledWith(['/companies']);
   });
 
+  it('creates only once when Save is double-clicked (immediate saving guard)', async () => {
+    let resolveAdd!: (value: unknown) => void;
+    mockCompaniesSvc.add.mockReturnValue(new Promise((r) => (resolveAdd = r)));
+
+    await createComponent();
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    component['payload'].set({
+      name: 'New Co',
+      description: '',
+      website: '',
+      industry: '',
+      email: '',
+      phone: '',
+      notes: '',
+    });
+
+    // Two rapid clicks before the first add resolves: the loading gate stays invisible
+    // for its first 300ms, so only the immediate `saving` guard can block the second.
+    component['save']();
+    component['save']();
+
+    expect(mockCompaniesSvc.add).toHaveBeenCalledTimes(1);
+
+    resolveAdd({ id: 'new-id' });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Guard clears after the save settles, so a later save can proceed.
+    expect(component['saving']()).toBe(false);
+  });
+
   it('should call update and show a success alert on successful save in edit mode', async () => {
     mockCompaniesSvc.getById.mockResolvedValue({ id: 'c-1', name: 'Acme Corp' });
     mockCompaniesSvc.update.mockResolvedValue({ id: 'c-1', name: 'Acme Corp Updated' });

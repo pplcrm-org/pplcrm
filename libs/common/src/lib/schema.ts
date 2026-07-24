@@ -21,4 +21,5 @@ export * from './schemas/canvassing.schema';
 export * from './schemas/deliveries.schema';
 export * from './schemas/donations.schema';
 export * from './schemas/companion-access.schema';
+export * from './schemas/bug-reports.schema';
 export * from './schemas/content-check.schema';

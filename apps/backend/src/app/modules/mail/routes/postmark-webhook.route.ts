@@ -65,7 +65,8 @@ const postmarkWebhookRoute: FastifyPluginCallback = (fastify, _opts, done) => {
       try {
         await db
           .insertInto('email_suppressions')
-          .values({ tenant_id: tenantId, email, reason, occurred_at: occurredAt })
+          // Store lowercased so suppression checks (case-insensitive) match mixed-case person addresses.
+          .values({ tenant_id: tenantId, email: email.toLowerCase(), reason, occurred_at: occurredAt })
           .onConflict((oc) => oc.columns(['tenant_id', 'email', 'reason']).doNothing())
           .execute();
         processed++;

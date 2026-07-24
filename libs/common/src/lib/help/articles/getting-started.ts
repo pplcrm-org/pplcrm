@@ -402,4 +402,38 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
       },
     ],
   },
+  {
+    id: 'report-a-bug',
+    category: 'getting-started',
+    title: 'Report a bug',
+    summary: 'Send a problem report straight to the pplCRM team, with an optional screenshot.',
+    keywords: ['bug', 'issue', 'problem', 'broken', 'error', 'crash', 'feedback', 'support', 'report'],
+    related: ['welcome', 'getting-around', 'shortcuts'],
+    blocks: [
+      {
+        kind: 'p',
+        text: 'If something in pplCRM misbehaves, you can report it without leaving the app. Reports go straight to the pplCRM team.',
+      },
+      { kind: 'h2', id: 'open', text: 'Where to find it' },
+      {
+        kind: 'list',
+        items: [
+          '**Your avatar menu** (top right): choose **Report a bug**.',
+          '**The command palette**: press **⌘⇧K** (Ctrl+Shift+K on Windows) and type "report".',
+          '**This help center**: the "Something broken?" card at the bottom of the [Help](/help) home page.',
+        ],
+      },
+      { kind: 'h2', id: 'what-to-write', text: 'What to include' },
+      {
+        kind: 'p',
+        text: 'Describe what you did, what you expected, and what happened instead. You can attach one screenshot (an image up to 5 MB). Your current page and browser details are included automatically, so you do not need to copy them in.',
+      },
+      {
+        kind: 'callout',
+        tone: 'tip',
+        title: 'Keep the reference code',
+        text: 'After you send a report you get a reference like BR-42. Quote it if you follow up with support so we can find your report immediately.',
+      },
+    ],
+  },
 ];

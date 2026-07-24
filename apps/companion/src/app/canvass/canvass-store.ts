@@ -94,6 +94,12 @@ export class CanvassStore {
   /** All ops recorded this session (queued + acked) — the optimistic overlay source. */
   private readonly localOps = signal<QueuedOp[]>([]);
   private readonly lastAction = signal<LastAction | null>(null);
+  /**
+   * Op ids of the POST batch currently in flight. They are still in `queue`
+   * (only an ack removes them), but the server may already have applied them,
+   * so treating them as revocable would silently diverge from the server.
+   */
+  private readonly inFlightOpIds = signal<ReadonlySet<string>>(new Set<string>());
 
   /** Server payload with the local overlay replayed on top — the one source the views read. */
   public readonly households = computed<CompanionHousehold[]>(() => {
@@ -102,11 +108,16 @@ export class CanvassStore {
   });
   public readonly stats = computed(() => meStats(this.households()));
   public readonly nextDoorId = computed(() => nextDoor(this.households())?.id ?? null);
-  /** Undo is offered for door outcomes (inverse op) or while the op is still queued. */
+  /**
+   * Undo is offered for door outcomes (inverse op) or while the op is still
+   * queued AND not in the in-flight batch — mid-flight the server may already
+   * have applied it, so it only becomes final again once the batch acks.
+   */
   public readonly canUndo = computed<boolean>(() => {
     const action = this.lastAction();
     if (!action) return false;
     if (action.type === 'door_outcome') return true;
+    if (this.inFlightOpIds().has(action.op_id)) return false;
     return this.queue().some((entry) => entry.op.op_id === action.op_id);
   });
 
@@ -234,14 +245,18 @@ export class CanvassStore {
 
   /**
    * Undo the last action. A queued op is simply removed (the replay overlay
-   * reverts with it). A door outcome that already synced gets the inverse
-   * clear_outcome op. A synced survey/person result cannot be undone — the
-   * server keeps knock history append-only.
+   * reverts with it). A door outcome that already synced (or is mid-flight)
+   * gets the inverse clear_outcome op. A synced survey/person result cannot
+   * be undone — the server keeps knock history append-only.
    */
   public undo(): boolean {
     const action = this.lastAction();
     if (!action) return false;
-    const queued = this.queue().some((entry) => entry.op.op_id === action.op_id);
+    // An op in the in-flight batch is not removable: the server may already
+    // have applied it. Door outcomes fall through to the inverse-op path
+    // (safe either way); anything else waits for the ack.
+    const inFlight = this.inFlightOpIds().has(action.op_id);
+    const queued = !inFlight && this.queue().some((entry) => entry.op.op_id === action.op_id);
     this.lastAction.set(null);
     if (queued) {
       this.queue.update((q) => q.filter((entry) => entry.op.op_id !== action.op_id));
@@ -286,6 +301,9 @@ export class CanvassStore {
           this.syncStatus.set('error');
           return;
         }
+        // Mark the batch in-flight so undo can't remove an op the server may
+        // be applying right now (canUndo/undo consult this set).
+        this.inFlightOpIds.set(new Set(batch.map((entry) => entry.op.op_id)));
         const res = await fetch(`/api/canvass/t/${encodeURIComponent(this.token)}/results`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...this.session.headers() },
@@ -301,12 +319,16 @@ export class CanvassStore {
         }
         const { acks } = (await res.json()) as { acks: CompanionOpAck[] };
         this.applyAcks(batch, acks);
+        this.inFlightOpIds.set(new Set<string>());
       }
       this.syncStatus.set('idle');
       this.lastSyncedAt.set(new Date());
     } catch {
       this.syncStatus.set('offline');
     } finally {
+      // A failed batch is treated as not applied — its ops stay queued and
+      // will re-send idempotently — so they become undoable again here.
+      this.inFlightOpIds.set(new Set<string>());
       this.flushing = false;
       this.persistQueue();
     }

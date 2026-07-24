@@ -72,6 +72,21 @@ function deriveRouteName(firstAddress: string, date: Date): string {
   return `${area} area — ${label}`;
 }
 
+/** The partial unique index enforcing "one open delivery request per household" (§14). */
+const OPEN_HOUSEHOLD_UNIQUE_INDEX = 'uq_delivery_requests_open_per_household';
+
+/**
+ * True for the Postgres unique-violation (23505) raised by the open-per-household partial index —
+ * the concurrency guard behind the check-then-insert. Constraint-scoped so an unrelated unique
+ * violation is never silently swallowed; tolerates a missing constraint name (bare 23505).
+ */
+function isOpenHouseholdConflict(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; constraint?: unknown };
+  if (e.code !== '23505') return false;
+  return e.constraint == null || e.constraint === OPEN_HOUSEHOLD_UNIQUE_INDEX;
+}
+
 export class DeliveriesController {
   private readonly requestsRepo = new DeliveryRequestsRepo();
   private readonly campaignsRepo = new CampaignsRepo();
@@ -128,7 +143,18 @@ export class DeliveriesController {
       createdby_id: auth.user_id,
       updatedby_id: auth.user_id,
     } as OperationDataType<'delivery_requests', 'insert'>;
-    const created = await this.requestsRepo.add({ row });
+    let created: { id: string | number };
+    try {
+      created = await this.requestsRepo.add({ row });
+    } catch (err) {
+      // The pre-check above is only a fast path: a concurrent create can pass it too and then hit
+      // the partial unique index uq_delivery_requests_open_per_household (23505). Treat the race as
+      // exactly what it is — an open request already exists — a 409, never an unhandled 500.
+      if (isOpenHouseholdConflict(err)) {
+        throw new ConflictError('This household already has an open delivery request.');
+      }
+      throw err;
+    }
     await this.logRequestStanding(undefined, auth, [String(created.id)], 'recorded');
     return { id: String(created.id) };
   }

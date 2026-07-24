@@ -23,6 +23,7 @@ import { Tabs as PcTabs, TabPanel, PcTabOption } from '@uxcommon/components/tabs
 import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
 import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
 import { createLoadingGate } from '@uxcommon/loading-gate';
+import { createRequestGuard } from '@uxcommon/request-guard';
 import { injectRecordNavigation } from '@frontend/services/record-navigation.service';
 import { getUserErrorMessage } from '@frontend/services/api/user-message';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
@@ -65,6 +66,7 @@ export class HouseholdView {
   private readonly dialogSvc = inject(ConfirmDialogService);
   protected readonly campaignContext = inject(CampaignContextService);
   private readonly _loading = createLoadingGate();
+  private readonly _requestGuard = createRequestGuard();
   protected readonly isLoading = this._loading.visible;
   protected readonly initialized = signal(false);
   protected readonly household = signal<Selectable<Households> | null>(null);
@@ -161,10 +163,12 @@ export class HouseholdView {
   }
 
   protected async loadAllData(id: string) {
+    const isCurrent = this._requestGuard.begin();
     const end = this._loading.begin();
     try {
       // 1. Load household details
       const householdData = (await this.householdsSvc.getById(id)) as Selectable<Households>;
+      if (!isCurrent()) return; // superseded — do not land stale data
       this.household.set(householdData);
       // Spec §1: the address bar shows the record slug, never the internal id.
       // Cosmetic swap only — route param, record-nav pager and breadcrumbs keep the numeric id.
@@ -177,6 +181,7 @@ export class HouseholdView {
         this.householdsSvc.getPeopleCount(id),
         this.householdsSvc.getLastCanvass(id).catch(() => null),
       ]);
+      if (!isCurrent()) return;
       this.peopleCount.set(count);
       this.lastCanvass.set((canvass as LastCanvass) ?? null);
     } catch (err) {

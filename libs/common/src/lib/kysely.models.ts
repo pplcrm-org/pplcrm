@@ -83,6 +83,7 @@ export interface Models {
   data_imports: DataImports;
   companies: Companies;
   files: Files;
+  bug_reports: BugReports;
   notifications: Notifications;
   volunteer_events: VolunteerEvents;
   volunteer_shifts: VolunteerShifts;
@@ -336,7 +337,9 @@ export interface DeliveryRequests extends RecordType {
   household_id: string;
   person_id: string | null;
   web_form_id: string | null;
-  source: Generated<'web_form' | 'manual'>;
+  // 'canvass' = raised at the door via the Canvass Companion survey (spec §3.6). The DB CHECK
+  // (migration 2026-07-12-companion-apps.ts) allows it; keep this union in lockstep with that CHECK.
+  source: Generated<'web_form' | 'manual' | 'canvass'>;
   status: Generated<'new' | 'approved' | 'declined' | 'delivered'>;
   notes: string | null;
   skip_reason: string | null;
@@ -792,6 +795,10 @@ interface Newsletters extends RecordType {
   top_links: Json | null;
   /** Resume point recorded when a send is paused mid-batch (tripwire/rate-cap); NULL otherwise. */
   send_offset: number | null;
+  /** Keyset cursor for the batch send: the last email address successfully sent. The worker
+   * resumes with `WHERE email > send_cursor` so a live audience change can't skip/duplicate at a
+   * batch boundary. NULL before the first batch and after completion. */
+  send_cursor: string | null;
   /** The sent newsletter this row is a non-opener follow-up of; NULL for originals. At most
    * one resend per original (partial unique index). */
   resend_of_id: string | null;
@@ -1180,6 +1187,19 @@ export interface Files {
   entity_id: string | null;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
+}
+
+/** User-submitted bug report (fire-and-forget) — stored for the ops record, emailed to OPS_ALERT_EMAIL. */
+export interface BugReports {
+  id: Generated<string>;
+  tenant_id: string;
+  created_by: string;
+  description: string;
+  page_url: string | null;
+  user_agent: string | null;
+  viewport: string | null;
+  screenshot_file_id: string | null;
+  created_at: Generated<Timestamp>;
 }
 
 export interface Notifications {

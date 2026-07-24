@@ -29,6 +29,11 @@ export class CompanyForm implements OnInit {
   private readonly dialogs = inject(ConfirmDialogService);
 
   private readonly _loading = createLoadingGate();
+
+  /** Disables Save immediately on click — the loading gate stays false for its first
+   *  300ms by design, which would leave a double-click window. */
+  protected readonly saving = signal(false);
+
   protected readonly company = signal<any | null>(null);
 
   /** People employed here — feeds the Overview rail (§7). */
@@ -250,8 +255,10 @@ export class CompanyForm implements OnInit {
     if (done instanceof Event) {
       done.preventDefault();
     }
+    if (this.saving()) return;
     const raw = this.payload();
     if (this.id()) {
+      this.saving.set(true);
       const end = this._loading.begin();
       this.companiesSvc
         .update(this.id()!, raw)
@@ -279,8 +286,12 @@ export class CompanyForm implements OnInit {
                 : 'Unable to save company';
           this.alertSvc.showError(message);
         })
-        .finally(() => end());
+        .finally(() => {
+          end();
+          this.saving.set(false);
+        });
     } else {
+      this.saving.set(true);
       const end = this._loading.begin();
       this.companiesSvc
         .add(raw)
@@ -308,7 +319,10 @@ export class CompanyForm implements OnInit {
                 : 'Unable to save company';
           this.alertSvc.showError(message);
         })
-        .finally(() => end());
+        .finally(() => {
+          end();
+          this.saving.set(false);
+        });
     }
   }
 }

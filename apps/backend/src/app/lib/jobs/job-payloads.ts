@@ -132,6 +132,13 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
   // Ops watchdog: cron that digests failed jobs/webhooks + queue backlog to the ops email and
   // writes the dead-man heartbeat behind GET /healthz/worker.
   z.object({ type: z.literal('ops_watchdog') }),
+  // User-submitted bug report → ops email. Carries only the report id; the handler composes
+  // the message and pulls the screenshot from storage (never the image in the payload).
+  z.object({
+    type: z.literal('send-bug-report-email'),
+    bugReportId: idSchema,
+    tenant_id: idSchema,
+  }),
 
   // ── Newsletters ──────────────────────────────────────────────────────────
   z.object({
@@ -141,6 +148,8 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     userId: idSchema,
     offset: z.number().nullish(),
     deliveredCount: z.number().nullish(),
+    // Keyset cursor (last email sent). Present on resume/continuation jobs; absent on a fresh send.
+    cursor: z.string().nullish(),
   }),
   z.object({ type: z.literal('prune_newsletter_events') }),
   z.object({ type: z.literal('process_scheduled_newsletters') }),

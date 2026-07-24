@@ -4,7 +4,10 @@ import { z } from 'zod';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
 import { logger } from '../../../logger';
+import type { MailAttachment } from '../../mail/transactional-mail.service';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { StorageService } from '../../storage.service';
+import type { JobPayloadOf } from '../job-payloads';
 import { FIVE_MINUTES_MS, scheduleNextRun } from '../reschedule';
 
 const mailService = new TransactionalEmailService();
@@ -172,6 +175,92 @@ export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
     .execute();
 
   await scheduleNextRun(db, 'ops_watchdog', FIVE_MINUTES_MS);
+}
+
+// Postmark's total-message cap is 10 MB; leave headroom for the body + inline logo.
+const MAX_SCREENSHOT_ATTACH_BYTES = 7 * 1024 * 1024;
+
+/**
+ * Email a user-submitted bug report to the operator (see modules/bug-reports). Sent to
+ * OPS_ALERT_EMAIL with the Postmark from-address as the fallback — a bug report must not be
+ * silently dropped just because the ops alert address isn't configured. The screenshot is
+ * attached to the email itself: the blob is private and the operator has no tenant session,
+ * so an attachment is the only zero-auth way for them to see it.
+ */
+export async function handleSendBugReportEmail(
+  payload: JobPayloadOf<'send-bug-report-email'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  const report = await db
+    .selectFrom('bug_reports')
+    .selectAll()
+    .where('tenant_id', '=', payload.tenant_id)
+    .where('id', '=', payload.bugReportId)
+    .executeTakeFirst();
+  if (!report) {
+    logger.warn({ bugReportId: payload.bugReportId }, 'Bug report email: report row not found, skipping');
+    return;
+  }
+
+  const reporter = await db
+    .selectFrom('authusers')
+    .select(['email', 'first_name', 'last_name', 'role', 'campaign_id'])
+    .where('tenant_id', '=', payload.tenant_id)
+    .where('id', '=', report.created_by)
+    .executeTakeFirst();
+  const tenant = await db.selectFrom('tenants').select(['name']).where('id', '=', payload.tenant_id).executeTakeFirst();
+
+  const attachments: MailAttachment[] = [];
+  let screenshotNote = 'none';
+  if (report.screenshot_file_id) {
+    const file = await db
+      .selectFrom('files')
+      .select(['filename', 'mime_type', 'size_bytes', 'storage_key'])
+      .where('tenant_id', '=', payload.tenant_id)
+      .where('id', '=', report.screenshot_file_id)
+      .executeTakeFirst();
+    if (!file) {
+      screenshotNote = 'referenced upload no longer exists';
+    } else if (Number(file.size_bytes ?? 0) > MAX_SCREENSHOT_ATTACH_BYTES) {
+      screenshotNote = `too large to attach (${file.filename}, ${file.size_bytes} bytes, storage key ${file.storage_key})`;
+    } else {
+      try {
+        const data = await new StorageService().download(file.storage_key);
+        attachments.push({
+          name: file.filename || 'screenshot.png',
+          contentBase64: data.toString('base64'),
+          contentType: file.mime_type ?? 'application/octet-stream',
+        });
+        screenshotNote = `attached (${file.filename})`;
+      } catch (err) {
+        logger.error({ err, bugReportId: payload.bugReportId }, 'Bug report email: screenshot download failed');
+        screenshotNote = `download failed (storage key ${file.storage_key})`;
+      }
+    }
+  }
+
+  const reporterName = [reporter?.first_name, reporter?.last_name].filter(Boolean).join(' ') || 'unknown';
+  const body = [
+    `Reference: BR-${report.id}`,
+    `Tenant: ${tenant?.name ?? 'unknown'} (${payload.tenant_id})`,
+    `Reporter: ${reporterName} <${reporter?.email ?? 'unknown'}> — role ${reporter?.role ?? 'unknown'}, campaign ${reporter?.campaign_id ?? 'none'}`,
+    `Submitted: ${new Date(report.created_at).toISOString()}`,
+    `Page: ${report.page_url ?? 'not captured'}`,
+    `Browser: ${report.user_agent ?? 'not captured'}`,
+    `Viewport: ${report.viewport ?? 'not captured'}`,
+    `Screenshot: ${screenshotNote}`,
+    '',
+    'Description:',
+    report.description,
+  ].join('\n');
+
+  await mailService.sendMail({
+    to: env.opsAlertEmail ?? env.postmarkFromEmail,
+    subject: `pplCRM bug report BR-${report.id} (tenant ${payload.tenant_id})`,
+    text: body,
+    html: `<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(body)}</pre>`,
+    attachments,
+  });
 }
 
 function formatFailureSection(title: string, groups: FailureGroup[]): string {

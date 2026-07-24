@@ -721,7 +721,8 @@ export class BackgroundJobWorker {
           payload.type === 'send-form-notifications' ||
           payload.type === 'send-webform-notifications' ||
           payload.type === 'send-shift-reminder' ||
-          payload.type === 'send-newsletter';
+          payload.type === 'send-newsletter' ||
+          payload.type === 'send-bug-report-email';
         const delaySeconds = isMail ? Math.pow(2, attempts) * 30 : attempts * 30;
         const runAt = new Date(Date.now() + delaySeconds * 1000);
         logger.info({ jobId: job.id, runAt: runAt.toISOString(), attempt: attempts, maxAttempts }, 'Rescheduling job');
@@ -810,6 +811,28 @@ export class BackgroundJobWorker {
             );
           } catch (recordErr) {
             logger.error({ err: recordErr }, 'Failed to record Google sync error on token');
+          }
+        }
+
+        if (payload.type === 'send-newsletter' && payload.newsletterId && payload.tenantId) {
+          // The send job is dead-lettered, but the newsletter is still flagged queuing/sending —
+          // which blocks both re-sending and editing, stranding it forever. Move it to 'paused' so
+          // the owner can resume from the resume UI; the persisted send_offset/send_cursor make the
+          // resume continue from where it stopped rather than re-emailing everyone.
+          try {
+            await this.db
+              .updateTable('newsletters')
+              .set({ status: 'paused', updated_at: new Date() })
+              .where('tenant_id', '=', String(payload.tenantId))
+              .where('id', '=', String(payload.newsletterId))
+              .where('status', 'in', ['queuing', 'sending'])
+              .execute();
+            logger.warn(
+              { tenantId: payload.tenantId, newsletterId: payload.newsletterId },
+              'Newsletter send permanently failed — moved to paused for supervised resume',
+            );
+          } catch (nlErr) {
+            logger.error({ err: nlErr }, 'Failed to reset newsletter status after permanent send failure');
           }
         }
 

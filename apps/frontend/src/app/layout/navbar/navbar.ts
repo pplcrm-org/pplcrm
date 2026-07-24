@@ -16,6 +16,7 @@ import { ThemeService } from 'apps/frontend/src/app/layout/theme/theme-service';
 import { UserService } from '@frontend/services/user.service';
 import { EmailActionsStore } from '../../experiences/emails/services/store/email-actions.store';
 import { NotificationsService } from '../../services/api/notifications-service';
+import { BugReportDialogService } from '../../services/bug-report-dialog.service';
 
 type NotificationItem = {
   id: string;
@@ -44,6 +45,7 @@ export class Navbar implements OnDestroy {
   private readonly searchSvc = inject(SearchService);
   private readonly sideBarSvc = inject(SidebarService);
   private readonly notificationsSvc = inject(NotificationsService);
+  private readonly bugReportDialog = inject(BugReportDialogService);
   private readonly router = inject(Router);
 
   protected readonly currentUser = this.auth.getUserSignal();
@@ -84,6 +86,10 @@ export class Navbar implements OnDestroy {
 
   protected openSettings(): void {
     this.settingsOpen.set(true);
+  }
+
+  protected openBugReport(): void {
+    this.bugReportDialog.open();
   }
 
   protected readonly searchStr = signal('');

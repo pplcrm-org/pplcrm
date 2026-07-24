@@ -12,7 +12,6 @@ import type {
   FieldReportRangeType,
   IAuthKeyPayload,
   KnockResponse,
-  LogKnockType,
   SupportLevel,
   UpdateCompanionSettingsType,
   UpdateTurfType,
@@ -874,7 +873,12 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
             notes: null,
             createdby_id: actor,
             updatedby_id: actor,
-          } as OperationDataType<'delivery_requests', 'insert'>)
+          })
+          // The pre-check above and a concurrent staff/web request can both see "no open request"
+          // and race to insert. The partial unique index uq_delivery_requests_open_per_household is
+          // the real guard; DO NOTHING makes the loser a no-op instead of a 23505 that would abort
+          // this whole companion-op transaction. (No cast needed — 'canvass' is in the source union.)
+          .onConflict((oc) => oc.doNothing())
           .execute();
       }
     }
@@ -1151,100 +1155,6 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       entity_id: String(resolved),
       metadata: { action: 'companion_settings', issues: input.issues.length },
     });
-  }
-
-  /**
-   * Log a knock from a Companion. Idempotent on `client_knock_id` so an offline
-   * volunteer's queued re-send never double-counts. Every knock syncs live to
-   * the household + person Activity log with honest "via Canvass Companion"
-   * attribution under the real account that deployed the link (§22.7).
-   */
-  public async logKnock(input: LogKnockType): Promise<{ recorded: boolean }> {
-    const assignment = await this.assignments.resolveByToken(input.token);
-    if (!assignment) throw new NotFoundError('This canvassing link is invalid or has been retired.');
-    const tenant_id = assignment.tenant_id;
-    const turf_id = assignment.turf_id;
-
-    // The door must belong to this turf — a token cannot log against other doors.
-    const doorIds = new Set(await this.turfHouseholds.getHouseholdIds({ tenant_id, turf_id }));
-    if (!doorIds.has(String(input.household_id))) {
-      throw new BadRequestError('That household is not part of this turf.');
-    }
-
-    const actor = assignment.created_by;
-    const knockedAt = input.knocked_at ? new Date(input.knocked_at) : new Date();
-
-    const row = {
-      tenant_id,
-      turf_id,
-      household_id: String(input.household_id),
-      person_id: input.person_id != null ? String(input.person_id) : null,
-      outcome: input.outcome,
-      response: input.response ?? null,
-      notes: input.notes ?? null,
-      source: COMPANION_SOURCE,
-      canvasser_name: input.canvasser_name ?? null,
-      client_knock_id: input.client_knock_id,
-      knocked_at: knockedAt,
-      createdby_id: actor,
-      updatedby_id: actor,
-    } as OperationDataType<'turf_knocks', 'insert'>;
-
-    const newId = await this.knocks.insertIdempotent(row);
-    if (!newId) return { recorded: false }; // already synced (offline re-send)
-
-    const via = input.canvasser_name ? `via Canvass Companion (${input.canvasser_name})` : 'via Canvass Companion';
-    const metadata = {
-      source: COMPANION_SOURCE,
-      via,
-      turf_id,
-      outcome: input.outcome,
-      response: input.response ?? null,
-      canvasser_name: input.canvasser_name ?? null,
-    };
-    // Sync to the household activity, and to the person's if one answered.
-    await this.userActivity.log({
-      tenant_id,
-      user_id: actor,
-      activity: 'update',
-      entity: 'household',
-      entity_id: String(input.household_id),
-      metadata,
-      performed_by: actor,
-    });
-    if (input.person_id != null) {
-      await this.userActivity.log({
-        tenant_id,
-        user_id: actor,
-        activity: 'update',
-        entity: 'person',
-        entity_id: String(input.person_id),
-        metadata,
-        performed_by: actor,
-      });
-
-      // A conversation with a stance feeds the support level (or turnout fact)
-      // of the campaign the TURF was cut for (§15) — a writ-period knock updates
-      // the election campaign's read on the voter, never the office's.
-      if (input.response) {
-        const campaignId = await this.resolveKnockCampaignId(tenant_id, turf_id);
-        const support = KNOCK_RESPONSE_TO_SUPPORT[input.response];
-        const voting = KNOCK_RESPONSE_TO_VOTING[input.response];
-        if (campaignId && (support || voting)) {
-          await this.factsRepo.upsertFact({
-            tenant_id,
-            campaign_id: campaignId,
-            person_id: String(input.person_id),
-            user_id: actor,
-            ...(support ? { support_level: support } : {}),
-            ...(voting ? { voting_status: voting } : {}),
-            source: 'canvass',
-          });
-        }
-      }
-    }
-
-    return { recorded: true };
   }
 
   /** The campaign a knock's support reading belongs to: the turf's own context. */

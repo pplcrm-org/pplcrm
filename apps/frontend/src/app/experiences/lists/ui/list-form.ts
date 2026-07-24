@@ -171,6 +171,10 @@ export class ListForm implements OnInit {
   protected readonly id = signal<string | null>(null);
   protected readonly isNew = signal<boolean>(true);
 
+  /** Disables Save immediately on click — the loading gate stays false for its first
+   *  300ms by design, which would leave a double-click window. */
+  protected readonly saving = signal(false);
+
   protected readonly payload = signal({
     name: '',
     description: '',
@@ -443,11 +447,13 @@ export class ListForm implements OnInit {
 
     this.form().markAsTouched();
     if (this.form().invalid()) return;
+    if (this.saving()) return;
 
     const formValue = this.payload();
     const listId = this.id();
     if (!this.isNew() && !listId) return;
 
+    this.saving.set(true);
     const end = this._loading.begin();
     let savePromise;
 
@@ -520,7 +526,10 @@ export class ListForm implements OnInit {
         this.alertSvc.showError(message);
         doneFn();
       })
-      .finally(() => end());
+      .finally(() => {
+        end();
+        this.saving.set(false);
+      });
   }
 
   protected async deleteList() {

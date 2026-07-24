@@ -242,6 +242,28 @@ describe('newsletters webhook route (SendGrid events)', () => {
     ]);
   });
 
+  it('does NOT suppress a SOFT bounce (type "blocked") — it is transient, not a dead address', async () => {
+    await post([makeEvent({ event: 'bounce', email: 'greylisted@example.com', type: 'blocked' })]);
+
+    const suppressions = await db
+      .selectFrom('email_suppressions')
+      .select('email')
+      .where('tenant_id', '=', tenantId)
+      .execute();
+    expect(suppressions).toEqual([]);
+  });
+
+  it('stores the suppressed address lowercased so case-insensitive checks match mixed-case persons', async () => {
+    await post([makeEvent({ event: 'bounce', email: 'Mixed.Case@Example.COM', type: 'bounce' })]);
+
+    const suppressions = await db
+      .selectFrom('email_suppressions')
+      .select('email')
+      .where('tenant_id', '=', tenantId)
+      .execute();
+    expect(suppressions).toEqual([{ email: 'mixed.case@example.com' }]);
+  });
+
   it('marks the campaign subscription unsubscribed when the recipient opts out', async () => {
     const householdId = rand();
     const personId = rand();

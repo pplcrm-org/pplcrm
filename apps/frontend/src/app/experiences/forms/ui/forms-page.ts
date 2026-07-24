@@ -198,6 +198,9 @@ export class FormsPageComponent implements OnInit {
 
   private readonly saveDebounced = debounce(() => void this.flushPatch(), 400);
   private pendingPatch: UpdateFormType = {};
+  /** The form the queued `pendingPatch` belongs to — captured when the patch is queued,
+   *  so a debounced flush can never write one form's edits onto another after a switch. */
+  private pendingPatchId: string | null = null;
 
   public ngOnInit(): void {
     void Promise.all([this.loadForms(), this.loadOrg(), this.loadLists()]);
@@ -248,6 +251,9 @@ export class FormsPageComponent implements OnInit {
     // Stripe-backed editor (/donation-pages/:id/edit) and /d/:slug public page; the pane shows a
     // read-only preview and hands off to that editor via `openDonationEditor()`.
     if (this.selectedId() === id) return;
+    // Flush any pending edits for the previous form before switching — the flush
+    // targets the captured pendingPatchId, never the newly selected form.
+    void this.flushPatch();
     this.selectedId.set(id);
     this.tab.set('form');
     this.submissions.set([]);
@@ -273,6 +279,8 @@ export class FormsPageComponent implements OnInit {
   }
 
   protected exitEdit(): void {
+    // Don't strand a queued edit behind the 400ms debounce — persist it now.
+    void this.flushPatch();
     this.mode.set('browse');
   }
 
@@ -485,21 +493,38 @@ export class FormsPageComponent implements OnInit {
   private patch(p: UpdateFormType): void {
     const form = this.selected();
     if (!form) return;
+    // Safety net: if a queued patch still targets another form, flush it first so
+    // the two forms' edits are never merged into one payload.
+    if (this.pendingPatchId != null && this.pendingPatchId !== form.id) {
+      void this.flushPatch();
+    }
     // Optimistic local update so the preview reflects the change immediately.
     this.replaceForm({ ...form, ...(p as Partial<FormDetail>) });
     Object.assign(this.pendingPatch, p);
+    this.pendingPatchId = form.id;
     this.saveDebounced();
   }
 
   private async flushPatch(): Promise<void> {
-    const id = this.selectedId();
+    // The target id was captured when the patch was queued — never resolved at flush
+    // time, which could point at a different form after a switch.
+    const id = this.pendingPatchId;
     const patch = this.pendingPatch;
     this.pendingPatch = {};
+    this.pendingPatchId = null;
     if (!id || Object.keys(patch).length === 0) return;
     try {
       const updated = await this.formsSvc.updateLive(id, patch);
       this.replaceForm(updated);
     } catch {
+      // Restore the un-flushed patch so the next flush retries it (select/exitEdit/next
+      // edit) — but never merge it under a different form's queued edits.
+      if (this.pendingPatchId == null) {
+        this.pendingPatch = { ...patch, ...this.pendingPatch };
+        this.pendingPatchId = id;
+      } else if (this.pendingPatchId === id) {
+        this.pendingPatch = { ...patch, ...this.pendingPatch };
+      }
       this.alerts.showError('Couldn’t save that change. Check your connection and try again.');
     }
   }

@@ -146,6 +146,39 @@ describe('WebhookEventWorker — Stripe Connect dispatch', () => {
     expect(await eventStatus(eventId)).toBe('processed');
   });
 
+  // Regression: subscription-lifecycle events are emitted for BOTH a donation pledge (Connect) and a
+  // tenant's own plan (platform). They must be discriminated by `account`, or platform billing events
+  // are swallowed by the donation branches and a failed renewal never triggers a payment hold / a
+  // cancellation never downgrades the tenant.
+  for (const type of ['customer.subscription.updated', 'customer.subscription.deleted', 'invoice.payment_failed']) {
+    it(`platform \`${type}\` (no account) reaches the BillingController`, async () => {
+      const eventId = await enqueueEvent(null, {
+        id: `evt_platform_${type}`,
+        type,
+        data: { object: { id: 'sub_platform_1', subscription: 'sub_platform_1', status: 'past_due' } },
+      });
+
+      await (worker as any).processNextEvent(eventId);
+
+      expect(billingSpy).toHaveBeenCalledTimes(1);
+      expect(await eventStatus(eventId)).toBe('processed');
+    });
+  }
+
+  it('Connect `customer.subscription.updated` (has account) is handled as a pledge, NOT by billing', async () => {
+    const eventId = await enqueueEvent(tenantId, {
+      id: 'evt_conn_sub_upd',
+      type: 'customer.subscription.updated',
+      account: 'acct_w1',
+      data: { object: { id: 'sub_conn_1', status: 'past_due' } },
+    });
+
+    await (worker as any).processNextEvent(eventId);
+
+    expect(billingSpy).not.toHaveBeenCalled();
+    expect(await eventStatus(eventId)).toBe('processed');
+  });
+
   it('a fully refunded Connect charge refunds the platform application fee', async () => {
     platform.applicationFeeRefund.mockResolvedValue({ id: 'fr_1' });
     const eventId = await enqueueEvent(tenantId, {

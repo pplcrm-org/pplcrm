@@ -287,6 +287,14 @@
             <ng-container i18n="Navbar|Help center menu item@@navbar.profile.menu.help">Help</ng-container>
           </a>
         </li>
+        <li class="hover:text-primary">
+          <a (click)="openBugReport()">
+            <pc-icon name="bug-ant"></pc-icon>
+            <ng-container i18n="Navbar|Report a bug menu item@@navbar.profile.menu.reportBug"
+              >Report a bug</ng-container
+            >
+          </a>
+        </li>
         <li class="base-neutral px-0 mx-0"></li>
         <li class="cursor-pointer hover:text-primary" (click)="signOut()">
           <a>

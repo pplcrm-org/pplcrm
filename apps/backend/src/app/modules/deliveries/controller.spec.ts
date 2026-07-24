@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { IAuthKeyPayload } from '@common';
 
@@ -434,6 +434,86 @@ describe('DeliveriesController — public volunteer path', () => {
       .where('id', '=', s.routeId)
       .execute();
     await expect(controller.mintShareLink(staffAuth, { route_id: s.routeId })).rejects.toThrow(/assign a volunteer/i);
+  });
+});
+
+describe('DeliveriesController — one open request per household', () => {
+  const controller = new DeliveriesController();
+  const db = BaseRepository.dbInstance;
+  let s: Seed;
+  let staffAuth: IAuthKeyPayload;
+
+  const freshHousehold = async (): Promise<string> => {
+    const householdId = rand();
+    await db
+      .insertInto('households')
+      .values({
+        id: householdId,
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .execute();
+    return householdId;
+  };
+
+  beforeEach(async () => {
+    s = await seed(db);
+    staffAuth = { tenant_id: s.tenantId, user_id: s.organizerId, name: 'Sam Staff', session_id: 'sess', role: 'user' };
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await cleanup(db, s.tenantId);
+  });
+
+  it('the pre-check refuses a second open request for the same household (fast path)', async () => {
+    const householdId = await freshHousehold();
+    const first = await controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId });
+    expect(first.id).toBeTruthy();
+
+    // The SELECT-then-INSERT pre-check sees the existing open request and refuses — a 409, not a
+    // duplicate stop on a route.
+    await expect(
+      controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId }),
+    ).rejects.toThrow(/already has an open delivery request/i);
+
+    const open = await db
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('household_id', '=', householdId)
+      .where('status', 'in', ['new', 'approved'])
+      .execute();
+    expect(open).toHaveLength(1);
+  });
+
+  it('converts a concurrent-insert 23505 (past the pre-check) into a graceful conflict, never a 500', async () => {
+    // Simulate the race the new partial unique index closes: both callers clear the pre-check, then
+    // one insert loses on uq_delivery_requests_open_per_household. The controller must translate that
+    // Postgres unique-violation into the same "already open" 409 the pre-check throws.
+    const householdId = await freshHousehold();
+    const violation = Object.assign(new Error('duplicate key value violates unique constraint'), {
+      code: '23505',
+      constraint: 'uq_delivery_requests_open_per_household',
+    });
+    const addSpy = vi.spyOn((controller as any).requestsRepo, 'add').mockRejectedValue(violation);
+
+    await expect(
+      controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId }),
+    ).rejects.toThrow(/already has an open delivery request/i);
+    expect(addSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-throws an unrelated database error rather than masking it as a conflict', async () => {
+    const householdId = await freshHousehold();
+    const other = Object.assign(new Error('deadlock detected'), { code: '40P01' });
+    vi.spyOn((controller as any).requestsRepo, 'add').mockRejectedValue(other);
+
+    await expect(
+      controller.addRequest(staffAuth, { household_id: householdId, campaign_id: s.campaignId }),
+    ).rejects.toThrow(/deadlock detected/i);
   });
 });
 

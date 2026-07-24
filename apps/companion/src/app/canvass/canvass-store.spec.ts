@@ -370,6 +370,64 @@ describe('CanvassStore', () => {
       expect(postedOps(fetchMock, 1)[0].type).toBe('clear_outcome');
     });
 
+    it('blocks undo for an op in the in-flight batch and converges after the ack', async () => {
+      let resolvePost: ((r: Response) => void) | undefined;
+      let sentOps: { op_id: string }[] = [];
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
+        sentOps = (JSON.parse(String(init.body)) as { ops: { op_id: string }[] }).ops;
+        return new Promise<Response>((resolve) => {
+          resolvePost = resolve;
+        });
+      });
+
+      store.personResult('10', '1', 'not_home');
+      // The POST is unresolved: the op is queued AND in the in-flight batch.
+      expect(store.queue()).toHaveLength(1);
+      expect(store.syncStatus()).toBe('syncing');
+      // The server may already have applied it, so it is not revocable now.
+      expect(store.canUndo()).toBe(false);
+      expect(store.undo()).toBe(false);
+      expect(store.householdById('10')?.people[0]?.result).toBe('not_home');
+
+      resolvePost?.(jsonResponse(acksFor(sentOps)));
+      await flushMicrotasks();
+      // Converged: server applied the op and the local overlay kept it.
+      expect(store.queue()).toHaveLength(0);
+      expect(store.syncStatus()).toBe('idle');
+      expect(store.householdById('10')?.people[0]?.result).toBe('not_home');
+    });
+
+    it('undoes an in-flight door outcome with the compensating clear, never by dropping the op', async () => {
+      const resolvers: ((r: Response) => void)[] = [];
+      const bodies: { op_id: string; type: string }[][] = [];
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
+        bodies.push((JSON.parse(String(init.body)) as { ops: { op_id: string; type: string }[] }).ops);
+        return new Promise<Response>((resolve) => {
+          resolvers.push(resolve);
+        });
+      });
+
+      store.doorOutcome('10', 'refused');
+      // Door outcomes stay undoable mid-flight (inverse op is safe either way).
+      expect(store.canUndo()).toBe(true);
+      expect(store.undo()).toBe(true);
+      // The in-flight op stayed queued; the inverse landed behind it in order.
+      expect(store.queue().map((e) => e.op.type)).toEqual(['door_outcome', 'clear_outcome']);
+      expect(store.householdById('10')?.door_outcome).toBeNull();
+
+      resolvers[0]?.(jsonResponse(acksFor(bodies[0] ?? [])));
+      await flushMicrotasks();
+      // The flush loop sent the clear as its own follow-up batch; ack it too.
+      expect(bodies[1]?.map((o) => o.type)).toEqual(['clear_outcome']);
+      resolvers[1]?.(jsonResponse(acksFor(bodies[1] ?? [])));
+      await flushMicrotasks();
+      // Server saw refused then cleared; the local replay agrees.
+      expect(store.queue()).toHaveLength(0);
+      expect(store.householdById('10')?.door_outcome).toBeNull();
+    });
+
     it('cannot undo a survey once it synced', async () => {
       store.submitSurvey('10', '1', {
         support: 'supporter',

@@ -42,7 +42,9 @@ describe('EmailsRouter', () => {
     } as any);
     const result = await caller.getEmailBody('1');
 
-    expect(spy).toHaveBeenCalledWith('1', '1');
+    // tenant_id, email_id, then the caller identity (user_id + role) for campaign isolation —
+    // role comes from the authProcedure middleware's user lookup (mocked to 'owner' above).
+    expect(spy).toHaveBeenCalledWith('1', '1', '1', 'owner');
     expect(result).toEqual(mockBody);
   });
 

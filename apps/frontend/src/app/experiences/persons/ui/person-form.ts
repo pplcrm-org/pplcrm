@@ -138,6 +138,10 @@ export class PersonForm implements OnInit {
   protected readonly pendingHouseholdId = signal<string | null>(null);
   protected readonly isLoading = this._loading.visible;
 
+  /** Disables Save immediately on click — the loading gate stays false for its first
+   *  300ms by design, which would leave a double-click window. */
+  protected readonly saving = signal(false);
+
   protected readonly emailError = linkedSignal({
     source: () => this.form.email().value(),
     computation: () => null as string | null,
@@ -346,6 +350,7 @@ export class PersonForm implements OnInit {
   }
 
   public save(done?: () => void) {
+    if (this.saving()) return;
     this.form().markAsTouched();
     if (this.form().invalid()) {
       // §4: Save never disables — instead of blocking, surface the errors and
@@ -585,6 +590,7 @@ export class PersonForm implements OnInit {
     };
 
     this.emailError.set(null);
+    this.saving.set(true);
     const end = this._loading.begin();
     this.personsSvc
       .add(data, { context: { skipErrorHandler: true } })
@@ -613,7 +619,10 @@ export class PersonForm implements OnInit {
           this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
         }
       })
-      .finally(() => end());
+      .finally(() => {
+        end();
+        this.saving.set(false);
+      });
   }
 
   /**
@@ -790,6 +799,7 @@ export class PersonForm implements OnInit {
     const savedName = this.formName() || 'person';
 
     this.emailError.set(null);
+    this.saving.set(true);
     const end = this._loading.begin();
     this.personsSvc
       .update(id, data, { context: { skipErrorHandler: true } })
@@ -810,7 +820,10 @@ export class PersonForm implements OnInit {
           this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
         }
       })
-      .finally(() => end());
+      .finally(() => {
+        end();
+        this.saving.set(false);
+      });
   }
 
   private async updateTags() {

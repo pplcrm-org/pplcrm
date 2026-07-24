@@ -3,6 +3,7 @@ import { sql } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
 import { logger } from '../../../logger';
+import { ConflictError } from '../../../errors/app-errors';
 import type { NewsletterAttachment, NewsletterRecipient } from '../../mail/newsletter-mail.service';
 import { NewsletterEmailService } from '../../mail/newsletter-mail.service';
 import {
@@ -55,6 +56,19 @@ export async function handleSendNewsletter(
     return;
   }
 
+  // Defense in depth: only a newsletter the kickoff actually claimed should be sent by this job.
+  // The atomic claim in sendNewsletter already guarantees one job per send, but if a duplicate job
+  // ever appears (a stale requeue, a hand-inserted row), refuse to send one that is already 'sent'
+  // or was reverted to draft/archived — never re-blast an audience off a stray job.
+  const SENDABLE_STATUSES = ['queuing', 'sending', 'paused'];
+  if (!SENDABLE_STATUSES.includes(String(newsletter.status))) {
+    logger.warn(
+      { tenantId, newsletterId, status: newsletter.status },
+      'Skipping send job for a newsletter that is not in a sendable state',
+    );
+    return;
+  }
+
   // 2. Build the recipient query using NewslettersController
   const { NewslettersController } = await import('../../../modules/newsletters/controller');
   const controller = new NewslettersController();
@@ -63,6 +77,11 @@ export async function handleSendNewsletter(
   // 3. Count total recipients
   let offset = payload.offset ?? 0;
   let deliveredCount = payload.deliveredCount ?? 0;
+  // Keyset cursor: the last email address sent. Recipients are walked in ascending email order with
+  // `WHERE email > cursor` instead of OFFSET, so unsubscribes/new sign-ups landing mid-send can't
+  // shift the window and skip or double-send a boundary recipient. `offset` is kept only as a
+  // progress counter (and the loop's upper bound), never as the pagination key.
+  let cursor: string | null = payload.cursor ?? null;
 
   const countResult = await baseQuery
     .select(({ fn }: ExpressionBuilder<Models, 'persons'>) => fn.count(sql`DISTINCT persons.email`).as('count'))
@@ -180,7 +199,10 @@ export async function handleSendNewsletter(
 
   const attachments = await buildNewsletterAttachments(db, tenantId, newsletterId);
 
-  while (offset < totalRecipients) {
+  // Keyset walk: loop until a batch yields no more recipients (see the empty-batch break below).
+  // `offset`/`totalRecipients` are progress display only — they must NOT bound the loop, or a resume
+  // after the audience shrank ahead of the cursor would stop early and skip the remaining recipients.
+  for (;;) {
     // Re-check the tenant's blocked state every batch so an abuse tripwire (fired by the
     // SendGrid webhook while this send is in flight) or a payment hold (subscription going
     // past_due mid-send) stops the send mid-stream, not just the next one. The resume point
@@ -193,7 +215,13 @@ export async function handleSendNewsletter(
       );
       await db
         .updateTable('newsletters')
-        .set({ status: 'paused', send_offset: offset, delivered_count: deliveredCount, updated_at: new Date() })
+        .set({
+          status: 'paused',
+          send_offset: offset,
+          send_cursor: cursor,
+          delivered_count: deliveredCount,
+          updated_at: new Date(),
+        })
         .where('tenant_id', '=', tenantId)
         .where('id', '=', newsletterId)
         .execute();
@@ -211,7 +239,7 @@ export async function handleSendNewsletter(
       );
       await db
         .updateTable('newsletters')
-        .set({ send_offset: offset, delivered_count: deliveredCount, updated_at: new Date() })
+        .set({ send_offset: offset, send_cursor: cursor, delivered_count: deliveredCount, updated_at: new Date() })
         .where('tenant_id', '=', tenantId)
         .where('id', '=', newsletterId)
         .execute();
@@ -221,7 +249,15 @@ export async function handleSendNewsletter(
           tenant_id: tenantId,
           queue: 'default',
           status: 'pending',
-          payload: JSON.stringify({ type: 'send-newsletter', newsletterId, tenantId, userId, offset, deliveredCount }),
+          payload: JSON.stringify({
+            type: 'send-newsletter',
+            newsletterId,
+            tenantId,
+            userId,
+            offset,
+            deliveredCount,
+            cursor,
+          }),
           run_at: new Date(Date.now() + RATE_CAP_DEFER_MS),
           max_attempts: 3,
         })
@@ -229,16 +265,19 @@ export async function handleSendNewsletter(
       return;
     }
 
-    // Query a chunk of recipients dynamically using LIMIT and OFFSET.
-    // distinctOn(email) yields exactly one row per address (matching the COUNT(DISTINCT email) total)
-    // while still carrying the person fields the merge tokens need.
-    const chunkRows = await baseQuery
+    // Query a chunk of recipients using keyset pagination (WHERE email > cursor), NOT OFFSET, so a
+    // recipient added/removed between batches can't shift the window. distinctOn(email) yields
+    // exactly one row per address (matching the COUNT(DISTINCT email) total) while still carrying
+    // the person fields the merge tokens need.
+    let chunkQuery = baseQuery
       .select(['persons.email', 'persons.first_name', 'persons.last_name', 'persons.mobile', 'persons.home_phone'])
       .distinctOn('persons.email')
       .orderBy('persons.email', 'asc')
-      .limit(Math.min(NEWSLETTER_BATCH_SIZE, allowance))
-      .offset(offset)
-      .execute();
+      .limit(Math.min(NEWSLETTER_BATCH_SIZE, allowance));
+    if (cursor !== null) {
+      chunkQuery = chunkQuery.where('persons.email', '>', cursor);
+    }
+    const chunkRows = await chunkQuery.execute();
 
     const seen = new Set<string>();
     const recipients: NewsletterRecipient[] = [];
@@ -280,6 +319,10 @@ export async function handleSendNewsletter(
 
     deliveredCount += batchDelivered;
     offset += chunkRows.length;
+    // Advance the keyset cursor to the last (max) email this batch sent. recipients is non-empty
+    // here (length === 0 breaks above) and ordered ascending, so its final element is the
+    // correct resume point — hence the non-null assertion.
+    cursor = recipients[recipients.length - 1]!.email;
 
     // Meter the batch — this row is what the warm-up and hourly caps SUM over.
     await logNewsletterBatch(db, tenantId, newsletterId, batchDelivered);
@@ -296,6 +339,7 @@ export async function handleSendNewsletter(
             userId,
             offset,
             deliveredCount,
+            cursor,
           }),
           updated_at: new Date(),
         })
@@ -316,6 +360,7 @@ export async function handleSendNewsletter(
       status: 'sent',
       delivered_count: deliveredCount,
       send_offset: null,
+      send_cursor: null,
       send_date: new Date(),
       updatedby_id: userId,
       updated_at: new Date(),
@@ -597,6 +642,16 @@ export async function handleProcessScheduledNewsletters(db: Kysely<Models>): Pro
         await controller.sendNewsletter(tenantId, newsletterId, String(row.updatedby_id));
         logger.info({ tenantId, newsletterId }, '[scheduled-newsletter] Fired at scheduled time');
       } catch (err) {
+        // A ConflictError means a concurrent "Send now" already claimed this newsletter (it is now
+        // queuing/sending). That is not a failure to fire — do NOT revert it to draft or notify the
+        // user; the winning caller owns the send.
+        if (err instanceof ConflictError) {
+          logger.info(
+            { tenantId, newsletterId },
+            '[scheduled-newsletter] Already claimed by a concurrent send; skipping',
+          );
+          continue;
+        }
         const reason = err instanceof Error ? err.message : String(err);
         await db
           .updateTable('newsletters')

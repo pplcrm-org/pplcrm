@@ -21,6 +21,7 @@ async function applyConsentSideEffects(
   eventType: string,
   email: string,
   occurredAt: Date,
+  bounceType: string | null,
 ): Promise<void> {
   if (!email) return;
   if (eventType === 'unsubscribe' || eventType === 'group_unsubscribe') {
@@ -38,10 +39,16 @@ async function applyConsentSideEffects(
       });
     }
   } else if (eventType === 'bounce' || eventType === 'spamreport') {
+    // A SendGrid `bounce` with type 'blocked' is a SOFT failure (greylisting, transient reputation),
+    // not a dead address — permanently suppressing it would silently shrink every future send off a
+    // one-off incident. Only hard bounces and spam complaints suppress.
+    if (eventType === 'bounce' && bounceType === 'blocked') return;
     const reason = eventType === 'bounce' ? 'hard_bounce' : 'spam_complaint';
     await db
       .insertInto('email_suppressions')
-      .values({ tenant_id: tenantId, email, reason, occurred_at: occurredAt })
+      // Store the address lowercased so suppression checks (which compare case-insensitively) match
+      // persons stored with mixed-case addresses.
+      .values({ tenant_id: tenantId, email: email.toLowerCase(), reason, occurred_at: occurredAt })
       .onConflict((oc) => oc.columns(['tenant_id', 'email', 'reason']).doNothing())
       .execute();
   }
@@ -123,18 +130,21 @@ async function applyAutomationEvent(ev: SendGridEvent): Promise<void> {
       .where('id', '=', runId)
       .execute();
   } else if ((eventType === 'bounce' || eventType === 'spamreport') && ev.email) {
-    const reason = eventType === 'bounce' ? 'hard_bounce' : 'spam_complaint';
-    await db
-      .insertInto('email_suppressions')
-      .values({ tenant_id: tenantId, email: ev.email, reason, occurred_at: occurredAt })
-      .onConflict((oc) => oc.columns(['tenant_id', 'email', 'reason']).doNothing())
-      .execute();
-
-    // Stamp the run for the automation abuse tripwires — hard bounces only (SendGrid `bounce`
-    // with type 'blocked' is a soft failure and never counts against the tenant, matching the
-    // newsletter tripwire's exclusion). COALESCE keeps the stamp idempotent.
+    // A SendGrid `bounce` with type 'blocked' is a SOFT failure (greylisting, transient reputation),
+    // not a dead address — permanently suppressing it would silently shrink every future send off a
+    // one-off incident. Only hard bounces and spam complaints suppress and stamp the tripwire.
     const isHardBounce = eventType === 'bounce' && ev.type !== 'blocked';
     if (eventType === 'spamreport' || isHardBounce) {
+      const reason = eventType === 'bounce' ? 'hard_bounce' : 'spam_complaint';
+      await db
+        .insertInto('email_suppressions')
+        // Store the address lowercased so suppression checks (which compare case-insensitively) match
+        // persons stored with mixed-case addresses.
+        .values({ tenant_id: tenantId, email: ev.email.toLowerCase(), reason, occurred_at: occurredAt })
+        .onConflict((oc) => oc.columns(['tenant_id', 'email', 'reason']).doNothing())
+        .execute();
+
+      // Stamp the run for the automation abuse tripwires. COALESCE keeps the stamp idempotent.
       await db
         .updateTable('workflow_runs')
         .set(
@@ -235,7 +245,14 @@ const newslettersWebhookRoute: FastifyPluginCallback = (fastify, _opts, done) =>
 
           processedNewsletters.add(`${tenantId}:${newsletterId}`);
 
-          await applyConsentSideEffects(String(tenantId), String(newsletterId), eventType, email, timestamp);
+          await applyConsentSideEffects(
+            String(tenantId),
+            String(newsletterId),
+            eventType,
+            email,
+            timestamp,
+            bounceType,
+          );
         } catch (insertErr) {
           req.log.error(insertErr, `Failed to insert webhook event ${sgEventId}`);
         }

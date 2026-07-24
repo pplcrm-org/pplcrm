@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, input, output, signal } from '@angular/core';
+import { Component, inject, input, model, output, signal } from '@angular/core';
 import { TagsService } from '@experiences/tags/services/tags-service';
 import { AutoComplete } from '@uxcommon/components/autocomplete/autocomplete';
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
@@ -59,7 +59,7 @@ interface TagView {
       </div>
     } `,
 })
-export class Tags implements OnInit {
+export class Tags {
   protected displayedTags: string[] = [];
   protected expanded = signal(false);
   private readonly paletteSvc = inject(TagPaletteService);
@@ -70,8 +70,6 @@ export class Tags implements OnInit {
   public readonly tagClicked = output<string>();
 
   public readonly tagRemoved = output<string>();
-
-  public readonly tagsChange = output<string[]>();
 
   public animateRemoval = input<boolean>(true);
 
@@ -85,7 +83,9 @@ export class Tags implements OnInit {
   public readonly type = input<'tag' | 'issue'>('tag');
   public compact = input<boolean>(false);
   public tagSvc = inject(TagsService);
-  public tags = input<string[]>([]);
+  /** Two-way model: every add/remove produces a NEW array reference so parent
+   *  signals and computed()s re-run. Never mutate the bound array in place. */
+  public tags = model<string[]>([]);
   public limit = input<number | undefined>(undefined);
 
   protected displayTags(): TagView[] {
@@ -115,12 +115,6 @@ export class Tags implements OnInit {
     return names.map((m) => m.name);
   }
 
-  public ngOnInit() {
-    for (const name of this.tags()) {
-      this.add(name);
-    }
-  }
-
   protected add(tagName: string) {
     if (!tagName || typeof tagName !== 'string') return;
 
@@ -132,18 +126,17 @@ export class Tags implements OnInit {
 
     if (tagName.length === 0) return;
 
-    const index = this.tags().findIndex((tag) => (tag || '').toLowerCase().trim() === tagName);
+    const name = tagName;
+    const index = this.tags().findIndex((tag) => (tag || '').toLowerCase().trim() === name);
     if (index === -1) {
-      this.tags().unshift(tagName);
-      this.tagAdded.emit(tagName);
+      this.tags.update((tags) => [name, ...tags]);
+      this.tagAdded.emit(name);
       // Invalidate the options cache so the grid's inline dropdown reflects this new value
       void this.tagOptionsSvc.invalidate(this.type());
     } else {
-      // Bring tag that maches to the front.
-      const [tag] = this.tags().splice(index, 1) as [string]; // remove it
-      this.tags().unshift(tag); // move to front
+      // Bring the tag that matches to the front.
+      this.tags.update((tags) => [...tags.slice(index, index + 1), ...tags.slice(0, index), ...tags.slice(index + 1)]);
     }
-    this.tagsChange.emit(this.tags());
   }
 
   protected clicked(tag: string) {
@@ -167,9 +160,9 @@ export class Tags implements OnInit {
     const target = (tagName || '').toLowerCase().trim();
     const index = this.tags().findIndex((tag) => (tag || '').toLowerCase().trim() === target);
     if (index > -1) {
-      const removed = this.tags().splice(index, 1)[0]!;
-      this.tagsChange.emit(this.tags());
-      this.tagRemoved.emit(removed);
+      const removed = this.tags()[index];
+      this.tags.update((tags) => tags.filter((_, i) => i !== index));
+      if (removed != null) this.tagRemoved.emit(removed);
     }
   }
 }

@@ -19,16 +19,23 @@ const DEFAULT_MAX_ATTEMPTS = 3;
  * requeues it and it re-runs — inserting a second next-run each time, so the cron would
  * multiply without bound. Only enqueue when no PENDING run of this type already exists (the
  * currently-'processing' job — this one — is intentionally NOT counted, or it would block its
- * own chain). FOR UPDATE serializes concurrent schedulers of the same type.
+ * own chain).
+ *
+ * A plain `SELECT ... FOR UPDATE` can't serialize this: when there is no pending row yet, it locks
+ * nothing, so two concurrent schedulers of the same type both see "none" and both insert, forking
+ * the chain. We take a transaction-scoped advisory lock keyed by the job type first — that
+ * serializes on the type itself (not on a row), so the second scheduler blocks until the first
+ * commits and then correctly sees the row it inserted.
  */
 export async function scheduleNextRun(db: Kysely<Models>, type: JobType, delayMs: number): Promise<void> {
   await db.transaction().execute(async (trx) => {
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${type}))`.execute(trx);
+
     const existing = await trx
       .selectFrom('background_jobs')
       .select('id')
       .where('status', '=', 'pending')
       .where(sql`payload->>'type'`, '=', type)
-      .forUpdate()
       .executeTakeFirst();
     if (existing) return; // a future run of this cron job is already queued — don't stack another
 

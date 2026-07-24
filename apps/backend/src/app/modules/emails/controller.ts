@@ -1,6 +1,6 @@
 import { env } from '../../../env';
 import { getAllEmailFolders } from '../../config/email-folders.config';
-import { AppError, BadRequestError, InternalError, NotFoundError } from '../../errors/app-errors';
+import { AppError, BadRequestError, ForbiddenError, InternalError, NotFoundError } from '../../errors/app-errors';
 import { EmailAttachmentsRepo } from './repositories/email-attachments.repo';
 import { EmailBodiesRepo } from './repositories/email-body.repo';
 import { EmailCommentsRepo } from './repositories/email-comments.repo';
@@ -36,10 +36,116 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     super(new EmailRepo());
   }
 
-  public async addComment(tenant_id: string, email_id: string, author_id: string, comment: string) {
+  /**
+   * Campaigns §15 — the single campaign an Editor/Viewer is pinned to. Admins and
+   * owners are unrestricted (cross-campaign inbox access is intentional for them),
+   * so this returns `null` for them. A non-admin's scope is their admin-assigned
+   * `authusers.campaign_id`, or the office campaign when unassigned (mirrors the
+   * `isAuthed` campaign guard in `apps/backend/src/trpc.ts`).
+   */
+  private async resolveCampaignScope(
+    tenant_id: string,
+    user_id: string,
+    role: string | null | undefined,
+  ): Promise<string | null> {
+    if (role === 'admin' || role === 'owner') return null;
+    const user = await this.getRepo()
+      .db.selectFrom('authusers')
+      .select('campaign_id')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', user_id)
+      .executeTakeFirst();
+    if (user?.campaign_id != null) return String(user.campaign_id);
+    const office = await this.getRepo()
+      .db.selectFrom('campaigns')
+      .select('id')
+      .where('tenant_id', '=', tenant_id)
+      .where('kind', '=', 'office')
+      .executeTakeFirst();
+    return office ? String(office.id) : null;
+  }
+
+  /**
+   * Campaign isolation for the by-id inbox reads (§15). `emails`/`email_drafts`
+   * carry `campaign_id NOT NULL` and Editors/Viewers are pinned to one campaign,
+   * but these reads key only on (tenant_id, id) — so without this a pinned user
+   * could read a record from a campaign they are not in (the `isAuthed` guard
+   * can't help: these inputs carry no `campaignId` key). `value` may name an
+   * email OR a draft (several reads fall back to drafts), so both are checked.
+   * A cross-campaign record → FORBIDDEN; a genuinely missing id falls through to
+   * the caller's own not-found handling.
+   */
+  private async assertInboxCampaignScope(
+    tenant_id: string,
+    user_id: string,
+    role: string | null | undefined,
+    value: string,
+  ): Promise<void> {
+    const scope = await this.resolveCampaignScope(tenant_id, user_id, role);
+    if (scope === null) return; // admin/owner — cross-campaign access retained
+
+    const email = await this.getRepo()
+      .db.selectFrom('emails')
+      .select('campaign_id')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', value)
+      .executeTakeFirst();
+    if (email) {
+      if (String(email.campaign_id) !== scope) {
+        throw new ForbiddenError('You can only access mail in your assigned campaign.');
+      }
+      return;
+    }
+
+    const draft = await this.getRepo()
+      .db.selectFrom('email_drafts')
+      .select('campaign_id')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', value)
+      .executeTakeFirst();
+    if (draft && String(draft.campaign_id) !== scope) {
+      throw new ForbiddenError('You can only access mail in your assigned campaign.');
+    }
+  }
+
+  /**
+   * Batch variant of assertInboxCampaignScope for the multi-id email ops (delete, restore,
+   * attachment flags). Acts on `emails` rows only — no draft fallback. One out-of-scope id
+   * rejects the whole batch; ids that don't exist fall through to the op's own handling.
+   */
+  private async assertInboxCampaignScopeMany(
+    tenant_id: string,
+    user_id: string,
+    role: string | null | undefined,
+    email_ids: string[],
+  ): Promise<void> {
+    if (email_ids.length === 0) return;
+    const scope = await this.resolveCampaignScope(tenant_id, user_id, role);
+    if (scope === null) return; // admin/owner — cross-campaign access retained
+
+    const rows = await this.getRepo()
+      .db.selectFrom('emails')
+      .select('campaign_id')
+      .distinct()
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', email_ids)
+      .execute();
+    if (rows.some((r) => String(r.campaign_id) !== scope)) {
+      throw new ForbiddenError('You can only access mail in your assigned campaign.');
+    }
+  }
+
+  public async addComment(
+    tenant_id: string,
+    email_id: string,
+    author_id: string,
+    comment: string,
+    author_role?: string | null,
+  ) {
     if (!comment?.trim()) {
       throw new BadRequestError('Comment cannot be empty');
     }
+    await this.assertInboxCampaignScope(tenant_id, author_id, author_role, email_id);
     try {
       const row = await this.commentsRepo.add({
         row: {
@@ -71,7 +177,11 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     user_id: string | null,
     actor_id?: string,
     assigned_to_name?: string | null,
+    actor_role?: string | null,
   ) {
+    if (actor_id) {
+      await this.assertInboxCampaignScope(tenant_id, actor_id, actor_role, id);
+    }
     try {
       const updated = await this.getRepo().assignEmail(tenant_id, id, user_id);
 
@@ -173,8 +283,27 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     return this.deleteMany(tenant_id, [idToDelete]);
   }
 
-  public async deleteComment(tenant_id: string, _email_id: string, comment_id: string) {
+  public async deleteComment(
+    tenant_id: string,
+    _email_id: string,
+    comment_id: string,
+    user_id?: string,
+    role?: string | null,
+  ) {
     try {
+      // Scope by the comment's OWN email, not the client-supplied email_id — otherwise a pinned
+      // user could pass an in-scope email_id alongside an out-of-scope comment_id.
+      if (user_id) {
+        const comment = await this.commentsRepo.db
+          .selectFrom('email_comments')
+          .select('email_id')
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', comment_id)
+          .executeTakeFirst();
+        if (comment) {
+          await this.assertInboxCampaignScope(tenant_id, user_id, role, String(comment.email_id));
+        }
+      }
       const deleted = await this.commentsRepo.delete({ tenant_id, id: comment_id /*, email_id */ });
       if (!deleted) throw new NotFoundError('Comment not found');
       return deleted;
@@ -184,7 +313,8 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async deleteDraft(tenant_id: string, _user_id: string, id: string) {
+  public async deleteDraft(tenant_id: string, user_id: string, id: string, role?: string | null) {
+    await this.assertInboxCampaignScope(tenant_id, user_id, role, id);
     try {
       const deleted = await this.draftsRepo.delete({ tenant_id, id });
       if (!deleted) throw new NotFoundError('Draft not found');
@@ -195,7 +325,15 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public override async deleteMany(tenant_id: TypeTenantId<'emails'>, idsToDelete: string[]) {
+  public override async deleteMany(
+    tenant_id: TypeTenantId<'emails'>,
+    idsToDelete: string[],
+    user_id?: string,
+    role?: string | null,
+  ) {
+    if (user_id) {
+      await this.assertInboxCampaignScopeMany(tenant_id as string, user_id, role, idsToDelete);
+    }
     // Go through idsToDelete and check which ones are in the trash folder (hard delete)
     // and which ones are not (soft delete - move to trash)
     const emailsInTrash = await this.getRepo().getByIdsInFolder(tenant_id as string, idsToDelete, ALL_FOLDERS.TRASH);
@@ -277,7 +415,14 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async getAllAttachments(tenant_id: string, email_id: string, options?: { includeInline: boolean }) {
+  public async getAllAttachments(
+    tenant_id: string,
+    email_id: string,
+    user_id: string,
+    role: string | null | undefined,
+    options?: { includeInline: boolean },
+  ) {
+    await this.assertInboxCampaignScope(tenant_id, user_id, role, email_id);
     try {
       return await this.attachmentsRepo.getAllAttachments(tenant_id, email_id, options);
     } catch (err) {
@@ -285,7 +430,13 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async getAttachmentsByEmailId(tenant_id: string, email_id: string) {
+  public async getAttachmentsByEmailId(
+    tenant_id: string,
+    email_id: string,
+    user_id: string,
+    role: string | null | undefined,
+  ) {
+    await this.assertInboxCampaignScope(tenant_id, user_id, role, email_id);
     try {
       return await this.attachmentsRepo.getByEmailId(tenant_id, email_id);
     } catch (err) {
@@ -293,7 +444,8 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async getDraft(tenant_id: string, _user_id: string, value: string) {
+  public async getDraft(tenant_id: string, user_id: string, value: string, role: string | null | undefined) {
+    await this.assertInboxCampaignScope(tenant_id, user_id, role, value);
     try {
       const draft = await this.draftsRepo.getOneBy('id', { tenant_id, value });
       if (!draft) throw new NotFoundError('Draft not found');
@@ -304,7 +456,8 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async getEmailBody(tenant_id: string, value: string) {
+  public async getEmailBody(tenant_id: string, value: string, user_id: string, role: string | null | undefined) {
+    await this.assertInboxCampaignScope(tenant_id, user_id, role, value);
     try {
       const email = (await this.bodiesRepo.getOneBy('email_id', { tenant_id, value })) as
         | Selectable<Models['email_bodies']>
@@ -332,7 +485,8 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async getEmailHeader(tenant_id: string, id: string, user_id?: string) {
+  public async getEmailHeader(tenant_id: string, id: string, user_id: string, role: string | null | undefined) {
+    await this.assertInboxCampaignScope(tenant_id, user_id, role, id);
     try {
       const [emailWithHeaders, comments, rawAttachments] = await Promise.all([
         this.getRepo().getEmailWithHeadersAndRecipients(tenant_id, id, user_id),
@@ -471,7 +625,8 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async hasAttachment(tenant_id: string, email_id: string) {
+  public async hasAttachment(tenant_id: string, email_id: string, user_id: string, role?: string | null) {
+    await this.assertInboxCampaignScope(tenant_id, user_id, role, email_id);
     try {
       return await this.attachmentsRepo.hasAttachment(tenant_id, email_id);
     } catch (err) {
@@ -479,8 +634,9 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async hasAttachmentByEmailIds(tenant_id: string, email_ids: string[]) {
+  public async hasAttachmentByEmailIds(tenant_id: string, email_ids: string[], user_id: string, role?: string | null) {
     if (!email_ids?.length) return Promise.resolve([]);
+    await this.assertInboxCampaignScopeMany(tenant_id, user_id, role, email_ids);
 
     try {
       return this.attachmentsRepo.hasAttachmentByEmailIds(tenant_id, email_ids);
@@ -489,11 +645,21 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public restoreFromTrash(tenant_id: string, idsToRestore: string[]) {
+  public async restoreFromTrash(tenant_id: string, idsToRestore: string[], user_id: string, role?: string | null) {
+    await this.assertInboxCampaignScopeMany(tenant_id, user_id, role, idsToRestore);
     return this.getRepo().restoreFromTrash(tenant_id, idsToRestore);
   }
 
-  public async moveToFolder(tenant_id: string, id: string, folder_id: string, actor_id?: string) {
+  public async moveToFolder(
+    tenant_id: string,
+    id: string,
+    folder_id: string,
+    actor_id?: string,
+    actor_role?: string | null,
+  ) {
+    if (actor_id) {
+      await this.assertInboxCampaignScope(tenant_id, actor_id, actor_role, id);
+    }
     try {
       const isTrash = folder_id === ALL_FOLDERS.TRASH;
       const deleted_at = isTrash ? new Date() : null;
@@ -555,7 +721,10 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
   }
 
-  public async setFavourite(tenant_id: string, id: string, favourite: boolean) {
+  public async setFavourite(tenant_id: string, id: string, favourite: boolean, user_id?: string, role?: string | null) {
+    if (user_id) {
+      await this.assertInboxCampaignScope(tenant_id, user_id, role, id);
+    }
     try {
       return this.getRepo().setFavourite(tenant_id, id, favourite);
     } catch (err) {

@@ -19,11 +19,10 @@ export class NotificationsController extends BaseController<'notifications', Not
     return this.getRepo().markAllRead(auth.tenant_id, auth.user_id);
   }
 
-  public async markRead(id: string, auth: IAuthKeyPayload) {
-    return this.update({
-      tenant_id: auth.tenant_id,
-      id,
-      row: { read: true },
-    });
+  public async markRead(id: string, auth: IAuthKeyPayload): Promise<{ id: string }> {
+    // Scope by user_id (not just tenant_id + the enumerable global id) so a user can never
+    // mark-read — and, via BaseController.update's returningAll, read — another user's notification.
+    await this.getRepo().markRead(auth.tenant_id, auth.user_id, id);
+    return { id };
   }
 }

@@ -21,7 +21,7 @@ import { BaseController } from '../../lib/base.controller';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
 import { ListsController } from '../lists/controller';
 import { NewslettersRepo } from './repositories/newsletters.repo';
-import { BadRequestError, NotFoundError } from '../../errors/app-errors';
+import { BadRequestError, ConflictError, NotFoundError } from '../../errors/app-errors';
 import { assertNotDemoMode } from '../demo/demo-guard';
 import {
   assertTenantMaySendNewsletter,
@@ -360,7 +360,8 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
               .selectFrom('email_suppressions')
               .select('email_suppressions.id')
               .where('email_suppressions.tenant_id', '=', tenant_id)
-              .where(sql<boolean>`email_suppressions.email = persons.email`),
+              // Case-insensitive: suppressions are stored lowercased but persons keep mixed case.
+              .where(sql<boolean>`lower(email_suppressions.email) = lower(persons.email)`),
           ),
         ),
       )
@@ -450,7 +451,7 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
               .where('newsletter_events.tenant_id', '=', tenant_id)
               .where('newsletter_events.newsletter_id', '=', String(resendOfId))
               .where('newsletter_events.event_type', 'in', ['open', 'click'])
-              .where(sql<boolean>`newsletter_events.email = persons.email`),
+              .where(sql<boolean>`lower(newsletter_events.email) = lower(persons.email)`),
           ),
         ),
       );
@@ -487,6 +488,12 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
     // tenant is unblocked, instead of double-sending the recipients before the pause point.
     const resumeOffset = newsletter['status'] === 'paused' ? Number(newsletter['send_offset'] ?? 0) : 0;
     const resumeDelivered = resumeOffset > 0 ? Number(newsletter['delivered_count'] ?? 0) : 0;
+    // Keyset resume point (last email sent). Paired with the offset above; the worker pages with
+    // `WHERE email > cursor`, so this is what actually prevents re-sending the pre-pause recipients.
+    const resumeCursor =
+      newsletter['status'] === 'paused' && typeof newsletter['send_cursor'] === 'string'
+        ? newsletter['send_cursor']
+        : null;
 
     // Anti-abuse gate: identity prerequisites, tripwire pauses, free-tier warm-up cap.
     await assertTenantMaySendNewsletter(db, tenant_id, totalRecipients - resumeOffset);
@@ -501,37 +508,59 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
       plain_text_content: str(newsletter['plain_text_content']),
     });
 
-    const updated = await this.update({
-      tenant_id,
-      id,
-      row: {
-        status: 'queuing',
-        total_recipients: totalRecipients,
-        delivered_count: resumeDelivered,
-        updatedby_id: userId,
-        updated_at: new Date(),
-      },
+    // Claim the newsletter and enqueue its send job atomically. The status flip is a CONDITIONAL
+    // update (only a newsletter not already sent/queuing/sending can be claimed) so two concurrent
+    // callers — two browser tabs, or a manual "Send now" racing the scheduled-newsletter cron — can
+    // never both pass: exactly one row is updated, and the loser gets a ConflictError instead of a
+    // second job that would email the whole audience twice. Doing the flip and the job insert in one
+    // transaction also upholds the outbox rule: a crash between them can't strand the newsletter in
+    // `queuing` with no job to run it.
+    const claimed = await db.transaction().execute(async (trx) => {
+      const row = await trx
+        .updateTable('newsletters')
+        .set({
+          status: 'queuing',
+          total_recipients: totalRecipients,
+          delivered_count: resumeDelivered,
+          updatedby_id: userId,
+          updated_at: new Date(),
+        })
+        .where('tenant_id', '=', tenant_id)
+        .where('id', '=', id)
+        .where('status', 'not in', ['sent', 'queuing', 'sending'])
+        .returningAll()
+        .executeTakeFirst();
+
+      if (!row) return null;
+
+      await trx
+        .insertInto('background_jobs')
+        .values({
+          tenant_id,
+          queue: 'default',
+          status: 'pending',
+          payload: JSON.stringify({
+            type: 'send-newsletter',
+            newsletterId: id,
+            tenantId: tenant_id,
+            userId: userId,
+            offset: resumeOffset,
+            deliveredCount: resumeDelivered,
+            cursor: resumeCursor,
+          }),
+          run_at: new Date(),
+        })
+        .execute();
+
+      return row;
     });
 
-    await db
-      .insertInto('background_jobs')
-      .values({
-        tenant_id,
-        queue: 'default',
-        status: 'pending',
-        payload: JSON.stringify({
-          type: 'send-newsletter',
-          newsletterId: id,
-          tenantId: tenant_id,
-          userId: userId,
-          offset: resumeOffset,
-          deliveredCount: resumeDelivered,
-        }),
-        run_at: new Date(),
-      })
-      .execute();
+    if (!claimed) {
+      // Another request claimed it between our status read and the conditional update.
+      throw new ConflictError('Newsletter has already been sent or is currently sending');
+    }
 
-    return updated;
+    return claimed;
   }
 
   /** Take a `scheduled` newsletter off the calendar: back to draft, send_date cleared. The
@@ -1021,7 +1050,8 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
                 .selectFrom('email_suppressions')
                 .select('email_suppressions.id')
                 .where('email_suppressions.tenant_id', '=', tenant_id)
-                .where(sql<boolean>`email_suppressions.email = persons.email`),
+                // Case-insensitive: suppressions are stored lowercased but persons keep mixed case.
+                .where(sql<boolean>`lower(email_suppressions.email) = lower(persons.email)`),
             ),
           )
           .executeTakeFirst();

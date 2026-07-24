@@ -137,4 +137,38 @@ describe('FormsPageComponent — field reorder', () => {
     expect((component as any).selected().fields.map((f: FormField) => f.key)).toEqual(['full_name', 'email', 'mobile']);
     expect(Object.keys((component as any).pendingPatch)).toHaveLength(0);
   });
+
+  describe('live-edit patch targeting', () => {
+    it('flushes a pending patch to the form it was queued for, never the newly selected form', () => {
+      const formA = formDetail([field('email', { required: true })]);
+      const formB = { ...formDetail([field('email', { required: true })]), id: 'form-2', name: 'Other form' };
+      (component as any).forms.set([formA, formB]);
+      (component as any).selectedId.set('form-1');
+
+      // Queue a debounced edit on form-1, then switch to form-2 before the 400ms flush.
+      (component as any).editName('Renamed A');
+      (component as any).select('form-2');
+
+      expect(mockFormsSvc.updateLive).toHaveBeenCalledTimes(1);
+      expect(mockFormsSvc.updateLive).toHaveBeenCalledWith('form-1', { name: 'Renamed A' });
+      expect(Object.keys((component as any).pendingPatch)).toHaveLength(0);
+    });
+
+    it('restores the un-flushed patch under the captured id and toasts when the flush fails', async () => {
+      seed([field('email', { required: true })]);
+      (component as any).editName('New name');
+      mockFormsSvc.updateLive.mockRejectedValueOnce(new Error('network down'));
+
+      await (component as any).flushPatch();
+
+      const alerts = TestBed.inject(AlertService) as any;
+      expect(alerts.showError).toHaveBeenCalled();
+      expect((component as any).pendingPatch).toEqual({ name: 'New name' });
+      expect((component as any).pendingPatchId).toBe('form-1');
+
+      // The next flush retries the restored patch against the same form.
+      await (component as any).flushPatch();
+      expect(mockFormsSvc.updateLive).toHaveBeenLastCalledWith('form-1', { name: 'New name' });
+    });
+  });
 });

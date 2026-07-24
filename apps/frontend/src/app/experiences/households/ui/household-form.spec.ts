@@ -181,7 +181,7 @@ describe('HouseholdForm', () => {
       expect(payload.city).toBe('Mountain View');
       expect(payload.street1).toBe('Amphitheatre Pkwy');
       expect(payload.notes).toBe('Google HQ');
-      expect(component['tags']).toEqual(expect.arrayContaining(['donor', 'volunteer']));
+      expect(component['tags']()).toEqual(expect.arrayContaining(['donor', 'volunteer']));
       expect(component['addressString']()).toBe('1600 Amphitheatre Pkwy, Mountain View, CA');
     });
 

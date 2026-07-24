@@ -2,8 +2,10 @@ import type { Kysely } from 'kysely';
 
 import { env } from '../../../../env';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { logger } from '../../../logger';
 import { NewsletterEmailService } from '../../mail/newsletter-mail.service';
-import { loadSendingTenant, logAutomationSend } from '../../../modules/newsletters/send-guards';
+import { hasPaymentHold, loadSendingTenant, logAutomationSend } from '../../../modules/newsletters/send-guards';
+import { resolveAutomationSendConsent } from '../../../modules/workflows/automation-consent';
 
 const mailService = new NewsletterEmailService();
 
@@ -74,6 +76,38 @@ export async function handleSendAutomationEmail(
     throw new Error(`Automation email for run ${payload.workflowRunId}: no verified From address`);
   }
 
+  // Delivery-time re-checks. The drip worker enforced consent/caps/pause when it ENQUEUED this job,
+  // but that can be hours before delivery (retry backoff, queue depth). Re-check here so a tenant
+  // paused/suspended by a tripwire or payment hold in the meantime doesn't keep sending, and a
+  // recipient who unsubscribed/bounced/was marked DNC after enqueue isn't emailed anyway. Drop the
+  // send (return, don't throw) rather than retry — the block is intentional, not a transient failure.
+  if (sendingTenant.suspended_at || sendingTenant.sending_paused_at || hasPaymentHold(sendingTenant)) {
+    logger.warn(
+      { tenantId, workflowRunId: payload.workflowRunId },
+      'Tenant sending blocked at delivery time — dropping queued automation email',
+    );
+    return;
+  }
+  const run = await db
+    .selectFrom('workflow_runs')
+    .select('person_id')
+    .where('tenant_id', '=', tenantId)
+    .where('id', '=', payload.workflowRunId)
+    .executeTakeFirst();
+  if (run?.person_id) {
+    const consent = await resolveAutomationSendConsent(db, tenantId, {
+      id: String(run.person_id),
+      email: payload.to,
+    });
+    if (!consent.ok) {
+      logger.info(
+        { tenantId, workflowRunId: payload.workflowRunId, reason: consent.reason },
+        'Recipient no longer consents at delivery time — dropping queued automation email',
+      );
+      return;
+    }
+  }
+
   const replyToRaw = (settingsMap['communications.reply_to'] || '').toLowerCase().trim();
   const replyTo = replyToRaw && verifiedEmails.includes(replyToRaw) ? replyToRaw : undefined;
 
@@ -96,8 +130,10 @@ export async function handleSendAutomationEmail(
     tenantId,
     customArgs: { workflow_run_id: payload.workflowRunId },
     // The footer carries the app's own HMAC unsubscribe link (flips every campaign
-    // subscription), so SendGrid's subscription tracking stays off.
+    // subscription), so SendGrid's subscription tracking stays off — which also means
+    // SendGrid won't add List-Unsubscribe headers; provide the RFC 8058 pair ourselves.
     subscriptionTracking: false,
+    listUnsubscribeUrl: payload.unsubscribeUrl,
   });
 
   // Meter the send only after SendGrid accepted it — a job that fails (and exhausts its

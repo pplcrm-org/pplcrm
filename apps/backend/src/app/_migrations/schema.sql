@@ -2649,7 +2649,7 @@ ALTER SEQUENCE public.tenants_id_seq OWNED BY public.tenants.id;
 --
 
 CREATE TABLE public.workspace_api_keys (
-    id bigserial NOT NULL,
+    id bigint NOT NULL,
     tenant_id bigint NOT NULL,
     key_hash text NOT NULL,
     key_preview text NOT NULL,
@@ -5765,10 +5765,10 @@ CREATE INDEX web_forms_tenant_index ON public.web_forms USING btree (tenant_id);
 
 
 --
--- Name: workspace_api_keys_key_hash_index; Type: INDEX; Schema: public; Owner: pplcrm_owner
+-- Name: idx_workspace_api_keys_key_hash; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
-CREATE INDEX workspace_api_keys_key_hash_index ON public.workspace_api_keys USING btree (key_hash);
+CREATE INDEX idx_workspace_api_keys_key_hash ON public.workspace_api_keys USING btree (key_hash);
 
 
 --
@@ -8011,11 +8011,11 @@ ALTER TABLE ONLY public.workspace_api_keys
 
 
 --
--- Name: workspace_api_keys workspace_api_keys_tenant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+-- Name: workspace_api_keys fk_workspace_api_keys_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE ONLY public.workspace_api_keys
-    ADD CONSTRAINT workspace_api_keys_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+    ADD CONSTRAINT fk_workspace_api_keys_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
 
 
 --

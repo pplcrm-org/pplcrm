@@ -1,0 +1,72 @@
+<pc-modal-shell
+  title="Report a bug"
+  icon="bug-ant"
+  [boxClass]="'max-w-md'"
+  [open]="dialogSvc.visible()"
+  (closed)="onClosed()"
+>
+  <form id="report-bug-form" class="flex flex-col gap-4" (submit)="$event.preventDefault(); submit()" novalidate>
+    <div class="flex flex-col gap-1.5">
+      <label class="text-sm font-semibold text-base-content/80" for="rb-description">What happened?</label>
+      <textarea
+        id="rb-description"
+        class="textarea textarea-bordered w-full text-sm min-h-28"
+        [class.textarea-error]="descriptionInvalid()"
+        placeholder="What did you do, what did you expect, and what happened instead?"
+        [formField]="descriptionForm"
+        autofocus
+      ></textarea>
+      @if (descriptionInvalid()) {
+      <p class="text-xs text-error mt-1 flex items-center gap-1">
+        <pc-icon name="exclamation-triangle" [size]="3"></pc-icon>
+        Describe what went wrong so we can chase it down.
+      </p>
+      }
+    </div>
+
+    <div class="flex flex-col gap-1.5">
+      <label class="text-sm font-semibold text-base-content/80" for="rb-screenshot">Screenshot (optional)</label>
+      @if (screenshot(); as file) {
+      <div class="flex items-center gap-2 px-3 py-2 bg-primary/10 rounded-xl border border-primary/30">
+        <pc-icon name="file-image" [size]="4" class="flex-shrink-0 text-primary"></pc-icon>
+        <span class="text-sm font-medium flex-1 truncate">{{ file.name }}</span>
+        <button
+          type="button"
+          class="btn btn-ghost btn-xs btn-circle"
+          (click)="removeScreenshot()"
+          aria-label="Remove screenshot"
+        >
+          <pc-icon name="x-mark" [size]="3"></pc-icon>
+        </button>
+      </div>
+      } @else {
+      <input
+        id="rb-screenshot"
+        type="file"
+        accept="image/*"
+        class="file-input file-input-bordered w-full text-sm"
+        (change)="onScreenshotChange($any($event.target).files)"
+      />
+      <p class="text-xs text-base-content/50">An image up to 5 MB. It goes straight to our team with your report.</p>
+      }
+    </div>
+
+    <p class="text-xs text-base-content/50 flex items-start gap-1.5">
+      <pc-icon name="information-circle" [size]="4" class="flex-shrink-0 mt-0.5"></pc-icon>
+      Your current page and browser details are included automatically so we can reproduce the problem.
+    </p>
+  </form>
+
+  <div pc-modal-footer class="flex gap-2">
+    <button type="button" class="btn btn-outline btn-accent" (click)="onClosed()" [disabled]="submitting()">
+      Cancel
+    </button>
+    <button type="submit" form="report-bug-form" class="btn btn-primary" [disabled]="submitting()">
+      @if (submitting()) {
+      <span class="loading loading-spinner loading-sm"></span>
+      } @else {
+      <pc-icon name="paper-airplane" [size]="4"></pc-icon>
+      } Send report
+    </button>
+  </div>
+</pc-modal-shell>
