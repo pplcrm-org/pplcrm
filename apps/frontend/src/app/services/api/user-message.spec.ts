@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { TRPCClientError } from '@trpc/client';
 import { JSendServerError } from '../../../../../../libs/common/src';
 import { ApiError } from './api-error';
-import { getUserErrorMessage, isServerUnreachable } from './user-message';
+import { getUserErrorMessage, isServerUnreachable, SERVER_UNREACHABLE_MESSAGE } from './user-message';
 
 const FALLBACK = 'Something went wrong, please try again';
 
 /** A tRPC error that actually came from the server always carries a `data` payload with a code. */
-function serverAuthoredTRPCError(message: string, code = 'UNAUTHORIZED'): TRPCClientError<never> {
+function serverAuthoredTRPCError(message: string, code = 'UNAUTHORIZED', httpStatus = 401): TRPCClientError<never> {
   const err = new TRPCClientError(message);
-  (err as unknown as { data: unknown }).data = { code, httpStatus: 401 };
+  (err as unknown as { data: unknown }).data = { code, httpStatus };
   return err;
 }
 
@@ -32,8 +32,14 @@ describe('getUserErrorMessage', () => {
     expect(getUserErrorMessage(new ApiError(''), FALLBACK)).toBe(FALLBACK);
   });
 
-  it('shows a TRPCClientError message as-is', () => {
-    expect(getUserErrorMessage(new TRPCClientError('Duplicate name'), FALLBACK)).toBe('Duplicate name');
+  it('shows a server-authored TRPCClientError message as-is', () => {
+    expect(getUserErrorMessage(serverAuthoredTRPCError('Duplicate name', 'CONFLICT', 409), FALLBACK)).toBe(
+      'Duplicate name',
+    );
+  });
+
+  it('shows the unreachable copy for a data-less tRPC error — the request never reached the server', () => {
+    expect(getUserErrorMessage(new TRPCClientError('Failed to fetch'), FALLBACK)).toBe(SERVER_UNREACHABLE_MESSAGE);
   });
 
   it('shows a JSendServerError messageText', () => {

@@ -1,6 +1,6 @@
 ---
 name: pplcrm-testing
-description: "Write and run Vitest unit tests in this repo, and understand why a spec can pass `nx lint` yet be rejected by the pre-commit hook. USE WHEN adding or editing a `*.spec.ts`, running project tests, mocking with `vi.spyOn`/`vi.fn`, or debugging a spec that lints clean under nx but fails on commit. EXAMPLES: 'my spec passes nx lint but the commit hook rejects it', 'how do I run just one test file', 'mock the mail service in a backend test'."
+description: "Write and run Vitest unit tests in this repo, isolate backend specs that share one Postgres, and understand why a spec can pass `nx lint` yet be rejected by the pre-commit hook. USE WHEN adding or editing a `*.spec.ts`, running project tests, mocking with `vi.spyOn`/`vi.fn`, debugging a spec that lints clean under nx but fails on commit, or chasing a backend spec that only fails when the whole suite runs. EXAMPLES: 'my spec passes nx lint but the commit hook rejects it', 'how do I run just one test file', 'mock the mail service in a backend test', 'this spec passes alone but is flaky in CI'."
 ---
 
 # Testing in pplCRM (Vitest)
@@ -33,6 +33,27 @@ cd apps/frontend && npx vitest run src/app/layout/favourite-toggle/favourite-tog
 ```
 
 Backend specs need Postgres reachable — DB env is injected by `apps/backend/vite.config.ts` (`test.env`), so the DB in that block must exist locally.
+
+## Backend isolation: one shared Postgres, spec files in parallel
+
+There is no DB mocking layer — every backend spec hits the same local database, and Vitest runs spec _files_ concurrently. Two helpers in `apps/backend/src/app/lib/test-utils/` cover the two different ways that bites. **A spec that passes alone but fails in a full run is almost always one of these.**
+
+**Default: `useTestTransaction()`** (`db-test-isolation.ts`) — opens a real transaction before each test and always rolls it back, so writes vanish even when the test throws, and are never visible to another file. Pass `ctx.trx` into the code under test. Reach for this first; hand-rolled `afterEach` deletes leak rows whenever a test fails or the process is killed.
+
+```ts
+const ctx = useTestTransaction();
+it('adds a row', async () => {
+  await repo.add({ row: { ... } }, ctx.trx);
+});
+```
+
+**When rollback can't help: `useExclusiveDbLock(key)`** (`exclusive-db-lock.ts`) — for code that reads a table _globally_, where the contention is between files, not tests. `claimNextPendingJob` picks the lowest-id runnable row in the whole `background_jobs` table, so a `pending` row another spec file committed mid-run is a real claimable job: it breaks the FIFO assertion _and_ gets stolen from the file that inserted it. Every file touching that resource takes the same advisory-lock key and they take turns; the rest of the suite stays parallel. Call it once at file top level, outside any `describe`:
+
+```ts
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
+```
+
+Keys live in `DB_TEST_LOCKS` — add one per shared resource, never reuse an unrelated file's. The lock is held by a transaction (`startTransaction()` pins one pooled connection) and taken with `pg_advisory_xact_lock`, so it releases on rollback _and_ on a mid-run crash — a wedged file can't block the next run. Current holders: `lib/jobs/job-claim.spec.ts` and `lib/jobs/worker.reliability.spec.ts`.
 
 ## Mocking conventions (copy these — they're real)
 
