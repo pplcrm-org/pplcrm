@@ -5,8 +5,10 @@ import { Client } from 'pg';
 import { env } from '../../../env';
 import { logger } from '../../logger';
 import { ImportsRepo } from '../../modules/imports/repositories/imports.repo';
+import { CRON_JOBS, isCronJobType, jobTimeoutMs } from './cron-registry';
 import { claimNextPendingJob } from './job-claim';
 import { executeJob } from './job-handlers';
+import { scheduleNextRun, seedCronJob } from './reschedule';
 
 // Backoff before polling again once the queue drained empty.
 const IDLE_POLL_MS = 30000;
@@ -21,6 +23,17 @@ const RESERVED_SLOTS = 1;
 // interval sits well under the threshold so several heartbeats land within one stale window.
 const STALE_JOB_THRESHOLD_MS = 30 * 60 * 1000;
 const JOB_HEARTBEAT_MS = 5 * 60 * 1000;
+
+/**
+ * Thrown when a handler outlives its wall-clock cap (see jobTimeoutMs). Distinct class because the
+ * failure path treats it differently from an ordinary error: the timed-out promise keeps running.
+ */
+class JobExecutionTimeoutError extends Error {
+  constructor(type: string, timeoutMs: number) {
+    super(`Job '${type}' exceeded its ${Math.round(timeoutMs / 1000)}s execution timeout`);
+    this.name = 'JobExecutionTimeoutError';
+  }
+}
 
 export class BackgroundJobWorker {
   private readonly importsRepo = new ImportsRepo();
@@ -44,49 +57,13 @@ export class BackgroundJobWorker {
     this.isRunning = true;
     logger.info('Background Job Worker started.');
 
-    this.ensureCleanupJobScheduled().catch((err) => logger.error({ err }, 'Failed to ensure cleanup job scheduled'));
-    this.ensureSyncSchedulerJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure sync scheduler job scheduled'),
-    );
-    this.ensureDuplicatesRecomputeJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure duplicates recompute job scheduled'),
-    );
-    this.ensureAddressFingerprintsJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure address fingerprints job scheduled'),
-    );
-    this.ensureLapsedSupportersJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure lapsed supporters job scheduled'),
-    );
-    this.ensureTaskSlaBreachesJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure task SLA breach scan scheduled'),
-    );
-    this.ensureWorkflowsJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure workflows job scheduled'),
-    );
-    this.ensurePerformScheduledDeletionsJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure perform scheduled deletions job scheduled'),
-    );
-    this.ensureUsageLimitChecksScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure usage limit checks scheduled'),
-    );
-    this.ensureDueTasksCheckScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure due tasks check scheduled'),
-    );
-    this.ensureCompaniesGoogleRefreshJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure companies google refresh job scheduled'),
-    );
-    this.ensurePruneNewsletterEventsJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure prune newsletter events job scheduled'),
-    );
-    this.ensureScheduledNewslettersJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure scheduled newsletters job scheduled'),
-    );
-    this.ensurePruneRetentionJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure retention prune job scheduled'),
-    );
-    this.ensureOpsWatchdogJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure ops watchdog job scheduled'),
-    );
+    // Seed the first run of every recurring job straight from the registry, so the set can't drift
+    // from CRON_JOBS. Seeds are independent and non-blocking: one failure (lock wait, transient DB
+    // error) must not stop the other seeds or the rest of start(). The .filter(isCronJobType) is
+    // only there to narrow Object.keys' string[] to CronJobType[].
+    for (const type of Object.keys(CRON_JOBS).filter(isCronJobType)) {
+      seedCronJob(this.db, type).catch((err) => logger.error({ err, type }, 'Failed to seed recurring job'));
+    }
 
     // Run stale job recovery on startup and then every 5 minutes
     this.recoverStaleJobs().catch((err) => logger.error({ err }, 'Failed to recover stale jobs on startup'));
@@ -134,456 +111,6 @@ export class BackgroundJobWorker {
       });
     }
     logger.info('Background Job Worker stopped.');
-  }
-
-  private async ensureAddressFingerprintsJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'recompute_address_fingerprints')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling nightly address fingerprints recomputation background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'recompute_address_fingerprints' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure address fingerprints job scheduled');
-    }
-  }
-
-  private async ensureOpsWatchdogJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'ops_watchdog')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling ops watchdog background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'ops_watchdog' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure ops watchdog job scheduled');
-    }
-  }
-
-  private async ensureCleanupJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'cleanup_activities')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily activity feed cleanup background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'cleanup_activities' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure cleanup job scheduled');
-    }
-  }
-
-  private async ensurePruneRetentionJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'prune_retention')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily retention prune background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'prune_retention' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure retention prune job scheduled');
-    }
-  }
-
-  private async ensureCompaniesGoogleRefreshJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'refresh_companies_google')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily company google enrichment background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'refresh_companies_google' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure companies google refresh job scheduled');
-    }
-  }
-
-  private async ensureDueTasksCheckScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'check_due_tasks')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily due tasks check background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'check_due_tasks' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure due tasks check scheduled');
-    }
-  }
-
-  private async ensureDuplicatesRecomputeJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'recompute_all_duplicates')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling nightly duplicates recomputation background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'recompute_all_duplicates' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure duplicates recompute job scheduled');
-    }
-  }
-
-  private async ensurePerformScheduledDeletionsJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'perform_scheduled_deletions')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily scheduled deletions background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'perform_scheduled_deletions' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure perform scheduled deletions job scheduled');
-    }
-  }
-
-  private async ensurePruneNewsletterEventsJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'prune_newsletter_events')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily newsletter events pruning background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'prune_newsletter_events' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure prune newsletter events job scheduled');
-    }
-  }
-
-  private async ensureScheduledNewslettersJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'process_scheduled_newsletters')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling scheduled-newsletters dispatch background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'process_scheduled_newsletters' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure scheduled newsletters job scheduled');
-    }
-  }
-
-  private async ensureSyncSchedulerJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'schedule_sync_jobs')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling sync scheduler background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'schedule_sync_jobs' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure sync scheduler job scheduled');
-    }
-  }
-
-  private async ensureUsageLimitChecksScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'check_all_usage_limits')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily usage limits check background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'check_all_usage_limits' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure usage limit checks scheduled');
-    }
-  }
-
-  private async ensureWorkflowsJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'process_drip_workflows')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling periodic drip workflows processing background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'process_drip_workflows' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure workflows job scheduled');
-    }
-  }
-
-  private async ensureLapsedSupportersJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'detect_lapsed_supporters')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily lapsed-supporters detection background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'detect_lapsed_supporters' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure lapsed supporters job scheduled');
-    }
-  }
-
-  private async ensureTaskSlaBreachesJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'detect_task_sla_breaches')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling hourly task SLA-breach scan background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'detect_task_sla_breaches' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure task SLA breach scan scheduled');
-    }
   }
 
   /**
@@ -667,8 +194,24 @@ export class BackgroundJobWorker {
     }, JOB_HEARTBEAT_MS);
     if (typeof heartbeat.unref === 'function') heartbeat.unref();
 
+    // Wall-clock cap. The heartbeat above keeps `locked_at` fresh, so a live-but-wedged handler
+    // (a hung HTTP call, a lock wait) would never look stale to recoverStaleJobs and would hold its
+    // pool slot forever. Racing the handler against a timer is what makes that recoverable.
+    const payloadType = typeof payload.type === 'string' ? payload.type : undefined;
+    const timeoutMs = jobTimeoutMs(payloadType);
+    let timeoutHandle: NodeJS.Timeout | undefined;
+
     try {
-      await executeJob(payload, this.db, job.id);
+      await Promise.race([
+        executeJob(payload, this.db, job.id),
+        new Promise<never>((_resolve, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new JobExecutionTimeoutError(payloadType ?? 'unknown', timeoutMs)),
+            timeoutMs,
+          );
+          if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
+        }),
+      ]);
 
       // Mark job as completed
       await this.db
@@ -724,7 +267,11 @@ export class BackgroundJobWorker {
           payload.type === 'send-newsletter' ||
           payload.type === 'send-bug-report-email';
         const delaySeconds = isMail ? Math.pow(2, attempts) * 30 : attempts * 30;
-        const runAt = new Date(Date.now() + delaySeconds * 1000);
+        // A timed-out handler's promise cannot be cancelled and may still be writing. Defer the
+        // retry past the stale-recovery window instead of the usual seconds-scale backoff: by then
+        // the zombie has either finished or died, so the retry can't run concurrently with it.
+        const retryDelayMs = err instanceof JobExecutionTimeoutError ? STALE_JOB_THRESHOLD_MS : delaySeconds * 1000;
+        const runAt = new Date(Date.now() + retryDelayMs);
         logger.info({ jobId: job.id, runAt: runAt.toISOString(), attempt: attempts, maxAttempts }, 'Rescheduling job');
 
         await this.db
@@ -840,7 +387,10 @@ export class BackgroundJobWorker {
         await this.rescheduleCronJobOnFailure(payload.type);
       }
     } finally {
+      // Reached on success, on handler failure, and on timeout — so neither the heartbeat interval
+      // nor the timeout timer can outlive the job.
       clearInterval(heartbeat);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
 
     return true;
@@ -933,50 +483,19 @@ export class BackgroundJobWorker {
     }
   }
 
+  /**
+   * A dead-lettered cron job must still get its next run queued, or the chain stops until the next
+   * deploy — silent breakage, since nothing else re-seeds it while the process lives. (For
+   * ops_watchdog it's worse than silent: no run means no heartbeat, so /healthz/worker goes stale
+   * and alerts until it recovers.) Intervals come from CRON_JOBS so no cron can be forgotten here.
+   */
   private async rescheduleCronJobOnFailure(type: string): Promise<void> {
-    let delayMs = 0;
-    if (type === 'cleanup_activities') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'schedule_sync_jobs') {
-      delayMs = 10 * 60 * 1000;
-    } else if (type === 'recompute_all_duplicates') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'recompute_address_fingerprints') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'process_drip_workflows') {
-      delayMs = 10 * 60 * 1000;
-    } else if (type === 'perform_scheduled_deletions') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'check_all_usage_limits') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'refresh_companies_google') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'prune_newsletter_events') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'prune_retention') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'ops_watchdog') {
-      // Must keep rescheduling even after a permanently-failed run — a dead watchdog means a
-      // stale heartbeat, and /healthz/worker would (correctly) alert until it recovers.
-      delayMs = 5 * 60 * 1000;
-    }
+    if (!isCronJobType(type)) return;
 
-    if (delayMs > 0) {
-      try {
-        await this.db
-          .insertInto('background_jobs')
-          .values({
-            tenant_id: null,
-            queue: 'default',
-            status: 'pending',
-            payload: JSON.stringify({ type }),
-            run_at: new Date(Date.now() + delayMs),
-            max_attempts: 3,
-          })
-          .execute();
-      } catch (schedErr) {
-        logger.error({ err: schedErr, type }, 'Failed to reschedule failed cron job');
-      }
+    try {
+      await scheduleNextRun(this.db, type, CRON_JOBS[type]);
+    } catch (schedErr) {
+      logger.error({ err: schedErr, type }, 'Failed to reschedule failed cron job');
     }
   }
 

@@ -5,10 +5,12 @@ vi.mock('../../../../env', () => ({
   env: { opsAlertEmail: 'ops@test' as string | undefined, postmarkFromEmail: 'hello@pplcrm.com' },
 }));
 
-vi.mock('../reschedule', () => ({
-  FIVE_MINUTES_MS: 5 * 60 * 1000,
-  scheduleNextRun: vi.fn(async () => undefined),
-}));
+// Partial mock: cron-registry.ts imports the interval constants from this module, so only the
+// scheduling side effect is stubbed — the real constants flow through.
+vi.mock('../reschedule', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../reschedule')>();
+  return { ...actual, scheduleNextRun: vi.fn(async () => undefined) };
+});
 
 import type { Kysely } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
@@ -98,7 +100,8 @@ describe('handleOpsWatchdog', () => {
     expect(mail.text).toContain('boom');
 
     const details = JSON.parse(String(inserts[0]?.values['details'])) as Record<string, unknown>;
-    expect(details['last_alert_fingerprint']).toBe('job:geocode_household');
+    // :m0 = order-of-magnitude bucket of the count (2 failures → floor(log10(2)) = 0).
+    expect(details['last_alert_fingerprint']).toBe('job:geocode_household:m0');
     expect(details['last_alerted_at']).toBeTruthy();
     expect(details['last_checked_at']).toBeTruthy();
   });
@@ -110,7 +113,7 @@ describe('handleOpsWatchdog', () => {
           {
             details: {
               last_checked_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-              last_alert_fingerprint: 'job:geocode_household',
+              last_alert_fingerprint: 'job:geocode_household:m0',
               last_alerted_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
             },
           },
@@ -122,6 +125,29 @@ describe('handleOpsWatchdog', () => {
 
     expect(sendMail).not.toHaveBeenCalled();
     expect(scheduleNextRun).toHaveBeenCalled();
+  });
+
+  it('re-alerts inside the window when a known category escalates by an order of magnitude', async () => {
+    const { db } = makeFakeDb(
+      withFailures({
+        // Same category as the stored fingerprint, but the count crossed a decade (2 → 200,
+        // m0 → m2) — escalation must break through the suppression window.
+        background_jobs: [[{ key: 'geocode_household', count: 200, sample_error: 'boom' }], { oldest_run_at: null }],
+        ops_heartbeats: [
+          {
+            details: {
+              last_checked_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+              last_alert_fingerprint: 'job:geocode_household:m0',
+              last_alerted_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+            },
+          },
+        ],
+      }),
+    );
+
+    await handleOpsWatchdog(db);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
   });
 
   it('alerts again when the findings change even inside the window', async () => {

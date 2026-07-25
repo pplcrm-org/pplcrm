@@ -91,6 +91,9 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('send-shift-reminder'),
     shiftId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
   }),
   z.object({
     type: z.literal('send-webform-notifications'),
@@ -99,14 +102,23 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     firstName: z.string().nullish(),
     lastName: z.string().nullish(),
     notes: z.string().nullish(),
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
   }),
   z.object({
     type: z.literal('send-event-registration-confirmation'),
     registrationId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
   }),
   z.object({
     type: z.literal('send-event-reminder'),
     registrationId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
   }),
   z.object({
     type: z.literal('send-transactional-email'),

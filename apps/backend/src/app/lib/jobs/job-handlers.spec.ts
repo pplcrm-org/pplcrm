@@ -2,12 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { BaseRepository } from '../../lib/base.repo';
 import { executeJob } from './job-handlers';
 
-describe('perform_scheduled_deletions Job Handler', () => {
+describe('prune_retention Job Handler (sole owner of background_jobs retention)', () => {
   const db = (BaseRepository as any)._db;
 
-  it('should delete completed background jobs older than 7 days, but preserve newer or non-completed ones', async () => {
-    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-    const sixDaysAgo = new Date(Date.now() - 6 * 24 * 60 * 60 * 1000);
+  it('prunes completed jobs after 7 days and failed jobs after 30, preserving everything newer or pending', async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const eightDaysAgo = new Date(Date.now() - 8 * DAY);
+    const sixDaysAgo = new Date(Date.now() - 6 * DAY);
+    const thirtyOneDaysAgo = new Date(Date.now() - 31 * DAY);
 
     // Generate unique queue names to select the jobs uniquely
     const prefix = Math.floor(Math.random() * 1000000);
@@ -15,6 +17,8 @@ describe('perform_scheduled_deletions Job Handler', () => {
     const qNewCompleted = `q-${prefix}-new-completed`;
     const qOldPending = `q-${prefix}-old-pending`;
     const qOldFailed = `q-${prefix}-old-failed`;
+    const qAncientFailed = `q-${prefix}-ancient-failed`;
+    const allQueues = [qOldCompleted, qNewCompleted, qOldPending, qOldFailed, qAncientFailed];
 
     // 1. Insert test jobs
     await db
@@ -41,8 +45,10 @@ describe('perform_scheduled_deletions Job Handler', () => {
           queue: qOldPending,
           status: 'pending',
           payload: JSON.stringify({ type: 'test-job' }),
+          // Far-future run_at so no concurrently-running claim test can ever grab this row;
+          // retention looks only at status + updated_at, so this doesn't affect the assertion.
           updated_at: eightDaysAgo,
-          run_at: eightDaysAgo,
+          run_at: new Date(Date.now() + 365 * DAY),
         },
         {
           tenant_id: null,
@@ -52,38 +58,49 @@ describe('perform_scheduled_deletions Job Handler', () => {
           updated_at: eightDaysAgo,
           run_at: eightDaysAgo,
         },
+        {
+          tenant_id: null,
+          queue: qAncientFailed,
+          status: 'failed',
+          payload: JSON.stringify({ type: 'test-job' }),
+          updated_at: thirtyOneDaysAgo,
+          run_at: thirtyOneDaysAgo,
+        },
       ])
       .execute();
 
     try {
-      // 2. Execute scheduled deletions job
-      await executeJob({ type: 'perform_scheduled_deletions' }, db);
+      // 2. Execute the retention prune job
+      await executeJob({ type: 'prune_retention' }, db);
 
       // 3. Verify results
       const remainingJobs = await db
         .selectFrom('background_jobs' as any)
         .select(['queue', 'status'])
-        .where('queue', 'in', [qOldCompleted, qNewCompleted, qOldPending, qOldFailed])
+        .where('queue', 'in', allQueues)
         .execute();
 
       const remainingQueues = remainingJobs.map((j: any) => j.queue);
 
-      // Old completed job should be deleted
+      // Completed past the 7-day window should be deleted
       expect(remainingQueues).not.toContain(qOldCompleted);
 
-      // New completed job should remain
+      // Completed inside the 7-day window should remain
       expect(remainingQueues).toContain(qNewCompleted);
 
-      // Old pending job should remain
+      // Pending jobs are never pruned, regardless of age
       expect(remainingQueues).toContain(qOldPending);
 
-      // Old failed job should remain
+      // Failed jobs get the longer 30-day dead-letter window: 8 days old remains…
       expect(remainingQueues).toContain(qOldFailed);
+
+      // …but past 30 days they are pruned too
+      expect(remainingQueues).not.toContain(qAncientFailed);
     } finally {
       // Clean up any remaining test data
       await db
         .deleteFrom('background_jobs' as any)
-        .where('queue', 'in', [qOldCompleted, qNewCompleted, qOldPending, qOldFailed])
+        .where('queue', 'in', allQueues)
         .execute();
     }
   });

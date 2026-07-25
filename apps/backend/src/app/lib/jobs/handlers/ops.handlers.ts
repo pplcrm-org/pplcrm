@@ -7,8 +7,9 @@ import { logger } from '../../../logger';
 import type { MailAttachment } from '../../mail/transactional-mail.service';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { StorageService } from '../../storage.service';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { FIVE_MINUTES_MS, scheduleNextRun } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 const mailService = new TransactionalEmailService();
 
@@ -125,11 +126,14 @@ export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
   let alertFingerprint = details.last_alert_fingerprint;
   let alertedAt = details.last_alerted_at;
   if (sections.length > 0) {
-    // Fingerprint on the *categories* of trouble, not counts — a persistent backlog shouldn't
-    // re-alert every 5 minutes, but a new failure category should alert immediately.
+    // Fingerprint on the *categories* of trouble, not raw counts — a persistent backlog
+    // shouldn't re-alert every 5 minutes, but a new failure category (or one escalating by an
+    // order of magnitude, e.g. 9 -> 10 failures) should alert immediately. failedJobs/failedWebhooks
+    // rows come from a GROUP BY on `status = 'failed'` rows, so count is always >= 1 and
+    // Math.log10(count) is always defined.
     const fingerprint = [
-      ...failedJobs.map((g) => `job:${g.key}`),
-      ...failedWebhooks.map((g) => `webhook:${g.key}`),
+      ...failedJobs.map((g) => `job:${g.key}:m${Math.floor(Math.log10(g.count))}`),
+      ...failedWebhooks.map((g) => `webhook:${g.key}:m${Math.floor(Math.log10(g.count))}`),
       backlogged ? 'backlog' : '',
       ...newlyPausedTenants.map((t) => `paused:${t.id}`),
     ]
@@ -174,7 +178,7 @@ export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
     .onConflict((oc) => oc.column('name').doUpdateSet({ beat_at: now, details: newDetails }))
     .execute();
 
-  await scheduleNextRun(db, 'ops_watchdog', FIVE_MINUTES_MS);
+  await scheduleNextRun(db, 'ops_watchdog', CRON_JOBS.ops_watchdog);
 }
 
 // Postmark's total-message cap is 10 MB; leave headroom for the body + inline logo.

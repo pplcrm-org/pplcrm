@@ -8,7 +8,7 @@
     "households:recompute-fp": "node --loader ts-node/esm scripts/recompute-fingerprints.ts",
     "households:regeocode-all": "node --loader ts-node/esm scripts/regeocode-all.ts",
     "prepare": "husky",
-    "context:backend": "npx repomix --output apps/backend/STRUCTURE.md --include \"apps/backend/src/**/*\" --ignore \"**/apps/frontend/**,**/apps/libs/uxcommon/**,**/_migrations/schema_dump.sql,**/*.spec.ts\"",
+    "context:backend": "npx repomix --output apps/backend/STRUCTURE.md --include \"apps/backend/src/**/*\" --ignore \"**/apps/frontend/**,**/apps/libs/uxcommon/**,**/libs/**,**/STRUCTURE.md,**/_migrations/schema.sql,**/*.spec.ts\"",
     "context:frontend": "npx repomix --output apps/frontend/STRUCTURE.md --include \"apps/frontend/src/**/*\" --ignore \"**/apps/backend/**,**/*.spec.ts\" --style markdown",
     "context:libs": "npx repomix --output apps/libs/STRUCTURE.md --include \"libs/common/src/**/*,libs/uxcommon/src/**/*\" --ignore \"apps/**,**/STRUCTURE.md,**/*.spec.ts\""
   },

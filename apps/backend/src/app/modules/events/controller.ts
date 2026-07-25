@@ -272,6 +272,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                     registrationId: String(reg.id),
                     eventId: String(id),
                     personId: String(reg.person_id),
+                    tenantId: auth.tenant_id,
                   }),
                   run_at: runAt,
                 })
@@ -425,6 +426,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                 registrationId: String(result.id),
                 eventId: String(payload.event_id),
                 personId: String(payload.person_id),
+                tenantId: auth.tenant_id,
               }),
               run_at: new Date(),
             })
@@ -452,6 +454,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                   registrationId: String(result.id),
                   eventId: String(payload.event_id),
                   personId: String(payload.person_id),
+                  tenantId: auth.tenant_id,
                 }),
                 run_at: runAt,
               })
@@ -790,6 +793,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                   registrationId: String(reg.id),
                   eventId: String(event.id),
                   personId,
+                  tenantId,
                 }),
                 run_at: new Date(),
               })
@@ -817,6 +821,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                     registrationId: String(reg.id),
                     eventId: String(event.id),
                     personId,
+                    tenantId,
                   }),
                   run_at: runAt,
                 })

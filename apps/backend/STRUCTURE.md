@@ -29,7 +29,7 @@ The content is organized as follows:
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
 - Only files matching these patterns are included: libs/**/*, apps/**/*, scriptis/**/*, apps/backend/src/**/*
-- Files matching these patterns are excluded: **/*.test.ts, **/*.spec.ts, **/dist/**, **/build/**, **/node_modules/**, **/.git/**, **/package-lock.json, **/yarn.lock, **/*.picture, **/*.png, **/*.jpg, **/*.jpeg, **/*.svg, **/*.ico, apps/frontend/**, apps/libs/**, libs/**, **/STRUCTURE.md, **/_migrations/schema_dump.sql, **/*.spec.ts
+- Files matching these patterns are excluded: **/*.test.ts, **/*.spec.ts, **/dist/**, **/build/**, **/node_modules/**, **/.git/**, **/package-lock.json, **/yarn.lock, **/*.picture, **/*.png, **/*.jpg, **/*.jpeg, **/*.svg, **/*.ico, **/apps/frontend/**, **/apps/libs/uxcommon/**, **/libs/**, **/STRUCTURE.md, **/_migrations/schema.sql, **/*.spec.ts
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
 - Files are sorted by Git change count (files with more changes are at the bottom)
@@ -72,7 +72,6 @@ apps/
           2026-07-24-d-newsletter-send-cursor.ts
           2026-07-24-e-authusers-deleted-at.ts
           2026-07-24-f-import-email-verification.ts
-          schema.sql
         config/
           email-folders.config.ts
         errors/
@@ -98,6 +97,7 @@ apps/
               ops.handlers.ts
               sync.handlers.ts
               workflows.handlers.ts
+            cron-registry.ts
             job-claim.ts
             job-handlers.ts
             job-payloads.ts
@@ -1316,41 +1316,6 @@ export async function down(_db: Kysely<unknown>): Promise<void> {
 }
 ````
 
-## File: apps/backend/src/app/_migrations/2026-07-24-f-import-email-verification.ts
-````typescript
-import type { Kysely } from 'kysely';
-import { sql } from 'kysely';
-
-/**
- * In-house email verification on contact import.
- *
- * The import background job now checks each imported address's domain (MX/A/AAAA via DNS) and
- * the disposable-domain list, then suppresses proven-bad addresses with a new
- * email_suppressions reason `invalid` — the address stays on the person record, but the
- * reason-agnostic newsletter/automation suppression checks exclude it from sends.
- * `data_imports.email_verification` stores the per-import verification summary (counts, typo
- * suspects, tripwire outcome) that the completion email and the History page report from.
- */
-export async function up(db: Kysely<any>): Promise<void> {
-  await sql`ALTER TABLE public.email_suppressions DROP CONSTRAINT IF EXISTS chk_esup_reason`.execute(db);
-  await sql`
-    ALTER TABLE public.email_suppressions ADD CONSTRAINT chk_esup_reason
-      CHECK (reason = ANY (ARRAY['hard_bounce'::text, 'spam_complaint'::text, 'manual'::text, 'invalid'::text]))
-  `.execute(db);
-  await sql`ALTER TABLE public.data_imports ADD COLUMN IF NOT EXISTS email_verification jsonb`.execute(db);
-}
-
-export async function down(db: Kysely<any>): Promise<void> {
-  await sql`DELETE FROM public.email_suppressions WHERE reason = 'invalid'`.execute(db);
-  await sql`ALTER TABLE public.email_suppressions DROP CONSTRAINT IF EXISTS chk_esup_reason`.execute(db);
-  await sql`
-    ALTER TABLE public.email_suppressions ADD CONSTRAINT chk_esup_reason
-      CHECK (reason = ANY (ARRAY['hard_bounce'::text, 'spam_complaint'::text, 'manual'::text]))
-  `.execute(db);
-  await sql`ALTER TABLE public.data_imports DROP COLUMN IF EXISTS email_verification`.execute(db);
-}
-````
-
 ## File: apps/backend/src/app/config/email-folders.config.ts
 ````typescript
 import type { EmailFolderConfig } from '../../../../../libs/common/src';
@@ -1889,8 +1854,9 @@ export async function geocodeAndMapHousehold(householdId: string, tenantId: stri
 ````typescript
 import type { Kysely } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { DAY_MS, scheduleNextRun } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 export async function handleZapierTrigger(payload: JobPayloadOf<'zapier_trigger'>): Promise<void> {
   const { ZapierService } = await import('../../../modules/zapier/zapier.service');
@@ -1909,143 +1875,7 @@ export async function handleCheckUsageLimits(
 export async function handleCheckAllUsageLimits(db: Kysely<Models>): Promise<void> {
   const { checkAllUsageLimits } = await import('../../../modules/billing/usage-limits');
   await checkAllUsageLimits(db);
-  await scheduleNextRun(db, 'check_all_usage_limits', DAY_MS);
-}
-````
-
-## File: apps/backend/src/app/lib/jobs/handlers/import-verification.ts
-````typescript
-import type { Kysely } from 'kysely';
-
-import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { logger } from '../../../logger';
-import { pauseTenantSending } from '../../../modules/newsletters/send-guards';
-import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
-import {
-  classifyEmails,
-  EmailVerifierService,
-  evaluateImportListQuality,
-  domainOfEmail,
-} from '../../mail/email-verifier.service';
-
-/** Same loose syntax gate sanitizeRow uses — a row's email is blanked upstream if it fails this. */
-const EMAIL_SYNTAX = /.+@.+\..+/;
-/** Postgres `IN (...)` list size for the already-suppressed lookup. */
-const SUPPRESSION_LOOKUP_CHUNK = 1_000;
-/** Suppression insert batch size. */
-const SUPPRESSION_INSERT_CHUNK = 500;
-/** Pause reason prefix; the import id is appended so support can trace which import triggered it. */
-export const IMPORT_PAUSE_REASON = 'import_bad_email_rate';
-
-interface ImportRowEmails {
-  email?: string;
-  email2?: string;
-}
-
-function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-}
-
-/** Unique, lowercased, syntactically-valid emails drawn from the import rows' email + email2 columns. */
-function uniqueEmailsFromRows(rows: ImportRowEmails[]): string[] {
-  const set = new Set<string>();
-  for (const row of rows) {
-    for (const raw of [row.email, row.email2]) {
-      if (typeof raw !== 'string') continue;
-      const email = raw.trim().toLowerCase();
-      if (email && EMAIL_SYNTAX.test(email)) set.add(email);
-    }
-  }
-  return [...set];
-}
-
-/**
- * Verifies the imported email list (DNS + disposable), suppresses proven-bad addresses, records the
- * summary on data_imports, and — on an egregious bad-email rate — pauses the tenant's sending.
- *
- * Suppression is additive and idempotent: bad addresses stay on the person record, but a new
- * `invalid` row in email_suppressions excludes them from every send (the sendability and automation
- * consent checks are reason-agnostic existence checks).
- *
- * Returns the summary, or null if verification failed — callers treat null as "import completed,
- * no verification numbers". Verification must never fail the import (fail-open).
- */
-export async function runImportEmailVerification(
-  db: Kysely<Models>,
-  payload: { tenant_id: string; import_id: string; user_id: string },
-  rows: ImportRowEmails[],
-  verifier: EmailVerifierService = new EmailVerifierService(),
-): Promise<EmailVerificationSummary | null> {
-  try {
-    const emails = uniqueEmailsFromRows(rows);
-    if (emails.length === 0) return null;
-
-    // 1. Addresses this tenant already suppresses (any reason — the checks are reason-agnostic).
-    const alreadySuppressed = new Set<string>();
-    for (const batch of chunk(emails, SUPPRESSION_LOOKUP_CHUNK)) {
-      const existing = await db
-        .selectFrom('email_suppressions')
-        .select('email')
-        .where('tenant_id', '=', payload.tenant_id)
-        .where('email', 'in', batch)
-        .execute();
-      for (const row of existing) alreadySuppressed.add(row.email.toLowerCase());
-    }
-
-    // 2. Resolve every unique domain (cached, bounded, fail-open), then classify each address.
-    const domains = emails.map((e) => domainOfEmail(e)).filter((d): d is string => d != null);
-    const domainStatus = await verifier.verifyDomains(domains);
-    const { summary, toSuppress } = classifyEmails(emails, domainStatus, alreadySuppressed);
-
-    // 3. Suppress the proven-bad addresses (idempotent — safe on a re-run).
-    for (const batch of chunk(toSuppress, SUPPRESSION_INSERT_CHUNK)) {
-      await db
-        .insertInto('email_suppressions')
-        .values(batch.map((email) => ({ tenant_id: payload.tenant_id, email, reason: 'invalid' })))
-        .onConflict((oc) => oc.columns(['tenant_id', 'email', 'reason']).doNothing())
-        .execute();
-    }
-
-    // 4. Decide the list-quality tripwire and stamp it onto the summary.
-    const outcome = evaluateImportListQuality({
-      checked: summary.checked,
-      dead: summary.dead_domain,
-      disposable: summary.disposable,
-    });
-    const full: EmailVerificationSummary = {
-      ...summary,
-      tripwire: outcome === 'pause' ? 'pause' : outcome === 'warn' ? 'warn' : 'none',
-    };
-
-    // 5. Persist the summary for the completion email and the History page.
-    await db
-      .updateTable('data_imports')
-      .set({ email_verification: JSON.stringify(full) })
-      .where('id', '=', payload.import_id)
-      .where('tenant_id', '=', payload.tenant_id)
-      .execute();
-
-    // 6. Act on the tripwire.
-    if (outcome === 'pause') {
-      logger.error(
-        { tenantId: payload.tenant_id, importId: payload.import_id, summary: full },
-        '[abuse-tripwire] Import bad-email rate exceeded — tenant sending paused',
-      );
-      await pauseTenantSending(db, payload.tenant_id, `${IMPORT_PAUSE_REASON}:${payload.import_id}`);
-    } else if (outcome === 'warn') {
-      logger.warn(
-        { tenantId: payload.tenant_id, importId: payload.import_id, summary: full },
-        '[abuse-tripwire] Import bad-email rate elevated',
-      );
-    }
-
-    return full;
-  } catch (err) {
-    logger.error({ err, importId: payload.import_id }, 'Import email verification failed (import unaffected)');
-    return null;
-  }
+  await scheduleNextRun(db, 'check_all_usage_limits', CRON_JOBS.check_all_usage_limits);
 }
 ````
 
@@ -2060,8 +1890,9 @@ import { logger } from '../../../logger';
 import { ActivityController } from '../../../modules/activity/controller';
 import { ListsController } from '../../../modules/lists/controller';
 import { DuplicateMaintenanceService } from '../../../modules/persons/services/duplicate-maintenance.service';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { DAY_MS, scheduleNextRun } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 export async function handleRefreshList(payload: JobPayloadOf<'refresh_list'>): Promise<void> {
   const listsController = new ListsController();
@@ -2089,7 +1920,7 @@ export async function handleRefreshCompaniesGoogle(
 
   // Only the global (cron-style) run reschedules itself.
   if (!payload.tenant_id) {
-    await scheduleNextRun(db, 'refresh_companies_google', DAY_MS);
+    await scheduleNextRun(db, 'refresh_companies_google', CRON_JOBS.refresh_companies_google);
   }
 }
 
@@ -2097,7 +1928,7 @@ export async function handleCleanupActivities(db: Kysely<Models>): Promise<void>
   const activityController = new ActivityController();
   await activityController.deleteOldActivities();
 
-  await scheduleNextRun(db, 'cleanup_activities', DAY_MS);
+  await scheduleNextRun(db, 'cleanup_activities', CRON_JOBS.cleanup_activities);
 }
 
 // P-3 (schema review 2026-07-06, §5): retention for the append-mostly tables
@@ -2106,9 +1937,14 @@ export async function handleCleanupActivities(db: Kysely<Models>): Promise<void>
 // covers the remaining three. Deletes run in bounded batches so a large backlog
 // never takes a long lock or a huge WAL spike.
 const RETENTION_BATCH = 5000;
-const COMPLETED_JOBS_RETENTION_DAYS = 30;
+const COMPLETED_JOBS_RETENTION_DAYS = 7;
+// Failed jobs are the only dead-letter record of what went wrong — kept far longer than
+// completed jobs so there's still something to diagnose against days (or weeks) after the fact.
+const FAILED_JOBS_RETENTION_DAYS = 30;
 const WEBHOOK_EVENTS_RETENTION_DAYS = 90;
 const EXPIRED_SESSION_GRACE_DAYS = 30;
+// Chunk size for the keyset-paginated address-fingerprint recompute below.
+const ADDRESS_FINGERPRINT_PAGE_SIZE = 1000;
 
 async function deleteInBatches(runOnce: () => Promise<bigint>): Promise<bigint> {
   let total = 0n;
@@ -2121,28 +1957,47 @@ async function deleteInBatches(runOnce: () => Promise<bigint>): Promise<bigint> 
 }
 
 export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
-  // Completed/failed background jobs older than the retention window. The
-  // currently-'processing' retention job itself is never matched.
-  const prunedJobs = await deleteInBatches(async () => {
+  // Completed background jobs older than the retention window — this is the sole owner of
+  // routine background_jobs pruning (the scheduled-deletions handler used to also prune
+  // completed jobs on its own overlapping schedule; that's been removed in favor of this job).
+  const prunedCompletedJobs = await deleteInBatches(async () => {
     const res = await sql`
       DELETE FROM background_jobs
       WHERE ctid IN (
         SELECT ctid FROM background_jobs
-        WHERE status IN ('completed', 'failed')
+        WHERE status = 'completed'
           AND updated_at < now() - make_interval(days => ${COMPLETED_JOBS_RETENTION_DAYS})
         LIMIT ${RETENTION_BATCH})
     `.execute(db);
     return res.numAffectedRows ?? 0n;
   });
 
-  // Processed Stripe/webhook events past their retention window.
+  // Failed jobs are the only dead-letter record of what went wrong, so they get a much longer
+  // window than completed jobs. The currently-'processing' retention job itself is never matched.
+  const prunedFailedJobs = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM background_jobs
+      WHERE ctid IN (
+        SELECT ctid FROM background_jobs
+        WHERE status = 'failed'
+          AND updated_at < now() - make_interval(days => ${FAILED_JOBS_RETENTION_DAYS})
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
+  // Processed Stripe/webhook events past their retention window, plus failed ones — failed rows
+  // may have a NULL processed_at (they never reached 'processed'), so fall back to updated_at,
+  // which trg_webhook_events_updated_at bumps on every status change.
   const prunedWebhooks = await deleteInBatches(async () => {
     const res = await sql`
       DELETE FROM webhook_events
       WHERE ctid IN (
         SELECT ctid FROM webhook_events
-        WHERE status = 'processed'
-          AND processed_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS})
+        WHERE (status = 'processed'
+                AND processed_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS}))
+           OR (status = 'failed'
+                AND updated_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS}))
         LIMIT ${RETENTION_BATCH})
     `.execute(db);
     return res.numAffectedRows ?? 0n;
@@ -2164,14 +2019,15 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
 
   logger.info(
     {
-      prunedJobs: prunedJobs.toString(),
+      prunedCompletedJobs: prunedCompletedJobs.toString(),
+      prunedFailedJobs: prunedFailedJobs.toString(),
       prunedWebhooks: prunedWebhooks.toString(),
       prunedSessions: prunedSessions.toString(),
     },
     'Retention prune complete',
   );
 
-  await scheduleNextRun(db, 'prune_retention', DAY_MS);
+  await scheduleNextRun(db, 'prune_retention', CRON_JOBS.prune_retention);
 }
 
 export async function handleRecomputeAllDuplicates(db: Kysely<Models>): Promise<void> {
@@ -2188,49 +2044,38 @@ export async function handleRecomputeAllDuplicates(db: Kysely<Models>): Promise<
   const maintenanceSvc = new DuplicateMaintenanceService();
   const lastRunTime = lastJob?.updated_at ? new Date(lastJob.updated_at) : null;
 
+  // Collapse the old "did anything change" probe — 3 queries × every tenant — into 3 queries
+  // total, run once, each returning the distinct tenants with a row changed since the last run.
+  // `null` means "no prior run", i.e. recompute unconditionally for every tenant (original
+  // behavior when lastRunTime was falsy).
+  let tenantsToRecompute: Set<string> | null = null;
+  if (lastRunTime) {
+    tenantsToRecompute = new Set<string>();
+    for (const table of ['persons', 'households', 'companies'] as const) {
+      const changedTenants = await db
+        .selectFrom(table)
+        .select('tenant_id')
+        .where('updated_at', '>', lastRunTime)
+        .groupBy('tenant_id')
+        .execute();
+      for (const row of changedTenants) {
+        tenantsToRecompute.add(String(row.tenant_id));
+      }
+    }
+  }
+
   for (const tenant of tenants) {
+    const tenantId = String(tenant.id);
+    if (tenantsToRecompute && !tenantsToRecompute.has(tenantId)) continue;
+
     try {
-      let shouldRecompute = true;
-
-      if (lastRunTime) {
-        const personChanged = await db
-          .selectFrom('persons')
-          .select('id')
-          .where('tenant_id', '=', String(tenant.id))
-          .where('updated_at', '>', lastRunTime)
-          .limit(1)
-          .executeTakeFirst();
-
-        const householdChanged = await db
-          .selectFrom('households')
-          .select('id')
-          .where('tenant_id', '=', String(tenant.id))
-          .where('updated_at', '>', lastRunTime)
-          .limit(1)
-          .executeTakeFirst();
-
-        const companyChanged = await db
-          .selectFrom('companies')
-          .select('id')
-          .where('tenant_id', '=', String(tenant.id))
-          .where('updated_at', '>', lastRunTime)
-          .limit(1)
-          .executeTakeFirst();
-
-        if (!personChanged && !householdChanged && !companyChanged) {
-          shouldRecompute = false;
-        }
-      }
-
-      if (shouldRecompute) {
-        await maintenanceSvc.recomputeAllDuplicates(String(tenant.id));
-      }
+      await maintenanceSvc.recomputeAllDuplicates(tenantId);
     } catch (tenantErr) {
       logger.error({ err: tenantErr }, `Failed to recompute duplicates for tenant ${tenant.id}`);
     }
   }
 
-  await scheduleNextRun(db, 'recompute_all_duplicates', DAY_MS);
+  await scheduleNextRun(db, 'recompute_all_duplicates', CRON_JOBS.recompute_all_duplicates);
 }
 
 export async function handleRecomputeAddressFingerprints(
@@ -2255,9 +2100,9 @@ export async function handleRecomputeAddressFingerprints(
     }
   }
 
-  // Schedule next run 24 hours later if periodic/cron-like (no tenant_id)
+  // Schedule next run if periodic/cron-like (no tenant_id)
   if (!payload.tenant_id) {
-    await scheduleNextRun(db, 'recompute_address_fingerprints', DAY_MS);
+    await scheduleNextRun(db, 'recompute_address_fingerprints', CRON_JOBS.recompute_address_fingerprints);
   }
 }
 
@@ -2268,38 +2113,87 @@ export async function handleGeocodeHousehold(
   await geocodeAndMapHousehold(payload.household_id, payload.tenant_id, db);
 }
 
+/** One page of households, keyset-paginated by id, carrying only the columns the fingerprint
+ *  helpers need (the previous version loaded every column of every household into memory).
+ *  Return type is inferred: the row shape follows the Kysely model's column types exactly. */
+async function fetchHouseholdFingerprintPage(db: Kysely<Models>, tenantId: string, cursorId: string | null) {
+  let query = db
+    .selectFrom('households')
+    .select([
+      'id',
+      'street_num',
+      'street1',
+      'street2',
+      'apt',
+      'city',
+      'state',
+      'zip',
+      'country',
+      'address_fp_street',
+      'address_fp_full',
+    ])
+    .where('tenant_id', '=', tenantId)
+    .orderBy('id', 'asc')
+    .limit(ADDRESS_FINGERPRINT_PAGE_SIZE);
+
+  if (cursorId !== null) {
+    query = query.where('id', '>', cursorId);
+  }
+
+  return query.execute();
+}
+
 async function recomputeTenantAddressFingerprints(tenantId: string, db: Kysely<Models>): Promise<void> {
-  const households = await db.selectFrom('households').selectAll().where('tenant_id', '=', tenantId).execute();
+  let cursorId: string | null = null;
 
-  for (const hh of households) {
-    const fp_street = fingerprintStreet({
-      street_num: hh.street_num,
-      street1: hh.street1,
-      street2: hh.street2,
-    });
-    const fp_full = fingerprintFull({
-      apt: hh.apt,
-      street_num: hh.street_num,
-      street1: hh.street1,
-      street2: hh.street2,
-      city: hh.city,
-      state: hh.state,
-      zip: hh.zip,
-      country: hh.country,
-    });
+  for (;;) {
+    const households = await fetchHouseholdFingerprintPage(db, tenantId, cursorId);
+    if (households.length === 0) break;
 
-    if (hh.address_fp_street !== fp_street || hh.address_fp_full !== fp_full) {
-      await db
-        .updateTable('households')
-        .set({
-          address_fp_street: fp_street,
-          address_fp_full: fp_full,
-          updated_at: new Date(),
-        })
-        .where('id', '=', hh.id)
-        .where('tenant_id', '=', tenantId)
-        .execute();
+    const changed: { id: string; fpStreet: string | null; fpFull: string | null }[] = [];
+    for (const hh of households) {
+      const fp_street = fingerprintStreet({
+        street_num: hh.street_num,
+        street1: hh.street1,
+        street2: hh.street2,
+      });
+      const fp_full = fingerprintFull({
+        apt: hh.apt,
+        street_num: hh.street_num,
+        street1: hh.street1,
+        street2: hh.street2,
+        city: hh.city,
+        state: hh.state,
+        zip: hh.zip,
+        country: hh.country,
+      });
+
+      if (hh.address_fp_street !== fp_street || hh.address_fp_full !== fp_full) {
+        changed.push({ id: hh.id, fpStreet: fp_street, fpFull: fp_full });
+      }
     }
+
+    // One round trip per chunk (not per row): batch every changed row in this page into a
+    // single UPDATE ... FROM (VALUES ...) statement.
+    if (changed.length > 0) {
+      const values = sql.join(changed.map((c) => sql`(${c.id}::bigint, ${c.fpStreet}::text, ${c.fpFull}::text)`));
+
+      await sql`
+        UPDATE households AS h
+        SET address_fp_street = v.fp_street,
+            address_fp_full = v.fp_full,
+            updated_at = now()
+        FROM (VALUES ${values}) AS v(id, fp_street, fp_full)
+        WHERE h.id = v.id AND h.tenant_id = ${tenantId}
+      `.execute(db);
+    }
+
+    const lastRow = households[households.length - 1];
+    // Unreachable: the `households.length === 0` check above guarantees an element exists here;
+    // this guard exists only to satisfy noUncheckedIndexedAccess.
+    if (!lastRow) break;
+    cursorId = lastRow.id;
+    if (households.length < ADDRESS_FINGERPRINT_PAGE_SIZE) break;
   }
 
   const maintenanceSvc = new DuplicateMaintenanceService();
@@ -2318,13 +2212,14 @@ import { GoogleOAuthService } from '../../../modules/google-sync/google-oauth.se
 import { GoogleSyncService } from '../../../modules/google-sync/google-sync.service';
 import { MsOAuthService } from '../../../modules/ms-sync/ms-oauth.service';
 import { MsSyncService } from '../../../modules/ms-sync/ms-sync.service';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { scheduleNextRun, TEN_MINUTES_MS } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 export async function handleScheduleSyncJobs(db: Kysely<Models>): Promise<void> {
   await queueUserSyncJobs(db);
 
-  await scheduleNextRun(db, 'schedule_sync_jobs', TEN_MINUTES_MS);
+  await scheduleNextRun(db, 'schedule_sync_jobs', CRON_JOBS.schedule_sync_jobs);
 }
 
 export async function handleGoogleSync(payload: JobPayloadOf<'google_sync'>, db: Kysely<Models>): Promise<void> {
@@ -2426,6 +2321,74 @@ async function queueUserSyncJobs(db: Kysely<Models>): Promise<void> {
   } catch (err) {
     logger.error({ err }, 'Failed to queue tenant sync jobs');
   }
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/cron-registry.ts
+````typescript
+import type { JobType } from './job-payloads';
+import { DAY_MS, FIVE_MINUTES_MS, HOUR_MS, TEN_MINUTES_MS } from './reschedule';
+
+/**
+ * Single source of truth for every self-rescheduling (cron-style) background job.
+ *
+ * Consumed in three places so the set can never drift again:
+ *  - worker.start() seeds one pending row per entry at boot;
+ *  - each handler's end-of-run scheduleNextRun() pulls its interval from here;
+ *  - the worker's permanent-failure path re-seeds the cron at the same interval,
+ *    so a cron chain can never silently die between deploys.
+ *
+ * Adding a recurring job = add its entry here; the seed loop and the failure
+ * reschedule pick it up automatically.
+ */
+export const CRON_JOBS = {
+  ops_watchdog: FIVE_MINUTES_MS,
+  process_scheduled_newsletters: FIVE_MINUTES_MS,
+  process_drip_workflows: TEN_MINUTES_MS,
+  schedule_sync_jobs: TEN_MINUTES_MS,
+  detect_task_sla_breaches: HOUR_MS,
+  check_all_usage_limits: DAY_MS,
+  check_due_tasks: DAY_MS,
+  cleanup_activities: DAY_MS,
+  detect_lapsed_supporters: DAY_MS,
+  perform_scheduled_deletions: DAY_MS,
+  prune_newsletter_events: DAY_MS,
+  prune_retention: DAY_MS,
+  recompute_address_fingerprints: DAY_MS,
+  recompute_all_duplicates: DAY_MS,
+  refresh_companies_google: DAY_MS,
+} as const satisfies Partial<Record<JobType, number>>;
+
+export type CronJobType = keyof typeof CRON_JOBS;
+
+export function isCronJobType(type: string): type is CronJobType {
+  return Object.hasOwn(CRON_JOBS, type);
+}
+
+/**
+ * Wall-clock caps for a single job execution. A handler that exceeds its cap is
+ * treated as failed; because the timed-out promise cannot be cancelled and may
+ * still be writing, the worker defers the retry long enough for the zombie to
+ * finish or die before the retry could overlap it.
+ */
+export const DEFAULT_JOB_TIMEOUT_MS = 15 * 60 * 1000;
+export const LONG_JOB_TIMEOUT_MS = 60 * 60 * 1000;
+
+// Long-runners: bulk sends, whole-table exports, mailbox syncs, tenant wipes.
+const JOB_TIMEOUT_OVERRIDES = {
+  'send-newsletter': LONG_JOB_TIMEOUT_MS,
+  export_csv: LONG_JOB_TIMEOUT_MS,
+  google_sync: LONG_JOB_TIMEOUT_MS,
+  ms_sync: LONG_JOB_TIMEOUT_MS,
+  perform_scheduled_deletions: LONG_JOB_TIMEOUT_MS,
+} as const satisfies Partial<Record<JobType, number>>;
+
+export function jobTimeoutMs(type: string | undefined): number {
+  // Legacy CSV imports carry no `type` on their payload; they process whole
+  // uploaded files, so they get the long cap rather than the default.
+  if (type == null) return LONG_JOB_TIMEOUT_MS;
+  const overrides: Partial<Record<string, number>> = JOB_TIMEOUT_OVERRIDES;
+  return overrides[type] ?? DEFAULT_JOB_TIMEOUT_MS;
 }
 ````
 
@@ -2689,332 +2652,6 @@ export function isDisposableEmail(email: string): boolean {
     if (DISPOSABLE_EMAIL_DOMAINS.has(parts.slice(i).join('.'))) return true;
   }
   return false;
-}
-````
-
-## File: apps/backend/src/app/lib/mail/email-verifier.service.ts
-````typescript
-import { Resolver } from 'node:dns/promises';
-
-import { isDisposableEmail } from './disposable-email-domains';
-
-/**
- * In-house email verification for contact import (no third-party service).
- *
- * What it does, per unique imported address:
- *  - disposable-domain check (reuses the signup block list) → suppress
- *  - typo-domain suggestion (gmial.com → gmail.com) → report only, never auto-fix
- *  - role-account detection (info@, admin@) → report only, never suppress (org mailboxes are
- *    legitimate CRM contacts)
- *  - MX/DNS resolution → a domain with no MX AND no A/AAAA record is dead → suppress
- *
- * What it deliberately does NOT do: SMTP mailbox probing. Azure blocks outbound port 25, and the
- * existing bounce tripwires already catch dead mailboxes reactively. So this is a DOMAIN-level
- * check — it proves a domain can't receive mail, not that a specific mailbox exists.
- *
- * FAIL-OPEN is absolute: only definitive DNS negatives (ENOTFOUND/ENODATA) and disposable domains
- * ever cause suppression. Timeouts, SERVFAIL, throttling, or an exhausted time budget resolve to
- * `unknown` and are treated as valid — a flaky resolver must never suppress a real supporter.
- */
-
-/** Per-DNS-query timeout. One try only (see resolver construction) — a slow domain is `unknown`, not retried forever. */
-export const DNS_LOOKUP_TIMEOUT_MS = 5_000;
-/** Max concurrent domain lookups. Bounds load on the resolver and keeps a 10k-row import's few-hundred domains flowing. */
-export const DNS_CONCURRENCY = 10;
-/** Whole-import wall-clock budget for DNS. Domains unresolved when it expires are `unknown` (fail-open). */
-export const VERIFICATION_TIME_BUDGET_MS = 120_000;
-
-/** Import list-quality tripwire needs a minimum sample so a tiny dirty import doesn't pause a tenant. */
-export const IMPORT_TRIPWIRE_MIN_EMAILS = 100;
-/**
- * Bad = dead-domain + disposable. Bands are deliberately looser than the 5% hard-bounce tripwire:
- * a no-MX domain is a weaker signal than a real bounce (hand-collected lists carry honest typos),
- * so only an egregious rate — purchased/scraped-list territory — reacts.
- */
-export const IMPORT_BAD_EMAIL_WARN_RATE = 0.08;
-export const IMPORT_BAD_EMAIL_PAUSE_RATE = 0.2;
-
-/** Cap on typo suspects retained in the stored summary / report email. */
-export const TYPO_SUSPECT_SAMPLE_CAP = 100;
-
-/** Injectable so unit tests never touch the network. Methods mirror node:dns Resolver. */
-export interface DomainResolver {
-  resolveMx(domain: string): Promise<unknown[]>;
-  resolve4(domain: string): Promise<unknown[]>;
-  resolve6(domain: string): Promise<unknown[]>;
-}
-
-/** `ok` = has MX or A/AAAA; `dead` = definitively none; `unknown` = couldn't determine (fail-open → valid). */
-export type DomainStatus = 'ok' | 'dead' | 'unknown';
-
-export type ImportTripwireOutcome = 'none' | 'warn' | 'pause';
-
-export interface EmailVerificationSummary {
-  checked: number;
-  valid: number;
-  dead_domain: number;
-  disposable: number;
-  already_suppressed: number;
-  unverifiable: number;
-  role_accounts: number;
-  suppressed_new: number;
-  typo_suspects: Array<{ email: string; suggested_domain: string }>;
-  tripwire: ImportTripwireOutcome;
-}
-
-/** Common misspellings of the big free providers. Report-only — we never rewrite a user's data. */
-const TYPO_DOMAINS: Record<string, string> = {
-  'gmial.com': 'gmail.com',
-  'gmai.com': 'gmail.com',
-  'gmal.com': 'gmail.com',
-  'gamil.com': 'gmail.com',
-  'gmaill.com': 'gmail.com',
-  'gnail.com': 'gmail.com',
-  'gmail.co': 'gmail.com',
-  'gmail.con': 'gmail.com',
-  'hotmial.com': 'hotmail.com',
-  'hotmai.com': 'hotmail.com',
-  'hotmali.com': 'hotmail.com',
-  'hotmail.co': 'hotmail.com',
-  'hotmail.con': 'hotmail.com',
-  'yaho.com': 'yahoo.com',
-  'yahooo.com': 'yahoo.com',
-  'yahoo.co': 'yahoo.com',
-  'yhaoo.com': 'yahoo.com',
-  'outlok.com': 'outlook.com',
-  'outllook.com': 'outlook.com',
-  'outook.com': 'outlook.com',
-  'iclod.com': 'icloud.com',
-  'icoud.com': 'icloud.com',
-  'iclould.com': 'icloud.com',
-  'live.co': 'live.com',
-  'aol.co': 'aol.com',
-};
-
-/** Non-personal mailbox prefixes — legitimate in a CRM (an org's shared inbox), so flagged, never suppressed. */
-const ROLE_LOCAL_PARTS = new Set<string>([
-  'info',
-  'admin',
-  'support',
-  'sales',
-  'contact',
-  'office',
-  'hello',
-  'team',
-  'help',
-  'billing',
-  'hr',
-  'jobs',
-  'careers',
-  'marketing',
-  'enquiries',
-  'inquiries',
-  'noreply',
-  'no-reply',
-  'donotreply',
-  'webmaster',
-  'postmaster',
-  'abuse',
-]);
-
-/** Lowercased registrable domain of an address, or null if it has no `@domain` part. */
-export function domainOfEmail(email: string): string | null {
-  const domain = email.toLowerCase().trim().split('@')[1];
-  return domain && domain.length > 0 ? domain : null;
-}
-
-/** A known-typo domain's correction, or null. Never used to rewrite — only to suggest in the report. */
-export function suggestTypoDomain(domain: string): string | null {
-  return TYPO_DOMAINS[domain.toLowerCase()] ?? null;
-}
-
-/** True when the local part is a shared/role mailbox (info@, admin@, …). */
-export function isRoleAccount(email: string): boolean {
-  const localPart = email.toLowerCase().trim().split('@')[0];
-  return localPart ? ROLE_LOCAL_PARTS.has(localPart) : false;
-}
-
-/**
- * Maps a DNS error to a domain status. Only ENOTFOUND (no such domain) and ENODATA (domain
- * exists, no record of this type) are definitive negatives; everything else — timeouts,
- * SERVFAIL, refusals, throttling — is `unknown` and treated as valid (fail-open).
- */
-export function classifyDomainError(err: unknown): DomainStatus {
-  const code = err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : '';
-  return code === 'ENOTFOUND' || code === 'ENODATA' ? 'dead' : 'unknown';
-}
-
-/**
- * The pure list-quality tripwire. `null` below the min sample or below the warn band, else the band.
- * Mirrors `evaluateTripwires` in send-guards.ts.
- */
-export function evaluateImportListQuality(stats: {
-  checked: number;
-  dead: number;
-  disposable: number;
-}): 'pause' | 'warn' | null {
-  if (stats.checked < IMPORT_TRIPWIRE_MIN_EMAILS) return null;
-  const badRate = (stats.dead + stats.disposable) / stats.checked;
-  if (badRate >= IMPORT_BAD_EMAIL_PAUSE_RATE) return 'pause';
-  if (badRate >= IMPORT_BAD_EMAIL_WARN_RATE) return 'warn';
-  return null;
-}
-
-/** Resolves once, rejects after `ms` — belt-and-braces around the resolver's own per-try timeout. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('dns_timeout')), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}
-
-export class EmailVerifierService {
-  private readonly resolver: DomainResolver;
-  private readonly cache = new Map<string, DomainStatus>();
-
-  constructor(resolver?: DomainResolver) {
-    this.resolver = resolver ?? new Resolver({ timeout: DNS_LOOKUP_TIMEOUT_MS, tries: 1 });
-  }
-
-  /**
-   * `dead` only when MX AND A AND AAAA all return definitive negatives (RFC 5321: a host with an
-   * A/AAAA record but no MX still accepts mail). Any `unknown` along the way wins → `unknown`.
-   */
-  async resolveDomainStatus(domain: string): Promise<DomainStatus> {
-    try {
-      const mx = await withTimeout(this.resolver.resolveMx(domain), DNS_LOOKUP_TIMEOUT_MS);
-      if (mx.length > 0) return 'ok';
-    } catch (err) {
-      if (classifyDomainError(err) === 'unknown') return 'unknown';
-    }
-    // No MX (or ENODATA on MX): fall back to A/AAAA per RFC 5321.
-    let sawDefinitiveNegative = false;
-    for (const lookup of [this.resolver.resolve4.bind(this.resolver), this.resolver.resolve6.bind(this.resolver)]) {
-      try {
-        const records = await withTimeout(lookup(domain), DNS_LOOKUP_TIMEOUT_MS);
-        if (records.length > 0) return 'ok';
-        sawDefinitiveNegative = true;
-      } catch (err) {
-        if (classifyDomainError(err) === 'unknown') return 'unknown';
-        sawDefinitiveNegative = true;
-      }
-    }
-    return sawDefinitiveNegative ? 'dead' : 'unknown';
-  }
-
-  /**
-   * Resolves the status of each unique domain, cached, at most `DNS_CONCURRENCY` in flight, within
-   * `VERIFICATION_TIME_BUDGET_MS`. Domains not resolved before the budget expires are `unknown`.
-   */
-  async verifyDomains(domains: string[]): Promise<Map<string, DomainStatus>> {
-    const unique = [...new Set(domains.map((d) => d.toLowerCase()))];
-    const deadline = timeNow() + VERIFICATION_TIME_BUDGET_MS;
-    let cursor = 0;
-
-    const worker = async (): Promise<void> => {
-      while (cursor < unique.length) {
-        const domain = unique[cursor++];
-        if (domain === undefined || this.cache.has(domain)) continue;
-        if (timeNow() >= deadline) {
-          this.cache.set(domain, 'unknown');
-          continue;
-        }
-        try {
-          this.cache.set(domain, await this.resolveDomainStatus(domain));
-        } catch {
-          this.cache.set(domain, 'unknown');
-        }
-      }
-    };
-
-    await Promise.all(Array.from({ length: Math.min(DNS_CONCURRENCY, unique.length) }, () => worker()));
-
-    const result = new Map<string, DomainStatus>();
-    for (const domain of unique) result.set(domain, this.cache.get(domain) ?? 'unknown');
-    return result;
-  }
-}
-
-/** Wall-clock read isolated so the deadline logic stays testable via the injected resolver's pacing. */
-function timeNow(): number {
-  return Date.now();
-}
-
-/**
- * Classifies a set of syntactically-valid, lowercased emails against a resolved domain-status map
- * and the tenant's already-suppressed set, producing the summary and the list of emails to
- * newly suppress. Pure given its inputs — no DNS, no DB — so it is fully unit-testable.
- */
-export function classifyEmails(
-  emails: string[],
-  domainStatus: Map<string, DomainStatus>,
-  alreadySuppressed: ReadonlySet<string>,
-): { summary: Omit<EmailVerificationSummary, 'tripwire'>; toSuppress: string[] } {
-  const toSuppress: string[] = [];
-  const typoSuspects: Array<{ email: string; suggested_domain: string }> = [];
-  let valid = 0;
-  let deadDomain = 0;
-  let disposable = 0;
-  let alreadySuppressedCount = 0;
-  let unverifiable = 0;
-  let roleAccounts = 0;
-
-  for (const email of emails) {
-    const domain = domainOfEmail(email);
-    if (!domain) continue;
-
-    if (isRoleAccount(email)) roleAccounts++;
-    const typo = suggestTypoDomain(domain);
-    if (typo && typoSuspects.length < TYPO_SUSPECT_SAMPLE_CAP) {
-      typoSuspects.push({ email, suggested_domain: typo });
-    }
-
-    if (alreadySuppressed.has(email)) {
-      alreadySuppressedCount++;
-      continue;
-    }
-
-    if (isDisposableEmail(email)) {
-      disposable++;
-      toSuppress.push(email);
-      continue;
-    }
-
-    const status = domainStatus.get(domain) ?? 'unknown';
-    if (status === 'dead') {
-      deadDomain++;
-      toSuppress.push(email);
-    } else if (status === 'unknown') {
-      unverifiable++;
-      valid++;
-    } else {
-      valid++;
-    }
-  }
-
-  return {
-    summary: {
-      checked: emails.length,
-      valid,
-      dead_domain: deadDomain,
-      disposable,
-      already_suppressed: alreadySuppressedCount,
-      unverifiable,
-      role_accounts: roleAccounts,
-      suppressed_new: toSuppress.length,
-      typo_suspects: typoSuspects,
-    },
-    toSuppress,
-  };
 }
 ````
 
@@ -30026,6 +29663,41 @@ export async function down(db: Kysely<any>): Promise<void> {
 }
 ````
 
+## File: apps/backend/src/app/_migrations/2026-07-24-f-import-email-verification.ts
+````typescript
+import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
+
+/**
+ * In-house email verification on contact import.
+ *
+ * The import background job now checks each imported address's domain (MX/A/AAAA via DNS) and
+ * the disposable-domain list, then suppresses proven-bad addresses with a new
+ * email_suppressions reason `invalid` — the address stays on the person record, but the
+ * reason-agnostic newsletter/automation suppression checks exclude it from sends.
+ * `data_imports.email_verification` stores the per-import verification summary (counts, typo
+ * suspects, tripwire outcome) that the completion email and the History page report from.
+ */
+export async function up(db: Kysely<any>): Promise<void> {
+  await sql`ALTER TABLE public.email_suppressions DROP CONSTRAINT IF EXISTS chk_esup_reason`.execute(db);
+  await sql`
+    ALTER TABLE public.email_suppressions ADD CONSTRAINT chk_esup_reason
+      CHECK (reason = ANY (ARRAY['hard_bounce'::text, 'spam_complaint'::text, 'manual'::text, 'invalid'::text]))
+  `.execute(db);
+  await sql`ALTER TABLE public.data_imports ADD COLUMN IF NOT EXISTS email_verification jsonb`.execute(db);
+}
+
+export async function down(db: Kysely<any>): Promise<void> {
+  await sql`DELETE FROM public.email_suppressions WHERE reason = 'invalid'`.execute(db);
+  await sql`ALTER TABLE public.email_suppressions DROP CONSTRAINT IF EXISTS chk_esup_reason`.execute(db);
+  await sql`
+    ALTER TABLE public.email_suppressions ADD CONSTRAINT chk_esup_reason
+      CHECK (reason = ANY (ARRAY['hard_bounce'::text, 'spam_complaint'::text, 'manual'::text]))
+  `.execute(db);
+  await sql`ALTER TABLE public.data_imports DROP COLUMN IF EXISTS email_verification`.execute(db);
+}
+````
+
 ## File: apps/backend/src/app/lib/gis/geocode-queue.ts
 ````typescript
 import type { Kysely, Transaction } from 'kysely';
@@ -30133,6 +29805,142 @@ export async function enqueueGeocodeJobs(
 }
 ````
 
+## File: apps/backend/src/app/lib/jobs/handlers/import-verification.ts
+````typescript
+import type { Kysely } from 'kysely';
+
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { logger } from '../../../logger';
+import { pauseTenantSending } from '../../../modules/newsletters/send-guards';
+import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
+import {
+  classifyEmails,
+  EmailVerifierService,
+  evaluateImportListQuality,
+  domainOfEmail,
+} from '../../mail/email-verifier.service';
+
+/** Same loose syntax gate sanitizeRow uses — a row's email is blanked upstream if it fails this. */
+const EMAIL_SYNTAX = /.+@.+\..+/;
+/** Postgres `IN (...)` list size for the already-suppressed lookup. */
+const SUPPRESSION_LOOKUP_CHUNK = 1_000;
+/** Suppression insert batch size. */
+const SUPPRESSION_INSERT_CHUNK = 500;
+/** Pause reason prefix; the import id is appended so support can trace which import triggered it. */
+export const IMPORT_PAUSE_REASON = 'import_bad_email_rate';
+
+interface ImportRowEmails {
+  email?: string;
+  email2?: string;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** Unique, lowercased, syntactically-valid emails drawn from the import rows' email + email2 columns. */
+function uniqueEmailsFromRows(rows: ImportRowEmails[]): string[] {
+  const set = new Set<string>();
+  for (const row of rows) {
+    for (const raw of [row.email, row.email2]) {
+      if (typeof raw !== 'string') continue;
+      const email = raw.trim().toLowerCase();
+      if (email && EMAIL_SYNTAX.test(email)) set.add(email);
+    }
+  }
+  return [...set];
+}
+
+/**
+ * Verifies the imported email list (DNS + disposable), suppresses proven-bad addresses, records the
+ * summary on data_imports, and — on an egregious bad-email rate — pauses the tenant's sending.
+ *
+ * Suppression is additive and idempotent: bad addresses stay on the person record, but a new
+ * `invalid` row in email_suppressions excludes them from every send (the sendability and automation
+ * consent checks are reason-agnostic existence checks).
+ *
+ * Returns the summary, or null if verification failed — callers treat null as "import completed,
+ * no verification numbers". Verification must never fail the import (fail-open).
+ */
+export async function runImportEmailVerification(
+  db: Kysely<Models>,
+  payload: { tenant_id: string; import_id: string; user_id: string },
+  rows: ImportRowEmails[],
+  verifier: EmailVerifierService = new EmailVerifierService(),
+): Promise<EmailVerificationSummary | null> {
+  try {
+    const emails = uniqueEmailsFromRows(rows);
+    if (emails.length === 0) return null;
+
+    // 1. Addresses this tenant already suppresses (any reason — the checks are reason-agnostic).
+    const alreadySuppressed = new Set<string>();
+    for (const batch of chunk(emails, SUPPRESSION_LOOKUP_CHUNK)) {
+      const existing = await db
+        .selectFrom('email_suppressions')
+        .select('email')
+        .where('tenant_id', '=', payload.tenant_id)
+        .where('email', 'in', batch)
+        .execute();
+      for (const row of existing) alreadySuppressed.add(row.email.toLowerCase());
+    }
+
+    // 2. Resolve every unique domain (cached, bounded, fail-open), then classify each address.
+    const domains = emails.map((e) => domainOfEmail(e)).filter((d): d is string => d != null);
+    const domainStatus = await verifier.verifyDomains(domains);
+    const { summary, toSuppress } = classifyEmails(emails, domainStatus, alreadySuppressed);
+
+    // 3. Suppress the proven-bad addresses (idempotent — safe on a re-run).
+    for (const batch of chunk(toSuppress, SUPPRESSION_INSERT_CHUNK)) {
+      await db
+        .insertInto('email_suppressions')
+        .values(batch.map((email) => ({ tenant_id: payload.tenant_id, email, reason: 'invalid' })))
+        .onConflict((oc) => oc.columns(['tenant_id', 'email', 'reason']).doNothing())
+        .execute();
+    }
+
+    // 4. Decide the list-quality tripwire and stamp it onto the summary.
+    const outcome = evaluateImportListQuality({
+      checked: summary.checked,
+      dead: summary.dead_domain,
+      disposable: summary.disposable,
+    });
+    const full: EmailVerificationSummary = {
+      ...summary,
+      tripwire: outcome === 'pause' ? 'pause' : outcome === 'warn' ? 'warn' : 'none',
+    };
+
+    // 5. Persist the summary for the completion email and the History page.
+    await db
+      .updateTable('data_imports')
+      .set({ email_verification: JSON.stringify(full) })
+      .where('id', '=', payload.import_id)
+      .where('tenant_id', '=', payload.tenant_id)
+      .execute();
+
+    // 6. Act on the tripwire.
+    if (outcome === 'pause') {
+      logger.error(
+        { tenantId: payload.tenant_id, importId: payload.import_id, summary: full },
+        '[abuse-tripwire] Import bad-email rate exceeded — tenant sending paused',
+      );
+      await pauseTenantSending(db, payload.tenant_id, `${IMPORT_PAUSE_REASON}:${payload.import_id}`);
+    } else if (outcome === 'warn') {
+      logger.warn(
+        { tenantId: payload.tenant_id, importId: payload.import_id, summary: full },
+        '[abuse-tripwire] Import bad-email rate elevated',
+      );
+    }
+
+    return full;
+  } catch (err) {
+    logger.error({ err, importId: payload.import_id }, 'Import email verification failed (import unaffected)');
+    return null;
+  }
+}
+````
+
 ## File: apps/backend/src/app/lib/jobs/job-claim.ts
 ````typescript
 import type { Kysely, Selectable } from 'kysely';
@@ -30201,6 +30009,332 @@ export async function claimNextPendingJob(
 
     return updatedJob ?? null;
   });
+}
+````
+
+## File: apps/backend/src/app/lib/mail/email-verifier.service.ts
+````typescript
+import { Resolver } from 'node:dns/promises';
+
+import { isDisposableEmail } from './disposable-email-domains';
+
+/**
+ * In-house email verification for contact import (no third-party service).
+ *
+ * What it does, per unique imported address:
+ *  - disposable-domain check (reuses the signup block list) → suppress
+ *  - typo-domain suggestion (gmial.com → gmail.com) → report only, never auto-fix
+ *  - role-account detection (info@, admin@) → report only, never suppress (org mailboxes are
+ *    legitimate CRM contacts)
+ *  - MX/DNS resolution → a domain with no MX AND no A/AAAA record is dead → suppress
+ *
+ * What it deliberately does NOT do: SMTP mailbox probing. Azure blocks outbound port 25, and the
+ * existing bounce tripwires already catch dead mailboxes reactively. So this is a DOMAIN-level
+ * check — it proves a domain can't receive mail, not that a specific mailbox exists.
+ *
+ * FAIL-OPEN is absolute: only definitive DNS negatives (ENOTFOUND/ENODATA) and disposable domains
+ * ever cause suppression. Timeouts, SERVFAIL, throttling, or an exhausted time budget resolve to
+ * `unknown` and are treated as valid — a flaky resolver must never suppress a real supporter.
+ */
+
+/** Per-DNS-query timeout. One try only (see resolver construction) — a slow domain is `unknown`, not retried forever. */
+export const DNS_LOOKUP_TIMEOUT_MS = 5_000;
+/** Max concurrent domain lookups. Bounds load on the resolver and keeps a 10k-row import's few-hundred domains flowing. */
+export const DNS_CONCURRENCY = 10;
+/** Whole-import wall-clock budget for DNS. Domains unresolved when it expires are `unknown` (fail-open). */
+export const VERIFICATION_TIME_BUDGET_MS = 120_000;
+
+/** Import list-quality tripwire needs a minimum sample so a tiny dirty import doesn't pause a tenant. */
+export const IMPORT_TRIPWIRE_MIN_EMAILS = 100;
+/**
+ * Bad = dead-domain + disposable. Bands are deliberately looser than the 5% hard-bounce tripwire:
+ * a no-MX domain is a weaker signal than a real bounce (hand-collected lists carry honest typos),
+ * so only an egregious rate — purchased/scraped-list territory — reacts.
+ */
+export const IMPORT_BAD_EMAIL_WARN_RATE = 0.08;
+export const IMPORT_BAD_EMAIL_PAUSE_RATE = 0.2;
+
+/** Cap on typo suspects retained in the stored summary / report email. */
+export const TYPO_SUSPECT_SAMPLE_CAP = 100;
+
+/** Injectable so unit tests never touch the network. Methods mirror node:dns Resolver. */
+export interface DomainResolver {
+  resolveMx(domain: string): Promise<unknown[]>;
+  resolve4(domain: string): Promise<unknown[]>;
+  resolve6(domain: string): Promise<unknown[]>;
+}
+
+/** `ok` = has MX or A/AAAA; `dead` = definitively none; `unknown` = couldn't determine (fail-open → valid). */
+export type DomainStatus = 'ok' | 'dead' | 'unknown';
+
+export type ImportTripwireOutcome = 'none' | 'warn' | 'pause';
+
+export interface EmailVerificationSummary {
+  checked: number;
+  valid: number;
+  dead_domain: number;
+  disposable: number;
+  already_suppressed: number;
+  unverifiable: number;
+  role_accounts: number;
+  suppressed_new: number;
+  typo_suspects: Array<{ email: string; suggested_domain: string }>;
+  tripwire: ImportTripwireOutcome;
+}
+
+/** Common misspellings of the big free providers. Report-only — we never rewrite a user's data. */
+const TYPO_DOMAINS: Record<string, string> = {
+  'gmial.com': 'gmail.com',
+  'gmai.com': 'gmail.com',
+  'gmal.com': 'gmail.com',
+  'gamil.com': 'gmail.com',
+  'gmaill.com': 'gmail.com',
+  'gnail.com': 'gmail.com',
+  'gmail.co': 'gmail.com',
+  'gmail.con': 'gmail.com',
+  'hotmial.com': 'hotmail.com',
+  'hotmai.com': 'hotmail.com',
+  'hotmali.com': 'hotmail.com',
+  'hotmail.co': 'hotmail.com',
+  'hotmail.con': 'hotmail.com',
+  'yaho.com': 'yahoo.com',
+  'yahooo.com': 'yahoo.com',
+  'yahoo.co': 'yahoo.com',
+  'yhaoo.com': 'yahoo.com',
+  'outlok.com': 'outlook.com',
+  'outllook.com': 'outlook.com',
+  'outook.com': 'outlook.com',
+  'iclod.com': 'icloud.com',
+  'icoud.com': 'icloud.com',
+  'iclould.com': 'icloud.com',
+  'live.co': 'live.com',
+  'aol.co': 'aol.com',
+};
+
+/** Non-personal mailbox prefixes — legitimate in a CRM (an org's shared inbox), so flagged, never suppressed. */
+const ROLE_LOCAL_PARTS = new Set<string>([
+  'info',
+  'admin',
+  'support',
+  'sales',
+  'contact',
+  'office',
+  'hello',
+  'team',
+  'help',
+  'billing',
+  'hr',
+  'jobs',
+  'careers',
+  'marketing',
+  'enquiries',
+  'inquiries',
+  'noreply',
+  'no-reply',
+  'donotreply',
+  'webmaster',
+  'postmaster',
+  'abuse',
+]);
+
+/** Lowercased registrable domain of an address, or null if it has no `@domain` part. */
+export function domainOfEmail(email: string): string | null {
+  const domain = email.toLowerCase().trim().split('@')[1];
+  return domain && domain.length > 0 ? domain : null;
+}
+
+/** A known-typo domain's correction, or null. Never used to rewrite — only to suggest in the report. */
+export function suggestTypoDomain(domain: string): string | null {
+  return TYPO_DOMAINS[domain.toLowerCase()] ?? null;
+}
+
+/** True when the local part is a shared/role mailbox (info@, admin@, …). */
+export function isRoleAccount(email: string): boolean {
+  const localPart = email.toLowerCase().trim().split('@')[0];
+  return localPart ? ROLE_LOCAL_PARTS.has(localPart) : false;
+}
+
+/**
+ * Maps a DNS error to a domain status. Only ENOTFOUND (no such domain) and ENODATA (domain
+ * exists, no record of this type) are definitive negatives; everything else — timeouts,
+ * SERVFAIL, refusals, throttling — is `unknown` and treated as valid (fail-open).
+ */
+export function classifyDomainError(err: unknown): DomainStatus {
+  const code = err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : '';
+  return code === 'ENOTFOUND' || code === 'ENODATA' ? 'dead' : 'unknown';
+}
+
+/**
+ * The pure list-quality tripwire. `null` below the min sample or below the warn band, else the band.
+ * Mirrors `evaluateTripwires` in send-guards.ts.
+ */
+export function evaluateImportListQuality(stats: {
+  checked: number;
+  dead: number;
+  disposable: number;
+}): 'pause' | 'warn' | null {
+  if (stats.checked < IMPORT_TRIPWIRE_MIN_EMAILS) return null;
+  const badRate = (stats.dead + stats.disposable) / stats.checked;
+  if (badRate >= IMPORT_BAD_EMAIL_PAUSE_RATE) return 'pause';
+  if (badRate >= IMPORT_BAD_EMAIL_WARN_RATE) return 'warn';
+  return null;
+}
+
+/** Resolves once, rejects after `ms` — belt-and-braces around the resolver's own per-try timeout. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('dns_timeout')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+export class EmailVerifierService {
+  private readonly resolver: DomainResolver;
+  private readonly cache = new Map<string, DomainStatus>();
+
+  constructor(resolver?: DomainResolver) {
+    this.resolver = resolver ?? new Resolver({ timeout: DNS_LOOKUP_TIMEOUT_MS, tries: 1 });
+  }
+
+  /**
+   * `dead` only when MX AND A AND AAAA all return definitive negatives (RFC 5321: a host with an
+   * A/AAAA record but no MX still accepts mail). Any `unknown` along the way wins → `unknown`.
+   */
+  async resolveDomainStatus(domain: string): Promise<DomainStatus> {
+    try {
+      const mx = await withTimeout(this.resolver.resolveMx(domain), DNS_LOOKUP_TIMEOUT_MS);
+      if (mx.length > 0) return 'ok';
+    } catch (err) {
+      if (classifyDomainError(err) === 'unknown') return 'unknown';
+    }
+    // No MX (or ENODATA on MX): fall back to A/AAAA per RFC 5321.
+    let sawDefinitiveNegative = false;
+    for (const lookup of [this.resolver.resolve4.bind(this.resolver), this.resolver.resolve6.bind(this.resolver)]) {
+      try {
+        const records = await withTimeout(lookup(domain), DNS_LOOKUP_TIMEOUT_MS);
+        if (records.length > 0) return 'ok';
+        sawDefinitiveNegative = true;
+      } catch (err) {
+        if (classifyDomainError(err) === 'unknown') return 'unknown';
+        sawDefinitiveNegative = true;
+      }
+    }
+    return sawDefinitiveNegative ? 'dead' : 'unknown';
+  }
+
+  /**
+   * Resolves the status of each unique domain, cached, at most `DNS_CONCURRENCY` in flight, within
+   * `VERIFICATION_TIME_BUDGET_MS`. Domains not resolved before the budget expires are `unknown`.
+   */
+  async verifyDomains(domains: string[]): Promise<Map<string, DomainStatus>> {
+    const unique = [...new Set(domains.map((d) => d.toLowerCase()))];
+    const deadline = timeNow() + VERIFICATION_TIME_BUDGET_MS;
+    let cursor = 0;
+
+    const worker = async (): Promise<void> => {
+      while (cursor < unique.length) {
+        const domain = unique[cursor++];
+        if (domain === undefined || this.cache.has(domain)) continue;
+        if (timeNow() >= deadline) {
+          this.cache.set(domain, 'unknown');
+          continue;
+        }
+        try {
+          this.cache.set(domain, await this.resolveDomainStatus(domain));
+        } catch {
+          this.cache.set(domain, 'unknown');
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(DNS_CONCURRENCY, unique.length) }, () => worker()));
+
+    const result = new Map<string, DomainStatus>();
+    for (const domain of unique) result.set(domain, this.cache.get(domain) ?? 'unknown');
+    return result;
+  }
+}
+
+/** Wall-clock read isolated so the deadline logic stays testable via the injected resolver's pacing. */
+function timeNow(): number {
+  return Date.now();
+}
+
+/**
+ * Classifies a set of syntactically-valid, lowercased emails against a resolved domain-status map
+ * and the tenant's already-suppressed set, producing the summary and the list of emails to
+ * newly suppress. Pure given its inputs — no DNS, no DB — so it is fully unit-testable.
+ */
+export function classifyEmails(
+  emails: string[],
+  domainStatus: Map<string, DomainStatus>,
+  alreadySuppressed: ReadonlySet<string>,
+): { summary: Omit<EmailVerificationSummary, 'tripwire'>; toSuppress: string[] } {
+  const toSuppress: string[] = [];
+  const typoSuspects: Array<{ email: string; suggested_domain: string }> = [];
+  let valid = 0;
+  let deadDomain = 0;
+  let disposable = 0;
+  let alreadySuppressedCount = 0;
+  let unverifiable = 0;
+  let roleAccounts = 0;
+
+  for (const email of emails) {
+    const domain = domainOfEmail(email);
+    if (!domain) continue;
+
+    if (isRoleAccount(email)) roleAccounts++;
+    const typo = suggestTypoDomain(domain);
+    if (typo && typoSuspects.length < TYPO_SUSPECT_SAMPLE_CAP) {
+      typoSuspects.push({ email, suggested_domain: typo });
+    }
+
+    if (alreadySuppressed.has(email)) {
+      alreadySuppressedCount++;
+      continue;
+    }
+
+    if (isDisposableEmail(email)) {
+      disposable++;
+      toSuppress.push(email);
+      continue;
+    }
+
+    const status = domainStatus.get(domain) ?? 'unknown';
+    if (status === 'dead') {
+      deadDomain++;
+      toSuppress.push(email);
+    } else if (status === 'unknown') {
+      unverifiable++;
+      valid++;
+    } else {
+      valid++;
+    }
+  }
+
+  return {
+    summary: {
+      checked: emails.length,
+      valid,
+      dead_domain: deadDomain,
+      disposable,
+      already_suppressed: alreadySuppressedCount,
+      unverifiable,
+      role_accounts: roleAccounts,
+      suppressed_new: toSuppress.length,
+      typo_suspects: typoSuspects,
+    },
+    toSuppress,
+  };
 }
 ````
 
@@ -41741,9963 +41875,6 @@ main().catch((error: unknown): void => {
 });
 ````
 
-## File: apps/backend/src/app/_migrations/schema.sql
-````sql
---
--- PostgreSQL database dump
---
-
-\restrict GhboKUqFznqkwhkamB1c46bniOml3zZWjH73ur6UjfuD98WEHRhntxz9GdHkfgK
-
--- Dumped from database version 18.4 (Homebrew)
--- Dumped by pg_dump version 18.4 (Homebrew)
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET transaction_timeout = 0;
-SET client_encoding = 'UTF8';
-SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET row_security = off;
-
---
--- Name: public; Type: SCHEMA; Schema: -; Owner: pplcrm_owner
---
-
--- *not* creating schema, since initdb creates it
-
-
-ALTER SCHEMA public OWNER TO pplcrm_owner;
-
---
--- Name: pg_trgm; Type: EXTENSION; Schema: -; Owner: -
---
-
-CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
-
-
---
--- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: -
---
-
-CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-
-
---
--- Name: notify_job_inserted(); Type: FUNCTION; Schema: public; Owner: pplcrm_owner
---
-
-CREATE FUNCTION public.notify_job_inserted() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-    BEGIN
-      PERFORM pg_notify('background_jobs_channel', '');
-      RETURN NEW;
-    END;
-    $$;
-
-
-ALTER FUNCTION public.notify_job_inserted() OWNER TO pplcrm_owner;
-
---
--- Name: notify_webhook_event_inserted(); Type: FUNCTION; Schema: public; Owner: pplcrm_owner
---
-
-CREATE FUNCTION public.notify_webhook_event_inserted() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-    BEGIN
-      PERFORM pg_notify('webhook_events_channel', '');
-      RETURN NEW;
-    END;
-    $$;
-
-
-ALTER FUNCTION public.notify_webhook_event_inserted() OWNER TO pplcrm_owner;
-
---
--- Name: set_updated_at(); Type: FUNCTION; Schema: public; Owner: pplcrm_owner
---
-
-CREATE FUNCTION public.set_updated_at() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-    BEGIN
-      NEW.updated_at = now();
-      RETURN NEW;
-    END;
-    $$;
-
-
-ALTER FUNCTION public.set_updated_at() OWNER TO pplcrm_owner;
-
-SET default_tablespace = '';
-
-SET default_table_access_method = heap;
-
---
--- Name: authusers; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.authusers (
-    id bigint NOT NULL,
-    tenant_id bigint,
-    verified boolean DEFAULT false,
-    role text,
-    first_name text,
-    last_name text,
-    email text NOT NULL,
-    password text NOT NULL,
-    password_reset_code text,
-    password_reset_code_created_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    createdby_id bigint,
-    updatedby_id bigint,
-    two_factor_enabled boolean DEFAULT false NOT NULL,
-    two_factor_code text,
-    two_factor_expires_at timestamp with time zone,
-    deletion_scheduled_at timestamp with time zone,
-    previous_email text,
-    previous_role text,
-    passkey_setup_dismissed_at timestamp with time zone,
-    two_factor_attempts integer DEFAULT 0 NOT NULL,
-    deactivated_at timestamp with time zone,
-    CONSTRAINT chk_authusers_role CHECK (((role IS NULL) OR (role = ANY (ARRAY['owner'::text, 'admin'::text, 'user'::text, 'viewer'::text]))))
-);
-
-ALTER TABLE ONLY public.authusers FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.authusers OWNER TO pplcrm_owner;
-
---
--- Name: authusers_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.authusers_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.authusers_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: authusers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.authusers_id_seq OWNED BY public.authusers.id;
-
-
---
--- Name: background_jobs; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.background_jobs (
-    id bigint NOT NULL,
-    tenant_id bigint,
-    queue text DEFAULT 'default'::text NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
-    payload jsonb NOT NULL,
-    attempts integer DEFAULT 0 NOT NULL,
-    max_attempts integer DEFAULT 3 NOT NULL,
-    error text,
-    run_at timestamp with time zone DEFAULT now() NOT NULL,
-    locked_at timestamp with time zone,
-    locked_by text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_background_jobs_status CHECK ((status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text])))
-);
-
-ALTER TABLE ONLY public.background_jobs FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.background_jobs OWNER TO pplcrm_owner;
-
---
--- Name: background_jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.background_jobs_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.background_jobs_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: background_jobs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.background_jobs_id_seq OWNED BY public.background_jobs.id;
-
-
---
--- Name: campaign_person_facts; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.campaign_person_facts (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    campaign_id bigint NOT NULL,
-    person_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    support_level text,
-    support_source text,
-    support_recorded_by bigint,
-    support_recorded_at timestamp with time zone,
-    voting_status text,
-    voting_source text,
-    voting_recorded_by bigint,
-    voting_recorded_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_cpf_support_level CHECK (((support_level IS NULL) OR (support_level = ANY (ARRAY['strong'::text, 'leaning'::text, 'neutral'::text, 'leaning_against'::text, 'against'::text, 'undecided'::text])))),
-    CONSTRAINT chk_cpf_support_source CHECK (((support_source IS NULL) OR (support_source = ANY (ARRAY['manual'::text, 'canvass'::text, 'form'::text, 'import'::text, 'carryover'::text])))),
-    CONSTRAINT chk_cpf_voting_source CHECK (((voting_source IS NULL) OR (voting_source = ANY (ARRAY['manual'::text, 'canvass'::text, 'form'::text, 'import'::text])))),
-    CONSTRAINT chk_cpf_voting_status CHECK (((voting_status IS NULL) OR (voting_status = ANY (ARRAY['will_vote'::text, 'voted_advance'::text, 'voted_eday'::text, 'not_voting'::text, 'ineligible'::text]))))
-);
-
-ALTER TABLE ONLY public.campaign_person_facts FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.campaign_person_facts OWNER TO pplcrm_owner;
-
---
--- Name: campaign_person_facts_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.campaign_person_facts_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.campaign_person_facts_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: campaign_person_facts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.campaign_person_facts_id_seq OWNED BY public.campaign_person_facts.id;
-
-
---
--- Name: campaign_subscriptions; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.campaign_subscriptions (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    campaign_id bigint NOT NULL,
-    person_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    email text NOT NULL,
-    status text DEFAULT 'subscribed'::text NOT NULL,
-    consent_source text DEFAULT 'manual'::text NOT NULL,
-    consent_at timestamp with time zone,
-    unsubscribed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_csub_source CHECK ((consent_source = ANY (ARRAY['form'::text, 'import'::text, 'manual'::text, 'copied'::text]))),
-    CONSTRAINT chk_csub_status CHECK ((status = ANY (ARRAY['subscribed'::text, 'pending'::text, 'unsubscribed'::text])))
-);
-
-ALTER TABLE ONLY public.campaign_subscriptions FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.campaign_subscriptions OWNER TO pplcrm_owner;
-
---
--- Name: campaign_subscriptions_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.campaign_subscriptions_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.campaign_subscriptions_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: campaign_subscriptions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.campaign_subscriptions_id_seq OWNED BY public.campaign_subscriptions.id;
-
-
---
--- Name: campaigns; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.campaigns (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    admin_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    notes text,
-    startdate date,
-    enddate date,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    updatedby_id bigint,
-    kind text DEFAULT 'office'::text NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    CONSTRAINT chk_campaigns_kind CHECK ((kind = ANY (ARRAY['office'::text, 'election'::text]))),
-    CONSTRAINT chk_campaigns_status CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
-);
-
-ALTER TABLE ONLY public.campaigns FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.campaigns OWNER TO pplcrm_owner;
-
---
--- Name: campaigns_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.campaigns_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.campaigns_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: campaigns_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.campaigns_id_seq OWNED BY public.campaigns.id;
-
-
---
--- Name: companies; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.companies (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    website text,
-    email text,
-    phone text,
-    industry text,
-    notes text,
-    enrichment jsonb,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    file_id bigint,
-    search_vector tsvector GENERATED ALWAYS AS (((((setweight(to_tsvector('simple'::regconfig, COALESCE(name, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(email, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(website, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(phone, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(industry, ''::text)), 'C'::"char"))) STORED,
-    slug text
-);
-
-ALTER TABLE ONLY public.companies FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.companies OWNER TO pplcrm_owner;
-
---
--- Name: companies_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.companies_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.companies_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: companies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.companies_id_seq OWNED BY public.companies.id;
-
-
---
--- Name: data_exports; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.data_exports (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    entity text NOT NULL,
-    file_name text NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
-    row_count integer DEFAULT 0,
-    storage_key text,
-    columns jsonb,
-    error text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_data_exports_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text]))))
-);
-
-ALTER TABLE ONLY public.data_exports FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.data_exports OWNER TO pplcrm_owner;
-
---
--- Name: data_exports_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.data_exports_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.data_exports_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: data_exports_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.data_exports_id_seq OWNED BY public.data_exports.id;
-
-
---
--- Name: data_imports; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.data_imports (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    file_name text NOT NULL,
-    source text DEFAULT 'persons'::text NOT NULL,
-    tag_name text,
-    tag_id bigint,
-    row_count integer DEFAULT 0 NOT NULL,
-    inserted_count integer DEFAULT 0 NOT NULL,
-    error_count integer DEFAULT 0 NOT NULL,
-    skipped_count integer DEFAULT 0 NOT NULL,
-    households_created integer DEFAULT 0 NOT NULL,
-    metadata jsonb,
-    processed_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    status text DEFAULT 'completed'::text NOT NULL,
-    error_message text,
-    merged_count integer DEFAULT 0 NOT NULL,
-    tags_applied jsonb DEFAULT '[]'::jsonb NOT NULL,
-    source_file_key text,
-    source_file_size bigint,
-    skip_reasons jsonb DEFAULT '[]'::jsonb NOT NULL,
-    CONSTRAINT chk_data_imports_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text]))))
-);
-
-ALTER TABLE ONLY public.data_imports FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.data_imports OWNER TO pplcrm_owner;
-
---
--- Name: data_imports_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.data_imports_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.data_imports_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: data_imports_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.data_imports_id_seq OWNED BY public.data_imports.id;
-
-
---
--- Name: delivery_requests; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.delivery_requests (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    household_id bigint NOT NULL,
-    person_id bigint,
-    web_form_id uuid,
-    source text DEFAULT 'manual'::text NOT NULL,
-    status text DEFAULT 'new'::text NOT NULL,
-    notes text,
-    skip_reason text,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT chk_delivery_requests_source CHECK ((source = ANY (ARRAY['web_form'::text, 'manual'::text]))),
-    CONSTRAINT chk_delivery_requests_status CHECK ((status = ANY (ARRAY['new'::text, 'approved'::text, 'declined'::text, 'delivered'::text])))
-);
-
-ALTER TABLE ONLY public.delivery_requests FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.delivery_requests OWNER TO pplcrm_owner;
-
---
--- Name: delivery_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.delivery_requests ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.delivery_requests_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: delivery_route_stops; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.delivery_route_stops (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    route_id bigint NOT NULL,
-    request_id bigint NOT NULL,
-    seq integer NOT NULL,
-    leg_minutes double precision DEFAULT 0 NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
-    reason text,
-    acted_at timestamp with time zone,
-    acted_via text,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_delivery_route_stops_acted_via CHECK (((acted_via IS NULL) OR (acted_via = ANY (ARRAY['volunteer_link'::text, 'staff'::text])))),
-    CONSTRAINT chk_delivery_route_stops_status CHECK ((status = ANY (ARRAY['pending'::text, 'delivered'::text, 'skipped'::text])))
-);
-
-ALTER TABLE ONLY public.delivery_route_stops FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.delivery_route_stops OWNER TO pplcrm_owner;
-
---
--- Name: delivery_route_stops_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.delivery_route_stops ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.delivery_route_stops_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: delivery_routes; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.delivery_routes (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    name text NOT NULL,
-    status text DEFAULT 'draft'::text NOT NULL,
-    volunteer_person_id bigint,
-    start_address text NOT NULL,
-    start_lat double precision NOT NULL,
-    start_lng double precision NOT NULL,
-    est_minutes double precision DEFAULT 0 NOT NULL,
-    est_km double precision DEFAULT 0 NOT NULL,
-    scheduled_for timestamp with time zone,
-    share_token_hash text,
-    share_token_expires_at timestamp with time zone,
-    params jsonb DEFAULT '{}'::jsonb NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT chk_delivery_routes_status CHECK ((status = ANY (ARRAY['draft'::text, 'assigned'::text, 'in_progress'::text, 'completed'::text, 'canceled'::text])))
-);
-
-ALTER TABLE ONLY public.delivery_routes FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.delivery_routes OWNER TO pplcrm_owner;
-
---
--- Name: delivery_routes_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.delivery_routes ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.delivery_routes_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: dismissed_duplicate_groups; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.dismissed_duplicate_groups (
-    tenant_id bigint NOT NULL,
-    group_key text NOT NULL,
-    dismissed_by_id bigint NOT NULL,
-    dismissed_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.dismissed_duplicate_groups FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.dismissed_duplicate_groups OWNER TO pplcrm_owner;
-
---
--- Name: donation_periods; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.donation_periods (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    name text NOT NULL,
-    start_date date NOT NULL,
-    end_date date,
-    limit_amount integer NOT NULL,
-    is_active boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT donation_periods_dates_check CHECK (((end_date IS NULL) OR (end_date > start_date))),
-    CONSTRAINT donation_periods_limit_check CHECK ((limit_amount > 0))
-);
-
-ALTER TABLE ONLY public.donation_periods FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.donation_periods OWNER TO pplcrm_owner;
-
---
--- Name: donation_periods_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.donation_periods_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.donation_periods_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: donation_periods_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.donation_periods_id_seq OWNED BY public.donation_periods.id;
-
-
---
--- Name: donation_pledges; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.donation_pledges (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    person_id bigint,
-    stripe_subscription_id text,
-    stripe_customer_id text,
-    monthly_amount integer NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    started_at timestamp with time zone DEFAULT now() NOT NULL,
-    cancelled_at timestamp with time zone,
-    next_billing_date date,
-    first_name text,
-    last_name text,
-    email text,
-    state text,
-    country text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT donation_pledges_status_check CHECK ((status = ANY (ARRAY['active'::text, 'past_due'::text, 'cancelled'::text, 'unpaid'::text])))
-);
-
-ALTER TABLE ONLY public.donation_pledges FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.donation_pledges OWNER TO pplcrm_owner;
-
---
--- Name: donation_pledges_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.donation_pledges_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.donation_pledges_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: donation_pledges_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.donation_pledges_id_seq OWNED BY public.donation_pledges.id;
-
-
---
--- Name: donations; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.donations (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    person_id bigint,
-    amount integer NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
-    stripe_session_id text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    first_name text,
-    last_name text,
-    email text,
-    street text,
-    apt text,
-    city text,
-    state text,
-    zip text,
-    country text,
-    pledge_id bigint,
-    method text DEFAULT 'card'::text NOT NULL,
-    receipt_sent boolean DEFAULT true NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT chk_donations_method CHECK ((method = ANY (ARRAY['card'::text, 'check'::text, 'cash'::text, 'bank_transfer'::text])))
-);
-
-ALTER TABLE ONLY public.donations FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.donations OWNER TO pplcrm_owner;
-
---
--- Name: donations_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.donations_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.donations_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: donations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.donations_id_seq OWNED BY public.donations.id;
-
-
---
--- Name: email_attachments; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_attachments (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    email_id bigint NOT NULL,
-    filename text NOT NULL,
-    content_type text NOT NULL,
-    size_bytes bigint NOT NULL,
-    cid text,
-    is_inline boolean DEFAULT false NOT NULL,
-    pos integer DEFAULT 0 NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    file_id bigint
-);
-
-ALTER TABLE ONLY public.email_attachments FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_attachments OWNER TO pplcrm_owner;
-
---
--- Name: email_attachments_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.email_attachments_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.email_attachments_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: email_attachments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.email_attachments_id_seq OWNED BY public.email_attachments.id;
-
-
---
--- Name: email_bodies; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_bodies (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    email_id bigint NOT NULL,
-    body_html text NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.email_bodies FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_bodies OWNER TO pplcrm_owner;
-
---
--- Name: email_bodies_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.email_bodies_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.email_bodies_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: email_bodies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.email_bodies_id_seq OWNED BY public.email_bodies.id;
-
-
---
--- Name: email_comments; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_comments (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    email_id bigint NOT NULL,
-    author_id bigint NOT NULL,
-    comment text NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.email_comments FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_comments OWNER TO pplcrm_owner;
-
---
--- Name: email_comments_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.email_comments_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.email_comments_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: email_comments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.email_comments_id_seq OWNED BY public.email_comments.id;
-
-
---
--- Name: email_drafts; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_drafts (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    thread_id text,
-    to_list jsonb,
-    cc_list jsonb,
-    bcc_list jsonb,
-    subject text,
-    body_html text,
-    body_delta jsonb,
-    meta jsonb,
-    is_locked boolean DEFAULT false NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    campaign_id bigint NOT NULL
-);
-
-ALTER TABLE ONLY public.email_drafts FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_drafts OWNER TO pplcrm_owner;
-
---
--- Name: email_drafts_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.email_drafts_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.email_drafts_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: email_drafts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.email_drafts_id_seq OWNED BY public.email_drafts.id;
-
-
---
--- Name: email_headers; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_headers (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    email_id bigint NOT NULL,
-    headers_json jsonb,
-    raw_headers text,
-    date_sent timestamp with time zone,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.email_headers FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_headers OWNER TO pplcrm_owner;
-
---
--- Name: email_headers_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.email_headers_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.email_headers_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: email_headers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.email_headers_id_seq OWNED BY public.email_headers.id;
-
-
---
--- Name: email_read_states; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_read_states (
-    tenant_id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    email_id bigint NOT NULL,
-    is_read boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.email_read_states FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_read_states OWNER TO pplcrm_owner;
-
---
--- Name: email_recipients; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_recipients (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    email_id bigint NOT NULL,
-    kind text NOT NULL,
-    name text,
-    email text NOT NULL,
-    pos integer DEFAULT 0 NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT email_recipients_kind_check CHECK ((kind = ANY (ARRAY['to'::text, 'cc'::text, 'bcc'::text])))
-);
-
-ALTER TABLE ONLY public.email_recipients FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_recipients OWNER TO pplcrm_owner;
-
---
--- Name: email_recipients_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.email_recipients_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.email_recipients_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: email_recipients_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.email_recipients_id_seq OWNED BY public.email_recipients.id;
-
-
---
--- Name: email_suppressions; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_suppressions (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    email text NOT NULL,
-    reason text NOT NULL,
-    occurred_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_esup_reason CHECK ((reason = ANY (ARRAY['hard_bounce'::text, 'spam_complaint'::text, 'manual'::text])))
-);
-
-ALTER TABLE ONLY public.email_suppressions FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_suppressions OWNER TO pplcrm_owner;
-
---
--- Name: email_suppressions_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.email_suppressions_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.email_suppressions_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: email_suppressions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.email_suppressions_id_seq OWNED BY public.email_suppressions.id;
-
-
---
--- Name: email_trash; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.email_trash (
-    tenant_id bigint NOT NULL,
-    email_id bigint NOT NULL,
-    from_folder_id bigint NOT NULL,
-    trashed_at timestamp with time zone DEFAULT now() NOT NULL,
-    createdby_id bigint,
-    updatedby_id bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    id bigint NOT NULL,
-    CONSTRAINT chk_email_trash_from_folder_id CHECK ((from_folder_id = ANY (ARRAY[(3)::bigint, (4)::bigint, (5)::bigint, (7)::bigint, (10)::bigint, (11)::bigint])))
-);
-
-ALTER TABLE ONLY public.email_trash FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.email_trash OWNER TO pplcrm_owner;
-
---
--- Name: email_trash_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.email_trash_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.email_trash_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: email_trash_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.email_trash_id_seq OWNED BY public.email_trash.id;
-
-
---
--- Name: emails; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.emails (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    folder_id bigint NOT NULL,
-    from_email text,
-    to_email text,
-    subject text,
-    preview text,
-    assigned_to bigint,
-    is_favourite boolean DEFAULT false NOT NULL,
-    deleted_at timestamp with time zone,
-    status text DEFAULT 'open'::text,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT chk_emails_folder_id CHECK ((folder_id = ANY (ARRAY[(3)::bigint, (4)::bigint, (5)::bigint, (7)::bigint, (10)::bigint, (11)::bigint]))),
-    CONSTRAINT chk_emails_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['open'::text, 'closed'::text]))))
-);
-
-ALTER TABLE ONLY public.emails FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.emails OWNER TO pplcrm_owner;
-
---
--- Name: emails_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.emails_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.emails_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: emails_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.emails_id_seq OWNED BY public.emails.id;
-
-
---
--- Name: event_registrations; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.event_registrations (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    event_id bigint NOT NULL,
-    person_id bigint NOT NULL,
-    ticket_type_id bigint,
-    status text DEFAULT 'registered'::text NOT NULL,
-    checked_in_at timestamp with time zone,
-    notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    CONSTRAINT event_registrations_status_check CHECK ((status = ANY (ARRAY['registered'::text, 'attended'::text, 'no_show'::text, 'cancelled'::text])))
-);
-
-ALTER TABLE ONLY public.event_registrations FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.event_registrations OWNER TO pplcrm_owner;
-
---
--- Name: event_registrations_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.event_registrations_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.event_registrations_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: event_registrations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.event_registrations_id_seq OWNED BY public.event_registrations.id;
-
-
---
--- Name: event_ticket_types; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.event_ticket_types (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    event_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    price_cents integer DEFAULT 0 NOT NULL,
-    capacity integer,
-    sort_order integer DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    CONSTRAINT event_ticket_types_capacity_check CHECK (((capacity IS NULL) OR (capacity > 0))),
-    CONSTRAINT event_ticket_types_price_check CHECK ((price_cents >= 0))
-);
-
-ALTER TABLE ONLY public.event_ticket_types FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.event_ticket_types OWNER TO pplcrm_owner;
-
---
--- Name: event_ticket_types_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.event_ticket_types_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.event_ticket_types_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: event_ticket_types_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.event_ticket_types_id_seq OWNED BY public.event_ticket_types.id;
-
-
---
--- Name: events; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.events (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    location_address text,
-    start_time timestamp with time zone NOT NULL,
-    end_time timestamp with time zone NOT NULL,
-    capacity integer,
-    contact_email text,
-    contact_phone text,
-    slug text NOT NULL,
-    is_published boolean DEFAULT false NOT NULL,
-    send_reminder boolean DEFAULT true NOT NULL,
-    send_registration_confirmation boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    search_vector tsvector GENERATED ALWAYS AS (((setweight(to_tsvector('english'::regconfig, COALESCE(name, ''::text)), 'A'::"char") || setweight(to_tsvector('english'::regconfig, COALESCE(location_address, ''::text)), 'B'::"char")) || setweight(to_tsvector('english'::regconfig, COALESCE(description, ''::text)), 'C'::"char"))) STORED,
-    fields jsonb DEFAULT '["first_name", "last_name", "email", "mobile", "notes"]'::jsonb NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT events_capacity_check CHECK (((capacity IS NULL) OR (capacity > 0))),
-    CONSTRAINT events_end_after_start_check CHECK ((end_time > start_time))
-);
-
-ALTER TABLE ONLY public.events FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.events OWNER TO pplcrm_owner;
-
---
--- Name: events_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.events_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.events_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.events_id_seq OWNED BY public.events.id;
-
-
---
--- Name: files; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.files (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    filename text NOT NULL,
-    mime_type text,
-    size_bytes bigint,
-    storage_key text NOT NULL,
-    sha256_hex text,
-    uploaded_by bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    entity_type text,
-    entity_id bigint
-);
-
-ALTER TABLE ONLY public.files FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.files OWNER TO pplcrm_owner;
-
---
--- Name: files_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.files_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.files_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: files_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.files_id_seq OWNED BY public.files.id;
-
-
---
--- Name: form_submissions; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.form_submissions (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    tenant_id bigint NOT NULL,
-    form_id uuid NOT NULL,
-    person_id bigint NOT NULL,
-    answers jsonb DEFAULT '{}'::jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.form_submissions FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.form_submissions OWNER TO pplcrm_owner;
-
---
--- Name: google_oauth_tokens; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.google_oauth_tokens (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    tenant_id bigint NOT NULL,
-    user_id text,
-    access_token text NOT NULL,
-    refresh_token text NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    google_email text,
-    delta_link text,
-    synced_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_sync_error text,
-    last_sync_error_at timestamp with time zone,
-    campaign_id bigint NOT NULL
-);
-
-ALTER TABLE ONLY public.google_oauth_tokens FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.google_oauth_tokens OWNER TO pplcrm_owner;
-
---
--- Name: households; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.households (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    campaign_id bigint,
-    createdby_id bigint NOT NULL,
-    file_id bigint,
-    home_phone text,
-    apt text,
-    street_num text,
-    street1 text,
-    street2 text,
-    city text,
-    state text,
-    zip text,
-    country text,
-    notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    address_fp_street text,
-    address_fp_full text,
-    is_placeholder boolean DEFAULT false NOT NULL,
-    updatedby_id bigint,
-    lat double precision,
-    lng double precision,
-    formatted_address text,
-    type text,
-    district text,
-    precinct text,
-    ward text,
-    geocoding_status text DEFAULT 'pending'::text,
-    search_vector tsvector GENERATED ALWAYS AS ((((((((((setweight(to_tsvector('simple'::regconfig, COALESCE(street1, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(city, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(address_fp_full, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(zip, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(state, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(home_phone, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(street_num, ''::text)), 'C'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(apt, ''::text)), 'C'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(street2, ''::text)), 'C'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(country, ''::text)), 'C'::"char"))) STORED,
-    slug text,
-    CONSTRAINT chk_households_geocoding_status CHECK (((geocoding_status IS NULL) OR (geocoding_status = ANY (ARRAY['pending'::text, 'success'::text, 'failed'::text]))))
-);
-
-ALTER TABLE ONLY public.households FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.households OWNER TO pplcrm_owner;
-
---
--- Name: households_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.households_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.households_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: households_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.households_id_seq OWNED BY public.households.id;
-
-
---
--- Name: kysely_migration; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.kysely_migration (
-    name character varying(255) NOT NULL,
-    "timestamp" character varying(255) NOT NULL
-);
-
-
-ALTER TABLE public.kysely_migration OWNER TO pplcrm_owner;
-
---
--- Name: kysely_migration_lock; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.kysely_migration_lock (
-    id character varying(255) NOT NULL,
-    is_locked integer DEFAULT 0 NOT NULL
-);
-
-
-ALTER TABLE public.kysely_migration_lock OWNER TO pplcrm_owner;
-
---
--- Name: lists; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.lists (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    object text NOT NULL,
-    is_dynamic boolean DEFAULT false NOT NULL,
-    definition jsonb,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_refreshed_at timestamp with time zone,
-    status text DEFAULT 'idle'::text NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT chk_lists_status CHECK ((status = ANY (ARRAY['idle'::text, 'refreshing'::text, 'failed'::text]))),
-    CONSTRAINT lists_object_check CHECK ((object = ANY (ARRAY['people'::text, 'households'::text])))
-);
-
-ALTER TABLE ONLY public.lists FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.lists OWNER TO pplcrm_owner;
-
---
--- Name: lists_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.lists_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.lists_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: lists_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.lists_id_seq OWNED BY public.lists.id;
-
-
---
--- Name: map_campaigns_users; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_campaigns_users (
-    tenant_id bigint NOT NULL,
-    campaign_id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.map_campaigns_users FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_campaigns_users OWNER TO pplcrm_owner;
-
---
--- Name: map_households_tags; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_households_tags (
-    tenant_id bigint NOT NULL,
-    household_id bigint NOT NULL,
-    tag_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.map_households_tags FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_households_tags OWNER TO pplcrm_owner;
-
---
--- Name: map_lists_households; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_lists_households (
-    tenant_id bigint NOT NULL,
-    list_id bigint NOT NULL,
-    household_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.map_lists_households FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_lists_households OWNER TO pplcrm_owner;
-
---
--- Name: map_lists_persons; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_lists_persons (
-    tenant_id bigint NOT NULL,
-    list_id bigint NOT NULL,
-    person_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.map_lists_persons FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_lists_persons OWNER TO pplcrm_owner;
-
---
--- Name: map_newsletters_lists; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_newsletters_lists (
-    tenant_id bigint NOT NULL,
-    newsletter_id bigint NOT NULL,
-    list_id bigint NOT NULL,
-    mode text DEFAULT 'include'::text NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_map_newsletters_lists_mode CHECK ((mode = ANY (ARRAY['include'::text, 'exclude'::text])))
-);
-
-ALTER TABLE ONLY public.map_newsletters_lists FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_newsletters_lists OWNER TO pplcrm_owner;
-
---
--- Name: map_peoples_tags; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_peoples_tags (
-    tenant_id bigint NOT NULL,
-    person_id bigint NOT NULL,
-    tag_id bigint NOT NULL,
-    deletable boolean DEFAULT true NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.map_peoples_tags FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_peoples_tags OWNER TO pplcrm_owner;
-
---
--- Name: map_teams_lists; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_teams_lists (
-    tenant_id bigint NOT NULL,
-    team_id bigint NOT NULL,
-    list_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.map_teams_lists FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_teams_lists OWNER TO pplcrm_owner;
-
---
--- Name: map_teams_persons; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_teams_persons (
-    tenant_id bigint NOT NULL,
-    team_id bigint NOT NULL,
-    person_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.map_teams_persons FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_teams_persons OWNER TO pplcrm_owner;
-
---
--- Name: map_web_forms_lists; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.map_web_forms_lists (
-    tenant_id bigint NOT NULL,
-    web_form_id uuid NOT NULL,
-    list_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.map_web_forms_lists FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.map_web_forms_lists OWNER TO pplcrm_owner;
-
---
--- Name: ms_oauth_tokens; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.ms_oauth_tokens (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    tenant_id bigint NOT NULL,
-    user_id text,
-    access_token text NOT NULL,
-    refresh_token text NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    ms_email text,
-    delta_link text,
-    synced_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_sync_error text,
-    last_sync_error_at timestamp with time zone,
-    campaign_id bigint NOT NULL
-);
-
-ALTER TABLE ONLY public.ms_oauth_tokens FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.ms_oauth_tokens OWNER TO pplcrm_owner;
-
---
--- Name: newsletter_events; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.newsletter_events (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    newsletter_id bigint NOT NULL,
-    email text NOT NULL,
-    event_type text NOT NULL,
-    sg_event_id text NOT NULL,
-    sg_message_id text,
-    url text,
-    ip text,
-    user_agent text,
-    "timestamp" timestamp with time zone NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    reason text,
-    bounce_type text
-);
-
-ALTER TABLE ONLY public.newsletter_events FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.newsletter_events OWNER TO pplcrm_owner;
-
---
--- Name: newsletter_events_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.newsletter_events_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.newsletter_events_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: newsletter_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.newsletter_events_id_seq OWNED BY public.newsletter_events.id;
-
-
---
--- Name: newsletters; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.newsletters (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    status text DEFAULT 'sent'::text NOT NULL,
-    subject text,
-    preview_text text,
-    audience_description text,
-    target_lists jsonb,
-    segments jsonb,
-    total_recipients integer DEFAULT 0 NOT NULL,
-    delivered_count integer DEFAULT 0 NOT NULL,
-    bounce_count integer DEFAULT 0 NOT NULL,
-    open_rate numeric DEFAULT 0 NOT NULL,
-    click_rate numeric DEFAULT 0 NOT NULL,
-    unique_opens integer DEFAULT 0 NOT NULL,
-    unique_clicks integer DEFAULT 0 NOT NULL,
-    unsubscribe_count integer DEFAULT 0 NOT NULL,
-    spam_complaint_count integer DEFAULT 0 NOT NULL,
-    reply_count integer DEFAULT 0 NOT NULL,
-    send_date timestamp with time zone,
-    last_engagement_at timestamp with time zone,
-    summary text,
-    html_content text,
-    plain_text_content text,
-    top_links jsonb,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT chk_newsletters_click_rate_range CHECK (((click_rate >= (0)::numeric) AND (click_rate <= (100)::numeric))),
-    CONSTRAINT chk_newsletters_open_rate_range CHECK (((open_rate >= (0)::numeric) AND (open_rate <= (100)::numeric)))
-);
-
-ALTER TABLE ONLY public.newsletters FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.newsletters OWNER TO pplcrm_owner;
-
---
--- Name: newsletters_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.newsletters_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.newsletters_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: newsletters_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.newsletters_id_seq OWNED BY public.newsletters.id;
-
-
---
--- Name: notifications; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.notifications (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    title text NOT NULL,
-    message text NOT NULL,
-    type text DEFAULT 'info'::text NOT NULL,
-    read boolean DEFAULT false NOT NULL,
-    link text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.notifications FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.notifications OWNER TO pplcrm_owner;
-
---
--- Name: notifications_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.notifications_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.notifications_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: notifications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
-
-
---
--- Name: passkeys; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.passkeys (
-    id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    credential_id text NOT NULL,
-    public_key text NOT NULL,
-    counter bigint DEFAULT 0 NOT NULL,
-    device_type text NOT NULL,
-    backed_up boolean DEFAULT false NOT NULL,
-    transports text[],
-    aaguid text,
-    friendly_name text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.passkeys FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.passkeys OWNER TO pplcrm_owner;
-
---
--- Name: passkeys_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.passkeys ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.passkeys_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: person_connections; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.person_connections (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    from_person_id bigint NOT NULL,
-    to_person_id bigint NOT NULL,
-    relation_type text NOT NULL,
-    custom_label text,
-    is_mutual boolean DEFAULT false NOT NULL,
-    notes text,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT pc_custom_label_required CHECK (((relation_type <> 'custom'::text) OR ((custom_label IS NOT NULL) AND (custom_label <> ''::text)))),
-    CONSTRAINT pc_no_self_loop CHECK ((from_person_id <> to_person_id)),
-    CONSTRAINT pc_relation_type_check CHECK ((relation_type = ANY (ARRAY['referred_by'::text, 'referred_to'::text, 'close_friend'::text, 'family_member'::text, 'spouse'::text, 'colleague'::text, 'org_affiliation'::text, 'introduced_by'::text, 'introduced_to'::text, 'custom'::text])))
-);
-
-ALTER TABLE ONLY public.person_connections FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.person_connections OWNER TO pplcrm_owner;
-
---
--- Name: person_connections_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.person_connections_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.person_connections_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: person_connections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.person_connections_id_seq OWNED BY public.person_connections.id;
-
-
---
--- Name: person_newsletter_engagements; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.person_newsletter_engagements (
-    tenant_id bigint NOT NULL,
-    newsletter_id bigint NOT NULL,
-    email text NOT NULL,
-    open_count integer DEFAULT 0 NOT NULL,
-    click_count integer DEFAULT 0 NOT NULL,
-    has_unsubscribed boolean DEFAULT false NOT NULL,
-    hard_bounced boolean DEFAULT false NOT NULL,
-    soft_bounced boolean DEFAULT false NOT NULL,
-    first_opened_at timestamp with time zone,
-    last_opened_at timestamp with time zone,
-    first_clicked_at timestamp with time zone,
-    last_clicked_at timestamp with time zone,
-    bounced_at timestamp with time zone,
-    unsubscribed_at timestamp with time zone
-);
-
-ALTER TABLE ONLY public.person_newsletter_engagements FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.person_newsletter_engagements OWNER TO pplcrm_owner;
-
---
--- Name: persons; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.persons (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    campaign_id bigint,
-    createdby_id bigint NOT NULL,
-    household_id bigint NOT NULL,
-    file_id bigint,
-    first_name text,
-    middle_names text,
-    last_name text,
-    home_phone text,
-    mobile text,
-    email text,
-    email2 text,
-    notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    updatedby_id bigint,
-    company_id bigint,
-    linkedin text,
-    twitter text,
-    facebook text,
-    instagram text,
-    assigned_to bigint,
-    search_vector tsvector GENERATED ALWAYS AS ((((((setweight(to_tsvector('simple'::regconfig, COALESCE(first_name, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(last_name, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(email, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(email2, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(mobile, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(home_phone, ''::text)), 'C'::"char"))) STORED,
-    preferred_contact text,
-    slug text,
-    public_id text,
-    do_not_contact boolean DEFAULT false NOT NULL,
-    do_not_contact_channels text[]
-);
-
-ALTER TABLE ONLY public.persons FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.persons OWNER TO pplcrm_owner;
-
---
--- Name: persons_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.persons_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.persons_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: persons_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.persons_id_seq OWNED BY public.persons.id;
-
-
---
--- Name: potential_duplicates; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.potential_duplicates (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    group_key text NOT NULL,
-    person_id bigint,
-    reason text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    household_id bigint,
-    company_id bigint
-);
-
-ALTER TABLE ONLY public.potential_duplicates FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.potential_duplicates OWNER TO pplcrm_owner;
-
---
--- Name: potential_duplicates_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.potential_duplicates_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.potential_duplicates_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: potential_duplicates_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.potential_duplicates_id_seq OWNED BY public.potential_duplicates.id;
-
-
---
--- Name: profiles; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.profiles (
-    id bigint NOT NULL,
-    tenant_id bigint,
-    auth_id bigint NOT NULL,
-    middle_names text,
-    last_name text,
-    home_phone text,
-    mobile text,
-    email2 text,
-    apt text,
-    street_num text,
-    street1 text,
-    street2 text,
-    city text,
-    state text,
-    zip text,
-    country text,
-    preferences jsonb,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    createdby_id bigint,
-    updatedby_id bigint,
-    avatar_file_id bigint
-);
-
-ALTER TABLE ONLY public.profiles FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.profiles OWNER TO pplcrm_owner;
-
---
--- Name: profiles_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.profiles_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.profiles_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: profiles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.profiles_id_seq OWNED BY public.profiles.id;
-
-
---
--- Name: sessions; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.sessions (
-    id bigint NOT NULL,
-    session_id text NOT NULL,
-    refresh_token text,
-    user_id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_accessed timestamp with time zone DEFAULT now() NOT NULL,
-    ip_address text NOT NULL,
-    user_agent text,
-    status text DEFAULT 'active'::text NOT NULL,
-    other_properties jsonb,
-    expires_at timestamp with time zone,
-    last_used_at timestamp with time zone
-);
-
-ALTER TABLE ONLY public.sessions FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.sessions OWNER TO pplcrm_owner;
-
---
--- Name: sessions_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.sessions_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.sessions_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: sessions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.sessions_id_seq OWNED BY public.sessions.id;
-
-
---
--- Name: settings; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.settings (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    key text NOT NULL,
-    value jsonb NOT NULL,
-    createdby_id bigint,
-    updatedby_id bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.settings FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.settings OWNER TO pplcrm_owner;
-
---
--- Name: settings_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.settings_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.settings_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: settings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.settings_id_seq OWNED BY public.settings.id;
-
-
---
--- Name: tags; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.tags (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    deletable boolean DEFAULT true NOT NULL,
-    color character varying(7),
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    type text DEFAULT 'tag'::text NOT NULL
-);
-
-ALTER TABLE ONLY public.tags FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.tags OWNER TO pplcrm_owner;
-
---
--- Name: tags_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.tags_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.tags_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: tags_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.tags_id_seq OWNED BY public.tags.id;
-
-
---
--- Name: task_attachments; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.task_attachments (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    task_id bigint NOT NULL,
-    filename text NOT NULL,
-    content_type text,
-    size_bytes bigint,
-    url text,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.task_attachments FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.task_attachments OWNER TO pplcrm_owner;
-
---
--- Name: task_attachments_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.task_attachments_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.task_attachments_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: task_attachments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.task_attachments_id_seq OWNED BY public.task_attachments.id;
-
-
---
--- Name: task_comments; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.task_comments (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    task_id bigint NOT NULL,
-    author_id bigint NOT NULL,
-    comment text NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.task_comments FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.task_comments OWNER TO pplcrm_owner;
-
---
--- Name: task_comments_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.task_comments_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.task_comments_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: task_comments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.task_comments_id_seq OWNED BY public.task_comments.id;
-
-
---
--- Name: task_subtasks; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.task_subtasks (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    task_id bigint NOT NULL,
-    name text NOT NULL,
-    status text DEFAULT 'todo'::text,
-    "position" integer DEFAULT 0,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.task_subtasks FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.task_subtasks OWNER TO pplcrm_owner;
-
---
--- Name: task_subtasks_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.task_subtasks_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.task_subtasks_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: task_subtasks_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.task_subtasks_id_seq OWNED BY public.task_subtasks.id;
-
-
---
--- Name: tasks; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.tasks (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    details text,
-    due_at timestamp with time zone,
-    status text DEFAULT 'todo'::text,
-    priority text,
-    assigned_to bigint,
-    completed_at timestamp with time zone,
-    "position" integer DEFAULT 0,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    team_id bigint,
-    file_id bigint,
-    CONSTRAINT chk_tasks_priority CHECK (((priority IS NULL) OR (priority = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text, 'urgent'::text])))),
-    CONSTRAINT chk_tasks_status CHECK ((status = ANY (ARRAY['todo'::text, 'in_progress'::text, 'waiting'::text, 'done'::text, 'archived'::text])))
-);
-
-ALTER TABLE ONLY public.tasks FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.tasks OWNER TO pplcrm_owner;
-
---
--- Name: tasks_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.tasks_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.tasks_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: tasks_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.tasks_id_seq OWNED BY public.tasks.id;
-
-
---
--- Name: teams; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.teams (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    team_captain_id bigint,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    team_lead_user_id bigint
-);
-
-ALTER TABLE ONLY public.teams FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.teams OWNER TO pplcrm_owner;
-
---
--- Name: teams_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.teams_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.teams_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: teams_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.teams_id_seq OWNED BY public.teams.id;
-
-
---
--- Name: tenants; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.tenants (
-    id bigint NOT NULL,
-    admin_id bigint,
-    createdby_id bigint,
-    name text NOT NULL,
-    mobile text,
-    email text,
-    email2 text,
-    apt text,
-    street_num text,
-    street1 text,
-    street2 text,
-    city text,
-    state text,
-    zip text,
-    country text,
-    billing_street_num text,
-    billing_street1 text,
-    billing_street2 text,
-    billing_city text,
-    billing_state text,
-    billing_zip text,
-    billing_country text,
-    notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    placeholder_household_id bigint,
-    stripe_customer_id text,
-    stripe_subscription_id text,
-    subscription_plan text DEFAULT 'free'::text NOT NULL,
-    subscription_status text,
-    subscription_ends_at timestamp with time zone,
-    deletion_scheduled_at timestamp with time zone,
-    suspended_at timestamp with time zone,
-    paused_at timestamp with time zone,
-    slug text,
-    demo_mode_at timestamp with time zone
-);
-
-
-ALTER TABLE public.tenants OWNER TO pplcrm_owner;
-
---
--- Name: tenants_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.tenants_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.tenants_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: tenants_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.tenants_id_seq OWNED BY public.tenants.id;
-
-
---
--- Name: workspace_api_keys; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.workspace_api_keys (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    key_hash text NOT NULL,
-    key_preview text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_used_at timestamp with time zone
-);
-
-
-ALTER TABLE public.workspace_api_keys OWNER TO pplcrm_owner;
-
---
--- Name: workspace_api_keys_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.workspace_api_keys_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-ALTER SEQUENCE public.workspace_api_keys_id_seq OWNED BY public.workspace_api_keys.id;
-
-ALTER TABLE ONLY public.workspace_api_keys ALTER COLUMN id SET DEFAULT nextval('public.workspace_api_keys_id_seq'::regclass);
-
-
---
--- Name: turf_assignments; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.turf_assignments (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    turf_id bigint NOT NULL,
-    team_id bigint,
-    token text NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    assigned_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.turf_assignments FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.turf_assignments OWNER TO pplcrm_owner;
-
---
--- Name: turf_assignments_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.turf_assignments_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.turf_assignments_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: turf_assignments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.turf_assignments_id_seq OWNED BY public.turf_assignments.id;
-
-
---
--- Name: turf_households; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.turf_households (
-    tenant_id bigint NOT NULL,
-    turf_id bigint NOT NULL,
-    household_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.turf_households FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.turf_households OWNER TO pplcrm_owner;
-
---
--- Name: turf_knocks; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.turf_knocks (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    turf_id bigint NOT NULL,
-    household_id bigint NOT NULL,
-    person_id bigint,
-    outcome text NOT NULL,
-    response text,
-    notes text,
-    source text DEFAULT 'companion'::text NOT NULL,
-    canvasser_name text,
-    client_knock_id text,
-    knocked_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.turf_knocks FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.turf_knocks OWNER TO pplcrm_owner;
-
---
--- Name: turf_knocks_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.turf_knocks_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.turf_knocks_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: turf_knocks_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.turf_knocks_id_seq OWNED BY public.turf_knocks.id;
-
-
---
--- Name: turfs; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.turfs (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    status text DEFAULT 'draft'::text NOT NULL,
-    list_id bigint,
-    target_doors integer,
-    centroid_lat double precision,
-    centroid_lng double precision,
-    ward text,
-    notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    campaign_id bigint NOT NULL
-);
-
-ALTER TABLE ONLY public.turfs FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.turfs OWNER TO pplcrm_owner;
-
---
--- Name: turfs_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.turfs_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.turfs_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: turfs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.turfs_id_seq OWNED BY public.turfs.id;
-
-
---
--- Name: user_activity; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.user_activity (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    user_id bigint NOT NULL,
-    activity text NOT NULL,
-    entity text NOT NULL,
-    quantity integer DEFAULT 0 NOT NULL,
-    metadata jsonb,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    entity_id text
-);
-
-ALTER TABLE ONLY public.user_activity FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.user_activity OWNER TO pplcrm_owner;
-
---
--- Name: user_activity_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.user_activity_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.user_activity_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: user_activity_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.user_activity_id_seq OWNED BY public.user_activity.id;
-
-
---
--- Name: volunteer_events; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.volunteer_events (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    location_address text,
-    start_time timestamp with time zone NOT NULL,
-    end_time timestamp with time zone NOT NULL,
-    capacity integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    contact_email text,
-    contact_phone text,
-    is_private boolean DEFAULT false NOT NULL,
-    send_reminder boolean DEFAULT true NOT NULL,
-    slug text NOT NULL,
-    send_signup_confirmation boolean DEFAULT true NOT NULL,
-    send_volunteer_alert boolean DEFAULT true NOT NULL,
-    search_vector tsvector GENERATED ALWAYS AS ((((setweight(to_tsvector('simple'::regconfig, COALESCE(name, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(location_address, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(contact_email, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(description, ''::text)), 'C'::"char"))) STORED,
-    fields jsonb DEFAULT '["first_name", "last_name", "email", "mobile", "notes"]'::jsonb NOT NULL
-);
-
-ALTER TABLE ONLY public.volunteer_events FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.volunteer_events OWNER TO pplcrm_owner;
-
---
--- Name: volunteer_events_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.volunteer_events_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.volunteer_events_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: volunteer_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.volunteer_events_id_seq OWNED BY public.volunteer_events.id;
-
-
---
--- Name: volunteer_shifts; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.volunteer_shifts (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    event_id bigint NOT NULL,
-    person_id bigint NOT NULL,
-    status text DEFAULT 'signed_up'::text NOT NULL,
-    hours_worked numeric(5,2),
-    notes text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_volunteer_shifts_status CHECK ((status = ANY (ARRAY['signed_up'::text, 'attended'::text, 'no_show'::text, 'cancelled'::text])))
-);
-
-ALTER TABLE ONLY public.volunteer_shifts FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.volunteer_shifts OWNER TO pplcrm_owner;
-
---
--- Name: volunteer_shifts_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.volunteer_shifts_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.volunteer_shifts_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: volunteer_shifts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.volunteer_shifts_id_seq OWNED BY public.volunteer_shifts.id;
-
-
---
--- Name: web_forms; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.web_forms (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    redirect_url text,
-    target_tags jsonb,
-    target_lists jsonb,
-    status text DEFAULT 'draft'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    fields jsonb,
-    send_confirmation boolean DEFAULT true NOT NULL,
-    send_alert boolean DEFAULT true NOT NULL,
-    form_type text DEFAULT 'standard'::text NOT NULL,
-    type text,
-    slug text NOT NULL,
-    submit_label text,
-    thanks_title text,
-    thanks_body text,
-    confirm_subject text,
-    confirm_body text,
-    notify_team_on boolean DEFAULT false NOT NULL,
-    archived_at timestamp with time zone,
-    campaign_id bigint NOT NULL,
-    CONSTRAINT chk_web_forms_form_type CHECK (((form_type IS NULL) OR (form_type = ANY (ARRAY['standard'::text, 'donation'::text, 'recurring_donation'::text])))),
-    CONSTRAINT chk_web_forms_status CHECK ((status = ANY (ARRAY['draft'::text, 'published'::text, 'archived'::text])))
-);
-
-ALTER TABLE ONLY public.web_forms FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.web_forms OWNER TO pplcrm_owner;
-
---
--- Name: webhook_events; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.webhook_events (
-    id bigint NOT NULL,
-    tenant_id bigint,
-    stripe_event_id text NOT NULL,
-    type text NOT NULL,
-    payload jsonb NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
-    attempts integer DEFAULT 0 NOT NULL,
-    max_attempts integer DEFAULT 3 NOT NULL,
-    error text,
-    run_at timestamp with time zone DEFAULT now() NOT NULL,
-    locked_at timestamp with time zone,
-    locked_by text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    processed_at timestamp with time zone,
-    CONSTRAINT chk_webhook_events_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['pending'::text, 'processing'::text, 'processed'::text, 'failed'::text]))))
-);
-
-ALTER TABLE ONLY public.webhook_events FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.webhook_events OWNER TO pplcrm_owner;
-
---
--- Name: webhook_events_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.webhook_events_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.webhook_events_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: webhook_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.webhook_events_id_seq OWNED BY public.webhook_events.id;
-
-
---
--- Name: workflow_enrollments; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.workflow_enrollments (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    workflow_id bigint NOT NULL,
-    person_id bigint NOT NULL,
-    status text DEFAULT 'active'::text NOT NULL,
-    current_step_number integer DEFAULT 0 NOT NULL,
-    next_run_at timestamp with time zone,
-    enrolled_at timestamp with time zone DEFAULT now() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_workflow_enrollments_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['active'::text, 'completed'::text, 'cancelled'::text]))))
-);
-
-ALTER TABLE ONLY public.workflow_enrollments FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.workflow_enrollments OWNER TO pplcrm_owner;
-
---
--- Name: workflow_enrollments_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.workflow_enrollments_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.workflow_enrollments_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: workflow_enrollments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.workflow_enrollments_id_seq OWNED BY public.workflow_enrollments.id;
-
-
---
--- Name: workflow_runs; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.workflow_runs (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    workflow_id bigint NOT NULL,
-    enrollment_id bigint,
-    person_id bigint,
-    step_number integer,
-    step_kind text,
-    status text DEFAULT 'success'::text NOT NULL,
-    error text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_workflow_runs_status CHECK ((status = ANY (ARRAY['success'::text, 'failed'::text])))
-);
-
-ALTER TABLE ONLY public.workflow_runs FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.workflow_runs OWNER TO pplcrm_owner;
-
---
--- Name: workflow_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.workflow_runs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.workflow_runs_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: workflow_steps; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.workflow_steps (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    workflow_id bigint NOT NULL,
-    step_number integer NOT NULL,
-    delay_days integer NOT NULL,
-    subject text,
-    preview_text text,
-    html_content text,
-    plain_text_content text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    delay_unit text DEFAULT 'days'::text NOT NULL,
-    kind text DEFAULT 'send_email'::text NOT NULL,
-    config jsonb,
-    CONSTRAINT chk_workflow_steps_kind CHECK ((kind = ANY (ARRAY['wait'::text, 'send_email'::text, 'add_tag'::text, 'create_task'::text, 'notify_team'::text])))
-);
-
-ALTER TABLE ONLY public.workflow_steps FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.workflow_steps OWNER TO pplcrm_owner;
-
---
--- Name: workflow_steps_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.workflow_steps_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.workflow_steps_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: workflow_steps_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.workflow_steps_id_seq OWNED BY public.workflow_steps.id;
-
-
---
--- Name: workflows; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.workflows (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    createdby_id bigint NOT NULL,
-    updatedby_id bigint NOT NULL,
-    name text NOT NULL,
-    description text,
-    trigger_type text NOT NULL,
-    status text DEFAULT 'draft'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    trigger_event_id text,
-    conditions jsonb,
-    CONSTRAINT chk_workflows_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['draft'::text, 'active'::text, 'paused'::text]))))
-);
-
-ALTER TABLE ONLY public.workflows FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.workflows OWNER TO pplcrm_owner;
-
---
--- Name: workflows_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE SEQUENCE public.workflows_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE public.workflows_id_seq OWNER TO pplcrm_owner;
-
---
--- Name: workflows_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER SEQUENCE public.workflows_id_seq OWNED BY public.workflows.id;
-
-
---
--- Name: zapier_subscriptions; Type: TABLE; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TABLE public.zapier_subscriptions (
-    id bigint NOT NULL,
-    tenant_id bigint NOT NULL,
-    event_type text NOT NULL,
-    webhook_url text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-ALTER TABLE ONLY public.zapier_subscriptions FORCE ROW LEVEL SECURITY;
-
-
-ALTER TABLE public.zapier_subscriptions OWNER TO pplcrm_owner;
-
---
--- Name: zapier_subscriptions_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.zapier_subscriptions ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.zapier_subscriptions_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: authusers id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.authusers ALTER COLUMN id SET DEFAULT nextval('public.authusers_id_seq'::regclass);
-
-
---
--- Name: background_jobs id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.background_jobs ALTER COLUMN id SET DEFAULT nextval('public.background_jobs_id_seq'::regclass);
-
-
---
--- Name: campaign_person_facts id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts ALTER COLUMN id SET DEFAULT nextval('public.campaign_person_facts_id_seq'::regclass);
-
-
---
--- Name: campaign_subscriptions id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions ALTER COLUMN id SET DEFAULT nextval('public.campaign_subscriptions_id_seq'::regclass);
-
-
---
--- Name: campaigns id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaigns ALTER COLUMN id SET DEFAULT nextval('public.campaigns_id_seq'::regclass);
-
-
---
--- Name: companies id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.companies ALTER COLUMN id SET DEFAULT nextval('public.companies_id_seq'::regclass);
-
-
---
--- Name: data_exports id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_exports ALTER COLUMN id SET DEFAULT nextval('public.data_exports_id_seq'::regclass);
-
-
---
--- Name: data_imports id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_imports ALTER COLUMN id SET DEFAULT nextval('public.data_imports_id_seq'::regclass);
-
-
---
--- Name: donation_periods id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_periods ALTER COLUMN id SET DEFAULT nextval('public.donation_periods_id_seq'::regclass);
-
-
---
--- Name: donation_pledges id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_pledges ALTER COLUMN id SET DEFAULT nextval('public.donation_pledges_id_seq'::regclass);
-
-
---
--- Name: donations id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donations ALTER COLUMN id SET DEFAULT nextval('public.donations_id_seq'::regclass);
-
-
---
--- Name: email_attachments id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_attachments ALTER COLUMN id SET DEFAULT nextval('public.email_attachments_id_seq'::regclass);
-
-
---
--- Name: email_bodies id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_bodies ALTER COLUMN id SET DEFAULT nextval('public.email_bodies_id_seq'::regclass);
-
-
---
--- Name: email_comments id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_comments ALTER COLUMN id SET DEFAULT nextval('public.email_comments_id_seq'::regclass);
-
-
---
--- Name: email_drafts id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_drafts ALTER COLUMN id SET DEFAULT nextval('public.email_drafts_id_seq'::regclass);
-
-
---
--- Name: email_headers id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_headers ALTER COLUMN id SET DEFAULT nextval('public.email_headers_id_seq'::regclass);
-
-
---
--- Name: email_recipients id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_recipients ALTER COLUMN id SET DEFAULT nextval('public.email_recipients_id_seq'::regclass);
-
-
---
--- Name: email_suppressions id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_suppressions ALTER COLUMN id SET DEFAULT nextval('public.email_suppressions_id_seq'::regclass);
-
-
---
--- Name: email_trash id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_trash ALTER COLUMN id SET DEFAULT nextval('public.email_trash_id_seq'::regclass);
-
-
---
--- Name: emails id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.emails ALTER COLUMN id SET DEFAULT nextval('public.emails_id_seq'::regclass);
-
-
---
--- Name: event_registrations id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_registrations ALTER COLUMN id SET DEFAULT nextval('public.event_registrations_id_seq'::regclass);
-
-
---
--- Name: event_ticket_types id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_ticket_types ALTER COLUMN id SET DEFAULT nextval('public.event_ticket_types_id_seq'::regclass);
-
-
---
--- Name: events id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.events ALTER COLUMN id SET DEFAULT nextval('public.events_id_seq'::regclass);
-
-
---
--- Name: files id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.files ALTER COLUMN id SET DEFAULT nextval('public.files_id_seq'::regclass);
-
-
---
--- Name: households id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.households ALTER COLUMN id SET DEFAULT nextval('public.households_id_seq'::regclass);
-
-
---
--- Name: lists id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.lists ALTER COLUMN id SET DEFAULT nextval('public.lists_id_seq'::regclass);
-
-
---
--- Name: newsletter_events id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletter_events ALTER COLUMN id SET DEFAULT nextval('public.newsletter_events_id_seq'::regclass);
-
-
---
--- Name: newsletters id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletters ALTER COLUMN id SET DEFAULT nextval('public.newsletters_id_seq'::regclass);
-
-
---
--- Name: notifications id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('public.notifications_id_seq'::regclass);
-
-
---
--- Name: person_connections id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.person_connections ALTER COLUMN id SET DEFAULT nextval('public.person_connections_id_seq'::regclass);
-
-
---
--- Name: persons id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons ALTER COLUMN id SET DEFAULT nextval('public.persons_id_seq'::regclass);
-
-
---
--- Name: potential_duplicates id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.potential_duplicates ALTER COLUMN id SET DEFAULT nextval('public.potential_duplicates_id_seq'::regclass);
-
-
---
--- Name: profiles id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.profiles ALTER COLUMN id SET DEFAULT nextval('public.profiles_id_seq'::regclass);
-
-
---
--- Name: sessions id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.sessions ALTER COLUMN id SET DEFAULT nextval('public.sessions_id_seq'::regclass);
-
-
---
--- Name: settings id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.settings ALTER COLUMN id SET DEFAULT nextval('public.settings_id_seq'::regclass);
-
-
---
--- Name: tags id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tags ALTER COLUMN id SET DEFAULT nextval('public.tags_id_seq'::regclass);
-
-
---
--- Name: task_attachments id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_attachments ALTER COLUMN id SET DEFAULT nextval('public.task_attachments_id_seq'::regclass);
-
-
---
--- Name: task_comments id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_comments ALTER COLUMN id SET DEFAULT nextval('public.task_comments_id_seq'::regclass);
-
-
---
--- Name: task_subtasks id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_subtasks ALTER COLUMN id SET DEFAULT nextval('public.task_subtasks_id_seq'::regclass);
-
-
---
--- Name: tasks id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tasks ALTER COLUMN id SET DEFAULT nextval('public.tasks_id_seq'::regclass);
-
-
---
--- Name: teams id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.teams ALTER COLUMN id SET DEFAULT nextval('public.teams_id_seq'::regclass);
-
-
---
--- Name: tenants id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tenants ALTER COLUMN id SET DEFAULT nextval('public.tenants_id_seq'::regclass);
-
-
---
--- Name: turf_assignments id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments ALTER COLUMN id SET DEFAULT nextval('public.turf_assignments_id_seq'::regclass);
-
-
---
--- Name: turf_knocks id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks ALTER COLUMN id SET DEFAULT nextval('public.turf_knocks_id_seq'::regclass);
-
-
---
--- Name: turfs id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turfs ALTER COLUMN id SET DEFAULT nextval('public.turfs_id_seq'::regclass);
-
-
---
--- Name: user_activity id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.user_activity ALTER COLUMN id SET DEFAULT nextval('public.user_activity_id_seq'::regclass);
-
-
---
--- Name: volunteer_events id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_events ALTER COLUMN id SET DEFAULT nextval('public.volunteer_events_id_seq'::regclass);
-
-
---
--- Name: volunteer_shifts id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_shifts ALTER COLUMN id SET DEFAULT nextval('public.volunteer_shifts_id_seq'::regclass);
-
-
---
--- Name: webhook_events id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.webhook_events ALTER COLUMN id SET DEFAULT nextval('public.webhook_events_id_seq'::regclass);
-
-
---
--- Name: workflow_enrollments id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_enrollments ALTER COLUMN id SET DEFAULT nextval('public.workflow_enrollments_id_seq'::regclass);
-
-
---
--- Name: workflow_steps id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_steps ALTER COLUMN id SET DEFAULT nextval('public.workflow_steps_id_seq'::regclass);
-
-
---
--- Name: workflows id; Type: DEFAULT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflows ALTER COLUMN id SET DEFAULT nextval('public.workflows_id_seq'::regclass);
-
-
---
--- Name: authusers authusers_email_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.authusers
-    ADD CONSTRAINT authusers_email_key UNIQUE (email);
-
-
---
--- Name: authusers authusers_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.authusers
-    ADD CONSTRAINT authusers_pkey PRIMARY KEY (id);
-
-
---
--- Name: background_jobs background_jobs_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.background_jobs
-    ADD CONSTRAINT background_jobs_pk PRIMARY KEY (id);
-
-
---
--- Name: campaign_person_facts campaign_person_facts_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts
-    ADD CONSTRAINT campaign_person_facts_id_key UNIQUE (id);
-
-
---
--- Name: campaign_person_facts campaign_person_facts_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts
-    ADD CONSTRAINT campaign_person_facts_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: campaign_subscriptions campaign_subscriptions_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions
-    ADD CONSTRAINT campaign_subscriptions_id_key UNIQUE (id);
-
-
---
--- Name: campaign_subscriptions campaign_subscriptions_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions
-    ADD CONSTRAINT campaign_subscriptions_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: campaigns campaigns_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaigns
-    ADD CONSTRAINT campaigns_id_key UNIQUE (id);
-
-
---
--- Name: campaigns campaigns_id_tenantid; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaigns
-    ADD CONSTRAINT campaigns_id_tenantid PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: companies companies_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.companies
-    ADD CONSTRAINT companies_id_key UNIQUE (id);
-
-
---
--- Name: companies companies_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.companies
-    ADD CONSTRAINT companies_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: data_exports data_exports_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_exports
-    ADD CONSTRAINT data_exports_id_key UNIQUE (id);
-
-
---
--- Name: data_exports data_exports_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_exports
-    ADD CONSTRAINT data_exports_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: data_imports data_imports_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_imports
-    ADD CONSTRAINT data_imports_id_key UNIQUE (id);
-
-
---
--- Name: data_imports data_imports_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_imports
-    ADD CONSTRAINT data_imports_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: delivery_requests delivery_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_requests
-    ADD CONSTRAINT delivery_requests_pkey PRIMARY KEY (id);
-
-
---
--- Name: delivery_route_stops delivery_route_stops_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_route_stops
-    ADD CONSTRAINT delivery_route_stops_pkey PRIMARY KEY (id);
-
-
---
--- Name: delivery_routes delivery_routes_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_routes
-    ADD CONSTRAINT delivery_routes_pkey PRIMARY KEY (id);
-
-
---
--- Name: dismissed_duplicate_groups dismissed_duplicate_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.dismissed_duplicate_groups
-    ADD CONSTRAINT dismissed_duplicate_groups_pkey PRIMARY KEY (tenant_id, group_key);
-
-
---
--- Name: donation_periods donation_periods_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_periods
-    ADD CONSTRAINT donation_periods_pkey PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: donation_pledges donation_pledges_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_pledges
-    ADD CONSTRAINT donation_pledges_id_key UNIQUE (id);
-
-
---
--- Name: donation_pledges donation_pledges_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_pledges
-    ADD CONSTRAINT donation_pledges_pkey PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: donation_pledges donation_pledges_stripe_subscription_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_pledges
-    ADD CONSTRAINT donation_pledges_stripe_subscription_id_key UNIQUE (stripe_subscription_id);
-
-
---
--- Name: donations donations_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donations
-    ADD CONSTRAINT donations_id_key UNIQUE (id);
-
-
---
--- Name: donations donations_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donations
-    ADD CONSTRAINT donations_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: donations donations_stripe_session_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donations
-    ADD CONSTRAINT donations_stripe_session_id_key UNIQUE (stripe_session_id);
-
-
---
--- Name: email_attachments email_attachments_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_attachments
-    ADD CONSTRAINT email_attachments_pkey PRIMARY KEY (id);
-
-
---
--- Name: email_bodies email_bodies_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_bodies
-    ADD CONSTRAINT email_bodies_pkey PRIMARY KEY (id);
-
-
---
--- Name: email_comments email_comments_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_comments
-    ADD CONSTRAINT email_comments_pkey PRIMARY KEY (id);
-
-
---
--- Name: email_drafts email_drafts_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_drafts
-    ADD CONSTRAINT email_drafts_pkey PRIMARY KEY (id);
-
-
---
--- Name: email_headers email_headers_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_headers
-    ADD CONSTRAINT email_headers_pkey PRIMARY KEY (id);
-
-
---
--- Name: email_read_states email_read_states_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_read_states
-    ADD CONSTRAINT email_read_states_pk PRIMARY KEY (tenant_id, user_id, email_id);
-
-
---
--- Name: email_recipients email_recipients_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_recipients
-    ADD CONSTRAINT email_recipients_pkey PRIMARY KEY (id);
-
-
---
--- Name: email_suppressions email_suppressions_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_suppressions
-    ADD CONSTRAINT email_suppressions_id_key UNIQUE (id);
-
-
---
--- Name: email_suppressions email_suppressions_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_suppressions
-    ADD CONSTRAINT email_suppressions_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: email_trash email_trash_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_trash
-    ADD CONSTRAINT email_trash_pkey PRIMARY KEY (id);
-
-
---
--- Name: emails emails_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.emails
-    ADD CONSTRAINT emails_pkey PRIMARY KEY (id);
-
-
---
--- Name: event_registrations event_registrations_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_registrations
-    ADD CONSTRAINT event_registrations_pkey PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: event_registrations event_registrations_unique; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_registrations
-    ADD CONSTRAINT event_registrations_unique UNIQUE (tenant_id, event_id, person_id);
-
-
---
--- Name: event_ticket_types event_ticket_types_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_ticket_types
-    ADD CONSTRAINT event_ticket_types_id_key UNIQUE (id);
-
-
---
--- Name: event_ticket_types event_ticket_types_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_ticket_types
-    ADD CONSTRAINT event_ticket_types_pkey PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: events events_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.events
-    ADD CONSTRAINT events_pkey PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: files files_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.files
-    ADD CONSTRAINT files_pkey PRIMARY KEY (id);
-
-
---
--- Name: form_submissions form_submissions_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.form_submissions
-    ADD CONSTRAINT form_submissions_pkey PRIMARY KEY (tenant_id, id);
-
-
---
--- Name: google_oauth_tokens google_oauth_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.google_oauth_tokens
-    ADD CONSTRAINT google_oauth_tokens_pkey PRIMARY KEY (id);
-
-
---
--- Name: google_oauth_tokens google_oauth_tokens_tenant_campaign_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.google_oauth_tokens
-    ADD CONSTRAINT google_oauth_tokens_tenant_campaign_key UNIQUE (tenant_id, campaign_id);
-
-
---
--- Name: households households_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.households
-    ADD CONSTRAINT households_id_key UNIQUE (id);
-
-
---
--- Name: households households_id_tenantid; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.households
-    ADD CONSTRAINT households_id_tenantid PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: kysely_migration_lock kysely_migration_lock_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.kysely_migration_lock
-    ADD CONSTRAINT kysely_migration_lock_pkey PRIMARY KEY (id);
-
-
---
--- Name: kysely_migration kysely_migration_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.kysely_migration
-    ADD CONSTRAINT kysely_migration_pkey PRIMARY KEY (name);
-
-
---
--- Name: lists lists_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.lists
-    ADD CONSTRAINT lists_id_key UNIQUE (id);
-
-
---
--- Name: lists lists_id_tenantid; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.lists
-    ADD CONSTRAINT lists_id_tenantid PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: map_campaigns_users map_campaigns_users_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_campaigns_users
-    ADD CONSTRAINT map_campaigns_users_pk PRIMARY KEY (tenant_id, campaign_id, user_id);
-
-
---
--- Name: map_households_tags map_households_tags_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_households_tags
-    ADD CONSTRAINT map_households_tags_pk PRIMARY KEY (tenant_id, household_id, tag_id);
-
-
---
--- Name: map_lists_households map_lists_households_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_lists_households
-    ADD CONSTRAINT map_lists_households_pk PRIMARY KEY (tenant_id, list_id, household_id);
-
-
---
--- Name: map_lists_persons map_lists_persons_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_lists_persons
-    ADD CONSTRAINT map_lists_persons_pk PRIMARY KEY (tenant_id, list_id, person_id);
-
-
---
--- Name: map_newsletters_lists map_newsletters_lists_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_newsletters_lists
-    ADD CONSTRAINT map_newsletters_lists_pk PRIMARY KEY (tenant_id, newsletter_id, list_id, mode);
-
-
---
--- Name: map_peoples_tags map_peoples_tags_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_peoples_tags
-    ADD CONSTRAINT map_peoples_tags_pk PRIMARY KEY (tenant_id, person_id, tag_id);
-
-
---
--- Name: map_teams_lists map_teams_lists_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_lists
-    ADD CONSTRAINT map_teams_lists_pk PRIMARY KEY (tenant_id, team_id, list_id);
-
-
---
--- Name: map_teams_persons map_teams_persons_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_persons
-    ADD CONSTRAINT map_teams_persons_pk PRIMARY KEY (tenant_id, team_id, person_id);
-
-
---
--- Name: map_web_forms_lists map_web_forms_lists_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_web_forms_lists
-    ADD CONSTRAINT map_web_forms_lists_pk PRIMARY KEY (tenant_id, web_form_id, list_id);
-
-
---
--- Name: ms_oauth_tokens ms_oauth_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.ms_oauth_tokens
-    ADD CONSTRAINT ms_oauth_tokens_pkey PRIMARY KEY (id);
-
-
---
--- Name: ms_oauth_tokens ms_oauth_tokens_tenant_campaign_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.ms_oauth_tokens
-    ADD CONSTRAINT ms_oauth_tokens_tenant_campaign_key UNIQUE (tenant_id, campaign_id);
-
-
---
--- Name: newsletter_events newsletter_events_id_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletter_events
-    ADD CONSTRAINT newsletter_events_id_pk PRIMARY KEY (id);
-
-
---
--- Name: newsletter_events newsletter_events_sg_event_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletter_events
-    ADD CONSTRAINT newsletter_events_sg_event_id_key UNIQUE (sg_event_id);
-
-
---
--- Name: newsletters newsletters_id_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletters
-    ADD CONSTRAINT newsletters_id_pk PRIMARY KEY (id);
-
-
---
--- Name: notifications notifications_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.notifications
-    ADD CONSTRAINT notifications_id_key UNIQUE (id);
-
-
---
--- Name: notifications notifications_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.notifications
-    ADD CONSTRAINT notifications_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: passkeys passkeys_credential_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.passkeys
-    ADD CONSTRAINT passkeys_credential_id_key UNIQUE (credential_id);
-
-
---
--- Name: passkeys passkeys_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.passkeys
-    ADD CONSTRAINT passkeys_pkey PRIMARY KEY (id);
-
-
---
--- Name: person_connections person_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.person_connections
-    ADD CONSTRAINT person_connections_pkey PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: person_newsletter_engagements person_newsletter_engagements_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.person_newsletter_engagements
-    ADD CONSTRAINT person_newsletter_engagements_pkey PRIMARY KEY (tenant_id, newsletter_id, email);
-
-
---
--- Name: persons persons_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT persons_id_key UNIQUE (id);
-
-
---
--- Name: persons persons_id_tenantid; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT persons_id_tenantid PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: potential_duplicates potential_duplicates_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.potential_duplicates
-    ADD CONSTRAINT potential_duplicates_pk PRIMARY KEY (id);
-
-
---
--- Name: profiles profiles_auth_id_unique; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.profiles
-    ADD CONSTRAINT profiles_auth_id_unique UNIQUE (auth_id);
-
-
---
--- Name: profiles profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.profiles
-    ADD CONSTRAINT profiles_pkey PRIMARY KEY (id);
-
-
---
--- Name: sessions sessions_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.sessions
-    ADD CONSTRAINT sessions_id_key UNIQUE (id);
-
-
---
--- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.sessions
-    ADD CONSTRAINT sessions_pkey PRIMARY KEY (session_id);
-
-
---
--- Name: sessions sessions_refresh_token_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.sessions
-    ADD CONSTRAINT sessions_refresh_token_key UNIQUE (refresh_token);
-
-
---
--- Name: settings settings_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.settings
-    ADD CONSTRAINT settings_pkey PRIMARY KEY (id);
-
-
---
--- Name: tags tags_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tags
-    ADD CONSTRAINT tags_id_key UNIQUE (id);
-
-
---
--- Name: tags tags_id_tenantid; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tags
-    ADD CONSTRAINT tags_id_tenantid PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: tags tags_tenant_name_type_unique; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tags
-    ADD CONSTRAINT tags_tenant_name_type_unique UNIQUE (tenant_id, name, type);
-
-
---
--- Name: task_attachments task_attachments_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_attachments
-    ADD CONSTRAINT task_attachments_pkey PRIMARY KEY (id);
-
-
---
--- Name: task_comments task_comments_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_comments
-    ADD CONSTRAINT task_comments_pkey PRIMARY KEY (id);
-
-
---
--- Name: task_subtasks task_subtasks_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_subtasks
-    ADD CONSTRAINT task_subtasks_pkey PRIMARY KEY (id);
-
-
---
--- Name: tasks tasks_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT tasks_id_key UNIQUE (id);
-
-
---
--- Name: tasks tasks_id_tenantid; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT tasks_id_tenantid PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: teams teams_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.teams
-    ADD CONSTRAINT teams_id_key UNIQUE (id);
-
-
---
--- Name: teams teams_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.teams
-    ADD CONSTRAINT teams_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: tenants tenants_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tenants
-    ADD CONSTRAINT tenants_pkey PRIMARY KEY (id);
-
-
---
--- Name: turf_assignments turf_assignments_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT turf_assignments_id_key UNIQUE (id);
-
-
---
--- Name: turf_assignments turf_assignments_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT turf_assignments_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: turf_assignments turf_assignments_token_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT turf_assignments_token_key UNIQUE (token);
-
-
---
--- Name: turf_households turf_households_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_households
-    ADD CONSTRAINT turf_households_pk PRIMARY KEY (tenant_id, turf_id, household_id);
-
-
---
--- Name: turf_knocks turf_knocks_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks
-    ADD CONSTRAINT turf_knocks_id_key UNIQUE (id);
-
-
---
--- Name: turf_knocks turf_knocks_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks
-    ADD CONSTRAINT turf_knocks_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: turfs turfs_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turfs
-    ADD CONSTRAINT turfs_id_key UNIQUE (id);
-
-
---
--- Name: turfs turfs_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turfs
-    ADD CONSTRAINT turfs_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: email_bodies unique_email_bodies_email_id; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_bodies
-    ADD CONSTRAINT unique_email_bodies_email_id UNIQUE (email_id);
-
-
---
--- Name: email_headers unique_email_headers_email_id; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_headers
-    ADD CONSTRAINT unique_email_headers_email_id UNIQUE (email_id);
-
-
---
--- Name: campaign_person_facts uq_cpf_campaign_person; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts
-    ADD CONSTRAINT uq_cpf_campaign_person UNIQUE (tenant_id, campaign_id, person_id);
-
-
---
--- Name: campaign_subscriptions uq_csub_campaign_person; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions
-    ADD CONSTRAINT uq_csub_campaign_person UNIQUE (tenant_id, campaign_id, person_id);
-
-
---
--- Name: email_suppressions uq_esup_email_reason; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_suppressions
-    ADD CONSTRAINT uq_esup_email_reason UNIQUE (tenant_id, email, reason);
-
-
---
--- Name: settings uq_settings_tenant_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.settings
-    ADD CONSTRAINT uq_settings_tenant_key UNIQUE (tenant_id, key);
-
-
---
--- Name: user_activity user_activity_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.user_activity
-    ADD CONSTRAINT user_activity_id_key UNIQUE (id);
-
-
---
--- Name: user_activity user_activity_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.user_activity
-    ADD CONSTRAINT user_activity_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: volunteer_events volunteer_events_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_events
-    ADD CONSTRAINT volunteer_events_id_key UNIQUE (id);
-
-
---
--- Name: volunteer_events volunteer_events_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_events
-    ADD CONSTRAINT volunteer_events_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: volunteer_shifts volunteer_shifts_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_shifts
-    ADD CONSTRAINT volunteer_shifts_id_key UNIQUE (id);
-
-
---
--- Name: volunteer_shifts volunteer_shifts_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_shifts
-    ADD CONSTRAINT volunteer_shifts_pk PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: web_forms web_forms_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.web_forms
-    ADD CONSTRAINT web_forms_id_key UNIQUE (id);
-
-
---
--- Name: web_forms web_forms_id_tenantid; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.web_forms
-    ADD CONSTRAINT web_forms_id_tenantid PRIMARY KEY (id, tenant_id);
-
-
---
--- Name: webhook_events webhook_events_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.webhook_events
-    ADD CONSTRAINT webhook_events_pk PRIMARY KEY (id);
-
-
---
--- Name: webhook_events webhook_events_stripe_event_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.webhook_events
-    ADD CONSTRAINT webhook_events_stripe_event_id_key UNIQUE (stripe_event_id);
-
-
---
--- Name: workflow_enrollments workflow_enrollments_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_enrollments
-    ADD CONSTRAINT workflow_enrollments_pk PRIMARY KEY (id);
-
-
---
--- Name: workflow_runs workflow_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_runs
-    ADD CONSTRAINT workflow_runs_pkey PRIMARY KEY (id);
-
-
---
--- Name: workflow_steps workflow_steps_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_steps
-    ADD CONSTRAINT workflow_steps_pk PRIMARY KEY (id);
-
-
---
--- Name: workflows workflows_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflows
-    ADD CONSTRAINT workflows_pk PRIMARY KEY (id);
-
-
---
--- Name: zapier_subscriptions zapier_subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.zapier_subscriptions
-    ADD CONSTRAINT zapier_subscriptions_pkey PRIMARY KEY (id);
-
-
---
--- Name: zapier_subscriptions zapier_subscriptions_tenant_id_event_type_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.zapier_subscriptions
-    ADD CONSTRAINT zapier_subscriptions_tenant_id_event_type_key UNIQUE (tenant_id, event_type);
-
-
---
--- Name: campaigns_map_tenant_user_index; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX campaigns_map_tenant_user_index ON public.map_campaigns_users USING btree (tenant_id, user_id);
-
-
---
--- Name: campaigns_tenant_index; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX campaigns_tenant_index ON public.campaigns USING btree (tenant_id);
-
-
---
--- Name: companies_tenant_slug_unique; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX companies_tenant_slug_unique ON public.companies USING btree (tenant_id, slug) WHERE (slug IS NOT NULL);
-
-
---
--- Name: event_registrations_event_idx; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX event_registrations_event_idx ON public.event_registrations USING btree (tenant_id, event_id);
-
-
---
--- Name: event_registrations_person_idx; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX event_registrations_person_idx ON public.event_registrations USING btree (tenant_id, person_id);
-
-
---
--- Name: events_search_vector_idx; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX events_search_vector_idx ON public.events USING gin (search_vector);
-
-
---
--- Name: events_tenant_slug_unique; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX events_tenant_slug_unique ON public.events USING btree (tenant_id, slug);
-
-
---
--- Name: files_entity_idx; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX files_entity_idx ON public.files USING btree (tenant_id, entity_type, entity_id);
-
-
---
--- Name: households_tenant_slug_unique; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX households_tenant_slug_unique ON public.households USING btree (tenant_id, slug) WHERE (slug IS NOT NULL);
-
-
---
--- Name: idx_background_jobs_active_type; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_background_jobs_active_type ON public.background_jobs USING btree (((payload ->> 'type'::text))) WHERE (status = ANY (ARRAY['pending'::text, 'processing'::text]));
-
-
---
--- Name: idx_background_jobs_claim; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_background_jobs_claim ON public.background_jobs USING btree (run_at, id) WHERE (status = 'pending'::text);
-
-
---
--- Name: idx_background_jobs_tenant_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_background_jobs_tenant_status ON public.background_jobs USING btree (tenant_id, status) WHERE (tenant_id IS NOT NULL);
-
-
---
--- Name: idx_companies_file_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_companies_file_id ON public.companies USING btree (file_id);
-
-
---
--- Name: idx_companies_fts; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_companies_fts ON public.companies USING gin (search_vector);
-
-
---
--- Name: idx_companies_tenant_email; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_companies_tenant_email ON public.companies USING btree (tenant_id, email);
-
-
---
--- Name: idx_companies_tenant_industry; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_companies_tenant_industry ON public.companies USING btree (tenant_id, industry);
-
-
---
--- Name: idx_companies_trgm_name; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_companies_trgm_name ON public.companies USING gin (name public.gin_trgm_ops);
-
-
---
--- Name: idx_cpf_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_cpf_tenant_campaign ON public.campaign_person_facts USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_cpf_tenant_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_cpf_tenant_person ON public.campaign_person_facts USING btree (tenant_id, person_id);
-
-
---
--- Name: idx_csub_tenant_campaign_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_csub_tenant_campaign_status ON public.campaign_subscriptions USING btree (tenant_id, campaign_id, status);
-
-
---
--- Name: idx_csub_tenant_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_csub_tenant_person ON public.campaign_subscriptions USING btree (tenant_id, person_id);
-
-
---
--- Name: idx_data_exports_tenant_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_data_exports_tenant_created ON public.data_exports USING btree (tenant_id, created_at);
-
-
---
--- Name: idx_data_exports_tenant_pending; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_data_exports_tenant_pending ON public.data_exports USING btree (tenant_id, created_at) WHERE (status = 'pending'::text);
-
-
---
--- Name: idx_data_imports_tag; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_data_imports_tag ON public.data_imports USING btree (tag_id);
-
-
---
--- Name: idx_data_imports_tenant_processed; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_data_imports_tenant_processed ON public.data_imports USING btree (tenant_id, processed_at);
-
-
---
--- Name: idx_delivery_requests_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_delivery_requests_tenant_campaign ON public.delivery_requests USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_delivery_requests_tenant_household; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_delivery_requests_tenant_household ON public.delivery_requests USING btree (tenant_id, household_id);
-
-
---
--- Name: idx_delivery_requests_tenant_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_delivery_requests_tenant_status ON public.delivery_requests USING btree (tenant_id, status);
-
-
---
--- Name: idx_delivery_route_stops_tenant_route; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_delivery_route_stops_tenant_route ON public.delivery_route_stops USING btree (tenant_id, route_id);
-
-
---
--- Name: idx_delivery_routes_share_token_hash; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_delivery_routes_share_token_hash ON public.delivery_routes USING btree (share_token_hash) WHERE (share_token_hash IS NOT NULL);
-
-
---
--- Name: idx_delivery_routes_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_delivery_routes_tenant_campaign ON public.delivery_routes USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_delivery_routes_tenant_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_delivery_routes_tenant_status ON public.delivery_routes USING btree (tenant_id, status);
-
-
---
--- Name: idx_dismissed_duplicate_groups_tenant; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_dismissed_duplicate_groups_tenant ON public.dismissed_duplicate_groups USING btree (tenant_id);
-
-
---
--- Name: idx_donation_periods_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_donation_periods_tenant_campaign ON public.donation_periods USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_donation_pledges_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_donation_pledges_tenant_campaign ON public.donation_pledges USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_donations_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_donations_person ON public.donations USING btree (tenant_id, person_id);
-
-
---
--- Name: idx_donations_pledge; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_donations_pledge ON public.donations USING btree (pledge_id) WHERE (pledge_id IS NOT NULL);
-
-
---
--- Name: idx_donations_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_donations_tenant_campaign ON public.donations USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_email_attachments_email_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_email_attachments_email_id ON public.email_attachments USING btree (email_id);
-
-
---
--- Name: idx_email_attachments_file_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_email_attachments_file_id ON public.email_attachments USING btree (file_id);
-
-
---
--- Name: idx_email_comments_email; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_email_comments_email ON public.email_comments USING btree (email_id);
-
-
---
--- Name: idx_email_drafts_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_email_drafts_tenant_campaign ON public.email_drafts USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_email_drafts_user_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_email_drafts_user_id ON public.email_drafts USING btree (tenant_id, user_id);
-
-
---
--- Name: idx_email_read_states_email; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_email_read_states_email ON public.email_read_states USING btree (tenant_id, email_id);
-
-
---
--- Name: idx_email_recipients_kind; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_email_recipients_kind ON public.email_recipients USING btree (email_id, kind, pos);
-
-
---
--- Name: idx_email_trash_tenant_email_unique; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_email_trash_tenant_email_unique ON public.email_trash USING btree (tenant_id, email_id);
-
-
---
--- Name: idx_emails_tenant_assigned; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_emails_tenant_assigned ON public.emails USING btree (tenant_id, assigned_to);
-
-
---
--- Name: idx_emails_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_emails_tenant_campaign ON public.emails USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_emails_tenant_folder; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_emails_tenant_folder ON public.emails USING btree (tenant_id, folder_id);
-
-
---
--- Name: idx_emails_tenant_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_emails_tenant_status ON public.emails USING btree (tenant_id, status);
-
-
---
--- Name: idx_esup_tenant_email; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_esup_tenant_email ON public.email_suppressions USING btree (tenant_id, email);
-
-
---
--- Name: idx_event_registrations_ticket; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_event_registrations_ticket ON public.event_registrations USING btree (ticket_type_id) WHERE (ticket_type_id IS NOT NULL);
-
-
---
--- Name: idx_events_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_events_tenant_campaign ON public.events USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_files_sha256; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_files_sha256 ON public.files USING btree (sha256_hex) WHERE (sha256_hex IS NOT NULL);
-
-
---
--- Name: idx_files_tenant; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_files_tenant ON public.files USING btree (tenant_id);
-
-
---
--- Name: idx_form_submissions_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_form_submissions_person ON public.form_submissions USING btree (tenant_id, person_id);
-
-
---
--- Name: idx_form_submissions_tenant_form; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_form_submissions_tenant_form ON public.form_submissions USING btree (tenant_id, form_id, created_at DESC);
-
-
---
--- Name: idx_households_file_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_file_id ON public.households USING btree (file_id);
-
-
---
--- Name: idx_households_fp_full; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_fp_full ON public.households USING btree (address_fp_full);
-
-
---
--- Name: idx_households_fp_street; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_fp_street ON public.households USING btree (address_fp_street);
-
-
---
--- Name: idx_households_fts; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_fts ON public.households USING gin (search_vector);
-
-
---
--- Name: idx_households_placeholder; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_households_placeholder ON public.households USING btree (tenant_id) WHERE is_placeholder;
-
-
---
--- Name: idx_households_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_tenant_campaign ON public.households USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_households_tenant_geocoding; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_tenant_geocoding ON public.households USING btree (tenant_id, geocoding_status);
-
-
---
--- Name: idx_households_tenant_type; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_tenant_type ON public.households USING btree (tenant_id, type);
-
-
---
--- Name: idx_households_trgm_city; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_trgm_city ON public.households USING gin (city public.gin_trgm_ops);
-
-
---
--- Name: idx_households_trgm_street1; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_trgm_street1 ON public.households USING gin (street1 public.gin_trgm_ops);
-
-
---
--- Name: idx_households_trgm_zip; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_households_trgm_zip ON public.households USING gin (zip public.gin_trgm_ops);
-
-
---
--- Name: idx_lists_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_lists_tenant_campaign ON public.lists USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_lists_tenant_is_dynamic; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_lists_tenant_is_dynamic ON public.lists USING btree (tenant_id, is_dynamic);
-
-
---
--- Name: idx_lists_tenant_object; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_lists_tenant_object ON public.lists USING btree (tenant_id, object);
-
-
---
--- Name: idx_lists_tenant_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_lists_tenant_status ON public.lists USING btree (tenant_id, status);
-
-
---
--- Name: idx_map_households_tags_tag; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_map_households_tags_tag ON public.map_households_tags USING btree (tag_id);
-
-
---
--- Name: idx_map_lists_households_hh; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_map_lists_households_hh ON public.map_lists_households USING btree (household_id);
-
-
---
--- Name: idx_map_lists_persons_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_map_lists_persons_person ON public.map_lists_persons USING btree (person_id);
-
-
---
--- Name: idx_map_newsletters_lists_list; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_map_newsletters_lists_list ON public.map_newsletters_lists USING btree (tenant_id, list_id);
-
-
---
--- Name: idx_map_peoples_tags_tag; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_map_peoples_tags_tag ON public.map_peoples_tags USING btree (tag_id);
-
-
---
--- Name: idx_map_teams_lists_list; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_map_teams_lists_list ON public.map_teams_lists USING btree (list_id);
-
-
---
--- Name: idx_map_teams_persons_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_map_teams_persons_person ON public.map_teams_persons USING btree (tenant_id, person_id);
-
-
---
--- Name: idx_map_web_forms_lists_list; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_map_web_forms_lists_list ON public.map_web_forms_lists USING btree (tenant_id, list_id);
-
-
---
--- Name: idx_newsletter_events_newsletter_event; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_newsletter_events_newsletter_event ON public.newsletter_events USING btree (newsletter_id, event_type);
-
-
---
--- Name: idx_newsletter_events_type; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_newsletter_events_type ON public.newsletter_events USING btree (tenant_id, newsletter_id, event_type);
-
-
---
--- Name: idx_newsletters_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_newsletters_tenant_campaign ON public.newsletters USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_notifications_read; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_notifications_read ON public.notifications USING btree (tenant_id, user_id, read);
-
-
---
--- Name: idx_persons_company_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_company_id ON public.persons USING btree (company_id);
-
-
---
--- Name: idx_persons_file_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_file_id ON public.persons USING btree (file_id);
-
-
---
--- Name: idx_persons_fts; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_fts ON public.persons USING gin (search_vector);
-
-
---
--- Name: idx_persons_tenant_assigned; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_tenant_assigned ON public.persons USING btree (tenant_id, assigned_to);
-
-
---
--- Name: idx_persons_tenant_company; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_tenant_company ON public.persons USING btree (tenant_id, company_id);
-
-
---
--- Name: idx_persons_tenant_email_btree; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_tenant_email_btree ON public.persons USING btree (tenant_id, email);
-
-
---
--- Name: idx_persons_tenant_email_unique; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_persons_tenant_email_unique ON public.persons USING btree (tenant_id, lower(email)) WHERE ((email IS NOT NULL) AND (TRIM(BOTH FROM email) <> ''::text));
-
-
---
--- Name: idx_persons_tenant_household; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_tenant_household ON public.persons USING btree (tenant_id, household_id);
-
-
---
--- Name: idx_persons_trgm_email; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_trgm_email ON public.persons USING gin (email public.gin_trgm_ops);
-
-
---
--- Name: idx_persons_trgm_first_name; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_trgm_first_name ON public.persons USING gin (first_name public.gin_trgm_ops);
-
-
---
--- Name: idx_persons_trgm_last_name; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_trgm_last_name ON public.persons USING gin (last_name public.gin_trgm_ops);
-
-
---
--- Name: idx_persons_trgm_mobile; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_persons_trgm_mobile ON public.persons USING gin (mobile public.gin_trgm_ops);
-
-
---
--- Name: idx_pne_newsletter; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_pne_newsletter ON public.person_newsletter_engagements USING btree (newsletter_id);
-
-
---
--- Name: idx_pne_tenant_email; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_pne_tenant_email ON public.person_newsletter_engagements USING btree (tenant_id, email);
-
-
---
--- Name: idx_potential_duplicates_company_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_potential_duplicates_company_id ON public.potential_duplicates USING btree (company_id) WHERE (company_id IS NOT NULL);
-
-
---
--- Name: idx_potential_duplicates_household_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_potential_duplicates_household_id ON public.potential_duplicates USING btree (household_id) WHERE (household_id IS NOT NULL);
-
-
---
--- Name: idx_potential_duplicates_person_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_potential_duplicates_person_id ON public.potential_duplicates USING btree (person_id);
-
-
---
--- Name: idx_potential_duplicates_tenant_group; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_potential_duplicates_tenant_group ON public.potential_duplicates USING btree (tenant_id, group_key);
-
-
---
--- Name: idx_potential_duplicates_unique_group_company; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_potential_duplicates_unique_group_company ON public.potential_duplicates USING btree (group_key, company_id) WHERE (company_id IS NOT NULL);
-
-
---
--- Name: idx_potential_duplicates_unique_group_household; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_potential_duplicates_unique_group_household ON public.potential_duplicates USING btree (group_key, household_id) WHERE (household_id IS NOT NULL);
-
-
---
--- Name: idx_potential_duplicates_unique_group_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_potential_duplicates_unique_group_person ON public.potential_duplicates USING btree (group_key, person_id);
-
-
---
--- Name: idx_profiles_avatar_file_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_profiles_avatar_file_id ON public.profiles USING btree (avatar_file_id);
-
-
---
--- Name: idx_sessions_expires_at; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_sessions_expires_at ON public.sessions USING btree (expires_at) WHERE (expires_at IS NOT NULL);
-
-
---
--- Name: idx_tags_tenant_type; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_tags_tenant_type ON public.tags USING btree (tenant_id, type);
-
-
---
--- Name: idx_task_attachments_task_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_task_attachments_task_id ON public.task_attachments USING btree (task_id);
-
-
---
--- Name: idx_task_comments_task_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_task_comments_task_id ON public.task_comments USING btree (task_id);
-
-
---
--- Name: idx_task_subtasks_task_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_task_subtasks_task_id ON public.task_subtasks USING btree (task_id);
-
-
---
--- Name: idx_tasks_file_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_tasks_file_id ON public.tasks USING btree (file_id);
-
-
---
--- Name: idx_tasks_team_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_tasks_team_id ON public.tasks USING btree (team_id);
-
-
---
--- Name: idx_tasks_tenant_assigned; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_tasks_tenant_assigned ON public.tasks USING btree (tenant_id, assigned_to);
-
-
---
--- Name: idx_tasks_tenant_due; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_tasks_tenant_due ON public.tasks USING btree (tenant_id, due_at);
-
-
---
--- Name: idx_tasks_tenant_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_tasks_tenant_status ON public.tasks USING btree (tenant_id, status);
-
-
---
--- Name: idx_teams_lead_user; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_teams_lead_user ON public.teams USING btree (team_lead_user_id);
-
-
---
--- Name: idx_teams_tenant_captain; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_teams_tenant_captain ON public.teams USING btree (tenant_id, team_captain_id);
-
-
---
--- Name: idx_tenants_slug; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_tenants_slug ON public.tenants USING btree (slug) WHERE (slug IS NOT NULL);
-
-
---
--- Name: idx_turf_assignments_team; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turf_assignments_team ON public.turf_assignments USING btree (tenant_id, team_id);
-
-
---
--- Name: idx_turf_assignments_turf; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turf_assignments_turf ON public.turf_assignments USING btree (tenant_id, turf_id);
-
-
---
--- Name: idx_turf_households_household; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turf_households_household ON public.turf_households USING btree (tenant_id, household_id);
-
-
---
--- Name: idx_turf_households_turf; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turf_households_turf ON public.turf_households USING btree (tenant_id, turf_id);
-
-
---
--- Name: idx_turf_knocks_household; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turf_knocks_household ON public.turf_knocks USING btree (tenant_id, household_id);
-
-
---
--- Name: idx_turf_knocks_knocked_at; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turf_knocks_knocked_at ON public.turf_knocks USING btree (tenant_id, knocked_at);
-
-
---
--- Name: idx_turf_knocks_turf; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turf_knocks_turf ON public.turf_knocks USING btree (tenant_id, turf_id);
-
-
---
--- Name: idx_turfs_tenant; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turfs_tenant ON public.turfs USING btree (tenant_id);
-
-
---
--- Name: idx_turfs_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turfs_tenant_campaign ON public.turfs USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_turfs_tenant_list; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turfs_tenant_list ON public.turfs USING btree (tenant_id, list_id);
-
-
---
--- Name: idx_turfs_tenant_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_turfs_tenant_status ON public.turfs USING btree (tenant_id, status);
-
-
---
--- Name: idx_user_activity_tenant_entity; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_user_activity_tenant_entity ON public.user_activity USING btree (tenant_id, entity, entity_id);
-
-
---
--- Name: idx_user_activity_tenant_user; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_user_activity_tenant_user ON public.user_activity USING btree (tenant_id, user_id);
-
-
---
--- Name: idx_volunteer_events_dates; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_volunteer_events_dates ON public.volunteer_events USING btree (tenant_id, start_time, end_time);
-
-
---
--- Name: idx_volunteer_events_fts; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_volunteer_events_fts ON public.volunteer_events USING gin (search_vector);
-
-
---
--- Name: idx_volunteer_events_tenant_end; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_volunteer_events_tenant_end ON public.volunteer_events USING btree (tenant_id, end_time);
-
-
---
--- Name: idx_volunteer_events_tenant_slug; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_volunteer_events_tenant_slug ON public.volunteer_events USING btree (tenant_id, slug);
-
-
---
--- Name: idx_volunteer_shifts_event; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_volunteer_shifts_event ON public.volunteer_shifts USING btree (tenant_id, event_id);
-
-
---
--- Name: idx_volunteer_shifts_event_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_volunteer_shifts_event_ri ON public.volunteer_shifts USING btree (event_id);
-
-
---
--- Name: idx_volunteer_shifts_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_volunteer_shifts_person ON public.volunteer_shifts USING btree (tenant_id, person_id);
-
-
---
--- Name: idx_volunteer_shifts_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_volunteer_shifts_person_ri ON public.volunteer_shifts USING btree (person_id);
-
-
---
--- Name: idx_web_forms_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_web_forms_tenant_campaign ON public.web_forms USING btree (tenant_id, campaign_id);
-
-
---
--- Name: idx_web_forms_tenant_slug; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX idx_web_forms_tenant_slug ON public.web_forms USING btree (tenant_id, slug) WHERE (slug IS NOT NULL);
-
-
---
--- Name: idx_webhook_events_status_run_at; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_webhook_events_status_run_at ON public.webhook_events USING btree (status, run_at);
-
-
---
--- Name: idx_workflow_enrollments_next_run; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workflow_enrollments_next_run ON public.workflow_enrollments USING btree (status, next_run_at);
-
-
---
--- Name: idx_workflow_enrollments_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workflow_enrollments_person ON public.workflow_enrollments USING btree (person_id);
-
-
---
--- Name: idx_workflow_enrollments_tenant_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workflow_enrollments_tenant_id ON public.workflow_enrollments USING btree (tenant_id);
-
-
---
--- Name: idx_workflow_enrollments_workflow_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workflow_enrollments_workflow_person ON public.workflow_enrollments USING btree (workflow_id, person_id);
-
-
---
--- Name: idx_workflow_runs_tenant_workflow_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workflow_runs_tenant_workflow_created ON public.workflow_runs USING btree (tenant_id, workflow_id, created_at DESC);
-
-
---
--- Name: idx_workflow_steps_tenant_workflow; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workflow_steps_tenant_workflow ON public.workflow_steps USING btree (tenant_id, workflow_id, step_number);
-
-
---
--- Name: idx_workflows_tenant_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workflows_tenant_id ON public.workflows USING btree (tenant_id);
-
-
---
--- Name: idx_workflows_trigger_event_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workflows_trigger_event_id ON public.workflows USING btree (trigger_event_id);
-
-
---
--- Name: newsletters_tenant_idx; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX newsletters_tenant_idx ON public.newsletters USING btree (tenant_id);
-
-
---
--- Name: passkeys_user_id_idx; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX passkeys_user_id_idx ON public.passkeys USING btree (user_id);
-
-
---
--- Name: pc_from_idx; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX pc_from_idx ON public.person_connections USING btree (tenant_id, from_person_id);
-
-
---
--- Name: pc_to_idx; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX pc_to_idx ON public.person_connections USING btree (tenant_id, to_person_id);
-
-
---
--- Name: pc_unique_edge; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX pc_unique_edge ON public.person_connections USING btree (tenant_id, from_person_id, to_person_id, relation_type);
-
-
---
--- Name: persons_tenant_campaign_household_index; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX persons_tenant_campaign_household_index ON public.persons USING btree (tenant_id, campaign_id, household_id);
-
-
---
--- Name: persons_tenant_public_id_unique; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX persons_tenant_public_id_unique ON public.persons USING btree (tenant_id, public_id) WHERE (public_id IS NOT NULL);
-
-
---
--- Name: persons_tenant_slug_unique; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX persons_tenant_slug_unique ON public.persons USING btree (tenant_id, slug) WHERE (slug IS NOT NULL);
-
-
---
--- Name: sessions_user_index; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX sessions_user_index ON public.sessions USING btree (user_id);
-
-
---
--- Name: uq_delivery_route_stops_active_request; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX uq_delivery_route_stops_active_request ON public.delivery_route_stops USING btree (request_id) WHERE (status = 'pending'::text);
-
-
---
--- Name: uq_delivery_route_stops_route_seq; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX uq_delivery_route_stops_route_seq ON public.delivery_route_stops USING btree (route_id, seq);
-
-
---
--- Name: uq_turf_knocks_client; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE UNIQUE INDEX uq_turf_knocks_client ON public.turf_knocks USING btree (tenant_id, turf_id, client_knock_id) WHERE (client_knock_id IS NOT NULL);
-
-
---
--- Name: web_forms_tenant_index; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX web_forms_tenant_index ON public.web_forms USING btree (tenant_id);
-
-
---
--- Name: idx_workspace_api_keys_key_hash; Type: INDEX; Schema: public; Owner: pplcrm_owner
---
-
-CREATE INDEX idx_workspace_api_keys_key_hash ON public.workspace_api_keys USING btree (key_hash);
-
-
---
--- Name: authusers trg_authusers_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_authusers_updated_at BEFORE UPDATE ON public.authusers FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: background_jobs trg_background_jobs_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_background_jobs_updated_at BEFORE UPDATE ON public.background_jobs FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: campaigns trg_campaigns_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_campaigns_updated_at BEFORE UPDATE ON public.campaigns FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: companies trg_companies_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_companies_updated_at BEFORE UPDATE ON public.companies FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: data_exports trg_data_exports_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_data_exports_updated_at BEFORE UPDATE ON public.data_exports FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: data_imports trg_data_imports_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_data_imports_updated_at BEFORE UPDATE ON public.data_imports FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: donation_periods trg_donation_periods_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_donation_periods_updated_at BEFORE UPDATE ON public.donation_periods FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: donation_pledges trg_donation_pledges_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_donation_pledges_updated_at BEFORE UPDATE ON public.donation_pledges FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: donations trg_donations_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_donations_updated_at BEFORE UPDATE ON public.donations FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: email_attachments trg_email_attachments_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_email_attachments_updated_at BEFORE UPDATE ON public.email_attachments FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: email_bodies trg_email_bodies_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_email_bodies_updated_at BEFORE UPDATE ON public.email_bodies FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: email_comments trg_email_comments_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_email_comments_updated_at BEFORE UPDATE ON public.email_comments FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: email_drafts trg_email_drafts_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_email_drafts_updated_at BEFORE UPDATE ON public.email_drafts FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: email_headers trg_email_headers_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_email_headers_updated_at BEFORE UPDATE ON public.email_headers FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: email_recipients trg_email_recipients_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_email_recipients_updated_at BEFORE UPDATE ON public.email_recipients FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: email_trash trg_email_trash_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_email_trash_updated_at BEFORE UPDATE ON public.email_trash FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: emails trg_emails_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_emails_updated_at BEFORE UPDATE ON public.emails FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: event_registrations trg_event_registrations_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_event_registrations_updated_at BEFORE UPDATE ON public.event_registrations FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: event_ticket_types trg_event_ticket_types_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_event_ticket_types_updated_at BEFORE UPDATE ON public.event_ticket_types FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: events trg_events_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_events_updated_at BEFORE UPDATE ON public.events FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: files trg_files_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_files_updated_at BEFORE UPDATE ON public.files FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: google_oauth_tokens trg_google_oauth_tokens_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_google_oauth_tokens_updated_at BEFORE UPDATE ON public.google_oauth_tokens FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: households trg_households_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_households_updated_at BEFORE UPDATE ON public.households FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: lists trg_lists_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_lists_updated_at BEFORE UPDATE ON public.lists FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: map_campaigns_users trg_map_campaigns_users_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_map_campaigns_users_updated_at BEFORE UPDATE ON public.map_campaigns_users FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: map_households_tags trg_map_households_tags_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_map_households_tags_updated_at BEFORE UPDATE ON public.map_households_tags FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: map_lists_households trg_map_lists_households_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_map_lists_households_updated_at BEFORE UPDATE ON public.map_lists_households FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: map_lists_persons trg_map_lists_persons_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_map_lists_persons_updated_at BEFORE UPDATE ON public.map_lists_persons FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: map_peoples_tags trg_map_peoples_tags_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_map_peoples_tags_updated_at BEFORE UPDATE ON public.map_peoples_tags FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: map_teams_lists trg_map_teams_lists_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_map_teams_lists_updated_at BEFORE UPDATE ON public.map_teams_lists FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: map_teams_persons trg_map_teams_persons_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_map_teams_persons_updated_at BEFORE UPDATE ON public.map_teams_persons FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: ms_oauth_tokens trg_ms_oauth_tokens_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_ms_oauth_tokens_updated_at BEFORE UPDATE ON public.ms_oauth_tokens FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: newsletters trg_newsletters_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_newsletters_updated_at BEFORE UPDATE ON public.newsletters FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: notifications trg_notifications_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_notifications_updated_at BEFORE UPDATE ON public.notifications FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: person_connections trg_person_connections_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_person_connections_updated_at BEFORE UPDATE ON public.person_connections FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: persons trg_persons_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_persons_updated_at BEFORE UPDATE ON public.persons FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: potential_duplicates trg_potential_duplicates_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_potential_duplicates_updated_at BEFORE UPDATE ON public.potential_duplicates FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: profiles trg_profiles_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: settings trg_settings_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_settings_updated_at BEFORE UPDATE ON public.settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: tags trg_tags_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_tags_updated_at BEFORE UPDATE ON public.tags FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: task_attachments trg_task_attachments_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_task_attachments_updated_at BEFORE UPDATE ON public.task_attachments FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: task_comments trg_task_comments_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_task_comments_updated_at BEFORE UPDATE ON public.task_comments FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: task_subtasks trg_task_subtasks_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_task_subtasks_updated_at BEFORE UPDATE ON public.task_subtasks FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: tasks trg_tasks_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_tasks_updated_at BEFORE UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: teams trg_teams_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_teams_updated_at BEFORE UPDATE ON public.teams FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: tenants trg_tenants_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_tenants_updated_at BEFORE UPDATE ON public.tenants FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: user_activity trg_user_activity_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_user_activity_updated_at BEFORE UPDATE ON public.user_activity FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: volunteer_events trg_volunteer_events_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_volunteer_events_updated_at BEFORE UPDATE ON public.volunteer_events FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: volunteer_shifts trg_volunteer_shifts_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_volunteer_shifts_updated_at BEFORE UPDATE ON public.volunteer_shifts FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: web_forms trg_web_forms_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_web_forms_updated_at BEFORE UPDATE ON public.web_forms FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: webhook_events trg_webhook_events_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_webhook_events_updated_at BEFORE UPDATE ON public.webhook_events FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: workflow_enrollments trg_workflow_enrollments_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_workflow_enrollments_updated_at BEFORE UPDATE ON public.workflow_enrollments FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: workflow_steps trg_workflow_steps_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_workflow_steps_updated_at BEFORE UPDATE ON public.workflow_steps FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: workflows trg_workflows_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_workflows_updated_at BEFORE UPDATE ON public.workflows FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: zapier_subscriptions trg_zapier_subscriptions_updated_at; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trg_zapier_subscriptions_updated_at BEFORE UPDATE ON public.zapier_subscriptions FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
-
-
---
--- Name: background_jobs trigger_notify_job_inserted; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trigger_notify_job_inserted AFTER INSERT ON public.background_jobs FOR EACH ROW EXECUTE FUNCTION public.notify_job_inserted();
-
-
---
--- Name: webhook_events trigger_notify_webhook_event_inserted; Type: TRIGGER; Schema: public; Owner: pplcrm_owner
---
-
-CREATE TRIGGER trigger_notify_webhook_event_inserted AFTER INSERT ON public.webhook_events FOR EACH ROW EXECUTE FUNCTION public.notify_webhook_event_inserted();
-
-
---
--- Name: email_comments email_comments_email_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_comments
-    ADD CONSTRAINT email_comments_email_id_fkey FOREIGN KEY (email_id) REFERENCES public.emails(id) ON DELETE CASCADE;
-
-
---
--- Name: email_trash email_trash_email_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_trash
-    ADD CONSTRAINT email_trash_email_id_fkey FOREIGN KEY (email_id) REFERENCES public.emails(id) ON DELETE CASCADE;
-
-
---
--- Name: campaigns fk_admin_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaigns
-    ADD CONSTRAINT fk_admin_id FOREIGN KEY (admin_id) REFERENCES public.authusers(id);
-
-
---
--- Name: tenants fk_admin_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tenants
-    ADD CONSTRAINT fk_admin_id FOREIGN KEY (admin_id) REFERENCES public.authusers(id);
-
-
---
--- Name: authusers fk_authusers_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.authusers
-    ADD CONSTRAINT fk_authusers_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: authusers fk_authusers_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.authusers
-    ADD CONSTRAINT fk_authusers_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: authusers fk_authusers_updatedby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.authusers
-    ADD CONSTRAINT fk_authusers_updatedby_id FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: background_jobs fk_background_jobs_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.background_jobs
-    ADD CONSTRAINT fk_background_jobs_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: households fk_campaign_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.households
-    ADD CONSTRAINT fk_campaign_id FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: map_campaigns_users fk_campaign_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_campaigns_users
-    ADD CONSTRAINT fk_campaign_id FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id) ON DELETE CASCADE;
-
-
---
--- Name: persons fk_campaign_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT fk_campaign_id FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: campaigns fk_campaigns_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaigns
-    ADD CONSTRAINT fk_campaigns_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: campaigns fk_campaigns_updatedby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaigns
-    ADD CONSTRAINT fk_campaigns_updatedby_id FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: companies fk_companies_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.companies
-    ADD CONSTRAINT fk_companies_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: companies fk_companies_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.companies
-    ADD CONSTRAINT fk_companies_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: companies fk_companies_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.companies
-    ADD CONSTRAINT fk_companies_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: campaign_person_facts fk_cpf_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts
-    ADD CONSTRAINT fk_cpf_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id) ON DELETE CASCADE;
-
-
---
--- Name: campaign_person_facts fk_cpf_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts
-    ADD CONSTRAINT fk_cpf_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: campaign_person_facts fk_cpf_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts
-    ADD CONSTRAINT fk_cpf_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
-
-
---
--- Name: campaign_person_facts fk_cpf_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts
-    ADD CONSTRAINT fk_cpf_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: campaign_person_facts fk_cpf_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_person_facts
-    ADD CONSTRAINT fk_cpf_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: campaigns fk_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaigns
-    ADD CONSTRAINT fk_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: households fk_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.households
-    ADD CONSTRAINT fk_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: persons fk_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT fk_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: tenants fk_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tenants
-    ADD CONSTRAINT fk_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: campaign_subscriptions fk_csub_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions
-    ADD CONSTRAINT fk_csub_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id) ON DELETE CASCADE;
-
-
---
--- Name: campaign_subscriptions fk_csub_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions
-    ADD CONSTRAINT fk_csub_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: campaign_subscriptions fk_csub_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions
-    ADD CONSTRAINT fk_csub_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
-
-
---
--- Name: campaign_subscriptions fk_csub_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions
-    ADD CONSTRAINT fk_csub_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: campaign_subscriptions fk_csub_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.campaign_subscriptions
-    ADD CONSTRAINT fk_csub_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: data_exports fk_data_exports_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_exports
-    ADD CONSTRAINT fk_data_exports_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: data_exports fk_data_exports_user; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_exports
-    ADD CONSTRAINT fk_data_exports_user FOREIGN KEY (user_id) REFERENCES public.authusers(id);
-
-
---
--- Name: data_imports fk_data_imports_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_imports
-    ADD CONSTRAINT fk_data_imports_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: data_imports fk_data_imports_tag; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_imports
-    ADD CONSTRAINT fk_data_imports_tag FOREIGN KEY (tag_id) REFERENCES public.tags(id) ON DELETE SET NULL;
-
-
---
--- Name: data_imports fk_data_imports_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_imports
-    ADD CONSTRAINT fk_data_imports_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: data_imports fk_data_imports_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.data_imports
-    ADD CONSTRAINT fk_data_imports_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: delivery_requests fk_delivery_requests_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_requests
-    ADD CONSTRAINT fk_delivery_requests_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: delivery_requests fk_delivery_requests_household; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_requests
-    ADD CONSTRAINT fk_delivery_requests_household FOREIGN KEY (household_id) REFERENCES public.households(id) ON DELETE CASCADE;
-
-
---
--- Name: delivery_requests fk_delivery_requests_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_requests
-    ADD CONSTRAINT fk_delivery_requests_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE SET NULL;
-
-
---
--- Name: delivery_requests fk_delivery_requests_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_requests
-    ADD CONSTRAINT fk_delivery_requests_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: delivery_requests fk_delivery_requests_web_form; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_requests
-    ADD CONSTRAINT fk_delivery_requests_web_form FOREIGN KEY (web_form_id) REFERENCES public.web_forms(id) ON DELETE SET NULL;
-
-
---
--- Name: delivery_route_stops fk_delivery_route_stops_request; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_route_stops
-    ADD CONSTRAINT fk_delivery_route_stops_request FOREIGN KEY (request_id) REFERENCES public.delivery_requests(id) ON DELETE CASCADE;
-
-
---
--- Name: delivery_route_stops fk_delivery_route_stops_route; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_route_stops
-    ADD CONSTRAINT fk_delivery_route_stops_route FOREIGN KEY (route_id) REFERENCES public.delivery_routes(id) ON DELETE CASCADE;
-
-
---
--- Name: delivery_route_stops fk_delivery_route_stops_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_route_stops
-    ADD CONSTRAINT fk_delivery_route_stops_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: delivery_routes fk_delivery_routes_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_routes
-    ADD CONSTRAINT fk_delivery_routes_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: delivery_routes fk_delivery_routes_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_routes
-    ADD CONSTRAINT fk_delivery_routes_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: delivery_routes fk_delivery_routes_volunteer; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.delivery_routes
-    ADD CONSTRAINT fk_delivery_routes_volunteer FOREIGN KEY (volunteer_person_id) REFERENCES public.persons(id) ON DELETE SET NULL;
-
-
---
--- Name: dismissed_duplicate_groups fk_dismissed_duplicate_groups_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.dismissed_duplicate_groups
-    ADD CONSTRAINT fk_dismissed_duplicate_groups_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: donation_periods fk_donation_periods_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_periods
-    ADD CONSTRAINT fk_donation_periods_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: donation_periods fk_donation_periods_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_periods
-    ADD CONSTRAINT fk_donation_periods_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: donation_pledges fk_donation_pledges_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_pledges
-    ADD CONSTRAINT fk_donation_pledges_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: donation_pledges fk_donation_pledges_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donation_pledges
-    ADD CONSTRAINT fk_donation_pledges_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE SET NULL;
-
-
---
--- Name: donations fk_donations_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donations
-    ADD CONSTRAINT fk_donations_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: donations fk_donations_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donations
-    ADD CONSTRAINT fk_donations_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE SET NULL;
-
-
---
--- Name: donations fk_donations_pledge; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donations
-    ADD CONSTRAINT fk_donations_pledge FOREIGN KEY (pledge_id) REFERENCES public.donation_pledges(id) ON DELETE SET NULL;
-
-
---
--- Name: donations fk_donations_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.donations
-    ADD CONSTRAINT fk_donations_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: email_attachments fk_email_attachments_email; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_attachments
-    ADD CONSTRAINT fk_email_attachments_email FOREIGN KEY (email_id) REFERENCES public.emails(id) ON DELETE CASCADE;
-
-
---
--- Name: email_attachments fk_email_attachments_file; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_attachments
-    ADD CONSTRAINT fk_email_attachments_file FOREIGN KEY (file_id) REFERENCES public.files(id) ON DELETE SET NULL;
-
-
---
--- Name: email_attachments fk_email_attachments_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_attachments
-    ADD CONSTRAINT fk_email_attachments_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: email_bodies fk_email_bodies_email; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_bodies
-    ADD CONSTRAINT fk_email_bodies_email FOREIGN KEY (email_id) REFERENCES public.emails(id) ON DELETE CASCADE;
-
-
---
--- Name: email_bodies fk_email_bodies_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_bodies
-    ADD CONSTRAINT fk_email_bodies_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: email_comments fk_email_comments_author; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_comments
-    ADD CONSTRAINT fk_email_comments_author FOREIGN KEY (author_id) REFERENCES public.authusers(id);
-
-
---
--- Name: email_comments fk_email_comments_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_comments
-    ADD CONSTRAINT fk_email_comments_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: email_drafts fk_email_drafts_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_drafts
-    ADD CONSTRAINT fk_email_drafts_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: email_drafts fk_email_drafts_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_drafts
-    ADD CONSTRAINT fk_email_drafts_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: email_drafts fk_email_drafts_user; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_drafts
-    ADD CONSTRAINT fk_email_drafts_user FOREIGN KEY (user_id) REFERENCES public.authusers(id) ON DELETE CASCADE;
-
-
---
--- Name: email_headers fk_email_headers_email; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_headers
-    ADD CONSTRAINT fk_email_headers_email FOREIGN KEY (email_id) REFERENCES public.emails(id) ON DELETE CASCADE;
-
-
---
--- Name: email_headers fk_email_headers_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_headers
-    ADD CONSTRAINT fk_email_headers_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: email_read_states fk_email_read_states_email; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_read_states
-    ADD CONSTRAINT fk_email_read_states_email FOREIGN KEY (email_id) REFERENCES public.emails(id) ON DELETE CASCADE;
-
-
---
--- Name: email_read_states fk_email_read_states_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_read_states
-    ADD CONSTRAINT fk_email_read_states_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: email_read_states fk_email_read_states_user; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_read_states
-    ADD CONSTRAINT fk_email_read_states_user FOREIGN KEY (user_id) REFERENCES public.authusers(id);
-
-
---
--- Name: email_recipients fk_email_recipients_email; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_recipients
-    ADD CONSTRAINT fk_email_recipients_email FOREIGN KEY (email_id) REFERENCES public.emails(id) ON DELETE CASCADE;
-
-
---
--- Name: email_recipients fk_email_recipients_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_recipients
-    ADD CONSTRAINT fk_email_recipients_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: email_trash fk_email_trash_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_trash
-    ADD CONSTRAINT fk_email_trash_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: emails fk_emails_assigned; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.emails
-    ADD CONSTRAINT fk_emails_assigned FOREIGN KEY (assigned_to) REFERENCES public.authusers(id);
-
-
---
--- Name: emails fk_emails_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.emails
-    ADD CONSTRAINT fk_emails_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: emails fk_emails_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.emails
-    ADD CONSTRAINT fk_emails_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: email_suppressions fk_esup_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.email_suppressions
-    ADD CONSTRAINT fk_esup_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: event_registrations fk_event_registrations_event; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_registrations
-    ADD CONSTRAINT fk_event_registrations_event FOREIGN KEY (event_id, tenant_id) REFERENCES public.events(id, tenant_id) ON DELETE CASCADE;
-
-
---
--- Name: event_registrations fk_event_registrations_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_registrations
-    ADD CONSTRAINT fk_event_registrations_person FOREIGN KEY (person_id, tenant_id) REFERENCES public.persons(id, tenant_id) ON DELETE CASCADE;
-
-
---
--- Name: event_registrations fk_event_registrations_ticket_type; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_registrations
-    ADD CONSTRAINT fk_event_registrations_ticket_type FOREIGN KEY (ticket_type_id) REFERENCES public.event_ticket_types(id) ON DELETE SET NULL;
-
-
---
--- Name: event_ticket_types fk_event_ticket_types_event; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.event_ticket_types
-    ADD CONSTRAINT fk_event_ticket_types_event FOREIGN KEY (event_id, tenant_id) REFERENCES public.events(id, tenant_id) ON DELETE CASCADE;
-
-
---
--- Name: events fk_events_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.events
-    ADD CONSTRAINT fk_events_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: volunteer_events fk_events_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_events
-    ADD CONSTRAINT fk_events_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: volunteer_events fk_events_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_events
-    ADD CONSTRAINT fk_events_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: volunteer_events fk_events_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_events
-    ADD CONSTRAINT fk_events_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: files fk_files_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.files
-    ADD CONSTRAINT fk_files_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: files fk_files_uploaded_by; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.files
-    ADD CONSTRAINT fk_files_uploaded_by FOREIGN KEY (uploaded_by) REFERENCES public.authusers(id) ON DELETE SET NULL;
-
-
---
--- Name: form_submissions fk_form_submissions_form; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.form_submissions
-    ADD CONSTRAINT fk_form_submissions_form FOREIGN KEY (form_id, tenant_id) REFERENCES public.web_forms(id, tenant_id) ON DELETE CASCADE;
-
-
---
--- Name: form_submissions fk_form_submissions_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.form_submissions
-    ADD CONSTRAINT fk_form_submissions_person FOREIGN KEY (person_id, tenant_id) REFERENCES public.persons(id, tenant_id) ON DELETE CASCADE;
-
-
---
--- Name: google_oauth_tokens fk_google_oauth_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.google_oauth_tokens
-    ADD CONSTRAINT fk_google_oauth_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: google_oauth_tokens fk_google_oauth_tokens_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.google_oauth_tokens
-    ADD CONSTRAINT fk_google_oauth_tokens_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: persons fk_household_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT fk_household_id FOREIGN KEY (household_id) REFERENCES public.households(id);
-
-
---
--- Name: households fk_households_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.households
-    ADD CONSTRAINT fk_households_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: households fk_households_updatedby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.households
-    ADD CONSTRAINT fk_households_updatedby_id FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: lists fk_lists_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.lists
-    ADD CONSTRAINT fk_lists_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: lists fk_lists_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.lists
-    ADD CONSTRAINT fk_lists_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: lists fk_lists_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.lists
-    ADD CONSTRAINT fk_lists_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: lists fk_lists_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.lists
-    ADD CONSTRAINT fk_lists_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: map_campaigns_users fk_map_campaigns_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_campaigns_users
-    ADD CONSTRAINT fk_map_campaigns_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: map_households_tags fk_map_household_tags_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_households_tags
-    ADD CONSTRAINT fk_map_household_tags_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: map_lists_households fk_map_lists_households_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_lists_households
-    ADD CONSTRAINT fk_map_lists_households_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: map_lists_persons fk_map_lists_persons_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_lists_persons
-    ADD CONSTRAINT fk_map_lists_persons_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: map_newsletters_lists fk_map_newsletters_lists_list; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_newsletters_lists
-    ADD CONSTRAINT fk_map_newsletters_lists_list FOREIGN KEY (list_id) REFERENCES public.lists(id) ON DELETE CASCADE;
-
-
---
--- Name: map_newsletters_lists fk_map_newsletters_lists_newsletter; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_newsletters_lists
-    ADD CONSTRAINT fk_map_newsletters_lists_newsletter FOREIGN KEY (newsletter_id) REFERENCES public.newsletters(id) ON DELETE CASCADE;
-
-
---
--- Name: map_newsletters_lists fk_map_newsletters_lists_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_newsletters_lists
-    ADD CONSTRAINT fk_map_newsletters_lists_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: map_peoples_tags fk_map_peoples_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_peoples_tags
-    ADD CONSTRAINT fk_map_peoples_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: map_teams_lists fk_map_teams_lists_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_lists
-    ADD CONSTRAINT fk_map_teams_lists_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: map_teams_lists fk_map_teams_lists_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_lists
-    ADD CONSTRAINT fk_map_teams_lists_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: map_teams_lists fk_map_teams_lists_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_lists
-    ADD CONSTRAINT fk_map_teams_lists_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: map_teams_persons fk_map_teams_persons_created; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_persons
-    ADD CONSTRAINT fk_map_teams_persons_created FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: map_teams_persons fk_map_teams_persons_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_persons
-    ADD CONSTRAINT fk_map_teams_persons_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: map_teams_persons fk_map_teams_persons_updated; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_persons
-    ADD CONSTRAINT fk_map_teams_persons_updated FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: map_web_forms_lists fk_map_web_forms_lists_form; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_web_forms_lists
-    ADD CONSTRAINT fk_map_web_forms_lists_form FOREIGN KEY (web_form_id) REFERENCES public.web_forms(id) ON DELETE CASCADE;
-
-
---
--- Name: map_web_forms_lists fk_map_web_forms_lists_list; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_web_forms_lists
-    ADD CONSTRAINT fk_map_web_forms_lists_list FOREIGN KEY (list_id) REFERENCES public.lists(id) ON DELETE CASCADE;
-
-
---
--- Name: map_web_forms_lists fk_map_web_forms_lists_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_web_forms_lists
-    ADD CONSTRAINT fk_map_web_forms_lists_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: ms_oauth_tokens fk_ms_oauth_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.ms_oauth_tokens
-    ADD CONSTRAINT fk_ms_oauth_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: ms_oauth_tokens fk_ms_oauth_tokens_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.ms_oauth_tokens
-    ADD CONSTRAINT fk_ms_oauth_tokens_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: newsletter_events fk_newsletter_events_newsletter_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletter_events
-    ADD CONSTRAINT fk_newsletter_events_newsletter_id FOREIGN KEY (newsletter_id) REFERENCES public.newsletters(id) ON DELETE CASCADE;
-
-
---
--- Name: newsletter_events fk_newsletter_events_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletter_events
-    ADD CONSTRAINT fk_newsletter_events_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: newsletters fk_newsletters_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletters
-    ADD CONSTRAINT fk_newsletters_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: newsletters fk_newsletters_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletters
-    ADD CONSTRAINT fk_newsletters_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: newsletters fk_newsletters_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletters
-    ADD CONSTRAINT fk_newsletters_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: newsletters fk_newsletters_updatedby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.newsletters
-    ADD CONSTRAINT fk_newsletters_updatedby_id FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: notifications fk_notifications_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.notifications
-    ADD CONSTRAINT fk_notifications_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: notifications fk_notifications_user; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.notifications
-    ADD CONSTRAINT fk_notifications_user FOREIGN KEY (user_id) REFERENCES public.authusers(id) ON DELETE CASCADE;
-
-
---
--- Name: passkeys fk_passkeys_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.passkeys
-    ADD CONSTRAINT fk_passkeys_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: persons fk_persons_assigned_to; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT fk_persons_assigned_to FOREIGN KEY (assigned_to) REFERENCES public.authusers(id) ON DELETE SET NULL;
-
-
---
--- Name: persons fk_persons_company; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT fk_persons_company FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE SET NULL;
-
-
---
--- Name: persons fk_persons_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT fk_persons_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: persons fk_persons_updatedby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.persons
-    ADD CONSTRAINT fk_persons_updatedby_id FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: person_newsletter_engagements fk_pne_newsletter; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.person_newsletter_engagements
-    ADD CONSTRAINT fk_pne_newsletter FOREIGN KEY (newsletter_id) REFERENCES public.newsletters(id) ON DELETE CASCADE;
-
-
---
--- Name: person_newsletter_engagements fk_pne_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.person_newsletter_engagements
-    ADD CONSTRAINT fk_pne_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: potential_duplicates fk_potential_duplicates_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.potential_duplicates
-    ADD CONSTRAINT fk_potential_duplicates_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
-
-
---
--- Name: potential_duplicates fk_potential_duplicates_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.potential_duplicates
-    ADD CONSTRAINT fk_potential_duplicates_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: profiles fk_profiles_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.profiles
-    ADD CONSTRAINT fk_profiles_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: profiles fk_profiles_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.profiles
-    ADD CONSTRAINT fk_profiles_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: profiles fk_profiles_updatedby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.profiles
-    ADD CONSTRAINT fk_profiles_updatedby_id FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: sessions fk_sessions_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.sessions
-    ADD CONSTRAINT fk_sessions_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: settings fk_settings_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.settings
-    ADD CONSTRAINT fk_settings_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: volunteer_shifts fk_shifts_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_shifts
-    ADD CONSTRAINT fk_shifts_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: volunteer_shifts fk_shifts_event; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_shifts
-    ADD CONSTRAINT fk_shifts_event FOREIGN KEY (event_id) REFERENCES public.volunteer_events(id) ON DELETE CASCADE;
-
-
---
--- Name: volunteer_shifts fk_shifts_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_shifts
-    ADD CONSTRAINT fk_shifts_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
-
-
---
--- Name: volunteer_shifts fk_shifts_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_shifts
-    ADD CONSTRAINT fk_shifts_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: volunteer_shifts fk_shifts_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.volunteer_shifts
-    ADD CONSTRAINT fk_shifts_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: tags fk_tags_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tags
-    ADD CONSTRAINT fk_tags_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: tags fk_tags_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tags
-    ADD CONSTRAINT fk_tags_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: tags fk_tags_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tags
-    ADD CONSTRAINT fk_tags_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: task_attachments fk_task_attachments_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_attachments
-    ADD CONSTRAINT fk_task_attachments_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: task_comments fk_task_comments_author; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_comments
-    ADD CONSTRAINT fk_task_comments_author FOREIGN KEY (author_id) REFERENCES public.authusers(id) ON DELETE CASCADE;
-
-
---
--- Name: task_comments fk_task_comments_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_comments
-    ADD CONSTRAINT fk_task_comments_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: task_subtasks fk_task_subtasks_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_subtasks
-    ADD CONSTRAINT fk_task_subtasks_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: tasks fk_tasks_assigned_to; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT fk_tasks_assigned_to FOREIGN KEY (assigned_to) REFERENCES public.authusers(id);
-
-
---
--- Name: tasks fk_tasks_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT fk_tasks_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: tasks fk_tasks_team_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT fk_tasks_team_id FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE SET NULL;
-
-
---
--- Name: tasks fk_tasks_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT fk_tasks_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: tasks fk_tasks_updatedby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT fk_tasks_updatedby_id FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: teams fk_teams_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.teams
-    ADD CONSTRAINT fk_teams_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: teams fk_teams_team_captain; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.teams
-    ADD CONSTRAINT fk_teams_team_captain FOREIGN KEY (team_captain_id) REFERENCES public.persons(id) ON DELETE SET NULL;
-
-
---
--- Name: teams fk_teams_team_lead_user; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.teams
-    ADD CONSTRAINT fk_teams_team_lead_user FOREIGN KEY (team_lead_user_id) REFERENCES public.authusers(id);
-
-
---
--- Name: teams fk_teams_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.teams
-    ADD CONSTRAINT fk_teams_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: teams fk_teams_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.teams
-    ADD CONSTRAINT fk_teams_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: turf_assignments fk_turf_assignments_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT fk_turf_assignments_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: turf_assignments fk_turf_assignments_team; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT fk_turf_assignments_team FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE SET NULL;
-
-
---
--- Name: turf_assignments fk_turf_assignments_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT fk_turf_assignments_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: turf_assignments fk_turf_assignments_turf; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT fk_turf_assignments_turf FOREIGN KEY (turf_id) REFERENCES public.turfs(id) ON DELETE CASCADE;
-
-
---
--- Name: turf_assignments fk_turf_assignments_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT fk_turf_assignments_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: turf_households fk_turf_households_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_households
-    ADD CONSTRAINT fk_turf_households_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: turf_households fk_turf_households_household; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_households
-    ADD CONSTRAINT fk_turf_households_household FOREIGN KEY (household_id) REFERENCES public.households(id) ON DELETE CASCADE;
-
-
---
--- Name: turf_households fk_turf_households_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_households
-    ADD CONSTRAINT fk_turf_households_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: turf_households fk_turf_households_turf; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_households
-    ADD CONSTRAINT fk_turf_households_turf FOREIGN KEY (turf_id) REFERENCES public.turfs(id) ON DELETE CASCADE;
-
-
---
--- Name: turf_households fk_turf_households_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_households
-    ADD CONSTRAINT fk_turf_households_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: turf_knocks fk_turf_knocks_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks
-    ADD CONSTRAINT fk_turf_knocks_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: turf_knocks fk_turf_knocks_household; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks
-    ADD CONSTRAINT fk_turf_knocks_household FOREIGN KEY (household_id) REFERENCES public.households(id) ON DELETE CASCADE;
-
-
---
--- Name: turf_knocks fk_turf_knocks_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks
-    ADD CONSTRAINT fk_turf_knocks_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE SET NULL;
-
-
---
--- Name: turf_knocks fk_turf_knocks_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks
-    ADD CONSTRAINT fk_turf_knocks_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: turf_knocks fk_turf_knocks_turf; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks
-    ADD CONSTRAINT fk_turf_knocks_turf FOREIGN KEY (turf_id) REFERENCES public.turfs(id) ON DELETE CASCADE;
-
-
---
--- Name: turf_knocks fk_turf_knocks_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turf_knocks
-    ADD CONSTRAINT fk_turf_knocks_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: turfs fk_turfs_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turfs
-    ADD CONSTRAINT fk_turfs_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: turfs fk_turfs_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turfs
-    ADD CONSTRAINT fk_turfs_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: turfs fk_turfs_list; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turfs
-    ADD CONSTRAINT fk_turfs_list FOREIGN KEY (list_id) REFERENCES public.lists(id) ON DELETE SET NULL;
-
-
---
--- Name: turfs fk_turfs_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turfs
-    ADD CONSTRAINT fk_turfs_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: turfs fk_turfs_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.turfs
-    ADD CONSTRAINT fk_turfs_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: user_activity fk_user_activity_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.user_activity
-    ADD CONSTRAINT fk_user_activity_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: user_activity fk_user_activity_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.user_activity
-    ADD CONSTRAINT fk_user_activity_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: user_activity fk_user_activity_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.user_activity
-    ADD CONSTRAINT fk_user_activity_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: user_activity fk_user_activity_user; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.user_activity
-    ADD CONSTRAINT fk_user_activity_user FOREIGN KEY (user_id) REFERENCES public.authusers(id);
-
-
---
--- Name: map_campaigns_users fk_user_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_campaigns_users
-    ADD CONSTRAINT fk_user_id FOREIGN KEY (user_id) REFERENCES public.authusers(id);
-
-
---
--- Name: web_forms fk_web_forms_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.web_forms
-    ADD CONSTRAINT fk_web_forms_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
-
-
---
--- Name: web_forms fk_web_forms_createdby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.web_forms
-    ADD CONSTRAINT fk_web_forms_createdby_id FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: web_forms fk_web_forms_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.web_forms
-    ADD CONSTRAINT fk_web_forms_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: web_forms fk_web_forms_updatedby_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.web_forms
-    ADD CONSTRAINT fk_web_forms_updatedby_id FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: webhook_events fk_webhook_events_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.webhook_events
-    ADD CONSTRAINT fk_webhook_events_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: workflow_enrollments fk_workflow_enrollments_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_enrollments
-    ADD CONSTRAINT fk_workflow_enrollments_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
-
-
---
--- Name: workflow_enrollments fk_workflow_enrollments_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_enrollments
-    ADD CONSTRAINT fk_workflow_enrollments_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: workflow_enrollments fk_workflow_enrollments_workflow; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_enrollments
-    ADD CONSTRAINT fk_workflow_enrollments_workflow FOREIGN KEY (workflow_id) REFERENCES public.workflows(id) ON DELETE CASCADE;
-
-
---
--- Name: workflow_runs fk_workflow_runs_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_runs
-    ADD CONSTRAINT fk_workflow_runs_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: workflow_runs fk_workflow_runs_workflow_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_runs
-    ADD CONSTRAINT fk_workflow_runs_workflow_id FOREIGN KEY (workflow_id) REFERENCES public.workflows(id) ON DELETE CASCADE;
-
-
---
--- Name: workflow_steps fk_workflow_steps_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_steps
-    ADD CONSTRAINT fk_workflow_steps_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: workflow_steps fk_workflow_steps_workflow; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflow_steps
-    ADD CONSTRAINT fk_workflow_steps_workflow FOREIGN KEY (workflow_id) REFERENCES public.workflows(id) ON DELETE CASCADE;
-
-
---
--- Name: workflows fk_workflows_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflows
-    ADD CONSTRAINT fk_workflows_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: workflows fk_workflows_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflows
-    ADD CONSTRAINT fk_workflows_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
-
-
---
--- Name: workflows fk_workflows_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workflows
-    ADD CONSTRAINT fk_workflows_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
-
-
---
--- Name: map_households_tags map_households_tags_household_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_households_tags
-    ADD CONSTRAINT map_households_tags_household_id_fkey FOREIGN KEY (household_id) REFERENCES public.households(id) ON DELETE CASCADE;
-
-
---
--- Name: map_households_tags map_households_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_households_tags
-    ADD CONSTRAINT map_households_tags_tag_id_fkey FOREIGN KEY (tag_id) REFERENCES public.tags(id) ON DELETE CASCADE;
-
-
---
--- Name: map_lists_households map_lists_households_household_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_lists_households
-    ADD CONSTRAINT map_lists_households_household_id_fkey FOREIGN KEY (household_id) REFERENCES public.households(id) ON DELETE CASCADE;
-
-
---
--- Name: map_lists_households map_lists_households_list_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_lists_households
-    ADD CONSTRAINT map_lists_households_list_id_fkey FOREIGN KEY (list_id) REFERENCES public.lists(id) ON DELETE CASCADE;
-
-
---
--- Name: map_lists_persons map_lists_persons_list_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_lists_persons
-    ADD CONSTRAINT map_lists_persons_list_id_fkey FOREIGN KEY (list_id) REFERENCES public.lists(id) ON DELETE CASCADE;
-
-
---
--- Name: map_lists_persons map_lists_persons_person_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_lists_persons
-    ADD CONSTRAINT map_lists_persons_person_id_fkey FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
-
-
---
--- Name: map_peoples_tags map_peoples_tags_person_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_peoples_tags
-    ADD CONSTRAINT map_peoples_tags_person_id_fkey FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
-
-
---
--- Name: map_peoples_tags map_peoples_tags_tag_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_peoples_tags
-    ADD CONSTRAINT map_peoples_tags_tag_id_fkey FOREIGN KEY (tag_id) REFERENCES public.tags(id) ON DELETE CASCADE;
-
-
---
--- Name: map_teams_lists map_teams_lists_list_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_lists
-    ADD CONSTRAINT map_teams_lists_list_id_fkey FOREIGN KEY (list_id) REFERENCES public.lists(id) ON DELETE CASCADE;
-
-
---
--- Name: map_teams_lists map_teams_lists_team_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_lists
-    ADD CONSTRAINT map_teams_lists_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
-
-
---
--- Name: map_teams_persons map_teams_persons_person_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_persons
-    ADD CONSTRAINT map_teams_persons_person_id_fkey FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
-
-
---
--- Name: map_teams_persons map_teams_persons_team_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.map_teams_persons
-    ADD CONSTRAINT map_teams_persons_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
-
-
---
--- Name: passkeys passkeys_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.passkeys
-    ADD CONSTRAINT passkeys_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.authusers(id) ON DELETE CASCADE;
-
-
---
--- Name: person_connections pc_from_person_fk; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.person_connections
-    ADD CONSTRAINT pc_from_person_fk FOREIGN KEY (from_person_id, tenant_id) REFERENCES public.persons(id, tenant_id) ON DELETE CASCADE;
-
-
---
--- Name: person_connections pc_to_person_fk; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.person_connections
-    ADD CONSTRAINT pc_to_person_fk FOREIGN KEY (to_person_id, tenant_id) REFERENCES public.persons(id, tenant_id) ON DELETE CASCADE;
-
-
---
--- Name: potential_duplicates potential_duplicates_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.potential_duplicates
-    ADD CONSTRAINT potential_duplicates_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
-
-
---
--- Name: potential_duplicates potential_duplicates_household_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.potential_duplicates
-    ADD CONSTRAINT potential_duplicates_household_id_fkey FOREIGN KEY (household_id) REFERENCES public.households(id) ON DELETE CASCADE;
-
-
---
--- Name: profiles profiles_auth_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.profiles
-    ADD CONSTRAINT profiles_auth_id_fkey FOREIGN KEY (auth_id) REFERENCES public.authusers(id) ON DELETE CASCADE;
-
-
---
--- Name: profiles profiles_avatar_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.profiles
-    ADD CONSTRAINT profiles_avatar_file_id_fkey FOREIGN KEY (avatar_file_id) REFERENCES public.files(id) ON DELETE SET NULL;
-
-
---
--- Name: sessions sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.sessions
-    ADD CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.authusers(id) ON DELETE CASCADE;
-
-
---
--- Name: task_attachments task_attachments_task_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_attachments
-    ADD CONSTRAINT task_attachments_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
-
-
---
--- Name: task_comments task_comments_task_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_comments
-    ADD CONSTRAINT task_comments_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
-
-
---
--- Name: task_subtasks task_subtasks_task_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.task_subtasks
-    ADD CONSTRAINT task_subtasks_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
-
-
---
--- Name: tenants tenants_placeholder_household_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.tenants
-    ADD CONSTRAINT tenants_placeholder_household_id_fkey FOREIGN KEY (placeholder_household_id) REFERENCES public.households(id) ON DELETE SET NULL;
-
-
---
--- Name: zapier_subscriptions zapier_subscriptions_tenant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.zapier_subscriptions
-    ADD CONSTRAINT zapier_subscriptions_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: workspace_api_keys workspace_api_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workspace_api_keys
-    ADD CONSTRAINT workspace_api_keys_pkey PRIMARY KEY (id);
-
-
---
--- Name: workspace_api_keys uq_workspace_api_keys_tenant_id; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workspace_api_keys
-    ADD CONSTRAINT uq_workspace_api_keys_tenant_id UNIQUE (tenant_id);
-
-
---
--- Name: workspace_api_keys fk_workspace_api_keys_tenant_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE ONLY public.workspace_api_keys
-    ADD CONSTRAINT fk_workspace_api_keys_tenant_id FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
-
-
---
--- Name: authusers; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.authusers ENABLE ROW LEVEL SECURITY;
-
---
--- Name: background_jobs; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.background_jobs ENABLE ROW LEVEL SECURITY;
-
---
--- Name: campaign_person_facts; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.campaign_person_facts ENABLE ROW LEVEL SECURITY;
-
---
--- Name: campaign_subscriptions; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.campaign_subscriptions ENABLE ROW LEVEL SECURITY;
-
---
--- Name: campaigns; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.campaigns ENABLE ROW LEVEL SECURITY;
-
---
--- Name: companies; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
-
---
--- Name: data_exports; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.data_exports ENABLE ROW LEVEL SECURITY;
-
---
--- Name: data_imports; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.data_imports ENABLE ROW LEVEL SECURITY;
-
---
--- Name: delivery_requests; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.delivery_requests ENABLE ROW LEVEL SECURITY;
-
---
--- Name: delivery_route_stops; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.delivery_route_stops ENABLE ROW LEVEL SECURITY;
-
---
--- Name: delivery_routes; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.delivery_routes ENABLE ROW LEVEL SECURITY;
-
---
--- Name: dismissed_duplicate_groups; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.dismissed_duplicate_groups ENABLE ROW LEVEL SECURITY;
-
---
--- Name: donation_periods; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.donation_periods ENABLE ROW LEVEL SECURITY;
-
---
--- Name: donation_pledges; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.donation_pledges ENABLE ROW LEVEL SECURITY;
-
---
--- Name: donations; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.donations ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_attachments; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_attachments ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_bodies; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_bodies ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_comments; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_comments ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_drafts; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_drafts ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_headers; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_headers ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_read_states; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_read_states ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_recipients; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_recipients ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_suppressions; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_suppressions ENABLE ROW LEVEL SECURITY;
-
---
--- Name: email_trash; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.email_trash ENABLE ROW LEVEL SECURITY;
-
---
--- Name: emails; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.emails ENABLE ROW LEVEL SECURITY;
-
---
--- Name: event_registrations; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.event_registrations ENABLE ROW LEVEL SECURITY;
-
---
--- Name: event_ticket_types; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.event_ticket_types ENABLE ROW LEVEL SECURITY;
-
---
--- Name: events; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.events ENABLE ROW LEVEL SECURITY;
-
---
--- Name: files; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.files ENABLE ROW LEVEL SECURITY;
-
---
--- Name: form_submissions; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.form_submissions ENABLE ROW LEVEL SECURITY;
-
---
--- Name: google_oauth_tokens; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.google_oauth_tokens ENABLE ROW LEVEL SECURITY;
-
---
--- Name: households; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.households ENABLE ROW LEVEL SECURITY;
-
---
--- Name: lists; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.lists ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_campaigns_users; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_campaigns_users ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_households_tags; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_households_tags ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_lists_households; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_lists_households ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_lists_persons; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_lists_persons ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_newsletters_lists; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_newsletters_lists ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_peoples_tags; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_peoples_tags ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_teams_lists; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_teams_lists ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_teams_persons; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_teams_persons ENABLE ROW LEVEL SECURITY;
-
---
--- Name: map_web_forms_lists; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.map_web_forms_lists ENABLE ROW LEVEL SECURITY;
-
---
--- Name: ms_oauth_tokens; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.ms_oauth_tokens ENABLE ROW LEVEL SECURITY;
-
---
--- Name: newsletter_events; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.newsletter_events ENABLE ROW LEVEL SECURITY;
-
---
--- Name: newsletters; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.newsletters ENABLE ROW LEVEL SECURITY;
-
---
--- Name: notifications; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
-
---
--- Name: passkeys; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.passkeys ENABLE ROW LEVEL SECURITY;
-
---
--- Name: person_connections; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.person_connections ENABLE ROW LEVEL SECURITY;
-
---
--- Name: person_newsletter_engagements; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.person_newsletter_engagements ENABLE ROW LEVEL SECURITY;
-
---
--- Name: persons; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.persons ENABLE ROW LEVEL SECURITY;
-
---
--- Name: potential_duplicates; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.potential_duplicates ENABLE ROW LEVEL SECURITY;
-
---
--- Name: profiles; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-
---
--- Name: sessions; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
-
---
--- Name: settings; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.settings ENABLE ROW LEVEL SECURITY;
-
---
--- Name: tags; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.tags ENABLE ROW LEVEL SECURITY;
-
---
--- Name: task_attachments; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.task_attachments ENABLE ROW LEVEL SECURITY;
-
---
--- Name: task_comments; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.task_comments ENABLE ROW LEVEL SECURITY;
-
---
--- Name: task_subtasks; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.task_subtasks ENABLE ROW LEVEL SECURITY;
-
---
--- Name: tasks; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.tasks ENABLE ROW LEVEL SECURITY;
-
---
--- Name: teams; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.teams ENABLE ROW LEVEL SECURITY;
-
---
--- Name: authusers tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.authusers USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: background_jobs tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.background_jobs USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: campaign_person_facts tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.campaign_person_facts USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: campaign_subscriptions tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.campaign_subscriptions USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: campaigns tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.campaigns USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: companies tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.companies USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: data_exports tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.data_exports USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: data_imports tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.data_imports USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: delivery_requests tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.delivery_requests USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: delivery_route_stops tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.delivery_route_stops USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: delivery_routes tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.delivery_routes USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: dismissed_duplicate_groups tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.dismissed_duplicate_groups USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: donation_periods tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.donation_periods USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: donation_pledges tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.donation_pledges USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: donations tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.donations USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_attachments tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_attachments USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_bodies tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_bodies USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_comments tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_comments USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_drafts tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_drafts USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_headers tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_headers USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_read_states tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_read_states USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_recipients tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_recipients USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_suppressions tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_suppressions USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: email_trash tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.email_trash USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: emails tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.emails USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: event_registrations tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.event_registrations USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: event_ticket_types tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.event_ticket_types USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: events tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.events USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: files tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.files USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: form_submissions tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.form_submissions USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: google_oauth_tokens tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.google_oauth_tokens USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: households tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.households USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: lists tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.lists USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_campaigns_users tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_campaigns_users USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_households_tags tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_households_tags USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_lists_households tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_lists_households USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_lists_persons tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_lists_persons USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_newsletters_lists tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_newsletters_lists USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_peoples_tags tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_peoples_tags USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_teams_lists tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_teams_lists USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_teams_persons tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_teams_persons USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: map_web_forms_lists tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.map_web_forms_lists USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: ms_oauth_tokens tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.ms_oauth_tokens USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: newsletter_events tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.newsletter_events USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: newsletters tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.newsletters USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: notifications tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.notifications USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: passkeys tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.passkeys USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: person_connections tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.person_connections USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: person_newsletter_engagements tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.person_newsletter_engagements USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: persons tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.persons USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: potential_duplicates tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.potential_duplicates USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: profiles tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.profiles USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: sessions tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.sessions USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: settings tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.settings USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: tags tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.tags USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: task_attachments tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.task_attachments USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: task_comments tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.task_comments USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: task_subtasks tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.task_subtasks USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: tasks tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.tasks USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: teams tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.teams USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: turf_assignments tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.turf_assignments USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: turf_households tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.turf_households USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: turf_knocks tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.turf_knocks USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: turfs tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.turfs USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: user_activity tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.user_activity USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: volunteer_events tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.volunteer_events USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: volunteer_shifts tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.volunteer_shifts USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: web_forms tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.web_forms USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: webhook_events tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.webhook_events USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: workflow_enrollments tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.workflow_enrollments USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: workflow_runs tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.workflow_runs USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: workflow_steps tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.workflow_steps USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: workflows tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.workflows USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: zapier_subscriptions tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
---
-
-CREATE POLICY tenant_isolation ON public.zapier_subscriptions USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
-
-
---
--- Name: turf_assignments; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.turf_assignments ENABLE ROW LEVEL SECURITY;
-
---
--- Name: turf_households; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.turf_households ENABLE ROW LEVEL SECURITY;
-
---
--- Name: turf_knocks; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.turf_knocks ENABLE ROW LEVEL SECURITY;
-
---
--- Name: turfs; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.turfs ENABLE ROW LEVEL SECURITY;
-
---
--- Name: user_activity; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.user_activity ENABLE ROW LEVEL SECURITY;
-
---
--- Name: volunteer_events; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.volunteer_events ENABLE ROW LEVEL SECURITY;
-
---
--- Name: volunteer_shifts; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.volunteer_shifts ENABLE ROW LEVEL SECURITY;
-
---
--- Name: web_forms; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.web_forms ENABLE ROW LEVEL SECURITY;
-
---
--- Name: webhook_events; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.webhook_events ENABLE ROW LEVEL SECURITY;
-
---
--- Name: workflow_enrollments; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.workflow_enrollments ENABLE ROW LEVEL SECURITY;
-
---
--- Name: workflow_runs; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.workflow_runs ENABLE ROW LEVEL SECURITY;
-
---
--- Name: workflow_steps; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.workflow_steps ENABLE ROW LEVEL SECURITY;
-
---
--- Name: workflows; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.workflows ENABLE ROW LEVEL SECURITY;
-
---
--- Name: zapier_subscriptions; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
---
-
-ALTER TABLE public.zapier_subscriptions ENABLE ROW LEVEL SECURITY;
-
---
--- Name: SCHEMA public; Type: ACL; Schema: -; Owner: pplcrm_owner
---
-
-GRANT USAGE ON SCHEMA public TO pplcrm_app;
-
-
---
--- Name: TABLE authusers; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.authusers TO pplcrm_app;
-
-
---
--- Name: SEQUENCE authusers_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.authusers_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE background_jobs; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.background_jobs TO pplcrm_app;
-
-
---
--- Name: SEQUENCE background_jobs_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.background_jobs_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE campaign_person_facts; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.campaign_person_facts TO pplcrm_app;
-
-
---
--- Name: SEQUENCE campaign_person_facts_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.campaign_person_facts_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE campaign_subscriptions; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.campaign_subscriptions TO pplcrm_app;
-
-
---
--- Name: SEQUENCE campaign_subscriptions_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.campaign_subscriptions_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE campaigns; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.campaigns TO pplcrm_app;
-
-
---
--- Name: SEQUENCE campaigns_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.campaigns_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE companies; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.companies TO pplcrm_app;
-
-
---
--- Name: SEQUENCE companies_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.companies_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE data_exports; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.data_exports TO pplcrm_app;
-
-
---
--- Name: SEQUENCE data_exports_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.data_exports_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE data_imports; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.data_imports TO pplcrm_app;
-
-
---
--- Name: SEQUENCE data_imports_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.data_imports_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE delivery_requests; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.delivery_requests TO pplcrm_app;
-
-
---
--- Name: SEQUENCE delivery_requests_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.delivery_requests_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE delivery_route_stops; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.delivery_route_stops TO pplcrm_app;
-
-
---
--- Name: SEQUENCE delivery_route_stops_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.delivery_route_stops_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE delivery_routes; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.delivery_routes TO pplcrm_app;
-
-
---
--- Name: SEQUENCE delivery_routes_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.delivery_routes_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE dismissed_duplicate_groups; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.dismissed_duplicate_groups TO pplcrm_app;
-
-
---
--- Name: TABLE donation_periods; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.donation_periods TO pplcrm_app;
-
-
---
--- Name: SEQUENCE donation_periods_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.donation_periods_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE donation_pledges; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.donation_pledges TO pplcrm_app;
-
-
---
--- Name: SEQUENCE donation_pledges_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.donation_pledges_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE donations; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.donations TO pplcrm_app;
-
-
---
--- Name: SEQUENCE donations_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.donations_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE email_attachments; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_attachments TO pplcrm_app;
-
-
---
--- Name: SEQUENCE email_attachments_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.email_attachments_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE email_bodies; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_bodies TO pplcrm_app;
-
-
---
--- Name: SEQUENCE email_bodies_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.email_bodies_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE email_comments; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_comments TO pplcrm_app;
-
-
---
--- Name: SEQUENCE email_comments_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.email_comments_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE email_drafts; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_drafts TO pplcrm_app;
-
-
---
--- Name: SEQUENCE email_drafts_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.email_drafts_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE email_headers; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_headers TO pplcrm_app;
-
-
---
--- Name: SEQUENCE email_headers_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.email_headers_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE email_read_states; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_read_states TO pplcrm_app;
-
-
---
--- Name: TABLE email_recipients; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_recipients TO pplcrm_app;
-
-
---
--- Name: SEQUENCE email_recipients_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.email_recipients_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE email_suppressions; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_suppressions TO pplcrm_app;
-
-
---
--- Name: SEQUENCE email_suppressions_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.email_suppressions_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE email_trash; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.email_trash TO pplcrm_app;
-
-
---
--- Name: SEQUENCE email_trash_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.email_trash_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE emails; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.emails TO pplcrm_app;
-
-
---
--- Name: SEQUENCE emails_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.emails_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE event_registrations; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.event_registrations TO pplcrm_app;
-
-
---
--- Name: SEQUENCE event_registrations_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.event_registrations_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE event_ticket_types; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.event_ticket_types TO pplcrm_app;
-
-
---
--- Name: SEQUENCE event_ticket_types_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.event_ticket_types_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE events; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.events TO pplcrm_app;
-
-
---
--- Name: SEQUENCE events_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.events_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE files; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.files TO pplcrm_app;
-
-
---
--- Name: SEQUENCE files_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.files_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE form_submissions; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.form_submissions TO pplcrm_app;
-
-
---
--- Name: TABLE google_oauth_tokens; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.google_oauth_tokens TO pplcrm_app;
-
-
---
--- Name: TABLE households; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.households TO pplcrm_app;
-
-
---
--- Name: SEQUENCE households_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.households_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE kysely_migration; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.kysely_migration TO pplcrm_app;
-
-
---
--- Name: TABLE kysely_migration_lock; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.kysely_migration_lock TO pplcrm_app;
-
-
---
--- Name: TABLE lists; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.lists TO pplcrm_app;
-
-
---
--- Name: SEQUENCE lists_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.lists_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE map_campaigns_users; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_campaigns_users TO pplcrm_app;
-
-
---
--- Name: TABLE map_households_tags; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_households_tags TO pplcrm_app;
-
-
---
--- Name: TABLE map_lists_households; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_lists_households TO pplcrm_app;
-
-
---
--- Name: TABLE map_lists_persons; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_lists_persons TO pplcrm_app;
-
-
---
--- Name: TABLE map_newsletters_lists; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_newsletters_lists TO pplcrm_app;
-
-
---
--- Name: TABLE map_peoples_tags; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_peoples_tags TO pplcrm_app;
-
-
---
--- Name: TABLE map_teams_lists; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_teams_lists TO pplcrm_app;
-
-
---
--- Name: TABLE map_teams_persons; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_teams_persons TO pplcrm_app;
-
-
---
--- Name: TABLE map_web_forms_lists; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.map_web_forms_lists TO pplcrm_app;
-
-
---
--- Name: TABLE ms_oauth_tokens; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.ms_oauth_tokens TO pplcrm_app;
-
-
---
--- Name: TABLE newsletter_events; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.newsletter_events TO pplcrm_app;
-
-
---
--- Name: SEQUENCE newsletter_events_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.newsletter_events_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE newsletters; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.newsletters TO pplcrm_app;
-
-
---
--- Name: SEQUENCE newsletters_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.newsletters_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE notifications; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.notifications TO pplcrm_app;
-
-
---
--- Name: SEQUENCE notifications_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.notifications_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE passkeys; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.passkeys TO pplcrm_app;
-
-
---
--- Name: SEQUENCE passkeys_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.passkeys_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE person_connections; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.person_connections TO pplcrm_app;
-
-
---
--- Name: SEQUENCE person_connections_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.person_connections_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE person_newsletter_engagements; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.person_newsletter_engagements TO pplcrm_app;
-
-
---
--- Name: TABLE persons; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.persons TO pplcrm_app;
-
-
---
--- Name: SEQUENCE persons_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.persons_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE potential_duplicates; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.potential_duplicates TO pplcrm_app;
-
-
---
--- Name: SEQUENCE potential_duplicates_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.potential_duplicates_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE profiles; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.profiles TO pplcrm_app;
-
-
---
--- Name: SEQUENCE profiles_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.profiles_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE sessions; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.sessions TO pplcrm_app;
-
-
---
--- Name: SEQUENCE sessions_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.sessions_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE settings; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.settings TO pplcrm_app;
-
-
---
--- Name: SEQUENCE settings_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.settings_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE tags; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tags TO pplcrm_app;
-
-
---
--- Name: SEQUENCE tags_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.tags_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE task_attachments; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.task_attachments TO pplcrm_app;
-
-
---
--- Name: SEQUENCE task_attachments_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.task_attachments_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE task_comments; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.task_comments TO pplcrm_app;
-
-
---
--- Name: SEQUENCE task_comments_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.task_comments_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE task_subtasks; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.task_subtasks TO pplcrm_app;
-
-
---
--- Name: SEQUENCE task_subtasks_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.task_subtasks_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE tasks; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tasks TO pplcrm_app;
-
-
---
--- Name: SEQUENCE tasks_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.tasks_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE teams; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.teams TO pplcrm_app;
-
-
---
--- Name: SEQUENCE teams_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.teams_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE tenants; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tenants TO pplcrm_app;
-
-
---
--- Name: SEQUENCE tenants_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.tenants_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE turf_assignments; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.turf_assignments TO pplcrm_app;
-
-
---
--- Name: SEQUENCE turf_assignments_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.turf_assignments_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE turf_households; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.turf_households TO pplcrm_app;
-
-
---
--- Name: TABLE turf_knocks; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.turf_knocks TO pplcrm_app;
-
-
---
--- Name: SEQUENCE turf_knocks_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.turf_knocks_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE turfs; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.turfs TO pplcrm_app;
-
-
---
--- Name: SEQUENCE turfs_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.turfs_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE user_activity; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.user_activity TO pplcrm_app;
-
-
---
--- Name: SEQUENCE user_activity_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.user_activity_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE volunteer_events; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.volunteer_events TO pplcrm_app;
-
-
---
--- Name: SEQUENCE volunteer_events_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.volunteer_events_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE volunteer_shifts; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.volunteer_shifts TO pplcrm_app;
-
-
---
--- Name: SEQUENCE volunteer_shifts_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.volunteer_shifts_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE web_forms; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.web_forms TO pplcrm_app;
-
-
---
--- Name: TABLE webhook_events; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.webhook_events TO pplcrm_app;
-
-
---
--- Name: SEQUENCE webhook_events_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.webhook_events_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE workflow_enrollments; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.workflow_enrollments TO pplcrm_app;
-
-
---
--- Name: SEQUENCE workflow_enrollments_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.workflow_enrollments_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE workflow_runs; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.workflow_runs TO pplcrm_app;
-
-
---
--- Name: SEQUENCE workflow_runs_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.workflow_runs_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE workflow_steps; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.workflow_steps TO pplcrm_app;
-
-
---
--- Name: SEQUENCE workflow_steps_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.workflow_steps_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE workflows; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.workflows TO pplcrm_app;
-
-
---
--- Name: SEQUENCE workflows_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.workflows_id_seq TO pplcrm_app;
-
-
---
--- Name: TABLE zapier_subscriptions; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.zapier_subscriptions TO pplcrm_app;
-
-
---
--- Name: SEQUENCE zapier_subscriptions_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
---
-
-GRANT SELECT,USAGE ON SEQUENCE public.zapier_subscriptions_id_seq TO pplcrm_app;
-
-
---
--- Name: DEFAULT PRIVILEGES FOR SEQUENCES; Type: DEFAULT ACL; Schema: public; Owner: pplcrm_owner
---
-
-ALTER DEFAULT PRIVILEGES FOR ROLE pplcrm_owner IN SCHEMA public GRANT SELECT,USAGE ON SEQUENCES TO pplcrm_app;
-
-
---
--- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: public; Owner: pplcrm_owner
---
-
-ALTER DEFAULT PRIVILEGES FOR ROLE pplcrm_owner IN SCHEMA public GRANT SELECT,INSERT,DELETE,UPDATE ON TABLES TO pplcrm_app;
-
-
---
--- PostgreSQL database dump complete
---
-
-\unrestrict GhboKUqFznqkwhkamB1c46bniOml3zZWjH73ur6UjfuD98WEHRhntxz9GdHkfgK
-````
-
 ## File: apps/backend/src/app/lib/jobs/handlers/export.handlers.ts
 ````typescript
 import type { ExpressionBuilder, Kysely } from 'kysely';
@@ -51971,240 +42148,6 @@ function getEntityFilterValues(entityFilter: string): string[] {
 }
 ````
 
-## File: apps/backend/src/app/lib/jobs/handlers/import.handlers.ts
-````typescript
-import type { Kysely } from 'kysely';
-import { env } from '../../../../env';
-import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { logger } from '../../../logger';
-import { CompaniesController } from '../../../modules/companies/controller';
-import { HouseholdsController } from '../../../modules/households/controller';
-import { ImportsRepo } from '../../../modules/imports/repositories/imports.repo';
-import { PersonsService } from '../../../modules/persons/services/persons.service';
-import { TasksController } from '../../../modules/tasks/controller';
-import { StorageService } from '../../storage.service';
-import { notificationEnabled } from '../../profile-preferences';
-import { TransactionalEmailService } from '../../mail/transactional-mail.service';
-import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
-import type { LegacyImportJobPayload } from '../job-payloads';
-import { runImportEmailVerification } from './import-verification';
-
-const storageService = new StorageService();
-const importsRepo = new ImportsRepo();
-const mailService = new TransactionalEmailService();
-
-/** How many typo suspects to spell out in the completion email before summarizing the rest. */
-const TYPO_SAMPLE_IN_EMAIL = 10;
-
-/** Plain-text email-checkup block appended to the import summary; empty string when unavailable. */
-function verificationText(v: EmailVerificationSummary | null): string {
-  if (!v || v.checked === 0) return '';
-  const lines = [
-    '',
-    'Email check-up:',
-    `- Addresses checked: ${v.checked}`,
-    `- Looking good: ${v.valid}`,
-    `- Suppressed (dead domain): ${v.dead_domain}`,
-    `- Suppressed (disposable): ${v.disposable}`,
-    `- Already suppressed: ${v.already_suppressed}`,
-    `- Role addresses (info@, admin@ — kept, not suppressed): ${v.role_accounts}`,
-    `- Couldn't verify (kept as valid): ${v.unverifiable}`,
-  ];
-  if (v.typo_suspects.length > 0) {
-    lines.push(`- Possible typos: ${v.typo_suspects.length}`);
-    for (const t of v.typo_suspects.slice(0, TYPO_SAMPLE_IN_EMAIL)) {
-      lines.push(`    ${t.email} — did you mean ${t.suggested_domain}?`);
-    }
-    if (v.typo_suspects.length > TYPO_SAMPLE_IN_EMAIL) {
-      lines.push(`    …and ${v.typo_suspects.length - TYPO_SAMPLE_IN_EMAIL} more`);
-    }
-  }
-  lines.push('');
-  lines.push('Suppressed addresses stay on the contact but are excluded from newsletters and automated emails.');
-  if (v.tripwire === 'pause') {
-    lines.push('');
-    lines.push(
-      'Heads up: this list had an unusually high rate of undeliverable addresses, so sending is paused pending review. Please contact support to resume.',
-    );
-  } else if (v.tripwire === 'warn') {
-    lines.push('');
-    lines.push(
-      'Heads up: this list had a high rate of undeliverable addresses, which usually means it was purchased or scraped. Please import only contacts who opted in.',
-    );
-  }
-  return lines.join('\n');
-}
-
-/** HTML email-checkup block appended to the import summary; empty string when unavailable. */
-function verificationHtml(v: EmailVerificationSummary | null): string {
-  if (!v || v.checked === 0) return '';
-  const typos = v.typo_suspects
-    .slice(0, TYPO_SAMPLE_IN_EMAIL)
-    .map((t) => `<li>${t.email} — did you mean <strong>${t.suggested_domain}</strong>?</li>`)
-    .join('');
-  const typoBlock =
-    v.typo_suspects.length > 0
-      ? `<p><strong>Possible typos:</strong> ${v.typo_suspects.length}</p><ul>${typos}${
-          v.typo_suspects.length > TYPO_SAMPLE_IN_EMAIL
-            ? `<li>…and ${v.typo_suspects.length - TYPO_SAMPLE_IN_EMAIL} more</li>`
-            : ''
-        }</ul>`
-      : '';
-  const tripwireBlock =
-    v.tripwire === 'pause'
-      ? '<p><strong>Heads up:</strong> this list had an unusually high rate of undeliverable addresses, so sending is paused pending review. Please contact support to resume.</p>'
-      : v.tripwire === 'warn'
-        ? '<p><strong>Heads up:</strong> this list had a high rate of undeliverable addresses, which usually means it was purchased or scraped. Please import only contacts who opted in.</p>'
-        : '';
-  return `<h3>Email check-up</h3>
-<div class="panel">
-  <p><strong>Addresses checked:</strong> ${v.checked}</p>
-  <p><strong>Looking good:</strong> ${v.valid}</p>
-  <p><strong>Suppressed — dead domain:</strong> ${v.dead_domain}</p>
-  <p><strong>Suppressed — disposable:</strong> ${v.disposable}</p>
-  <p><strong>Already suppressed:</strong> ${v.already_suppressed}</p>
-  <p><strong>Role addresses (kept, not suppressed):</strong> ${v.role_accounts}</p>
-  <p><strong>Couldn't verify (kept as valid):</strong> ${v.unverifiable}</p>
-  ${typoBlock}
-</div>
-<p>Suppressed addresses stay on the contact but are excluded from newsletters and automated emails.</p>
-${tripwireBlock}`;
-}
-
-export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysely<Models>): Promise<void> {
-  // 1. Mark import status as 'processing' in data_imports
-  await importsRepo.update({
-    tenant_id: payload.tenant_id,
-    id: payload.import_id,
-    row: {
-      status: 'processing',
-      updated_at: new Date(),
-    },
-  });
-
-  // 2. Download mapping payload from storage
-  const buffer = await storageService.download(payload.storage_key);
-  const rows = JSON.parse(buffer.toString('utf8'));
-
-  // 3. Process the import rows in chunks
-  let verification: EmailVerificationSummary | null = null;
-  if (payload.source === 'companies') {
-    const companiesController = new CompaniesController();
-    await companiesController.processImportRows(
-      payload.import_id,
-      payload.tenant_id,
-      payload.user_id,
-      Number(payload.skipped || 0),
-      rows,
-    );
-  } else if (payload.source === 'tasks') {
-    const tasksController = new TasksController();
-    await tasksController.processImportRows(
-      payload.import_id,
-      payload.tenant_id,
-      payload.user_id,
-      Number(payload.skipped || 0),
-      rows,
-    );
-  } else if (payload.source === 'households') {
-    const householdsController = new HouseholdsController();
-    await householdsController.processImportRows(
-      payload.import_id,
-      payload.tenant_id,
-      payload.user_id,
-      payload.campaign_id ?? '',
-      payload.tags ?? [],
-      Number(payload.skipped || 0),
-      rows,
-    );
-  } else {
-    const personsService = new PersonsService();
-    await personsService.processImportRows(
-      payload.import_id,
-      payload.tenant_id,
-      payload.user_id,
-      payload.campaign_id ?? '',
-      payload.tags ?? [],
-      Number(payload.skipped || 0),
-      rows,
-      {
-        duplicateDecision: payload.duplicate_decision ?? 'skip',
-        listName: payload.list_name ?? undefined,
-        clientSkipReasons: payload.client_skip_reasons ?? undefined,
-      },
-    );
-
-    // 3b. Verify the imported email list (DNS + disposable). Persons only — companies/households
-    // have no send-suppression semantics. Fail-open: a thrown/failed check never fails the import.
-    verification = await runImportEmailVerification(
-      db,
-      { tenant_id: payload.tenant_id, import_id: payload.import_id, user_id: payload.user_id },
-      rows,
-    );
-  }
-
-  // 4. Update import status to 'completed'
-  await importsRepo.update({
-    tenant_id: payload.tenant_id,
-    id: payload.import_id,
-    row: {
-      status: 'completed',
-      processed_at: new Date(),
-      updated_at: new Date(),
-    },
-  });
-
-  try {
-    await storageService.delete(payload.storage_key);
-  } catch (storageErr) {
-    logger.error({ err: storageErr }, `Failed to clean up storage key ${payload.storage_key}`);
-  }
-
-  try {
-    const user = await db
-      .selectFrom('authusers')
-      .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
-      .select(['authusers.email', 'authusers.first_name', 'profiles.preferences as profile_preferences'])
-      .where('authusers.id', '=', payload.user_id)
-      .executeTakeFirst();
-
-    if (user && user.email) {
-      if (notificationEnabled(user.profile_preferences, 'import_summary')) {
-        const importRecord = await db
-          .selectFrom('data_imports')
-          .select(['inserted_count', 'error_count', 'skipped_count'])
-          .where('id', '=', payload.import_id)
-          .where('tenant_id', '=', payload.tenant_id)
-          .executeTakeFirst();
-
-        if (importRecord) {
-          const inserted = importRecord.inserted_count || 0;
-          const errors = importRecord.error_count || 0;
-          const skipped = importRecord.skipped_count || 0;
-
-          await mailService.sendMail({
-            to: user.email,
-            subject: `Spreadsheet import complete: ${payload.file_name || 'import.csv'}`,
-            notificationSettingsLink: true,
-            text: `Hi ${user.first_name || 'there'},\n\nYour contact spreadsheet import has completed.\n\nStatistics:\n- Inserted: ${inserted}\n- Errors: ${errors}\n- Skipped: ${skipped}\n${verificationText(verification)}\nView imported rows: ${env.appUrl}/imports/${payload.import_id}`,
-            html: `<h2>Spreadsheet import complete</h2>
-<p>Hi ${user.first_name || 'there'},</p>
-<p>Your contact spreadsheet import has completed.</p>
-<div class="panel"><p><strong>Inserted:</strong> ${inserted}</p><p><strong>Errors:</strong> ${errors}</p><p><strong>Skipped:</strong> ${skipped}</p></div>
-${verificationHtml(verification)}
-<div class="btn-container">
-  <a href="${env.appUrl}/imports/${payload.import_id}" class="btn">View imported rows</a>
-</div>`,
-          });
-        }
-      }
-    }
-  } catch (mailErr) {
-    logger.error({ err: mailErr }, 'Failed to send import completion summary email');
-  }
-}
-````
-
 ## File: apps/backend/src/app/lib/jobs/handlers/ops.handlers.ts
 ````typescript
 import { sql } from 'kysely';
@@ -52216,8 +42159,9 @@ import { logger } from '../../../logger';
 import type { MailAttachment } from '../../mail/transactional-mail.service';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { StorageService } from '../../storage.service';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { FIVE_MINUTES_MS, scheduleNextRun } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 const mailService = new TransactionalEmailService();
 
@@ -52334,11 +42278,14 @@ export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
   let alertFingerprint = details.last_alert_fingerprint;
   let alertedAt = details.last_alerted_at;
   if (sections.length > 0) {
-    // Fingerprint on the *categories* of trouble, not counts — a persistent backlog shouldn't
-    // re-alert every 5 minutes, but a new failure category should alert immediately.
+    // Fingerprint on the *categories* of trouble, not raw counts — a persistent backlog
+    // shouldn't re-alert every 5 minutes, but a new failure category (or one escalating by an
+    // order of magnitude, e.g. 9 -> 10 failures) should alert immediately. failedJobs/failedWebhooks
+    // rows come from a GROUP BY on `status = 'failed'` rows, so count is always >= 1 and
+    // Math.log10(count) is always defined.
     const fingerprint = [
-      ...failedJobs.map((g) => `job:${g.key}`),
-      ...failedWebhooks.map((g) => `webhook:${g.key}`),
+      ...failedJobs.map((g) => `job:${g.key}:m${Math.floor(Math.log10(g.count))}`),
+      ...failedWebhooks.map((g) => `webhook:${g.key}:m${Math.floor(Math.log10(g.count))}`),
       backlogged ? 'backlog' : '',
       ...newlyPausedTenants.map((t) => `paused:${t.id}`),
     ]
@@ -52383,7 +42330,7 @@ export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
     .onConflict((oc) => oc.column('name').doUpdateSet({ beat_at: now, details: newDetails }))
     .execute();
 
-  await scheduleNextRun(db, 'ops_watchdog', FIVE_MINUTES_MS);
+  await scheduleNextRun(db, 'ops_watchdog', CRON_JOBS.ops_watchdog);
 }
 
 // Postmark's total-message cap is 10 MB; leave headroom for the body + inline logo.
@@ -52519,10 +42466,10 @@ import {
 } from '../../../modules/newsletters/send-guards';
 import { encodeUnsubscribeToken } from '../../../modules/newsletters/unsubscribe-token';
 import { resolveAutomationSendConsent } from '../../../modules/workflows/automation-consent';
-import { scheduleNextRun, TEN_MINUTES_MS } from '../reschedule';
+import { CRON_JOBS } from '../cron-registry';
+import { DAY_MS, HOUR_MS, scheduleNextRun, TEN_MINUTES_MS } from '../reschedule';
 
 const ENROLLMENT_BATCH_SIZE = 500;
-const ONE_HOUR_MS = 60 * 60 * 1000;
 
 /** The recipient must not be emailed (unsubscribed/suppressed/DNC). Recorded as a 'skipped'
  * run — not a failure — and the sequence advances past the step. */
@@ -52578,7 +42525,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
       if (!automationsAllowed) {
         await db
           .updateTable('workflow_enrollments')
-          .set({ next_run_at: new Date(Date.now() + ONE_HOUR_MS), updated_at: new Date() })
+          .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
           .where('id', '=', enrollment.id)
           .execute();
         continue;
@@ -52727,7 +42674,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
             if (err instanceof RetryLaterError) {
               await trx
                 .updateTable('workflow_enrollments')
-                .set({ next_run_at: new Date(Date.now() + ONE_HOUR_MS), updated_at: new Date() })
+                .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
                 .where('id', '=', lockedEnrollment.id)
                 .execute();
               logger.info(
@@ -52772,14 +42719,13 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
   }
 
   // A full batch means there is likely more work waiting — requeue immediately.
-  const delayMs = pendingEnrollments.length === ENROLLMENT_BATCH_SIZE ? 0 : TEN_MINUTES_MS;
+  const delayMs = pendingEnrollments.length === ENROLLMENT_BATCH_SIZE ? 0 : CRON_JOBS.process_drip_workflows;
   await scheduleNextRun(db, 'process_drip_workflows', delayMs);
 }
 
 const LAPSED_DEFAULT_DAYS = 90;
 const LAPSED_MIN_DAYS = 7;
 const MAX_LAPSED_ENROLLMENTS_PER_RUN = 500;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Daily scan behind the `supporter_lapsed` trigger ("Supporter goes quiet"). For each active
@@ -52893,15 +42839,17 @@ export async function handleDetectLapsedSupporters(db: Kysely<Models>): Promise<
     }
   }
 
-  await scheduleNextRun(db, 'detect_lapsed_supporters', 24 * 60 * 60 * 1000);
+  await scheduleNextRun(db, 'detect_lapsed_supporters', CRON_JOBS.detect_lapsed_supporters);
 }
 
 /** Self-rescheduling hourly scan behind the `task_sla_breach` trigger ("Task breaches SLA"). */
 export async function handleDetectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
   await detectTaskSlaBreaches(db);
 
-  await scheduleNextRun(db, 'detect_task_sla_breaches', ONE_HOUR_MS);
+  await scheduleNextRun(db, 'detect_task_sla_breaches', CRON_JOBS.detect_task_sla_breaches);
 }
+
+const TASK_SLA_SCAN_CHUNK_SIZE = 500;
 
 /**
  * Hourly scan behind the `task_sla_breach` trigger (spec §4 → §16). For every open task not
@@ -52911,73 +42859,102 @@ export async function handleDetectTaskSlaBreaches(db: Kysely<Models>): Promise<v
  * `sla_breached_at` (the once-only marker — later ticks skip stamped tasks), then the
  * task's linked person is enrolled through the normal trigger path (conditions respected).
  * Tasks with no linked person are stamped but skip enrollment: automations enroll persons.
+ *
+ * Keyset-paginated by task id (ascending `WHERE id > cursor`, not OFFSET) in chunks of
+ * TASK_SLA_SCAN_CHUNK_SIZE, looping until a chunk comes back short — an unbounded, un-stamped
+ * open-task backlog across every tenant must never be loaded into memory in one query. Each
+ * chunk is grouped by tenant and scanned inside its own try/catch (same as before pagination),
+ * so one tenant's failure only drops that slice of that chunk — it never kills the rest of the
+ * chunk, later chunks, or other tenants' scans.
  */
 export async function detectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
   const now = new Date();
-  const candidates = await db
-    .selectFrom('tasks')
-    .select(['id', 'tenant_id', 'created_at', 'person_id'])
-    .where('status', 'not in', ['done', 'archived'])
-    .where('sla_breached_at', 'is', null)
-    .execute();
-  if (candidates.length === 0) return;
-
-  const byTenant = new Map<string, typeof candidates>();
-  for (const task of candidates) {
-    const tenantId = String(task.tenant_id);
-    const list = byTenant.get(tenantId) ?? [];
-    list.push(task);
-    byTenant.set(tenantId, list);
-  }
-
   const { WorkflowsController } = await import('../../../modules/workflows/controller');
   const controller = new WorkflowsController();
+  const slaConfigByTenant = new Map<string, Awaited<ReturnType<typeof loadTaskSlaConfig>>>();
 
-  for (const [tenantId, tasks] of byTenant.entries()) {
-    try {
-      const config = await loadTaskSlaConfig(db, tenantId);
-      const slaMs = config.taskSlaHours * ONE_HOUR_MS;
-
-      for (const task of tasks) {
-        const workingMs = calculateWorkingTimeMs(
-          new Date(task.created_at),
-          now,
-          config.workingDays,
-          config.workingHoursStart,
-          config.workingHoursEnd,
-        );
-        if (workingMs <= slaMs) continue;
-
-        // Stamp before enrolling: even if enrollment fails, the trigger fires at most once
-        // per task. The `is null` guard makes concurrent ticks race-safe — only the tick
-        // that flips the marker proceeds to enroll.
-        const stamped = await db
-          .updateTable('tasks')
-          .set({ sla_breached_at: now })
-          .where('tenant_id', '=', tenantId)
-          .where('id', '=', String(task.id))
-          .where('sla_breached_at', 'is', null)
-          .returning('id')
-          .executeTakeFirst();
-        if (!stamped) continue;
-
-        if (!task.person_id) {
-          logger.info(
-            { tenantId, taskId: String(task.id) },
-            '[task-sla] Task breached SLA but has no linked person — skipping automation enrollment',
-          );
-          continue;
-        }
-
-        try {
-          await controller.triggerWorkflow(tenantId, String(task.person_id), 'task_sla_breach', null);
-        } catch (err) {
-          logger.error({ err, tenantId, taskId: String(task.id) }, '[task-sla] Failed to fire task_sla_breach trigger');
-        }
-      }
-    } catch (err) {
-      logger.error({ err, tenantId }, '[task-sla] Failed to scan tenant for task SLA breaches');
+  let cursor: string | null = null;
+  for (;;) {
+    let chunkQuery = db
+      .selectFrom('tasks')
+      .select(['id', 'tenant_id', 'created_at', 'person_id'])
+      .where('status', 'not in', ['done', 'archived'])
+      .where('sla_breached_at', 'is', null)
+      .orderBy('id', 'asc')
+      .limit(TASK_SLA_SCAN_CHUNK_SIZE);
+    if (cursor !== null) {
+      chunkQuery = chunkQuery.where('id', '>', cursor);
     }
+    const chunk = await chunkQuery.execute();
+    if (chunk.length === 0) break;
+    const lastTask = chunk[chunk.length - 1];
+    // Unreachable: the length check above guarantees an element; satisfies noUncheckedIndexedAccess.
+    if (!lastTask) break;
+    cursor = String(lastTask.id);
+
+    const byTenant = new Map<string, typeof chunk>();
+    for (const task of chunk) {
+      const tenantId = String(task.tenant_id);
+      const list = byTenant.get(tenantId) ?? [];
+      list.push(task);
+      byTenant.set(tenantId, list);
+    }
+
+    for (const [tenantId, tasks] of byTenant.entries()) {
+      try {
+        let config = slaConfigByTenant.get(tenantId);
+        if (!config) {
+          config = await loadTaskSlaConfig(db, tenantId);
+          slaConfigByTenant.set(tenantId, config);
+        }
+        const slaMs = config.taskSlaHours * HOUR_MS;
+
+        for (const task of tasks) {
+          const workingMs = calculateWorkingTimeMs(
+            new Date(task.created_at),
+            now,
+            config.workingDays,
+            config.workingHoursStart,
+            config.workingHoursEnd,
+          );
+          if (workingMs <= slaMs) continue;
+
+          // Stamp before enrolling: even if enrollment fails, the trigger fires at most once
+          // per task. The `is null` guard makes concurrent ticks race-safe — only the tick
+          // that flips the marker proceeds to enroll.
+          const stamped = await db
+            .updateTable('tasks')
+            .set({ sla_breached_at: now })
+            .where('tenant_id', '=', tenantId)
+            .where('id', '=', String(task.id))
+            .where('sla_breached_at', 'is', null)
+            .returning('id')
+            .executeTakeFirst();
+          if (!stamped) continue;
+
+          if (!task.person_id) {
+            logger.info(
+              { tenantId, taskId: String(task.id) },
+              '[task-sla] Task breached SLA but has no linked person — skipping automation enrollment',
+            );
+            continue;
+          }
+
+          try {
+            await controller.triggerWorkflow(tenantId, String(task.person_id), 'task_sla_breach', null);
+          } catch (err) {
+            logger.error(
+              { err, tenantId, taskId: String(task.id) },
+              '[task-sla] Failed to fire task_sla_breach trigger',
+            );
+          }
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '[task-sla] Failed to scan tenant for task SLA breaches');
+      }
+    }
+
+    if (chunk.length < TASK_SLA_SCAN_CHUNK_SIZE) break;
   }
 }
 
@@ -53442,11 +43419,16 @@ async function findMetExitCondition(trx: Transaction<Models>, ctx: ExitContext):
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
+import { logger } from '../../logger';
+// Type-only import: cron-registry imports the interval constants from this module, so a value
+// import here would close a runtime cycle (and TDZ-crash whichever module loads second).
+import type { CronJobType } from './cron-registry';
 import type { JobType } from './job-payloads';
 
 const MINUTE_MS = 60 * 1000;
 export const FIVE_MINUTES_MS = 5 * MINUTE_MS;
 export const TEN_MINUTES_MS = 10 * MINUTE_MS;
+export const HOUR_MS = 60 * MINUTE_MS;
 export const DAY_MS = 24 * 60 * MINUTE_MS;
 
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -53488,6 +43470,46 @@ export async function scheduleNextRun(db: Kysely<Models>, type: JobType, delayMs
         status: 'pending',
         payload: JSON.stringify({ type }),
         run_at: new Date(Date.now() + delayMs),
+        max_attempts: DEFAULT_MAX_ATTEMPTS,
+      })
+      .execute();
+  });
+}
+
+/**
+ * Seeds the first run of one cron-style job at boot, so a freshly-provisioned (or wiped) queue
+ * starts every recurring chain without anyone hand-maintaining a list of them.
+ *
+ * Same advisory-lock idiom, and for the same reason, as `scheduleNextRun`: every replica calls this
+ * on startup, and a plain check-then-insert (even with `FOR UPDATE`) locks nothing when there is no
+ * row yet, so N replicas booting together would each insert a seed and fork the chain N ways.
+ *
+ * Unlike `scheduleNextRun`, this also treats a 'processing' row as "already seeded": the chain is
+ * alive and its handler will enqueue the next run when it finishes. (`scheduleNextRun` deliberately
+ * excludes 'processing' because the job calling it *is* that processing row, and counting it would
+ * block the chain from ever continuing.)
+ */
+export async function seedCronJob(db: Kysely<Models>, type: CronJobType): Promise<void> {
+  await db.transaction().execute(async (trx) => {
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${type}))`.execute(trx);
+
+    const existing = await trx
+      .selectFrom('background_jobs')
+      .select('id')
+      .where('status', 'in', ['pending', 'processing'])
+      .where(sql`payload->>'type'`, '=', type)
+      .executeTakeFirst();
+    if (existing) return;
+
+    logger.info({ type }, 'Seeding recurring background job');
+    await trx
+      .insertInto('background_jobs')
+      .values({
+        tenant_id: null,
+        queue: 'default',
+        status: 'pending',
+        payload: JSON.stringify({ type }),
+        run_at: new Date(),
         max_attempts: DEFAULT_MAX_ATTEMPTS,
       })
       .execute();
@@ -59842,6 +49864,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                     shiftId: String(shift.id),
                     eventId: String(id),
                     personId: String(shift.person_id),
+                    tenantId: auth.tenant_id,
                   }),
                   run_at: runAt,
                 })
@@ -59900,6 +49923,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                   shiftId: String(result.id),
                   eventId: String(payload.event_id),
                   personId: String(payload.person_id),
+                  tenantId: auth.tenant_id,
                 }),
                 run_at: runAt,
               })
@@ -60037,6 +50061,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                     shiftId: String(id),
                     eventId: String(result.event_id),
                     personId: String(result.person_id),
+                    tenantId: auth.tenant_id,
                   }),
                   run_at: runAt,
                 })
@@ -60565,6 +50590,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                   shiftId: String(shiftId),
                   eventId: String(event.id),
                   personId: String(personId),
+                  tenantId,
                 }),
                 run_at: runAt,
               })
@@ -61933,11 +51959,10 @@ import type { Models } from '../../../../../../../libs/common/src/lib/kysely.mod
 import { logger } from '../../../logger';
 import { tombstoneAuthUser } from '../../tombstone-user';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
-import { DAY_MS, scheduleNextRun } from '../reschedule';
+import { CRON_JOBS } from '../cron-registry';
+import { scheduleNextRun } from '../reschedule';
 
 const mailService = new TransactionalEmailService();
-
-const COMPLETED_JOB_RETENTION_DAYS = 7;
 
 /**
  * Every tenant-scoped table, ordered children-before-parents, that a full tenant wipe must clear.
@@ -62058,7 +52083,7 @@ export async function handlePerformScheduledDeletions(db: Kysely<Models>): Promi
   try {
     await performScheduledDeletions(db);
   } finally {
-    await scheduleNextRun(db, 'perform_scheduled_deletions', DAY_MS);
+    await scheduleNextRun(db, 'perform_scheduled_deletions', CRON_JOBS.perform_scheduled_deletions);
   }
 }
 
@@ -62144,14 +52169,6 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
     }
   }
 
-  // Permanently delete completed background jobs older than 7 days to prevent unbounded table growth
-  const retentionCutoff = new Date(Date.now() - COMPLETED_JOB_RETENTION_DAYS * DAY_MS);
-  await db
-    .deleteFrom('background_jobs')
-    .where('status', '=', 'completed')
-    .where('updated_at', '<=', retentionCutoff)
-    .execute();
-
   if (failures.length > 0) {
     logger.error({ failures }, `Scheduled deletions completed with ${failures.length} failure(s)`);
     // Rethrow so the worker retries and then marks the job 'failed' — the ops digest only reports
@@ -62159,6 +52176,240 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
     // bug). The next daily run is already scheduled by handlePerformScheduledDeletions' finally, and
     // re-running is idempotent: succeeded deletions no longer match the framing queries.
     throw new Error(`Scheduled deletions failed for: ${failures.join(', ')}`);
+  }
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/handlers/import.handlers.ts
+````typescript
+import type { Kysely } from 'kysely';
+import { env } from '../../../../env';
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { logger } from '../../../logger';
+import { CompaniesController } from '../../../modules/companies/controller';
+import { HouseholdsController } from '../../../modules/households/controller';
+import { ImportsRepo } from '../../../modules/imports/repositories/imports.repo';
+import { PersonsService } from '../../../modules/persons/services/persons.service';
+import { TasksController } from '../../../modules/tasks/controller';
+import { StorageService } from '../../storage.service';
+import { notificationEnabled } from '../../profile-preferences';
+import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
+import type { LegacyImportJobPayload } from '../job-payloads';
+import { runImportEmailVerification } from './import-verification';
+
+const storageService = new StorageService();
+const importsRepo = new ImportsRepo();
+const mailService = new TransactionalEmailService();
+
+/** How many typo suspects to spell out in the completion email before summarizing the rest. */
+const TYPO_SAMPLE_IN_EMAIL = 10;
+
+/** Plain-text email-checkup block appended to the import summary; empty string when unavailable. */
+function verificationText(v: EmailVerificationSummary | null): string {
+  if (!v || v.checked === 0) return '';
+  const lines = [
+    '',
+    'Email check-up:',
+    `- Addresses checked: ${v.checked}`,
+    `- Looking good: ${v.valid}`,
+    `- Suppressed (dead domain): ${v.dead_domain}`,
+    `- Suppressed (disposable): ${v.disposable}`,
+    `- Already suppressed: ${v.already_suppressed}`,
+    `- Role addresses (info@, admin@ — kept, not suppressed): ${v.role_accounts}`,
+    `- Couldn't verify (kept as valid): ${v.unverifiable}`,
+  ];
+  if (v.typo_suspects.length > 0) {
+    lines.push(`- Possible typos: ${v.typo_suspects.length}`);
+    for (const t of v.typo_suspects.slice(0, TYPO_SAMPLE_IN_EMAIL)) {
+      lines.push(`    ${t.email} — did you mean ${t.suggested_domain}?`);
+    }
+    if (v.typo_suspects.length > TYPO_SAMPLE_IN_EMAIL) {
+      lines.push(`    …and ${v.typo_suspects.length - TYPO_SAMPLE_IN_EMAIL} more`);
+    }
+  }
+  lines.push('');
+  lines.push('Suppressed addresses stay on the contact but are excluded from newsletters and automated emails.');
+  if (v.tripwire === 'pause') {
+    lines.push('');
+    lines.push(
+      'Heads up: this list had an unusually high rate of undeliverable addresses, so sending is paused pending review. Please contact support to resume.',
+    );
+  } else if (v.tripwire === 'warn') {
+    lines.push('');
+    lines.push(
+      'Heads up: this list had a high rate of undeliverable addresses, which usually means it was purchased or scraped. Please import only contacts who opted in.',
+    );
+  }
+  return lines.join('\n');
+}
+
+/** HTML email-checkup block appended to the import summary; empty string when unavailable. */
+function verificationHtml(v: EmailVerificationSummary | null): string {
+  if (!v || v.checked === 0) return '';
+  const typos = v.typo_suspects
+    .slice(0, TYPO_SAMPLE_IN_EMAIL)
+    .map((t) => `<li>${t.email} — did you mean <strong>${t.suggested_domain}</strong>?</li>`)
+    .join('');
+  const typoBlock =
+    v.typo_suspects.length > 0
+      ? `<p><strong>Possible typos:</strong> ${v.typo_suspects.length}</p><ul>${typos}${
+          v.typo_suspects.length > TYPO_SAMPLE_IN_EMAIL
+            ? `<li>…and ${v.typo_suspects.length - TYPO_SAMPLE_IN_EMAIL} more</li>`
+            : ''
+        }</ul>`
+      : '';
+  const tripwireBlock =
+    v.tripwire === 'pause'
+      ? '<p><strong>Heads up:</strong> this list had an unusually high rate of undeliverable addresses, so sending is paused pending review. Please contact support to resume.</p>'
+      : v.tripwire === 'warn'
+        ? '<p><strong>Heads up:</strong> this list had a high rate of undeliverable addresses, which usually means it was purchased or scraped. Please import only contacts who opted in.</p>'
+        : '';
+  return `<h3>Email check-up</h3>
+<div class="panel">
+  <p><strong>Addresses checked:</strong> ${v.checked}</p>
+  <p><strong>Looking good:</strong> ${v.valid}</p>
+  <p><strong>Suppressed — dead domain:</strong> ${v.dead_domain}</p>
+  <p><strong>Suppressed — disposable:</strong> ${v.disposable}</p>
+  <p><strong>Already suppressed:</strong> ${v.already_suppressed}</p>
+  <p><strong>Role addresses (kept, not suppressed):</strong> ${v.role_accounts}</p>
+  <p><strong>Couldn't verify (kept as valid):</strong> ${v.unverifiable}</p>
+  ${typoBlock}
+</div>
+<p>Suppressed addresses stay on the contact but are excluded from newsletters and automated emails.</p>
+${tripwireBlock}`;
+}
+
+export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysely<Models>): Promise<void> {
+  // 1. Mark import status as 'processing' in data_imports
+  await importsRepo.update({
+    tenant_id: payload.tenant_id,
+    id: payload.import_id,
+    row: {
+      status: 'processing',
+      updated_at: new Date(),
+    },
+  });
+
+  // 2. Download mapping payload from storage
+  const buffer = await storageService.download(payload.storage_key);
+  const rows = JSON.parse(buffer.toString('utf8'));
+
+  // 3. Process the import rows in chunks
+  let verification: EmailVerificationSummary | null = null;
+  if (payload.source === 'companies') {
+    const companiesController = new CompaniesController();
+    await companiesController.processImportRows(
+      payload.import_id,
+      payload.tenant_id,
+      payload.user_id,
+      Number(payload.skipped || 0),
+      rows,
+    );
+  } else if (payload.source === 'tasks') {
+    const tasksController = new TasksController();
+    await tasksController.processImportRows(
+      payload.import_id,
+      payload.tenant_id,
+      payload.user_id,
+      Number(payload.skipped || 0),
+      rows,
+    );
+  } else if (payload.source === 'households') {
+    const householdsController = new HouseholdsController();
+    await householdsController.processImportRows(
+      payload.import_id,
+      payload.tenant_id,
+      payload.user_id,
+      payload.campaign_id ?? '',
+      payload.tags ?? [],
+      Number(payload.skipped || 0),
+      rows,
+    );
+  } else {
+    const personsService = new PersonsService();
+    await personsService.processImportRows(
+      payload.import_id,
+      payload.tenant_id,
+      payload.user_id,
+      payload.campaign_id ?? '',
+      payload.tags ?? [],
+      Number(payload.skipped || 0),
+      rows,
+      {
+        duplicateDecision: payload.duplicate_decision ?? 'skip',
+        listName: payload.list_name ?? undefined,
+        clientSkipReasons: payload.client_skip_reasons ?? undefined,
+      },
+    );
+
+    // 3b. Verify the imported email list (DNS + disposable). Persons only — companies/households
+    // have no send-suppression semantics. Fail-open: a thrown/failed check never fails the import.
+    verification = await runImportEmailVerification(
+      db,
+      { tenant_id: payload.tenant_id, import_id: payload.import_id, user_id: payload.user_id },
+      rows,
+    );
+  }
+
+  // 4. Update import status to 'completed'
+  await importsRepo.update({
+    tenant_id: payload.tenant_id,
+    id: payload.import_id,
+    row: {
+      status: 'completed',
+      processed_at: new Date(),
+      updated_at: new Date(),
+    },
+  });
+
+  try {
+    await storageService.delete(payload.storage_key);
+  } catch (storageErr) {
+    logger.error({ err: storageErr }, `Failed to clean up storage key ${payload.storage_key}`);
+  }
+
+  try {
+    const user = await db
+      .selectFrom('authusers')
+      .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
+      .select(['authusers.email', 'authusers.first_name', 'profiles.preferences as profile_preferences'])
+      .where('authusers.id', '=', payload.user_id)
+      .executeTakeFirst();
+
+    if (user && user.email) {
+      if (notificationEnabled(user.profile_preferences, 'import_summary')) {
+        const importRecord = await db
+          .selectFrom('data_imports')
+          .select(['inserted_count', 'error_count', 'skipped_count'])
+          .where('id', '=', payload.import_id)
+          .where('tenant_id', '=', payload.tenant_id)
+          .executeTakeFirst();
+
+        if (importRecord) {
+          const inserted = importRecord.inserted_count || 0;
+          const errors = importRecord.error_count || 0;
+          const skipped = importRecord.skipped_count || 0;
+
+          await mailService.sendMail({
+            to: user.email,
+            subject: `Spreadsheet import complete: ${payload.file_name || 'import.csv'}`,
+            notificationSettingsLink: true,
+            text: `Hi ${user.first_name || 'there'},\n\nYour contact spreadsheet import has completed.\n\nStatistics:\n- Inserted: ${inserted}\n- Errors: ${errors}\n- Skipped: ${skipped}\n${verificationText(verification)}\nView imported rows: ${env.appUrl}/imports/${payload.import_id}`,
+            html: `<h2>Spreadsheet import complete</h2>
+<p>Hi ${user.first_name || 'there'},</p>
+<p>Your contact spreadsheet import has completed.</p>
+<div class="panel"><p><strong>Inserted:</strong> ${inserted}</p><p><strong>Errors:</strong> ${errors}</p><p><strong>Skipped:</strong> ${skipped}</p></div>
+${verificationHtml(verification)}
+<div class="btn-container">
+  <a href="${env.appUrl}/imports/${payload.import_id}" class="btn">View imported rows</a>
+</div>`,
+          });
+        }
+      }
+    }
+  } catch (mailErr) {
+    logger.error({ err: mailErr }, 'Failed to send import completion summary email');
   }
 }
 ````
@@ -62173,16 +52424,22 @@ import { NotificationsRepo } from '../../../modules/notifications/repositories/n
 import { notificationEnabled } from '../../profile-preferences';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { SmsService } from '../../sms/sms.service';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { DAY_MS, scheduleNextRun } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 const mailService = new TransactionalEmailService();
 const smsService = new SmsService();
+
+// Chunk size for the keyset-paginated due-tasks scan below — bounds each page instead of
+// joining every tenant's overdue tasks into memory in one unbounded query.
+const CHECK_DUE_TASKS_PAGE_SIZE = 500;
 
 export async function handleSendFormNotifications(
   payload: JobPayloadOf<'send-form-notifications'>,
   db: Kysely<Models>,
 ): Promise<void> {
+  // tenantId is required on this payload (server-generated), so scope unconditionally.
   const event = await db
     .selectFrom('volunteer_events')
     .select([
@@ -62196,6 +52453,7 @@ export async function handleSendFormNotifications(
       'send_volunteer_alert',
     ])
     .where('id', '=', payload.eventId)
+    .where('tenant_id', '=', payload.tenantId)
     .executeTakeFirst();
 
   if (!event) {
@@ -62264,11 +52522,14 @@ export async function handleSendShiftReminder(
   payload: JobPayloadOf<'send-shift-reminder'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  const shift = await db
+  let shiftQuery = db
     .selectFrom('volunteer_shifts')
-    .select(['id', 'status', 'event_id', 'person_id'])
-    .where('id', '=', payload.shiftId)
-    .executeTakeFirst();
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id'])
+    .where('id', '=', payload.shiftId);
+  if (payload.tenantId != null) {
+    shiftQuery = shiftQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const shift = await shiftQuery.executeTakeFirst();
 
   if (!shift) {
     logger.info(`Skipping shift reminder: shift ${payload.shiftId} not found.`);
@@ -62281,7 +52542,13 @@ export async function handleSendShiftReminder(
     return;
   }
 
-  const event = await db.selectFrom('volunteer_events').selectAll().where('id', '=', shift.event_id).executeTakeFirst();
+  // Scoped by the shift's own tenant_id — stronger than trusting the payload.
+  const event = await db
+    .selectFrom('volunteer_events')
+    .selectAll()
+    .where('id', '=', shift.event_id)
+    .where('tenant_id', '=', shift.tenant_id)
+    .executeTakeFirst();
 
   if (!event) {
     logger.info(`Skipping shift reminder: event ${shift.event_id} not found.`);
@@ -62293,7 +52560,13 @@ export async function handleSendShiftReminder(
     return;
   }
 
-  const person = await db.selectFrom('persons').selectAll().where('id', '=', shift.person_id).executeTakeFirst();
+  // Scoped by the shift's own tenant_id — stronger than trusting the payload.
+  const person = await db
+    .selectFrom('persons')
+    .selectAll()
+    .where('id', '=', shift.person_id)
+    .where('tenant_id', '=', shift.tenant_id)
+    .executeTakeFirst();
 
   if (!person) {
     logger.info(`Skipping shift reminder: person ${shift.person_id} not found.`);
@@ -62341,11 +52614,14 @@ export async function handleSendWebformNotifications(
   payload: JobPayloadOf<'send-webform-notifications'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  const form = await db
+  let formQuery = db
     .selectFrom('web_forms')
     .select(['name', 'send_confirmation', 'send_alert', 'tenant_id'])
-    .where('id', '=', payload.formId)
-    .executeTakeFirst();
+    .where('id', '=', payload.formId);
+  if (payload.tenantId != null) {
+    formQuery = formQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const form = await formQuery.executeTakeFirst();
 
   if (!form) {
     logger.info(`Skipping web form notifications: form ${payload.formId} not found.`);
@@ -62391,17 +52667,21 @@ export async function handleSendEventRegistrationConfirmation(
   payload: JobPayloadOf<'send-event-registration-confirmation'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  const registration = await db
+  let registrationQuery = db
     .selectFrom('event_registrations')
-    .select(['id', 'status', 'event_id', 'person_id', 'ticket_type_id'])
-    .where('id', '=', payload.registrationId)
-    .executeTakeFirst();
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id', 'ticket_type_id'])
+    .where('id', '=', payload.registrationId);
+  if (payload.tenantId != null) {
+    registrationQuery = registrationQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const registration = await registrationQuery.executeTakeFirst();
 
   if (!registration || registration.status === 'cancelled') {
     logger.info(`Skipping event confirmation: registration ${payload.registrationId} not found or cancelled.`);
     return;
   }
 
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
   const event = await db
     .selectFrom('events')
     .select([
@@ -62414,6 +52694,7 @@ export async function handleSendEventRegistrationConfirmation(
       'send_registration_confirmation',
     ])
     .where('id', '=', registration.event_id)
+    .where('tenant_id', '=', registration.tenant_id)
     .executeTakeFirst();
 
   if (!event || event.send_registration_confirmation === false) {
@@ -62421,10 +52702,12 @@ export async function handleSendEventRegistrationConfirmation(
     return;
   }
 
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
   const person = await db
     .selectFrom('persons')
     .select(['first_name', 'email'])
     .where('id', '=', registration.person_id)
+    .where('tenant_id', '=', registration.tenant_id)
     .executeTakeFirst();
 
   if (!person || !person.email) {
@@ -62465,11 +52748,14 @@ export async function handleSendEventReminder(
   payload: JobPayloadOf<'send-event-reminder'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  const registration = await db
+  let registrationQuery = db
     .selectFrom('event_registrations')
-    .select(['id', 'status', 'event_id', 'person_id'])
-    .where('id', '=', payload.registrationId)
-    .executeTakeFirst();
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id'])
+    .where('id', '=', payload.registrationId);
+  if (payload.tenantId != null) {
+    registrationQuery = registrationQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const registration = await registrationQuery.executeTakeFirst();
 
   if (!registration || registration.status !== 'registered') {
     logger.info(
@@ -62478,17 +52764,25 @@ export async function handleSendEventReminder(
     return;
   }
 
-  const event = await db.selectFrom('events').selectAll().where('id', '=', registration.event_id).executeTakeFirst();
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
+  const event = await db
+    .selectFrom('events')
+    .selectAll()
+    .where('id', '=', registration.event_id)
+    .where('tenant_id', '=', registration.tenant_id)
+    .executeTakeFirst();
 
   if (!event || event.send_reminder === false) {
     logger.info(`Skipping event reminder: event ${registration.event_id} not found or reminders disabled.`);
     return;
   }
 
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
   const person = await db
     .selectFrom('persons')
     .select(['first_name', 'email'])
     .where('id', '=', registration.person_id)
+    .where('tenant_id', '=', registration.tenant_id)
     .executeTakeFirst();
 
   if (!person || !person.email) {
@@ -62551,44 +52845,81 @@ export async function handleSendSubscriptionConfirmation(
 export async function handleCheckDueTasks(db: Kysely<Models>): Promise<void> {
   await checkDueTasks(db);
 
-  await scheduleNextRun(db, 'check_due_tasks', DAY_MS);
+  await scheduleNextRun(db, 'check_due_tasks', CRON_JOBS.check_due_tasks);
 }
+
+/** Not executed — only used to derive the row type each keyset page returns. */
+function dueTasksBaseQuery(db: Kysely<Models>, now: Date) {
+  return db
+    .selectFrom('tasks')
+    .innerJoin('authusers', 'authusers.id', 'tasks.assigned_to')
+    .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
+    .select([
+      'tasks.id as task_id',
+      'tasks.tenant_id as tenant_id',
+      'tasks.name as task_name',
+      'tasks.due_at',
+      'tasks.details',
+      'authusers.id as user_id',
+      'authusers.email as user_email',
+      'authusers.first_name',
+      'profiles.preferences as profile_preferences',
+    ])
+    .where('tasks.status', 'not in', ['done', 'archived'])
+    .where('tasks.due_at', '<=', now);
+}
+
+type DueTaskRow = Awaited<ReturnType<ReturnType<typeof dueTasksBaseQuery>['execute']>>[number];
+type DueTasksCursor = { dueAt: Date; taskId: string };
 
 export async function checkDueTasks(db: Kysely<Models>): Promise<void> {
   const now = new Date();
   try {
-    const dueTasks = await db
-      .selectFrom('tasks')
-      .innerJoin('authusers', 'authusers.id', 'tasks.assigned_to')
-      .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
-      .select([
-        'tasks.id as task_id',
-        'tasks.tenant_id as tenant_id',
-        'tasks.name as task_name',
-        'tasks.due_at',
-        'tasks.details',
-        'authusers.id as user_id',
-        'authusers.email as user_email',
-        'authusers.first_name',
-        'profiles.preferences as profile_preferences',
-      ])
-      .where('tasks.status', 'not in', ['done', 'archived'])
-      .where('tasks.due_at', '<=', now)
-      .orderBy('tasks.due_at', 'asc')
-      .execute();
+    const userTasksMap = new Map<string, DueTaskRow[]>();
+    let cursor: DueTasksCursor | null = null;
 
-    if (dueTasks.length === 0) return;
+    // Keyset-paginated (due_at, id) instead of one unbounded cross-tenant query: this join
+    // spans every tenant's overdue tasks, and OFFSET-style pagination would re-scan skipped
+    // rows on every page. (due_at, id) breaks ties safely since due_at alone isn't unique.
+    for (;;) {
+      let pageQuery = dueTasksBaseQuery(db, now)
+        .orderBy('tasks.due_at', 'asc')
+        .orderBy('tasks.id', 'asc')
+        .limit(CHECK_DUE_TASKS_PAGE_SIZE);
 
-    const userTasksMap = new Map<string, typeof dueTasks>();
-    for (const row of dueTasks) {
-      const userId = String(row.user_id);
-      let userTasks = userTasksMap.get(userId);
-      if (!userTasks) {
-        userTasks = [];
-        userTasksMap.set(userId, userTasks);
+      if (cursor) {
+        const { dueAt, taskId } = cursor;
+        pageQuery = pageQuery.where((eb) =>
+          eb.or([
+            eb('tasks.due_at', '>', dueAt),
+            eb.and([eb('tasks.due_at', '=', dueAt), eb('tasks.id', '>', taskId)]),
+          ]),
+        );
       }
-      userTasks.push(row);
+
+      const page: DueTaskRow[] = await pageQuery.execute();
+      if (page.length === 0) break;
+
+      for (const row of page) {
+        const userId = String(row.user_id);
+        let userTasks = userTasksMap.get(userId);
+        if (!userTasks) {
+          userTasks = [];
+          userTasksMap.set(userId, userTasks);
+        }
+        userTasks.push(row);
+      }
+
+      const lastRow = page[page.length - 1];
+      // `due_at <= now` in the WHERE clause already excludes null due_at rows.
+      if (lastRow && lastRow.due_at != null) {
+        cursor = { dueAt: new Date(lastRow.due_at), taskId: String(lastRow.task_id) };
+      }
+
+      if (page.length < CHECK_DUE_TASKS_PAGE_SIZE) break;
     }
+
+    if (userTasksMap.size === 0) return;
 
     const notificationsRepo = new NotificationsRepo();
     for (const [userId, tasks] of userTasksMap.entries()) {
@@ -63653,6 +53984,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                     registrationId: String(reg.id),
                     eventId: String(id),
                     personId: String(reg.person_id),
+                    tenantId: auth.tenant_id,
                   }),
                   run_at: runAt,
                 })
@@ -63806,6 +54138,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                 registrationId: String(result.id),
                 eventId: String(payload.event_id),
                 personId: String(payload.person_id),
+                tenantId: auth.tenant_id,
               }),
               run_at: new Date(),
             })
@@ -63833,6 +54166,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                   registrationId: String(result.id),
                   eventId: String(payload.event_id),
                   personId: String(payload.person_id),
+                  tenantId: auth.tenant_id,
                 }),
                 run_at: runAt,
               })
@@ -64171,6 +54505,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                   registrationId: String(reg.id),
                   eventId: String(event.id),
                   personId,
+                  tenantId,
                 }),
                 run_at: new Date(),
               })
@@ -64198,6 +54533,7 @@ export class EventsController extends BaseController<'events', EventsRepo> {
                     registrationId: String(reg.id),
                     eventId: String(event.id),
                     personId,
+                    tenantId,
                   }),
                   run_at: runAt,
                 })
@@ -72049,6 +62385,9 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('send-shift-reminder'),
     shiftId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
   }),
   z.object({
     type: z.literal('send-webform-notifications'),
@@ -72057,14 +62396,23 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     firstName: z.string().nullish(),
     lastName: z.string().nullish(),
     notes: z.string().nullish(),
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
   }),
   z.object({
     type: z.literal('send-event-registration-confirmation'),
     registrationId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
   }),
   z.object({
     type: z.literal('send-event-reminder'),
     registrationId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
   }),
   z.object({
     type: z.literal('send-transactional-email'),
@@ -72200,8 +62548,10 @@ import { Client } from 'pg';
 import { env } from '../../../env';
 import { logger } from '../../logger';
 import { ImportsRepo } from '../../modules/imports/repositories/imports.repo';
+import { CRON_JOBS, isCronJobType, jobTimeoutMs } from './cron-registry';
 import { claimNextPendingJob } from './job-claim';
 import { executeJob } from './job-handlers';
+import { scheduleNextRun, seedCronJob } from './reschedule';
 
 // Backoff before polling again once the queue drained empty.
 const IDLE_POLL_MS = 30000;
@@ -72216,6 +62566,17 @@ const RESERVED_SLOTS = 1;
 // interval sits well under the threshold so several heartbeats land within one stale window.
 const STALE_JOB_THRESHOLD_MS = 30 * 60 * 1000;
 const JOB_HEARTBEAT_MS = 5 * 60 * 1000;
+
+/**
+ * Thrown when a handler outlives its wall-clock cap (see jobTimeoutMs). Distinct class because the
+ * failure path treats it differently from an ordinary error: the timed-out promise keeps running.
+ */
+class JobExecutionTimeoutError extends Error {
+  constructor(type: string, timeoutMs: number) {
+    super(`Job '${type}' exceeded its ${Math.round(timeoutMs / 1000)}s execution timeout`);
+    this.name = 'JobExecutionTimeoutError';
+  }
+}
 
 export class BackgroundJobWorker {
   private readonly importsRepo = new ImportsRepo();
@@ -72239,49 +62600,13 @@ export class BackgroundJobWorker {
     this.isRunning = true;
     logger.info('Background Job Worker started.');
 
-    this.ensureCleanupJobScheduled().catch((err) => logger.error({ err }, 'Failed to ensure cleanup job scheduled'));
-    this.ensureSyncSchedulerJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure sync scheduler job scheduled'),
-    );
-    this.ensureDuplicatesRecomputeJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure duplicates recompute job scheduled'),
-    );
-    this.ensureAddressFingerprintsJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure address fingerprints job scheduled'),
-    );
-    this.ensureLapsedSupportersJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure lapsed supporters job scheduled'),
-    );
-    this.ensureTaskSlaBreachesJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure task SLA breach scan scheduled'),
-    );
-    this.ensureWorkflowsJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure workflows job scheduled'),
-    );
-    this.ensurePerformScheduledDeletionsJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure perform scheduled deletions job scheduled'),
-    );
-    this.ensureUsageLimitChecksScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure usage limit checks scheduled'),
-    );
-    this.ensureDueTasksCheckScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure due tasks check scheduled'),
-    );
-    this.ensureCompaniesGoogleRefreshJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure companies google refresh job scheduled'),
-    );
-    this.ensurePruneNewsletterEventsJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure prune newsletter events job scheduled'),
-    );
-    this.ensureScheduledNewslettersJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure scheduled newsletters job scheduled'),
-    );
-    this.ensurePruneRetentionJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure retention prune job scheduled'),
-    );
-    this.ensureOpsWatchdogJobScheduled().catch((err) =>
-      logger.error({ err }, 'Failed to ensure ops watchdog job scheduled'),
-    );
+    // Seed the first run of every recurring job straight from the registry, so the set can't drift
+    // from CRON_JOBS. Seeds are independent and non-blocking: one failure (lock wait, transient DB
+    // error) must not stop the other seeds or the rest of start(). The .filter(isCronJobType) is
+    // only there to narrow Object.keys' string[] to CronJobType[].
+    for (const type of Object.keys(CRON_JOBS).filter(isCronJobType)) {
+      seedCronJob(this.db, type).catch((err) => logger.error({ err, type }, 'Failed to seed recurring job'));
+    }
 
     // Run stale job recovery on startup and then every 5 minutes
     this.recoverStaleJobs().catch((err) => logger.error({ err }, 'Failed to recover stale jobs on startup'));
@@ -72329,456 +62654,6 @@ export class BackgroundJobWorker {
       });
     }
     logger.info('Background Job Worker stopped.');
-  }
-
-  private async ensureAddressFingerprintsJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'recompute_address_fingerprints')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling nightly address fingerprints recomputation background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'recompute_address_fingerprints' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure address fingerprints job scheduled');
-    }
-  }
-
-  private async ensureOpsWatchdogJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'ops_watchdog')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling ops watchdog background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'ops_watchdog' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure ops watchdog job scheduled');
-    }
-  }
-
-  private async ensureCleanupJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'cleanup_activities')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily activity feed cleanup background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'cleanup_activities' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure cleanup job scheduled');
-    }
-  }
-
-  private async ensurePruneRetentionJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'prune_retention')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily retention prune background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'prune_retention' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure retention prune job scheduled');
-    }
-  }
-
-  private async ensureCompaniesGoogleRefreshJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'refresh_companies_google')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily company google enrichment background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'refresh_companies_google' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure companies google refresh job scheduled');
-    }
-  }
-
-  private async ensureDueTasksCheckScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'check_due_tasks')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily due tasks check background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'check_due_tasks' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure due tasks check scheduled');
-    }
-  }
-
-  private async ensureDuplicatesRecomputeJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'recompute_all_duplicates')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling nightly duplicates recomputation background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'recompute_all_duplicates' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure duplicates recompute job scheduled');
-    }
-  }
-
-  private async ensurePerformScheduledDeletionsJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'perform_scheduled_deletions')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily scheduled deletions background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'perform_scheduled_deletions' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure perform scheduled deletions job scheduled');
-    }
-  }
-
-  private async ensurePruneNewsletterEventsJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'prune_newsletter_events')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily newsletter events pruning background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'prune_newsletter_events' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure prune newsletter events job scheduled');
-    }
-  }
-
-  private async ensureScheduledNewslettersJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'process_scheduled_newsletters')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling scheduled-newsletters dispatch background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'process_scheduled_newsletters' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure scheduled newsletters job scheduled');
-    }
-  }
-
-  private async ensureSyncSchedulerJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'schedule_sync_jobs')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling sync scheduler background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'schedule_sync_jobs' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure sync scheduler job scheduled');
-    }
-  }
-
-  private async ensureUsageLimitChecksScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'check_all_usage_limits')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily usage limits check background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'check_all_usage_limits' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure usage limit checks scheduled');
-    }
-  }
-
-  private async ensureWorkflowsJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'process_drip_workflows')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling periodic drip workflows processing background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'process_drip_workflows' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure workflows job scheduled');
-    }
-  }
-
-  private async ensureLapsedSupportersJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'detect_lapsed_supporters')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling daily lapsed-supporters detection background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'detect_lapsed_supporters' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure lapsed supporters job scheduled');
-    }
-  }
-
-  private async ensureTaskSlaBreachesJobScheduled(): Promise<void> {
-    try {
-      await this.db.transaction().execute(async (trx) => {
-        const existing = await trx
-          .selectFrom('background_jobs')
-          .select('id')
-          .where('status', 'in', ['pending', 'processing'])
-          .where(sql`payload->>'type'`, '=', 'detect_task_sla_breaches')
-          .forUpdate()
-          .executeTakeFirst();
-        if (!existing) {
-          logger.info('Scheduling hourly task SLA-breach scan background job…');
-          await trx
-            .insertInto('background_jobs')
-            .values({
-              tenant_id: null,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({ type: 'detect_task_sla_breaches' }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, 'Failed to ensure task SLA breach scan scheduled');
-    }
   }
 
   /**
@@ -72862,8 +62737,24 @@ export class BackgroundJobWorker {
     }, JOB_HEARTBEAT_MS);
     if (typeof heartbeat.unref === 'function') heartbeat.unref();
 
+    // Wall-clock cap. The heartbeat above keeps `locked_at` fresh, so a live-but-wedged handler
+    // (a hung HTTP call, a lock wait) would never look stale to recoverStaleJobs and would hold its
+    // pool slot forever. Racing the handler against a timer is what makes that recoverable.
+    const payloadType = typeof payload.type === 'string' ? payload.type : undefined;
+    const timeoutMs = jobTimeoutMs(payloadType);
+    let timeoutHandle: NodeJS.Timeout | undefined;
+
     try {
-      await executeJob(payload, this.db, job.id);
+      await Promise.race([
+        executeJob(payload, this.db, job.id),
+        new Promise<never>((_resolve, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new JobExecutionTimeoutError(payloadType ?? 'unknown', timeoutMs)),
+            timeoutMs,
+          );
+          if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
+        }),
+      ]);
 
       // Mark job as completed
       await this.db
@@ -72919,7 +62810,11 @@ export class BackgroundJobWorker {
           payload.type === 'send-newsletter' ||
           payload.type === 'send-bug-report-email';
         const delaySeconds = isMail ? Math.pow(2, attempts) * 30 : attempts * 30;
-        const runAt = new Date(Date.now() + delaySeconds * 1000);
+        // A timed-out handler's promise cannot be cancelled and may still be writing. Defer the
+        // retry past the stale-recovery window instead of the usual seconds-scale backoff: by then
+        // the zombie has either finished or died, so the retry can't run concurrently with it.
+        const retryDelayMs = err instanceof JobExecutionTimeoutError ? STALE_JOB_THRESHOLD_MS : delaySeconds * 1000;
+        const runAt = new Date(Date.now() + retryDelayMs);
         logger.info({ jobId: job.id, runAt: runAt.toISOString(), attempt: attempts, maxAttempts }, 'Rescheduling job');
 
         await this.db
@@ -73035,7 +62930,10 @@ export class BackgroundJobWorker {
         await this.rescheduleCronJobOnFailure(payload.type);
       }
     } finally {
+      // Reached on success, on handler failure, and on timeout — so neither the heartbeat interval
+      // nor the timeout timer can outlive the job.
       clearInterval(heartbeat);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
 
     return true;
@@ -73128,50 +63026,19 @@ export class BackgroundJobWorker {
     }
   }
 
+  /**
+   * A dead-lettered cron job must still get its next run queued, or the chain stops until the next
+   * deploy — silent breakage, since nothing else re-seeds it while the process lives. (For
+   * ops_watchdog it's worse than silent: no run means no heartbeat, so /healthz/worker goes stale
+   * and alerts until it recovers.) Intervals come from CRON_JOBS so no cron can be forgotten here.
+   */
   private async rescheduleCronJobOnFailure(type: string): Promise<void> {
-    let delayMs = 0;
-    if (type === 'cleanup_activities') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'schedule_sync_jobs') {
-      delayMs = 10 * 60 * 1000;
-    } else if (type === 'recompute_all_duplicates') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'recompute_address_fingerprints') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'process_drip_workflows') {
-      delayMs = 10 * 60 * 1000;
-    } else if (type === 'perform_scheduled_deletions') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'check_all_usage_limits') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'refresh_companies_google') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'prune_newsletter_events') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'prune_retention') {
-      delayMs = 24 * 60 * 60 * 1000;
-    } else if (type === 'ops_watchdog') {
-      // Must keep rescheduling even after a permanently-failed run — a dead watchdog means a
-      // stale heartbeat, and /healthz/worker would (correctly) alert until it recovers.
-      delayMs = 5 * 60 * 1000;
-    }
+    if (!isCronJobType(type)) return;
 
-    if (delayMs > 0) {
-      try {
-        await this.db
-          .insertInto('background_jobs')
-          .values({
-            tenant_id: null,
-            queue: 'default',
-            status: 'pending',
-            payload: JSON.stringify({ type }),
-            run_at: new Date(Date.now() + delayMs),
-            max_attempts: 3,
-          })
-          .execute();
-      } catch (schedErr) {
-        logger.error({ err: schedErr, type }, 'Failed to reschedule failed cron job');
-      }
+    try {
+      await scheduleNextRun(this.db, type, CRON_JOBS[type]);
+    } catch (schedErr) {
+      logger.error({ err: schedErr, type }, 'Failed to reschedule failed cron job');
     }
   }
 
@@ -74883,266 +64750,6 @@ export class HomePage {
     this.aud.set(id);
   }
 }
-````
-
-## File: apps/website/src/app/legal/eula-content.ts
-````typescript
-import type { LegalDoc } from './legal-types';
-
-/**
- * The end user license agreement (the terms of service for the platform).
- * Operational specifics (plan caps, sending guards, deletion windows, the 1%
- * donation platform fee) mirror the product; if the product changes, change
- * this document in the same commit.
- */
-export const EULA_DOC: LegalDoc = {
-  eyebrow: 'Legal',
-  title: 'End user license agreement',
-  intro:
-    'The agreement between you and pplCRM when you use the service. Plain language where the law allows it, and no surprises hiding in the numbered clauses.',
-  updated: 'July 24, 2026',
-  blocks: [
-    {
-      kind: 'h2',
-      id: 'agreement',
-      text: '1. The agreement',
-    },
-    {
-      kind: 'p',
-      text: 'These terms are a contract between pplCRM (“we”, “us”) and the organization or person creating an account (“you”). They cover the pplCRM application, the volunteer companion apps, the public pages you publish through us, and the marketing site. By creating an account, or by clicking agree at signup, you accept them. If you are accepting on behalf of an organization, you confirm you have authority to bind it, and “you” means that organization.',
-    },
-    {
-      kind: 'p',
-      text: 'You must be the age of majority in your jurisdiction to create an account. The [privacy policy](/privacy) explains how personal information is handled and is part of this agreement.',
-    },
-    {
-      kind: 'h2',
-      id: 'accounts',
-      text: '2. Accounts and workspaces',
-    },
-    {
-      kind: 'list',
-      items: [
-        'Each organization gets its own workspace, isolated from every other organization on the platform.',
-        'You are responsible for the accuracy of your account information, for keeping credentials confidential, and for what happens under your seats. Tell us at hello@pplcrm.com immediately if you suspect unauthorized access.',
-        'Workspace admins control who has access, including requiring two-factor authentication for the whole workspace, approving field volunteers, and deactivating people who leave.',
-        'Signup requires a working email address; accounts with unverified email cannot sign in.',
-      ],
-    },
-    {
-      kind: 'h2',
-      id: 'plans-billing',
-      text: '3. Plans, billing and taxes',
-    },
-    {
-      kind: 'list',
-      items: [
-        'Current plans, prices and limits are on the [pricing page](/pricing). Paid plans are billed in US dollars through Stripe; prices shown in other currencies are estimates only. Applicable sales taxes are calculated at checkout.',
-        'Paid plans can be billed monthly or annually. Annual billing is paid up front for the year at 10× the monthly price — two months free — and renews yearly unless canceled.',
-        'Paid plans are metered on emailable subscribers, not stored contacts. When your subscriber count crosses into a new bracket, we email your admins, move you to the new bracket, and charge the prorated difference for the remainder of your current billing period on either interval. Growing never interrupts your service. If your count shrinks, the price drops at the next renewal automatically.',
-        'The free plan is free indefinitely, within its published limits (subscriber, sending, seat and storage caps). We may adjust free-plan limits with notice; we will never retroactively charge you.',
-        'If a subscription payment fails, newsletter sending is placed on hold until the payment method is updated — nothing else is restricted, and reading and exporting your data are never affected.',
-        'We may change paid pricing with at least 30 days’ notice; changes take effect at your next billing cycle, and you can cancel before they do.',
-        'Downgrading or lapsing never locks your data. Reading and exporting stay available regardless of plan; features above your plan simply stop being editable.',
-      ],
-    },
-    {
-      kind: 'h2',
-      id: 'cancellation',
-      text: '4. Cancellation and refunds',
-    },
-    {
-      kind: 'p',
-      text: 'You can cancel your subscription at any time. Cancellation stops future renewals; your paid features run until the end of the period you have paid for. Except where the law requires otherwise, fees already paid are not refunded, and partial periods are not prorated. If you believe we have billed you in error, write to hello@pplcrm.com and we will fix genuine mistakes without ceremony.',
-    },
-    {
-      kind: 'h2',
-      id: 'your-data',
-      text: '5. Your data stays yours',
-    },
-    {
-      kind: 'list',
-      items: [
-        'You own the data in your workspace. We claim no rights to it beyond the narrow license needed to run the service for you: storing it, displaying it to your team, sending what you tell us to send, and backing it up.',
-        'We never sell, share, rent or mine workspace data, use it for advertising, or use it to train machine-learning models. These commitments are stated in full in the [privacy policy](/privacy) and on the [data ownership page](/data-ownership).',
-        'You can export everything to CSV at any time, on every plan.',
-        'Workspace deletion is real: after a 30-day grace window it permanently and irreversibly deletes every record in the workspace. Export first; we cannot recover data you asked us to destroy.',
-        'If your organization needs a signed data processing agreement, write to hello@pplcrm.com.',
-      ],
-    },
-    {
-      kind: 'h2',
-      id: 'responsibilities',
-      text: '6. Your responsibilities for the people in your list',
-    },
-    {
-      kind: 'p',
-      text: 'You are the steward of the people in your workspace, and the law sees it the same way: for workspace data you are the controller and we are your service provider. That means you are responsible for:',
-    },
-    {
-      kind: 'list',
-      items: [
-        'Having consent or another lawful basis for the personal information you store and the messages you send, under the laws that apply to you (for example PIPEDA and CASL in Canada, CAN-SPAM in the US, GDPR and PECR in Europe and the UK).',
-        'Complying with the election, campaign finance and donor disclosure laws of your jurisdiction, including any rules about who may donate and what records you must keep.',
-        'Answering access, correction and deletion requests from the people in your list. The product gives you the tools; the obligation is yours.',
-        'What your team and volunteers do with the access you give them.',
-      ],
-    },
-    {
-      kind: 'h2',
-      id: 'acceptable-use',
-      text: '7. Acceptable use',
-    },
-    {
-      kind: 'p',
-      text: 'We built pplCRM for legitimate community, political and non-profit work. You agree not to use it to:',
-    },
-    {
-      kind: 'list',
-      items: [
-        'Send spam. Purchased, scraped or borrowed lists are prohibited; you may only email people who gave you their address with a reasonable expectation of hearing from you.',
-        'Break the law, including privacy, election, anti-harassment and anti-discrimination law.',
-        'Harass, threaten, defame or deceive people, or impersonate another person or organization.',
-        'Probe, disrupt or overload the service, resell access to it, or attempt to access another organization’s workspace.',
-        'Store data you have no right to hold, including data obtained by breach or deception.',
-      ],
-    },
-    {
-      kind: 'p',
-      text: 'We may suspend or terminate accounts that break these rules. Where the situation allows it, we warn first and suspend second; where people are being harmed, we act first.',
-    },
-    {
-      kind: 'h2',
-      id: 'email-rules',
-      text: '8. Email sending rules',
-    },
-    {
-      kind: 'p',
-      text: 'Deliverability is a shared resource, so the platform enforces guardrails and you agree to them:',
-    },
-    {
-      kind: 'list',
-      items: [
-        'Newsletters are sent from your own verified domain. Every newsletter automatically carries your organization’s name, postal address, a working unsubscribe link and a “powered by pplCRM” attribution line, and this footer cannot be removed. Sending is disabled until the postal address is set.',
-        'Unsubscribes, bounces and do-not-contact flags are honored automatically on all future sends. Attempting to circumvent suppression is a breach of this agreement.',
-        'New free-plan senders verify a mobile number and warm up gradually under a daily cap.',
-        'Each plan includes a monthly newsletter-email allowance (shown on the [pricing page](/pricing)), and it is enforced at send time: a send larger than what remains of your allowance is declined with the exact numbers, and the allowance resets each billing month. Emails sent by automations count toward the same allowance. Growing your list raises your bracket — and your allowance — automatically.',
-        'Every newsletter passes a deliverability check before it sends. Content that scores in the blocked band — phishing-shaped links, scam patterns, or commercial marketing unrelated to your organization’s cause — will not send until fixed. Fundraising, auctions and event promotion are normal newsletter content and are not affected.',
-        'Sending pauses automatically if your hard-bounce rate exceeds 5%, and is suspended if your spam-complaint rate exceeds 1%. We do this to protect both your sending reputation and everyone else’s; write to us to review and resume.',
-        'Imported contact lists are checked on the way in: each address’s domain is verified and disposable addresses are flagged. Undeliverable addresses are suppressed automatically, and an import with an unusually high rate of them — the hallmark of a purchased or scraped list — pauses your sending pending review.',
-      ],
-    },
-    {
-      kind: 'h2',
-      id: 'donations',
-      text: '9. Donations',
-    },
-    {
-      kind: 'list',
-      items: [
-        'Donation payments are processed by Stripe. We are not a payment processor, and card details never touch our servers.',
-        'Card donations processed through Stripe carry a 1% platform fee in addition to Stripe’s own processing fees, as shown in the product.',
-        'You are responsible for your eligibility to accept donations, for issuing any receipts the law requires, and for compliance with contribution limits and disclosure rules.',
-        'Refunds and chargebacks are handled through the payment processor; the product reflects them against the donation record automatically.',
-      ],
-    },
-    {
-      kind: 'h2',
-      id: 'volunteers',
-      text: '10. Volunteer companion access',
-    },
-    {
-      kind: 'p',
-      text: 'Companion links give volunteers access to exactly the turf or route you assign, without an account. Volunteers verify with a one-time code and each must be approved once by an admin. You are responsible for who you approve, and you can revoke a volunteer or regenerate a link at any time. Companion sessions and links expire automatically unless you configure otherwise.',
-    },
-    {
-      kind: 'h2',
-      id: 'ip',
-      text: '11. Intellectual property',
-    },
-    {
-      kind: 'p',
-      text: 'We own the pplCRM software, design and brand. We grant you a non-exclusive, non-transferable right to use the service while this agreement is in effect. You may not copy, modify, reverse engineer or create derivative works of the service except where the law grants that right regardless of contract. If you send us feedback or feature ideas, we may use them without obligation; that license covers the idea, never your data.',
-    },
-    {
-      kind: 'h2',
-      id: 'availability',
-      text: '12. Availability and support',
-    },
-    {
-      kind: 'p',
-      text: 'We work to keep the service fast and available, and we maintain automated backups, but we do not promise uninterrupted service and self-serve plans carry no formal SLA. We may change the service as we improve it; if we materially remove functionality your plan depends on, we will give you notice and time to export. Support is by email at hello@pplcrm.com, and a human replies.',
-    },
-    {
-      kind: 'h2',
-      id: 'suspension-termination',
-      text: '13. Suspension and termination',
-    },
-    {
-      kind: 'list',
-      items: [
-        'You may stop using the service and delete your workspace at any time; section 5 describes how deletion works.',
-        'We may suspend or terminate for breach of these terms, non-payment, legal requirement, or genuine risk to the platform or other customers. Except in urgent cases, we give notice and a chance to fix the problem first.',
-        'On termination we will not withhold your data: export remains available for a reasonable wind-down period before deletion, except where the law forbids it.',
-        'Sections that by their nature should survive (data commitments, disclaimers, liability limits, governing law) survive termination.',
-      ],
-    },
-    {
-      kind: 'h2',
-      id: 'disclaimers',
-      text: '14. Disclaimers',
-    },
-    {
-      kind: 'p',
-      text: 'The service is provided “as is” and “as available”. To the maximum extent the law allows, we disclaim implied warranties of merchantability, fitness for a particular purpose and non-infringement. pplCRM is a tool: we do not provide legal advice, and using features like consent tracking, suppression lists or receipts does not by itself make you compliant with the laws that apply to you.',
-    },
-    {
-      kind: 'h2',
-      id: 'liability',
-      text: '15. Limitation of liability',
-    },
-    {
-      kind: 'p',
-      text: 'To the maximum extent the law allows: neither party is liable for indirect, incidental, special, consequential or punitive damages, or for lost profits, revenues or data; and our total liability under this agreement is capped at the amounts you paid us in the 12 months before the event giving rise to the claim (or 100 US dollars if you are on the free plan). Nothing in this section limits liability that cannot lawfully be limited, and nothing in it weakens our data commitments in section 5.',
-    },
-    {
-      kind: 'h2',
-      id: 'indemnity',
-      text: '16. Indemnity',
-    },
-    {
-      kind: 'p',
-      text: 'You will defend and indemnify us against third-party claims arising from your data, your messages, or your breach of sections 6 through 9, provided we tell you promptly about the claim and let you control the defense.',
-    },
-    {
-      kind: 'h2',
-      id: 'law',
-      text: '17. Governing law',
-    },
-    {
-      kind: 'p',
-      text: 'This agreement is governed by the laws of the Province of Ontario and the federal laws of Canada applicable in it, and the courts of Ontario have exclusive jurisdiction, except that either party may seek injunctive relief for misuse of data or intellectual property in any competent court. If you are a consumer somewhere whose law gives you mandatory protections, those protections are unaffected.',
-    },
-    {
-      kind: 'h2',
-      id: 'changes',
-      text: '18. Changes to these terms',
-    },
-    {
-      kind: 'p',
-      text: 'When these terms change materially, we will email workspace admins at least 30 days before the change takes effect, and update the date at the top. If you keep using the service after that date, the new terms apply; if you do not agree, cancel and export before it, and we will help.',
-    },
-    {
-      kind: 'h2',
-      id: 'contact',
-      text: '19. Contact',
-    },
-    {
-      kind: 'p',
-      text: 'Questions about these terms go to hello@pplcrm.com. If anything here seems to conflict with the plain-language promises on the [data ownership page](/data-ownership), tell us; the stricter protection for you is the one we intend.',
-    },
-  ],
-};
 ````
 
 ## File: apps/website/src/app/legal/privacy-content.ts
@@ -81021,6 +70628,266 @@ export class FaqPage {
 }
 ````
 
+## File: apps/website/src/app/legal/eula-content.ts
+````typescript
+import type { LegalDoc } from './legal-types';
+
+/**
+ * The end user license agreement (the terms of service for the platform).
+ * Operational specifics (plan caps, sending guards, deletion windows, the 1%
+ * donation platform fee) mirror the product; if the product changes, change
+ * this document in the same commit.
+ */
+export const EULA_DOC: LegalDoc = {
+  eyebrow: 'Legal',
+  title: 'End user license agreement',
+  intro:
+    'The agreement between you and pplCRM when you use the service. Plain language where the law allows it, and no surprises hiding in the numbered clauses.',
+  updated: 'July 24, 2026',
+  blocks: [
+    {
+      kind: 'h2',
+      id: 'agreement',
+      text: '1. The agreement',
+    },
+    {
+      kind: 'p',
+      text: 'These terms are a contract between pplCRM (“we”, “us”) and the organization or person creating an account (“you”). They cover the pplCRM application, the volunteer companion apps, the public pages you publish through us, and the marketing site. By creating an account, or by clicking agree at signup, you accept them. If you are accepting on behalf of an organization, you confirm you have authority to bind it, and “you” means that organization.',
+    },
+    {
+      kind: 'p',
+      text: 'You must be the age of majority in your jurisdiction to create an account. The [privacy policy](/privacy) explains how personal information is handled and is part of this agreement.',
+    },
+    {
+      kind: 'h2',
+      id: 'accounts',
+      text: '2. Accounts and workspaces',
+    },
+    {
+      kind: 'list',
+      items: [
+        'Each organization gets its own workspace, isolated from every other organization on the platform.',
+        'You are responsible for the accuracy of your account information, for keeping credentials confidential, and for what happens under your seats. Tell us at hello@pplcrm.com immediately if you suspect unauthorized access.',
+        'Workspace admins control who has access, including requiring two-factor authentication for the whole workspace, approving field volunteers, and deactivating people who leave.',
+        'Signup requires a working email address; accounts with unverified email cannot sign in.',
+      ],
+    },
+    {
+      kind: 'h2',
+      id: 'plans-billing',
+      text: '3. Plans, billing and taxes',
+    },
+    {
+      kind: 'list',
+      items: [
+        'Current plans, prices and limits are on the [pricing page](/pricing). Paid plans are billed in US dollars through Stripe; prices shown in other currencies are estimates only. Applicable sales taxes are calculated at checkout.',
+        'Paid plans can be billed monthly or annually. Annual billing is paid up front for the year at 10× the monthly price — two months free — and renews yearly unless canceled.',
+        'Paid plans are metered on emailable subscribers, not stored contacts. When your subscriber count crosses into a new bracket, we email your admins, move you to the new bracket, and charge the prorated difference for the remainder of your current billing period on either interval. Growing never interrupts your service. If your count shrinks, the price drops at the next renewal automatically.',
+        'The free plan is free indefinitely, within its published limits (subscriber, sending, seat and storage caps). We may adjust free-plan limits with notice; we will never retroactively charge you.',
+        'If a subscription payment fails, newsletter sending is placed on hold until the payment method is updated — nothing else is restricted, and reading and exporting your data are never affected.',
+        'We may change paid pricing with at least 30 days’ notice; changes take effect at your next billing cycle, and you can cancel before they do.',
+        'Downgrading or lapsing never locks your data. Reading and exporting stay available regardless of plan; features above your plan simply stop being editable.',
+      ],
+    },
+    {
+      kind: 'h2',
+      id: 'cancellation',
+      text: '4. Cancellation and refunds',
+    },
+    {
+      kind: 'p',
+      text: 'You can cancel your subscription at any time. Cancellation stops future renewals; your paid features run until the end of the period you have paid for. Except where the law requires otherwise, fees already paid are not refunded, and partial periods are not prorated. If you believe we have billed you in error, write to hello@pplcrm.com and we will fix genuine mistakes without ceremony.',
+    },
+    {
+      kind: 'h2',
+      id: 'your-data',
+      text: '5. Your data stays yours',
+    },
+    {
+      kind: 'list',
+      items: [
+        'You own the data in your workspace. We claim no rights to it beyond the narrow license needed to run the service for you: storing it, displaying it to your team, sending what you tell us to send, and backing it up.',
+        'We never sell, share, rent or mine workspace data, use it for advertising, or use it to train machine-learning models. These commitments are stated in full in the [privacy policy](/privacy) and on the [data ownership page](/data-ownership).',
+        'You can export everything to CSV at any time, on every plan.',
+        'Workspace deletion is real: after a 30-day grace window it permanently and irreversibly deletes every record in the workspace. Export first; we cannot recover data you asked us to destroy.',
+        'If your organization needs a signed data processing agreement, write to hello@pplcrm.com.',
+      ],
+    },
+    {
+      kind: 'h2',
+      id: 'responsibilities',
+      text: '6. Your responsibilities for the people in your list',
+    },
+    {
+      kind: 'p',
+      text: 'You are the steward of the people in your workspace, and the law sees it the same way: for workspace data you are the controller and we are your service provider. That means you are responsible for:',
+    },
+    {
+      kind: 'list',
+      items: [
+        'Having consent or another lawful basis for the personal information you store and the messages you send, under the laws that apply to you (for example PIPEDA and CASL in Canada, CAN-SPAM in the US, GDPR and PECR in Europe and the UK).',
+        'Complying with the election, campaign finance and donor disclosure laws of your jurisdiction, including any rules about who may donate and what records you must keep.',
+        'Answering access, correction and deletion requests from the people in your list. The product gives you the tools; the obligation is yours.',
+        'What your team and volunteers do with the access you give them.',
+      ],
+    },
+    {
+      kind: 'h2',
+      id: 'acceptable-use',
+      text: '7. Acceptable use',
+    },
+    {
+      kind: 'p',
+      text: 'We built pplCRM for legitimate community, political and non-profit work. You agree not to use it to:',
+    },
+    {
+      kind: 'list',
+      items: [
+        'Send spam. Purchased, scraped or borrowed lists are prohibited; you may only email people who gave you their address with a reasonable expectation of hearing from you.',
+        'Break the law, including privacy, election, anti-harassment and anti-discrimination law.',
+        'Harass, threaten, defame or deceive people, or impersonate another person or organization.',
+        'Probe, disrupt or overload the service, resell access to it, or attempt to access another organization’s workspace.',
+        'Store data you have no right to hold, including data obtained by breach or deception.',
+      ],
+    },
+    {
+      kind: 'p',
+      text: 'We may suspend or terminate accounts that break these rules. Where the situation allows it, we warn first and suspend second; where people are being harmed, we act first.',
+    },
+    {
+      kind: 'h2',
+      id: 'email-rules',
+      text: '8. Email sending rules',
+    },
+    {
+      kind: 'p',
+      text: 'Deliverability is a shared resource, so the platform enforces guardrails and you agree to them:',
+    },
+    {
+      kind: 'list',
+      items: [
+        'Newsletters are sent from your own verified domain. Every newsletter automatically carries your organization’s name, postal address, a working unsubscribe link and a “powered by pplCRM” attribution line, and this footer cannot be removed. Sending is disabled until the postal address is set.',
+        'Unsubscribes, bounces and do-not-contact flags are honored automatically on all future sends. Attempting to circumvent suppression is a breach of this agreement.',
+        'New free-plan senders verify a mobile number and warm up gradually under a daily cap.',
+        'Each plan includes a monthly newsletter-email allowance (shown on the [pricing page](/pricing)), and it is enforced at send time: a send larger than what remains of your allowance is declined with the exact numbers, and the allowance resets each billing month. Emails sent by automations count toward the same allowance. Growing your list raises your bracket — and your allowance — automatically.',
+        'Every newsletter passes a deliverability check before it sends. Content that scores in the blocked band — phishing-shaped links, scam patterns, or commercial marketing unrelated to your organization’s cause — will not send until fixed. Fundraising, auctions and event promotion are normal newsletter content and are not affected.',
+        'Sending pauses automatically if your hard-bounce rate exceeds 5%, and is suspended if your spam-complaint rate exceeds 1%. We do this to protect both your sending reputation and everyone else’s; write to us to review and resume.',
+        'Imported contact lists are checked on the way in: each address’s domain is verified and disposable addresses are flagged. Undeliverable addresses are suppressed automatically, and an import with an unusually high rate of them — the hallmark of a purchased or scraped list — pauses your sending pending review.',
+      ],
+    },
+    {
+      kind: 'h2',
+      id: 'donations',
+      text: '9. Donations',
+    },
+    {
+      kind: 'list',
+      items: [
+        'Donation payments are processed by Stripe. We are not a payment processor, and card details never touch our servers.',
+        'Card donations processed through Stripe carry a 1% platform fee in addition to Stripe’s own processing fees, as shown in the product.',
+        'You are responsible for your eligibility to accept donations, for issuing any receipts the law requires, and for compliance with contribution limits and disclosure rules.',
+        'Refunds and chargebacks are handled through the payment processor; the product reflects them against the donation record automatically.',
+      ],
+    },
+    {
+      kind: 'h2',
+      id: 'volunteers',
+      text: '10. Volunteer companion access',
+    },
+    {
+      kind: 'p',
+      text: 'Companion links give volunteers access to exactly the turf or route you assign, without an account. Volunteers verify with a one-time code and each must be approved once by an admin. You are responsible for who you approve, and you can revoke a volunteer or regenerate a link at any time. Companion sessions and links expire automatically unless you configure otherwise.',
+    },
+    {
+      kind: 'h2',
+      id: 'ip',
+      text: '11. Intellectual property',
+    },
+    {
+      kind: 'p',
+      text: 'We own the pplCRM software, design and brand. We grant you a non-exclusive, non-transferable right to use the service while this agreement is in effect. You may not copy, modify, reverse engineer or create derivative works of the service except where the law grants that right regardless of contract. If you send us feedback or feature ideas, we may use them without obligation; that license covers the idea, never your data.',
+    },
+    {
+      kind: 'h2',
+      id: 'availability',
+      text: '12. Availability and support',
+    },
+    {
+      kind: 'p',
+      text: 'We work to keep the service fast and available, and we maintain automated backups, but we do not promise uninterrupted service and self-serve plans carry no formal SLA. We may change the service as we improve it; if we materially remove functionality your plan depends on, we will give you notice and time to export. Support is by email at hello@pplcrm.com, and a human replies.',
+    },
+    {
+      kind: 'h2',
+      id: 'suspension-termination',
+      text: '13. Suspension and termination',
+    },
+    {
+      kind: 'list',
+      items: [
+        'You may stop using the service and delete your workspace at any time; section 5 describes how deletion works.',
+        'We may suspend or terminate for breach of these terms, non-payment, legal requirement, or genuine risk to the platform or other customers. Except in urgent cases, we give notice and a chance to fix the problem first.',
+        'On termination we will not withhold your data: export remains available for a reasonable wind-down period before deletion, except where the law forbids it.',
+        'Sections that by their nature should survive (data commitments, disclaimers, liability limits, governing law) survive termination.',
+      ],
+    },
+    {
+      kind: 'h2',
+      id: 'disclaimers',
+      text: '14. Disclaimers',
+    },
+    {
+      kind: 'p',
+      text: 'The service is provided “as is” and “as available”. To the maximum extent the law allows, we disclaim implied warranties of merchantability, fitness for a particular purpose and non-infringement. pplCRM is a tool: we do not provide legal advice, and using features like consent tracking, suppression lists or receipts does not by itself make you compliant with the laws that apply to you.',
+    },
+    {
+      kind: 'h2',
+      id: 'liability',
+      text: '15. Limitation of liability',
+    },
+    {
+      kind: 'p',
+      text: 'To the maximum extent the law allows: neither party is liable for indirect, incidental, special, consequential or punitive damages, or for lost profits, revenues or data; and our total liability under this agreement is capped at the amounts you paid us in the 12 months before the event giving rise to the claim (or 100 US dollars if you are on the free plan). Nothing in this section limits liability that cannot lawfully be limited, and nothing in it weakens our data commitments in section 5.',
+    },
+    {
+      kind: 'h2',
+      id: 'indemnity',
+      text: '16. Indemnity',
+    },
+    {
+      kind: 'p',
+      text: 'You will defend and indemnify us against third-party claims arising from your data, your messages, or your breach of sections 6 through 9, provided we tell you promptly about the claim and let you control the defense.',
+    },
+    {
+      kind: 'h2',
+      id: 'law',
+      text: '17. Governing law',
+    },
+    {
+      kind: 'p',
+      text: 'This agreement is governed by the laws of the Province of Ontario and the federal laws of Canada applicable in it, and the courts of Ontario have exclusive jurisdiction, except that either party may seek injunctive relief for misuse of data or intellectual property in any competent court. If you are a consumer somewhere whose law gives you mandatory protections, those protections are unaffected.',
+    },
+    {
+      kind: 'h2',
+      id: 'changes',
+      text: '18. Changes to these terms',
+    },
+    {
+      kind: 'p',
+      text: 'When these terms change materially, we will email workspace admins at least 30 days before the change takes effect, and update the date at the top. If you keep using the service after that date, the new terms apply; if you do not agree, cancel and export before it, and we will help.',
+    },
+    {
+      kind: 'h2',
+      id: 'contact',
+      text: '19. Contact',
+    },
+    {
+      kind: 'p',
+      text: 'Questions about these terms go to hello@pplcrm.com. If anything here seems to conflict with the plain-language promises on the [data ownership page](/data-ownership), tell us; the stricter protection for you is the one we intend.',
+    },
+  ],
+};
+````
+
 ## File: apps/backend/src/app/lib/jobs/handlers/newsletter.handlers.ts
 ````typescript
 import type { ExpressionBuilder, Kysely } from 'kysely';
@@ -81038,8 +70905,9 @@ import {
   resolveMergeSubstitutions,
 } from '../../mail/newsletter-render';
 import { UserActivityRepo } from '../../user-activity.repo';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { DAY_MS, FIVE_MINUTES_MS, scheduleNextRun } from '../reschedule';
+import { DAY_MS, scheduleNextRun } from '../reschedule';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { FilesRepo } from '../../../modules/files/repositories/files.repo';
 import { StorageService } from '../../storage.service';
@@ -81059,6 +70927,72 @@ const BATCH_DELAY_MS = 1000;
 // How long a rate-capped send waits before its continuation job retries (rolling windows free
 // up gradually, so a short fixed delay converges without busy-waiting a worker slot).
 const RATE_CAP_DEFER_MS = 15 * 60 * 1000;
+// Pool fairness (NOT rate limiting): a single large send would otherwise hold one of the worker's
+// few concurrent slots for its entire duration (batch + BATCH_DELAY_MS sleep, repeated), starving
+// every other tenant's jobs. After this many batches in one execution the send hands its remainder
+// to a continuation job with run_at = now, so the slot is released and the send resumes immediately.
+const MAX_BATCHES_PER_EXECUTION = 10;
+// The yield is not a backoff: the continuation is runnable the moment a slot frees up.
+const YIELD_DEFER_MS = 0;
+const CONTINUATION_MAX_ATTEMPTS = 3;
+
+/** Durable progress of an in-flight newsletter send (the resume point + best-effort counters). */
+type NewsletterSendProgress = {
+  tenantId: string;
+  newsletterId: string;
+  userId: string;
+  offset: number;
+  cursor: string | null;
+  deliveredCount: number;
+};
+
+/** The `send-newsletter` job payload, shared by the per-batch claim write and continuation jobs. */
+function sendNewsletterPayload(progress: NewsletterSendProgress): string {
+  return JSON.stringify({
+    type: 'send-newsletter',
+    newsletterId: progress.newsletterId,
+    tenantId: progress.tenantId,
+    userId: progress.userId,
+    offset: progress.offset,
+    deliveredCount: progress.deliveredCount,
+    cursor: progress.cursor,
+  });
+}
+
+/**
+ * Ends this job execution early and hands the remainder of the send to a continuation job:
+ * saves the resume point on the newsletter row, then enqueues the follow-up at `delayMs`.
+ * Two callers, same mechanism, different delay — the per-tenant rate cap (defer until the rolling
+ * window frees up) and the pool-fairness yield (resume immediately, just in a fresh slot).
+ */
+async function deferRemainderOfSend(
+  db: Kysely<Models>,
+  progress: NewsletterSendProgress,
+  delayMs: number,
+): Promise<void> {
+  await db
+    .updateTable('newsletters')
+    .set({
+      send_offset: progress.offset,
+      send_cursor: progress.cursor,
+      delivered_count: progress.deliveredCount,
+      updated_at: new Date(),
+    })
+    .where('tenant_id', '=', progress.tenantId)
+    .where('id', '=', progress.newsletterId)
+    .execute();
+  await db
+    .insertInto('background_jobs')
+    .values({
+      tenant_id: progress.tenantId,
+      queue: 'default',
+      status: 'pending',
+      payload: sendNewsletterPayload(progress),
+      run_at: new Date(Date.now() + delayMs),
+      max_attempts: CONTINUATION_MAX_ATTEMPTS,
+    })
+    .execute();
+}
 
 export async function handleSendNewsletter(
   payload: JobPayloadOf<'send-newsletter'>,
@@ -81224,6 +71158,9 @@ export async function handleSendNewsletter(
 
   const attachments = await buildNewsletterAttachments(db, tenantId, newsletterId);
 
+  // Batches sent by THIS execution (not by the send as a whole) — the pool-fairness budget below.
+  let batchesThisRun = 0;
+
   // Keyset walk: loop until a batch yields no more recipients (see the empty-batch break below).
   // `offset`/`totalRecipients` are progress display only — they must NOT bound the loop, or a resume
   // after the audience shrank ahead of the cursor would stop early and skip the remaining recipients.
@@ -81262,31 +71199,11 @@ export async function handleSendNewsletter(
         { tenantId, newsletterId, offset, deliveredCount },
         'Per-tenant send cap reached — deferring remainder of newsletter send',
       );
-      await db
-        .updateTable('newsletters')
-        .set({ send_offset: offset, send_cursor: cursor, delivered_count: deliveredCount, updated_at: new Date() })
-        .where('tenant_id', '=', tenantId)
-        .where('id', '=', newsletterId)
-        .execute();
-      await db
-        .insertInto('background_jobs')
-        .values({
-          tenant_id: tenantId,
-          queue: 'default',
-          status: 'pending',
-          payload: JSON.stringify({
-            type: 'send-newsletter',
-            newsletterId,
-            tenantId,
-            userId,
-            offset,
-            deliveredCount,
-            cursor,
-          }),
-          run_at: new Date(Date.now() + RATE_CAP_DEFER_MS),
-          max_attempts: 3,
-        })
-        .execute();
+      await deferRemainderOfSend(
+        db,
+        { tenantId, newsletterId, userId, offset, cursor, deliveredCount },
+        RATE_CAP_DEFER_MS,
+      );
       return;
     }
 
@@ -81294,11 +71211,12 @@ export async function handleSendNewsletter(
     // recipient added/removed between batches can't shift the window. distinctOn(email) yields
     // exactly one row per address (matching the COUNT(DISTINCT email) total) while still carrying
     // the person fields the merge tokens need.
+    const batchLimit = Math.min(NEWSLETTER_BATCH_SIZE, allowance);
     let chunkQuery = baseQuery
       .select(['persons.email', 'persons.first_name', 'persons.last_name', 'persons.mobile', 'persons.home_phone'])
       .distinctOn('persons.email')
       .orderBy('persons.email', 'asc')
-      .limit(Math.min(NEWSLETTER_BATCH_SIZE, allowance));
+      .limit(batchLimit);
     if (cursor !== null) {
       chunkQuery = chunkQuery.where('persons.email', '>', cursor);
     }
@@ -81327,6 +71245,40 @@ export async function handleSendNewsletter(
       break;
     }
 
+    // ── Claim the batch BEFORE sending it: at-most-once delivery ─────────────────────────────
+    // Explicit product decision (2026-07-24): crash between claim and send → that batch is
+    // skipped, never duplicated; duplicates were judged worse than gaps (spam-complaint
+    // tripwires). So the advanced resume point is made durable in the job payload FIRST, then
+    // SendGrid is called. Do not "fix" this back to send-then-persist.
+    //
+    // The resume point is the max email of the batch about to go out: `recipients` is non-empty
+    // here (length === 0 breaks above) and walked in ascending email order, so its final element
+    // is past every address in this batch under the `email > cursor` keyset semantics — hence the
+    // non-null assertion.
+    const nextCursor = recipients[recipients.length - 1]!.email;
+    const nextOffset = offset + chunkRows.length;
+    // deliveredCount is only knowable after the send, so the claim persists the pre-send value and
+    // stays best-effort: a retry resumes past this batch but may undercount what it delivered.
+    // (No jobId — a direct/handler-level invocation — means there is no payload to claim into and
+    // therefore no durability here; the worker always passes one.)
+    if (jobId) {
+      await db
+        .updateTable('background_jobs')
+        .set({
+          payload: sendNewsletterPayload({
+            tenantId,
+            newsletterId,
+            userId,
+            offset: nextOffset,
+            cursor: nextCursor,
+            deliveredCount,
+          }),
+          updated_at: new Date(),
+        })
+        .where('id', '=', jobId)
+        .execute();
+    }
+
     const batchDelivered = await newsletterMailSvc.sendNewsletter({
       fromName,
       fromEmail,
@@ -81343,33 +71295,31 @@ export async function handleSendNewsletter(
     });
 
     deliveredCount += batchDelivered;
-    offset += chunkRows.length;
-    // Advance the keyset cursor to the last (max) email this batch sent. recipients is non-empty
-    // here (length === 0 breaks above) and ordered ascending, so its final element is the
-    // correct resume point — hence the non-null assertion.
-    cursor = recipients[recipients.length - 1]!.email;
+    offset = nextOffset;
+    cursor = nextCursor;
 
-    // Meter the batch — this row is what the warm-up and hourly caps SUM over.
+    // Meter the batch — this row is what the warm-up and hourly caps SUM over. It stays AFTER the
+    // send, which is the flip side of the at-most-once ordering: a batch whose send crashes goes
+    // unmetered, so the caps can err permissive by at most one batch. Accepted — metering pre-send
+    // would spend a tenant's allowance on mail that may never have left.
     await logNewsletterBatch(db, tenantId, newsletterId, batchDelivered);
 
-    // Update progress in the background job payload (no recipients array!)
-    if (jobId) {
-      await db
-        .updateTable('background_jobs')
-        .set({
-          payload: JSON.stringify({
-            type: 'send-newsletter',
-            newsletterId,
-            tenantId,
-            userId,
-            offset,
-            deliveredCount,
-            cursor,
-          }),
-          updated_at: new Date(),
-        })
-        .where('id', '=', jobId)
-        .execute();
+    // Pool fairness, not rate limiting: stop after a fixed number of batches so other tenants'
+    // jobs get a turn on this slot, and let the send continue immediately in a fresh execution.
+    // A short final batch means the keyset walk is exhausted — nothing left to hand over, so fall
+    // through and let the next iteration break into the completion path instead.
+    batchesThisRun += 1;
+    if (batchesThisRun >= MAX_BATCHES_PER_EXECUTION && chunkRows.length === batchLimit) {
+      logger.info(
+        { tenantId, newsletterId, offset, deliveredCount, batchesThisRun },
+        'Batch budget for this execution reached — yielding the worker slot and continuing the send',
+      );
+      await deferRemainderOfSend(
+        db,
+        { tenantId, newsletterId, userId, offset, cursor, deliveredCount },
+        YIELD_DEFER_MS,
+      );
+      return;
     }
 
     // Add a small delay between batches to respect rate limits
@@ -81378,7 +71328,10 @@ export async function handleSendNewsletter(
     }
   }
 
-  // Update newsletter status to 'sent'
+  // Update newsletter status to 'sent'. `delivered_count` is a best-effort figure, not an audited
+  // one: it sums the batches this send (and its continuations) observed SendGrid accept, so a batch
+  // lost to the at-most-once claim (crash between claim and send) is missing from it — and the real
+  // delivery numbers come from the SendGrid event webhook aggregates anyway.
   await db
     .updateTable('newsletters')
     .set({
@@ -81403,6 +71356,8 @@ export async function handleSendNewsletter(
     entity: 'newsletters',
     entity_id: newsletterId,
     quantity: totalRecipients,
+    // deliveredCount is best-effort (see the status update above) — treat it as "at least this
+    // many", never as an exact audit figure.
     metadata: { recipientsCount: totalRecipients, deliveredCount },
   });
 
@@ -81417,7 +71372,7 @@ const SEND_LOG_RETENTION_DAYS = 32;
 
 export async function handlePruneNewsletterEvents(db: Kysely<Models>): Promise<void> {
   await pruneNewsletterEvents(db);
-  await scheduleNextRun(db, 'prune_newsletter_events', DAY_MS);
+  await scheduleNextRun(db, 'prune_newsletter_events', CRON_JOBS.prune_newsletter_events);
 }
 
 // Event types that warrant keeping a per-newsletter engagement record.
@@ -81719,7 +71674,7 @@ export async function handleProcessScheduledNewsletters(db: Kysely<Models>): Pro
     }
   }
 
-  await scheduleNextRun(db, 'process_scheduled_newsletters', FIVE_MINUTES_MS);
+  await scheduleNextRun(db, 'process_scheduled_newsletters', CRON_JOBS.process_scheduled_newsletters);
 }
 
 /**

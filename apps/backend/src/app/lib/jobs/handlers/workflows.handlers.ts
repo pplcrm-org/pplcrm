@@ -15,10 +15,10 @@ import {
 } from '../../../modules/newsletters/send-guards';
 import { encodeUnsubscribeToken } from '../../../modules/newsletters/unsubscribe-token';
 import { resolveAutomationSendConsent } from '../../../modules/workflows/automation-consent';
-import { scheduleNextRun, TEN_MINUTES_MS } from '../reschedule';
+import { CRON_JOBS } from '../cron-registry';
+import { DAY_MS, HOUR_MS, scheduleNextRun, TEN_MINUTES_MS } from '../reschedule';
 
 const ENROLLMENT_BATCH_SIZE = 500;
-const ONE_HOUR_MS = 60 * 60 * 1000;
 
 /** The recipient must not be emailed (unsubscribed/suppressed/DNC). Recorded as a 'skipped'
  * run — not a failure — and the sequence advances past the step. */
@@ -74,7 +74,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
       if (!automationsAllowed) {
         await db
           .updateTable('workflow_enrollments')
-          .set({ next_run_at: new Date(Date.now() + ONE_HOUR_MS), updated_at: new Date() })
+          .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
           .where('id', '=', enrollment.id)
           .execute();
         continue;
@@ -223,7 +223,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
             if (err instanceof RetryLaterError) {
               await trx
                 .updateTable('workflow_enrollments')
-                .set({ next_run_at: new Date(Date.now() + ONE_HOUR_MS), updated_at: new Date() })
+                .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
                 .where('id', '=', lockedEnrollment.id)
                 .execute();
               logger.info(
@@ -268,14 +268,13 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
   }
 
   // A full batch means there is likely more work waiting — requeue immediately.
-  const delayMs = pendingEnrollments.length === ENROLLMENT_BATCH_SIZE ? 0 : TEN_MINUTES_MS;
+  const delayMs = pendingEnrollments.length === ENROLLMENT_BATCH_SIZE ? 0 : CRON_JOBS.process_drip_workflows;
   await scheduleNextRun(db, 'process_drip_workflows', delayMs);
 }
 
 const LAPSED_DEFAULT_DAYS = 90;
 const LAPSED_MIN_DAYS = 7;
 const MAX_LAPSED_ENROLLMENTS_PER_RUN = 500;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Daily scan behind the `supporter_lapsed` trigger ("Supporter goes quiet"). For each active
@@ -389,15 +388,17 @@ export async function handleDetectLapsedSupporters(db: Kysely<Models>): Promise<
     }
   }
 
-  await scheduleNextRun(db, 'detect_lapsed_supporters', 24 * 60 * 60 * 1000);
+  await scheduleNextRun(db, 'detect_lapsed_supporters', CRON_JOBS.detect_lapsed_supporters);
 }
 
 /** Self-rescheduling hourly scan behind the `task_sla_breach` trigger ("Task breaches SLA"). */
 export async function handleDetectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
   await detectTaskSlaBreaches(db);
 
-  await scheduleNextRun(db, 'detect_task_sla_breaches', ONE_HOUR_MS);
+  await scheduleNextRun(db, 'detect_task_sla_breaches', CRON_JOBS.detect_task_sla_breaches);
 }
+
+const TASK_SLA_SCAN_CHUNK_SIZE = 500;
 
 /**
  * Hourly scan behind the `task_sla_breach` trigger (spec §4 → §16). For every open task not
@@ -407,73 +408,102 @@ export async function handleDetectTaskSlaBreaches(db: Kysely<Models>): Promise<v
  * `sla_breached_at` (the once-only marker — later ticks skip stamped tasks), then the
  * task's linked person is enrolled through the normal trigger path (conditions respected).
  * Tasks with no linked person are stamped but skip enrollment: automations enroll persons.
+ *
+ * Keyset-paginated by task id (ascending `WHERE id > cursor`, not OFFSET) in chunks of
+ * TASK_SLA_SCAN_CHUNK_SIZE, looping until a chunk comes back short — an unbounded, un-stamped
+ * open-task backlog across every tenant must never be loaded into memory in one query. Each
+ * chunk is grouped by tenant and scanned inside its own try/catch (same as before pagination),
+ * so one tenant's failure only drops that slice of that chunk — it never kills the rest of the
+ * chunk, later chunks, or other tenants' scans.
  */
 export async function detectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
   const now = new Date();
-  const candidates = await db
-    .selectFrom('tasks')
-    .select(['id', 'tenant_id', 'created_at', 'person_id'])
-    .where('status', 'not in', ['done', 'archived'])
-    .where('sla_breached_at', 'is', null)
-    .execute();
-  if (candidates.length === 0) return;
-
-  const byTenant = new Map<string, typeof candidates>();
-  for (const task of candidates) {
-    const tenantId = String(task.tenant_id);
-    const list = byTenant.get(tenantId) ?? [];
-    list.push(task);
-    byTenant.set(tenantId, list);
-  }
-
   const { WorkflowsController } = await import('../../../modules/workflows/controller');
   const controller = new WorkflowsController();
+  const slaConfigByTenant = new Map<string, Awaited<ReturnType<typeof loadTaskSlaConfig>>>();
 
-  for (const [tenantId, tasks] of byTenant.entries()) {
-    try {
-      const config = await loadTaskSlaConfig(db, tenantId);
-      const slaMs = config.taskSlaHours * ONE_HOUR_MS;
-
-      for (const task of tasks) {
-        const workingMs = calculateWorkingTimeMs(
-          new Date(task.created_at),
-          now,
-          config.workingDays,
-          config.workingHoursStart,
-          config.workingHoursEnd,
-        );
-        if (workingMs <= slaMs) continue;
-
-        // Stamp before enrolling: even if enrollment fails, the trigger fires at most once
-        // per task. The `is null` guard makes concurrent ticks race-safe — only the tick
-        // that flips the marker proceeds to enroll.
-        const stamped = await db
-          .updateTable('tasks')
-          .set({ sla_breached_at: now })
-          .where('tenant_id', '=', tenantId)
-          .where('id', '=', String(task.id))
-          .where('sla_breached_at', 'is', null)
-          .returning('id')
-          .executeTakeFirst();
-        if (!stamped) continue;
-
-        if (!task.person_id) {
-          logger.info(
-            { tenantId, taskId: String(task.id) },
-            '[task-sla] Task breached SLA but has no linked person — skipping automation enrollment',
-          );
-          continue;
-        }
-
-        try {
-          await controller.triggerWorkflow(tenantId, String(task.person_id), 'task_sla_breach', null);
-        } catch (err) {
-          logger.error({ err, tenantId, taskId: String(task.id) }, '[task-sla] Failed to fire task_sla_breach trigger');
-        }
-      }
-    } catch (err) {
-      logger.error({ err, tenantId }, '[task-sla] Failed to scan tenant for task SLA breaches');
+  let cursor: string | null = null;
+  for (;;) {
+    let chunkQuery = db
+      .selectFrom('tasks')
+      .select(['id', 'tenant_id', 'created_at', 'person_id'])
+      .where('status', 'not in', ['done', 'archived'])
+      .where('sla_breached_at', 'is', null)
+      .orderBy('id', 'asc')
+      .limit(TASK_SLA_SCAN_CHUNK_SIZE);
+    if (cursor !== null) {
+      chunkQuery = chunkQuery.where('id', '>', cursor);
     }
+    const chunk = await chunkQuery.execute();
+    if (chunk.length === 0) break;
+    const lastTask = chunk[chunk.length - 1];
+    // Unreachable: the length check above guarantees an element; satisfies noUncheckedIndexedAccess.
+    if (!lastTask) break;
+    cursor = String(lastTask.id);
+
+    const byTenant = new Map<string, typeof chunk>();
+    for (const task of chunk) {
+      const tenantId = String(task.tenant_id);
+      const list = byTenant.get(tenantId) ?? [];
+      list.push(task);
+      byTenant.set(tenantId, list);
+    }
+
+    for (const [tenantId, tasks] of byTenant.entries()) {
+      try {
+        let config = slaConfigByTenant.get(tenantId);
+        if (!config) {
+          config = await loadTaskSlaConfig(db, tenantId);
+          slaConfigByTenant.set(tenantId, config);
+        }
+        const slaMs = config.taskSlaHours * HOUR_MS;
+
+        for (const task of tasks) {
+          const workingMs = calculateWorkingTimeMs(
+            new Date(task.created_at),
+            now,
+            config.workingDays,
+            config.workingHoursStart,
+            config.workingHoursEnd,
+          );
+          if (workingMs <= slaMs) continue;
+
+          // Stamp before enrolling: even if enrollment fails, the trigger fires at most once
+          // per task. The `is null` guard makes concurrent ticks race-safe — only the tick
+          // that flips the marker proceeds to enroll.
+          const stamped = await db
+            .updateTable('tasks')
+            .set({ sla_breached_at: now })
+            .where('tenant_id', '=', tenantId)
+            .where('id', '=', String(task.id))
+            .where('sla_breached_at', 'is', null)
+            .returning('id')
+            .executeTakeFirst();
+          if (!stamped) continue;
+
+          if (!task.person_id) {
+            logger.info(
+              { tenantId, taskId: String(task.id) },
+              '[task-sla] Task breached SLA but has no linked person — skipping automation enrollment',
+            );
+            continue;
+          }
+
+          try {
+            await controller.triggerWorkflow(tenantId, String(task.person_id), 'task_sla_breach', null);
+          } catch (err) {
+            logger.error(
+              { err, tenantId, taskId: String(task.id) },
+              '[task-sla] Failed to fire task_sla_breach trigger',
+            );
+          }
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '[task-sla] Failed to scan tenant for task SLA breaches');
+      }
+    }
+
+    if (chunk.length < TASK_SLA_SCAN_CHUNK_SIZE) break;
   }
 }
 

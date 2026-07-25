@@ -13,8 +13,9 @@ import {
   resolveMergeSubstitutions,
 } from '../../mail/newsletter-render';
 import { UserActivityRepo } from '../../user-activity.repo';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { DAY_MS, FIVE_MINUTES_MS, scheduleNextRun } from '../reschedule';
+import { DAY_MS, scheduleNextRun } from '../reschedule';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { FilesRepo } from '../../../modules/files/repositories/files.repo';
 import { StorageService } from '../../storage.service';
@@ -34,6 +35,72 @@ const BATCH_DELAY_MS = 1000;
 // How long a rate-capped send waits before its continuation job retries (rolling windows free
 // up gradually, so a short fixed delay converges without busy-waiting a worker slot).
 const RATE_CAP_DEFER_MS = 15 * 60 * 1000;
+// Pool fairness (NOT rate limiting): a single large send would otherwise hold one of the worker's
+// few concurrent slots for its entire duration (batch + BATCH_DELAY_MS sleep, repeated), starving
+// every other tenant's jobs. After this many batches in one execution the send hands its remainder
+// to a continuation job with run_at = now, so the slot is released and the send resumes immediately.
+const MAX_BATCHES_PER_EXECUTION = 10;
+// The yield is not a backoff: the continuation is runnable the moment a slot frees up.
+const YIELD_DEFER_MS = 0;
+const CONTINUATION_MAX_ATTEMPTS = 3;
+
+/** Durable progress of an in-flight newsletter send (the resume point + best-effort counters). */
+type NewsletterSendProgress = {
+  tenantId: string;
+  newsletterId: string;
+  userId: string;
+  offset: number;
+  cursor: string | null;
+  deliveredCount: number;
+};
+
+/** The `send-newsletter` job payload, shared by the per-batch claim write and continuation jobs. */
+function sendNewsletterPayload(progress: NewsletterSendProgress): string {
+  return JSON.stringify({
+    type: 'send-newsletter',
+    newsletterId: progress.newsletterId,
+    tenantId: progress.tenantId,
+    userId: progress.userId,
+    offset: progress.offset,
+    deliveredCount: progress.deliveredCount,
+    cursor: progress.cursor,
+  });
+}
+
+/**
+ * Ends this job execution early and hands the remainder of the send to a continuation job:
+ * saves the resume point on the newsletter row, then enqueues the follow-up at `delayMs`.
+ * Two callers, same mechanism, different delay — the per-tenant rate cap (defer until the rolling
+ * window frees up) and the pool-fairness yield (resume immediately, just in a fresh slot).
+ */
+async function deferRemainderOfSend(
+  db: Kysely<Models>,
+  progress: NewsletterSendProgress,
+  delayMs: number,
+): Promise<void> {
+  await db
+    .updateTable('newsletters')
+    .set({
+      send_offset: progress.offset,
+      send_cursor: progress.cursor,
+      delivered_count: progress.deliveredCount,
+      updated_at: new Date(),
+    })
+    .where('tenant_id', '=', progress.tenantId)
+    .where('id', '=', progress.newsletterId)
+    .execute();
+  await db
+    .insertInto('background_jobs')
+    .values({
+      tenant_id: progress.tenantId,
+      queue: 'default',
+      status: 'pending',
+      payload: sendNewsletterPayload(progress),
+      run_at: new Date(Date.now() + delayMs),
+      max_attempts: CONTINUATION_MAX_ATTEMPTS,
+    })
+    .execute();
+}
 
 export async function handleSendNewsletter(
   payload: JobPayloadOf<'send-newsletter'>,
@@ -199,6 +266,9 @@ export async function handleSendNewsletter(
 
   const attachments = await buildNewsletterAttachments(db, tenantId, newsletterId);
 
+  // Batches sent by THIS execution (not by the send as a whole) — the pool-fairness budget below.
+  let batchesThisRun = 0;
+
   // Keyset walk: loop until a batch yields no more recipients (see the empty-batch break below).
   // `offset`/`totalRecipients` are progress display only — they must NOT bound the loop, or a resume
   // after the audience shrank ahead of the cursor would stop early and skip the remaining recipients.
@@ -237,31 +307,11 @@ export async function handleSendNewsletter(
         { tenantId, newsletterId, offset, deliveredCount },
         'Per-tenant send cap reached — deferring remainder of newsletter send',
       );
-      await db
-        .updateTable('newsletters')
-        .set({ send_offset: offset, send_cursor: cursor, delivered_count: deliveredCount, updated_at: new Date() })
-        .where('tenant_id', '=', tenantId)
-        .where('id', '=', newsletterId)
-        .execute();
-      await db
-        .insertInto('background_jobs')
-        .values({
-          tenant_id: tenantId,
-          queue: 'default',
-          status: 'pending',
-          payload: JSON.stringify({
-            type: 'send-newsletter',
-            newsletterId,
-            tenantId,
-            userId,
-            offset,
-            deliveredCount,
-            cursor,
-          }),
-          run_at: new Date(Date.now() + RATE_CAP_DEFER_MS),
-          max_attempts: 3,
-        })
-        .execute();
+      await deferRemainderOfSend(
+        db,
+        { tenantId, newsletterId, userId, offset, cursor, deliveredCount },
+        RATE_CAP_DEFER_MS,
+      );
       return;
     }
 
@@ -269,11 +319,12 @@ export async function handleSendNewsletter(
     // recipient added/removed between batches can't shift the window. distinctOn(email) yields
     // exactly one row per address (matching the COUNT(DISTINCT email) total) while still carrying
     // the person fields the merge tokens need.
+    const batchLimit = Math.min(NEWSLETTER_BATCH_SIZE, allowance);
     let chunkQuery = baseQuery
       .select(['persons.email', 'persons.first_name', 'persons.last_name', 'persons.mobile', 'persons.home_phone'])
       .distinctOn('persons.email')
       .orderBy('persons.email', 'asc')
-      .limit(Math.min(NEWSLETTER_BATCH_SIZE, allowance));
+      .limit(batchLimit);
     if (cursor !== null) {
       chunkQuery = chunkQuery.where('persons.email', '>', cursor);
     }
@@ -302,6 +353,40 @@ export async function handleSendNewsletter(
       break;
     }
 
+    // ── Claim the batch BEFORE sending it: at-most-once delivery ─────────────────────────────
+    // Explicit product decision (2026-07-24): crash between claim and send → that batch is
+    // skipped, never duplicated; duplicates were judged worse than gaps (spam-complaint
+    // tripwires). So the advanced resume point is made durable in the job payload FIRST, then
+    // SendGrid is called. Do not "fix" this back to send-then-persist.
+    //
+    // The resume point is the max email of the batch about to go out: `recipients` is non-empty
+    // here (length === 0 breaks above) and walked in ascending email order, so its final element
+    // is past every address in this batch under the `email > cursor` keyset semantics — hence the
+    // non-null assertion.
+    const nextCursor = recipients[recipients.length - 1]!.email;
+    const nextOffset = offset + chunkRows.length;
+    // deliveredCount is only knowable after the send, so the claim persists the pre-send value and
+    // stays best-effort: a retry resumes past this batch but may undercount what it delivered.
+    // (No jobId — a direct/handler-level invocation — means there is no payload to claim into and
+    // therefore no durability here; the worker always passes one.)
+    if (jobId) {
+      await db
+        .updateTable('background_jobs')
+        .set({
+          payload: sendNewsletterPayload({
+            tenantId,
+            newsletterId,
+            userId,
+            offset: nextOffset,
+            cursor: nextCursor,
+            deliveredCount,
+          }),
+          updated_at: new Date(),
+        })
+        .where('id', '=', jobId)
+        .execute();
+    }
+
     const batchDelivered = await newsletterMailSvc.sendNewsletter({
       fromName,
       fromEmail,
@@ -318,33 +403,31 @@ export async function handleSendNewsletter(
     });
 
     deliveredCount += batchDelivered;
-    offset += chunkRows.length;
-    // Advance the keyset cursor to the last (max) email this batch sent. recipients is non-empty
-    // here (length === 0 breaks above) and ordered ascending, so its final element is the
-    // correct resume point — hence the non-null assertion.
-    cursor = recipients[recipients.length - 1]!.email;
+    offset = nextOffset;
+    cursor = nextCursor;
 
-    // Meter the batch — this row is what the warm-up and hourly caps SUM over.
+    // Meter the batch — this row is what the warm-up and hourly caps SUM over. It stays AFTER the
+    // send, which is the flip side of the at-most-once ordering: a batch whose send crashes goes
+    // unmetered, so the caps can err permissive by at most one batch. Accepted — metering pre-send
+    // would spend a tenant's allowance on mail that may never have left.
     await logNewsletterBatch(db, tenantId, newsletterId, batchDelivered);
 
-    // Update progress in the background job payload (no recipients array!)
-    if (jobId) {
-      await db
-        .updateTable('background_jobs')
-        .set({
-          payload: JSON.stringify({
-            type: 'send-newsletter',
-            newsletterId,
-            tenantId,
-            userId,
-            offset,
-            deliveredCount,
-            cursor,
-          }),
-          updated_at: new Date(),
-        })
-        .where('id', '=', jobId)
-        .execute();
+    // Pool fairness, not rate limiting: stop after a fixed number of batches so other tenants'
+    // jobs get a turn on this slot, and let the send continue immediately in a fresh execution.
+    // A short final batch means the keyset walk is exhausted — nothing left to hand over, so fall
+    // through and let the next iteration break into the completion path instead.
+    batchesThisRun += 1;
+    if (batchesThisRun >= MAX_BATCHES_PER_EXECUTION && chunkRows.length === batchLimit) {
+      logger.info(
+        { tenantId, newsletterId, offset, deliveredCount, batchesThisRun },
+        'Batch budget for this execution reached — yielding the worker slot and continuing the send',
+      );
+      await deferRemainderOfSend(
+        db,
+        { tenantId, newsletterId, userId, offset, cursor, deliveredCount },
+        YIELD_DEFER_MS,
+      );
+      return;
     }
 
     // Add a small delay between batches to respect rate limits
@@ -353,7 +436,10 @@ export async function handleSendNewsletter(
     }
   }
 
-  // Update newsletter status to 'sent'
+  // Update newsletter status to 'sent'. `delivered_count` is a best-effort figure, not an audited
+  // one: it sums the batches this send (and its continuations) observed SendGrid accept, so a batch
+  // lost to the at-most-once claim (crash between claim and send) is missing from it — and the real
+  // delivery numbers come from the SendGrid event webhook aggregates anyway.
   await db
     .updateTable('newsletters')
     .set({
@@ -378,6 +464,8 @@ export async function handleSendNewsletter(
     entity: 'newsletters',
     entity_id: newsletterId,
     quantity: totalRecipients,
+    // deliveredCount is best-effort (see the status update above) — treat it as "at least this
+    // many", never as an exact audit figure.
     metadata: { recipientsCount: totalRecipients, deliveredCount },
   });
 
@@ -392,7 +480,7 @@ const SEND_LOG_RETENTION_DAYS = 32;
 
 export async function handlePruneNewsletterEvents(db: Kysely<Models>): Promise<void> {
   await pruneNewsletterEvents(db);
-  await scheduleNextRun(db, 'prune_newsletter_events', DAY_MS);
+  await scheduleNextRun(db, 'prune_newsletter_events', CRON_JOBS.prune_newsletter_events);
 }
 
 // Event types that warrant keeping a per-newsletter engagement record.
@@ -694,7 +782,7 @@ export async function handleProcessScheduledNewsletters(db: Kysely<Models>): Pro
     }
   }
 
-  await scheduleNextRun(db, 'process_scheduled_newsletters', FIVE_MINUTES_MS);
+  await scheduleNextRun(db, 'process_scheduled_newsletters', CRON_JOBS.process_scheduled_newsletters);
 }
 
 /**
