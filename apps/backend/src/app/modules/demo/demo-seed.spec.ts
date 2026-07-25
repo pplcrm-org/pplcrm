@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import { BaseRepository } from '../../lib/base.repo';
 import { useTestTransaction } from '../../lib/test-utils/db-test-isolation';
+import { SYSTEM_LISTS } from '@common';
 import { STARTER_ISSUES, STARTER_TAGS, seedStarterForms, seedStarterTags } from '../auth/onboarding-seed';
+import { ensureSystemLists } from '../lists/system-lists';
 import { DemoController } from './controller';
 import { assertNotDemoMode } from './demo-guard';
 import { DEMO_MANIFEST_SETTINGS_KEY, deleteDemoData, seedDemoData } from './demo-seed';
@@ -95,6 +97,9 @@ describe('demo seeding and exit-demo', () => {
       .execute();
     await seedStarterTags({ tenant_id, user_id }, trx);
     const forms = await seedStarterForms({ tenant_id, user_id, campaign_id }, trx);
+    // Mirrors signup: the built-in lists (§8) are seeded alongside the starter
+    // data, not with the demo dataset, which is why they survive exit-demo.
+    await ensureSystemLists({ tenant_id, user_id, campaign_id }, trx);
     const manifest = await seedDemoData({ tenant_id, user_id, campaign_id, placeholder_household_id, forms }, trx);
     return { tenant_id, user_id, campaign_id, placeholder_household_id, forms, manifest };
   }
@@ -151,7 +156,7 @@ describe('demo seeding and exit-demo', () => {
     expect(await count('emails', f.tenant_id)).toBe(DEMO_EMAILS.length);
     expect(await count('authusers', f.tenant_id)).toBe(DEMO_USERS.length + 1); // + owner
     expect(await count('profiles', f.tenant_id)).toBe(DEMO_USERS.length);
-    expect(await count('lists', f.tenant_id)).toBe(DEMO_LISTS.length);
+    expect(await count('lists', f.tenant_id)).toBe(DEMO_LISTS.length + SYSTEM_LISTS.length);
     expect(await count('teams', f.tenant_id)).toBe(1);
     expect(await count('volunteer_events', f.tenant_id)).toBe(DEMO_VOLUNTEER_EVENTS.length);
     expect(await count('newsletters', f.tenant_id)).toBe(DEMO_NEWSLETTERS.length);
@@ -410,7 +415,15 @@ describe('demo seeding and exit-demo', () => {
 
     // Demo data is gone.
     expect(await count('companies', f.tenant_id)).toBe(0);
-    expect(await count('lists', f.tenant_id)).toBe(0);
+    // The demo lists are gone; the built-ins (§8) are still standing — they are
+    // product-owned, so exiting demo mode must never take them with it.
+    const listsAfter = await trx
+      .selectFrom('lists')
+      .select(['name', 'system_key'])
+      .where('tenant_id', '=', f.tenant_id)
+      .orderBy('system_key')
+      .execute();
+    expect(listsAfter.map((l) => l.name)).toEqual(SYSTEM_LISTS.map((s) => s.name));
     expect(await count('teams', f.tenant_id)).toBe(0);
     expect(await count('volunteer_events', f.tenant_id)).toBe(0);
     expect(await count('volunteer_shifts', f.tenant_id)).toBe(0);

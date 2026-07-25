@@ -71,6 +71,11 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
       'membership',
       'rule',
       'query',
+      'all subscribers',
+      'all volunteers',
+      'built-in list',
+      'system list',
+      'undeletable',
     ],
     related: ['tags-issues', 'filters', 'newsletters'],
     blocks: [
@@ -87,6 +92,11 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'A static list runs its rules once, at creation, and saves the result as a fixed snapshot. Today’s matches become the members and stay put. New matching people are not added later; membership changes only when you edit it by hand. Use one for a curated invite list, a board roster, or the attendees of a specific event.',
+      },
+      { kind: 'h2', id: 'built-in', text: 'The two lists you always have' },
+      {
+        kind: 'p',
+        text: 'Every context starts with two built-in smart lists, marked “Built in” in the table: **All Subscribers** (everyone who has opted in to email in this context) and **All Volunteers** (everyone with a volunteer standing, at any stage). They refresh themselves like any smart list, and they are always there — including while you are exploring the demo data, and after you clear it. Because other things point at them, they cannot be deleted or renamed; you can edit their description. If you want a variation, make your own smart list from the same rule.',
       },
       { kind: 'h2', id: 'create', text: 'Create a list' },
       {
@@ -108,7 +118,7 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
           {
             title: 'Build the rule',
             detail:
-              'Compose conditions in the query builder: match all or any, with nested groups. The live preview does the math in public: “Matches 1,284 people right now”, with a note reminding you whether that count will keep moving (Smart) or freeze on save (Static).',
+              'Compose conditions in the query builder: match all or any, with nested groups. For people you can rule on tags and issues, on standing (volunteer status, subscriber status, staff status, support level, voting status, do not contact), and on any contact or address field. Status fields offer a picker rather than a text box, plus “is set” / “is not set”. The live preview does the math in public: “Matches 1,284 people right now”, with a note reminding you whether that count will keep moving (Smart) or freeze on save (Static).',
           },
           {
             title: 'Create it',
@@ -134,7 +144,7 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
         kind: 'callout',
         tone: 'warning',
         title: 'Deleting a list names what it will affect',
-        text: 'If a list is in use, the delete confirmation names its consumers (the newsletters, forms, and turfs that reference it), so you never break an audience by surprise. The people and households themselves are never touched; only the list is removed.',
+        text: 'If a list is in use, the delete confirmation names its consumers (the newsletters, forms, and turfs that reference it), so you never break an audience by surprise. The people and households themselves are never touched; only the list is removed. The two built-in lists have no delete button at all.',
       },
       {
         kind: 'callout',

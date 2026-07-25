@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ListsController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import type { IAuthKeyPayload } from '@common';
+
+// These tests commit `pending` background_jobs rows (the refresh-list enqueue),
+// which are claimable by any spec reading the queue globally — take the lock.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 async function createTestSeed(db: any) {
   const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);

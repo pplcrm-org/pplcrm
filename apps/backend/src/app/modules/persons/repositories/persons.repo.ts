@@ -184,6 +184,16 @@ export class PersonsRepo extends BaseRepository<'persons'> {
             .on('cpf.tenant_id', '=', tenantId)
             .on('cpf.campaign_id', '=', campaignId),
         )
+        // Email consent for this context (§15). At most one row per person
+        // (uq_csub_campaign_person), so this adds no duplication. NULL = never
+        // subscribed, which is how a "Subscriber status is subscribed" rule
+        // correctly excludes people who never opted in.
+        .leftJoin('campaign_subscriptions as csub', (join) =>
+          join
+            .onRef('csub.person_id', '=', 'persons.id')
+            .on('csub.tenant_id', '=', tenantId)
+            .on('csub.campaign_id', '=', campaignId),
+        )
         .where('households.tenant_id', '=', tenantId)
         .$if(!!tags?.length, (q) => q.where('tags.name', 'in', tags ?? []).where('tags.type', '=', 'tag'))
         .$if(!!issues?.length, (q) => q.where('tags.name', 'in', issues ?? []).where('tags.type', '=', 'issue'))
@@ -260,6 +270,21 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         tags: { col: 'tags.name' },
         issues: { col: 'tags.name' },
         company_name: { col: 'companies.name' },
+        notes: { col: 'persons.notes' },
+        country: { col: 'households.country' },
+        // Structured person status (§15) — the first-class replacements for the
+        // retired `volunteer` / `staff` tags. NULL means "not one", which the
+        // isEmpty / isNotEmpty operators read correctly.
+        volunteer_status: { col: 'persons.volunteer_status' },
+        staff_status: { col: 'persons.staff_status' },
+        // Campaign-scoped facts — resolved against options.campaignId above, so
+        // a rule on these means "in the context this query is running in".
+        subscription_status: { col: 'csub.status' },
+        support_level: { col: 'cpf.support_level' },
+        voting_status: { col: 'cpf.voting_status' },
+        // Booleans have to go through a text cast for the ILIKE-based operators;
+        // the values a rule compares against are 'true' / 'false'.
+        do_not_contact: { col: 'persons.do_not_contact::text', isCast: true },
       };
       const advModel =
         options.advancedFilterModel || (options.filterModel?.['tags_expression'] as typeof options.advancedFilterModel);
@@ -305,6 +330,12 @@ export class PersonsRepo extends BaseRepository<'persons'> {
           .as('household_is_placeholder'),
         'cpf.support_level',
         'cpf.voting_status',
+        // Structured status + consent, so the list-builder's client-side preview
+        // can evaluate the same rules the server does against the loaded rows.
+        'persons.volunteer_status',
+        'persons.staff_status',
+        'persons.do_not_contact',
+        'csub.status as subscription_status',
         sql<string[]>`coalesce(array_remove(array_agg(CASE WHEN tags.type = 'tag' THEN tags.name END), null), '{}')`.as(
           'tags',
         ),
@@ -339,6 +370,10 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'tenants.placeholder_household_id',
         'cpf.support_level',
         'cpf.voting_status',
+        'persons.volunteer_status',
+        'persons.staff_status',
+        'persons.do_not_contact',
+        'csub.status',
       ])
       .$if(!!options.sortModel?.length, (qb) =>
         (options.sortModel ?? []).reduce((acc, sort) => {

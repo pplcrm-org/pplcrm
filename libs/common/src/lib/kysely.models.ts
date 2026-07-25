@@ -15,6 +15,7 @@ import type {
   Updateable,
 } from 'kysely';
 import type { EmailStatus } from './emails';
+import type { SystemListKey } from './system-lists';
 import type { z } from 'zod';
 import type { addressSchema } from './schema';
 
@@ -679,6 +680,13 @@ export interface Lists extends RecordType {
   definition: Json | null;
   last_refreshed_at: Timestamp | null;
   status: Generated<'idle' | 'refreshing' | 'failed'>;
+
+  /**
+   * Built-in list marker (§8). NULL for lists the user made; a stable key for
+   * the ones the product owns and re-creates ("All Subscribers", "All
+   * Volunteers"). Non-NULL means undeletable and unrenameable.
+   */
+  system_key: SystemListKey | null;
 }
 
 export interface Tags extends RecordType {

@@ -139,7 +139,13 @@ export class ListsGridComponent implements OnInit {
       headerName: 'List',
       cellRenderer: (p: CellParams) => {
         const name = String(p?.value ?? p?.data?.['name'] ?? 'Untitled list');
-        return `<span class="cursor-pointer text-xs font-semibold underline decoration-base-content/20 underline-offset-[3px] transition-colors hover:text-primary hover:decoration-primary">${escapeHtml(name)}</span>`;
+        const link = `<span class="cursor-pointer text-xs font-semibold underline decoration-base-content/20 underline-offset-[3px] transition-colors hover:text-primary hover:decoration-primary">${escapeHtml(name)}</span>`;
+        // Built-in lists (§8) carry the badge rather than a disabled-looking row:
+        // say what it is up front instead of only explaining after a failed delete.
+        if (p?.data?.['system_key']) {
+          return `<span class="inline-flex items-center gap-1.5">${link}<span class="badge badge-ghost badge-xs font-medium" title="Built in — always here, and can’t be deleted">Built in</span></span>`;
+        }
+        return link;
       },
       onCellClicked: (p: CellParams) => this.openListOnGrid(p?.data),
     },

@@ -313,6 +313,7 @@ apps/
             services/
               list-consumers.ts
               list-definition.ts
+              list-rule-fields.ts
               lists-refresh.service.ts
               lists-service.ts
             ui/
@@ -17275,30 +17276,16 @@ export function buildDeleteConfirmMessage(listName: string, value: unknown): str
 ## File: apps/frontend/src/app/experiences/lists/services/list-definition.ts
 ```typescript
 import type { QueryBuilderGroupNode, QueryBuilderNode } from '../../../../../../../libs/common/src';
+import { RULE_FIELD_CHOICES, ruleFieldLabel, ruleValueLabel } from './list-rule-fields';
 
 /**
  * Render a list's stored rule `definition` as the human "DEFINITION" sentence
- * shown in the Lists table (§8) — e.g. "Tags is 'donor' and City contains
- * 'Ottawa'". Static lists with a hand-picked membership (no rules) read as
- * "Hand-picked members"; an empty rule set reads as "Everyone".
+ * shown in the Lists table (§8) — e.g. "Volunteer status is 'Active' and City
+ * contains 'Ottawa'". Field and value labels come from list-rule-fields, the
+ * same source the rule builder's pickers use. Static lists with a hand-picked
+ * membership (no rules) read as "Hand-picked members"; an empty rule set reads
+ * as "Everyone".
  */
-
-const FIELD_LABELS: Record<string, string> = {
-  tags: 'Tags',
-  issues: 'Issues',
-  first_name: 'First name',
-  last_name: 'Last name',
-  email: 'Email',
-  mobile: 'Mobile',
-  company_name: 'Company',
-  city: 'City',
-  state: 'State/Province',
-  street1: 'Street 1',
-  street2: 'Street 2',
-  street_num: 'Street number',
-  zip: 'Zip code',
-  home_phone: 'Home phone',
-};
 
 const OP_LABELS: Record<string, string> = {
   eq: 'is',
@@ -17315,26 +17302,37 @@ const OP_LABELS: Record<string, string> = {
   notempty: 'is not empty',
 };
 
+/**
+ * On a status field the picker offers "is set" / "is not set" rather than "is
+ * empty" — a volunteer status that is absent means "not a volunteer", not "an
+ * empty string". The sentence has to use the same words.
+ */
+const CHOICE_OP_LABELS: Record<string, string> = {
+  isEmpty: 'is not set',
+  empty: 'is not set',
+  isNotEmpty: 'is set',
+  notempty: 'is set',
+};
+
 const VALUELESS_OPS = new Set(['isEmpty', 'isNotEmpty', 'empty', 'notempty']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function fieldLabel(field: string): string {
-  return FIELD_LABELS[field] ?? field.replace(/_/g, ' ');
-}
-
-function opLabel(op: string): string {
+function opLabel(field: string, op: string): string {
+  if (RULE_FIELD_CHOICES[field] && CHOICE_OP_LABELS[op]) return CHOICE_OP_LABELS[op];
   return OP_LABELS[op] ?? op;
 }
 
 function describeNode(node: QueryBuilderNode): string {
   if (node.kind === 'rule') {
-    const label = fieldLabel(node.field);
-    const op = opLabel(node.op);
+    const label = ruleFieldLabel(node.field);
+    const op = opLabel(node.field, node.op);
     if (VALUELESS_OPS.has(node.op)) return `${label} ${op}`;
-    const value = node.value == null || String(node.value).trim() === '' ? '…' : String(node.value);
+    // Enum values are shown the way the picker showed them, not raw
+    // ('leaning_against' → 'Leaning against').
+    const value = node.value == null || String(node.value).trim() === '' ? '…' : ruleValueLabel(node.field, node.value);
     return `${label} ${op} '${value}'`;
   }
   return describeGroup(node);
@@ -17361,6 +17359,98 @@ export function describeListDefinition(definition: unknown): string {
   if (!group) return 'Hand-picked members';
   if (!group.rules.length) return 'Everyone';
   return describeGroup(group);
+}
+```
+
+## File: apps/frontend/src/app/experiences/lists/services/list-rule-fields.ts
+```typescript
+import {
+  STAFF_STATUSES,
+  STAFF_STATUS_LABELS,
+  SUBSCRIPTION_STATUSES,
+  SUBSCRIPTION_STATUS_LABELS,
+  SUPPORT_LEVELS,
+  SUPPORT_LEVEL_LABELS,
+  VOLUNTEER_STATUSES,
+  VOLUNTEER_STATUS_LABELS,
+  VOTING_STATUSES,
+  VOTING_STATUS_LABELS,
+} from '../../../../../../../libs/common/src';
+
+/**
+ * The vocabulary of the list rule builder (§8), in one place.
+ *
+ * The builder (list-form) and the human "Definition" sentence (list-definition)
+ * both read from here, so a field can't be offered under one label and rendered
+ * under another. The `name` of each field is the key the backend's
+ * `columnMapping` resolves — add a field here only when persons.repo /
+ * households.repo can actually map it, or the rule is silently dropped.
+ */
+
+export interface RuleChoice {
+  value: string;
+  label: string;
+}
+
+const choicesFrom = <T extends string>(values: readonly T[], labels: Record<T, string>): RuleChoice[] =>
+  values.map((value) => ({ value, label: labels[value] }));
+
+export const VOLUNTEER_STATUS_CHOICES: RuleChoice[] = choicesFrom(VOLUNTEER_STATUSES, VOLUNTEER_STATUS_LABELS);
+export const STAFF_STATUS_CHOICES: RuleChoice[] = choicesFrom(STAFF_STATUSES, STAFF_STATUS_LABELS);
+export const SUBSCRIPTION_STATUS_CHOICES: RuleChoice[] = choicesFrom(SUBSCRIPTION_STATUSES, SUBSCRIPTION_STATUS_LABELS);
+export const SUPPORT_LEVEL_CHOICES: RuleChoice[] = choicesFrom(SUPPORT_LEVELS, SUPPORT_LEVEL_LABELS);
+export const VOTING_STATUS_CHOICES: RuleChoice[] = choicesFrom(VOTING_STATUSES, VOTING_STATUS_LABELS);
+
+/** `persons.do_not_contact` is a boolean; rules compare it as text ('true'/'false'). */
+export const DO_NOT_CONTACT_CHOICES: RuleChoice[] = [
+  { value: 'true', label: 'Yes — do not contact' },
+  { value: 'false', label: 'No — contactable' },
+];
+
+/** Field name → the label shown in the picker and in the definition sentence. */
+export const RULE_FIELD_LABELS: Record<string, string> = {
+  tags: 'Tags',
+  issues: 'Issues',
+  volunteer_status: 'Volunteer status',
+  subscription_status: 'Subscriber status',
+  staff_status: 'Staff status',
+  support_level: 'Support level',
+  voting_status: 'Voting status',
+  do_not_contact: 'Do not contact',
+  first_name: 'First Name',
+  last_name: 'Last Name',
+  email: 'Email',
+  mobile: 'Mobile',
+  company_name: 'Company',
+  city: 'City',
+  state: 'State/Province',
+  street1: 'Street 1',
+  street2: 'Street 2',
+  street_num: 'Street Number',
+  zip: 'Zip Code',
+  country: 'Country',
+  home_phone: 'Home Phone',
+  notes: 'Notes',
+};
+
+/** Field name → its picker choices, for fields whose values are a fixed set. */
+export const RULE_FIELD_CHOICES: Record<string, RuleChoice[]> = {
+  volunteer_status: VOLUNTEER_STATUS_CHOICES,
+  subscription_status: SUBSCRIPTION_STATUS_CHOICES,
+  staff_status: STAFF_STATUS_CHOICES,
+  support_level: SUPPORT_LEVEL_CHOICES,
+  voting_status: VOTING_STATUS_CHOICES,
+  do_not_contact: DO_NOT_CONTACT_CHOICES,
+};
+
+export function ruleFieldLabel(field: string): string {
+  return RULE_FIELD_LABELS[field] ?? field.replace(/_/g, ' ');
+}
+
+/** The stored value rendered the way the picker showed it ('leaning_against' → 'Leaning against'). */
+export function ruleValueLabel(field: string, value: unknown): string {
+  const raw = value == null ? '' : String(value);
+  return RULE_FIELD_CHOICES[field]?.find((c) => c.value === raw)?.label ?? raw;
 }
 ```
 
@@ -17505,6 +17595,8 @@ export class ListsService extends AbstractAPIService<'lists', UpdateListType> {
           <span class="badge badge-primary font-semibold text-xs py-2 px-3 shadow-sm rounded-md">Dynamic List</span>
           } @else {
           <span class="badge badge-neutral font-semibold text-xs py-2 px-3 shadow-sm rounded-md">Static List</span>
+          } @if (isSystem()) {
+          <span class="badge badge-ghost font-semibold text-xs py-2 px-3 rounded-md">Built in</span>
           }
         </div>
         <p class="text-sm text-base-content/60 mt-1">{{ listData()?.description || 'No description provided' }}</p>
@@ -17530,11 +17622,13 @@ export class ListsService extends AbstractAPIService<'lists', UpdateListType> {
         Refresh Now }
       </button>
       }
+      <!-- Built-in lists (§8) can't be deleted, so the button is absent rather
+           than present-and-failing. Editing stays open — the description is. -->
       <pc-form-actions
         [isLoading]="loading()"
         [btn1Text]="'Edit List'"
         [btn1Icon]="'pencil-square'"
-        [showDelete]="true"
+        [showDelete]="!isSystem()"
         [deleteText]="'Delete List'"
         (deleteClicked)="deleteList()"
         (btn1Clicked)="editList()"
@@ -17722,6 +17816,9 @@ export class ListView implements OnDestroy {
 
   protected isPeople = computed(() => this.object() === 'people');
 
+  /** Built-in lists (§8) — product-owned, so undeletable and unrenameable. */
+  protected readonly isSystem = computed(() => this.listData()?.system_key != null);
+
   constructor() {
     effect(() => {
       const currentId = this.id();
@@ -17807,7 +17904,7 @@ export class ListView implements OnDestroy {
 
   protected async deleteList() {
     const id = this.id();
-    if (!id) return;
+    if (!id || this.isSystem()) return;
     let consumers: unknown = null;
     try {
       consumers = await this.lists.getConsumers(id);
@@ -18007,7 +18104,13 @@ export class ListsGridComponent implements OnInit {
       headerName: 'List',
       cellRenderer: (p: CellParams) => {
         const name = String(p?.value ?? p?.data?.['name'] ?? 'Untitled list');
-        return `<span class="cursor-pointer text-xs font-semibold underline decoration-base-content/20 underline-offset-[3px] transition-colors hover:text-primary hover:decoration-primary">${escapeHtml(name)}</span>`;
+        const link = `<span class="cursor-pointer text-xs font-semibold underline decoration-base-content/20 underline-offset-[3px] transition-colors hover:text-primary hover:decoration-primary">${escapeHtml(name)}</span>`;
+        // Built-in lists (§8) carry the badge rather than a disabled-looking row:
+        // say what it is up front instead of only explaining after a failed delete.
+        if (p?.data?.['system_key']) {
+          return `<span class="inline-flex items-center gap-1.5">${link}<span class="badge badge-ghost badge-xs font-medium" title="Built in — always here, and can’t be deleted">Built in</span></span>`;
+        }
+        return link;
       },
       onCellClicked: (p: CellParams) => this.openListOnGrid(p?.data),
     },
@@ -23882,488 +23985,6 @@ export class PublicVolunteerListComponent implements OnInit {
 </div>
 ```
 
-## File: apps/frontend/src/app/experiences/shifts/ui/shift-form.ts
-```typescript
-import { DatePipe } from '@angular/common';
-import { Component, computed, effect, inject, input, signal, untracked, OnInit } from '@angular/core';
-import { FormField, form, validateStandardSchema } from '@angular/forms/signals';
-import { Router, RouterModule } from '@angular/router';
-import { Icon } from '@icons/icon';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { EntityOverview as PcEntityOverview } from '@uxcommon/components/entity-overview/entity-overview';
-import { Input as PcInput } from '@uxcommon/components/input/input';
-import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { FieldsSelector } from '@uxcommon/components/fields-selector/fields-selector';
-import { PublicLinkPanel } from '@uxcommon/components/public-link-panel/public-link-panel';
-
-import {
-  AddVolunteerEventObj,
-  AddVolunteerEventType,
-  UpdateVolunteerEventType,
-} from '../../../../../../../libs/common/src';
-import { AuthService } from '../../../auth/auth-service';
-import { publicPageUrl } from '../../../shared/public-pages';
-import { VolunteerService } from '../../../services/api/volunteer-service';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { PersonsService } from '../../persons/services/persons-service';
-import { ShiftsService } from '../services/shifts-service';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-
-@Component({
-  selector: 'pc-shift-form',
-  imports: [
-    DatePipe,
-    FormField,
-    PcInput,
-    PcTextarea,
-    RouterModule,
-    Icon,
-    PcDetailHeader,
-    PcEntityOverview,
-    PcCard,
-    FieldsSelector,
-    PublicLinkPanel,
-  ],
-  templateUrl: './shift-form.html',
-  providers: [VolunteerService],
-})
-export class ShiftFormComponent implements OnInit {
-  private readonly _loading = createLoadingGate();
-  private readonly alerts = inject(AlertService);
-  private readonly auth = inject(AuthService);
-  private readonly dialogs = inject(ConfirmDialogService);
-  private readonly personsSvc = inject(PersonsService);
-  private readonly router = inject(Router);
-  private readonly volunteerEventsSvc = inject(ShiftsService);
-  private readonly volunteerSvc = inject(VolunteerService);
-
-  private slugTimeoutId: ReturnType<typeof setTimeout> | null = null;
-
-  protected readonly selectedFields = signal<string[]>(['first_name', 'last_name', 'email', 'mobile', 'notes']);
-  protected readonly publicUrl = computed(() => {
-    const slug = this.payload().slug;
-    if (!slug || this.isNew()) return '';
-    return publicPageUrl(this.auth.getUser()?.tenant_slug, `v/${slug}`);
-  });
-
-  protected readonly allVolunteers = signal<any[]>([]);
-  protected readonly detail = signal<any>(null);
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
-    const shifts: PcBreadcrumb = { label: 'Forms', route: '/forms' };
-    const id = this.id();
-    if (id) {
-      return [
-        shifts,
-        { label: this.detail()?.name || 'Volunteer event', route: ['/events/shifts', id] },
-        { label: 'Edit' },
-      ];
-    }
-    return [shifts, { label: 'New volunteer event' }];
-  });
-
-  protected readonly payload = signal({
-    name: '',
-    slug: '',
-    description: '',
-    location_address: '',
-    start_time: '',
-    end_time: '',
-    capacity: null as number | null,
-    contact_email: '',
-    contact_phone: '',
-    is_private: false,
-    send_reminder: true,
-    send_signup_confirmation: true,
-    send_volunteer_alert: true,
-  });
-  protected readonly endBeforeStartError = computed(() => {
-    const { start_time, end_time } = this.payload();
-    if (!start_time || !end_time) return false;
-    return new Date(end_time) <= new Date(start_time);
-  });
-  protected readonly volunteerListUrl = computed(() => publicPageUrl(this.auth.getUser()?.tenant_slug, 'volunteer'));
-  protected readonly error = signal<string | null>(null);
-  protected readonly eventPassed = computed(() => {
-    const end = this.payload().end_time;
-    if (!end) return false;
-    return new Date(end) < new Date();
-  });
-  protected readonly form = form(this.payload, (p) => {
-    validateStandardSchema(p, AddVolunteerEventObj);
-  });
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-  protected readonly isNew = computed(() => !this.id());
-  protected readonly loading = this._loading.visible;
-
-  // Roster state
-  protected readonly roster = signal<any[]>([]);
-  protected readonly saving = signal(false);
-  protected readonly slugChecking = signal(false);
-  protected readonly slugUnique = signal<boolean | null>(null);
-  protected readonly volunteerSearch = signal('');
-
-  // Filter out volunteers that are already signed up
-  protected readonly volunteerSearchResults = computed(() => {
-    const search = this.volunteerSearch().toLowerCase().trim();
-    if (!search) return [];
-
-    const rosterIds = new Set(this.roster().map((r) => String(r.person_id)));
-    return this.allVolunteers().filter((v) => {
-      if (rosterIds.has(String(v.id))) return false;
-      const fullName = `${v.first_name || ''} ${v.last_name || ''}`.toLowerCase();
-      const email = (v.email || '').toLowerCase();
-      return fullName.includes(search) || email.includes(search);
-    });
-  });
-
-  protected slugManuallyEdited = false;
-
-  public readonly id = input<string>();
-
-  constructor() {
-    const nameSignal = computed(() => this.payload().name);
-    effect(() => {
-      const name = nameSignal();
-      if (this.isNew() && !this.slugManuallyEdited) {
-        const suggested = this.slugify(name);
-        if (untracked(this.payload).slug !== suggested) {
-          this.payload.update((p) => ({
-            ...p,
-            slug: suggested,
-          }));
-        }
-      }
-    });
-
-    const slugSignal = computed(() => this.payload().slug);
-    effect(() => {
-      const slug = slugSignal();
-      if (this.slugTimeoutId) {
-        clearTimeout(this.slugTimeoutId);
-        this.slugTimeoutId = null;
-      }
-
-      if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
-        this.slugUnique.set(null);
-        this.slugChecking.set(false);
-        return;
-      }
-
-      this.slugChecking.set(true);
-      this.slugTimeoutId = setTimeout(() => {
-        void (async () => {
-          try {
-            const res = await this.volunteerEventsSvc.checkSlugUnique(slug, this.isNew() ? null : (this.id() ?? null));
-            if (untracked(slugSignal) === slug) {
-              this.slugUnique.set(res.unique);
-            }
-          } catch (err) {
-            console.error('Failed to check slug uniqueness', err);
-          } finally {
-            if (untracked(slugSignal) === slug) {
-              this.slugChecking.set(false);
-            }
-          }
-        })();
-      }, 300);
-    });
-  }
-
-  public ngOnInit(): void {
-    const end = this._loading.begin();
-    try {
-      void Promise.all([this.loadVolunteers(), this.loadEvent()]).finally(() => end());
-    } catch {
-      end();
-    }
-  }
-
-  // Roster Management
-  protected async addVolunteer(person: any) {
-    try {
-      await this.volunteerSvc.signupVolunteer({
-        event_id: this.id()!,
-        person_id: String(person.id),
-        status: 'signed_up',
-      });
-      this.volunteerSearch.set('');
-      this.alerts.showSuccess(`${person.first_name} added to roster`);
-      await this.loadRoster();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to add volunteer');
-    }
-  }
-
-  protected copyToClipboard(url: string) {
-    navigator.clipboard
-      .writeText(url)
-      .then(() => this.alerts.showSuccess('Link copied to clipboard'))
-      .catch((err) => console.error('Failed to copy', err));
-  }
-
-  protected async deleteEvent() {
-    if (!this.id()) return;
-    const confirmed = await this.dialogs.confirm({
-      title: 'Delete Event',
-      message: 'Are you sure you want to delete this event? This will also delete all signed up shifts.',
-      variant: 'danger',
-      confirmText: 'Delete',
-    });
-    if (!confirmed) return;
-
-    this.saving.set(true);
-    try {
-      await this.volunteerEventsSvc.delete(this.id()!);
-      this.volunteerEventsSvc.triggerRefresh();
-      this.alerts.showSuccess('Event deleted');
-      await this.router.navigate(['/forms']);
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to delete event');
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  protected async loadEvent() {
-    if (this.isNew()) {
-      const state = window.history.state;
-      if (state && state.cloneData) {
-        const event = state.cloneData;
-        this.payload.set({
-          name: event.name ? `${event.name} (Copy)` : '',
-          slug: event.slug ? `${event.slug}-copy` : '',
-          description: event.description ?? '',
-          location_address: event.location_address ?? '',
-          start_time: this.toDatetimeLocalString(event.start_time),
-          end_time: this.toDatetimeLocalString(event.end_time),
-          capacity: event.capacity ?? null,
-          contact_email: event.contact_email ?? '',
-          contact_phone: event.contact_phone ?? '',
-          is_private: !!event.is_private,
-          send_reminder: event.send_reminder !== false,
-          send_signup_confirmation: event.send_signup_confirmation !== false,
-          send_volunteer_alert: event.send_volunteer_alert !== false,
-        });
-      }
-      return;
-    }
-
-    try {
-      const event = (await this.volunteerEventsSvc.getById(this.id()!)) as any;
-      this.detail.set(event);
-      this.payload.set({
-        name: event.name ?? '',
-        slug: event.slug ?? '',
-        description: event.description ?? '',
-        location_address: event.location_address ?? '',
-        start_time: this.toDatetimeLocalString(event.start_time),
-        end_time: this.toDatetimeLocalString(event.end_time),
-        capacity: event.capacity ?? null,
-        contact_email: event.contact_email ?? '',
-        contact_phone: event.contact_phone ?? '',
-        is_private: !!event.is_private,
-        send_reminder: event.send_reminder !== false,
-        send_signup_confirmation: event.send_signup_confirmation !== false,
-        send_volunteer_alert: event.send_volunteer_alert !== false,
-      });
-
-      if (Array.isArray((event as any).fields) && (event as any).fields.length > 0) {
-        this.selectedFields.set((event as any).fields);
-      }
-
-      await this.loadRoster();
-    } catch (err) {
-      this.error.set(err instanceof Error && err.message ? err.message : 'Failed to load event');
-      this.alerts.showError(this.error()!);
-    }
-  }
-
-  protected async loadRoster() {
-    if (!this.id()) return;
-    try {
-      const roster = await this.volunteerSvc.getShiftsForEvent(this.id()!);
-      this.roster.set(roster || []);
-    } catch (err) {
-      console.error('Failed to load event roster', err);
-    }
-  }
-
-  protected async loadVolunteers() {
-    try {
-      const res = await this.personsSvc.getAll({ limit: 1000, tags: ['volunteer'] });
-      this.allVolunteers.set(res?.rows || []);
-    } catch (err) {
-      console.error('Failed to load volunteers', err);
-    }
-  }
-
-  protected onSlugInput() {
-    this.slugManuallyEdited = true;
-  }
-
-  protected onVolunteerSearchInput(event: Event): void {
-    const input = event.target as HTMLInputElement | null;
-    this.volunteerSearch.set(input?.value ?? '');
-  }
-
-  protected onShiftStatusChange(shift: any, event: Event): void {
-    const select = event.target as HTMLSelectElement | null;
-    if (!select) return;
-    void this.updateShiftStatus(shift, select.value);
-  }
-
-  protected onShiftHoursInput(shift: any, event: Event): void {
-    const input = event.target as HTMLInputElement | null;
-    this.updateShiftHours(shift, input?.value ?? '');
-  }
-
-  protected onShiftNotesInput(shift: any, event: Event): void {
-    const input = event.target as HTMLInputElement | null;
-    this.updateShiftNotes(shift, input?.value ?? '');
-  }
-
-  protected async removeVolunteer(shift: any) {
-    const confirmed = await this.dialogs.confirm({
-      title: 'Remove Volunteer',
-      message: 'Remove this person from the event roster?',
-      variant: 'danger',
-      confirmText: 'Remove',
-    });
-    if (!confirmed) return;
-    try {
-      await this.volunteerSvc.deleteShift(shift.id);
-      this.alerts.showSuccess('Volunteer removed');
-      await this.loadRoster();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to remove volunteer');
-    }
-  }
-
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this volunteer event');
-  }
-
-  protected async save(done?: (() => void) | Event) {
-    if (done instanceof Event) {
-      done.preventDefault();
-    }
-    this.form().markAsTouched();
-    if (this.form().invalid()) return;
-
-    if (this.endBeforeStartError()) {
-      this.alerts.showError('The event cannot end before it starts, please check the dates and times again.');
-      return;
-    }
-
-    if (this.slugUnique() === false) {
-      this.alerts.showError('This URL slug is already in use. Please choose a different one.');
-      return;
-    }
-
-    this.saving.set(true);
-    this.error.set(null);
-
-    const raw = this.payload();
-    const data = {
-      name: raw.name.trim(),
-      slug: raw.slug.trim(),
-      description: raw.description?.trim() || null,
-      location_address: raw.location_address?.trim() || null,
-      start_time: new Date(raw.start_time),
-      end_time: new Date(raw.end_time),
-      capacity: raw.capacity ? Number(raw.capacity) : null,
-      contact_email: raw.contact_email?.trim() || null,
-      contact_phone: raw.contact_phone?.trim() || null,
-      is_private: !!raw.is_private,
-      send_reminder: !!raw.send_reminder,
-      send_signup_confirmation: !!raw.send_signup_confirmation,
-      send_volunteer_alert: !!raw.send_volunteer_alert,
-      fields: this.selectedFields(),
-    };
-
-    try {
-      if (this.isNew()) {
-        const res = await this.volunteerEventsSvc.add(data as AddVolunteerEventType);
-        this.volunteerEventsSvc.triggerRefresh();
-        this.alerts.showSuccess('Event created successfully');
-        await this.router.navigate(['/events/shifts', res.id]);
-      } else {
-        await this.volunteerEventsSvc.update(this.id()!, data as UpdateVolunteerEventType);
-        this.volunteerEventsSvc.triggerRefresh();
-        this.alerts.showSuccess('Event updated successfully');
-        if (typeof done === 'function') {
-          done();
-        } else {
-          await this.router.navigate(['/events/shifts', this.id()]);
-        }
-      }
-    } catch (err) {
-      this.error.set(err instanceof Error && err.message ? err.message : 'Failed to save event');
-      this.alerts.showError(this.error()!);
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  protected async saveShiftDetails(shift: any) {
-    try {
-      await this.volunteerSvc.updateShift(shift.id, {
-        status: shift.status,
-        hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
-        notes: shift.notes || null,
-      });
-      this.alerts.showSuccess('Shift details saved');
-      await this.loadRoster();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to save shift details');
-    }
-  }
-
-  protected slugify(text: string): string {
-    return text
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-  }
-
-  protected toDatetimeLocalString(val: any): string {
-    if (!val) return '';
-    const date = new Date(val);
-    if (Number.isNaN(date.getTime())) return '';
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  }
-
-  protected updateShiftHours(shift: any, hours: any) {
-    shift.hours_worked = hours ? Number(hours) : null;
-  }
-
-  protected updateShiftNotes(shift: any, notes: any) {
-    shift.notes = notes || null;
-  }
-
-  protected async updateShiftStatus(shift: any, status: any) {
-    try {
-      await this.volunteerSvc.updateShift(shift.id, {
-        status,
-        hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
-        notes: shift.notes || null,
-      });
-      this.alerts.showSuccess('Shift status updated');
-      await this.loadRoster();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to update shift');
-    }
-  }
-}
-```
-
 ## File: apps/frontend/src/app/experiences/shifts/ui/shift-view.html
 ```html
 <pc-detail-layout
@@ -25597,6 +25218,126 @@ export class AddTagDialog {
 }
 ```
 
+## File: apps/frontend/src/app/experiences/tags/ui/issues-admin.ts
+```typescript
+import { Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { Icon } from '@icons/icon';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
+import { RowActions } from '@uxcommon/components/row-actions/row-actions';
+import { Table } from '@uxcommon/components/table/table';
+import { TagItem } from '@uxcommon/components/tags/tagitem';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+
+import { TagsService } from '@experiences/tags/services/tags-service';
+import { AddIssueDialog } from './add-issue';
+import { TagAdminActions, type TagAdminRow } from './tag-admin-actions';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+
+/**
+ * §9.2 Issues admin (spec Fig. 11). Ranked table with a proportional interest bar and a trend
+ * column. Issues are the same `tags` table as §9.1 with `type: 'issue'` — but the two stay
+ * conceptually separate everywhere (see `pplcrm-design-principles` §5) because issues power
+ * issue-based filtering/targeting, tags power general categorization. Never merge the two
+ * concepts even though the plumbing is shared. Each row's chip uses its own `color`.
+ */
+@Component({
+  selector: 'pc-issues-admin',
+  imports: [EmptyState, Icon, RouterLink, TagItem, AddIssueDialog, Table, RowActions, GridHeaderComponent],
+  templateUrl: './issues-admin.html',
+})
+export class IssuesAdmin implements OnInit {
+  private readonly tagsSvc = inject(TagsService);
+  private readonly alertSvc = inject(AlertService);
+  protected readonly actions = inject(TagAdminActions);
+
+  protected readonly addDialog = viewChild.required(AddIssueDialog);
+
+  private readonly _loading = createLoadingGate();
+  protected readonly loading = this._loading.visible;
+  protected readonly loaded = this._loading.loaded;
+
+  protected readonly rows = signal<TagAdminRow[]>([]);
+  protected readonly peopleSharedCount = signal(0);
+
+  /** Ranked by PEOPLE INTERESTED, descending — `getAdminList` already returns this order. */
+  protected readonly ranked = computed(() => this.rows().map((row, i) => ({ rank: i + 1, row })));
+
+  protected readonly maxInterested = computed(() => Math.max(1, ...this.rows().map((r) => r.use_count_people)));
+
+  protected readonly sentence = computed(() => {
+    const issueCount = this.rows().length;
+    return (
+      `${issueCount.toLocaleString()} issue${issueCount === 1 ? '' : 's'} · ` +
+      `${this.peopleSharedCount().toLocaleString()} people shared what they care about, from forms, surveys and profile edits.`
+    );
+  });
+
+  public ngOnInit(): void {
+    void this.load();
+  }
+
+  protected openAddDialog(): void {
+    this.addDialog().open();
+  }
+
+  protected onIssueSaved(): void {
+    void this.load();
+  }
+
+  protected interestedPercent(row: TagAdminRow): number {
+    return Math.round((row.use_count_people / this.maxInterested()) * 100);
+  }
+
+  protected trendLabel(row: TagAdminRow): string {
+    const n = row.recent_applications_30d;
+    return n > 0 ? `+${n} this month` : 'No new activity this month';
+  }
+
+  protected async rename(row: TagAdminRow): Promise<void> {
+    this.blurActiveElement();
+    const updated = await this.actions.rename(row, 'issue');
+    if (updated) this.rows.update((rows) => rows.map((r) => (r.id === row.id ? { ...r, name: updated.name } : r)));
+  }
+
+  protected async merge(row: TagAdminRow): Promise<void> {
+    this.blurActiveElement();
+    const others = this.rows().filter((r) => r.id !== row.id);
+    const target = await this.actions.merge(row, others, 'issue');
+    if (target) await this.load();
+  }
+
+  protected async delete(row: TagAdminRow): Promise<void> {
+    this.blurActiveElement();
+    const deleted = await this.actions.delete(row, 'issue');
+    if (deleted) this.rows.update((rows) => rows.filter((r) => r.id !== row.id));
+  }
+
+  private blurActiveElement(): void {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
+  private async load(): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      const [rows, peopleSharedCount] = await Promise.all([
+        this.tagsSvc.getAdminList('issue'),
+        this.tagsSvc.countDistinctPeople('issue'),
+      ]);
+      this.rows.set(rows);
+      this.peopleSharedCount.set(peopleSharedCount);
+    } catch (err) {
+      this.alertSvc.showError(err instanceof Error && err.message ? err.message : "Couldn't load issues.");
+    } finally {
+      end();
+    }
+  }
+}
+```
+
 ## File: apps/frontend/src/app/experiences/tags/ui/tag-admin-actions.ts
 ```typescript
 import { inject, Service } from '@angular/core';
@@ -25771,6 +25512,148 @@ export class TagPaletteService {
   public async ensurePalette(): Promise<void> {
     // Trigger a reload of the resource
     this.tagsResource.reload();
+  }
+}
+```
+
+## File: apps/frontend/src/app/experiences/tags/ui/tags-admin.ts
+```typescript
+import { Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { Icon } from '@icons/icon';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
+import { RowActions } from '@uxcommon/components/row-actions/row-actions';
+import { Table } from '@uxcommon/components/table/table';
+import { TagItem } from '@uxcommon/components/tags/tagitem';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+
+import { TagsService } from '@experiences/tags/services/tags-service';
+import { AddTagDialog } from './add-tag';
+import { TagAdminActions, type TagAdminRow } from './tag-admin-actions';
+
+const UNUSED_DAYS = 90;
+const UNUSED_MS = UNUSED_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * §9.1 Tags admin (spec Fig. 10). Not `pc-datagrid` — the sentence, unused-tags callout, and
+ * rename/merge/delete idiom don't fit the grid's generic column model — but rendered through the
+ * shared `pc-table` shell so it stays visually identical to the datagrid (see `pplcrm-table`).
+ * Reuses `TagAdminActions` (rename/merge/delete) so Issues admin (`issues-admin.ts`) can't drift.
+ */
+@Component({
+  selector: 'pc-tags-admin',
+  imports: [Icon, RouterLink, TagItem, AddTagDialog, Table, RowActions, GridHeaderComponent],
+  templateUrl: './tags-admin.html',
+})
+export class TagsAdmin implements OnInit {
+  private readonly tagsSvc = inject(TagsService);
+  private readonly alertSvc = inject(AlertService);
+  protected readonly actions = inject(TagAdminActions);
+
+  protected readonly addDialog = viewChild.required(AddTagDialog);
+
+  private readonly _loading = createLoadingGate();
+  protected readonly loading = this._loading.visible;
+  protected readonly loaded = this._loading.loaded;
+
+  protected readonly rows = signal<TagAdminRow[]>([]);
+  protected readonly showUnusedOnly = signal(false);
+
+  protected readonly unusedRows = computed(() => this.rows().filter((r) => this.isUnused(r)));
+
+  protected readonly visibleRows = computed(() => (this.showUnusedOnly() ? this.unusedRows() : this.rows()));
+
+  protected readonly totalApplications = computed(() =>
+    this.rows().reduce((sum, r) => sum + r.use_count_people + r.use_count_households, 0),
+  );
+
+  protected readonly sentence = computed(() => {
+    const tagCount = this.rows().length;
+    const unusedCount = this.unusedRows().length;
+    const parts = [
+      `${tagCount.toLocaleString()} tag${tagCount === 1 ? '' : 's'}`,
+      `${this.totalApplications().toLocaleString()} application${this.totalApplications() === 1 ? '' : 's'}`,
+    ];
+    if (unusedCount > 0) {
+      parts.push(`${unusedCount} unused in ${UNUSED_DAYS} days`);
+    }
+    return parts.join(' · ');
+  });
+
+  protected readonly calloutNames = computed(() =>
+    this.unusedRows()
+      .slice(0, 2)
+      .map((r) => `"${r.name}"`)
+      .join(' and '),
+  );
+
+  public ngOnInit(): void {
+    void this.load();
+  }
+
+  protected openAddDialog(): void {
+    this.addDialog().open();
+  }
+
+  protected onTagSaved(): void {
+    void this.load();
+  }
+
+  protected isUnused(row: TagAdminRow): boolean {
+    if (!row.last_applied_at) return true;
+    return Date.now() - new Date(row.last_applied_at).getTime() > UNUSED_MS;
+  }
+
+  protected relativeLastApplied(row: TagAdminRow): string {
+    if (!row.last_applied_at) return 'Never';
+    const ms = Date.now() - new Date(row.last_applied_at).getTime();
+    const days = Math.floor(ms / (24 * 60 * 60 * 1000));
+    if (days <= 0) return 'Today';
+    if (days === 1) return 'Yesterday';
+    if (days < 30) return `${days} days ago`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`;
+    const years = Math.floor(months / 12);
+    return `${years} year${years === 1 ? '' : 's'} ago`;
+  }
+
+  protected async rename(row: TagAdminRow): Promise<void> {
+    this.blurActiveElement();
+    const updated = await this.actions.rename(row, 'tag');
+    if (updated) this.rows.update((rows) => rows.map((r) => (r.id === row.id ? { ...r, name: updated.name } : r)));
+  }
+
+  protected async merge(row: TagAdminRow): Promise<void> {
+    this.blurActiveElement();
+    const others = this.rows().filter((r) => r.id !== row.id);
+    const target = await this.actions.merge(row, others, 'tag');
+    if (target) await this.load();
+  }
+
+  protected async delete(row: TagAdminRow): Promise<void> {
+    this.blurActiveElement();
+    const deleted = await this.actions.delete(row, 'tag');
+    if (deleted) this.rows.update((rows) => rows.filter((r) => r.id !== row.id));
+  }
+
+  /** DaisyUI's CSS-only dropdown opens/closes on focus — blur the trigger so it closes before
+   * the confirm/prompt dialog opens (otherwise both float over each other). */
+  private blurActiveElement(): void {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+
+  private async load(): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      this.rows.set(await this.tagsSvc.getAdminList('tag'));
+    } catch (err) {
+      this.alertSvc.showError(err instanceof Error && err.message ? err.message : "Couldn't load tags.");
+    } finally {
+      end();
+    }
   }
 }
 ```
@@ -26268,442 +26151,6 @@ export class TaskAddComponent implements OnInit {
     }
   </form>
 </section>
-}
-```
-
-## File: apps/frontend/src/app/experiences/teams/ui/team-form.ts
-```typescript
-import { Component, computed, effect, inject, input, OnInit, signal, untracked } from '@angular/core';
-import { form, FormField, validateStandardSchema } from '@angular/forms/signals';
-import { Router, RouterModule } from '@angular/router';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { Icon } from '@uxcommon/components/icons/icon';
-import { Input as PcInput } from '@uxcommon/components/input/input';
-import { Select as PcSelect } from '@uxcommon/components/select/select';
-import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { AddTeamObj, AddTeamType, IAuthUser, UpdateTeamType } from '../../../../../../../libs/common/src';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-
-import { UserService } from '../../../services/user.service';
-import { ListsService } from '../../lists/services/lists-service';
-import { PersonsService } from '../../persons/services/persons-service';
-import { TasksService } from '../../tasks/services/tasks-service';
-import { TeamDetail, TeamsService } from '../services/teams-service';
-
-interface PersonOption {
-  email: string | null;
-  id: string;
-  label: string;
-}
-
-import { DatePipe } from '@angular/common';
-import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
-
-@Component({
-  selector: 'pc-team-form',
-  imports: [EmptyState, FormField, RouterModule, Icon, DatePipe, PcDetailHeader, PcInput, PcTextarea, PcSelect, PcCard],
-  templateUrl: './team-form.html',
-})
-export class TeamFormComponent implements OnInit {
-  readonly id = input<string>();
-
-  private readonly alerts = inject(AlertService);
-  private readonly persons = inject(PersonsService);
-  private readonly router = inject(Router);
-  private readonly teams = inject(TeamsService);
-  private readonly lists = inject(ListsService);
-  private readonly userService = inject(UserService);
-  private readonly tasksSvc = inject(TasksService);
-  private readonly dialogs = inject(ConfirmDialogService);
-
-  protected readonly isNew = computed(() => !this.id());
-
-  protected readonly detail = signal<TeamDetail | null>(null);
-  protected readonly error = signal<string | null>(null);
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
-    const teams: PcBreadcrumb = { label: 'Teams', route: '/teams' };
-    const id = this.id();
-    if (id) {
-      return [teams, { label: this.detail()?.name || 'Team', route: ['/teams', id] }, { label: 'Edit' }];
-    }
-    return [teams, { label: 'New team' }];
-  });
-
-  protected readonly payload = signal({
-    name: '',
-    description: '',
-    team_captain_id: '',
-    team_lead_user_id: '',
-    volunteer_ids: [] as string[],
-    list_ids: [] as string[],
-  });
-
-  protected readonly form = form(this.payload, (p) => {
-    validateStandardSchema(p, AddTeamObj);
-  });
-
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-
-  private readonly _loading = createLoadingGate();
-  protected readonly loading = this._loading.visible;
-  protected signalPeople = signal<PersonOption[]>([]);
-  protected readonly people = computed(() => this.signalPeople());
-  protected readonly users = signal<IAuthUser[]>([]);
-  protected readonly availableLists = signal<any[]>([]);
-  protected readonly assignedLists = signal<any[]>([]);
-  protected readonly teamTasks = signal<any[]>([]);
-  protected readonly saving = signal(false);
-  protected readonly volunteers = computed(() => this.detail()?.volunteers ?? []);
-
-  constructor() {
-    effect(() => {
-      const options = this.people();
-      if (options.length === 0) return;
-
-      const current = untracked(this.payload);
-      let nextCaptain = current.team_captain_id;
-      let changed = false;
-
-      if (nextCaptain && !options.some((p) => p.id === nextCaptain)) {
-        nextCaptain = '';
-        changed = true;
-      }
-
-      const currentVolunteers = current.volunteer_ids ?? [];
-      const validIds = currentVolunteers.filter((id) => options.some((p) => p.id === id));
-      if (validIds.length !== currentVolunteers.length) {
-        changed = true;
-      }
-
-      if (changed) {
-        this.payload.update((p) => ({
-          ...p,
-          team_captain_id: nextCaptain,
-          volunteer_ids: validIds,
-        }));
-      }
-    });
-  }
-
-  public ngOnInit(): void {
-    void this.initialize();
-  }
-  private async initialize(): Promise<void> {
-    const end = this._loading.begin();
-    try {
-      await Promise.all([this.loadPeople(), this.loadUsers(), this.loadLists(), this.loadTeam()]);
-
-      if (this.isNew()) {
-        const state = window.history.state;
-        if (state && state.cloneData) {
-          const sourceTeamId = state.cloneData.id;
-          if (sourceTeamId) {
-            try {
-              const teamDetail = await this.teams.getById(sourceTeamId);
-              this.payload.set({
-                name: teamDetail.name ? `${teamDetail.name} (Copy)` : '',
-                description: teamDetail.description ?? '',
-                team_captain_id: teamDetail.team_captain_id ?? '',
-                team_lead_user_id: teamDetail.team_lead_user_id ?? '',
-                volunteer_ids: teamDetail.volunteers?.map((v) => v.id) ?? [],
-                list_ids: teamDetail.list_ids ?? [],
-              });
-              this.assignedLists.set(teamDetail.lists ?? []);
-            } catch (err) {
-              console.error('Failed to load source team details for cloning', err);
-              const data = state.cloneData;
-              this.payload.set({
-                name: data.name ? `${data.name} (Copy)` : '',
-                description: data.description ?? '',
-                team_captain_id: data.team_captain_id ?? '',
-                team_lead_user_id: data.team_lead_user_id ?? '',
-                volunteer_ids: [],
-                list_ids: [],
-              });
-            }
-          }
-        }
-      }
-    } finally {
-      end();
-    }
-  }
-
-  protected captainLabel(captainId: string | null) {
-    if (!captainId) return '—';
-    const person = this.people().find((p) => p.id === captainId);
-    return person?.label ?? '—';
-  }
-
-  protected isVolunteerSelected(id: string): boolean {
-    return this.payload().volunteer_ids?.includes(id) ?? false;
-  }
-
-  protected onVolunteersChange(event: Event) {
-    const select = event.target as HTMLSelectElement;
-    const selectedOptions = Array.from(select.selectedOptions).map((o) => o.value);
-
-    this.payload.update((p) => ({
-      ...p,
-      volunteer_ids: selectedOptions,
-    }));
-    this.form.volunteer_ids().markAsDirty();
-  }
-
-  protected isListSelected(id: string): boolean {
-    return this.payload().list_ids?.includes(id) ?? false;
-  }
-
-  protected onListsChange(event: Event) {
-    const select = event.target as HTMLSelectElement;
-    const selectedOptions = Array.from(select.selectedOptions).map((o) => o.value);
-
-    this.payload.update((p) => ({
-      ...p,
-      list_ids: selectedOptions,
-    }));
-    this.form.list_ids().markAsDirty();
-
-    const matching = this.availableLists().filter((l) => selectedOptions.includes(l.id));
-    this.assignedLists.set(matching);
-  }
-
-  protected async deleteTeam() {
-    if (!this.id()) return;
-    const confirmed = await this.dialogs.confirm({
-      title: 'Delete Team',
-      message: 'Are you sure you want to delete this team? This action cannot be undone.',
-      variant: 'danger',
-      confirmText: 'Delete',
-    });
-    if (!confirmed) return;
-    this.saving.set(true);
-    try {
-      await this.teams.delete(this.id()!);
-      this.teams.triggerRefresh();
-      this.alerts.showSuccess('Team deleted');
-      await this.router.navigate(['/teams']);
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : isRecord(err) &&
-              isRecord(err['data']) &&
-              typeof err['data']['message'] === 'string' &&
-              err['data']['message']
-            ? err['data']['message']
-            : 'Unable to delete team';
-      this.error.set(message);
-      this.alerts.showError(message);
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this team');
-  }
-
-  protected async save(done?: (() => void) | Event) {
-    if (done instanceof Event) {
-      done.preventDefault();
-    }
-
-    this.form().markAsTouched();
-    if (this.form().invalid()) {
-      return;
-    }
-
-    const raw = this.payload();
-
-    this.saving.set(true);
-    this.error.set(null);
-
-    try {
-      let result: TeamDetail;
-      if (this.isNew()) {
-        const payload: AddTeamType = {
-          name: raw.name?.trim() ?? '',
-          description: raw.description?.trim()?.length ? raw.description.trim() : null,
-          team_captain_id: raw.team_captain_id || undefined,
-          team_lead_user_id: raw.team_lead_user_id || undefined,
-          volunteer_ids: raw.volunteer_ids ?? [],
-          list_ids: raw.list_ids ?? [],
-        };
-        result = await this.teams.add(payload);
-        this.teams.triggerRefresh();
-        if (typeof done === 'function') {
-          done();
-        } else {
-          await this.router.navigate(['/teams']);
-        }
-      } else if (this.id()) {
-        const payload: UpdateTeamType = {
-          name: raw.name?.trim() ?? null,
-          description: raw.description?.trim()?.length ? raw.description.trim() : null,
-          team_captain_id: raw.team_captain_id || null,
-          team_lead_user_id: raw.team_lead_user_id || null,
-          volunteer_ids: raw.volunteer_ids ?? [],
-          list_ids: raw.list_ids ?? [],
-        };
-        result = await this.teams.update(this.id()!, payload);
-        this.teams.triggerRefresh();
-        this.detail.set(result);
-        this.setForm(result);
-        this.form().reset();
-        this.alerts.showSuccess('Team updated');
-        if (typeof done === 'function') {
-          done();
-        } else {
-          await this.router.navigate(['/teams', this.id()]);
-        }
-        return;
-      } else {
-        throw new Error('Missing team identifier');
-      }
-      this.detail.set(result);
-      this.setForm(result);
-      this.form().reset();
-      this.alerts.showSuccess(this.isNew() ? 'Team created' : 'Team updated');
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : isRecord(err) &&
-              isRecord(err['data']) &&
-              typeof err['data']['message'] === 'string' &&
-              err['data']['message']
-            ? err['data']['message']
-            : 'Unable to save team';
-      this.error.set(message);
-      this.alerts.showError(message);
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  private async loadPeople() {
-    try {
-      // Volunteers are first-class person status now (§15); 'former' is excluded
-      // from the eligible-to-add list — someone who quit shouldn't be re-added silently.
-      const res = await this.persons.getAll({ limit: 500, volunteerStatus: ['prospective', 'active', 'inactive'] });
-      const items = (res?.rows ?? []).map((person: any) => ({
-        id: String(person.id ?? ''),
-        label: `${person.first_name ?? ''} ${person.last_name ?? ''}`.trim() || person.email || 'Unknown',
-        email: person.email ?? null,
-      }));
-      this.signalPeople.set(items);
-    } catch (err) {
-      console.error('Failed to load volunteers list', err);
-      this.signalPeople.set([]);
-    }
-  }
-
-  private async loadUsers() {
-    try {
-      const us = await this.userService.getUsers();
-      this.users.set(us || []);
-    } catch (err) {
-      console.error('Failed to load teammates list', err);
-      this.users.set([]);
-    }
-  }
-
-  private async loadLists() {
-    try {
-      const res = await this.lists.getAll({ limit: 1000 });
-      this.availableLists.set(res?.rows ?? []);
-    } catch (err) {
-      console.error('Failed to load lists', err);
-      this.availableLists.set([]);
-    }
-  }
-
-  private async loadTeam() {
-    if (this.isNew()) {
-      this.detail.set(null);
-      this.setForm(null);
-      return;
-    }
-    if (!this.id()) {
-      this.error.set('Missing team identifier');
-      return;
-    }
-
-    try {
-      const team = await this.teams.getById(this.id()!);
-      this.detail.set(team);
-      this.setForm(team);
-      const res = await this.tasksSvc.getAll({
-        filterModel: { team_id: { value: this.id() } },
-      } as any);
-      this.teamTasks.set(res?.rows ?? []);
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : isRecord(err) &&
-              isRecord(err['data']) &&
-              typeof err['data']['message'] === 'string' &&
-              err['data']['message']
-            ? err['data']['message']
-            : 'Failed to load team';
-      this.error.set(message);
-      this.alerts.showError(message);
-    }
-  }
-
-  private setForm(team: TeamDetail | null) {
-    this.payload.set({
-      name: team?.name ?? '',
-      description: team?.description ?? '',
-      team_captain_id: team?.team_captain_id ?? '',
-      team_lead_user_id: team?.team_lead_user_id ?? '',
-      volunteer_ids: team?.volunteers?.map((v) => v.id) ?? [],
-      list_ids: team?.list_ids ?? [],
-    });
-    this.assignedLists.set(team?.lists ?? []);
-  }
-
-  protected getPriorityClass(priority: string | null | undefined): string {
-    const p = String(priority || '').toLowerCase();
-    switch (p) {
-      case 'urgent':
-        return 'badge-error text-error-content';
-      case 'high':
-        return 'badge-warning text-warning-content';
-      case 'medium':
-        return 'badge-info text-info-content';
-      default:
-        return 'badge-ghost';
-    }
-  }
-
-  protected getStatusClass(status: string | null | undefined): string {
-    const s = String(status || '').toLowerCase();
-    switch (s) {
-      case 'done':
-        return 'badge-success text-success-content';
-      case 'in_progress':
-        return 'badge-info text-info-content';
-      case 'waiting':
-        return 'badge-error text-error-content';
-      case 'archived':
-        return 'badge-neutral text-neutral-content';
-      default:
-        return 'badge-ghost';
-    }
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 ```
 
@@ -29917,81 +29364,6 @@ export class AppTitleStrategy extends TitleStrategy {
 }
 ```
 
-## File: apps/frontend/src/app/services/unsaved-changes-guard.ts
-```typescript
-import { computed, inject } from '@angular/core';
-import type { Signal } from '@angular/core';
-import type { CanDeactivateFn } from '@angular/router';
-import type { FieldTree } from '@angular/forms/signals';
-import { ConfirmDialogService } from './shared-dialog.service';
-
-export interface UnsavedChangesHandle {
-  dirtyCount: Signal<number>;
-  headerLine: Signal<string | null>;
-  confirmDiscardIfDirty(recordName: string): Promise<boolean>;
-}
-
-interface Deactivatable {
-  canDeactivate?(): boolean | Promise<boolean>;
-}
-
-/** Route-level guard: lets any edit-page component veto navigation away while it has unsaved changes. */
-export const unsavedChangesGuard: CanDeactivateFn<Deactivatable> = (component) =>
-  component.canDeactivate ? component.canDeactivate() : true;
-
-/**
- * Wires an Angular Signal Forms `form`/`payload` pair up to the "Unsaved changes · N fields" header
- * line and a leave-confirm dialog naming the changed fields. `dirty()` is per-field and already used
- * to gate the Save button (see pc-form-actions) - this just reads the same signals.
- */
-export function injectUnsavedChanges<TModel extends Record<string, unknown>>(
-  form: FieldTree<TModel>,
-  payload: Signal<TModel>,
-): UnsavedChangesHandle {
-  const dialogs = inject(ConfirmDialogService);
-
-  // Subfields<TModel> guarantees one FieldTree per data key, so indexing by the payload's
-  // own keys is safe even though TypeScript can't express a dynamic per-key lookup here.
-  const fields = form as unknown as Record<string, () => { dirty(): boolean }>;
-
-  const dirtyKeys = computed(() => Object.keys(payload()).filter((key) => fields[key]?.().dirty()));
-  const dirtyCount = computed(() => dirtyKeys().length);
-  const headerLine = computed(() =>
-    dirtyCount() > 0 ? `Unsaved changes · ${dirtyCount()} field${dirtyCount() === 1 ? '' : 's'}` : null,
-  );
-
-  return {
-    dirtyCount,
-    headerLine,
-    confirmDiscardIfDirty(recordName: string): Promise<boolean> {
-      if (dirtyCount() === 0) return Promise.resolve(true);
-      const fieldList = joinWithAnd(dirtyKeys().map(humanizeFieldKey));
-      return dialogs.confirm({
-        title: 'Leave without saving?',
-        message: `Your changes to ${recordName} (${fieldList}) will be lost.`,
-        variant: 'warning',
-        confirmText: 'Discard changes',
-        cancelText: 'Keep editing',
-        emphasizeCancel: true,
-      });
-    },
-  };
-}
-
-function humanizeFieldKey(key: string): string {
-  return key
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/_/g, ' ')
-    .toLowerCase();
-}
-
-function joinWithAnd(items: string[]): string {
-  if (items.length <= 1) return items[0] ?? '';
-  if (items.length === 2) return `${items[0]} and ${items[1]}`;
-  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
-}
-```
-
 ## File: apps/frontend/src/app/services/user.service.ts
 ```typescript
 import { inject, Service } from '@angular/core';
@@ -33052,11 +32424,14 @@ export class QueryBuilderComponent {
     if (this.isRule(node)) {
       const fieldDef = this.getFieldDef(node.field);
       const fieldLabel = fieldDef?.label || node.field;
-      const opLabel = node.op;
+      // Read the summary back in the words the pickers used ("is 'Active'"),
+      // not the wire values ("eq 'active'") — it is the same sentence the Lists
+      // table shows under DEFINITION.
+      const opLabel = fieldDef?.operators.find((o) => o.value === node.op)?.label ?? node.op;
       if (['empty', 'notempty', 'isEmpty', 'isNotEmpty'].includes(node.op)) {
         return `(${fieldLabel} ${opLabel})`;
       }
-      const val = node.value || '…';
+      const val = fieldDef?.choices?.find((c) => c.value === node.value)?.label ?? node.value ?? '…';
       return `(${fieldLabel} ${opLabel} '${val}')`;
     }
     return this.summarizeGroup(node as QueryBuilderGroupNode);
@@ -38675,174 +38050,6 @@ export class ActivityFeed implements OnInit {
 }
 ```
 
-## File: apps/frontend/src/app/experiences/campaigns/ui/campaign-form.ts
-```typescript
-import { Component, OnInit, computed, inject, input, signal } from '@angular/core';
-import { form, FormField, validateStandardSchema } from '@angular/forms/signals';
-import { Router, RouterModule } from '@angular/router';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { Input as PcInput } from '@uxcommon/components/input/input';
-import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { AddCampaignObj, AddCampaignType, UpdateCampaignType } from '../../../../../../../libs/common/src';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-
-import { CampaignContextService } from '../../../services/campaign-context.service';
-import { CampaignDetail, CampaignsService } from '../services/campaigns-service';
-import { getUserErrorMessage } from '@frontend/services/api/user-message';
-
-/**
- * Campaigns §15 — create/edit. New campaigns are always elections: the office
- * context is permanent and created at signup, so there is never a second one.
- * Kind is immutable after creation; status changes only via archive/unarchive.
- */
-@Component({
-  selector: 'pc-campaign-form',
-  imports: [FormField, RouterModule, PcDetailHeader, PcInput, PcTextarea, PcCard],
-  templateUrl: './campaign-form.html',
-})
-export class CampaignFormComponent implements OnInit {
-  readonly id = input<string>();
-
-  private readonly alerts = inject(AlertService);
-  private readonly router = inject(Router);
-  private readonly campaignsSvc = inject(CampaignsService);
-  private readonly context = inject(CampaignContextService);
-
-  protected readonly isNew = computed(() => !this.id());
-  protected readonly detail = signal<CampaignDetail | null>(null);
-  /** getById is loosely typed at the crud-router boundary; read the name defensively. */
-  protected readonly detailName = computed(() => {
-    const name = (this.detail() as Record<string, unknown> | null)?.['name'];
-    return typeof name === 'string' ? name : '';
-  });
-  protected readonly error = signal<string | null>(null);
-  protected readonly saving = signal(false);
-
-  private readonly _loading = createLoadingGate();
-  protected readonly loading = this._loading.visible;
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
-    const campaigns: PcBreadcrumb = { label: 'Campaigns', route: '/workspace/campaigns' };
-    const id = this.id();
-    if (id) {
-      return [campaigns, { label: this.detailName() || 'Campaign', route: ['/campaigns', id] }, { label: 'Edit' }];
-    }
-    return [campaigns, { label: 'New campaign' }];
-  });
-
-  protected readonly payload = signal({
-    name: '',
-    description: '',
-    notes: '',
-    kind: 'election' as const,
-    startdate: '',
-    enddate: '',
-  });
-
-  protected readonly form = form(this.payload, (p) => {
-    validateStandardSchema(p, AddCampaignObj);
-  });
-
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-
-  public ngOnInit(): void {
-    void this.loadCampaign();
-  }
-
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detailName() || 'this campaign');
-  }
-
-  protected async save(done?: (() => void) | Event) {
-    if (done instanceof Event) done.preventDefault();
-
-    this.form().markAsTouched();
-    if (this.form().invalid()) return;
-
-    const raw = this.payload();
-    this.saving.set(true);
-    this.error.set(null);
-
-    try {
-      if (this.isNew()) {
-        const payload: AddCampaignType = {
-          name: raw.name.trim(),
-          description: raw.description.trim() || null,
-          notes: raw.notes.trim() || null,
-          kind: 'election',
-          startdate: raw.startdate || null,
-          enddate: raw.enddate || null,
-        };
-        const result = await this.campaignsSvc.add(payload);
-        this.campaignsSvc.triggerRefresh();
-        await this.context.refresh();
-        this.detail.set(result);
-        this.form().reset();
-        this.alerts.showSuccess('Campaign created');
-        if (typeof done === 'function') done();
-        else await this.router.navigate(['/workspace/campaigns']);
-      } else {
-        const payload: UpdateCampaignType = {
-          name: raw.name.trim() || undefined,
-          description: raw.description.trim() || null,
-          notes: raw.notes.trim() || null,
-          startdate: raw.startdate || null,
-          enddate: raw.enddate || null,
-        };
-        const result = await this.campaignsSvc.update(this.id()!, payload);
-        this.campaignsSvc.triggerRefresh();
-        await this.context.refresh();
-        this.detail.set(result);
-        this.setForm(result);
-        this.form().reset();
-        this.alerts.showSuccess('Campaign updated');
-        if (typeof done === 'function') done();
-        else await this.router.navigate(['/campaigns', this.id()]);
-      }
-    } catch (err) {
-      const message = getUserErrorMessage(err, 'Unable to save the campaign');
-      this.error.set(message);
-      this.alerts.showError(message);
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  private async loadCampaign(): Promise<void> {
-    if (this.isNew()) return;
-    const end = this._loading.begin();
-    try {
-      const campaign = await this.campaignsSvc.getById(this.id()!);
-      this.detail.set(campaign);
-      this.setForm(campaign);
-    } catch (err) {
-      const message = getUserErrorMessage(err, 'Failed to load the campaign');
-      this.error.set(message);
-      this.alerts.showError(message);
-    } finally {
-      end();
-    }
-  }
-
-  private setForm(campaign: CampaignDetail | null) {
-    if (!campaign) return;
-    const c = campaign as Record<string, unknown>;
-    this.payload.set({
-      name: typeof c['name'] === 'string' ? c['name'] : '',
-      description: typeof c['description'] === 'string' ? c['description'] : '',
-      notes: typeof c['notes'] === 'string' ? c['notes'] : '',
-      kind: 'election',
-      startdate: typeof c['startdate'] === 'string' ? c['startdate'] : '',
-      enddate: typeof c['enddate'] === 'string' ? c['enddate'] : '',
-    });
-  }
-}
-```
-
 ## File: apps/frontend/src/app/experiences/canvassing/services/canvassing-service.ts
 ```typescript
 import { Service } from '@angular/core';
@@ -39096,6 +38303,807 @@ export class AssignTurfDialog {
 }
 ```
 
+## File: apps/frontend/src/app/experiences/canvassing/ui/canvassing-page.html
+```html
+<div class="mx-auto w-full max-w-6xl p-4 sm:p-6">
+  <!-- Header -->
+  <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <div>
+      <!-- Visible title lives in the navbar breadcrumb; keep an accessible heading only. -->
+      <h1 class="sr-only">Canvassing</h1>
+      @if (headline()) {
+      <p class="text-xs text-base-content/70">{{ headline() }}</p>
+      } @else {
+      <p class="text-xs text-base-content/70">Cut your first turfs to start knocking doors.</p>
+      }
+    </div>
+    <div class="flex items-center gap-2">
+      <button type="button" class="btn btn-ghost btn-sm" (click)="settingsOpen.set(true)">
+        <pc-icon name="cog" [size]="4" />
+        Survey settings
+      </button>
+      <button type="button" class="btn btn-primary btn-sm" (click)="openCut()">
+        <pc-icon name="map-pin" [size]="4" />
+        Cut new turfs
+      </button>
+    </div>
+  </div>
+
+  <!-- Tabs (the standard pill tab bar) -->
+  <pc-tab-bar class="mb-4" [tabs]="pageTabs" [activeTab]="tab()" (activeTabChange)="selectTab($event)" />
+
+  @if (tab() === 'turfs') {
+  <!-- In the field today -->
+  <section class="card mb-4 border border-base-300 bg-base-100">
+    <div class="card-body p-4">
+      <div class="mb-2 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <h2 class="text-sm font-semibold text-base-content">In the field today</h2>
+          <span class="badge badge-ghost badge-sm">Live: updates as knocks are logged</span>
+        </div>
+        <button type="button" class="link link-primary text-sm" (click)="selectTab('report')">
+          Full field report →
+        </button>
+      </div>
+
+      @if (today(); as t) {
+      <div class="flex flex-wrap items-center gap-6">
+        <div>
+          <div class="text-3xl font-semibold text-base-content">{{ t.doorsKnocked }}</div>
+          <div class="text-xs text-base-content/60">doors knocked</div>
+        </div>
+        <div>
+          <div class="text-3xl font-semibold text-base-content">{{ t.conversations }}</div>
+          <div class="text-xs text-base-content/60">conversations</div>
+        </div>
+        <div class="min-w-48 flex-1">
+          @if (todayTotal() > 0) {
+          <div class="flex h-3 w-full overflow-hidden rounded-full">
+            @for (seg of todaySegments(); track seg.key) {
+            <div
+              class="h-full {{ seg.cls }}"
+              [style.width.%]="barPct(seg.value, todayTotal())"
+              [title]="seg.label + ': ' + seg.value"
+            ></div>
+            }
+          </div>
+          <div class="mt-2 flex flex-wrap gap-3 text-xs text-base-content/70">
+            @for (seg of todaySegments(); track seg.key) {
+            <span class="flex items-center gap-1">
+              <span class="inline-block h-2 w-2 rounded-full {{ seg.cls }}"></span>
+              {{ seg.label }} {{ seg.value }}
+            </span>
+            }
+          </div>
+          } @else {
+          <p class="text-sm text-base-content/50">No knocks logged yet today. Outcomes appear as companions sync.</p>
+          }
+        </div>
+      </div>
+      }
+    </div>
+  </section>
+
+  <!-- Turf map strip -->
+  <section class="card mb-4 border border-base-300 bg-base-100">
+    <div class="card-body p-4">
+      @if (hasMap()) {
+      <pc-map class="block h-56 w-full rounded-lg" [markers]="mapMarkers()" ariaLabel="Turf map"></pc-map>
+      } @else {
+      <div
+        class="flex h-32 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm text-base-content/50"
+      >
+        Turfs appear here on the ward map once they are cut.
+      </div>
+      }
+      <p class="mt-2 text-xs text-base-content/50">Auto-cut keeps turfs contiguous and off Route 9 and the river.</p>
+    </div>
+  </section>
+
+  <!-- Turf table -->
+  <section class="card border border-base-300 bg-base-100">
+    <div class="overflow-x-auto">
+      <table class="table pc-table">
+        <thead>
+          <tr class="text-xs uppercase text-base-content/50">
+            <th>Turf</th>
+            <th>Size</th>
+            <th>Team</th>
+            <th>Progress</th>
+            <th>Last activity</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (t of turfs(); track t.id) {
+          <tr>
+            <td>
+              <div class="flex items-center gap-2">
+                <span class="font-medium text-base-content">{{ t.name }}</span>
+                <span class="badge badge-sm {{ statusBadge[t.status] }}">{{ statusLabel[t.status] }}</span>
+              </div>
+              @if (t.list_name) {
+              <div class="text-xs text-base-content/50">{{ t.list_name }}</div>
+              }
+            </td>
+            <td class="whitespace-nowrap">{{ t.door_count }} doors</td>
+            <td>
+              @if (t.team_name) {
+              <span>{{ t.team_name }}</span>
+              } @else {
+              <button type="button" class="btn btn-ghost btn-xs border-dashed" (click)="assign(t)">Assign</button>
+              }
+            </td>
+            <td class="min-w-40">
+              <div class="flex items-center gap-2">
+                <progress class="progress progress-primary w-24" [value]="progressPct(t)" max="100"></progress>
+                <span class="text-xs text-base-content/60">{{ t.attempted }} of {{ t.door_count }}</span>
+                @if (t.status === 'in_field') {
+                <span
+                  class="inline-block h-2 w-2 animate-pulse rounded-full bg-success"
+                  title="In the field now"
+                ></span>
+                }
+              </div>
+              @if (t.conversations > 0) {
+              <div class="text-xs text-base-content/50">{{ t.conversations }} conversations</div>
+              }
+            </td>
+            <td class="whitespace-nowrap text-xs text-base-content/60">
+              {{ t.last_activity_at ? (t.last_activity_at | date: 'MMM d, h:mm a') : '—' }}
+            </td>
+            <td class="text-right">
+              <pc-row-actions [label]="'Actions for ' + t.name">
+                <li>
+                  <button type="button" (click)="assign(t)">
+                    {{ t.token ? 'Change volunteer' : 'Assign volunteer' }}
+                  </button>
+                </li>
+                <li><button type="button" (click)="copyLink(t)">Copy volunteer link</button></li>
+                <li><button type="button" (click)="refresh(t)">Refresh from list</button></li>
+                <li>
+                  <button type="button" class="text-error" (click)="retire(t)">Retire turf</button>
+                </li>
+              </pc-row-actions>
+            </td>
+          </tr>
+          } @empty {
+          <tr>
+            <td colspan="6" class="py-10 text-center text-sm text-base-content/60">
+              No turfs yet. Choose a smart-list universe and
+              <button type="button" class="link link-primary" (click)="openCut()">cut your first turfs</button>.
+            </td>
+          </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <div class="border-t border-base-300 p-3 text-xs text-base-content/60">
+      Assigning a volunteer sends them their personal Canvass Companion link by email or text — the Companion is a web
+      app, nothing to install, and the link only works for them. Progress and conversations sync back live. Knocks land
+      on the person, the household, and the Activity log.
+    </div>
+  </section>
+  } @else {
+  <!-- Field report -->
+  <section>
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div role="tablist" class="tabs tabs-boxed tabs-sm">
+        @for (r of ranges; track r.key) {
+        <button role="tab" class="tab" [class.tab-active]="reportRange() === r.key" (click)="setRange(r.key)">
+          {{ r.label }}
+        </button>
+        }
+      </div>
+      <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="exportReport()">
+        <pc-icon name="arrow-down-tray" [size]="4" />
+        Export CSV
+      </button>
+    </div>
+
+    @if (report(); as r) {
+    <!-- Stat tiles -->
+    <div class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div class="card border border-base-300 bg-base-100 p-4">
+        <div class="text-2xl font-semibold">{{ r.doors }}</div>
+        <div class="text-xs text-base-content/60">doors</div>
+      </div>
+      <div class="card border border-base-300 bg-base-100 p-4">
+        <div class="text-2xl font-semibold">{{ r.conversations }}</div>
+        <div class="text-xs text-base-content/60">conversations</div>
+      </div>
+      <div class="card border border-base-300 bg-base-100 p-4">
+        <div class="text-2xl font-semibold">{{ r.contactRatePct }}%</div>
+        <div class="text-xs text-base-content/60">contact rate</div>
+      </div>
+      <div class="card border border-base-300 bg-base-100 p-4">
+        <div class="text-2xl font-semibold">{{ r.supportIds }}</div>
+        <div class="text-xs text-base-content/60">support IDs</div>
+      </div>
+    </div>
+
+    <!-- Coverage — where we've walked (§13.3) -->
+    @if (coverage(); as cov) { @if (cov.doors.length > 0) {
+    <div class="card mb-4 border border-base-300 bg-base-100">
+      <div class="flex flex-wrap items-center justify-between gap-2 p-4 pb-2">
+        <h3 class="text-sm font-semibold">Coverage</h3>
+        <div role="tablist" class="tabs tabs-boxed tabs-xs">
+          <button
+            role="tab"
+            class="tab"
+            [class.tab-active]="coverageView() === 'map'"
+            (click)="coverageView.set('map')"
+          >
+            Street map
+          </button>
+          <button
+            role="tab"
+            class="tab"
+            [class.tab-active]="coverageView() === 'ward'"
+            (click)="coverageView.set('ward')"
+          >
+            By ward
+          </button>
+        </div>
+      </div>
+      <div class="p-4 pt-0">
+        @if (coverageView() === 'map') {
+        <pc-map
+          class="block h-72 w-full rounded-lg"
+          [markers]="coverageMarkers()"
+          [polygons]="coveragePolygons()"
+          ariaLabel="Coverage map"
+        ></pc-map>
+        <div class="mt-2 flex flex-wrap gap-3 text-xs text-base-content/70">
+          @for (l of coverageLegend; track l.status) {
+          <span class="flex items-center gap-1">
+            <span class="inline-block h-2 w-2 rounded-full {{ l.dot }}"></span>{{ l.label }}
+          </span>
+          }
+          <span class="flex items-center gap-1">
+            <span class="inline-block h-2 w-3 rounded-sm border border-dashed border-base-content/40"></span>
+            Turf boundary
+          </span>
+        </div>
+        } @else {
+        <div class="overflow-x-auto">
+          <table class="table pc-table">
+            <thead>
+              <tr class="text-xs uppercase text-base-content/50">
+                <th>Ward</th>
+                <th>Doors</th>
+                <th class="w-1/2">Coverage</th>
+                <th class="text-right">Talked</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (w of cov.byWard; track w.ward) {
+              <tr>
+                <td class="font-medium">{{ w.ward }}</td>
+                <td class="whitespace-nowrap">{{ w.doors }}</td>
+                <td>
+                  <div class="flex h-2.5 w-full overflow-hidden rounded-full bg-base-200">
+                    <div class="h-full bg-success" [style.width.%]="barPct(w.conversation, w.doors)"></div>
+                    <div class="h-full bg-warning" [style.width.%]="barPct(w.attempted, w.doors)"></div>
+                  </div>
+                  <div class="mt-1 text-[10px] text-base-content/50">
+                    {{ barPct(w.conversation + w.attempted, w.doors) }}% knocked · {{ w.not_yet }} not yet
+                  </div>
+                </td>
+                <td class="text-right">{{ w.conversation }}</td>
+              </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        }
+      </div>
+    </div>
+    } } @if (r.doors === 0) {
+    <div class="card border border-dashed border-base-300 p-10 text-center text-sm text-base-content/60">
+      No knocks in this range yet. Every number here flows in from synced Canvass Companions. Nothing is entered by
+      hand.
+    </div>
+    } @else {
+    <!-- What voters said -->
+    <div class="card mb-4 border border-base-300 bg-base-100 p-4">
+      <h3 class="mb-2 text-sm font-semibold">What voters said at the door</h3>
+      <div class="flex h-3 w-full overflow-hidden rounded-full">
+        <div class="h-full bg-success" [style.width.%]="barPct(r.responseMix.supporter, r.doors)"></div>
+        <div class="h-full bg-warning" [style.width.%]="barPct(r.responseMix.undecided, r.doors)"></div>
+        <div class="h-full bg-error" [style.width.%]="barPct(r.responseMix.non_supporter, r.doors)"></div>
+        <div class="h-full bg-base-content/30" [style.width.%]="barPct(r.responseMix.not_voting, r.doors)"></div>
+        <div class="h-full bg-info" [style.width.%]="barPct(r.responseMix.already_voted, r.doors)"></div>
+        <div class="h-full bg-base-300" [style.width.%]="barPct(r.responseMix.no_answer, r.doors)"></div>
+      </div>
+      <div class="mt-2 flex flex-wrap gap-3 text-xs text-base-content/70">
+        <span>Supporters {{ r.responseMix.supporter }}</span>
+        <span>Undecided {{ r.responseMix.undecided }}</span>
+        <span>Non-supporters {{ r.responseMix.non_supporter }}</span>
+        <span>Not voting {{ r.responseMix.not_voting }}</span>
+        <span>Already voted {{ r.responseMix.already_voted }}</span>
+        <span>No answer {{ r.responseMix.no_answer }}</span>
+      </div>
+    </div>
+
+    <!-- Doors knocked per day -->
+    <div class="card mb-4 border border-base-300 bg-base-100 p-4">
+      <h3 class="mb-3 text-sm font-semibold">Doors knocked</h3>
+      <div class="flex items-end gap-2" style="height: 120px">
+        @for (d of r.perDay; track d.day) {
+        <div class="flex flex-1 flex-col items-center justify-end gap-1">
+          <div class="flex w-6 flex-col justify-end" style="height: 90px">
+            <div class="w-full rounded-t bg-base-300" [style.height.%]="barPct(d.no_answer, maxPerDay())"></div>
+            <div class="w-full rounded-t bg-primary" [style.height.%]="barPct(d.conversations, maxPerDay())"></div>
+          </div>
+          <div class="text-[10px] text-base-content/50">{{ d.day | date: 'M/d' }}</div>
+        </div>
+        }
+      </div>
+      <div class="mt-2 flex gap-3 text-xs text-base-content/60">
+        <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-primary"></span> Conversation</span>
+        <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-base-300"></span> No answer</span>
+      </div>
+    </div>
+
+    <!-- Performance by team -->
+    <div class="card mb-4 border border-base-300 bg-base-100">
+      <div class="p-4 pb-2 text-sm font-semibold">Performance by team</div>
+      <div class="overflow-x-auto">
+        <table class="table pc-table">
+          <thead>
+            <tr class="text-xs uppercase text-base-content/50">
+              <th>Team</th>
+              <th>Doors</th>
+              <th>Conversations</th>
+              <th>Support IDs</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (t of r.byTeam; track t.team_name) {
+            <tr>
+              <td>{{ t.team_name }}</td>
+              <td>{{ t.doors }}</td>
+              <td>{{ t.conversations }}</td>
+              <td>{{ t.supportIds }}</td>
+            </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid gap-4 sm:grid-cols-2">
+      <!-- When doors answer -->
+      <div class="card border border-base-300 bg-base-100 p-4">
+        <h3 class="mb-3 text-sm font-semibold">When doors answer</h3>
+        @if (r.byHour.length > 0) {
+        <div class="flex items-end gap-1" style="height: 100px">
+          @for (h of r.byHour; track h.hour) {
+          <div class="flex flex-1 flex-col items-center justify-end gap-1">
+            <div
+              class="w-full rounded-t bg-info"
+              [style.height.%]="barPct(h.attempts, maxByHour())"
+              [title]="hourLabel(h.hour) + ': ' + h.attempts"
+            ></div>
+            <div class="text-[9px] text-base-content/50">{{ hourLabel(h.hour) }}</div>
+          </div>
+          }
+        </div>
+        <p class="mt-2 text-xs text-base-content/60">Evenings answer best. Schedule shifts 4–8 pm when you can.</p>
+        } @else {
+        <p class="text-sm text-base-content/60">Not enough knocks to show a pattern yet.</p>
+        }
+      </div>
+
+      <!-- Top canvassers -->
+      <div class="card border border-base-300 bg-base-100 p-4">
+        <h3 class="mb-3 text-sm font-semibold">Top canvassers</h3>
+        @if (r.topCanvassers.length > 0) {
+        <ol class="space-y-1">
+          @for (c of r.topCanvassers; track c.name) {
+          <li class="flex justify-between text-sm">
+            <span>{{ c.name }}</span>
+            <span class="text-base-content/60">{{ c.doors }} doors</span>
+          </li>
+          }
+        </ol>
+        } @else {
+        <p class="text-sm text-base-content/60">Canvasser names appear here once volunteers sign their knocks.</p>
+        }
+      </div>
+    </div>
+
+    <p class="mt-4 text-xs text-base-content/50">
+      Every number here flows in from synced Canvass Companions. Nothing is entered by hand. Contact rate counts
+      conversations per door attempted; support IDs are strong + lean support. Totals include retired turfs.
+    </p>
+    } }
+  </section>
+  } @if (cutOpen()) {
+  <pc-cut-turfs-dialog (done)="onCutDone($event)" />
+  } @if (assignTarget(); as target) {
+  <pc-assign-turf-dialog
+    [turfId]="target.id"
+    [turfName]="target.name"
+    (cancelled)="assignTarget.set(null)"
+    (assigned)="onAssigned($event)"
+  />
+  } @if (settingsOpen()) {
+  <pc-companion-settings-dialog (closed)="settingsOpen.set(false)" />
+  }
+</div>
+```
+
+## File: apps/frontend/src/app/experiences/canvassing/ui/canvassing-page.ts
+```typescript
+import { Component, type OnInit, computed, inject, signal } from '@angular/core';
+import { DatePipe } from '@angular/common';
+
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
+import { Icon } from '@icons/icon';
+import { PcMap } from '@uxcommon/components/map/map';
+import type { PcMapMarker, PcMapPolygon, PcMapVariant } from '@uxcommon/components/map/map-types';
+import { RowActions } from '@uxcommon/components/row-actions/row-actions';
+import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
+
+import type { FieldReportRangeType } from '../../../../../../../libs/common/src';
+import {
+  CanvassingService,
+  type Coverage,
+  type FieldReport,
+  type FieldSummary,
+  type InFieldToday,
+  type TurfListItem,
+} from '../services/canvassing-service';
+import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
+import { AssignTurfDialog } from './assign-turf-dialog';
+import { CompanionSettingsDialog } from './companion-settings-dialog';
+import { CutTurfsDialog } from './cut-turfs-dialog';
+
+type TurfStatus = TurfListItem['status'];
+type Tab = 'turfs' | 'report';
+type ReportRange = FieldReportRangeType['range'];
+type CoverageStatus = Coverage['doors'][number]['status'];
+type CoverageView = 'map' | 'ward';
+
+/** Door-dot colours on the coverage map: talked → knocked-no-answer → not yet. */
+const COVERAGE_VARIANT: Record<CoverageStatus, PcMapVariant> = {
+  conversation: 'success',
+  attempted: 'warning',
+  not_yet: 'muted',
+};
+
+const COVERAGE_LEGEND: { status: CoverageStatus; label: string; dot: string }[] = [
+  { status: 'conversation', label: 'Conversation', dot: 'bg-success' },
+  { status: 'attempted', label: 'Knocked, no answer', dot: 'bg-warning' },
+  { status: 'not_yet', label: 'Not yet knocked', dot: 'bg-base-300' },
+];
+
+const STATUS_VARIANT: Record<TurfStatus, PcMapVariant> = {
+  draft: 'neutral',
+  assigned: 'info',
+  in_field: 'success',
+  complete: 'primary',
+  retired: 'muted',
+};
+
+const STATUS_LABEL: Record<TurfStatus, string> = {
+  draft: 'Draft (unassigned)',
+  assigned: 'Sent to app',
+  in_field: 'In field now',
+  complete: 'Complete',
+  retired: 'Retired',
+};
+
+const STATUS_BADGE: Record<TurfStatus, string> = {
+  draft: 'badge-ghost',
+  assigned: 'badge-info',
+  in_field: 'badge-success',
+  complete: 'badge-primary',
+  retired: 'badge-ghost opacity-60',
+};
+
+const RANGES: { key: ReportRange; label: string }[] = [
+  { key: 'today', label: 'Today' },
+  { key: 'yesterday', label: 'Yesterday' },
+  { key: 'week', label: 'This week' },
+  { key: 'month', label: 'This month' },
+  { key: 'campaign', label: 'Campaign' },
+];
+
+@Component({
+  selector: 'pc-canvassing-page',
+  imports: [DatePipe, Icon, PcMap, RowActions, TabBar, CutTurfsDialog, AssignTurfDialog, CompanionSettingsDialog],
+  templateUrl: './canvassing-page.html',
+})
+export class CanvassingPage implements OnInit {
+  private readonly svc = inject(CanvassingService);
+  private readonly alerts = inject(AlertService);
+  private readonly dialog = inject(ConfirmDialogService);
+
+  private readonly _loading = createLoadingGate();
+  protected readonly loading = this._loading.visible;
+
+  protected readonly tab = signal<Tab>('turfs');
+
+  protected readonly pageTabs: PcTabOption[] = [
+    { id: 'turfs', label: 'Turfs & assignments' },
+    { id: 'report', label: 'Field report' },
+  ];
+  protected readonly turfs = signal<TurfListItem[]>([]);
+  protected readonly summary = signal<FieldSummary | null>(null);
+  protected readonly today = signal<InFieldToday | null>(null);
+
+  protected readonly reportRange = signal<ReportRange>('week');
+  protected readonly report = signal<FieldReport | null>(null);
+  protected readonly coverage = signal<Coverage | null>(null);
+  protected readonly coverageView = signal<CoverageView>('map');
+
+  protected readonly cutOpen = signal(false);
+  /** Turf currently being assigned in the pick-a-volunteer dialog (null = closed). */
+  protected readonly assignTarget = signal<TurfListItem | null>(null);
+  /** Companion survey settings dialog (issues vocabulary + door script). */
+  protected readonly settingsOpen = signal(false);
+
+  protected readonly ranges = RANGES;
+  protected readonly statusLabel = STATUS_LABEL;
+  protected readonly statusBadge = STATUS_BADGE;
+  protected readonly coverageLegend = COVERAGE_LEGEND;
+
+  ngOnInit(): void {
+    void this.loadTurfs();
+  }
+
+  /** Header sentence: "9 turfs · 3 in the field now · 1,412 of 2,860 doors attempted · 2 waiting for a canvasser". */
+  protected readonly headline = computed<string>(() => {
+    const s = this.summary();
+    if (!s) return '';
+    const parts = [
+      `${s.turfCount} ${s.turfCount === 1 ? 'turf' : 'turfs'}`,
+      `${s.inFieldCount} in the field now`,
+      `${s.doorsAttempted.toLocaleString()} of ${s.doorsTotal.toLocaleString()} doors attempted`,
+      `${s.waitingCount} waiting for a canvasser`,
+    ];
+    return parts.join(' · ');
+  });
+
+  /** Response-mix stacked bar segments for the "in the field today" card. */
+  protected readonly todaySegments = computed(() => {
+    const t = this.today();
+    if (!t) return [];
+    const m = t.responseMix;
+    return [
+      { key: 'supporter', label: 'Supporters', value: m.supporter, cls: 'bg-success' },
+      { key: 'undecided', label: 'Undecided', value: m.undecided, cls: 'bg-warning' },
+      { key: 'non_supporter', label: 'Non-supporters', value: m.non_supporter, cls: 'bg-error' },
+      { key: 'not_voting', label: 'Not voting', value: m.not_voting, cls: 'bg-base-content/30' },
+      { key: 'already_voted', label: 'Already voted', value: m.already_voted, cls: 'bg-info' },
+      { key: 'no_answer', label: 'No answer', value: m.no_answer, cls: 'bg-base-300' },
+    ].filter((s) => s.value > 0);
+  });
+
+  protected readonly todayTotal = computed<number>(() => this.todaySegments().reduce((n, s) => n + s.value, 0));
+
+  /**
+   * Tinted turf-centroid markers over the ward map (§13.1 turf map strip).
+   * Each turf's stored centroid is pinned and tinted by its live status. (Filled
+   * polygons per turf need the door hull — a follow-up; centroids read honestly.)
+   */
+  protected readonly mapMarkers = computed<PcMapMarker[]>(() => {
+    return this.turfs()
+      .filter((t) => t.status !== 'retired' && t.centroid_lat != null && t.centroid_lng != null)
+      .map((t) => ({
+        position: { lat: Number(t.centroid_lat), lng: Number(t.centroid_lng) },
+        variant: this.variantFor(t.status),
+        tooltip: `${t.name} — ${this.statusLabel[t.status]}`,
+        id: t.id,
+        payload: t.id,
+      }));
+  });
+
+  protected readonly hasMap = computed<boolean>(() => this.mapMarkers().length > 0);
+
+  protected variantFor(status: TurfStatus): PcMapVariant {
+    return STATUS_VARIANT[status];
+  }
+
+  protected progressPct(t: TurfListItem): number {
+    if (t.door_count <= 0) return 0;
+    return Math.min(100, Math.round((t.attempted / t.door_count) * 100));
+  }
+
+  protected async loadTurfs(): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      const [turfs, summary, today] = await Promise.all([
+        this.svc.getTurfs(),
+        this.svc.getFieldSummary(),
+        this.svc.getInFieldToday(),
+      ]);
+      this.turfs.set(turfs);
+      this.summary.set(summary);
+      this.today.set(today);
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load canvassing.');
+    } finally {
+      end();
+    }
+  }
+
+  protected async loadReport(): Promise<void> {
+    const end = this._loading.begin();
+    const range = { range: this.reportRange(), from: null, to: null };
+    try {
+      const [report, coverage] = await Promise.all([this.svc.getFieldReport(range), this.svc.getCoverage(range)]);
+      this.report.set(report);
+      this.coverage.set(coverage);
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load field report.');
+    } finally {
+      end();
+    }
+  }
+
+  /** Coverage door dots, coloured by whether we talked, knocked, or haven't reached them. */
+  protected readonly coverageMarkers = computed<PcMapMarker[]>(() => {
+    const cov = this.coverage();
+    if (!cov) return [];
+    return cov.doors.map((d) => ({
+      position: { lat: d.lat, lng: d.lng },
+      variant: COVERAGE_VARIANT[d.status],
+    }));
+  });
+
+  /** Dashed turf boundaries (convex hull of each turf's doors). */
+  protected readonly coveragePolygons = computed<PcMapPolygon[]>(() => {
+    const cov = this.coverage();
+    if (!cov) return [];
+    return cov.turfs.map((t) => ({
+      path: t.path,
+      variant: 'neutral' as const,
+      dashed: true,
+      label: t.name,
+      id: t.id,
+    }));
+  });
+
+  protected selectTab(tab: string): void {
+    if (tab !== 'turfs' && tab !== 'report') return;
+    this.tab.set(tab);
+    if (tab === 'report' && !this.report()) void this.loadReport();
+  }
+
+  protected setRange(range: ReportRange): void {
+    this.reportRange.set(range);
+    void this.loadReport();
+  }
+
+  protected openCut(): void {
+    this.cutOpen.set(true);
+  }
+
+  protected onCutDone(created: number): void {
+    this.cutOpen.set(false);
+    if (created > 0) {
+      this.alerts.showSuccess(`Cut ${created} ${created === 1 ? 'turf' : 'turfs'}.`);
+      void this.loadTurfs();
+    }
+  }
+
+  /** Assignment is personal now — open the pick-a-volunteer dialog (plan §5 B1). */
+  protected assign(t: TurfListItem): void {
+    this.assignTarget.set(t);
+  }
+
+  /** An existing link can be re-copied; a missing one needs an assignment first. */
+  protected async copyLink(t: TurfListItem): Promise<void> {
+    if (t.token) {
+      await this.copyCompanionLink(t.token);
+      return;
+    }
+    this.assign(t);
+  }
+
+  protected async onAssigned(res: { token: string; sent: { email: boolean; sms: boolean } }): Promise<void> {
+    this.assignTarget.set(null);
+    const phrase = volunteerLinkSentPhrase(res.sent);
+    await this.copyCompanionLink(res.token, phrase ? `Volunteer assigned — ${phrase}. Link also copied.` : undefined);
+    if (!phrase) {
+      this.alerts.showWarn('They have no email or mobile on file — paste them the copied link yourself');
+    }
+    await this.loadTurfs();
+  }
+
+  private async copyCompanionLink(token: string, successMessage?: string): Promise<void> {
+    const url = companionUrl(`/t/${encodeURIComponent(token)}`);
+    try {
+      await navigator.clipboard.writeText(url);
+      this.alerts.showSuccess(successMessage ?? 'Personal link copied. Only the assigned volunteer can open it.');
+    } catch {
+      this.alerts.showSuccess(`Companion link: ${url}`);
+    }
+  }
+
+  protected async refresh(t: TurfListItem): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      const res = await this.svc.refreshFromList(t.id);
+      this.alerts.showSuccess(`Refreshed. ${res.added} added, ${res.removed} removed. Knock history kept.`);
+      await this.loadTurfs();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');
+    } finally {
+      end();
+    }
+  }
+
+  protected async retire(t: TurfListItem): Promise<void> {
+    const ok = await this.dialog.confirm({
+      title: 'Retire this turf?',
+      message: `"${t.name}" will stop accepting knocks. Its totals stay in the field report.`,
+      confirmText: 'Retire turf',
+    });
+    if (!ok) return;
+    const end = this._loading.begin();
+    try {
+      await this.svc.retire(t.id);
+      this.alerts.showSuccess('Turf retired.');
+      await this.loadTurfs();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to retire turf.');
+    } finally {
+      end();
+    }
+  }
+
+  protected async exportReport(): Promise<void> {
+    try {
+      const { filename, content } = await this.svc.exportFieldReport({
+        range: this.reportRange(),
+        from: null,
+        to: null,
+      });
+      const blob = new Blob([content], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      this.alerts.showSuccess('Report exported: doors, conversations and responses by team and by day (CSV).');
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to export report.');
+    }
+  }
+
+  protected hourLabel(h: number): string {
+    const am = h < 12;
+    const base = h % 12 === 0 ? 12 : h % 12;
+    return `${base}${am ? 'am' : 'pm'}`;
+  }
+
+  protected barPct(value: number, max: number): number {
+    if (max <= 0) return 0;
+    return Math.round((value / max) * 100);
+  }
+
+  protected maxPerDay(): number {
+    const r = this.report();
+    if (!r) return 0;
+    return Math.max(1, ...r.perDay.map((d) => d.conversations + d.no_answer));
+  }
+
+  protected maxByHour(): number {
+    const r = this.report();
+    if (!r) return 0;
+    return Math.max(1, ...r.byHour.map((h) => h.attempts));
+  }
+}
+```
+
 ## File: apps/frontend/src/app/experiences/companies/ui/company-form.html
 ```html
 <div class="flex min-h-full flex-col bg-base-200/50 p-6">
@@ -39211,342 +39219,6 @@ export class AssignTurfDialog {
 </div>
 ```
 
-## File: apps/frontend/src/app/experiences/companies/ui/company-form.ts
-```typescript
-import { Component, OnInit, computed, inject, input, signal } from '@angular/core';
-import { Router, RouterModule } from '@angular/router';
-import { form, validateStandardSchema } from '@angular/forms/signals';
-import { Input as PcInput } from '@uxcommon/components/input/input';
-import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
-import { Icon as PcIcon } from '@icons/icon';
-import { CompanyInputObj } from '../../../../../../../libs/common/src';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { CompaniesService } from '../services/companies-service';
-import { PersonsService } from '../../persons/services/persons-service';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { StatusBadge as PcStatusBadge } from '@uxcommon/components/status-badge/status-badge';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-
-@Component({
-  selector: 'pc-company-form',
-  imports: [PcInput, PcTextarea, PcIcon, RouterModule, PcDetailHeader, PcStatusBadge, PcCard],
-  templateUrl: './company-form.html',
-})
-export class CompanyForm implements OnInit {
-  private readonly alertSvc = inject(AlertService);
-  private readonly companiesSvc = inject(CompaniesService);
-  private readonly personsSvc = inject(PersonsService);
-  private readonly router = inject(Router);
-  private readonly dialogs = inject(ConfirmDialogService);
-
-  private readonly _loading = createLoadingGate();
-
-  /** Disables Save immediately on click — the loading gate stays false for its first
-   *  300ms by design, which would leave a double-click window. */
-  protected readonly saving = signal(false);
-
-  protected readonly company = signal<any | null>(null);
-
-  /** People employed here — feeds the Overview rail (§7). */
-  protected readonly employeeCount = signal(0);
-
-  /** Whether Google enrichment has run, for the Overview status badge. */
-  protected readonly isEnriched = computed(() => {
-    const raw = this.company()?.enrichment;
-    if (!raw) return false;
-    try {
-      const enrichment = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return !!enrichment.google_enriched;
-    } catch {
-      return false;
-    }
-  });
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
-    const companies: PcBreadcrumb = { label: 'Companies', route: '/companies' };
-    const id = this.company()?.id;
-    if (id) {
-      return [
-        companies,
-        { label: this.company()?.name || 'Company', route: ['/companies', String(id)] },
-        { label: 'Edit' },
-      ];
-    }
-    return [companies, { label: 'New company' }];
-  });
-
-  protected readonly payload = signal({
-    name: '',
-    description: '',
-    website: '',
-    industry: '',
-    email: '',
-    phone: '',
-    notes: '',
-  });
-
-  protected readonly form = form(this.payload, (p) => {
-    validateStandardSchema(p, CompanyInputObj);
-  });
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-  protected id = input<string>();
-  protected isLoading = this._loading.visible;
-
-  public mode = input<'new' | 'edit'>('edit');
-  protected readonly isNewMode = computed(() => this.mode() === 'new' || !this.id());
-
-  /** True while an add-time Google lookup is in flight (shows an inline hint). */
-  protected readonly lookingUp = signal(false);
-  /** True when another company already uses this name (advisory hint, not a block). */
-  protected readonly duplicateName = signal(false);
-  /** Last name we looked up, so repeated blurs on the same name don't re-hit Google. */
-  private lastLookedUpName = '';
-
-  private static readonly MIN_LOOKUP_NAME_LENGTH = 2;
-
-  public ngOnInit(): void {
-    void this.loadOnInit();
-  }
-
-  private async loadOnInit(): Promise<void> {
-    await this.loadCompany();
-    if (this.isNewMode()) {
-      const state = window.history.state;
-      if (state && state.cloneData) {
-        const data = state.cloneData;
-        this.payload.set({
-          name: data.name ? `${data.name} (Copy)` : '',
-          description: data.description ?? '',
-          website: data.website ?? '',
-          industry: data.industry ?? '',
-          email: data.email ?? '',
-          phone: data.phone ?? '',
-          notes: data.notes ?? '',
-        });
-      }
-    }
-  }
-
-  private async loadCompany() {
-    if (!this.id()) return;
-    const end = this._loading.begin();
-    try {
-      const data = await this.companiesSvc.getById(this.id()!);
-      this.company.set(data);
-      if (data) {
-        this.payload.set({
-          name: data.name ?? '',
-          description: data.description ?? '',
-          website: data.website ?? '',
-          industry: data.industry ?? '',
-          email: data.email ?? '',
-          phone: data.phone ?? '',
-          notes: data.notes ?? '',
-        });
-        this.form().reset();
-      }
-      try {
-        this.employeeCount.set(await this.personsSvc.countByCompanyId(this.id()!));
-      } catch {
-        this.employeeCount.set(0);
-      }
-    } catch (err) {
-      console.error('Failed to load company details:', err);
-    } finally {
-      end();
-    }
-  }
-
-  /**
-   * On name blur in the New Company form, ask Google Places for this company and
-   * pre-fill only the fields the user left blank. Non-blocking and best-effort:
-   * enrichment is a convenience, so a failed lookup never interrupts adding a
-   * company. Auto-filled values are shown for the user to review and edit before
-   * saving — nothing is persisted until they hit Create.
-   */
-  protected onNameBlur(): void {
-    const name = this.payload().name.trim();
-    if (name.length < CompanyForm.MIN_LOOKUP_NAME_LENGTH) {
-      this.duplicateName.set(false);
-      return;
-    }
-    // Duplicate check runs in both new and edit modes; Google auto-fill is new-only.
-    void this.checkDuplicateName(name);
-    if (this.isNewMode()) {
-      void this.runNameLookup(name);
-    }
-  }
-
-  /** Advisory duplicate-name check — updates the hint, never blocks saving. */
-  private async checkDuplicateName(name: string): Promise<void> {
-    try {
-      const exists = await this.companiesSvc.checkNameExists(name, this.id());
-      this.duplicateName.set(exists);
-    } catch (err) {
-      // Best-effort: a failed check just hides the hint, never blocks the form.
-      console.error('Duplicate company-name check failed:', err);
-      this.duplicateName.set(false);
-    }
-  }
-
-  private async runNameLookup(name: string): Promise<void> {
-    if (name === this.lastLookedUpName) return;
-    this.lastLookedUpName = name;
-
-    this.lookingUp.set(true);
-    try {
-      const result = await this.companiesSvc.lookupEnrichment(name);
-      const current = this.payload();
-      const next = { ...current };
-      const filled: string[] = [];
-      if (!current.website.trim() && result.website) {
-        next.website = result.website;
-        filled.push('website');
-      }
-      if (!current.phone.trim() && result.phone) {
-        next.phone = result.phone;
-        filled.push('phone');
-      }
-      if (!current.industry.trim() && result.industry) {
-        next.industry = result.industry;
-        filled.push('industry');
-      }
-      if (!current.description.trim() && result.description) {
-        next.description = result.description;
-        filled.push('description');
-      }
-      if (filled.length > 0) {
-        this.payload.set(next);
-        this.alertSvc.showSuccess(`Filled in ${filled.join(', ')} from Google. Review before saving`);
-      }
-    } catch (err) {
-      // Best-effort only: never block adding a company on a Google lookup.
-      console.error('Google company lookup failed:', err);
-    } finally {
-      this.lookingUp.set(false);
-    }
-  }
-
-  protected async deleteCompany() {
-    if (!this.id()) return;
-    const confirmed = await this.dialogs.confirm({
-      title: 'Delete Company',
-      message: 'Are you sure you want to delete this company? This action cannot be undone.',
-      variant: 'danger',
-      confirmText: 'Delete',
-    });
-    if (!confirmed) return;
-    const end = this._loading.begin();
-    try {
-      await this.companiesSvc.delete(this.id()!);
-      this.companiesSvc.triggerRefresh();
-      this.alertSvc.showSuccess('Company deleted');
-      await this.router.navigate(['/companies']);
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : isRecord(err) &&
-              isRecord(err['data']) &&
-              typeof err['data']['message'] === 'string' &&
-              err['data']['message']
-            ? err['data']['message']
-            : 'Unable to delete company';
-      this.alertSvc.showError(message);
-    } finally {
-      end();
-    }
-  }
-
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.company()?.name || 'this company');
-  }
-
-  protected save(done?: (() => void) | Event) {
-    if (done instanceof Event) {
-      done.preventDefault();
-    }
-    if (this.saving()) return;
-    const raw = this.payload();
-    if (this.id()) {
-      this.saving.set(true);
-      const end = this._loading.begin();
-      this.companiesSvc
-        .update(this.id()!, raw)
-        .then(() => {
-          this.companiesSvc.triggerRefresh();
-          this.alertSvc.showSuccess('Company updated successfully');
-          // Mark the form pristine so the deactivate guard doesn't prompt
-          // "Leave without saving?" on the post-save navigation.
-          this.form().reset();
-          if (typeof done === 'function') {
-            done();
-          } else {
-            void this.router.navigate(['/companies', this.id()]);
-          }
-        })
-        .catch((err: any) => {
-          const message =
-            err instanceof Error && err.message
-              ? err.message
-              : isRecord(err) &&
-                  isRecord(err['data']) &&
-                  typeof err['data']['message'] === 'string' &&
-                  err['data']['message']
-                ? err['data']['message']
-                : 'Unable to save company';
-          this.alertSvc.showError(message);
-        })
-        .finally(() => {
-          end();
-          this.saving.set(false);
-        });
-    } else {
-      this.saving.set(true);
-      const end = this._loading.begin();
-      this.companiesSvc
-        .add(raw)
-        .then(() => {
-          this.companiesSvc.triggerRefresh();
-          this.alertSvc.showSuccess('Company added successfully');
-          // Mark the form pristine so the deactivate guard doesn't prompt
-          // "Leave without saving?" on the post-save navigation.
-          this.form().reset();
-          if (typeof done === 'function') {
-            done();
-          } else {
-            void this.router.navigate(['/companies']);
-          }
-        })
-        .catch((err: any) => {
-          const message =
-            err instanceof Error && err.message
-              ? err.message
-              : isRecord(err) &&
-                  isRecord(err['data']) &&
-                  typeof err['data']['message'] === 'string' &&
-                  err['data']['message']
-                ? err['data']['message']
-                : 'Unable to save company';
-          this.alertSvc.showError(message);
-        })
-        .finally(() => {
-          end();
-          this.saving.set(false);
-        });
-    }
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-```
-
 ## File: apps/frontend/src/app/experiences/deliveries/ui/deliveries-nav.ts
 ```typescript
 import { Component } from '@angular/core';
@@ -39571,6 +39243,95 @@ export class DeliveriesNav {
     { id: 'routes', label: 'Routes', route: '/deliveries/routes' },
   ];
 }
+```
+
+## File: apps/frontend/src/app/experiences/deliveries/ui/deliveries-routes.html
+```html
+<div class="mx-auto flex w-full max-w-[980px] flex-col gap-5 p-4">
+  <!-- Trail (Deliveries / Routes) renders in the navbar; keep an accessible heading only. -->
+  <div class="flex flex-wrap items-center justify-end gap-3">
+    <h1 class="sr-only">Routes</h1>
+    <pc-deliveries-nav class="mr-auto" />
+    <a class="btn btn-primary btn-sm" routerLink="/deliveries/plan">
+      <pc-icon name="map-pin" [size]="4"></pc-icon> Plan routes
+    </a>
+  </div>
+
+  <pc-table [loading]="loading.visible()" [columns]="8">
+    <ng-container pcTableHead>
+      <th>Name</th>
+      <th>Status</th>
+      <th>Stops</th>
+      <th>Est. time</th>
+      <th>Volunteer</th>
+      <th>Scheduled</th>
+      <th>Created</th>
+      <th></th>
+    </ng-container>
+
+    @if (loaded() && rows().length === 0) {
+    <tr>
+      <td colspan="8" class="px-6">
+        <pc-empty-state
+          icon="map-pin"
+          [bordered]="false"
+          title="No routes yet"
+          hint="Approve requests, then plan routes."
+        >
+          <a class="btn btn-primary btn-sm" routerLink="/deliveries/plan">Plan routes</a>
+        </pc-empty-state>
+      </td>
+    </tr>
+    } @else { @for (row of rows(); track row.id) {
+    <tr>
+      <td>
+        <a
+          class="link link-hover font-medium text-primary underline decoration-primary/20 underline-offset-[3px]"
+          [routerLink]="['/deliveries/routes', row.id]"
+        >
+          {{ row.name }}
+        </a>
+      </td>
+      <td><pc-status-badge [type]="tone(row.status)">{{ label(row.status) }}</pc-status-badge></td>
+      <td class="tabular-nums">{{ stopsLabel(row) }}</td>
+      <td class="tabular-nums text-base-content/70">{{ row.est_minutes }} min · {{ row.est_km }} km</td>
+      <td>
+        @if (row.volunteer_person_id) {
+        <a class="link link-hover text-primary" [routerLink]="['/people', row.volunteer_person_id]"
+          >{{ row.volunteer_name || 'Volunteer' }}</a
+        >
+        } @else {
+        <button type="button" class="btn btn-ghost btn-xs border-dashed" (click)="openAssign(row)">Assign</button>
+        }
+      </td>
+      <td class="whitespace-nowrap tabular-nums text-base-content/60">
+        {{ row.scheduled_for ? (row.scheduled_for | date: 'mediumDate') : '—' }}
+      </td>
+      <td class="whitespace-nowrap tabular-nums text-base-content/60">
+        {{ row.created_at ? (row.created_at | date: 'mediumDate') : '' }}
+      </td>
+      <td class="text-right">
+        <pc-row-actions [label]="'Actions for ' + row.name">
+          @if (row.volunteer_person_id) {
+          <li><button type="button" (click)="openAssign(row)">Change volunteer</button></li>
+          <li><button type="button" (click)="copyLink(row)">Copy volunteer link</button></li>
+          @if (canResend(row.status)) {
+          <li><button type="button" (click)="resendLink(row)">Resend link to volunteer</button></li>
+          } } @else {
+          <li><button type="button" (click)="openAssign(row)">Assign volunteer</button></li>
+          } @if (canCancel(row.status)) {
+          <li><button type="button" class="text-error" (click)="cancelRoute(row)">Cancel route…</button></li>
+          } @if (canDelete(row.status)) {
+          <li><button type="button" class="text-error" (click)="deleteRoute(row)">Delete route</button></li>
+          }
+        </pc-row-actions>
+      </td>
+    </tr>
+    } }
+  </pc-table>
+
+  <pc-assign-volunteer-dialog #assignDlg (selected)="onVolunteerSelected($event)"></pc-assign-volunteer-dialog>
+</div>
 ```
 
 ## File: apps/frontend/src/app/experiences/deliveries/ui/yard-sign-standing.html
@@ -42512,411 +42273,6 @@ export class EmailList {
 </div>
 ```
 
-## File: apps/frontend/src/app/experiences/events/ui/event-form.ts
-```typescript
-import { Component, computed, effect, inject, input, signal, untracked, OnInit } from '@angular/core';
-import { FormField, form, validateStandardSchema } from '@angular/forms/signals';
-import { Router, RouterModule } from '@angular/router';
-import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
-import type { CdkDragDrop } from '@angular/cdk/drag-drop';
-import { Icon } from '@icons/icon';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { EntityOverview as PcEntityOverview } from '@uxcommon/components/entity-overview/entity-overview';
-import { Input as PcInput } from '@uxcommon/components/input/input';
-import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { FieldsSelector } from '@uxcommon/components/fields-selector/fields-selector';
-import { PublicLinkPanel } from '@uxcommon/components/public-link-panel/public-link-panel';
-import { AuthService } from '../../../auth/auth-service';
-import { publicPageUrl } from '../../../shared/public-pages';
-
-import { AddEventObj, AddEventType, UpdateEventType } from '../../../../../../../libs/common/src';
-import { EventsService } from '../../../services/api/events-service';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { EventsFrontendService } from '../services/events-frontend-service';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-
-@Component({
-  selector: 'pc-event-form',
-  imports: [
-    FormField,
-    PcInput,
-    PcTextarea,
-    RouterModule,
-    Icon,
-    PcDetailHeader,
-    PcEntityOverview,
-    PcCard,
-    FieldsSelector,
-    PublicLinkPanel,
-    CdkDropList,
-    CdkDrag,
-    CdkDragHandle,
-    CdkDragPlaceholder,
-  ],
-  templateUrl: './event-form.html',
-  providers: [EventsService],
-})
-export class EventFormComponent implements OnInit {
-  private readonly _loading = createLoadingGate();
-  private readonly alerts = inject(AlertService);
-  private readonly dialogs = inject(ConfirmDialogService);
-  private readonly auth = inject(AuthService);
-  private readonly eventsFrontendSvc = inject(EventsFrontendService);
-  private readonly eventsSvc = inject(EventsService);
-  private readonly router = inject(Router);
-
-  private slugTimeoutId: ReturnType<typeof setTimeout> | null = null;
-
-  protected readonly addingTicket = signal(false);
-  protected readonly selectedFields = signal<string[]>(['first_name', 'last_name', 'email', 'mobile', 'notes']);
-  protected readonly publicUrl = computed(() => {
-    const slug = this.payload().slug;
-    if (!slug || this.isNew()) return '';
-    return publicPageUrl(this.auth.getUser()?.tenant_slug, `e/${slug}`);
-  });
-  protected readonly detail = signal<any>(null);
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
-    const events: PcBreadcrumb = { label: 'Forms', route: '/forms' };
-    const id = this.id();
-    if (id) {
-      return [events, { label: this.detail()?.name || 'Event', route: ['/events/pages', id] }, { label: 'Edit' }];
-    }
-    return [events, { label: 'New event' }];
-  });
-
-  protected readonly payload = signal({
-    name: '',
-    slug: '',
-    description: '',
-    location_address: '',
-    start_time: '',
-    end_time: '',
-    capacity: null as number | null,
-    contact_email: '',
-    contact_phone: '',
-    is_published: false,
-    send_reminder: true,
-    send_registration_confirmation: true,
-  });
-  protected readonly endBeforeStartError = computed(() => {
-    const { start_time, end_time } = this.payload();
-    if (!start_time || !end_time) return false;
-    return new Date(end_time) <= new Date(start_time);
-  });
-  protected readonly error = signal<string | null>(null);
-  protected readonly form = form(this.payload, (p) => {
-    validateStandardSchema(p, AddEventObj);
-  });
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-  protected readonly isNew = computed(() => !this.id());
-  protected readonly loading = this._loading.visible;
-  protected readonly newTicket = signal({ name: '', description: '', price_cents: 0, capacity: null as number | null });
-  protected readonly saving = signal(false);
-  protected readonly slugChecking = signal(false);
-  protected readonly slugUnique = signal<boolean | null>(null);
-
-  // Ticket types
-  protected readonly ticketTypes = signal<any[]>([]);
-
-  protected slugManuallyEdited = false;
-
-  protected setNewTicketName(event: Event): void {
-    const input = event.target as HTMLInputElement | null;
-    this.newTicket.update((t) => ({ ...t, name: input?.value ?? '' }));
-  }
-  protected setNewTicketPrice(event: Event): void {
-    const input = event.target as HTMLInputElement | null;
-    this.newTicket.update((t) => ({ ...t, price_cents: +(input?.value ?? '') }));
-  }
-  protected setNewTicketCapacity(event: Event): void {
-    const input = event.target as HTMLInputElement | null;
-    const value = input?.value ?? '';
-    this.newTicket.update((t) => ({ ...t, capacity: value ? +value : null }));
-  }
-
-  public readonly id = input<string>();
-
-  constructor() {
-    const nameSignal = computed(() => this.payload().name);
-    effect(() => {
-      const name = nameSignal();
-      if (this.isNew() && !this.slugManuallyEdited) {
-        const suggested = this.slugify(name);
-        if (untracked(this.payload).slug !== suggested) {
-          this.payload.update((p) => ({ ...p, slug: suggested }));
-        }
-      }
-    });
-
-    const slugSignal = computed(() => this.payload().slug);
-    effect(() => {
-      const slug = slugSignal();
-      if (this.slugTimeoutId) {
-        clearTimeout(this.slugTimeoutId);
-        this.slugTimeoutId = null;
-      }
-      if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
-        this.slugUnique.set(null);
-        this.slugChecking.set(false);
-        return;
-      }
-      this.slugChecking.set(true);
-      this.slugTimeoutId = setTimeout(() => {
-        void (async () => {
-          try {
-            const res = await this.eventsFrontendSvc.checkSlugUnique(slug, this.isNew() ? null : (this.id() ?? null));
-            if (untracked(slugSignal) === slug) {
-              this.slugUnique.set(res.unique);
-            }
-          } catch (err) {
-            console.error('Failed to check slug uniqueness', err);
-          } finally {
-            if (untracked(slugSignal) === slug) {
-              this.slugChecking.set(false);
-            }
-          }
-        })();
-      }, 300);
-    });
-  }
-
-  public ngOnInit(): void {
-    const end = this._loading.begin();
-    void this.loadEvent().finally(() => end());
-  }
-
-  protected cancelAddTicket() {
-    this.addingTicket.set(false);
-  }
-
-  protected async deleteEvent() {
-    if (!this.id()) return;
-    const confirmed = await this.dialogs.confirm({
-      title: 'Delete Event Page',
-      message: 'Are you sure you want to delete this event page? All registrations will also be deleted.',
-      variant: 'danger',
-      confirmText: 'Delete',
-    });
-    if (!confirmed) return;
-
-    this.saving.set(true);
-    try {
-      await this.eventsFrontendSvc.delete(this.id()!);
-      this.eventsFrontendSvc.triggerRefresh();
-      this.alerts.showSuccess('Event deleted');
-      await this.router.navigate(['/forms']);
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to delete event');
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  /**
-   * Drag-to-reorder ticket types. Optimistically reorders the local list, persists the new order as
-   * each ticket's sort_order (index), then reconciles with a reload. On failure we roll back and
-   * surface the error. The order set here is the order attendees see on the public event page.
-   */
-  protected async onTicketDrop(event: CdkDragDrop<unknown[]>): Promise<void> {
-    const snapshot = this.ticketTypes();
-    const from = event.previousIndex;
-    const to = event.currentIndex;
-    if (from === to || from < 0 || to < 0 || from >= snapshot.length || to >= snapshot.length) return;
-
-    const reordered = [...snapshot];
-    moveItemInArray(reordered, from, to);
-    this.ticketTypes.set(reordered);
-    const orderedIds = reordered.map((t) => String(t.id));
-
-    try {
-      await this.eventsSvc.reorderTicketTypes(this.id()!, orderedIds);
-      await this.loadTicketTypes();
-    } catch (err) {
-      this.ticketTypes.set(snapshot);
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to reorder ticket types');
-    }
-  }
-
-  protected async deleteTicketType(id: string) {
-    const confirmed = await this.dialogs.confirm({
-      title: 'Delete Ticket Type',
-      message: 'Delete this ticket type?',
-      variant: 'danger',
-      confirmText: 'Delete',
-    });
-    if (!confirmed) return;
-    try {
-      await this.eventsSvc.deleteTicketType(id);
-      this.alerts.showSuccess('Ticket type deleted');
-      await this.loadTicketTypes();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to delete ticket type');
-    }
-  }
-
-  protected formatPrice(cents: number): string {
-    if (!cents) return 'Free';
-    return `$${(cents / 100).toFixed(2)}`;
-  }
-
-  protected async loadEvent() {
-    if (this.isNew()) return;
-
-    try {
-      const event = (await this.eventsFrontendSvc.getById(this.id()!)) as any;
-      this.detail.set(event);
-      this.payload.set({
-        name: event.name ?? '',
-        slug: event.slug ?? '',
-        description: event.description ?? '',
-        location_address: event.location_address ?? '',
-        start_time: this.toDatetimeLocalString(event.start_time),
-        end_time: this.toDatetimeLocalString(event.end_time),
-        capacity: event.capacity ?? null,
-        contact_email: event.contact_email ?? '',
-        contact_phone: event.contact_phone ?? '',
-        is_published: !!event.is_published,
-        send_reminder: event.send_reminder !== false,
-        send_registration_confirmation: event.send_registration_confirmation !== false,
-      });
-      if (Array.isArray(event.fields) && event.fields.length > 0) {
-        this.selectedFields.set(event.fields);
-      }
-      await this.loadTicketTypes();
-    } catch (err) {
-      this.error.set(err instanceof Error && err.message ? err.message : 'Failed to load event');
-      this.alerts.showError(this.error()!);
-    }
-  }
-
-  protected async loadTicketTypes() {
-    if (!this.id()) return;
-    try {
-      const types = await this.eventsSvc.getTicketTypes(this.id()!);
-      this.ticketTypes.set(types || []);
-    } catch (err) {
-      console.error('Failed to load ticket types', err);
-    }
-  }
-
-  protected onSlugInput() {
-    this.slugManuallyEdited = true;
-  }
-
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this event');
-  }
-
-  protected async save(done?: (() => void) | Event) {
-    if (done instanceof Event) done.preventDefault();
-    this.form().markAsTouched();
-    if (this.form().invalid()) return;
-
-    if (this.endBeforeStartError()) {
-      this.alerts.showError('The event cannot end before it starts, please check the dates and times again.');
-      return;
-    }
-
-    if (this.slugUnique() === false) {
-      this.alerts.showError('This URL slug is already in use. Please choose a different one.');
-      return;
-    }
-
-    this.saving.set(true);
-    this.error.set(null);
-
-    const raw = this.payload();
-    const data = {
-      name: raw.name.trim(),
-      slug: raw.slug.trim(),
-      description: raw.description?.trim() || null,
-      location_address: raw.location_address?.trim() || null,
-      start_time: new Date(raw.start_time),
-      end_time: new Date(raw.end_time),
-      capacity: raw.capacity ? Number(raw.capacity) : null,
-      contact_email: raw.contact_email?.trim() || null,
-      contact_phone: raw.contact_phone?.trim() || null,
-      is_published: !!raw.is_published,
-      send_reminder: !!raw.send_reminder,
-      send_registration_confirmation: !!raw.send_registration_confirmation,
-      fields: this.selectedFields(),
-    };
-
-    try {
-      if (this.isNew()) {
-        const res = await this.eventsFrontendSvc.add(data as AddEventType);
-        this.eventsFrontendSvc.triggerRefresh();
-        this.alerts.showSuccess('Event created successfully');
-        await this.router.navigate(['/events/pages', (res as any).id]);
-      } else {
-        await this.eventsFrontendSvc.update(this.id()!, data as UpdateEventType);
-        this.eventsFrontendSvc.triggerRefresh();
-        this.alerts.showSuccess('Event updated successfully');
-        if (typeof done === 'function') {
-          done();
-        } else {
-          await this.router.navigate(['/events/pages', this.id()]);
-        }
-      }
-    } catch (err) {
-      this.error.set(err instanceof Error && err.message ? err.message : 'Failed to save event');
-      this.alerts.showError(this.error()!);
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  protected async saveNewTicket() {
-    const t = this.newTicket();
-    if (!t.name.trim()) {
-      this.alerts.showError('Ticket type name is required');
-      return;
-    }
-    try {
-      await this.eventsSvc.addTicketType({
-        event_id: this.id()!,
-        name: t.name.trim(),
-        description: t.description?.trim() || null,
-        price_cents: Number(t.price_cents) || 0,
-        capacity: t.capacity ? Number(t.capacity) : null,
-      });
-      this.addingTicket.set(false);
-      this.alerts.showSuccess('Ticket type added');
-      await this.loadTicketTypes();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to add ticket type');
-    }
-  }
-
-  protected slugify(text: string): string {
-    return text
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-  }
-
-  // Ticket type management
-  protected startAddTicket() {
-    this.newTicket.set({ name: '', description: '', price_cents: 0, capacity: null });
-    this.addingTicket.set(true);
-  }
-
-  protected toDatetimeLocalString(val: any): string {
-    if (!val) return '';
-    const date = new Date(val);
-    if (Number.isNaN(date.getTime())) return '';
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  }
-}
-```
-
 ## File: apps/frontend/src/app/experiences/forms/ui/donation-render.ts
 ```typescript
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
@@ -44226,443 +43582,6 @@ export class HelpHomePage {
 </div>
 ```
 
-## File: apps/frontend/src/app/experiences/households/ui/household-form.ts
-```typescript
-import { Component, OnInit, inject, input, signal, computed } from '@angular/core';
-import { DatePipe } from '@angular/common';
-import { form, validateStandardSchema } from '@angular/forms/signals';
-import { Router, RouterModule } from '@angular/router';
-import { UpdateHouseholdsType, UpdateHouseholdsObj } from '../../../../../../../libs/common/src';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Icon } from '@icons/icon';
-import { AddressAutocomplete } from '@uxcommon/components/address-autocomplete/address-autocomplete';
-import { Tags } from '@experiences/tags/ui/tags';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
-import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { AddressFormGroup as PcAddressFormGroup } from '@uxcommon/components/address-form-group/address-form-group';
-import { GeocodeChip } from '@uxcommon/components/geocode-chip/geocode-chip';
-
-import type { Selectable } from 'kysely';
-import { HouseholdsService } from '../services/households-service';
-import { Households, AddressType } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { PersonsService } from '../../persons/services/persons-service';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-import { getUserErrorMessage } from '@frontend/services/api/user-message';
-
-@Component({
-  selector: 'pc-household-form',
-  imports: [
-    PcTextarea,
-    AddressAutocomplete,
-    Tags,
-    Icon,
-    RouterModule,
-    PcDetailHeader,
-    PcCard,
-    PcAddressFormGroup,
-    GeocodeChip,
-    DatePipe,
-  ],
-  templateUrl: './household-form.html',
-})
-export class HouseholdForm implements OnInit {
-  private readonly alertSvc = inject(AlertService);
-  private readonly householdsSvc = inject(HouseholdsService);
-  private readonly tagOptionsSvc = inject(TagOptionsService);
-  private readonly router = inject(Router);
-  private readonly dialogSvc = inject(ConfirmDialogService);
-  private readonly personsSvc = inject(PersonsService);
-
-  private _loading = createLoadingGate();
-
-  /** Disables Save immediately on click — the loading gate stays false for its first
-   *  300ms by design, which would leave a double-click window. */
-  protected readonly saving = signal(false);
-
-  protected readonly household = signal<Selectable<Households> | null>(null);
-
-  /** Member count for the Overview rail — loaded alongside the household (§6). */
-  protected readonly peopleCount = signal(0);
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
-    const households: PcBreadcrumb = { label: 'Households', route: '/households' };
-    const id = this.household()?.id;
-    if (id) {
-      return [households, { label: 'Household', route: ['/households', String(id)] }, { label: 'Edit' }];
-    }
-    return [households, { label: 'New household' }];
-  });
-
-  protected addressVerified = false;
-
-  /** Signals so pc-tags' two-way binding propagates new array references back here. */
-  protected readonly tags = signal<string[]>([]);
-
-  protected readonly issues = signal<string[]>([]);
-
-  protected readonly payload = signal({
-    formatted_address: '',
-    type: '',
-    lat: 0,
-    lng: 0,
-    street_num: '',
-    street1: '',
-    street2: '',
-    apt: '',
-    city: '',
-    state: '',
-    country: '',
-    zip: '',
-    home_phone: '',
-    notes: '',
-  });
-
-  protected readonly form = form(this.payload, (p) => {
-    validateStandardSchema(p, UpdateHouseholdsObj);
-  });
-
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-
-  protected readonly addressString = computed(() => {
-    const raw = this.payload();
-
-    // If formatted_address is present (e.g. populated via Google Places autocomplete)
-    if (raw.formatted_address) {
-      return raw.formatted_address;
-    }
-
-    const parts: string[] = [];
-
-    const streetParts = [raw.apt ? `Apt ${raw.apt}` : null, raw.street_num, raw.street1, raw.street2].filter(Boolean);
-
-    const locationParts = [raw.city, raw.state, raw.zip, raw.country].filter(Boolean);
-
-    if (streetParts.length) {
-      parts.push(streetParts.join(' ').trim());
-    }
-    if (locationParts.length) {
-      parts.push(locationParts.join(', ').trim());
-    }
-
-    return parts.join(', ').trim();
-  });
-
-  protected id = input<string>();
-  protected isLoading = this._loading.visible;
-
-  public mode = input<'new' | 'edit'>('edit');
-  protected readonly isNewMode = computed(() => this.mode() === 'new' || !this.id());
-
-  public handleAddressChange(address: AddressType) {
-    const end = this._loading.begin();
-    try {
-      if (!address || !address.street1) {
-        this.alertSvc.showError('Please select the correct address from the list or leave it blank');
-        return;
-      }
-      this.payload.update((prev) => ({
-        ...prev,
-        formatted_address: address.formatted_address ?? '',
-        type: address.type ?? '',
-        lat: address.lat ?? 0,
-        lng: address.lng ?? 0,
-        street_num: address.street_num ?? '',
-        street1: address.street1 ?? '',
-        street2: address.street2 ?? '',
-        apt: address.apt ?? '',
-        city: address.city ?? '',
-        state: address.state ?? '',
-        country: address.country ?? '',
-        zip: address.zip ?? '',
-      }));
-      this.form.street1().markAsDirty();
-      this.addressVerified = true;
-    } finally {
-      end();
-    }
-  }
-
-  public ngOnInit(): void {
-    void this.loadOnInit();
-  }
-
-  private async loadOnInit(): Promise<void> {
-    await this.loadHousehold();
-    if (this.isNewMode()) {
-      const state = window.history.state;
-      if (state && state.cloneData) {
-        const data = state.cloneData;
-        this.payload.set({
-          formatted_address: data.formatted_address ?? '',
-          type: data.type ?? '',
-          lat: data.lat ?? 0,
-          lng: data.lng ?? 0,
-          street_num: data.street_num ?? '',
-          street1: data.street1 ?? '',
-          street2: data.street2 ?? '',
-          apt: data.apt ?? '',
-          city: data.city ?? '',
-          state: data.state ?? '',
-          country: data.country ?? '',
-          zip: data.zip ?? '',
-          home_phone: data.home_phone ?? '',
-          notes: data.notes ?? '',
-        });
-      }
-    }
-  }
-
-  protected async applyEdit(input: { key: string; value: string; changed: boolean }) {
-    if (input.changed) {
-      const row = { [input.key]: input.value };
-      this.update(row);
-    }
-  }
-
-  protected async deleteHousehold() {
-    const id = this.id();
-    if (!id) return;
-    const end = this._loading.begin();
-    try {
-      // Fetch people belonging to this household
-      const people = (await this.personsSvc.getByHouseholdId(id, { columns: ['id'] })) as Array<{ id: string }>;
-      const personIds = people.map((p) => p.id);
-      const peopleCount = personIds.length;
-
-      if (peopleCount > 0) {
-        // Show the 3-option warning dialog
-        const choice = await this.dialogSvc.choose<'delete-people' | 'keep-people'>({
-          title: 'Households have people',
-          message: `1 household(s) being deleted contain ${peopleCount} person(s).\nWhat would you like to do with those people?`,
-          variant: 'warning',
-          choices: [
-            { label: 'Delete people too', value: 'delete-people', variant: 'danger' },
-            { label: 'Keep people, just remove their address', value: 'keep-people', variant: 'warning' },
-          ],
-          cancelText: 'Cancel',
-        });
-
-        if (!choice) return; // Handled (user clicked Cancel, so do nothing)
-
-        if (choice === 'keep-people') {
-          for (const pid of personIds) {
-            await this.personsSvc.removeHousehold(pid);
-          }
-        } else if (choice === 'delete-people') {
-          await this.personsSvc.deleteMany(personIds);
-        }
-      } else {
-        const confirmed = await this.dialogSvc.confirm({
-          title: 'Delete Household',
-          message: 'Are you sure you want to delete this household? This action cannot be undone.',
-          variant: 'danger',
-          confirmText: 'Delete',
-        });
-        if (!confirmed) return;
-      }
-
-      await this.householdsSvc.delete(id);
-      this.householdsSvc.triggerRefresh();
-      this.alertSvc.showSuccess('Household deleted');
-      await this.router.navigate(['/households']);
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : isRecord(err) &&
-              isRecord(err['data']) &&
-              typeof err['data']['message'] === 'string' &&
-              err['data']['message']
-            ? err['data']['message']
-            : 'Unable to delete household';
-      this.alertSvc.showError(message);
-    } finally {
-      end();
-    }
-  }
-
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.addressString() || 'this household');
-  }
-
-  protected save(done?: () => void) {
-    if (this.saving()) return;
-    const raw = this.payload();
-    const data: UpdateHouseholdsType = {
-      home_phone: raw.home_phone,
-      street_num: raw.street_num,
-      street1: raw.street1,
-      street2: raw.street2,
-      apt: raw.apt,
-      city: raw.city,
-      state: raw.state,
-      zip: raw.zip,
-      country: raw.country,
-      notes: raw.notes,
-      formatted_address: raw.formatted_address || null,
-      type: raw.type || null,
-      lat: raw.lat || null,
-      lng: raw.lng || null,
-    };
-    if (!this.id()) {
-      this.saving.set(true);
-      const end = this._loading.begin();
-      return this.householdsSvc
-        .add(data)
-        .then(async (result) => {
-          this.alertSvc.showSuccess('Household added successfully.');
-          this.householdsSvc.triggerRefresh();
-          // Mark the form pristine so the deactivate guard doesn't prompt
-          // "Leave without saving?" on the post-save navigation.
-          this.form().reset();
-          done?.();
-          await this.router.navigate(['/households', result.id]);
-        })
-        .catch((err: unknown) => {
-          this.alertSvc.showError(getUserErrorMessage(err, 'Could not add the household. Please try again.'));
-        })
-        .finally(() => {
-          end();
-          this.saving.set(false);
-        });
-    }
-    return this.update(data, done);
-  }
-
-  protected async tagAdded(tag: string) {
-    const id = this.id();
-    if (!id) return;
-    try {
-      await this.householdsSvc.attachTag(id, tag, 'tag');
-      await this.tagOptionsSvc.invalidate('tag');
-    } catch (err) {
-      console.error('Failed to attach tag:', err);
-    }
-  }
-
-  protected async tagRemoved(tag: string) {
-    const id = this.id();
-    if (!id) return;
-    try {
-      await this.householdsSvc.detachTag(id, tag, 'tag');
-      await this.tagOptionsSvc.invalidate('tag');
-    } catch (err) {
-      console.error('Failed to detach tag:', err);
-    }
-  }
-
-  protected async issueAdded(issue: string) {
-    const id = this.id();
-    if (!id) return;
-    try {
-      await this.householdsSvc.attachTag(id, issue, 'issue');
-      await this.tagOptionsSvc.invalidate('issue');
-    } catch (err) {
-      console.error('Failed to attach issue:', err);
-    }
-  }
-
-  protected async issueRemoved(issue: string) {
-    const id = this.id();
-    if (!id) return;
-    try {
-      await this.householdsSvc.detachTag(id, issue, 'issue');
-      await this.tagOptionsSvc.invalidate('issue');
-    } catch (err) {
-      console.error('Failed to detach issue:', err);
-    }
-  }
-
-  private async getTags() {
-    const id = this.id();
-    if (!this.household() || !id) {
-      return;
-    }
-    this.tags.set(await this.householdsSvc.getTags(id, 'tag'));
-    this.issues.set(await this.householdsSvc.getTags(id, 'issue'));
-  }
-
-  private async loadHousehold() {
-    const id = this.id();
-    if (!id) return;
-
-    const end = this._loading.begin();
-
-    try {
-      this.household.set((await this.householdsSvc.getById(id)) as Selectable<Households>);
-      await this.getTags();
-      this.refreshForm();
-      try {
-        this.peopleCount.set(await this.householdsSvc.getPeopleCount(id));
-      } catch {
-        this.peopleCount.set(0);
-      }
-    } finally {
-      end();
-    }
-  }
-
-  private refreshForm() {
-    const household = this.household();
-    if (!household) return;
-
-    this.payload.set({
-      formatted_address: household.formatted_address ?? '',
-      type: household.type ?? '',
-      lat: household.lat ?? 0,
-      lng: household.lng ?? 0,
-      street_num: household.street_num ?? '',
-      street1: household.street1 ?? '',
-      street2: household.street2 ?? '',
-      apt: household.apt ?? '',
-      city: household.city ?? '',
-      state: household.state ?? '',
-      country: household.country ?? '',
-      zip: household.zip ?? '',
-      home_phone: household.home_phone ?? '',
-      notes: household.notes ?? '',
-    });
-    this.form().reset();
-  }
-
-  private update(data: Partial<UpdateHouseholdsType>, done?: () => void) {
-    const id = this.id();
-    if (!id) {
-      return;
-    }
-
-    this.saving.set(true);
-    const end = this._loading.begin();
-    void this.householdsSvc
-      .update(id, data)
-      .then(() => {
-        this.alertSvc.showSuccess('Household updated successfully.');
-        this.form().reset();
-        this.householdsSvc.triggerRefresh();
-        if (done) {
-          done();
-        }
-      })
-      .catch((err: unknown) => {
-        this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the household. Please try again.'));
-      })
-      .finally(() => {
-        end();
-        this.saving.set(false);
-      });
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-```
-
 ## File: apps/frontend/src/app/experiences/households/ui/household-view.ts
 ```typescript
 import { DatePipe, Location } from '@angular/common';
@@ -44958,7 +43877,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
         <pc-icon name="queue-list" class="text-primary" [size]="5"></pc-icon>
         <div>
           <h1 class="text-xl font-bold">Edit {{ payload().name || 'List' }}</h1>
-          <p class="text-sm text-base-content/60 mt-0.5">Modify the name and description of this list.</p>
+          <p class="text-sm text-base-content/60 mt-0.5">
+            @if (isSystem()) { This is a built-in list. Its name and rules are fixed — you can edit the description. }
+            @else { Modify the name and description of this list. }
+          </p>
         </div>
       </div>
       <pc-form-actions
@@ -44966,7 +43888,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
         [signalForm]="form"
         (btn1Clicked)="save($event)"
         [btn1Text]="'Save List'"
-        [showDelete]="true"
+        [showDelete]="!isSystem()"
         [deleteText]="'Delete List'"
         (deleteClicked)="deleteList()"
         buttonsToShow="two"
@@ -44976,13 +43898,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     <section class="grid gap-6 rounded border border-base-300 bg-base-100 p-6 shadow-sm">
       <div class="space-y-2">
         <label class="text-sm font-medium text-base-content/80" for="list-name">List Name</label>
+        <!-- Built-in lists (§8) are found by name; renaming one would break that
+             recognition, so the field explains itself instead of erroring on save. -->
         <input
           id="list-name"
           type="text"
           class="input input-bordered w-full"
           [formField]="form.name"
+          [readOnly]="isSystem()"
+          [class.bg-base-200]="isSystem()"
+          [class.cursor-not-allowed]="isSystem()"
+          [class.opacity-70]="isSystem()"
           placeholder="List Name"
         />
+        @if (isSystem()) {
+        <p class="text-xs text-base-content/60">Built-in lists keep their name.</p>
+        }
       </div>
 
       <div class="space-y-2">
@@ -45141,7 +44072,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     @if (step() === 3) {
     <div class="grid gap-4">
       <div class="grid gap-3">
-        <div class="label-text mb-1">Build Tag Rules</div>
+        <div class="label-text mb-1">Build the rules</div>
         <pc-query-builder
           [group]="rulesRoot()"
           [fields]="listFields()"
@@ -45151,7 +44082,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
           [summaryError]="rulesError()"
           (changed)="onRulesChanged()"
         ></pc-query-builder>
-        <div class="text-xs text-base-content/70">Use AND/OR and nested groups to combine Tag is / is not rules.</div>
+        <div class="text-xs text-base-content/70">
+          Match on tags and issues, on standing (volunteer, subscriber, staff, support, voting), or on any contact or
+          address field. Use AND/OR and nested groups to combine them.
+        </div>
       </div>
       <!-- Matches are shown in the summary line above -->
       <div class="flex items-center justify-between mt-2">
@@ -45263,6 +44197,53 @@ import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 
 import { QueryBuilderField, QueryBuilderComponent } from '@frontend/shared/components/query-builder/query-builder';
 import { QueryBuilderNode, QueryBuilderGroupNode, cloneQueryBuilderNode } from '../../../../../../../libs/common/src';
+import { RULE_FIELD_CHOICES, ruleFieldLabel } from '@experiences/lists/services/list-rule-fields';
+
+interface RuleOperator {
+  value: string;
+  label: string;
+}
+
+const TAG_OPERATORS: RuleOperator[] = [
+  { value: 'eq', label: 'is' },
+  { value: 'neq', label: 'is not' },
+  { value: 'contains', label: 'contains' },
+  { value: 'notContains', label: 'does not contain' },
+  { value: 'equals', label: 'equals' },
+  { value: 'notEquals', label: 'does not equal' },
+  { value: 'startsWith', label: 'starts with' },
+  { value: 'endsWith', label: 'ends with' },
+  { value: 'isEmpty', label: 'is empty' },
+  { value: 'isNotEmpty', label: 'is not empty' },
+];
+
+const TEXT_OPERATORS: RuleOperator[] = [
+  { value: 'contains', label: 'contains' },
+  { value: 'notContains', label: 'does not contain' },
+  { value: 'equals', label: 'equals' },
+  { value: 'notEquals', label: 'does not equal' },
+  { value: 'startsWith', label: 'starts with' },
+  { value: 'endsWith', label: 'ends with' },
+  { value: 'isEmpty', label: 'is empty' },
+  { value: 'isNotEmpty', label: 'is not empty' },
+];
+
+/**
+ * Status fields hold one value from a fixed set, so they get a picker instead
+ * of a free-text box — and "is set / is not set" reads better than "is empty"
+ * for a status that is simply absent (§15: NULL = not a volunteer / never asked).
+ */
+const CHOICE_OPERATORS: RuleOperator[] = [
+  { value: 'eq', label: 'is' },
+  { value: 'neq', label: 'is not' },
+  { value: 'isNotEmpty', label: 'is set' },
+  { value: 'isEmpty', label: 'is not set' },
+];
+
+const BOOLEAN_OPERATORS: RuleOperator[] = [
+  { value: 'eq', label: 'is' },
+  { value: 'neq', label: 'is not' },
+];
 
 @Component({
   selector: 'pc-household-filter-grid',
@@ -45413,6 +44394,10 @@ export class ListForm implements OnInit {
   protected readonly id = signal<string | null>(null);
   protected readonly isNew = signal<boolean>(true);
 
+  /** Built-in list marker (§8) — set when editing one of the product-owned lists. */
+  protected readonly systemKey = signal<string | null>(null);
+  protected readonly isSystem = computed<boolean>(() => this.systemKey() != null);
+
   /** Disables Save immediately on click — the loading gate stays false for its first
    *  300ms by design, which would leave a double-click window. */
   protected readonly saving = signal(false);
@@ -45461,6 +44446,7 @@ export class ListForm implements OnInit {
     try {
       const list = (await this.listsSvc.getById(id)) as any;
       if (list) {
+        this.systemKey.set(list.system_key ?? null);
         this.payload.set({
           name: list.name ?? '',
           description: list.description ?? '',
@@ -45539,59 +44525,67 @@ export class ListForm implements OnInit {
     rules: [],
   });
 
+  /**
+   * The fields a rule can be written against, per list type. Names are the keys
+   * the backend's `columnMapping` resolves; labels and choices come from
+   * list-rule-fields so the picker and the saved definition read alike.
+   *
+   * Ordered by what people reach for: who they are (tags/issues), then their
+   * standing with the campaign (volunteer, subscriber, staff, support, voting,
+   * DNC), then contact details and address.
+   */
   protected readonly listFields = computed<QueryBuilderField[]>(() => {
     const isPeople = this.listType() === 'people';
-    const tagOperators = [
-      { value: 'eq', label: 'is' },
-      { value: 'neq', label: 'is not' },
-      { value: 'contains', label: 'contains' },
-      { value: 'notContains', label: 'does not contain' },
-      { value: 'equals', label: 'equals' },
-      { value: 'notEquals', label: 'does not equal' },
-      { value: 'startsWith', label: 'starts with' },
-      { value: 'endsWith', label: 'ends with' },
-      { value: 'isEmpty', label: 'is empty' },
-      { value: 'isNotEmpty', label: 'is not empty' },
-    ];
-    const textOperators = [
-      { value: 'contains', label: 'contains' },
-      { value: 'notContains', label: 'does not contain' },
-      { value: 'equals', label: 'equals' },
-      { value: 'notEquals', label: 'does not equal' },
-      { value: 'startsWith', label: 'starts with' },
-      { value: 'endsWith', label: 'ends with' },
-      { value: 'isEmpty', label: 'is empty' },
-      { value: 'isNotEmpty', label: 'is not empty' },
-    ];
+
+    const field = (name: string, inputType: QueryBuilderField['inputType'], operators: RuleOperator[]) => ({
+      name,
+      label: ruleFieldLabel(name),
+      operators,
+      inputType,
+      ...(RULE_FIELD_CHOICES[name] ? { choices: RULE_FIELD_CHOICES[name] } : {}),
+    });
+
+    const text = (name: string) => field(name, 'text', TEXT_OPERATORS);
+    const tag = (name: string) => field(name, 'autocomplete', TAG_OPERATORS);
+    const choice = (name: string) => field(name, 'select', CHOICE_OPERATORS);
 
     if (isPeople) {
       return [
-        { name: 'tags', label: 'Tags', operators: tagOperators, inputType: 'autocomplete' as const },
-        { name: 'issues', label: 'Issues', operators: tagOperators, inputType: 'autocomplete' as const },
-        { name: 'first_name', label: 'First Name', operators: textOperators, inputType: 'text' as const },
-        { name: 'last_name', label: 'Last Name', operators: textOperators, inputType: 'text' as const },
-        { name: 'email', label: 'Email', operators: textOperators, inputType: 'text' as const },
-        { name: 'mobile', label: 'Mobile', operators: textOperators, inputType: 'text' as const },
-        { name: 'company_name', label: 'Company', operators: textOperators, inputType: 'text' as const },
-        { name: 'city', label: 'City', operators: textOperators, inputType: 'text' as const },
-        { name: 'state', label: 'State/Province', operators: textOperators, inputType: 'text' as const },
-        { name: 'street1', label: 'Street 1', operators: textOperators, inputType: 'text' as const },
-        { name: 'street_num', label: 'Street Number', operators: textOperators, inputType: 'text' as const },
-        { name: 'zip', label: 'Zip Code', operators: textOperators, inputType: 'text' as const },
-      ];
-    } else {
-      return [
-        { name: 'tags', label: 'Tags', operators: tagOperators, inputType: 'autocomplete' as const },
-        { name: 'issues', label: 'Issues', operators: tagOperators, inputType: 'autocomplete' as const },
-        { name: 'city', label: 'City', operators: textOperators, inputType: 'text' as const },
-        { name: 'state', label: 'State/Province', operators: textOperators, inputType: 'text' as const },
-        { name: 'street1', label: 'Street 1', operators: textOperators, inputType: 'text' as const },
-        { name: 'street2', label: 'Street 2', operators: textOperators, inputType: 'text' as const },
-        { name: 'street_num', label: 'Street Number', operators: textOperators, inputType: 'text' as const },
-        { name: 'zip', label: 'Zip Code', operators: textOperators, inputType: 'text' as const },
-        { name: 'home_phone', label: 'Home Phone', operators: textOperators, inputType: 'text' as const },
+        tag('tags'),
+        tag('issues'),
+        choice('volunteer_status'),
+        choice('subscription_status'),
+        choice('staff_status'),
+        choice('support_level'),
+        choice('voting_status'),
+        // A boolean is either set or not — "is not set" would be a lie.
+        field('do_not_contact', 'select', BOOLEAN_OPERATORS),
+        text('first_name'),
+        text('last_name'),
+        text('email'),
+        text('mobile'),
+        text('company_name'),
+        text('city'),
+        text('state'),
+        text('street1'),
+        text('street_num'),
+        text('zip'),
+        text('country'),
+        text('notes'),
       ];
     }
+    return [
+      tag('tags'),
+      tag('issues'),
+      text('city'),
+      text('state'),
+      text('street1'),
+      text('street2'),
+      text('street_num'),
+      text('zip'),
+      text('country'),
+      text('home_phone'),
+    ];
   });
 
   protected externalRowFilter = (row: any) => {
@@ -45776,7 +44770,7 @@ export class ListForm implements OnInit {
 
   protected async deleteList() {
     const id = this.id();
-    if (this.isNew() || !id) return;
+    if (this.isNew() || !id || this.isSystem()) return;
     let consumers: unknown = null;
     try {
       consumers = await this.listsSvc.getConsumers(id);
@@ -47572,866 +46566,6 @@ export class TemplateThumbComponent {
     </div>
   </pc-side-drawer>
 </div>
-```
-
-## File: apps/frontend/src/app/experiences/persons/ui/person-form.ts
-```typescript
-import { Component, ElementRef, OnInit, computed, inject, input, resource, signal, linkedSignal } from '@angular/core';
-import { DatePipe } from '@angular/common';
-import { form, validateStandardSchema } from '@angular/forms/signals';
-import { Router, RouterModule } from '@angular/router';
-import { type IAuthUser, UpdatePersonsType, UpdatePersonsObj } from '../../../../../../../libs/common/src';
-import type { SupportLevel, VotingStatus, VolunteerStatus, StaffStatus } from '../../../../../../../libs/common/src';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Icon } from '@uxcommon/components/icons/icon';
-import { Tags } from '@experiences/tags/ui/tags';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { Input as PcInput } from '@uxcommon/components/input/input';
-import { Select as PcSelect } from '@uxcommon/components/select/select';
-import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
-import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-
-import { UserService } from '../../../services/user.service';
-import { HouseholdsService } from '../../households/services/households-service';
-import { PersonsService } from '../services/persons-service';
-import { CompaniesService } from '../../companies/services/companies-service';
-import { AddressType, Persons, Households } from '../../../../../../../libs/common/src/lib/kysely.models';
-import type { Selectable } from 'kysely';
-import { VolunteerService } from '../../../services/api/volunteer-service';
-import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
-import { SideDrawer } from '@uxcommon/components/side-drawer/side-drawer';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-import { getUserErrorMessage } from '@frontend/services/api/user-message';
-import { PersonCampaignFacts } from './person-campaign-facts';
-import { PersonStandingDraft } from './person-standing-draft';
-import { CampaignContextService } from '../../../services/campaign-context.service';
-import { CampaignsService } from '../../campaigns/services/campaigns-service';
-
-@Component({
-  selector: 'pc-person-form',
-  imports: [
-    PcInput,
-    PcSelect,
-    PcTextarea,
-    Tags,
-    RouterModule,
-    Icon,
-    PcDetailHeader,
-    SideDrawer,
-    PcCard,
-    DatePipe,
-    PersonCampaignFacts,
-    PersonStandingDraft,
-  ],
-  templateUrl: './person-form.html',
-})
-export class PersonForm implements OnInit {
-  private readonly alertSvc = inject(AlertService);
-  private readonly userService = inject(UserService);
-  private readonly confirmDlg = inject(ConfirmDialogService);
-  private readonly householdsSvc = inject(HouseholdsService);
-  private readonly personsSvc = inject(PersonsService);
-  private readonly companiesSvc = inject(CompaniesService);
-  private readonly router = inject(Router);
-  private readonly volunteerSvc = inject(VolunteerService);
-  private readonly tagOptionsSvc = inject(TagOptionsService);
-  private readonly campaignsSvc = inject(CampaignsService);
-  private readonly campaignContext = inject(CampaignContextService);
-  private readonly host: ElementRef<HTMLElement> = inject(ElementRef);
-
-  private _loading = createLoadingGate();
-  private usersById = new Map<string, IAuthUser>();
-
-  protected readonly householdResource = resource({
-    params: () => this.householdId(),
-    loader: async ({ params: householdId }) => {
-      if (!householdId) return null;
-      try {
-        return await this.householdsSvc.getById(householdId);
-      } catch {
-        return null;
-      }
-    },
-  });
-
-  protected readonly addressString = computed(() => {
-    const hh = this.householdResource.value() as Households | null | undefined;
-    if (!hh || hh.is_placeholder) return null;
-    return this.getFormattedAddress(hh);
-  });
-
-  /** Overview rail (§6): everyone else sharing this person's household. */
-  protected readonly householdMembersResource = resource({
-    params: () => this.householdId(),
-    loader: async ({ params: householdId }) => {
-      if (!householdId) return null;
-      try {
-        return await this.householdsSvc.getPeopleCount(householdId);
-      } catch {
-        return null;
-      }
-    },
-  });
-
-  protected readonly companyName = computed(() => {
-    const id = this.person()?.company_id;
-    if (!id) return null;
-    return this.companies().find((c) => c.id === id)?.name ?? null;
-  });
-
-  protected readonly preferredContactLabel = computed(() => {
-    switch (this.person()?.preferred_contact) {
-      case 'email':
-        return 'Email';
-      case 'mobile':
-        return 'Mobile phone';
-      case 'home_phone':
-        return 'Home phone';
-      default:
-        return 'No preference';
-    }
-  });
-
-  protected readonly isPlaceholderHousehold = computed(() => {
-    return (this.householdResource.value() as Households | null | undefined)?.is_placeholder ?? false;
-  });
-
-  /** Address line with the household's ward appended when known (e.g. "312 Alder St … · Ward 3"). */
-  protected readonly addressWithWard = computed(() => {
-    const base = this.addressString();
-    if (!base) return null;
-    const ward = (this.householdResource.value() as Households | null | undefined)?.ward;
-    return ward ? `${base} · Ward ${ward}` : base;
-  });
-
-  // Drawer state for assigning household
-  protected readonly assignDrawerOpen = signal(false);
-  protected readonly householdResults = signal<any[]>([]);
-  protected readonly householdSearch = signal('');
-  protected readonly householdsLoading = signal(false);
-
-  protected readonly pendingHouseholdId = signal<string | null>(null);
-  protected readonly isLoading = this._loading.visible;
-
-  /** Disables Save immediately on click — the loading gate stays false for its first
-   *  300ms by design, which would leave a double-click window. */
-  protected readonly saving = signal(false);
-
-  protected readonly emailError = linkedSignal({
-    source: () => this.form.email().value(),
-    computation: () => null as string | null,
-  });
-  protected readonly person = signal<Selectable<Persons> | null>(null);
-  protected readonly users = signal<IAuthUser[]>([]);
-  protected readonly companies = signal<any[]>([]);
-  protected readonly volunteerStats = signal<{ shifts_count: number; total_hours: number } | null>(null);
-  protected readonly volunteerHistory = signal<any[]>([]);
-
-  protected readonly payload = signal({
-    first_name: '',
-    middle_names: '',
-    last_name: '',
-    email: '',
-    email2: '',
-    home_phone: '',
-    mobile: '',
-    notes: '',
-    company_id: '',
-    preferred_contact: '',
-    linkedin: '',
-    twitter: '',
-    facebook: '',
-    instagram: '',
-    assigned_to: '',
-  });
-
-  protected readonly form = form(this.payload, (p) => {
-    validateStandardSchema(p, UpdatePersonsObj);
-  });
-
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-
-  protected id = input<string>();
-  protected tags = signal<string[]>([]);
-  protected issues = signal<string[]>([]);
-
-  // Campaign standing captured on the NEW-person form (§15). Support/voting/subscribe
-  // are campaign-scoped and can only be written once the person has an id, so they are
-  // applied after the add succeeds; do_not_contact is a plain person field folded into
-  // the add payload. Bound two-way to <pc-person-standing-draft>.
-  protected readonly draftSupport = signal<SupportLevel | ''>('');
-  protected readonly draftVoting = signal<VotingStatus | ''>('');
-  protected readonly draftSubscribe = signal(false);
-  protected readonly draftDnc = signal(false);
-  // Volunteer/staff are global person status (§15) — folded straight into the add payload.
-  protected readonly draftVolunteer = signal<VolunteerStatus | ''>('');
-  protected readonly draftStaff = signal<StaffStatus | ''>('');
-
-  // All known tag/issue names for the dashed "Suggestions:" chips under each editor (§4).
-  protected readonly allTagNames = signal<string[]>([]);
-  protected readonly allIssueNames = signal<string[]>([]);
-  private readonly SUGGESTION_LIMIT = 6;
-  protected readonly tagSuggestions = computed(() => this.suggestFrom(this.allTagNames(), this.tags()));
-  protected readonly issueSuggestions = computed(() => this.suggestFrom(this.allIssueNames(), this.issues()));
-
-  private suggestFrom(all: string[], applied: string[]): string[] {
-    const used = new Set(applied.map((t) => t.toLowerCase().trim()));
-    return all.filter((name) => !used.has(name.toLowerCase().trim())).slice(0, this.SUGGESTION_LIMIT);
-  }
-
-  /** Add a tag from a suggestion chip — mirrors the typed-add path (updates the list + persists). */
-  protected addTagSuggestion(name: string): void {
-    if (this.tags().some((t) => t.toLowerCase().trim() === name.toLowerCase().trim())) return;
-    this.tags.update((list) => [...list, name]);
-    void this.tagAdded(name);
-  }
-
-  protected addIssueSuggestion(name: string): void {
-    if (this.issues().some((t) => t.toLowerCase().trim() === name.toLowerCase().trim())) return;
-    this.issues.update((list) => [...list, name]);
-    void this.issueAdded(name);
-  }
-
-  public readonly householdId = computed(() => (this.person()?.household_id ?? null) || this.pendingHouseholdId());
-
-  public mode = input<'new' | 'edit'>('edit');
-  protected readonly isNewMode = computed(() => this.mode() === 'new' || !this.id());
-
-  protected readonly formName = computed(() => {
-    const v = this.payload();
-    return `${v.first_name || ''} ${v.middle_names || ''} ${v.last_name || ''}`.trim();
-  });
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
-    const people: PcBreadcrumb = { label: 'People', route: '/people' };
-    const id = this.person()?.id;
-    if (id) {
-      return [people, { label: this.formName() || 'Person', route: ['/people', String(id)] }, { label: 'Edit' }];
-    }
-    return [people, { label: 'New person' }];
-  });
-
-  protected readonly formInitials = computed(() => {
-    const name = this.formName() || '?';
-    return name
-      .split(' ')
-      .slice(0, 2)
-      .map((w) => w[0] ?? '')
-      .join('')
-      .toUpperCase();
-  });
-
-  protected readonly buttonsToShow = computed<'two' | 'three'>(() => (this.person()?.id ? 'two' : 'three'));
-
-  constructor() {
-    // Load users once for display names
-    this.userService
-      .getUsers()
-      .then((u) => {
-        this.users.set(u);
-        this.usersById = new Map(u.map((x) => [x.id, x]));
-      })
-      .catch(() => void 0);
-  }
-
-  public ngOnInit(): void {
-    void this.loadOnInit();
-  }
-
-  private async loadOnInit(): Promise<void> {
-    await this.loadPerson();
-    await this.loadCompanies();
-    void this.loadSuggestionNames();
-    if (this.isNewMode()) {
-      const state = window.history.state;
-      if (state && state.cloneData) {
-        const data = state.cloneData;
-        this.payload.set({
-          first_name: data.first_name ?? '',
-          middle_names: data.middle_names ?? '',
-          last_name: data.last_name ? `${data.last_name} (Copy)` : '',
-          email: data.email ?? '',
-          email2: data.email2 ?? '',
-          home_phone: data.home_phone ?? '',
-          mobile: data.mobile ?? '',
-          notes: data.notes ?? '',
-          company_id: data.company_id ?? '',
-          preferred_contact: data.preferred_contact ?? '',
-          linkedin: data.linkedin ?? '',
-          twitter: data.twitter ?? '',
-          facebook: data.facebook ?? '',
-          instagram: data.instagram ?? '',
-          assigned_to: data.assigned_to ? String(data.assigned_to) : '',
-        });
-        if (data.household_id) {
-          this.pendingHouseholdId.set(data.household_id);
-        }
-      }
-    }
-  }
-
-  private async loadSuggestionNames() {
-    try {
-      this.allTagNames.set(await this.tagOptionsSvc.getTagNames('tag'));
-      this.allIssueNames.set(await this.tagOptionsSvc.getTagNames('issue'));
-    } catch (err) {
-      console.error('Failed to load tag/issue suggestions', err);
-    }
-  }
-
-  private async loadCompanies() {
-    try {
-      const res = await this.companiesSvc.getAll();
-      this.companies.set(res.rows || []);
-    } catch {
-      this.companies.set([]);
-    }
-  }
-
-  protected async deletePerson() {
-    const id = this.id();
-    if (!id) return;
-    const confirmed = await this.confirmDlg.confirm({
-      title: 'Delete Person',
-      message: 'Are you sure you want to delete this person? This action cannot be undone.',
-      variant: 'danger',
-      confirmText: 'Delete',
-    });
-    if (!confirmed) return;
-    const end = this._loading.begin();
-    try {
-      await this.personsSvc.delete(id);
-      this.personsSvc.triggerRefresh();
-      this.alertSvc.showSuccess('Person deleted');
-      await this.router.navigate(['/people']);
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : isRecord(err) &&
-              isRecord(err['data']) &&
-              typeof err['data']['message'] === 'string' &&
-              err['data']['message']
-            ? err['data']['message']
-            : 'Unable to delete person';
-      this.alertSvc.showError(message);
-    } finally {
-      end();
-    }
-  }
-
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.formName() || 'this person');
-  }
-
-  public save(done?: () => void) {
-    if (this.saving()) return;
-    this.form().markAsTouched();
-    if (this.form().invalid()) {
-      // §4: Save never disables — instead of blocking, surface the errors and
-      // move focus to the first invalid field so the user knows what to fix.
-      queueMicrotask(() => {
-        const el = this.host.nativeElement.querySelector<HTMLElement>('.input-error input, [aria-invalid="true"]');
-        el?.focus();
-      });
-      return;
-    }
-    const raw = this.payload();
-    const data = {
-      ...raw,
-      company_id: raw.company_id || null,
-      assigned_to: raw.assigned_to || null,
-      preferred_contact: raw.preferred_contact || null,
-    } as UpdatePersonsType;
-    return this.id() ? this.update(data, done) : this.add(data, done);
-  }
-
-  protected async applyEdit(input: { key: string; value: string; changed: boolean }) {
-    if (input.changed) {
-      const row = { [input.key]: input.value };
-      this.update(row);
-    }
-  }
-
-  protected async assignToHousehold(household_id: string) {
-    const id = this.id();
-    // NEW PERSON: just store the pending selection; it will be sent on save
-    if (!id) {
-      this.pendingHouseholdId.set(household_id);
-      this.alertSvc.showSuccess('Household selected. It will be saved when you add the person');
-      this.closeAssignDrawer();
-      return;
-    }
-
-    // Ask scope: just this person vs everyone in current household
-    const applyToAll = await this.confirmDlg.confirm({
-      title: 'Change household',
-      message: 'Apply to everyone in the current household, or just this person?',
-      variant: 'info',
-      confirmText: 'Everyone',
-      cancelText: 'Just this person',
-    });
-
-    const currentHousehold = this.householdId();
-
-    const end = this._loading.begin();
-    try {
-      if (applyToAll && currentHousehold) {
-        // Single atomic tRPC call to the backend
-        await this.personsSvc.moveEntireHousehold(currentHousehold, household_id);
-      } else {
-        // Only move this person
-        await this.personsSvc.update(id, { household_id } as UpdatePersonsType);
-      }
-
-      // update local state for current person and UI
-      this.person.update((p) => (p ? { ...p, household_id } : p));
-
-      this.alertSvc.showSuccess('Assigned to selected household');
-      this.closeAssignDrawer();
-    } catch (err) {
-      this.alertSvc.showError(getUserErrorMessage(err, 'Could not assign the household. Please try again.'));
-    } finally {
-      end();
-    }
-  }
-
-  protected closeAssignDrawer() {
-    this.assignDrawerOpen.set(false);
-  }
-
-  protected formatHouseholdRow(row: any) {
-    const address = {
-      apt: row.apt ?? null,
-      street_num: row.street_num ?? '',
-      street1: row.street1 ?? '',
-      street2: row.street2 ?? '',
-      city: row.city ?? '',
-      state: row.state ?? '',
-      zip: row.zip ?? '',
-      country: row.country ?? '',
-    } as AddressType;
-    return this.getFormattedAddress(address);
-  }
-
-  protected getId() {
-    const id = this.person()?.id;
-    if (!id) return null;
-
-    return id as unknown as string;
-  }
-
-  protected getUserName(id: string | null | undefined = null): string {
-    if (!id) return '?';
-    return this.usersById.get(String(id))?.first_name ?? '?';
-  }
-
-  protected navigateToHousehold() {
-    const household_id = this.householdId();
-    if (household_id) {
-      void this.router.navigate(['households', household_id]);
-    }
-  }
-
-  protected onHouseholdSearch(ev: Event) {
-    const target = ev.target as HTMLInputElement | null;
-    const val = target?.value ?? '';
-    this.householdSearch.set(val);
-    void this.fetchHouseholds();
-  }
-
-  protected openAssignDrawer() {
-    this.assignDrawerOpen.set(true);
-    // Initial fetch
-    void this.fetchHouseholds();
-  }
-
-  protected async removeAddress() {
-    const id = this.id();
-    // New person: just clear the pending household — no API call needed yet
-    if (!id) {
-      this.pendingHouseholdId.set(null);
-      return;
-    }
-
-    if (!this.person()) return;
-
-    const confirmed = await this.confirmDlg.confirm({
-      title: 'Remove Address',
-      message: 'This will move the person to a new blank household (clearing address). Continue?',
-      variant: 'danger',
-      confirmText: 'Remove',
-      cancelText: 'Cancel',
-    });
-    if (!confirmed) return;
-
-    const end = this._loading.begin();
-    try {
-      await this.personsSvc.removeHousehold(id);
-      this.person.update((p) => (p ? { ...p, household_id: null } : p));
-      this.alertSvc.showInfo('The person has been removed from the household. You may select a different household');
-    } catch (err) {
-      this.alertSvc.showError(
-        getUserErrorMessage(err, 'Could not remove the person from the household. Please try again.'),
-      );
-    } finally {
-      end();
-    }
-  }
-
-  protected async tagAdded(tag: string) {
-    const id = this.id();
-    if (!id) return;
-    try {
-      await this.personsSvc.attachTag(id, tag, 'tag');
-      await this.tagOptionsSvc.invalidate('tag');
-    } catch (err) {
-      console.error('Failed to attach tag:', err);
-    }
-  }
-
-  protected async tagRemoved(tag: string) {
-    const id = this.id();
-    if (!id) return;
-
-    const restoreTag = () => this.tags.update((curr) => (curr.includes(tag) ? curr : [...curr, tag]));
-
-    try {
-      // Volunteer/staff are first-class person status now (§15), no longer tags —
-      // tag removal is the plain path with no team cascade.
-      await this.personsSvc.detachTag(id, tag, 'tag');
-      await this.updateTags();
-      await this.tagOptionsSvc.invalidate('tag');
-    } catch (err) {
-      console.error('Failed to detach tag:', err);
-      restoreTag();
-    }
-  }
-
-  protected async issueAdded(issue: string) {
-    const id = this.id();
-    if (!id) return;
-    try {
-      await this.personsSvc.attachTag(id, issue, 'issue');
-      await this.tagOptionsSvc.invalidate('issue');
-    } catch (err) {
-      console.error('Failed to attach issue:', err);
-    }
-  }
-
-  protected async issueRemoved(issue: string) {
-    const id = this.id();
-    if (!id) return;
-
-    const restoreIssue = () => this.issues.update((curr) => (curr.includes(issue) ? curr : [...curr, issue]));
-
-    try {
-      await this.personsSvc.detachTag(id, issue, 'issue');
-      await this.updateTags();
-      await this.tagOptionsSvc.invalidate('issue');
-    } catch (err) {
-      console.error('Failed to detach issue:', err);
-      restoreIssue();
-    }
-  }
-
-  private add(data: UpdatePersonsType, done?: () => void) {
-    // Include any household selected via the drawer before saving
-    const pendingHousehold = this.pendingHouseholdId();
-    if (pendingHousehold) {
-      data = { ...data, household_id: pendingHousehold } as UpdatePersonsType;
-    }
-
-    // do_not_contact is a plain person field — save it with the person.
-    if (this.draftDnc()) {
-      data = { ...data, do_not_contact: true } as UpdatePersonsType;
-    }
-
-    // Volunteer/staff are global person status (§15) — fold non-empty values in.
-    if (this.draftVolunteer()) {
-      data = { ...data, volunteer_status: this.draftVolunteer() } as UpdatePersonsType;
-    }
-    if (this.draftStaff()) {
-      data = { ...data, staff_status: this.draftStaff() } as UpdatePersonsType;
-    }
-
-    // Snapshot the campaign-scoped standing NOW, before the success handler resets
-    // the draft signals — it is applied after the person id exists.
-    const standing = {
-      support: this.draftSupport(),
-      voting: this.draftVoting(),
-      subscribe: this.draftSubscribe(),
-      email: this.payload().email,
-    };
-
-    this.emailError.set(null);
-    this.saving.set(true);
-    const end = this._loading.begin();
-    this.personsSvc
-      .add(data, { context: { skipErrorHandler: true } })
-      .then((created: unknown) => {
-        this.alertSvc.showSuccess(`Added ${this.formName() || 'person'}.`);
-        this.personsSvc.triggerRefresh();
-        void this.applyStanding(created, standing);
-        if (done) {
-          done();
-          this.pendingHouseholdId.set(null);
-          this.tags.set([]);
-          this.issues.set([]);
-          this.draftSupport.set('');
-          this.draftVoting.set('');
-          this.draftSubscribe.set(false);
-          this.draftDnc.set(false);
-          this.draftVolunteer.set('');
-          this.draftStaff.set('');
-          this.form().reset();
-        }
-      })
-      .catch((err: unknown) => {
-        if (this.isDuplicateEmailError(err)) {
-          this.emailError.set('This email address is already used by another person.');
-        } else {
-          this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
-        }
-      })
-      .finally(() => {
-        end();
-        this.saving.set(false);
-      });
-  }
-
-  /**
-   * Apply the standing captured on the add form once the person exists (§15).
-   * Campaign-scoped writes are keyed to the active context; a failure here does
-   * not undo the person — it was already saved — so we surface a soft error.
-   */
-  private async applyStanding(
-    created: unknown,
-    standing: { support: SupportLevel | ''; voting: VotingStatus | ''; subscribe: boolean; email: string },
-  ): Promise<void> {
-    const personId = isRecord(created) && created['id'] != null ? String(created['id']) : null;
-    if (!personId) return;
-
-    const wantsFact = !!standing.support || !!standing.voting;
-    const wantsSubscription = standing.subscribe && !!standing.email.trim();
-    if (!wantsFact && !wantsSubscription) return;
-
-    try {
-      await this.campaignContext.ensureLoaded();
-      const campaign_id = this.campaignContext.activeCampaignId();
-      if (!campaign_id) return;
-
-      if (wantsFact) {
-        await this.campaignsSvc.upsertPersonFact({
-          campaign_id,
-          person_id: personId,
-          ...(standing.support ? { support_level: standing.support } : {}),
-          ...(standing.voting ? { voting_status: standing.voting } : {}),
-        });
-      }
-      if (wantsSubscription) {
-        await this.campaignsSvc.setSubscription({ campaign_id, person_id: personId, status: 'subscribed' });
-      }
-    } catch (err) {
-      this.alertSvc.showError(
-        getUserErrorMessage(err, 'The person was added, but their campaign standing could not be saved.'),
-      );
-    }
-  }
-
-  private isDuplicateEmailError(err: unknown): boolean {
-    if (!err || typeof err !== 'object') return false;
-    const e = err as Record<string, any>;
-    // tRPC wraps backend errors; check both data.httpStatus and message
-    return (
-      e['data']?.['httpStatus'] === 409 ||
-      String(e['message'] ?? '')
-        .toLowerCase()
-        .includes('already exists')
-    );
-  }
-
-  private async fetchHouseholds() {
-    try {
-      this.householdsLoading.set(true);
-      const opts = {
-        searchStr: this.householdSearch(),
-        limit: 25,
-        columns: ['id', 'street_num', 'street1', 'street2', 'apt', 'city', 'state', 'zip', 'country', 'persons_count'],
-      };
-      const res = await this.householdsSvc.getAll(opts);
-      this.householdResults.set(res.rows || []);
-    } catch (err) {
-      this.alertSvc.showError(getUserErrorMessage(err, 'Could not load households. Please try again.'));
-      this.householdResults.set([]);
-    } finally {
-      this.householdsLoading.set(false);
-    }
-  }
-
-  private getFormattedAddress(address: AddressType): string {
-    const parts: string[] = [];
-
-    const streetParts = [
-      address.apt ? `Apt ${address.apt}` : null,
-      address.street_num,
-      address.street1,
-      address.street2,
-    ].filter(Boolean);
-
-    const locationParts = [address.city, address.state, address.zip, address.country].filter(Boolean);
-
-    if (streetParts.length) parts.push(streetParts.join(' ').trim());
-    if (locationParts.length) parts.push(locationParts.join(', ').trim());
-
-    const formatted = parts.join(', ').trim();
-    return formatted || 'No Address Assigned';
-  }
-
-  private async loadPerson() {
-    const id = this.id();
-    if (!id) return;
-
-    const end = this._loading.begin();
-    try {
-      this.person.set((await this.personsSvc.getById(id)) as Selectable<Persons>);
-
-      await this.updateTags();
-      await this.loadVolunteerInfo();
-
-      this.refreshForm();
-    } finally {
-      end();
-    }
-  }
-
-  private refreshForm() {
-    const person = this.person();
-    if (!person) return;
-
-    this.payload.set({
-      first_name: person.first_name ?? '',
-      middle_names: person.middle_names ?? '',
-      last_name: person.last_name ?? '',
-      email: person.email ?? '',
-      email2: person.email2 ?? '',
-      home_phone: person.home_phone ?? '',
-      mobile: person.mobile ?? '',
-      notes: person.notes ?? '',
-      company_id: person.company_id ?? '',
-      preferred_contact: person.preferred_contact ?? '',
-      linkedin: person.linkedin ?? '',
-      twitter: person.twitter ?? '',
-      facebook: person.facebook ?? '',
-      instagram: person.instagram ?? '',
-      assigned_to: person.assigned_to ? String(person.assigned_to) : '',
-    });
-  }
-
-  // Friendly labels for the field-naming save toast (§4).
-  private readonly fieldLabels: Record<string, string> = {
-    first_name: 'first name',
-    middle_names: 'middle name',
-    last_name: 'last name',
-    email: 'email',
-    email2: 'secondary email',
-    mobile: 'mobile phone',
-    home_phone: 'home phone',
-    company_id: 'company',
-    preferred_contact: 'preferred contact',
-    assigned_to: 'owner',
-    notes: 'notes',
-    linkedin: 'LinkedIn',
-    twitter: 'X',
-    facebook: 'Facebook',
-    instagram: 'Instagram',
-  };
-
-  private changedFieldLabels(): string[] {
-    const f = this.form as unknown as Record<string, () => { dirty?: () => boolean }>;
-    return Object.keys(this.fieldLabels)
-      .filter((k) => {
-        try {
-          return !!f[k]?.().dirty?.();
-        } catch {
-          return false;
-        }
-      })
-      .map((k) => this.fieldLabels[k]!);
-  }
-
-  private joinWithAnd(items: string[]): string {
-    if (items.length <= 1) return items[0] ?? '';
-    if (items.length === 2) return `${items[0]} and ${items[1]}`;
-    return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-  }
-
-  private update(data: Partial<UpdatePersonsType>, done?: () => void) {
-    const id = this.id();
-    if (!id) return;
-
-    const changed = this.changedFieldLabels();
-    const savedName = this.formName() || 'person';
-
-    this.emailError.set(null);
-    this.saving.set(true);
-    const end = this._loading.begin();
-    this.personsSvc
-      .update(id, data, { context: { skipErrorHandler: true } })
-      .then(() => {
-        // Name the fields that changed (§4), e.g. "Saved Amira Hassan — email and mobile phone updated".
-        const detail = changed.length ? `: ${this.joinWithAnd(changed)} updated` : '';
-        this.alertSvc.showSuccess(`Saved ${savedName}${detail}.`);
-        this.form().reset();
-        this.personsSvc.triggerRefresh();
-        if (done) {
-          done();
-        }
-      })
-      .catch((err: unknown) => {
-        if (this.isDuplicateEmailError(err)) {
-          this.emailError.set('This email address is already used by another person.');
-        } else {
-          this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
-        }
-      })
-      .finally(() => {
-        end();
-        this.saving.set(false);
-      });
-  }
-
-  private async updateTags() {
-    if (!this.person()) return;
-
-    const id = this.id();
-    const tags = id ? await this.personsSvc.getTags(id, 'tag') : [];
-    this.tags.set(tags);
-
-    const issues = id ? await this.personsSvc.getTags(id, 'issue') : [];
-    this.issues.set(issues);
-  }
-
-  private async loadVolunteerInfo() {
-    const id = this.id();
-    if (!id) return;
-    try {
-      const stats = await this.volunteerSvc.getVolunteerStats(id);
-      this.volunteerStats.set(stats);
-      const history = await this.volunteerSvc.getHistoryForPerson(id);
-      this.volunteerHistory.set(history || []);
-    } catch (err) {
-      console.error('Failed to load volunteer info', err);
-    }
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 ```
 
 ## File: apps/frontend/src/app/experiences/profile/profile-page.html
@@ -51237,6 +49371,496 @@ export class SettingsService extends TRPCService<TenantSettingsSnapshot> {
 </div>
 ```
 
+## File: apps/frontend/src/app/experiences/shifts/ui/shift-form.ts
+```typescript
+import { DatePipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked, OnInit } from '@angular/core';
+import { FormField, form, validateStandardSchema } from '@angular/forms/signals';
+import { Router, RouterModule } from '@angular/router';
+import { Icon } from '@icons/icon';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { EntityOverview as PcEntityOverview } from '@uxcommon/components/entity-overview/entity-overview';
+import { Input as PcInput } from '@uxcommon/components/input/input';
+import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { FieldsSelector } from '@uxcommon/components/fields-selector/fields-selector';
+import { PublicLinkPanel } from '@uxcommon/components/public-link-panel/public-link-panel';
+
+import {
+  AddVolunteerEventObj,
+  AddVolunteerEventType,
+  UpdateVolunteerEventType,
+} from '../../../../../../../libs/common/src';
+import { AuthService } from '../../../auth/auth-service';
+import { publicPageUrl } from '../../../shared/public-pages';
+import { VolunteerService } from '../../../services/api/volunteer-service';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { PersonsService } from '../../persons/services/persons-service';
+import { ShiftsService } from '../services/shifts-service';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+
+@Component({
+  selector: 'pc-shift-form',
+  imports: [
+    DatePipe,
+    FormField,
+    PcInput,
+    PcTextarea,
+    RouterModule,
+    Icon,
+    PcDetailHeader,
+    PcEntityOverview,
+    PcCard,
+    FieldsSelector,
+    PublicLinkPanel,
+  ],
+  templateUrl: './shift-form.html',
+  providers: [VolunteerService],
+})
+export class ShiftFormComponent implements OnInit {
+  private readonly _loading = createLoadingGate();
+  private readonly alerts = inject(AlertService);
+  private readonly auth = inject(AuthService);
+  private readonly dialogs = inject(ConfirmDialogService);
+  private readonly personsSvc = inject(PersonsService);
+  private readonly router = inject(Router);
+  private readonly volunteerEventsSvc = inject(ShiftsService);
+  private readonly volunteerSvc = inject(VolunteerService);
+
+  private slugTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  protected readonly selectedFields = signal<string[]>(['first_name', 'last_name', 'email', 'mobile', 'notes']);
+  protected readonly publicUrl = computed(() => {
+    const slug = this.payload().slug;
+    if (!slug || this.isNew()) return '';
+    return publicPageUrl(this.auth.getUser()?.tenant_slug, `v/${slug}`);
+  });
+
+  protected readonly allVolunteers = signal<any[]>([]);
+  protected readonly detail = signal<any>(null);
+
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
+    const shifts: PcBreadcrumb = { label: 'Forms', route: '/forms' };
+    const id = this.id();
+    if (id) {
+      return [
+        shifts,
+        { label: this.detail()?.name || 'Volunteer event', route: ['/events/shifts', id] },
+        { label: 'Edit' },
+      ];
+    }
+    return [shifts, { label: 'New volunteer event' }];
+  });
+
+  protected readonly payload = signal({
+    name: '',
+    slug: '',
+    description: '',
+    location_address: '',
+    start_time: '',
+    end_time: '',
+    capacity: null as number | null,
+    contact_email: '',
+    contact_phone: '',
+    is_private: false,
+    send_reminder: true,
+    send_signup_confirmation: true,
+    send_volunteer_alert: true,
+  });
+  protected readonly endBeforeStartError = computed(() => {
+    const { start_time, end_time } = this.payload();
+    if (!start_time || !end_time) return false;
+    return new Date(end_time) <= new Date(start_time);
+  });
+  protected readonly volunteerListUrl = computed(() => publicPageUrl(this.auth.getUser()?.tenant_slug, 'volunteer'));
+  protected readonly error = signal<string | null>(null);
+  protected readonly eventPassed = computed(() => {
+    const end = this.payload().end_time;
+    if (!end) return false;
+    return new Date(end) < new Date();
+  });
+  protected readonly form = form(this.payload, (p) => {
+    validateStandardSchema(p, AddVolunteerEventObj);
+  });
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+  protected readonly isNew = computed(() => !this.id());
+  protected readonly loading = this._loading.visible;
+
+  // Roster state
+  protected readonly roster = signal<any[]>([]);
+  protected readonly saving = signal(false);
+  protected readonly slugChecking = signal(false);
+  protected readonly slugUnique = signal<boolean | null>(null);
+  protected readonly volunteerSearch = signal('');
+
+  // Filter out volunteers that are already signed up
+  protected readonly volunteerSearchResults = computed(() => {
+    const search = this.volunteerSearch().toLowerCase().trim();
+    if (!search) return [];
+
+    const rosterIds = new Set(this.roster().map((r) => String(r.person_id)));
+    return this.allVolunteers().filter((v) => {
+      if (rosterIds.has(String(v.id))) return false;
+      const fullName = `${v.first_name || ''} ${v.last_name || ''}`.toLowerCase();
+      const email = (v.email || '').toLowerCase();
+      return fullName.includes(search) || email.includes(search);
+    });
+  });
+
+  protected slugManuallyEdited = false;
+
+  public readonly id = input<string>();
+
+  constructor() {
+    const nameSignal = computed(() => this.payload().name);
+    effect(() => {
+      const name = nameSignal();
+      if (this.isNew() && !this.slugManuallyEdited) {
+        const suggested = this.slugify(name);
+        if (untracked(this.payload).slug !== suggested) {
+          this.payload.update((p) => ({
+            ...p,
+            slug: suggested,
+          }));
+        }
+      }
+    });
+
+    const slugSignal = computed(() => this.payload().slug);
+    effect(() => {
+      const slug = slugSignal();
+      if (this.slugTimeoutId) {
+        clearTimeout(this.slugTimeoutId);
+        this.slugTimeoutId = null;
+      }
+
+      if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+        this.slugUnique.set(null);
+        this.slugChecking.set(false);
+        return;
+      }
+
+      this.slugChecking.set(true);
+      this.slugTimeoutId = setTimeout(() => {
+        void (async () => {
+          try {
+            const res = await this.volunteerEventsSvc.checkSlugUnique(slug, this.isNew() ? null : (this.id() ?? null));
+            if (untracked(slugSignal) === slug) {
+              this.slugUnique.set(res.unique);
+            }
+          } catch (err) {
+            console.error('Failed to check slug uniqueness', err);
+          } finally {
+            if (untracked(slugSignal) === slug) {
+              this.slugChecking.set(false);
+            }
+          }
+        })();
+      }, 300);
+    });
+  }
+
+  public ngOnInit(): void {
+    const end = this._loading.begin();
+    try {
+      void Promise.all([this.loadVolunteers(), this.loadEvent()]).finally(() => end());
+    } catch {
+      end();
+    }
+  }
+
+  // Roster Management
+  protected async addVolunteer(person: any) {
+    try {
+      await this.volunteerSvc.signupVolunteer({
+        event_id: this.id()!,
+        person_id: String(person.id),
+        status: 'signed_up',
+      });
+      this.volunteerSearch.set('');
+      this.alerts.showSuccess(`${person.first_name} added to roster`);
+      await this.loadRoster();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to add volunteer');
+    }
+  }
+
+  protected copyToClipboard(url: string) {
+    navigator.clipboard
+      .writeText(url)
+      .then(() => this.alerts.showSuccess('Link copied to clipboard'))
+      .catch((err) => console.error('Failed to copy', err));
+  }
+
+  protected async deleteEvent() {
+    if (!this.id()) return;
+    const confirmed = await this.dialogs.confirm({
+      title: 'Delete Event',
+      message: 'Are you sure you want to delete this event? This will also delete all signed up shifts.',
+      variant: 'danger',
+      confirmText: 'Delete',
+    });
+    if (!confirmed) return;
+
+    this.saving.set(true);
+    try {
+      await this.volunteerEventsSvc.delete(this.id()!);
+      this.volunteerEventsSvc.triggerRefresh();
+      this.alerts.showSuccess('Event deleted');
+      await this.router.navigate(['/forms']);
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to delete event');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async loadEvent() {
+    if (this.isNew()) {
+      const state = window.history.state;
+      if (state && state.cloneData) {
+        const event = state.cloneData;
+        this.payload.set({
+          name: event.name ? `${event.name} (Copy)` : '',
+          slug: event.slug ? `${event.slug}-copy` : '',
+          description: event.description ?? '',
+          location_address: event.location_address ?? '',
+          start_time: this.toDatetimeLocalString(event.start_time),
+          end_time: this.toDatetimeLocalString(event.end_time),
+          capacity: event.capacity ?? null,
+          contact_email: event.contact_email ?? '',
+          contact_phone: event.contact_phone ?? '',
+          is_private: !!event.is_private,
+          send_reminder: event.send_reminder !== false,
+          send_signup_confirmation: event.send_signup_confirmation !== false,
+          send_volunteer_alert: event.send_volunteer_alert !== false,
+        });
+      }
+      return;
+    }
+
+    try {
+      const event = (await this.volunteerEventsSvc.getById(this.id()!)) as any;
+      this.detail.set(event);
+      this.payload.set({
+        name: event.name ?? '',
+        slug: event.slug ?? '',
+        description: event.description ?? '',
+        location_address: event.location_address ?? '',
+        start_time: this.toDatetimeLocalString(event.start_time),
+        end_time: this.toDatetimeLocalString(event.end_time),
+        capacity: event.capacity ?? null,
+        contact_email: event.contact_email ?? '',
+        contact_phone: event.contact_phone ?? '',
+        is_private: !!event.is_private,
+        send_reminder: event.send_reminder !== false,
+        send_signup_confirmation: event.send_signup_confirmation !== false,
+        send_volunteer_alert: event.send_volunteer_alert !== false,
+      });
+
+      if (Array.isArray((event as any).fields) && (event as any).fields.length > 0) {
+        this.selectedFields.set((event as any).fields);
+      }
+
+      await this.loadRoster();
+    } catch (err) {
+      this.error.set(err instanceof Error && err.message ? err.message : 'Failed to load event');
+      this.alerts.showError(this.error()!);
+    }
+  }
+
+  protected async loadRoster() {
+    if (!this.id()) return;
+    try {
+      const roster = await this.volunteerSvc.getShiftsForEvent(this.id()!);
+      this.roster.set(roster || []);
+    } catch (err) {
+      console.error('Failed to load event roster', err);
+    }
+  }
+
+  protected async loadVolunteers() {
+    try {
+      const res = await this.personsSvc.getAll({ limit: 1000, tags: ['volunteer'] });
+      this.allVolunteers.set(res?.rows || []);
+    } catch (err) {
+      console.error('Failed to load volunteers', err);
+    }
+  }
+
+  protected onSlugInput() {
+    this.slugManuallyEdited = true;
+  }
+
+  protected onVolunteerSearchInput(event: Event): void {
+    const input = event.target as HTMLInputElement | null;
+    this.volunteerSearch.set(input?.value ?? '');
+  }
+
+  protected onShiftStatusChange(shift: any, event: Event): void {
+    const select = event.target as HTMLSelectElement | null;
+    if (!select) return;
+    void this.updateShiftStatus(shift, select.value);
+  }
+
+  protected onShiftHoursInput(shift: any, event: Event): void {
+    const input = event.target as HTMLInputElement | null;
+    this.updateShiftHours(shift, input?.value ?? '');
+  }
+
+  protected onShiftNotesInput(shift: any, event: Event): void {
+    const input = event.target as HTMLInputElement | null;
+    this.updateShiftNotes(shift, input?.value ?? '');
+  }
+
+  protected async removeVolunteer(shift: any) {
+    const confirmed = await this.dialogs.confirm({
+      title: 'Remove Volunteer',
+      message: 'Remove this person from the event roster?',
+      variant: 'danger',
+      confirmText: 'Remove',
+    });
+    if (!confirmed) return;
+    try {
+      await this.volunteerSvc.deleteShift(shift.id);
+      this.alerts.showSuccess('Volunteer removed');
+      await this.loadRoster();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to remove volunteer');
+    }
+  }
+
+  public canDeactivate(): Promise<boolean> {
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this volunteer event', () =>
+      this.save(undefined, true),
+    );
+  }
+
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
+    if (done instanceof Event) {
+      done.preventDefault();
+    }
+    this.form().markAsTouched();
+    if (this.form().invalid()) return false;
+
+    if (this.endBeforeStartError()) {
+      this.alerts.showError('The event cannot end before it starts, please check the dates and times again.');
+      return false;
+    }
+
+    if (this.slugUnique() === false) {
+      this.alerts.showError('This URL slug is already in use. Please choose a different one.');
+      return false;
+    }
+
+    this.saving.set(true);
+    this.error.set(null);
+
+    const raw = this.payload();
+    const data = {
+      name: raw.name.trim(),
+      slug: raw.slug.trim(),
+      description: raw.description?.trim() || null,
+      location_address: raw.location_address?.trim() || null,
+      start_time: new Date(raw.start_time),
+      end_time: new Date(raw.end_time),
+      capacity: raw.capacity ? Number(raw.capacity) : null,
+      contact_email: raw.contact_email?.trim() || null,
+      contact_phone: raw.contact_phone?.trim() || null,
+      is_private: !!raw.is_private,
+      send_reminder: !!raw.send_reminder,
+      send_signup_confirmation: !!raw.send_signup_confirmation,
+      send_volunteer_alert: !!raw.send_volunteer_alert,
+      fields: this.selectedFields(),
+    };
+
+    try {
+      if (this.isNew()) {
+        const res = await this.volunteerEventsSvc.add(data as AddVolunteerEventType);
+        this.volunteerEventsSvc.triggerRefresh();
+        this.alerts.showSuccess('Event created successfully');
+        this.form().reset();
+        if (!stayPut) await this.router.navigate(['/events/shifts', res.id]);
+      } else {
+        await this.volunteerEventsSvc.update(this.id()!, data as UpdateVolunteerEventType);
+        this.volunteerEventsSvc.triggerRefresh();
+        this.alerts.showSuccess('Event updated successfully');
+        // Pristine again, so the post-save navigation doesn't hit the leave guard.
+        this.form().reset();
+        if (typeof done === 'function') {
+          done();
+        } else if (!stayPut) {
+          await this.router.navigate(['/events/shifts', this.id()]);
+        }
+      }
+      return true;
+    } catch (err) {
+      this.error.set(err instanceof Error && err.message ? err.message : 'Failed to save event');
+      this.alerts.showError(this.error()!);
+      return false;
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async saveShiftDetails(shift: any) {
+    try {
+      await this.volunteerSvc.updateShift(shift.id, {
+        status: shift.status,
+        hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
+        notes: shift.notes || null,
+      });
+      this.alerts.showSuccess('Shift details saved');
+      await this.loadRoster();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to save shift details');
+    }
+  }
+
+  protected slugify(text: string): string {
+    return text
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+  }
+
+  protected toDatetimeLocalString(val: any): string {
+    if (!val) return '';
+    const date = new Date(val);
+    if (Number.isNaN(date.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  protected updateShiftHours(shift: any, hours: any) {
+    shift.hours_worked = hours ? Number(hours) : null;
+  }
+
+  protected updateShiftNotes(shift: any, notes: any) {
+    shift.notes = notes || null;
+  }
+
+  protected async updateShiftStatus(shift: any, status: any) {
+    try {
+      await this.volunteerSvc.updateShift(shift.id, {
+        status,
+        hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
+        notes: shift.notes || null,
+      });
+      this.alerts.showSuccess('Shift status updated');
+      await this.loadRoster();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to update shift');
+    }
+  }
+}
+```
+
 ## File: apps/frontend/src/app/experiences/summary/demo-mode-card.ts
 ```typescript
 import { Component, computed, inject, output } from '@angular/core';
@@ -52222,266 +50846,117 @@ export class Summary implements OnInit {
 }
 ```
 
-## File: apps/frontend/src/app/experiences/tags/ui/issues-admin.ts
-```typescript
-import { Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
-import { RouterLink } from '@angular/router';
-import { Icon } from '@icons/icon';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
-import { RowActions } from '@uxcommon/components/row-actions/row-actions';
-import { Table } from '@uxcommon/components/table/table';
-import { TagItem } from '@uxcommon/components/tags/tagitem';
-import { createLoadingGate } from '@uxcommon/loading-gate';
+## File: apps/frontend/src/app/experiences/tags/ui/tags-admin.html
+```html
+<div class="flex flex-col gap-4 p-4 sm:p-6">
+  <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
+  <pc-grid-header title="Tags" [totalSentence]="loaded() ? sentence() : null">
+    <button type="button" class="btn btn-primary btn-sm gap-2" (click)="openAddDialog()">
+      <pc-icon name="add-label" [size]="4"></pc-icon>
+      New tag
+    </button>
+  </pc-grid-header>
 
-import { TagsService } from '@experiences/tags/services/tags-service';
-import { AddIssueDialog } from './add-issue';
-import { TagAdminActions, type TagAdminRow } from './tag-admin-actions';
-import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
-
-/**
- * §9.2 Issues admin (spec Fig. 11). Ranked table with a proportional interest bar and a trend
- * column. Issues are the same `tags` table as §9.1 with `type: 'issue'` — but the two stay
- * conceptually separate everywhere (see `pplcrm-design-principles` §5) because issues power
- * issue-based filtering/targeting, tags power general categorization. Never merge the two
- * concepts even though the plumbing is shared. Each row's chip uses its own `color`.
- */
-@Component({
-  selector: 'pc-issues-admin',
-  imports: [EmptyState, Icon, RouterLink, TagItem, AddIssueDialog, Table, RowActions, GridHeaderComponent],
-  templateUrl: './issues-admin.html',
-})
-export class IssuesAdmin implements OnInit {
-  private readonly tagsSvc = inject(TagsService);
-  private readonly alertSvc = inject(AlertService);
-  protected readonly actions = inject(TagAdminActions);
-
-  protected readonly addDialog = viewChild.required(AddIssueDialog);
-
-  private readonly _loading = createLoadingGate();
-  protected readonly loading = this._loading.visible;
-  protected readonly loaded = this._loading.loaded;
-
-  protected readonly rows = signal<TagAdminRow[]>([]);
-  protected readonly peopleSharedCount = signal(0);
-
-  /** Ranked by PEOPLE INTERESTED, descending — `getAdminList` already returns this order. */
-  protected readonly ranked = computed(() => this.rows().map((row, i) => ({ rank: i + 1, row })));
-
-  protected readonly maxInterested = computed(() => Math.max(1, ...this.rows().map((r) => r.use_count_people)));
-
-  protected readonly sentence = computed(() => {
-    const issueCount = this.rows().length;
-    return (
-      `${issueCount.toLocaleString()} issue${issueCount === 1 ? '' : 's'} · ` +
-      `${this.peopleSharedCount().toLocaleString()} people shared what they care about, from forms, surveys and profile edits.`
-    );
-  });
-
-  public ngOnInit(): void {
-    void this.load();
+  @if (loaded() && unusedRows().length > 0) {
+  <div class="alert bg-base-200 border border-base-300 flex items-center justify-between gap-4 py-3">
+    <div class="flex items-center gap-3">
+      <pc-icon name="exclamation-circle" class="text-warning shrink-0" [size]="5"></pc-icon>
+      <span class="text-xs text-base-content/80">
+        {{ calloutNames() }}{{ unusedRows().length > 2 ? ' and others' : '' }} haven't been applied in 90 days. Merge or
+        delete {{ unusedRows().length === 1 ? 'it' : 'them' }} to keep the vocabulary sharp.
+      </span>
+    </div>
+    <button
+      type="button"
+      class="btn btn-outline btn-secondary btn-sm shrink-0"
+      (click)="showUnusedOnly.set(!showUnusedOnly())"
+    >
+      {{ showUnusedOnly() ? 'Show all tags' : 'Show the ' + unusedRows().length + ' unused' }}
+    </button>
+  </div>
   }
 
-  protected openAddDialog(): void {
-    this.addDialog().open();
-  }
+  <pc-table [loading]="loading()" [columns]="5">
+    <ng-container pcTableHead>
+      <!-- min-w keeps narrow viewports from strangling the chip into per-letter
+           wrapping; the pc-table-shell scrolls horizontally instead. -->
+      <th class="min-w-44">Tag</th>
+      <th>People</th>
+      <th>Last applied</th>
+      <th>Created by</th>
+      <th class="w-10"></th>
+    </ng-container>
 
-  protected onIssueSaved(): void {
-    void this.load();
-  }
+    @if (visibleRows().length === 0) {
+    <tr>
+      <td colspan="5" class="py-12 text-center">
+        <div class="flex flex-col items-center gap-2">
+          <pc-icon name="label" class="text-base-content/30" [size]="8"></pc-icon>
+          <p class="text-xs text-base-content/60">
+            {{ showUnusedOnly() ? 'No unused tags. Nice and tidy.' : 'No tags yet.' }}
+          </p>
+          @if (showUnusedOnly()) {
+          <button type="button" class="btn btn-sm btn-outline btn-secondary" (click)="showUnusedOnly.set(false)">
+            Show all tags
+          </button>
+          } @else {
+          <button type="button" class="btn btn-sm btn-primary" (click)="openAddDialog()">New tag</button>
+          }
+        </div>
+      </td>
+    </tr>
+    } @else { @for (row of visibleRows(); track row.id) {
+    <tr>
+      <td>
+        <div class="flex items-center gap-2">
+          <pc-tagitem [name]="row.name" [color]="row.color" [canDelete]="false" [compact]="true" />
+          @if (isUnused(row)) {
+          <span class="badge badge-ghost badge-sm text-base-content/50">Unused 90d</span>
+          }
+        </div>
+      </td>
+      <td class="tabular-nums">
+        <a
+          [routerLink]="'/people'"
+          [queryParams]="{ tag: row.name }"
+          class="link link-hover text-xs text-base-content underline decoration-base-content/20 underline-offset-[3px] hover:text-primary hover:decoration-primary"
+        >
+          {{ row.use_count_people.toLocaleString() }}
+        </a>
+        @if (row.use_count_households > 0) {
+        <span class="text-xs text-base-content/50">
+          · {{ row.use_count_households.toLocaleString() }} household{{ row.use_count_households === 1 ? '' : 's' }}
+        </span>
+        }
+      </td>
+      <td class="text-xs text-base-content/70">{{ relativeLastApplied(row) }}</td>
+      <td class="text-xs text-base-content/70">{{ row.created_by_name ?? '—' }}</td>
+      <td>
+        <pc-row-actions [label]="'Actions for ' + row.name">
+          <li>
+            <a (click)="rename(row)"><pc-icon name="pencil-square" [size]="4"></pc-icon> Rename tag</a>
+          </li>
+          <li>
+            <a (click)="merge(row)"><pc-icon name="merge" [size]="4"></pc-icon> Merge into another tag</a>
+          </li>
+          <li><hr class="my-1 border-base-300" /></li>
+          <li>
+            <a (click)="delete(row)" class="text-error">
+              <pc-icon name="trash-forever" [size]="4"></pc-icon> Delete tag
+            </a>
+          </li>
+        </pc-row-actions>
+      </td>
+    </tr>
+    } }
+  </pc-table>
 
-  protected interestedPercent(row: TagAdminRow): number {
-    return Math.round((row.use_count_people / this.maxInterested()) * 100);
-  }
+  <p class="text-xs text-base-content/50 px-1">
+    Renames and merges apply everywhere a tag is referenced (people, lists, automations and forms) in one pass.
+  </p>
+</div>
 
-  protected trendLabel(row: TagAdminRow): string {
-    const n = row.recent_applications_30d;
-    return n > 0 ? `+${n} this month` : 'No new activity this month';
-  }
-
-  protected async rename(row: TagAdminRow): Promise<void> {
-    this.blurActiveElement();
-    const updated = await this.actions.rename(row, 'issue');
-    if (updated) this.rows.update((rows) => rows.map((r) => (r.id === row.id ? { ...r, name: updated.name } : r)));
-  }
-
-  protected async merge(row: TagAdminRow): Promise<void> {
-    this.blurActiveElement();
-    const others = this.rows().filter((r) => r.id !== row.id);
-    const target = await this.actions.merge(row, others, 'issue');
-    if (target) await this.load();
-  }
-
-  protected async delete(row: TagAdminRow): Promise<void> {
-    this.blurActiveElement();
-    const deleted = await this.actions.delete(row, 'issue');
-    if (deleted) this.rows.update((rows) => rows.filter((r) => r.id !== row.id));
-  }
-
-  private blurActiveElement(): void {
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-  }
-
-  private async load(): Promise<void> {
-    const end = this._loading.begin();
-    try {
-      const [rows, peopleSharedCount] = await Promise.all([
-        this.tagsSvc.getAdminList('issue'),
-        this.tagsSvc.countDistinctPeople('issue'),
-      ]);
-      this.rows.set(rows);
-      this.peopleSharedCount.set(peopleSharedCount);
-    } catch (err) {
-      this.alertSvc.showError(err instanceof Error && err.message ? err.message : "Couldn't load issues.");
-    } finally {
-      end();
-    }
-  }
-}
-```
-
-## File: apps/frontend/src/app/experiences/tags/ui/tags-admin.ts
-```typescript
-import { Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
-import { RouterLink } from '@angular/router';
-import { Icon } from '@icons/icon';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
-import { RowActions } from '@uxcommon/components/row-actions/row-actions';
-import { Table } from '@uxcommon/components/table/table';
-import { TagItem } from '@uxcommon/components/tags/tagitem';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-
-import { TagsService } from '@experiences/tags/services/tags-service';
-import { AddTagDialog } from './add-tag';
-import { TagAdminActions, type TagAdminRow } from './tag-admin-actions';
-
-const UNUSED_DAYS = 90;
-const UNUSED_MS = UNUSED_DAYS * 24 * 60 * 60 * 1000;
-
-/**
- * §9.1 Tags admin (spec Fig. 10). Not `pc-datagrid` — the sentence, unused-tags callout, and
- * rename/merge/delete idiom don't fit the grid's generic column model — but rendered through the
- * shared `pc-table` shell so it stays visually identical to the datagrid (see `pplcrm-table`).
- * Reuses `TagAdminActions` (rename/merge/delete) so Issues admin (`issues-admin.ts`) can't drift.
- */
-@Component({
-  selector: 'pc-tags-admin',
-  imports: [Icon, RouterLink, TagItem, AddTagDialog, Table, RowActions, GridHeaderComponent],
-  templateUrl: './tags-admin.html',
-})
-export class TagsAdmin implements OnInit {
-  private readonly tagsSvc = inject(TagsService);
-  private readonly alertSvc = inject(AlertService);
-  protected readonly actions = inject(TagAdminActions);
-
-  protected readonly addDialog = viewChild.required(AddTagDialog);
-
-  private readonly _loading = createLoadingGate();
-  protected readonly loading = this._loading.visible;
-  protected readonly loaded = this._loading.loaded;
-
-  protected readonly rows = signal<TagAdminRow[]>([]);
-  protected readonly showUnusedOnly = signal(false);
-
-  protected readonly unusedRows = computed(() => this.rows().filter((r) => this.isUnused(r)));
-
-  protected readonly visibleRows = computed(() => (this.showUnusedOnly() ? this.unusedRows() : this.rows()));
-
-  protected readonly totalApplications = computed(() =>
-    this.rows().reduce((sum, r) => sum + r.use_count_people + r.use_count_households, 0),
-  );
-
-  protected readonly sentence = computed(() => {
-    const tagCount = this.rows().length;
-    const unusedCount = this.unusedRows().length;
-    const parts = [
-      `${tagCount.toLocaleString()} tag${tagCount === 1 ? '' : 's'}`,
-      `${this.totalApplications().toLocaleString()} application${this.totalApplications() === 1 ? '' : 's'}`,
-    ];
-    if (unusedCount > 0) {
-      parts.push(`${unusedCount} unused in ${UNUSED_DAYS} days`);
-    }
-    return parts.join(' · ');
-  });
-
-  protected readonly calloutNames = computed(() =>
-    this.unusedRows()
-      .slice(0, 2)
-      .map((r) => `"${r.name}"`)
-      .join(' and '),
-  );
-
-  public ngOnInit(): void {
-    void this.load();
-  }
-
-  protected openAddDialog(): void {
-    this.addDialog().open();
-  }
-
-  protected onTagSaved(): void {
-    void this.load();
-  }
-
-  protected isUnused(row: TagAdminRow): boolean {
-    if (!row.last_applied_at) return true;
-    return Date.now() - new Date(row.last_applied_at).getTime() > UNUSED_MS;
-  }
-
-  protected relativeLastApplied(row: TagAdminRow): string {
-    if (!row.last_applied_at) return 'Never';
-    const ms = Date.now() - new Date(row.last_applied_at).getTime();
-    const days = Math.floor(ms / (24 * 60 * 60 * 1000));
-    if (days <= 0) return 'Today';
-    if (days === 1) return 'Yesterday';
-    if (days < 30) return `${days} days ago`;
-    const months = Math.floor(days / 30);
-    if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`;
-    const years = Math.floor(months / 12);
-    return `${years} year${years === 1 ? '' : 's'} ago`;
-  }
-
-  protected async rename(row: TagAdminRow): Promise<void> {
-    this.blurActiveElement();
-    const updated = await this.actions.rename(row, 'tag');
-    if (updated) this.rows.update((rows) => rows.map((r) => (r.id === row.id ? { ...r, name: updated.name } : r)));
-  }
-
-  protected async merge(row: TagAdminRow): Promise<void> {
-    this.blurActiveElement();
-    const others = this.rows().filter((r) => r.id !== row.id);
-    const target = await this.actions.merge(row, others, 'tag');
-    if (target) await this.load();
-  }
-
-  protected async delete(row: TagAdminRow): Promise<void> {
-    this.blurActiveElement();
-    const deleted = await this.actions.delete(row, 'tag');
-    if (deleted) this.rows.update((rows) => rows.filter((r) => r.id !== row.id));
-  }
-
-  /** DaisyUI's CSS-only dropdown opens/closes on focus — blur the trigger so it closes before
-   * the confirm/prompt dialog opens (otherwise both float over each other). */
-  private blurActiveElement(): void {
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-  }
-
-  private async load(): Promise<void> {
-    const end = this._loading.begin();
-    try {
-      this.rows.set(await this.tagsSvc.getAdminList('tag'));
-    } catch (err) {
-      this.alertSvc.showError(err instanceof Error && err.message ? err.message : "Couldn't load tags.");
-    } finally {
-      end();
-    }
-  }
-}
+<pc-add-tag-dialog (saved)="onTagSaved()" />
 ```
 
 ## File: apps/frontend/src/app/experiences/tags/ui/tags.ts
@@ -53992,6 +52467,447 @@ export class TeamsService extends AbstractAPIService<'teams', UpdateTeamType> {
 }
 ```
 
+## File: apps/frontend/src/app/experiences/teams/ui/team-form.ts
+```typescript
+import { Component, computed, effect, inject, input, OnInit, signal, untracked } from '@angular/core';
+import { form, FormField, validateStandardSchema } from '@angular/forms/signals';
+import { Router, RouterModule } from '@angular/router';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { Icon } from '@uxcommon/components/icons/icon';
+import { Input as PcInput } from '@uxcommon/components/input/input';
+import { Select as PcSelect } from '@uxcommon/components/select/select';
+import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { AddTeamObj, AddTeamType, IAuthUser, UpdateTeamType } from '../../../../../../../libs/common/src';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+
+import { UserService } from '../../../services/user.service';
+import { ListsService } from '../../lists/services/lists-service';
+import { PersonsService } from '../../persons/services/persons-service';
+import { TasksService } from '../../tasks/services/tasks-service';
+import { TeamDetail, TeamsService } from '../services/teams-service';
+
+interface PersonOption {
+  email: string | null;
+  id: string;
+  label: string;
+}
+
+import { DatePipe } from '@angular/common';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+
+@Component({
+  selector: 'pc-team-form',
+  imports: [EmptyState, FormField, RouterModule, Icon, DatePipe, PcDetailHeader, PcInput, PcTextarea, PcSelect, PcCard],
+  templateUrl: './team-form.html',
+})
+export class TeamFormComponent implements OnInit {
+  readonly id = input<string>();
+
+  private readonly alerts = inject(AlertService);
+  private readonly persons = inject(PersonsService);
+  private readonly router = inject(Router);
+  private readonly teams = inject(TeamsService);
+  private readonly lists = inject(ListsService);
+  private readonly userService = inject(UserService);
+  private readonly tasksSvc = inject(TasksService);
+  private readonly dialogs = inject(ConfirmDialogService);
+
+  protected readonly isNew = computed(() => !this.id());
+
+  protected readonly detail = signal<TeamDetail | null>(null);
+  protected readonly error = signal<string | null>(null);
+
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
+    const teams: PcBreadcrumb = { label: 'Teams', route: '/teams' };
+    const id = this.id();
+    if (id) {
+      return [teams, { label: this.detail()?.name || 'Team', route: ['/teams', id] }, { label: 'Edit' }];
+    }
+    return [teams, { label: 'New team' }];
+  });
+
+  protected readonly payload = signal({
+    name: '',
+    description: '',
+    team_captain_id: '',
+    team_lead_user_id: '',
+    volunteer_ids: [] as string[],
+    list_ids: [] as string[],
+  });
+
+  protected readonly form = form(this.payload, (p) => {
+    validateStandardSchema(p, AddTeamObj);
+  });
+
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+
+  private readonly _loading = createLoadingGate();
+  protected readonly loading = this._loading.visible;
+  protected signalPeople = signal<PersonOption[]>([]);
+  protected readonly people = computed(() => this.signalPeople());
+  protected readonly users = signal<IAuthUser[]>([]);
+  protected readonly availableLists = signal<any[]>([]);
+  protected readonly assignedLists = signal<any[]>([]);
+  protected readonly teamTasks = signal<any[]>([]);
+  protected readonly saving = signal(false);
+  protected readonly volunteers = computed(() => this.detail()?.volunteers ?? []);
+
+  constructor() {
+    effect(() => {
+      const options = this.people();
+      if (options.length === 0) return;
+
+      const current = untracked(this.payload);
+      let nextCaptain = current.team_captain_id;
+      let changed = false;
+
+      if (nextCaptain && !options.some((p) => p.id === nextCaptain)) {
+        nextCaptain = '';
+        changed = true;
+      }
+
+      const currentVolunteers = current.volunteer_ids ?? [];
+      const validIds = currentVolunteers.filter((id) => options.some((p) => p.id === id));
+      if (validIds.length !== currentVolunteers.length) {
+        changed = true;
+      }
+
+      if (changed) {
+        this.payload.update((p) => ({
+          ...p,
+          team_captain_id: nextCaptain,
+          volunteer_ids: validIds,
+        }));
+      }
+    });
+  }
+
+  public ngOnInit(): void {
+    void this.initialize();
+  }
+  private async initialize(): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      await Promise.all([this.loadPeople(), this.loadUsers(), this.loadLists(), this.loadTeam()]);
+
+      if (this.isNew()) {
+        const state = window.history.state;
+        if (state && state.cloneData) {
+          const sourceTeamId = state.cloneData.id;
+          if (sourceTeamId) {
+            try {
+              const teamDetail = await this.teams.getById(sourceTeamId);
+              this.payload.set({
+                name: teamDetail.name ? `${teamDetail.name} (Copy)` : '',
+                description: teamDetail.description ?? '',
+                team_captain_id: teamDetail.team_captain_id ?? '',
+                team_lead_user_id: teamDetail.team_lead_user_id ?? '',
+                volunteer_ids: teamDetail.volunteers?.map((v) => v.id) ?? [],
+                list_ids: teamDetail.list_ids ?? [],
+              });
+              this.assignedLists.set(teamDetail.lists ?? []);
+            } catch (err) {
+              console.error('Failed to load source team details for cloning', err);
+              const data = state.cloneData;
+              this.payload.set({
+                name: data.name ? `${data.name} (Copy)` : '',
+                description: data.description ?? '',
+                team_captain_id: data.team_captain_id ?? '',
+                team_lead_user_id: data.team_lead_user_id ?? '',
+                volunteer_ids: [],
+                list_ids: [],
+              });
+            }
+          }
+        }
+      }
+    } finally {
+      end();
+    }
+  }
+
+  protected captainLabel(captainId: string | null) {
+    if (!captainId) return '—';
+    const person = this.people().find((p) => p.id === captainId);
+    return person?.label ?? '—';
+  }
+
+  protected isVolunteerSelected(id: string): boolean {
+    return this.payload().volunteer_ids?.includes(id) ?? false;
+  }
+
+  protected onVolunteersChange(event: Event) {
+    const select = event.target as HTMLSelectElement;
+    const selectedOptions = Array.from(select.selectedOptions).map((o) => o.value);
+
+    this.payload.update((p) => ({
+      ...p,
+      volunteer_ids: selectedOptions,
+    }));
+    this.form.volunteer_ids().markAsDirty();
+  }
+
+  protected isListSelected(id: string): boolean {
+    return this.payload().list_ids?.includes(id) ?? false;
+  }
+
+  protected onListsChange(event: Event) {
+    const select = event.target as HTMLSelectElement;
+    const selectedOptions = Array.from(select.selectedOptions).map((o) => o.value);
+
+    this.payload.update((p) => ({
+      ...p,
+      list_ids: selectedOptions,
+    }));
+    this.form.list_ids().markAsDirty();
+
+    const matching = this.availableLists().filter((l) => selectedOptions.includes(l.id));
+    this.assignedLists.set(matching);
+  }
+
+  protected async deleteTeam() {
+    if (!this.id()) return;
+    const confirmed = await this.dialogs.confirm({
+      title: 'Delete Team',
+      message: 'Are you sure you want to delete this team? This action cannot be undone.',
+      variant: 'danger',
+      confirmText: 'Delete',
+    });
+    if (!confirmed) return;
+    this.saving.set(true);
+    try {
+      await this.teams.delete(this.id()!);
+      this.teams.triggerRefresh();
+      this.alerts.showSuccess('Team deleted');
+      await this.router.navigate(['/teams']);
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Unable to delete team';
+      this.error.set(message);
+      this.alerts.showError(message);
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  public canDeactivate(): Promise<boolean> {
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this team', () =>
+      this.save(undefined, true),
+    );
+  }
+
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
+    if (done instanceof Event) {
+      done.preventDefault();
+    }
+
+    this.form().markAsTouched();
+    if (this.form().invalid()) {
+      return false;
+    }
+
+    const raw = this.payload();
+
+    this.saving.set(true);
+    this.error.set(null);
+
+    try {
+      let result: TeamDetail;
+      if (this.isNew()) {
+        const payload: AddTeamType = {
+          name: raw.name?.trim() ?? '',
+          description: raw.description?.trim()?.length ? raw.description.trim() : null,
+          team_captain_id: raw.team_captain_id || undefined,
+          team_lead_user_id: raw.team_lead_user_id || undefined,
+          volunteer_ids: raw.volunteer_ids ?? [],
+          list_ids: raw.list_ids ?? [],
+        };
+        result = await this.teams.add(payload);
+        this.teams.triggerRefresh();
+        if (typeof done === 'function') {
+          done();
+        } else if (!stayPut) {
+          await this.router.navigate(['/teams']);
+        }
+      } else if (this.id()) {
+        const payload: UpdateTeamType = {
+          name: raw.name?.trim() ?? null,
+          description: raw.description?.trim()?.length ? raw.description.trim() : null,
+          team_captain_id: raw.team_captain_id || null,
+          team_lead_user_id: raw.team_lead_user_id || null,
+          volunteer_ids: raw.volunteer_ids ?? [],
+          list_ids: raw.list_ids ?? [],
+        };
+        result = await this.teams.update(this.id()!, payload);
+        this.teams.triggerRefresh();
+        this.detail.set(result);
+        this.setForm(result);
+        this.form().reset();
+        this.alerts.showSuccess('Team updated');
+        if (typeof done === 'function') {
+          done();
+        } else if (!stayPut) {
+          await this.router.navigate(['/teams', this.id()]);
+        }
+        return true;
+      } else {
+        throw new Error('Missing team identifier');
+      }
+      this.detail.set(result);
+      this.setForm(result);
+      this.form().reset();
+      this.alerts.showSuccess(this.isNew() ? 'Team created' : 'Team updated');
+      return true;
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Unable to save team';
+      this.error.set(message);
+      this.alerts.showError(message);
+      return false;
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private async loadPeople() {
+    try {
+      // Volunteers are first-class person status now (§15); 'former' is excluded
+      // from the eligible-to-add list — someone who quit shouldn't be re-added silently.
+      const res = await this.persons.getAll({ limit: 500, volunteerStatus: ['prospective', 'active', 'inactive'] });
+      const items = (res?.rows ?? []).map((person: any) => ({
+        id: String(person.id ?? ''),
+        label: `${person.first_name ?? ''} ${person.last_name ?? ''}`.trim() || person.email || 'Unknown',
+        email: person.email ?? null,
+      }));
+      this.signalPeople.set(items);
+    } catch (err) {
+      console.error('Failed to load volunteers list', err);
+      this.signalPeople.set([]);
+    }
+  }
+
+  private async loadUsers() {
+    try {
+      const us = await this.userService.getUsers();
+      this.users.set(us || []);
+    } catch (err) {
+      console.error('Failed to load teammates list', err);
+      this.users.set([]);
+    }
+  }
+
+  private async loadLists() {
+    try {
+      const res = await this.lists.getAll({ limit: 1000 });
+      this.availableLists.set(res?.rows ?? []);
+    } catch (err) {
+      console.error('Failed to load lists', err);
+      this.availableLists.set([]);
+    }
+  }
+
+  private async loadTeam() {
+    if (this.isNew()) {
+      this.detail.set(null);
+      this.setForm(null);
+      return;
+    }
+    if (!this.id()) {
+      this.error.set('Missing team identifier');
+      return;
+    }
+
+    try {
+      const team = await this.teams.getById(this.id()!);
+      this.detail.set(team);
+      this.setForm(team);
+      const res = await this.tasksSvc.getAll({
+        filterModel: { team_id: { value: this.id() } },
+      } as any);
+      this.teamTasks.set(res?.rows ?? []);
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Failed to load team';
+      this.error.set(message);
+      this.alerts.showError(message);
+    }
+  }
+
+  private setForm(team: TeamDetail | null) {
+    this.payload.set({
+      name: team?.name ?? '',
+      description: team?.description ?? '',
+      team_captain_id: team?.team_captain_id ?? '',
+      team_lead_user_id: team?.team_lead_user_id ?? '',
+      volunteer_ids: team?.volunteers?.map((v) => v.id) ?? [],
+      list_ids: team?.list_ids ?? [],
+    });
+    this.assignedLists.set(team?.lists ?? []);
+  }
+
+  protected getPriorityClass(priority: string | null | undefined): string {
+    const p = String(priority || '').toLowerCase();
+    switch (p) {
+      case 'urgent':
+        return 'badge-error text-error-content';
+      case 'high':
+        return 'badge-warning text-warning-content';
+      case 'medium':
+        return 'badge-info text-info-content';
+      default:
+        return 'badge-ghost';
+    }
+  }
+
+  protected getStatusClass(status: string | null | undefined): string {
+    const s = String(status || '').toLowerCase();
+    switch (s) {
+      case 'done':
+        return 'badge-success text-success-content';
+      case 'in_progress':
+        return 'badge-info text-info-content';
+      case 'waiting':
+        return 'badge-error text-error-content';
+      case 'archived':
+        return 'badge-neutral text-neutral-content';
+      default:
+        return 'badge-ghost';
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+```
+
 ## File: apps/frontend/src/app/experiences/teams/ui/team-view.ts
 ```typescript
 import { DatePipe } from '@angular/common';
@@ -54682,6 +53598,479 @@ export class InviteUserDialog {
   </div>
   }
 </pc-detail-layout>
+```
+
+## File: apps/frontend/src/app/experiences/users/ui/users-page.html
+```html
+<div class="mx-auto flex w-full max-w-[980px] flex-col gap-5 p-4">
+  <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
+  <pc-grid-header title="Users" [totalSentence]="loaded() ? headerSentence() : null">
+    <span class="tooltip-left" [class.tooltip]="inviteLockReason() !== null" [attr.data-tip]="inviteLockReason()">
+      <button
+        type="button"
+        class="btn btn-primary btn-sm"
+        [disabled]="inviteLockReason() !== null"
+        (click)="openInvite()"
+      >
+        <pc-icon name="user-plus" [size]="4"></pc-icon>
+        Invite user
+      </button>
+    </span>
+  </pc-grid-header>
+
+  <!-- Table -->
+  <pc-table [loading]="loading.visible()" [columns]="columnCount()">
+    <ng-container pcTableHead>
+      <th>User</th>
+      <th>Role</th>
+      @if (showCampaignColumn()) {
+      <th>Campaign</th>
+      }
+      <th>Status</th>
+      <th>MFA</th>
+      <th>Last active</th>
+      <th class="w-10"></th>
+    </ng-container>
+
+    @if (loaded() && rows().length === 0) {
+    <tr>
+      <td [attr.colspan]="columnCount()" class="px-6">
+        <pc-empty-state icon="users" [bordered]="false" title="No users yet" hint="Invite your first teammate.">
+          <button type="button" class="btn btn-primary btn-sm" (click)="openInvite()">Invite user</button>
+        </pc-empty-state>
+      </td>
+    </tr>
+    } @else { @for (row of rows(); track row.id) {
+    <tr [class.animate-saved-flash]="flashedId() === row.id" [class.opacity-60]="isDeactivated(row)">
+      <td>
+        <div class="flex items-center gap-3">
+          <pc-user-avatar [avatarUrl]="avatarUrl(row)" [name]="displayName(row)" [size]="9"></pc-user-avatar>
+          <div class="min-w-0">
+            <div class="flex items-center gap-1.5">
+              <a
+                class="link link-hover font-medium text-primary underline decoration-primary/20 underline-offset-[3px]"
+                [routerLink]="['/users', row.id]"
+              >
+                {{ displayName(row) }}
+              </a>
+              @if (isSelf(row)) {
+              <span class="text-xs text-base-content/50">(you)</span>
+              }
+            </div>
+            <p class="max-w-[260px] truncate text-xs text-base-content/50">{{ row.email }}</p>
+          </div>
+        </div>
+      </td>
+      <td>
+        @if (roleLockReason(row); as reason) {
+        <span class="tooltip tooltip-right" [attr.data-tip]="reason">
+          <select class="select select-bordered select-sm w-32" disabled [attr.aria-label]="'Role: ' + reason">
+            <option>{{ roleLabel(row.role) }}</option>
+          </select>
+        </span>
+        } @else {
+        <select
+          class="select select-bordered select-sm w-32"
+          [disabled]="savingIds().has(row.id)"
+          [attr.aria-label]="'Role for ' + displayName(row)"
+          (change)="changeRole(row, $event)"
+        >
+          @for (r of roleOptions(row); track r) {
+          <option [value]="r" [selected]="r === row.role">{{ roleLabel(r) }}</option>
+          }
+        </select>
+        }
+      </td>
+      @if (showCampaignColumn()) {
+      <td>
+        @if (!isCampaignScoped(row)) {
+        <span
+          class="tooltip tooltip-right text-xs text-base-content/60"
+          data-tip="Admins and owners can work in every campaign"
+        >
+          All campaigns
+        </span>
+        } @else {
+        <select
+          class="select select-bordered select-sm w-36"
+          [disabled]="savingIds().has(row.id)"
+          [attr.aria-label]="'Campaign for ' + displayName(row)"
+          (change)="changeCampaign(row, $event)"
+        >
+          @for (c of assignableCampaigns(); track c.id) {
+          <option
+            [value]="c.kind === 'office' ? '' : c.id"
+            [selected]="(c.kind === 'office' ? null : c.id) === row.campaign_id"
+          >
+            {{ c.name }}
+          </option>
+          }
+        </select>
+        }
+      </td>
+      }
+      <td>
+        <pc-status-badge [type]="status(row).tone">{{ status(row).label }}</pc-status-badge>
+      </td>
+      <td>
+        @if (row.two_factor_enabled) {
+        <span class="tooltip" data-tip="MFA enabled">
+          <pc-icon name="check-circle" [size]="5" class="text-success"></pc-icon>
+        </span>
+        } @else {
+        <span class="text-base-content/30">—</span>
+        }
+      </td>
+      <td class="whitespace-nowrap tabular-nums text-base-content/60">{{ lastActiveText(row) }}</td>
+      <td>
+        <pc-row-actions [label]="'Actions for ' + displayName(row)">
+          <li>
+            <a [routerLink]="['/users', row.id]"><pc-icon name="eye" [size]="4"></pc-icon> View profile</a>
+          </li>
+          <li>
+            <a (click)="sendPasswordReset(row)">
+              <pc-icon name="lock-closed" [size]="4"></pc-icon> Send password reset
+            </a>
+          </li>
+        </pc-row-actions>
+      </td>
+    </tr>
+    } }
+
+    <div pcTableFooter class="border-t border-base-200 px-4 py-3 text-xs text-base-content/50">
+      Users are staff logins. Volunteers live in
+      <a routerLink="/teams" class="link link-hover text-primary">Teams</a>
+      and don't need an account.
+    </div>
+  </pc-table>
+
+  <pc-invite-user-dialog [seatUsage]="seatUsage()" (saved)="onInvited()"></pc-invite-user-dialog>
+</div>
+```
+
+## File: apps/frontend/src/app/experiences/users/ui/users-page.ts
+```typescript
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { planDisplayName } from '@common';
+
+import { Icon } from '@icons/icon';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
+import type { PcStatusType } from '@uxcommon/components/status-badge/status-badge';
+import { RowActions } from '@uxcommon/components/row-actions/row-actions';
+import { Table } from '@uxcommon/components/table/table';
+import { UserAvatarComponent } from '@uxcommon/components/user-avatar/user-avatar';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+
+import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
+import { UserService } from '@frontend/services/user.service';
+import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
+import { authRoleLabel } from '../../../../../../../libs/common/src';
+import { CampaignContextService } from '../../../services/campaign-context.service';
+import { UserAdminService } from '../services/useradmin-service';
+import {
+  userIsDeactivated,
+  userLastActiveLabel,
+  userRoleLockReason,
+  userRoleOptions,
+  userStatus,
+} from '../user-status';
+import { InviteUserDialog, type SeatUsage } from './invite-user-dialog';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+
+export interface UserRow {
+  id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  role: string | null;
+  campaign_id: string | null;
+  verified: boolean;
+  two_factor_enabled: boolean;
+  deletion_scheduled_at: string | null;
+  deactivated_at: string | null;
+  last_active_at: string | null;
+  created_at: string | null;
+  avatar_url: string | null;
+}
+
+/**
+ * Users admin page — staff logins for this workspace. A bespoke `pc-table` (not the datagrid):
+ * inline role select with explained locks, honest status/MFA/last-active columns derived from
+ * real session data, and the seat-aware "Invite user" dialog.
+ */
+@Component({
+  selector: 'pc-users-page',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    EmptyState,
+    RouterLink,
+    Icon,
+    StatusBadge,
+    Table,
+    RowActions,
+    UserAvatarComponent,
+    InviteUserDialog,
+    GridHeaderComponent,
+  ],
+  templateUrl: './users-page.html',
+})
+export class UsersPageComponent implements OnInit {
+  private readonly users = inject(UserAdminService);
+  private readonly auth = inject(AuthService);
+  private readonly alerts = inject(AlertService);
+  private readonly userService = inject(UserService);
+  private readonly campaignContext = inject(CampaignContextService);
+
+  private readonly inviteDlg = viewChild.required(InviteUserDialog);
+
+  protected readonly loading = createLoadingGate();
+  protected readonly loaded = signal(false);
+  protected readonly rows = signal<UserRow[]>([]);
+  protected readonly seatUsage = signal<SeatUsage | null>(null);
+
+  /** Row that just saved a role change — drives the one-shot saved flash. */
+  protected readonly flashedId = signal<string | null>(null);
+  /** Rows with an in-flight role change; their select is disabled while saving. */
+  protected readonly savingIds = signal<ReadonlySet<string>>(new Set());
+
+  protected readonly currentUserId = computed(() => {
+    const id = this.auth.getUser()?.id;
+    return id != null ? String(id) : null;
+  });
+  protected readonly currentUserRole = computed(() => this.auth.getUser()?.role ?? null);
+
+  protected readonly activeCount = computed(
+    () => this.rows().filter((r) => r.verified && !userIsDeactivated(r)).length,
+  );
+  protected readonly invitedCount = computed(
+    () => this.rows().filter((r) => !r.verified && !userIsDeactivated(r)).length,
+  );
+  protected readonly deactivatedCount = computed(() => this.rows().filter((r) => userIsDeactivated(r)).length);
+  protected readonly adminCount = computed(
+    () => this.rows().filter((r) => (r.role === 'admin' || r.role === 'owner') && !userIsDeactivated(r)).length,
+  );
+
+  protected readonly seatsRemaining = computed(() => {
+    const usage = this.seatUsage();
+    return usage ? Math.max(0, usage.seatLimit - usage.seatsUsed) : null;
+  });
+
+  /** Campaigns §15 — active contexts an Editor/Viewer can be assigned to. */
+  protected readonly assignableCampaigns = computed(() =>
+    this.campaignContext.campaigns().filter((c) => c.status === 'active'),
+  );
+  /** The column only earns its space once an election campaign exists. */
+  protected readonly showCampaignColumn = computed(() => this.assignableCampaigns().length > 1);
+  protected readonly columnCount = computed(() => (this.showCampaignColumn() ? 7 : 6));
+
+  private readonly userSignal = this.auth.getUserSignal();
+  private readonly isDemo = computed(() => !!this.userSignal()?.tenant_demo_mode_at);
+
+  /** Why inviting is unavailable — null when it isn't. Doubles as the tooltip copy (§2 explained-disabled). */
+  protected readonly inviteLockReason = computed<string | null>(() => {
+    if (this.isDemo()) {
+      return 'Inviting teammates is locked during the demo. Choose a plan, then exit demo mode';
+    }
+    if (this.seatsRemaining() === 0) {
+      return `All ${this.seatUsage()?.seatLimit} seats on the ${this.planLabel()} plan are in use. Upgrade in Settings → Billing`;
+    }
+    return null;
+  });
+
+  protected readonly planLabel = computed(() => {
+    const usage = this.seatUsage();
+    return usage ? planDisplayName(usage.plan) : '';
+  });
+
+  /** Header grain sentence, e.g. "5 users · 3 active, 1 invited · 2 admins · 4 of 10 seats on the Team plan". */
+  protected readonly headerSentence = computed(() => {
+    const total = this.rows().length;
+    const parts = [`${total} user${total === 1 ? '' : 's'}`];
+    const statusBits = [`${this.activeCount()} active`];
+    if (this.invitedCount() > 0) statusBits.push(`${this.invitedCount()} invited`);
+    if (this.deactivatedCount() > 0) statusBits.push(`${this.deactivatedCount()} deactivated`);
+    parts.push(statusBits.join(', '));
+    parts.push(`${this.adminCount()} admin${this.adminCount() === 1 ? '' : 's'}`);
+    const usage = this.seatUsage();
+    if (usage) parts.push(`${usage.seatsUsed} of ${usage.seatLimit} seats on the ${this.planLabel()} plan`);
+    return parts.join(' · ');
+  });
+
+  public ngOnInit(): void {
+    void this.load();
+  }
+
+  protected openInvite(): void {
+    this.inviteDlg().open();
+  }
+
+  protected onInvited(): void {
+    void this.load();
+  }
+
+  protected displayName(row: UserRow): string {
+    return `${row.first_name} ${row.last_name}`.trim() || row.email;
+  }
+
+  protected avatarUrl(row: UserRow): string | null {
+    return row.avatar_url ? (this.userService.resolveAvatarUrl(row.avatar_url) ?? null) : null;
+  }
+
+  protected isSelf(row: UserRow): boolean {
+    return row.id === this.currentUserId();
+  }
+
+  protected roleLabel(role: string | null): string {
+    return authRoleLabel(role);
+  }
+
+  /** Roles the caller may assign on this row; includes the row's current role so the select never shows blank. */
+  protected roleOptions(row: UserRow): string[] {
+    return userRoleOptions(this.currentUserRole(), row.role);
+  }
+
+  /** Why this row's role can't be changed — null when it can. Doubles as the tooltip copy (§2 explained-disabled). */
+  protected roleLockReason(row: UserRow): string | null {
+    return userRoleLockReason({
+      isSelf: this.isSelf(row),
+      callerRole: this.currentUserRole(),
+      targetRole: row.role,
+      deactivated: userIsDeactivated(row),
+    });
+  }
+
+  protected isDeactivated(row: UserRow): boolean {
+    return userIsDeactivated(row);
+  }
+
+  protected status(row: UserRow): { label: string; tone: PcStatusType } {
+    return userStatus(row);
+  }
+
+  protected lastActiveText(row: UserRow): string {
+    return userLastActiveLabel(row);
+  }
+
+  /** Admins/owners aren't scoped by an assignment; everyone else shows their campaign. */
+  protected isCampaignScoped(row: UserRow): boolean {
+    return row.role !== 'admin' && row.role !== 'owner';
+  }
+
+  protected campaignName(campaignId: string | null): string {
+    if (campaignId == null) return 'Office';
+    return this.assignableCampaigns().find((c) => String(c.id) === campaignId)?.name ?? 'Office';
+  }
+
+  protected async changeCampaign(row: UserRow, event: Event): Promise<void> {
+    const select = event.target as HTMLSelectElement;
+    const campaignId = select.value || null;
+    if (campaignId === row.campaign_id) return;
+
+    this.savingIds.update((ids) => new Set(ids).add(row.id));
+    try {
+      await this.users.update(row.id, { campaign_id: campaignId });
+      this.rows.update((rows) => rows.map((r) => (r.id === row.id ? { ...r, campaign_id: campaignId } : r)));
+      this.flashRow(row.id);
+      this.alerts.showSuccess(`${this.displayName(row)} now works in ${this.campaignName(campaignId)}`);
+    } catch (err) {
+      select.value = row.campaign_id ?? '';
+      const message = err instanceof Error && err.message ? err.message : 'Unable to update the campaign';
+      this.alerts.showError(message);
+    } finally {
+      this.savingIds.update((ids) => {
+        const next = new Set(ids);
+        next.delete(row.id);
+        return next;
+      });
+    }
+  }
+
+  protected async changeRole(row: UserRow, event: Event): Promise<void> {
+    const select = event.target as HTMLSelectElement;
+    const role = select.value;
+    if (!role || role === row.role) return;
+
+    this.savingIds.update((ids) => new Set(ids).add(row.id));
+    try {
+      await this.users.update(row.id, { role });
+      this.rows.update((rows) => rows.map((r) => (r.id === row.id ? { ...r, role } : r)));
+      this.flashRow(row.id);
+      this.alerts.showSuccess(`Role updated. ${this.displayName(row)} is now ${this.roleLabel(role)}`);
+    } catch (err) {
+      select.value = row.role ?? '';
+      const message = err instanceof Error && err.message ? err.message : 'Unable to update the role';
+      this.alerts.showError(message);
+    } finally {
+      this.savingIds.update((ids) => {
+        const next = new Set(ids);
+        next.delete(row.id);
+        return next;
+      });
+    }
+  }
+
+  protected async sendPasswordReset(row: UserRow): Promise<void> {
+    try {
+      await this.users.adminTriggerPasswordReset(row.id);
+      this.alerts.showSuccess(`Password reset email sent to ${row.email}`);
+    } catch (err) {
+      const message = err instanceof Error && err.message ? err.message : 'Unable to send the reset email';
+      this.alerts.showError(message);
+    }
+  }
+
+  private async load(): Promise<void> {
+    const end = this.loading.begin();
+    try {
+      const [list, seats] = await Promise.all([
+        this.users.getAll({ startRow: 0, endRow: 500 }),
+        this.users.getSeatUsage(),
+        this.campaignContext.ensureLoaded(),
+      ]);
+      this.rows.set(list.rows.map((raw) => this.toRow(raw)));
+      this.seatUsage.set(seats);
+      this.loaded.set(true);
+    } catch {
+      this.alerts.showError('Unable to load users. Try refreshing the page');
+    } finally {
+      end();
+    }
+  }
+
+  private toRow(raw: Record<string, unknown>): UserRow {
+    return {
+      id: raw['id'] != null ? String(raw['id']) : '',
+      email: typeof raw['email'] === 'string' ? raw['email'] : '',
+      first_name: typeof raw['first_name'] === 'string' ? raw['first_name'] : '',
+      last_name: typeof raw['last_name'] === 'string' ? raw['last_name'] : '',
+      role: typeof raw['role'] === 'string' ? raw['role'] : null,
+      campaign_id: raw['campaign_id'] != null ? String(raw['campaign_id']) : null,
+      verified: raw['verified'] === true,
+      two_factor_enabled: raw['two_factor_enabled'] === true,
+      deletion_scheduled_at: this.toIso(raw['deletion_scheduled_at']),
+      deactivated_at: this.toIso(raw['deactivated_at']),
+      last_active_at: this.toIso(raw['last_active_at']),
+      created_at: this.toIso(raw['created_at']),
+      avatar_url: typeof raw['avatar_url'] === 'string' ? raw['avatar_url'] : null,
+    };
+  }
+
+  private toIso(value: unknown): string | null {
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value === 'string' && value) return value;
+    return null;
+  }
+
+  private flashRow(id: string): void {
+    this.flashedId.set(id);
+    const FLASH_MS = 1300;
+    setTimeout(() => {
+      if (this.flashedId() === id) this.flashedId.set(null);
+    }, FLASH_MS);
+  }
+}
 ```
 
 ## File: apps/frontend/src/app/experiences/workflows/models/automation-recipes.ts
@@ -56014,6 +55403,110 @@ export const jsendInterceptor: HttpInterceptorFn = (req, next) => {
     }),
   );
 };
+```
+
+## File: apps/frontend/src/app/services/unsaved-changes-guard.ts
+```typescript
+import { computed, inject } from '@angular/core';
+import type { Signal } from '@angular/core';
+import type { CanDeactivateFn } from '@angular/router';
+import type { FieldTree } from '@angular/forms/signals';
+import { ConfirmDialogService } from './shared-dialog.service';
+
+/**
+ * Writes the form's pending edits and resolves true only if the write landed. It must NOT navigate:
+ * the router is already mid-navigation when the leave prompt runs (forms pass `stayPut`/no `done`).
+ */
+export type SaveOnLeave = () => Promise<boolean>;
+
+export interface UnsavedChangesHandle {
+  dirtyCount: Signal<number>;
+  headerLine: Signal<string | null>;
+  confirmDiscardIfDirty(recordName: string, save?: SaveOnLeave): Promise<boolean>;
+}
+
+/** The two ways out of the leave prompt; cancelling it (Keep editing) resolves to null instead. */
+type LeaveChoice = 'save' | 'discard';
+
+interface Deactivatable {
+  canDeactivate?(): boolean | Promise<boolean>;
+}
+
+/** Route-level guard: lets any edit-page component veto navigation away while it has unsaved changes. */
+export const unsavedChangesGuard: CanDeactivateFn<Deactivatable> = (component) =>
+  component.canDeactivate ? component.canDeactivate() : true;
+
+/**
+ * Wires an Angular Signal Forms `form`/`payload` pair up to the "Unsaved changes · N fields" header
+ * line and a leave-confirm dialog naming the changed fields. `dirty()` is per-field and already used
+ * to gate the Save button (see pc-form-actions) - this just reads the same signals.
+ */
+export function injectUnsavedChanges<TModel extends Record<string, unknown>>(
+  form: FieldTree<TModel>,
+  payload: Signal<TModel>,
+): UnsavedChangesHandle {
+  const dialogs = inject(ConfirmDialogService);
+
+  // Subfields<TModel> guarantees one FieldTree per data key, so indexing by the payload's
+  // own keys is safe even though TypeScript can't express a dynamic per-key lookup here.
+  const fields = form as unknown as Record<string, () => { dirty(): boolean }>;
+
+  const dirtyKeys = computed(() => Object.keys(payload()).filter((key) => fields[key]?.().dirty()));
+  const dirtyCount = computed(() => dirtyKeys().length);
+  const headerLine = computed(() =>
+    dirtyCount() > 0 ? `Unsaved changes · ${dirtyCount()} field${dirtyCount() === 1 ? '' : 's'}` : null,
+  );
+
+  return {
+    dirtyCount,
+    headerLine,
+    async confirmDiscardIfDirty(recordName: string, save?: SaveOnLeave): Promise<boolean> {
+      if (dirtyCount() === 0) return true;
+      const fieldList = joinWithAnd(dirtyKeys().map(humanizeFieldKey));
+
+      // Without a save handler the page can only offer the two lossy ways out.
+      if (!save) {
+        return dialogs.confirm({
+          title: 'Leave without saving?',
+          message: `Your changes to ${recordName} (${fieldList}) will be lost.`,
+          variant: 'warning',
+          confirmText: 'Discard changes',
+          cancelText: 'Keep editing',
+          emphasizeCancel: true,
+        });
+      }
+
+      // Offer the way out of the trap, not just the two ways to lose it: saving is the
+      // emphasized default, discarding is the de-emphasized escape.
+      const choice = await dialogs.choose<LeaveChoice>({
+        title: 'Leave without saving?',
+        message: `Your changes to ${recordName} (${fieldList}) are not saved yet.`,
+        variant: 'warning',
+        choices: [
+          { label: 'Save changes', value: 'save', variant: 'info' },
+          { label: 'Discard changes', value: 'discard', variant: 'warning' },
+        ],
+        cancelText: 'Keep editing',
+      });
+      // A failed save keeps the user on the form with their edits intact (the toast says why).
+      if (choice === 'save') return save();
+      return choice === 'discard';
+    },
+  };
+}
+
+function humanizeFieldKey(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .toLowerCase();
+}
+
+function joinWithAnd(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
 ```
 
 ## File: apps/frontend/src/app/shared/components/datagrid/controllers/editing.controller.ts
@@ -58938,6 +58431,179 @@ main().catch((error: unknown): void => {
 });
 ```
 
+## File: apps/frontend/src/app/experiences/campaigns/ui/campaign-form.ts
+```typescript
+import { Component, OnInit, computed, inject, input, signal } from '@angular/core';
+import { form, FormField, validateStandardSchema } from '@angular/forms/signals';
+import { Router, RouterModule } from '@angular/router';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { Input as PcInput } from '@uxcommon/components/input/input';
+import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { AddCampaignObj, AddCampaignType, UpdateCampaignType } from '../../../../../../../libs/common/src';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+
+import { CampaignContextService } from '../../../services/campaign-context.service';
+import { CampaignDetail, CampaignsService } from '../services/campaigns-service';
+import { getUserErrorMessage } from '@frontend/services/api/user-message';
+
+/**
+ * Campaigns §15 — create/edit. New campaigns are always elections: the office
+ * context is permanent and created at signup, so there is never a second one.
+ * Kind is immutable after creation; status changes only via archive/unarchive.
+ */
+@Component({
+  selector: 'pc-campaign-form',
+  imports: [FormField, RouterModule, PcDetailHeader, PcInput, PcTextarea, PcCard],
+  templateUrl: './campaign-form.html',
+})
+export class CampaignFormComponent implements OnInit {
+  readonly id = input<string>();
+
+  private readonly alerts = inject(AlertService);
+  private readonly router = inject(Router);
+  private readonly campaignsSvc = inject(CampaignsService);
+  private readonly context = inject(CampaignContextService);
+
+  protected readonly isNew = computed(() => !this.id());
+  protected readonly detail = signal<CampaignDetail | null>(null);
+  /** getById is loosely typed at the crud-router boundary; read the name defensively. */
+  protected readonly detailName = computed(() => {
+    const name = (this.detail() as Record<string, unknown> | null)?.['name'];
+    return typeof name === 'string' ? name : '';
+  });
+  protected readonly error = signal<string | null>(null);
+  protected readonly saving = signal(false);
+
+  private readonly _loading = createLoadingGate();
+  protected readonly loading = this._loading.visible;
+
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
+    const campaigns: PcBreadcrumb = { label: 'Campaigns', route: '/workspace/campaigns' };
+    const id = this.id();
+    if (id) {
+      return [campaigns, { label: this.detailName() || 'Campaign', route: ['/campaigns', id] }, { label: 'Edit' }];
+    }
+    return [campaigns, { label: 'New campaign' }];
+  });
+
+  protected readonly payload = signal({
+    name: '',
+    description: '',
+    notes: '',
+    kind: 'election' as const,
+    startdate: '',
+    enddate: '',
+  });
+
+  protected readonly form = form(this.payload, (p) => {
+    validateStandardSchema(p, AddCampaignObj);
+  });
+
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+
+  public ngOnInit(): void {
+    void this.loadCampaign();
+  }
+
+  public canDeactivate(): Promise<boolean> {
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.detailName() || 'this campaign', () =>
+      this.save(undefined, true),
+    );
+  }
+
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
+    if (done instanceof Event) done.preventDefault();
+
+    this.form().markAsTouched();
+    if (this.form().invalid()) return false;
+
+    const raw = this.payload();
+    this.saving.set(true);
+    this.error.set(null);
+
+    try {
+      if (this.isNew()) {
+        const payload: AddCampaignType = {
+          name: raw.name.trim(),
+          description: raw.description.trim() || null,
+          notes: raw.notes.trim() || null,
+          kind: 'election',
+          startdate: raw.startdate || null,
+          enddate: raw.enddate || null,
+        };
+        const result = await this.campaignsSvc.add(payload);
+        this.campaignsSvc.triggerRefresh();
+        await this.context.refresh();
+        this.detail.set(result);
+        this.form().reset();
+        this.alerts.showSuccess('Campaign created');
+        if (typeof done === 'function') done();
+        else if (!stayPut) await this.router.navigate(['/workspace/campaigns']);
+      } else {
+        const payload: UpdateCampaignType = {
+          name: raw.name.trim() || undefined,
+          description: raw.description.trim() || null,
+          notes: raw.notes.trim() || null,
+          startdate: raw.startdate || null,
+          enddate: raw.enddate || null,
+        };
+        const result = await this.campaignsSvc.update(this.id()!, payload);
+        this.campaignsSvc.triggerRefresh();
+        await this.context.refresh();
+        this.detail.set(result);
+        this.setForm(result);
+        this.form().reset();
+        this.alerts.showSuccess('Campaign updated');
+        if (typeof done === 'function') done();
+        else if (!stayPut) await this.router.navigate(['/campaigns', this.id()]);
+      }
+      return true;
+    } catch (err) {
+      const message = getUserErrorMessage(err, 'Unable to save the campaign');
+      this.error.set(message);
+      this.alerts.showError(message);
+      return false;
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  private async loadCampaign(): Promise<void> {
+    if (this.isNew()) return;
+    const end = this._loading.begin();
+    try {
+      const campaign = await this.campaignsSvc.getById(this.id()!);
+      this.detail.set(campaign);
+      this.setForm(campaign);
+    } catch (err) {
+      const message = getUserErrorMessage(err, 'Failed to load the campaign');
+      this.error.set(message);
+      this.alerts.showError(message);
+    } finally {
+      end();
+    }
+  }
+
+  private setForm(campaign: CampaignDetail | null) {
+    if (!campaign) return;
+    const c = campaign as Record<string, unknown>;
+    this.payload.set({
+      name: typeof c['name'] === 'string' ? c['name'] : '',
+      description: typeof c['description'] === 'string' ? c['description'] : '',
+      notes: typeof c['notes'] === 'string' ? c['notes'] : '',
+      kind: 'election',
+      startdate: typeof c['startdate'] === 'string' ? c['startdate'] : '',
+      enddate: typeof c['enddate'] === 'string' ? c['enddate'] : '',
+    });
+  }
+}
+```
+
 ## File: apps/frontend/src/app/experiences/campaigns/ui/campaign-view.ts
 ```typescript
 import { DatePipe } from '@angular/common';
@@ -59117,804 +58783,312 @@ export class CampaignViewComponent {
 }
 ```
 
-## File: apps/frontend/src/app/experiences/canvassing/ui/canvassing-page.html
-```html
-<div class="mx-auto w-full max-w-6xl p-4 sm:p-6">
-  <!-- Header -->
-  <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-    <div>
-      <!-- Visible title lives in the navbar breadcrumb; keep an accessible heading only. -->
-      <h1 class="sr-only">Canvassing</h1>
-      @if (headline()) {
-      <p class="text-xs text-base-content/70">{{ headline() }}</p>
-      } @else {
-      <p class="text-xs text-base-content/70">Cut your first turfs to start knocking doors.</p>
-      }
-    </div>
-    <div class="flex items-center gap-2">
-      <button type="button" class="btn btn-ghost btn-sm" (click)="settingsOpen.set(true)">
-        <pc-icon name="cog" [size]="4" />
-        Survey settings
-      </button>
-      <button type="button" class="btn btn-primary btn-sm" (click)="openCut()">
-        <pc-icon name="map-pin" [size]="4" />
-        Cut new turfs
-      </button>
-    </div>
-  </div>
-
-  <!-- Tabs (the standard pill tab bar) -->
-  <pc-tab-bar class="mb-4" [tabs]="pageTabs" [activeTab]="tab()" (activeTabChange)="selectTab($event)" />
-
-  @if (tab() === 'turfs') {
-  <!-- In the field today -->
-  <section class="card mb-4 border border-base-300 bg-base-100">
-    <div class="card-body p-4">
-      <div class="mb-2 flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <h2 class="text-sm font-semibold text-base-content">In the field today</h2>
-          <span class="badge badge-ghost badge-sm">Live: updates as knocks are logged</span>
-        </div>
-        <button type="button" class="link link-primary text-sm" (click)="selectTab('report')">
-          Full field report →
-        </button>
-      </div>
-
-      @if (today(); as t) {
-      <div class="flex flex-wrap items-center gap-6">
-        <div>
-          <div class="text-3xl font-semibold text-base-content">{{ t.doorsKnocked }}</div>
-          <div class="text-xs text-base-content/60">doors knocked</div>
-        </div>
-        <div>
-          <div class="text-3xl font-semibold text-base-content">{{ t.conversations }}</div>
-          <div class="text-xs text-base-content/60">conversations</div>
-        </div>
-        <div class="min-w-48 flex-1">
-          @if (todayTotal() > 0) {
-          <div class="flex h-3 w-full overflow-hidden rounded-full">
-            @for (seg of todaySegments(); track seg.key) {
-            <div
-              class="h-full {{ seg.cls }}"
-              [style.width.%]="barPct(seg.value, todayTotal())"
-              [title]="seg.label + ': ' + seg.value"
-            ></div>
-            }
-          </div>
-          <div class="mt-2 flex flex-wrap gap-3 text-xs text-base-content/70">
-            @for (seg of todaySegments(); track seg.key) {
-            <span class="flex items-center gap-1">
-              <span class="inline-block h-2 w-2 rounded-full {{ seg.cls }}"></span>
-              {{ seg.label }} {{ seg.value }}
-            </span>
-            }
-          </div>
-          } @else {
-          <p class="text-sm text-base-content/50">No knocks logged yet today. Outcomes appear as companions sync.</p>
-          }
-        </div>
-      </div>
-      }
-    </div>
-  </section>
-
-  <!-- Turf map strip -->
-  <section class="card mb-4 border border-base-300 bg-base-100">
-    <div class="card-body p-4">
-      @if (hasMap()) {
-      <pc-map class="block h-56 w-full rounded-lg" [markers]="mapMarkers()" ariaLabel="Turf map"></pc-map>
-      } @else {
-      <div
-        class="flex h-32 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm text-base-content/50"
-      >
-        Turfs appear here on the ward map once they are cut.
-      </div>
-      }
-      <p class="mt-2 text-xs text-base-content/50">Auto-cut keeps turfs contiguous and off Route 9 and the river.</p>
-    </div>
-  </section>
-
-  <!-- Turf table -->
-  <section class="card border border-base-300 bg-base-100">
-    <div class="overflow-x-auto">
-      <table class="table pc-table">
-        <thead>
-          <tr class="text-xs uppercase text-base-content/50">
-            <th>Turf</th>
-            <th>Size</th>
-            <th>Team</th>
-            <th>Progress</th>
-            <th>Last activity</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          @for (t of turfs(); track t.id) {
-          <tr>
-            <td>
-              <div class="flex items-center gap-2">
-                <span class="font-medium text-base-content">{{ t.name }}</span>
-                <span class="badge badge-sm {{ statusBadge[t.status] }}">{{ statusLabel[t.status] }}</span>
-              </div>
-              @if (t.list_name) {
-              <div class="text-xs text-base-content/50">{{ t.list_name }}</div>
-              }
-            </td>
-            <td class="whitespace-nowrap">{{ t.door_count }} doors</td>
-            <td>
-              @if (t.team_name) {
-              <span>{{ t.team_name }}</span>
-              } @else {
-              <button type="button" class="btn btn-ghost btn-xs border-dashed" (click)="assign(t)">Assign</button>
-              }
-            </td>
-            <td class="min-w-40">
-              <div class="flex items-center gap-2">
-                <progress class="progress progress-primary w-24" [value]="progressPct(t)" max="100"></progress>
-                <span class="text-xs text-base-content/60">{{ t.attempted }} of {{ t.door_count }}</span>
-                @if (t.status === 'in_field') {
-                <span
-                  class="inline-block h-2 w-2 animate-pulse rounded-full bg-success"
-                  title="In the field now"
-                ></span>
-                }
-              </div>
-              @if (t.conversations > 0) {
-              <div class="text-xs text-base-content/50">{{ t.conversations }} conversations</div>
-              }
-            </td>
-            <td class="whitespace-nowrap text-xs text-base-content/60">
-              {{ t.last_activity_at ? (t.last_activity_at | date: 'MMM d, h:mm a') : '—' }}
-            </td>
-            <td class="text-right">
-              <pc-row-actions [label]="'Actions for ' + t.name">
-                <li>
-                  <button type="button" (click)="assign(t)">
-                    {{ t.token ? 'Change volunteer' : 'Assign volunteer' }}
-                  </button>
-                </li>
-                <li><button type="button" (click)="copyLink(t)">Copy volunteer link</button></li>
-                <li><button type="button" (click)="refresh(t)">Refresh from list</button></li>
-                <li>
-                  <button type="button" class="text-error" (click)="retire(t)">Retire turf</button>
-                </li>
-              </pc-row-actions>
-            </td>
-          </tr>
-          } @empty {
-          <tr>
-            <td colspan="6" class="py-10 text-center text-sm text-base-content/60">
-              No turfs yet. Choose a smart-list universe and
-              <button type="button" class="link link-primary" (click)="openCut()">cut your first turfs</button>.
-            </td>
-          </tr>
-          }
-        </tbody>
-      </table>
-    </div>
-    <div class="border-t border-base-300 p-3 text-xs text-base-content/60">
-      Assigning a volunteer sends them their personal Canvass Companion link by email or text — the Companion is a web
-      app, nothing to install, and the link only works for them. Progress and conversations sync back live. Knocks land
-      on the person, the household, and the Activity log.
-    </div>
-  </section>
-  } @else {
-  <!-- Field report -->
-  <section>
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div role="tablist" class="tabs tabs-boxed tabs-sm">
-        @for (r of ranges; track r.key) {
-        <button role="tab" class="tab" [class.tab-active]="reportRange() === r.key" (click)="setRange(r.key)">
-          {{ r.label }}
-        </button>
-        }
-      </div>
-      <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="exportReport()">
-        <pc-icon name="arrow-down-tray" [size]="4" />
-        Export CSV
-      </button>
-    </div>
-
-    @if (report(); as r) {
-    <!-- Stat tiles -->
-    <div class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <div class="card border border-base-300 bg-base-100 p-4">
-        <div class="text-2xl font-semibold">{{ r.doors }}</div>
-        <div class="text-xs text-base-content/60">doors</div>
-      </div>
-      <div class="card border border-base-300 bg-base-100 p-4">
-        <div class="text-2xl font-semibold">{{ r.conversations }}</div>
-        <div class="text-xs text-base-content/60">conversations</div>
-      </div>
-      <div class="card border border-base-300 bg-base-100 p-4">
-        <div class="text-2xl font-semibold">{{ r.contactRatePct }}%</div>
-        <div class="text-xs text-base-content/60">contact rate</div>
-      </div>
-      <div class="card border border-base-300 bg-base-100 p-4">
-        <div class="text-2xl font-semibold">{{ r.supportIds }}</div>
-        <div class="text-xs text-base-content/60">support IDs</div>
-      </div>
-    </div>
-
-    <!-- Coverage — where we've walked (§13.3) -->
-    @if (coverage(); as cov) { @if (cov.doors.length > 0) {
-    <div class="card mb-4 border border-base-300 bg-base-100">
-      <div class="flex flex-wrap items-center justify-between gap-2 p-4 pb-2">
-        <h3 class="text-sm font-semibold">Coverage</h3>
-        <div role="tablist" class="tabs tabs-boxed tabs-xs">
-          <button
-            role="tab"
-            class="tab"
-            [class.tab-active]="coverageView() === 'map'"
-            (click)="coverageView.set('map')"
-          >
-            Street map
-          </button>
-          <button
-            role="tab"
-            class="tab"
-            [class.tab-active]="coverageView() === 'ward'"
-            (click)="coverageView.set('ward')"
-          >
-            By ward
-          </button>
-        </div>
-      </div>
-      <div class="p-4 pt-0">
-        @if (coverageView() === 'map') {
-        <pc-map
-          class="block h-72 w-full rounded-lg"
-          [markers]="coverageMarkers()"
-          [polygons]="coveragePolygons()"
-          ariaLabel="Coverage map"
-        ></pc-map>
-        <div class="mt-2 flex flex-wrap gap-3 text-xs text-base-content/70">
-          @for (l of coverageLegend; track l.status) {
-          <span class="flex items-center gap-1">
-            <span class="inline-block h-2 w-2 rounded-full {{ l.dot }}"></span>{{ l.label }}
-          </span>
-          }
-          <span class="flex items-center gap-1">
-            <span class="inline-block h-2 w-3 rounded-sm border border-dashed border-base-content/40"></span>
-            Turf boundary
-          </span>
-        </div>
-        } @else {
-        <div class="overflow-x-auto">
-          <table class="table pc-table">
-            <thead>
-              <tr class="text-xs uppercase text-base-content/50">
-                <th>Ward</th>
-                <th>Doors</th>
-                <th class="w-1/2">Coverage</th>
-                <th class="text-right">Talked</th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (w of cov.byWard; track w.ward) {
-              <tr>
-                <td class="font-medium">{{ w.ward }}</td>
-                <td class="whitespace-nowrap">{{ w.doors }}</td>
-                <td>
-                  <div class="flex h-2.5 w-full overflow-hidden rounded-full bg-base-200">
-                    <div class="h-full bg-success" [style.width.%]="barPct(w.conversation, w.doors)"></div>
-                    <div class="h-full bg-warning" [style.width.%]="barPct(w.attempted, w.doors)"></div>
-                  </div>
-                  <div class="mt-1 text-[10px] text-base-content/50">
-                    {{ barPct(w.conversation + w.attempted, w.doors) }}% knocked · {{ w.not_yet }} not yet
-                  </div>
-                </td>
-                <td class="text-right">{{ w.conversation }}</td>
-              </tr>
-              }
-            </tbody>
-          </table>
-        </div>
-        }
-      </div>
-    </div>
-    } } @if (r.doors === 0) {
-    <div class="card border border-dashed border-base-300 p-10 text-center text-sm text-base-content/60">
-      No knocks in this range yet. Every number here flows in from synced Canvass Companions. Nothing is entered by
-      hand.
-    </div>
-    } @else {
-    <!-- What voters said -->
-    <div class="card mb-4 border border-base-300 bg-base-100 p-4">
-      <h3 class="mb-2 text-sm font-semibold">What voters said at the door</h3>
-      <div class="flex h-3 w-full overflow-hidden rounded-full">
-        <div class="h-full bg-success" [style.width.%]="barPct(r.responseMix.supporter, r.doors)"></div>
-        <div class="h-full bg-warning" [style.width.%]="barPct(r.responseMix.undecided, r.doors)"></div>
-        <div class="h-full bg-error" [style.width.%]="barPct(r.responseMix.non_supporter, r.doors)"></div>
-        <div class="h-full bg-base-content/30" [style.width.%]="barPct(r.responseMix.not_voting, r.doors)"></div>
-        <div class="h-full bg-info" [style.width.%]="barPct(r.responseMix.already_voted, r.doors)"></div>
-        <div class="h-full bg-base-300" [style.width.%]="barPct(r.responseMix.no_answer, r.doors)"></div>
-      </div>
-      <div class="mt-2 flex flex-wrap gap-3 text-xs text-base-content/70">
-        <span>Supporters {{ r.responseMix.supporter }}</span>
-        <span>Undecided {{ r.responseMix.undecided }}</span>
-        <span>Non-supporters {{ r.responseMix.non_supporter }}</span>
-        <span>Not voting {{ r.responseMix.not_voting }}</span>
-        <span>Already voted {{ r.responseMix.already_voted }}</span>
-        <span>No answer {{ r.responseMix.no_answer }}</span>
-      </div>
-    </div>
-
-    <!-- Doors knocked per day -->
-    <div class="card mb-4 border border-base-300 bg-base-100 p-4">
-      <h3 class="mb-3 text-sm font-semibold">Doors knocked</h3>
-      <div class="flex items-end gap-2" style="height: 120px">
-        @for (d of r.perDay; track d.day) {
-        <div class="flex flex-1 flex-col items-center justify-end gap-1">
-          <div class="flex w-6 flex-col justify-end" style="height: 90px">
-            <div class="w-full rounded-t bg-base-300" [style.height.%]="barPct(d.no_answer, maxPerDay())"></div>
-            <div class="w-full rounded-t bg-primary" [style.height.%]="barPct(d.conversations, maxPerDay())"></div>
-          </div>
-          <div class="text-[10px] text-base-content/50">{{ d.day | date: 'M/d' }}</div>
-        </div>
-        }
-      </div>
-      <div class="mt-2 flex gap-3 text-xs text-base-content/60">
-        <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-primary"></span> Conversation</span>
-        <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-base-300"></span> No answer</span>
-      </div>
-    </div>
-
-    <!-- Performance by team -->
-    <div class="card mb-4 border border-base-300 bg-base-100">
-      <div class="p-4 pb-2 text-sm font-semibold">Performance by team</div>
-      <div class="overflow-x-auto">
-        <table class="table pc-table">
-          <thead>
-            <tr class="text-xs uppercase text-base-content/50">
-              <th>Team</th>
-              <th>Doors</th>
-              <th>Conversations</th>
-              <th>Support IDs</th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (t of r.byTeam; track t.team_name) {
-            <tr>
-              <td>{{ t.team_name }}</td>
-              <td>{{ t.doors }}</td>
-              <td>{{ t.conversations }}</td>
-              <td>{{ t.supportIds }}</td>
-            </tr>
-            }
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="grid gap-4 sm:grid-cols-2">
-      <!-- When doors answer -->
-      <div class="card border border-base-300 bg-base-100 p-4">
-        <h3 class="mb-3 text-sm font-semibold">When doors answer</h3>
-        @if (r.byHour.length > 0) {
-        <div class="flex items-end gap-1" style="height: 100px">
-          @for (h of r.byHour; track h.hour) {
-          <div class="flex flex-1 flex-col items-center justify-end gap-1">
-            <div
-              class="w-full rounded-t bg-info"
-              [style.height.%]="barPct(h.attempts, maxByHour())"
-              [title]="hourLabel(h.hour) + ': ' + h.attempts"
-            ></div>
-            <div class="text-[9px] text-base-content/50">{{ hourLabel(h.hour) }}</div>
-          </div>
-          }
-        </div>
-        <p class="mt-2 text-xs text-base-content/60">Evenings answer best. Schedule shifts 4–8 pm when you can.</p>
-        } @else {
-        <p class="text-sm text-base-content/60">Not enough knocks to show a pattern yet.</p>
-        }
-      </div>
-
-      <!-- Top canvassers -->
-      <div class="card border border-base-300 bg-base-100 p-4">
-        <h3 class="mb-3 text-sm font-semibold">Top canvassers</h3>
-        @if (r.topCanvassers.length > 0) {
-        <ol class="space-y-1">
-          @for (c of r.topCanvassers; track c.name) {
-          <li class="flex justify-between text-sm">
-            <span>{{ c.name }}</span>
-            <span class="text-base-content/60">{{ c.doors }} doors</span>
-          </li>
-          }
-        </ol>
-        } @else {
-        <p class="text-sm text-base-content/60">Canvasser names appear here once volunteers sign their knocks.</p>
-        }
-      </div>
-    </div>
-
-    <p class="mt-4 text-xs text-base-content/50">
-      Every number here flows in from synced Canvass Companions. Nothing is entered by hand. Contact rate counts
-      conversations per door attempted; support IDs are strong + lean support. Totals include retired turfs.
-    </p>
-    } }
-  </section>
-  } @if (cutOpen()) {
-  <pc-cut-turfs-dialog (done)="onCutDone($event)" />
-  } @if (assignTarget(); as target) {
-  <pc-assign-turf-dialog
-    [turfId]="target.id"
-    [turfName]="target.name"
-    (cancelled)="assignTarget.set(null)"
-    (assigned)="onAssigned($event)"
-  />
-  } @if (settingsOpen()) {
-  <pc-companion-settings-dialog (closed)="settingsOpen.set(false)" />
-  }
-</div>
-```
-
-## File: apps/frontend/src/app/experiences/canvassing/ui/canvassing-page.ts
+## File: apps/frontend/src/app/experiences/companies/ui/company-form.ts
 ```typescript
-import { Component, type OnInit, computed, inject, signal } from '@angular/core';
-import { DatePipe } from '@angular/common';
-
-import { createLoadingGate } from '@uxcommon/loading-gate';
+import { Component, OnInit, computed, inject, input, signal } from '@angular/core';
+import { Router, RouterModule } from '@angular/router';
+import { form, validateStandardSchema } from '@angular/forms/signals';
+import { Input as PcInput } from '@uxcommon/components/input/input';
+import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
+import { Icon as PcIcon } from '@icons/icon';
+import { CompanyInputObj } from '../../../../../../../libs/common/src';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
-import { Icon } from '@icons/icon';
-import { PcMap } from '@uxcommon/components/map/map';
-import type { PcMapMarker, PcMapPolygon, PcMapVariant } from '@uxcommon/components/map/map-types';
-import { RowActions } from '@uxcommon/components/row-actions/row-actions';
-import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
-
-import type { FieldReportRangeType } from '../../../../../../../libs/common/src';
-import {
-  CanvassingService,
-  type Coverage,
-  type FieldReport,
-  type FieldSummary,
-  type InFieldToday,
-  type TurfListItem,
-} from '../services/canvassing-service';
-import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
-import { AssignTurfDialog } from './assign-turf-dialog';
-import { CompanionSettingsDialog } from './companion-settings-dialog';
-import { CutTurfsDialog } from './cut-turfs-dialog';
-
-type TurfStatus = TurfListItem['status'];
-type Tab = 'turfs' | 'report';
-type ReportRange = FieldReportRangeType['range'];
-type CoverageStatus = Coverage['doors'][number]['status'];
-type CoverageView = 'map' | 'ward';
-
-/** Door-dot colours on the coverage map: talked → knocked-no-answer → not yet. */
-const COVERAGE_VARIANT: Record<CoverageStatus, PcMapVariant> = {
-  conversation: 'success',
-  attempted: 'warning',
-  not_yet: 'muted',
-};
-
-const COVERAGE_LEGEND: { status: CoverageStatus; label: string; dot: string }[] = [
-  { status: 'conversation', label: 'Conversation', dot: 'bg-success' },
-  { status: 'attempted', label: 'Knocked, no answer', dot: 'bg-warning' },
-  { status: 'not_yet', label: 'Not yet knocked', dot: 'bg-base-300' },
-];
-
-const STATUS_VARIANT: Record<TurfStatus, PcMapVariant> = {
-  draft: 'neutral',
-  assigned: 'info',
-  in_field: 'success',
-  complete: 'primary',
-  retired: 'muted',
-};
-
-const STATUS_LABEL: Record<TurfStatus, string> = {
-  draft: 'Draft (unassigned)',
-  assigned: 'Sent to app',
-  in_field: 'In field now',
-  complete: 'Complete',
-  retired: 'Retired',
-};
-
-const STATUS_BADGE: Record<TurfStatus, string> = {
-  draft: 'badge-ghost',
-  assigned: 'badge-info',
-  in_field: 'badge-success',
-  complete: 'badge-primary',
-  retired: 'badge-ghost opacity-60',
-};
-
-const RANGES: { key: ReportRange; label: string }[] = [
-  { key: 'today', label: 'Today' },
-  { key: 'yesterday', label: 'Yesterday' },
-  { key: 'week', label: 'This week' },
-  { key: 'month', label: 'This month' },
-  { key: 'campaign', label: 'Campaign' },
-];
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { CompaniesService } from '../services/companies-service';
+import { PersonsService } from '../../persons/services/persons-service';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { StatusBadge as PcStatusBadge } from '@uxcommon/components/status-badge/status-badge';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
 @Component({
-  selector: 'pc-canvassing-page',
-  imports: [DatePipe, Icon, PcMap, RowActions, TabBar, CutTurfsDialog, AssignTurfDialog, CompanionSettingsDialog],
-  templateUrl: './canvassing-page.html',
+  selector: 'pc-company-form',
+  imports: [PcInput, PcTextarea, PcIcon, RouterModule, PcDetailHeader, PcStatusBadge, PcCard],
+  templateUrl: './company-form.html',
 })
-export class CanvassingPage implements OnInit {
-  private readonly svc = inject(CanvassingService);
-  private readonly alerts = inject(AlertService);
-  private readonly dialog = inject(ConfirmDialogService);
+export class CompanyForm implements OnInit {
+  private readonly alertSvc = inject(AlertService);
+  private readonly companiesSvc = inject(CompaniesService);
+  private readonly personsSvc = inject(PersonsService);
+  private readonly router = inject(Router);
+  private readonly dialogs = inject(ConfirmDialogService);
 
   private readonly _loading = createLoadingGate();
-  protected readonly loading = this._loading.visible;
 
-  protected readonly tab = signal<Tab>('turfs');
+  /** Disables Save immediately on click — the loading gate stays false for its first
+   *  300ms by design, which would leave a double-click window. */
+  protected readonly saving = signal(false);
 
-  protected readonly pageTabs: PcTabOption[] = [
-    { id: 'turfs', label: 'Turfs & assignments' },
-    { id: 'report', label: 'Field report' },
-  ];
-  protected readonly turfs = signal<TurfListItem[]>([]);
-  protected readonly summary = signal<FieldSummary | null>(null);
-  protected readonly today = signal<InFieldToday | null>(null);
+  protected readonly company = signal<any | null>(null);
 
-  protected readonly reportRange = signal<ReportRange>('week');
-  protected readonly report = signal<FieldReport | null>(null);
-  protected readonly coverage = signal<Coverage | null>(null);
-  protected readonly coverageView = signal<CoverageView>('map');
+  /** People employed here — feeds the Overview rail (§7). */
+  protected readonly employeeCount = signal(0);
 
-  protected readonly cutOpen = signal(false);
-  /** Turf currently being assigned in the pick-a-volunteer dialog (null = closed). */
-  protected readonly assignTarget = signal<TurfListItem | null>(null);
-  /** Companion survey settings dialog (issues vocabulary + door script). */
-  protected readonly settingsOpen = signal(false);
+  /** Whether Google enrichment has run, for the Overview status badge. */
+  protected readonly isEnriched = computed(() => {
+    const raw = this.company()?.enrichment;
+    if (!raw) return false;
+    try {
+      const enrichment = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return !!enrichment.google_enriched;
+    } catch {
+      return false;
+    }
+  });
 
-  protected readonly ranges = RANGES;
-  protected readonly statusLabel = STATUS_LABEL;
-  protected readonly statusBadge = STATUS_BADGE;
-  protected readonly coverageLegend = COVERAGE_LEGEND;
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
+    const companies: PcBreadcrumb = { label: 'Companies', route: '/companies' };
+    const id = this.company()?.id;
+    if (id) {
+      return [
+        companies,
+        { label: this.company()?.name || 'Company', route: ['/companies', String(id)] },
+        { label: 'Edit' },
+      ];
+    }
+    return [companies, { label: 'New company' }];
+  });
 
-  ngOnInit(): void {
-    void this.loadTurfs();
+  protected readonly payload = signal({
+    name: '',
+    description: '',
+    website: '',
+    industry: '',
+    email: '',
+    phone: '',
+    notes: '',
+  });
+
+  protected readonly form = form(this.payload, (p) => {
+    validateStandardSchema(p, CompanyInputObj);
+  });
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+  protected id = input<string>();
+  protected isLoading = this._loading.visible;
+
+  public mode = input<'new' | 'edit'>('edit');
+  protected readonly isNewMode = computed(() => this.mode() === 'new' || !this.id());
+
+  /** True while an add-time Google lookup is in flight (shows an inline hint). */
+  protected readonly lookingUp = signal(false);
+  /** True when another company already uses this name (advisory hint, not a block). */
+  protected readonly duplicateName = signal(false);
+  /** Last name we looked up, so repeated blurs on the same name don't re-hit Google. */
+  private lastLookedUpName = '';
+
+  private static readonly MIN_LOOKUP_NAME_LENGTH = 2;
+
+  public ngOnInit(): void {
+    void this.loadOnInit();
   }
 
-  /** Header sentence: "9 turfs · 3 in the field now · 1,412 of 2,860 doors attempted · 2 waiting for a canvasser". */
-  protected readonly headline = computed<string>(() => {
-    const s = this.summary();
-    if (!s) return '';
-    const parts = [
-      `${s.turfCount} ${s.turfCount === 1 ? 'turf' : 'turfs'}`,
-      `${s.inFieldCount} in the field now`,
-      `${s.doorsAttempted.toLocaleString()} of ${s.doorsTotal.toLocaleString()} doors attempted`,
-      `${s.waitingCount} waiting for a canvasser`,
-    ];
-    return parts.join(' · ');
-  });
+  private async loadOnInit(): Promise<void> {
+    await this.loadCompany();
+    if (this.isNewMode()) {
+      const state = window.history.state;
+      if (state && state.cloneData) {
+        const data = state.cloneData;
+        this.payload.set({
+          name: data.name ? `${data.name} (Copy)` : '',
+          description: data.description ?? '',
+          website: data.website ?? '',
+          industry: data.industry ?? '',
+          email: data.email ?? '',
+          phone: data.phone ?? '',
+          notes: data.notes ?? '',
+        });
+      }
+    }
+  }
 
-  /** Response-mix stacked bar segments for the "in the field today" card. */
-  protected readonly todaySegments = computed(() => {
-    const t = this.today();
-    if (!t) return [];
-    const m = t.responseMix;
-    return [
-      { key: 'supporter', label: 'Supporters', value: m.supporter, cls: 'bg-success' },
-      { key: 'undecided', label: 'Undecided', value: m.undecided, cls: 'bg-warning' },
-      { key: 'non_supporter', label: 'Non-supporters', value: m.non_supporter, cls: 'bg-error' },
-      { key: 'not_voting', label: 'Not voting', value: m.not_voting, cls: 'bg-base-content/30' },
-      { key: 'already_voted', label: 'Already voted', value: m.already_voted, cls: 'bg-info' },
-      { key: 'no_answer', label: 'No answer', value: m.no_answer, cls: 'bg-base-300' },
-    ].filter((s) => s.value > 0);
-  });
-
-  protected readonly todayTotal = computed<number>(() => this.todaySegments().reduce((n, s) => n + s.value, 0));
+  private async loadCompany() {
+    if (!this.id()) return;
+    const end = this._loading.begin();
+    try {
+      const data = await this.companiesSvc.getById(this.id()!);
+      this.company.set(data);
+      if (data) {
+        this.payload.set({
+          name: data.name ?? '',
+          description: data.description ?? '',
+          website: data.website ?? '',
+          industry: data.industry ?? '',
+          email: data.email ?? '',
+          phone: data.phone ?? '',
+          notes: data.notes ?? '',
+        });
+        this.form().reset();
+      }
+      try {
+        this.employeeCount.set(await this.personsSvc.countByCompanyId(this.id()!));
+      } catch {
+        this.employeeCount.set(0);
+      }
+    } catch (err) {
+      console.error('Failed to load company details:', err);
+    } finally {
+      end();
+    }
+  }
 
   /**
-   * Tinted turf-centroid markers over the ward map (§13.1 turf map strip).
-   * Each turf's stored centroid is pinned and tinted by its live status. (Filled
-   * polygons per turf need the door hull — a follow-up; centroids read honestly.)
+   * On name blur in the New Company form, ask Google Places for this company and
+   * pre-fill only the fields the user left blank. Non-blocking and best-effort:
+   * enrichment is a convenience, so a failed lookup never interrupts adding a
+   * company. Auto-filled values are shown for the user to review and edit before
+   * saving — nothing is persisted until they hit Create.
    */
-  protected readonly mapMarkers = computed<PcMapMarker[]>(() => {
-    return this.turfs()
-      .filter((t) => t.status !== 'retired' && t.centroid_lat != null && t.centroid_lng != null)
-      .map((t) => ({
-        position: { lat: Number(t.centroid_lat), lng: Number(t.centroid_lng) },
-        variant: this.variantFor(t.status),
-        tooltip: `${t.name} — ${this.statusLabel[t.status]}`,
-        id: t.id,
-        payload: t.id,
-      }));
-  });
-
-  protected readonly hasMap = computed<boolean>(() => this.mapMarkers().length > 0);
-
-  protected variantFor(status: TurfStatus): PcMapVariant {
-    return STATUS_VARIANT[status];
-  }
-
-  protected progressPct(t: TurfListItem): number {
-    if (t.door_count <= 0) return 0;
-    return Math.min(100, Math.round((t.attempted / t.door_count) * 100));
-  }
-
-  protected async loadTurfs(): Promise<void> {
-    const end = this._loading.begin();
-    try {
-      const [turfs, summary, today] = await Promise.all([
-        this.svc.getTurfs(),
-        this.svc.getFieldSummary(),
-        this.svc.getInFieldToday(),
-      ]);
-      this.turfs.set(turfs);
-      this.summary.set(summary);
-      this.today.set(today);
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load canvassing.');
-    } finally {
-      end();
-    }
-  }
-
-  protected async loadReport(): Promise<void> {
-    const end = this._loading.begin();
-    const range = { range: this.reportRange(), from: null, to: null };
-    try {
-      const [report, coverage] = await Promise.all([this.svc.getFieldReport(range), this.svc.getCoverage(range)]);
-      this.report.set(report);
-      this.coverage.set(coverage);
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load field report.');
-    } finally {
-      end();
-    }
-  }
-
-  /** Coverage door dots, coloured by whether we talked, knocked, or haven't reached them. */
-  protected readonly coverageMarkers = computed<PcMapMarker[]>(() => {
-    const cov = this.coverage();
-    if (!cov) return [];
-    return cov.doors.map((d) => ({
-      position: { lat: d.lat, lng: d.lng },
-      variant: COVERAGE_VARIANT[d.status],
-    }));
-  });
-
-  /** Dashed turf boundaries (convex hull of each turf's doors). */
-  protected readonly coveragePolygons = computed<PcMapPolygon[]>(() => {
-    const cov = this.coverage();
-    if (!cov) return [];
-    return cov.turfs.map((t) => ({
-      path: t.path,
-      variant: 'neutral' as const,
-      dashed: true,
-      label: t.name,
-      id: t.id,
-    }));
-  });
-
-  protected selectTab(tab: string): void {
-    if (tab !== 'turfs' && tab !== 'report') return;
-    this.tab.set(tab);
-    if (tab === 'report' && !this.report()) void this.loadReport();
-  }
-
-  protected setRange(range: ReportRange): void {
-    this.reportRange.set(range);
-    void this.loadReport();
-  }
-
-  protected openCut(): void {
-    this.cutOpen.set(true);
-  }
-
-  protected onCutDone(created: number): void {
-    this.cutOpen.set(false);
-    if (created > 0) {
-      this.alerts.showSuccess(`Cut ${created} ${created === 1 ? 'turf' : 'turfs'}.`);
-      void this.loadTurfs();
-    }
-  }
-
-  /** Assignment is personal now — open the pick-a-volunteer dialog (plan §5 B1). */
-  protected assign(t: TurfListItem): void {
-    this.assignTarget.set(t);
-  }
-
-  /** An existing link can be re-copied; a missing one needs an assignment first. */
-  protected async copyLink(t: TurfListItem): Promise<void> {
-    if (t.token) {
-      await this.copyCompanionLink(t.token);
+  protected onNameBlur(): void {
+    const name = this.payload().name.trim();
+    if (name.length < CompanyForm.MIN_LOOKUP_NAME_LENGTH) {
+      this.duplicateName.set(false);
       return;
     }
-    this.assign(t);
-  }
-
-  protected async onAssigned(res: { token: string; sent: { email: boolean; sms: boolean } }): Promise<void> {
-    this.assignTarget.set(null);
-    const phrase = volunteerLinkSentPhrase(res.sent);
-    await this.copyCompanionLink(res.token, phrase ? `Volunteer assigned — ${phrase}. Link also copied.` : undefined);
-    if (!phrase) {
-      this.alerts.showWarn('They have no email or mobile on file — paste them the copied link yourself');
-    }
-    await this.loadTurfs();
-  }
-
-  private async copyCompanionLink(token: string, successMessage?: string): Promise<void> {
-    const url = companionUrl(`/t/${encodeURIComponent(token)}`);
-    try {
-      await navigator.clipboard.writeText(url);
-      this.alerts.showSuccess(successMessage ?? 'Personal link copied. Only the assigned volunteer can open it.');
-    } catch {
-      this.alerts.showSuccess(`Companion link: ${url}`);
+    // Duplicate check runs in both new and edit modes; Google auto-fill is new-only.
+    void this.checkDuplicateName(name);
+    if (this.isNewMode()) {
+      void this.runNameLookup(name);
     }
   }
 
-  protected async refresh(t: TurfListItem): Promise<void> {
-    const end = this._loading.begin();
+  /** Advisory duplicate-name check — updates the hint, never blocks saving. */
+  private async checkDuplicateName(name: string): Promise<void> {
     try {
-      const res = await this.svc.refreshFromList(t.id);
-      this.alerts.showSuccess(`Refreshed. ${res.added} added, ${res.removed} removed. Knock history kept.`);
-      await this.loadTurfs();
+      const exists = await this.companiesSvc.checkNameExists(name, this.id());
+      this.duplicateName.set(exists);
     } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');
-    } finally {
-      end();
+      // Best-effort: a failed check just hides the hint, never blocks the form.
+      console.error('Duplicate company-name check failed:', err);
+      this.duplicateName.set(false);
     }
   }
 
-  protected async retire(t: TurfListItem): Promise<void> {
-    const ok = await this.dialog.confirm({
-      title: 'Retire this turf?',
-      message: `"${t.name}" will stop accepting knocks. Its totals stay in the field report.`,
-      confirmText: 'Retire turf',
+  private async runNameLookup(name: string): Promise<void> {
+    if (name === this.lastLookedUpName) return;
+    this.lastLookedUpName = name;
+
+    this.lookingUp.set(true);
+    try {
+      const result = await this.companiesSvc.lookupEnrichment(name);
+      const current = this.payload();
+      const next = { ...current };
+      const filled: string[] = [];
+      if (!current.website.trim() && result.website) {
+        next.website = result.website;
+        filled.push('website');
+      }
+      if (!current.phone.trim() && result.phone) {
+        next.phone = result.phone;
+        filled.push('phone');
+      }
+      if (!current.industry.trim() && result.industry) {
+        next.industry = result.industry;
+        filled.push('industry');
+      }
+      if (!current.description.trim() && result.description) {
+        next.description = result.description;
+        filled.push('description');
+      }
+      if (filled.length > 0) {
+        this.payload.set(next);
+        this.alertSvc.showSuccess(`Filled in ${filled.join(', ')} from Google. Review before saving`);
+      }
+    } catch (err) {
+      // Best-effort only: never block adding a company on a Google lookup.
+      console.error('Google company lookup failed:', err);
+    } finally {
+      this.lookingUp.set(false);
+    }
+  }
+
+  protected async deleteCompany() {
+    if (!this.id()) return;
+    const confirmed = await this.dialogs.confirm({
+      title: 'Delete Company',
+      message: 'Are you sure you want to delete this company? This action cannot be undone.',
+      variant: 'danger',
+      confirmText: 'Delete',
     });
-    if (!ok) return;
+    if (!confirmed) return;
     const end = this._loading.begin();
     try {
-      await this.svc.retire(t.id);
-      this.alerts.showSuccess('Turf retired.');
-      await this.loadTurfs();
+      await this.companiesSvc.delete(this.id()!);
+      this.companiesSvc.triggerRefresh();
+      this.alertSvc.showSuccess('Company deleted');
+      await this.router.navigate(['/companies']);
     } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to retire turf.');
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Unable to delete company';
+      this.alertSvc.showError(message);
     } finally {
       end();
     }
   }
 
-  protected async exportReport(): Promise<void> {
+  public canDeactivate(): Promise<boolean> {
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.company()?.name || 'this company', () =>
+      this.save(undefined, true),
+    );
+  }
+
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
+    if (done instanceof Event) {
+      done.preventDefault();
+    }
+    if (this.saving()) return false;
+    const raw = this.payload();
+    const editing = this.id();
+
+    this.saving.set(true);
+    const end = this._loading.begin();
     try {
-      const { filename, content } = await this.svc.exportFieldReport({
-        range: this.reportRange(),
-        from: null,
-        to: null,
-      });
-      const blob = new Blob([content], { type: 'text/csv' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-      this.alerts.showSuccess('Report exported: doors, conversations and responses by team and by day (CSV).');
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to export report.');
+      if (editing) {
+        await this.companiesSvc.update(editing, raw);
+      } else {
+        await this.companiesSvc.add(raw);
+      }
+      this.companiesSvc.triggerRefresh();
+      this.alertSvc.showSuccess(editing ? 'Company updated successfully' : 'Company added successfully');
+      // Mark the form pristine so the deactivate guard doesn't prompt
+      // "Leave without saving?" on the post-save navigation.
+      this.form().reset();
+      if (typeof done === 'function') {
+        done();
+      } else if (!stayPut) {
+        await this.router.navigate(editing ? ['/companies', editing] : ['/companies']);
+      }
+      return true;
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Unable to save company';
+      this.alertSvc.showError(message);
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
     }
   }
+}
 
-  protected hourLabel(h: number): string {
-    const am = h < 12;
-    const base = h % 12 === 0 ? 12 : h % 12;
-    return `${base}${am ? 'am' : 'pm'}`;
-  }
-
-  protected barPct(value: number, max: number): number {
-    if (max <= 0) return 0;
-    return Math.round((value / max) * 100);
-  }
-
-  protected maxPerDay(): number {
-    const r = this.report();
-    if (!r) return 0;
-    return Math.max(1, ...r.perDay.map((d) => d.conversations + d.no_answer));
-  }
-
-  protected maxByHour(): number {
-    const r = this.report();
-    if (!r) return 0;
-    return Math.max(1, ...r.byHour.map((h) => h.attempts));
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 ```
 
@@ -60234,93 +59408,217 @@ export class DeliveriesRoutesService extends AbstractAPIService<'delivery_routes
 }
 ```
 
-## File: apps/frontend/src/app/experiences/deliveries/ui/deliveries-routes.html
-```html
-<div class="mx-auto flex w-full max-w-[980px] flex-col gap-5 p-4">
-  <!-- Trail (Deliveries / Routes) renders in the navbar; keep an accessible heading only. -->
-  <div class="flex flex-wrap items-center justify-end gap-3">
-    <h1 class="sr-only">Routes</h1>
-    <pc-deliveries-nav class="mr-auto" />
-    <a class="btn btn-primary btn-sm" routerLink="/deliveries/plan">
-      <pc-icon name="map-pin" [size]="4"></pc-icon> Plan routes
-    </a>
-  </div>
+## File: apps/frontend/src/app/experiences/deliveries/ui/deliveries-routes.ts
+```typescript
+import { DatePipe } from '@angular/common';
+import { ChangeDetectionStrategy, Component, OnInit, inject, signal, viewChild } from '@angular/core';
+import { RouterLink } from '@angular/router';
 
-  <pc-table [loading]="loading.visible()" [columns]="8">
-    <ng-container pcTableHead>
-      <th>Name</th>
-      <th>Status</th>
-      <th>Stops</th>
-      <th>Est. time</th>
-      <th>Volunteer</th>
-      <th>Scheduled</th>
-      <th>Created</th>
-      <th></th>
-    </ng-container>
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
+import type { PcStatusType } from '@uxcommon/components/status-badge/status-badge';
+import { RowActions } from '@uxcommon/components/row-actions/row-actions';
+import { Table } from '@uxcommon/components/table/table';
+import { Icon } from '@icons/icon';
 
-    @if (loaded() && rows().length === 0) {
-    <tr>
-      <td colspan="8" class="px-6">
-        <pc-empty-state
-          icon="map-pin"
-          [bordered]="false"
-          title="No routes yet"
-          hint="Approve requests, then plan routes."
-        >
-          <a class="btn btn-primary btn-sm" routerLink="/deliveries/plan">Plan routes</a>
-        </pc-empty-state>
-      </td>
-    </tr>
-    } @else { @for (row of rows(); track row.id) {
-    <tr>
-      <td>
-        <a
-          class="link link-hover font-medium text-primary underline decoration-primary/20 underline-offset-[3px]"
-          [routerLink]="['/deliveries/routes', row.id]"
-        >
-          {{ row.name }}
-        </a>
-      </td>
-      <td><pc-status-badge [type]="tone(row.status)">{{ label(row.status) }}</pc-status-badge></td>
-      <td class="tabular-nums">{{ stopsLabel(row) }}</td>
-      <td class="tabular-nums text-base-content/70">{{ row.est_minutes }} min · {{ row.est_km }} km</td>
-      <td>
-        @if (row.volunteer_person_id) {
-        <a class="link link-hover text-primary" [routerLink]="['/people', row.volunteer_person_id]"
-          >{{ row.volunteer_name || 'Volunteer' }}</a
-        >
-        } @else {
-        <button type="button" class="btn btn-ghost btn-xs border-dashed" (click)="openAssign(row)">Assign</button>
-        }
-      </td>
-      <td class="whitespace-nowrap tabular-nums text-base-content/60">
-        {{ row.scheduled_for ? (row.scheduled_for | date: 'mediumDate') : '—' }}
-      </td>
-      <td class="whitespace-nowrap tabular-nums text-base-content/60">
-        {{ row.created_at ? (row.created_at | date: 'mediumDate') : '' }}
-      </td>
-      <td class="text-right">
-        <pc-row-actions [label]="'Actions for ' + row.name">
-          @if (row.volunteer_person_id) {
-          <li><button type="button" (click)="openAssign(row)">Change volunteer</button></li>
-          <li><button type="button" (click)="copyLink(row)">Copy volunteer link</button></li>
-          @if (canResend(row.status)) {
-          <li><button type="button" (click)="resendLink(row)">Resend link to volunteer</button></li>
-          } } @else {
-          <li><button type="button" (click)="openAssign(row)">Assign volunteer</button></li>
-          } @if (canCancel(row.status)) {
-          <li><button type="button" class="text-error" (click)="cancelRoute(row)">Cancel route…</button></li>
-          } @if (canDelete(row.status)) {
-          <li><button type="button" class="text-error" (click)="deleteRoute(row)">Delete route</button></li>
-          }
-        </pc-row-actions>
-      </td>
-    </tr>
-    } }
-  </pc-table>
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
+import { AssignVolunteerDialog } from './assign-volunteer-dialog';
+import { DeliveriesNav } from './deliveries-nav';
 
-  <pc-assign-volunteer-dialog #assignDlg (selected)="onVolunteerSelected($event)"></pc-assign-volunteer-dialog>
-</div>
+import { DeliveriesRoutesService, type DeliveryRouteRow } from '../services/deliveries-routes-service';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+
+type PersonSearchResult = { id: string; first_name: string | null; last_name: string | null; email: string | null };
+
+const ROUTE_TONE: Record<string, PcStatusType> = {
+  draft: 'neutral',
+  assigned: 'info',
+  in_progress: 'warning',
+  completed: 'success',
+  canceled: 'ghost',
+};
+
+/** Deliveries routes grid (spec §4.3 list). */
+@Component({
+  selector: 'pc-deliveries-routes',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [
+    EmptyState,
+    RouterLink,
+    StatusBadge,
+    Icon,
+    DatePipe,
+    Table,
+    RowActions,
+    DeliveriesNav,
+    AssignVolunteerDialog,
+  ],
+  templateUrl: './deliveries-routes.html',
+})
+export class DeliveriesRoutes implements OnInit {
+  private readonly svc = inject(DeliveriesRoutesService);
+  private readonly alerts = inject(AlertService);
+  private readonly confirm = inject(ConfirmDialogService);
+  private readonly assignDlg = viewChild.required<AssignVolunteerDialog>('assignDlg');
+  protected readonly loading = createLoadingGate();
+
+  protected readonly rows = signal<DeliveryRouteRow[]>([]);
+  protected readonly loaded = signal(false);
+
+  /** The route the open picker is acting on — the dialog itself is route-agnostic. */
+  private readonly assigningRouteId = signal<string | null>(null);
+
+  public ngOnInit(): void {
+    void this.reload();
+  }
+
+  protected tone(status: string): PcStatusType {
+    return ROUTE_TONE[status] ?? 'neutral';
+  }
+
+  protected label(status: string): string {
+    return status === 'in_progress' ? 'in progress' : status;
+  }
+
+  /** Cancel is meaningless once a route is already canceled or completed. */
+  protected canCancel(status: string): boolean {
+    return status !== 'canceled' && status !== 'completed';
+  }
+
+  /** Delete only while nothing has happened yet (mirrors the route-detail rule). */
+  protected canDelete(status: string): boolean {
+    return status === 'draft' || status === 'assigned';
+  }
+
+  /** Re-sending only makes sense while the route is still live (same statuses as cancel). */
+  protected canResend(status: string): boolean {
+    return this.canCancel(status);
+  }
+
+  protected openAssign(row: DeliveryRouteRow): void {
+    this.assigningRouteId.set(row.id);
+    this.assignDlg().open(row.volunteer_person_id != null);
+  }
+
+  protected async onVolunteerSelected(person: PersonSearchResult | null): Promise<void> {
+    const routeId = this.assigningRouteId();
+    if (!routeId) return;
+    try {
+      const res = await this.svc.assignVolunteer(routeId, person?.id ?? null);
+      if (!person) {
+        this.alerts.showSuccess('Volunteer removed');
+      } else {
+        const phrase = volunteerLinkSentPhrase(res.sent);
+        if (phrase) this.alerts.showSuccess(`Volunteer assigned — ${phrase}`);
+        else
+          this.alerts.showWarn(
+            'Volunteer assigned, but they have no email or mobile on file — use "Copy volunteer link" to share it',
+          );
+      }
+      await this.reload();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error ? err.message : 'Could not update the volunteer');
+    }
+  }
+
+  protected async copyLink(row: DeliveryRouteRow, regenerate = false): Promise<void> {
+    try {
+      const res = await this.svc.mintShareLink(row.id, regenerate);
+      if (res.status === 'exists') {
+        // The raw token is never stored, so the existing link can't be shown again — the only way
+        // to hand the user a copyable link is to mint a fresh one, which retires the old one.
+        const ok = await this.confirm.confirm({
+          title: 'Copy a fresh link?',
+          message:
+            'This route already has an active volunteer link, and for security the existing one can’t be shown again. Copying a fresh link replaces it. The old link stops working, so anyone you already sent it to will need the new one.',
+          variant: 'warning',
+          confirmText: 'Regenerate & copy',
+        });
+        if (ok) await this.copyLink(row, true);
+        return;
+      }
+      const url = companionUrl(`/r/${res.token}`);
+      await navigator.clipboard.writeText(url).catch(() => undefined);
+      // expires_at is null when the workspace disables link expiry (Workspace → App).
+      this.alerts.showSuccess(
+        regenerate
+          ? 'Fresh link copied. The old link no longer works'
+          : res.expires_at
+            ? 'Link copied (valid 30 days)'
+            : 'Link copied',
+      );
+    } catch (err) {
+      this.alerts.showError(err instanceof Error ? err.message : 'Could not create the link');
+    }
+  }
+
+  /** Mint a fresh link and send it to the volunteer's contacts (replaces the previously sent link). */
+  protected async resendLink(row: DeliveryRouteRow): Promise<void> {
+    try {
+      const res = await this.svc.resendVolunteerLink(row.id);
+      const phrase = volunteerLinkSentPhrase(res.sent);
+      this.alerts.showSuccess(phrase ? `Fresh ${phrase}` : 'Link sent');
+    } catch (err) {
+      this.alerts.showError(err instanceof Error ? err.message : 'Could not send the link');
+    }
+  }
+
+  protected async cancelRoute(row: DeliveryRouteRow): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Cancel this route?',
+      message: 'Its undelivered stops return to the planning pool. Delivered stops keep their record.',
+      variant: 'danger',
+      confirmText: 'Cancel route',
+    });
+    if (!ok) return;
+    try {
+      await this.svc.setStatus(row.id, 'canceled');
+      this.alerts.showSuccess('Route canceled');
+      await this.reload();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error ? err.message : 'Could not cancel the route');
+    }
+  }
+
+  protected async deleteRoute(row: DeliveryRouteRow): Promise<void> {
+    const ok = await this.confirm.confirm({
+      title: 'Delete this route?',
+      message: 'This removes the route. Its stops return to the planning pool.',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    try {
+      await this.svc.delete(row.id);
+      this.alerts.showSuccess('Route deleted');
+      await this.reload();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error ? err.message : 'Could not delete the route');
+    }
+  }
+
+  protected stopsLabel(row: DeliveryRouteRow): string {
+    if (row.stops_total === 0) return '0';
+    if (row.stops_delivered > 0 || row.status === 'in_progress' || row.status === 'completed') {
+      return `${row.stops_delivered} of ${row.stops_total} delivered`;
+    }
+    return String(row.stops_total);
+  }
+
+  private async reload(): Promise<void> {
+    const end = this.loading.begin();
+    try {
+      const list = await this.svc.getAll();
+      this.rows.set(list.rows);
+      this.loaded.set(true);
+    } catch (err) {
+      this.alerts.showError(err instanceof Error ? err.message : 'Could not load routes');
+    } finally {
+      end();
+    }
+  }
+}
 ```
 
 ## File: apps/frontend/src/app/experiences/deliveries/ui/yard-sign-standing.ts
@@ -61016,6 +60314,856 @@ export class EmailClient {
     if (target.isContentEditable) return true;
     return target.getAttribute('role') === 'textbox';
   }
+}
+```
+
+## File: apps/frontend/src/app/experiences/events/ui/event-form.ts
+```typescript
+import { Component, computed, effect, inject, input, signal, untracked, OnInit } from '@angular/core';
+import { FormField, form, validateStandardSchema } from '@angular/forms/signals';
+import { Router, RouterModule } from '@angular/router';
+import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
+import type { CdkDragDrop } from '@angular/cdk/drag-drop';
+import { Icon } from '@icons/icon';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { EntityOverview as PcEntityOverview } from '@uxcommon/components/entity-overview/entity-overview';
+import { Input as PcInput } from '@uxcommon/components/input/input';
+import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { FieldsSelector } from '@uxcommon/components/fields-selector/fields-selector';
+import { PublicLinkPanel } from '@uxcommon/components/public-link-panel/public-link-panel';
+import { AuthService } from '../../../auth/auth-service';
+import { publicPageUrl } from '../../../shared/public-pages';
+
+import { AddEventObj, AddEventType, UpdateEventType } from '../../../../../../../libs/common/src';
+import { EventsService } from '../../../services/api/events-service';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { EventsFrontendService } from '../services/events-frontend-service';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+
+@Component({
+  selector: 'pc-event-form',
+  imports: [
+    FormField,
+    PcInput,
+    PcTextarea,
+    RouterModule,
+    Icon,
+    PcDetailHeader,
+    PcEntityOverview,
+    PcCard,
+    FieldsSelector,
+    PublicLinkPanel,
+    CdkDropList,
+    CdkDrag,
+    CdkDragHandle,
+    CdkDragPlaceholder,
+  ],
+  templateUrl: './event-form.html',
+  providers: [EventsService],
+})
+export class EventFormComponent implements OnInit {
+  private readonly _loading = createLoadingGate();
+  private readonly alerts = inject(AlertService);
+  private readonly dialogs = inject(ConfirmDialogService);
+  private readonly auth = inject(AuthService);
+  private readonly eventsFrontendSvc = inject(EventsFrontendService);
+  private readonly eventsSvc = inject(EventsService);
+  private readonly router = inject(Router);
+
+  private slugTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  protected readonly addingTicket = signal(false);
+  protected readonly selectedFields = signal<string[]>(['first_name', 'last_name', 'email', 'mobile', 'notes']);
+  protected readonly publicUrl = computed(() => {
+    const slug = this.payload().slug;
+    if (!slug || this.isNew()) return '';
+    return publicPageUrl(this.auth.getUser()?.tenant_slug, `e/${slug}`);
+  });
+  protected readonly detail = signal<any>(null);
+
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
+    const events: PcBreadcrumb = { label: 'Forms', route: '/forms' };
+    const id = this.id();
+    if (id) {
+      return [events, { label: this.detail()?.name || 'Event', route: ['/events/pages', id] }, { label: 'Edit' }];
+    }
+    return [events, { label: 'New event' }];
+  });
+
+  protected readonly payload = signal({
+    name: '',
+    slug: '',
+    description: '',
+    location_address: '',
+    start_time: '',
+    end_time: '',
+    capacity: null as number | null,
+    contact_email: '',
+    contact_phone: '',
+    is_published: false,
+    send_reminder: true,
+    send_registration_confirmation: true,
+  });
+  protected readonly endBeforeStartError = computed(() => {
+    const { start_time, end_time } = this.payload();
+    if (!start_time || !end_time) return false;
+    return new Date(end_time) <= new Date(start_time);
+  });
+  protected readonly error = signal<string | null>(null);
+  protected readonly form = form(this.payload, (p) => {
+    validateStandardSchema(p, AddEventObj);
+  });
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+  protected readonly isNew = computed(() => !this.id());
+  protected readonly loading = this._loading.visible;
+  protected readonly newTicket = signal({ name: '', description: '', price_cents: 0, capacity: null as number | null });
+  protected readonly saving = signal(false);
+  protected readonly slugChecking = signal(false);
+  protected readonly slugUnique = signal<boolean | null>(null);
+
+  // Ticket types
+  protected readonly ticketTypes = signal<any[]>([]);
+
+  protected slugManuallyEdited = false;
+
+  protected setNewTicketName(event: Event): void {
+    const input = event.target as HTMLInputElement | null;
+    this.newTicket.update((t) => ({ ...t, name: input?.value ?? '' }));
+  }
+  protected setNewTicketPrice(event: Event): void {
+    const input = event.target as HTMLInputElement | null;
+    this.newTicket.update((t) => ({ ...t, price_cents: +(input?.value ?? '') }));
+  }
+  protected setNewTicketCapacity(event: Event): void {
+    const input = event.target as HTMLInputElement | null;
+    const value = input?.value ?? '';
+    this.newTicket.update((t) => ({ ...t, capacity: value ? +value : null }));
+  }
+
+  public readonly id = input<string>();
+
+  constructor() {
+    const nameSignal = computed(() => this.payload().name);
+    effect(() => {
+      const name = nameSignal();
+      if (this.isNew() && !this.slugManuallyEdited) {
+        const suggested = this.slugify(name);
+        if (untracked(this.payload).slug !== suggested) {
+          this.payload.update((p) => ({ ...p, slug: suggested }));
+        }
+      }
+    });
+
+    const slugSignal = computed(() => this.payload().slug);
+    effect(() => {
+      const slug = slugSignal();
+      if (this.slugTimeoutId) {
+        clearTimeout(this.slugTimeoutId);
+        this.slugTimeoutId = null;
+      }
+      if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+        this.slugUnique.set(null);
+        this.slugChecking.set(false);
+        return;
+      }
+      this.slugChecking.set(true);
+      this.slugTimeoutId = setTimeout(() => {
+        void (async () => {
+          try {
+            const res = await this.eventsFrontendSvc.checkSlugUnique(slug, this.isNew() ? null : (this.id() ?? null));
+            if (untracked(slugSignal) === slug) {
+              this.slugUnique.set(res.unique);
+            }
+          } catch (err) {
+            console.error('Failed to check slug uniqueness', err);
+          } finally {
+            if (untracked(slugSignal) === slug) {
+              this.slugChecking.set(false);
+            }
+          }
+        })();
+      }, 300);
+    });
+  }
+
+  public ngOnInit(): void {
+    const end = this._loading.begin();
+    void this.loadEvent().finally(() => end());
+  }
+
+  protected cancelAddTicket() {
+    this.addingTicket.set(false);
+  }
+
+  protected async deleteEvent() {
+    if (!this.id()) return;
+    const confirmed = await this.dialogs.confirm({
+      title: 'Delete Event Page',
+      message: 'Are you sure you want to delete this event page? All registrations will also be deleted.',
+      variant: 'danger',
+      confirmText: 'Delete',
+    });
+    if (!confirmed) return;
+
+    this.saving.set(true);
+    try {
+      await this.eventsFrontendSvc.delete(this.id()!);
+      this.eventsFrontendSvc.triggerRefresh();
+      this.alerts.showSuccess('Event deleted');
+      await this.router.navigate(['/forms']);
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to delete event');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  /**
+   * Drag-to-reorder ticket types. Optimistically reorders the local list, persists the new order as
+   * each ticket's sort_order (index), then reconciles with a reload. On failure we roll back and
+   * surface the error. The order set here is the order attendees see on the public event page.
+   */
+  protected async onTicketDrop(event: CdkDragDrop<unknown[]>): Promise<void> {
+    const snapshot = this.ticketTypes();
+    const from = event.previousIndex;
+    const to = event.currentIndex;
+    if (from === to || from < 0 || to < 0 || from >= snapshot.length || to >= snapshot.length) return;
+
+    const reordered = [...snapshot];
+    moveItemInArray(reordered, from, to);
+    this.ticketTypes.set(reordered);
+    const orderedIds = reordered.map((t) => String(t.id));
+
+    try {
+      await this.eventsSvc.reorderTicketTypes(this.id()!, orderedIds);
+      await this.loadTicketTypes();
+    } catch (err) {
+      this.ticketTypes.set(snapshot);
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to reorder ticket types');
+    }
+  }
+
+  protected async deleteTicketType(id: string) {
+    const confirmed = await this.dialogs.confirm({
+      title: 'Delete Ticket Type',
+      message: 'Delete this ticket type?',
+      variant: 'danger',
+      confirmText: 'Delete',
+    });
+    if (!confirmed) return;
+    try {
+      await this.eventsSvc.deleteTicketType(id);
+      this.alerts.showSuccess('Ticket type deleted');
+      await this.loadTicketTypes();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to delete ticket type');
+    }
+  }
+
+  protected formatPrice(cents: number): string {
+    if (!cents) return 'Free';
+    return `$${(cents / 100).toFixed(2)}`;
+  }
+
+  protected async loadEvent() {
+    if (this.isNew()) return;
+
+    try {
+      const event = (await this.eventsFrontendSvc.getById(this.id()!)) as any;
+      this.detail.set(event);
+      this.payload.set({
+        name: event.name ?? '',
+        slug: event.slug ?? '',
+        description: event.description ?? '',
+        location_address: event.location_address ?? '',
+        start_time: this.toDatetimeLocalString(event.start_time),
+        end_time: this.toDatetimeLocalString(event.end_time),
+        capacity: event.capacity ?? null,
+        contact_email: event.contact_email ?? '',
+        contact_phone: event.contact_phone ?? '',
+        is_published: !!event.is_published,
+        send_reminder: event.send_reminder !== false,
+        send_registration_confirmation: event.send_registration_confirmation !== false,
+      });
+      if (Array.isArray(event.fields) && event.fields.length > 0) {
+        this.selectedFields.set(event.fields);
+      }
+      await this.loadTicketTypes();
+    } catch (err) {
+      this.error.set(err instanceof Error && err.message ? err.message : 'Failed to load event');
+      this.alerts.showError(this.error()!);
+    }
+  }
+
+  protected async loadTicketTypes() {
+    if (!this.id()) return;
+    try {
+      const types = await this.eventsSvc.getTicketTypes(this.id()!);
+      this.ticketTypes.set(types || []);
+    } catch (err) {
+      console.error('Failed to load ticket types', err);
+    }
+  }
+
+  protected onSlugInput() {
+    this.slugManuallyEdited = true;
+  }
+
+  public canDeactivate(): Promise<boolean> {
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this event', () =>
+      this.save(undefined, true),
+    );
+  }
+
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
+    if (done instanceof Event) done.preventDefault();
+    this.form().markAsTouched();
+    if (this.form().invalid()) return false;
+
+    if (this.endBeforeStartError()) {
+      this.alerts.showError('The event cannot end before it starts, please check the dates and times again.');
+      return false;
+    }
+
+    if (this.slugUnique() === false) {
+      this.alerts.showError('This URL slug is already in use. Please choose a different one.');
+      return false;
+    }
+
+    this.saving.set(true);
+    this.error.set(null);
+
+    const raw = this.payload();
+    const data = {
+      name: raw.name.trim(),
+      slug: raw.slug.trim(),
+      description: raw.description?.trim() || null,
+      location_address: raw.location_address?.trim() || null,
+      start_time: new Date(raw.start_time),
+      end_time: new Date(raw.end_time),
+      capacity: raw.capacity ? Number(raw.capacity) : null,
+      contact_email: raw.contact_email?.trim() || null,
+      contact_phone: raw.contact_phone?.trim() || null,
+      is_published: !!raw.is_published,
+      send_reminder: !!raw.send_reminder,
+      send_registration_confirmation: !!raw.send_registration_confirmation,
+      fields: this.selectedFields(),
+    };
+
+    try {
+      if (this.isNew()) {
+        const res = await this.eventsFrontendSvc.add(data as AddEventType);
+        this.eventsFrontendSvc.triggerRefresh();
+        this.alerts.showSuccess('Event created successfully');
+        this.form().reset();
+        if (!stayPut) await this.router.navigate(['/events/pages', (res as any).id]);
+      } else {
+        await this.eventsFrontendSvc.update(this.id()!, data as UpdateEventType);
+        this.eventsFrontendSvc.triggerRefresh();
+        this.alerts.showSuccess('Event updated successfully');
+        // Pristine again, so the post-save navigation doesn't hit the leave guard.
+        this.form().reset();
+        if (typeof done === 'function') {
+          done();
+        } else if (!stayPut) {
+          await this.router.navigate(['/events/pages', this.id()]);
+        }
+      }
+      return true;
+    } catch (err) {
+      this.error.set(err instanceof Error && err.message ? err.message : 'Failed to save event');
+      this.alerts.showError(this.error()!);
+      return false;
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async saveNewTicket() {
+    const t = this.newTicket();
+    if (!t.name.trim()) {
+      this.alerts.showError('Ticket type name is required');
+      return;
+    }
+    try {
+      await this.eventsSvc.addTicketType({
+        event_id: this.id()!,
+        name: t.name.trim(),
+        description: t.description?.trim() || null,
+        price_cents: Number(t.price_cents) || 0,
+        capacity: t.capacity ? Number(t.capacity) : null,
+      });
+      this.addingTicket.set(false);
+      this.alerts.showSuccess('Ticket type added');
+      await this.loadTicketTypes();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to add ticket type');
+    }
+  }
+
+  protected slugify(text: string): string {
+    return text
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+  }
+
+  // Ticket type management
+  protected startAddTicket() {
+    this.newTicket.set({ name: '', description: '', price_cents: 0, capacity: null });
+    this.addingTicket.set(true);
+  }
+
+  protected toDatetimeLocalString(val: any): string {
+    if (!val) return '';
+    const date = new Date(val);
+    if (Number.isNaN(date.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+}
+```
+
+## File: apps/frontend/src/app/experiences/households/ui/household-form.ts
+```typescript
+import { Component, OnInit, inject, input, signal, computed } from '@angular/core';
+import { DatePipe } from '@angular/common';
+import { form, validateStandardSchema } from '@angular/forms/signals';
+import { Router, RouterModule } from '@angular/router';
+import { UpdateHouseholdsType, UpdateHouseholdsObj } from '../../../../../../../libs/common/src';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Icon } from '@icons/icon';
+import { AddressAutocomplete } from '@uxcommon/components/address-autocomplete/address-autocomplete';
+import { Tags } from '@experiences/tags/ui/tags';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
+import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { AddressFormGroup as PcAddressFormGroup } from '@uxcommon/components/address-form-group/address-form-group';
+import { GeocodeChip } from '@uxcommon/components/geocode-chip/geocode-chip';
+
+import type { Selectable } from 'kysely';
+import { HouseholdsService } from '../services/households-service';
+import { Households, AddressType } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { PersonsService } from '../../persons/services/persons-service';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+import { getUserErrorMessage } from '@frontend/services/api/user-message';
+
+@Component({
+  selector: 'pc-household-form',
+  imports: [
+    PcTextarea,
+    AddressAutocomplete,
+    Tags,
+    Icon,
+    RouterModule,
+    PcDetailHeader,
+    PcCard,
+    PcAddressFormGroup,
+    GeocodeChip,
+    DatePipe,
+  ],
+  templateUrl: './household-form.html',
+})
+export class HouseholdForm implements OnInit {
+  private readonly alertSvc = inject(AlertService);
+  private readonly householdsSvc = inject(HouseholdsService);
+  private readonly tagOptionsSvc = inject(TagOptionsService);
+  private readonly router = inject(Router);
+  private readonly dialogSvc = inject(ConfirmDialogService);
+  private readonly personsSvc = inject(PersonsService);
+
+  private _loading = createLoadingGate();
+
+  /** Disables Save immediately on click — the loading gate stays false for its first
+   *  300ms by design, which would leave a double-click window. */
+  protected readonly saving = signal(false);
+
+  protected readonly household = signal<Selectable<Households> | null>(null);
+
+  /** Member count for the Overview rail — loaded alongside the household (§6). */
+  protected readonly peopleCount = signal(0);
+
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
+    const households: PcBreadcrumb = { label: 'Households', route: '/households' };
+    const id = this.household()?.id;
+    if (id) {
+      return [households, { label: 'Household', route: ['/households', String(id)] }, { label: 'Edit' }];
+    }
+    return [households, { label: 'New household' }];
+  });
+
+  protected addressVerified = false;
+
+  /** Signals so pc-tags' two-way binding propagates new array references back here. */
+  protected readonly tags = signal<string[]>([]);
+
+  protected readonly issues = signal<string[]>([]);
+
+  protected readonly payload = signal({
+    formatted_address: '',
+    type: '',
+    lat: 0,
+    lng: 0,
+    street_num: '',
+    street1: '',
+    street2: '',
+    apt: '',
+    city: '',
+    state: '',
+    country: '',
+    zip: '',
+    home_phone: '',
+    notes: '',
+  });
+
+  protected readonly form = form(this.payload, (p) => {
+    validateStandardSchema(p, UpdateHouseholdsObj);
+  });
+
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+
+  protected readonly addressString = computed(() => {
+    const raw = this.payload();
+
+    // If formatted_address is present (e.g. populated via Google Places autocomplete)
+    if (raw.formatted_address) {
+      return raw.formatted_address;
+    }
+
+    const parts: string[] = [];
+
+    const streetParts = [raw.apt ? `Apt ${raw.apt}` : null, raw.street_num, raw.street1, raw.street2].filter(Boolean);
+
+    const locationParts = [raw.city, raw.state, raw.zip, raw.country].filter(Boolean);
+
+    if (streetParts.length) {
+      parts.push(streetParts.join(' ').trim());
+    }
+    if (locationParts.length) {
+      parts.push(locationParts.join(', ').trim());
+    }
+
+    return parts.join(', ').trim();
+  });
+
+  protected id = input<string>();
+  protected isLoading = this._loading.visible;
+
+  public mode = input<'new' | 'edit'>('edit');
+  protected readonly isNewMode = computed(() => this.mode() === 'new' || !this.id());
+
+  public handleAddressChange(address: AddressType) {
+    const end = this._loading.begin();
+    try {
+      if (!address || !address.street1) {
+        this.alertSvc.showError('Please select the correct address from the list or leave it blank');
+        return;
+      }
+      this.payload.update((prev) => ({
+        ...prev,
+        formatted_address: address.formatted_address ?? '',
+        type: address.type ?? '',
+        lat: address.lat ?? 0,
+        lng: address.lng ?? 0,
+        street_num: address.street_num ?? '',
+        street1: address.street1 ?? '',
+        street2: address.street2 ?? '',
+        apt: address.apt ?? '',
+        city: address.city ?? '',
+        state: address.state ?? '',
+        country: address.country ?? '',
+        zip: address.zip ?? '',
+      }));
+      this.form.street1().markAsDirty();
+      this.addressVerified = true;
+    } finally {
+      end();
+    }
+  }
+
+  public ngOnInit(): void {
+    void this.loadOnInit();
+  }
+
+  private async loadOnInit(): Promise<void> {
+    await this.loadHousehold();
+    if (this.isNewMode()) {
+      const state = window.history.state;
+      if (state && state.cloneData) {
+        const data = state.cloneData;
+        this.payload.set({
+          formatted_address: data.formatted_address ?? '',
+          type: data.type ?? '',
+          lat: data.lat ?? 0,
+          lng: data.lng ?? 0,
+          street_num: data.street_num ?? '',
+          street1: data.street1 ?? '',
+          street2: data.street2 ?? '',
+          apt: data.apt ?? '',
+          city: data.city ?? '',
+          state: data.state ?? '',
+          country: data.country ?? '',
+          zip: data.zip ?? '',
+          home_phone: data.home_phone ?? '',
+          notes: data.notes ?? '',
+        });
+      }
+    }
+  }
+
+  protected async applyEdit(input: { key: string; value: string; changed: boolean }) {
+    if (input.changed) {
+      const row = { [input.key]: input.value };
+      await this.update(row);
+    }
+  }
+
+  protected async deleteHousehold() {
+    const id = this.id();
+    if (!id) return;
+    const end = this._loading.begin();
+    try {
+      // Fetch people belonging to this household
+      const people = (await this.personsSvc.getByHouseholdId(id, { columns: ['id'] })) as Array<{ id: string }>;
+      const personIds = people.map((p) => p.id);
+      const peopleCount = personIds.length;
+
+      if (peopleCount > 0) {
+        // Show the 3-option warning dialog
+        const choice = await this.dialogSvc.choose<'delete-people' | 'keep-people'>({
+          title: 'Households have people',
+          message: `1 household(s) being deleted contain ${peopleCount} person(s).\nWhat would you like to do with those people?`,
+          variant: 'warning',
+          choices: [
+            { label: 'Delete people too', value: 'delete-people', variant: 'danger' },
+            { label: 'Keep people, just remove their address', value: 'keep-people', variant: 'warning' },
+          ],
+          cancelText: 'Cancel',
+        });
+
+        if (!choice) return; // Handled (user clicked Cancel, so do nothing)
+
+        if (choice === 'keep-people') {
+          for (const pid of personIds) {
+            await this.personsSvc.removeHousehold(pid);
+          }
+        } else if (choice === 'delete-people') {
+          await this.personsSvc.deleteMany(personIds);
+        }
+      } else {
+        const confirmed = await this.dialogSvc.confirm({
+          title: 'Delete Household',
+          message: 'Are you sure you want to delete this household? This action cannot be undone.',
+          variant: 'danger',
+          confirmText: 'Delete',
+        });
+        if (!confirmed) return;
+      }
+
+      await this.householdsSvc.delete(id);
+      this.householdsSvc.triggerRefresh();
+      this.alertSvc.showSuccess('Household deleted');
+      await this.router.navigate(['/households']);
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Unable to delete household';
+      this.alertSvc.showError(message);
+    } finally {
+      end();
+    }
+  }
+
+  public canDeactivate(): Promise<boolean> {
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.addressString() || 'this household', () =>
+      this.save(undefined, true),
+    );
+  }
+
+  protected async save(done?: () => void, stayPut = false): Promise<boolean> {
+    if (this.saving()) return false;
+    const raw = this.payload();
+    const data: UpdateHouseholdsType = {
+      home_phone: raw.home_phone,
+      street_num: raw.street_num,
+      street1: raw.street1,
+      street2: raw.street2,
+      apt: raw.apt,
+      city: raw.city,
+      state: raw.state,
+      zip: raw.zip,
+      country: raw.country,
+      notes: raw.notes,
+      formatted_address: raw.formatted_address || null,
+      type: raw.type || null,
+      lat: raw.lat || null,
+      lng: raw.lng || null,
+    };
+    if (!this.id()) {
+      this.saving.set(true);
+      const end = this._loading.begin();
+      try {
+        const result = await this.householdsSvc.add(data);
+        this.alertSvc.showSuccess('Household added successfully.');
+        this.householdsSvc.triggerRefresh();
+        // Mark the form pristine so the deactivate guard doesn't prompt
+        // "Leave without saving?" on the post-save navigation.
+        this.form().reset();
+        done?.();
+        // stayPut: the leave guard saved on the way out — the router is already navigating.
+        if (!stayPut) await this.router.navigate(['/households', result.id]);
+        return true;
+      } catch (err: unknown) {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not add the household. Please try again.'));
+        return false;
+      } finally {
+        end();
+        this.saving.set(false);
+      }
+    }
+    return this.update(data, done);
+  }
+
+  protected async tagAdded(tag: string) {
+    const id = this.id();
+    if (!id) return;
+    try {
+      await this.householdsSvc.attachTag(id, tag, 'tag');
+      await this.tagOptionsSvc.invalidate('tag');
+    } catch (err) {
+      console.error('Failed to attach tag:', err);
+    }
+  }
+
+  protected async tagRemoved(tag: string) {
+    const id = this.id();
+    if (!id) return;
+    try {
+      await this.householdsSvc.detachTag(id, tag, 'tag');
+      await this.tagOptionsSvc.invalidate('tag');
+    } catch (err) {
+      console.error('Failed to detach tag:', err);
+    }
+  }
+
+  protected async issueAdded(issue: string) {
+    const id = this.id();
+    if (!id) return;
+    try {
+      await this.householdsSvc.attachTag(id, issue, 'issue');
+      await this.tagOptionsSvc.invalidate('issue');
+    } catch (err) {
+      console.error('Failed to attach issue:', err);
+    }
+  }
+
+  protected async issueRemoved(issue: string) {
+    const id = this.id();
+    if (!id) return;
+    try {
+      await this.householdsSvc.detachTag(id, issue, 'issue');
+      await this.tagOptionsSvc.invalidate('issue');
+    } catch (err) {
+      console.error('Failed to detach issue:', err);
+    }
+  }
+
+  private async getTags() {
+    const id = this.id();
+    if (!this.household() || !id) {
+      return;
+    }
+    this.tags.set(await this.householdsSvc.getTags(id, 'tag'));
+    this.issues.set(await this.householdsSvc.getTags(id, 'issue'));
+  }
+
+  private async loadHousehold() {
+    const id = this.id();
+    if (!id) return;
+
+    const end = this._loading.begin();
+
+    try {
+      this.household.set((await this.householdsSvc.getById(id)) as Selectable<Households>);
+      await this.getTags();
+      this.refreshForm();
+      try {
+        this.peopleCount.set(await this.householdsSvc.getPeopleCount(id));
+      } catch {
+        this.peopleCount.set(0);
+      }
+    } finally {
+      end();
+    }
+  }
+
+  private refreshForm() {
+    const household = this.household();
+    if (!household) return;
+
+    this.payload.set({
+      formatted_address: household.formatted_address ?? '',
+      type: household.type ?? '',
+      lat: household.lat ?? 0,
+      lng: household.lng ?? 0,
+      street_num: household.street_num ?? '',
+      street1: household.street1 ?? '',
+      street2: household.street2 ?? '',
+      apt: household.apt ?? '',
+      city: household.city ?? '',
+      state: household.state ?? '',
+      country: household.country ?? '',
+      zip: household.zip ?? '',
+      home_phone: household.home_phone ?? '',
+      notes: household.notes ?? '',
+    });
+    this.form().reset();
+  }
+
+  private async update(data: Partial<UpdateHouseholdsType>, done?: () => void): Promise<boolean> {
+    const id = this.id();
+    if (!id) {
+      return false;
+    }
+
+    this.saving.set(true);
+    const end = this._loading.begin();
+    try {
+      await this.householdsSvc.update(id, data);
+      this.alertSvc.showSuccess('Household updated successfully.');
+      this.form().reset();
+      this.householdsSvc.triggerRefresh();
+      done?.();
+      return true;
+    } catch (err: unknown) {
+      this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the household. Please try again.'));
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 ```
 
@@ -62078,6 +62226,867 @@ export class NewslettersPage {
 }
 ```
 
+## File: apps/frontend/src/app/experiences/persons/ui/person-form.ts
+```typescript
+import { Component, ElementRef, OnInit, computed, inject, input, resource, signal, linkedSignal } from '@angular/core';
+import { DatePipe } from '@angular/common';
+import { form, validateStandardSchema } from '@angular/forms/signals';
+import { Router, RouterModule } from '@angular/router';
+import { type IAuthUser, UpdatePersonsType, UpdatePersonsObj } from '../../../../../../../libs/common/src';
+import type { SupportLevel, VotingStatus, VolunteerStatus, StaffStatus } from '../../../../../../../libs/common/src';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Icon } from '@uxcommon/components/icons/icon';
+import { Tags } from '@experiences/tags/ui/tags';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { Input as PcInput } from '@uxcommon/components/input/input';
+import { Select as PcSelect } from '@uxcommon/components/select/select';
+import { Textarea as PcTextarea } from '@uxcommon/components/textarea/textarea';
+import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+
+import { UserService } from '../../../services/user.service';
+import { HouseholdsService } from '../../households/services/households-service';
+import { PersonsService } from '../services/persons-service';
+import { CompaniesService } from '../../companies/services/companies-service';
+import { AddressType, Persons, Households } from '../../../../../../../libs/common/src/lib/kysely.models';
+import type { Selectable } from 'kysely';
+import { VolunteerService } from '../../../services/api/volunteer-service';
+import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
+import { SideDrawer } from '@uxcommon/components/side-drawer/side-drawer';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+import { getUserErrorMessage } from '@frontend/services/api/user-message';
+import { PersonCampaignFacts } from './person-campaign-facts';
+import { PersonStandingDraft } from './person-standing-draft';
+import { CampaignContextService } from '../../../services/campaign-context.service';
+import { CampaignsService } from '../../campaigns/services/campaigns-service';
+
+@Component({
+  selector: 'pc-person-form',
+  imports: [
+    PcInput,
+    PcSelect,
+    PcTextarea,
+    Tags,
+    RouterModule,
+    Icon,
+    PcDetailHeader,
+    SideDrawer,
+    PcCard,
+    DatePipe,
+    PersonCampaignFacts,
+    PersonStandingDraft,
+  ],
+  templateUrl: './person-form.html',
+})
+export class PersonForm implements OnInit {
+  private readonly alertSvc = inject(AlertService);
+  private readonly userService = inject(UserService);
+  private readonly confirmDlg = inject(ConfirmDialogService);
+  private readonly householdsSvc = inject(HouseholdsService);
+  private readonly personsSvc = inject(PersonsService);
+  private readonly companiesSvc = inject(CompaniesService);
+  private readonly router = inject(Router);
+  private readonly volunteerSvc = inject(VolunteerService);
+  private readonly tagOptionsSvc = inject(TagOptionsService);
+  private readonly campaignsSvc = inject(CampaignsService);
+  private readonly campaignContext = inject(CampaignContextService);
+  private readonly host: ElementRef<HTMLElement> = inject(ElementRef);
+
+  private _loading = createLoadingGate();
+  private usersById = new Map<string, IAuthUser>();
+
+  protected readonly householdResource = resource({
+    params: () => this.householdId(),
+    loader: async ({ params: householdId }) => {
+      if (!householdId) return null;
+      try {
+        return await this.householdsSvc.getById(householdId);
+      } catch {
+        return null;
+      }
+    },
+  });
+
+  protected readonly addressString = computed(() => {
+    const hh = this.householdResource.value() as Households | null | undefined;
+    if (!hh || hh.is_placeholder) return null;
+    return this.getFormattedAddress(hh);
+  });
+
+  /** Overview rail (§6): everyone else sharing this person's household. */
+  protected readonly householdMembersResource = resource({
+    params: () => this.householdId(),
+    loader: async ({ params: householdId }) => {
+      if (!householdId) return null;
+      try {
+        return await this.householdsSvc.getPeopleCount(householdId);
+      } catch {
+        return null;
+      }
+    },
+  });
+
+  protected readonly companyName = computed(() => {
+    const id = this.person()?.company_id;
+    if (!id) return null;
+    return this.companies().find((c) => c.id === id)?.name ?? null;
+  });
+
+  protected readonly preferredContactLabel = computed(() => {
+    switch (this.person()?.preferred_contact) {
+      case 'email':
+        return 'Email';
+      case 'mobile':
+        return 'Mobile phone';
+      case 'home_phone':
+        return 'Home phone';
+      default:
+        return 'No preference';
+    }
+  });
+
+  protected readonly isPlaceholderHousehold = computed(() => {
+    return (this.householdResource.value() as Households | null | undefined)?.is_placeholder ?? false;
+  });
+
+  /** Address line with the household's ward appended when known (e.g. "312 Alder St … · Ward 3"). */
+  protected readonly addressWithWard = computed(() => {
+    const base = this.addressString();
+    if (!base) return null;
+    const ward = (this.householdResource.value() as Households | null | undefined)?.ward;
+    return ward ? `${base} · Ward ${ward}` : base;
+  });
+
+  // Drawer state for assigning household
+  protected readonly assignDrawerOpen = signal(false);
+  protected readonly householdResults = signal<any[]>([]);
+  protected readonly householdSearch = signal('');
+  protected readonly householdsLoading = signal(false);
+
+  protected readonly pendingHouseholdId = signal<string | null>(null);
+  protected readonly isLoading = this._loading.visible;
+
+  /** Disables Save immediately on click — the loading gate stays false for its first
+   *  300ms by design, which would leave a double-click window. */
+  protected readonly saving = signal(false);
+
+  protected readonly emailError = linkedSignal({
+    source: () => this.form.email().value(),
+    computation: () => null as string | null,
+  });
+  protected readonly person = signal<Selectable<Persons> | null>(null);
+  protected readonly users = signal<IAuthUser[]>([]);
+  protected readonly companies = signal<any[]>([]);
+  protected readonly volunteerStats = signal<{ shifts_count: number; total_hours: number } | null>(null);
+  protected readonly volunteerHistory = signal<any[]>([]);
+
+  protected readonly payload = signal({
+    first_name: '',
+    middle_names: '',
+    last_name: '',
+    email: '',
+    email2: '',
+    home_phone: '',
+    mobile: '',
+    notes: '',
+    company_id: '',
+    preferred_contact: '',
+    linkedin: '',
+    twitter: '',
+    facebook: '',
+    instagram: '',
+    assigned_to: '',
+  });
+
+  protected readonly form = form(this.payload, (p) => {
+    validateStandardSchema(p, UpdatePersonsObj);
+  });
+
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+
+  protected id = input<string>();
+  protected tags = signal<string[]>([]);
+  protected issues = signal<string[]>([]);
+
+  // Campaign standing captured on the NEW-person form (§15). Support/voting/subscribe
+  // are campaign-scoped and can only be written once the person has an id, so they are
+  // applied after the add succeeds; do_not_contact is a plain person field folded into
+  // the add payload. Bound two-way to <pc-person-standing-draft>.
+  protected readonly draftSupport = signal<SupportLevel | ''>('');
+  protected readonly draftVoting = signal<VotingStatus | ''>('');
+  protected readonly draftSubscribe = signal(false);
+  protected readonly draftDnc = signal(false);
+  // Volunteer/staff are global person status (§15) — folded straight into the add payload.
+  protected readonly draftVolunteer = signal<VolunteerStatus | ''>('');
+  protected readonly draftStaff = signal<StaffStatus | ''>('');
+
+  // All known tag/issue names for the dashed "Suggestions:" chips under each editor (§4).
+  protected readonly allTagNames = signal<string[]>([]);
+  protected readonly allIssueNames = signal<string[]>([]);
+  private readonly SUGGESTION_LIMIT = 6;
+  protected readonly tagSuggestions = computed(() => this.suggestFrom(this.allTagNames(), this.tags()));
+  protected readonly issueSuggestions = computed(() => this.suggestFrom(this.allIssueNames(), this.issues()));
+
+  private suggestFrom(all: string[], applied: string[]): string[] {
+    const used = new Set(applied.map((t) => t.toLowerCase().trim()));
+    return all.filter((name) => !used.has(name.toLowerCase().trim())).slice(0, this.SUGGESTION_LIMIT);
+  }
+
+  /** Add a tag from a suggestion chip — mirrors the typed-add path (updates the list + persists). */
+  protected addTagSuggestion(name: string): void {
+    if (this.tags().some((t) => t.toLowerCase().trim() === name.toLowerCase().trim())) return;
+    this.tags.update((list) => [...list, name]);
+    void this.tagAdded(name);
+  }
+
+  protected addIssueSuggestion(name: string): void {
+    if (this.issues().some((t) => t.toLowerCase().trim() === name.toLowerCase().trim())) return;
+    this.issues.update((list) => [...list, name]);
+    void this.issueAdded(name);
+  }
+
+  public readonly householdId = computed(() => (this.person()?.household_id ?? null) || this.pendingHouseholdId());
+
+  public mode = input<'new' | 'edit'>('edit');
+  protected readonly isNewMode = computed(() => this.mode() === 'new' || !this.id());
+
+  protected readonly formName = computed(() => {
+    const v = this.payload();
+    return `${v.first_name || ''} ${v.middle_names || ''} ${v.last_name || ''}`.trim();
+  });
+
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
+    const people: PcBreadcrumb = { label: 'People', route: '/people' };
+    const id = this.person()?.id;
+    if (id) {
+      return [people, { label: this.formName() || 'Person', route: ['/people', String(id)] }, { label: 'Edit' }];
+    }
+    return [people, { label: 'New person' }];
+  });
+
+  protected readonly formInitials = computed(() => {
+    const name = this.formName() || '?';
+    return name
+      .split(' ')
+      .slice(0, 2)
+      .map((w) => w[0] ?? '')
+      .join('')
+      .toUpperCase();
+  });
+
+  protected readonly buttonsToShow = computed<'two' | 'three'>(() => (this.person()?.id ? 'two' : 'three'));
+
+  constructor() {
+    // Load users once for display names
+    this.userService
+      .getUsers()
+      .then((u) => {
+        this.users.set(u);
+        this.usersById = new Map(u.map((x) => [x.id, x]));
+      })
+      .catch(() => void 0);
+  }
+
+  public ngOnInit(): void {
+    void this.loadOnInit();
+  }
+
+  private async loadOnInit(): Promise<void> {
+    await this.loadPerson();
+    await this.loadCompanies();
+    void this.loadSuggestionNames();
+    if (this.isNewMode()) {
+      const state = window.history.state;
+      if (state && state.cloneData) {
+        const data = state.cloneData;
+        this.payload.set({
+          first_name: data.first_name ?? '',
+          middle_names: data.middle_names ?? '',
+          last_name: data.last_name ? `${data.last_name} (Copy)` : '',
+          email: data.email ?? '',
+          email2: data.email2 ?? '',
+          home_phone: data.home_phone ?? '',
+          mobile: data.mobile ?? '',
+          notes: data.notes ?? '',
+          company_id: data.company_id ?? '',
+          preferred_contact: data.preferred_contact ?? '',
+          linkedin: data.linkedin ?? '',
+          twitter: data.twitter ?? '',
+          facebook: data.facebook ?? '',
+          instagram: data.instagram ?? '',
+          assigned_to: data.assigned_to ? String(data.assigned_to) : '',
+        });
+        if (data.household_id) {
+          this.pendingHouseholdId.set(data.household_id);
+        }
+      }
+    }
+  }
+
+  private async loadSuggestionNames() {
+    try {
+      this.allTagNames.set(await this.tagOptionsSvc.getTagNames('tag'));
+      this.allIssueNames.set(await this.tagOptionsSvc.getTagNames('issue'));
+    } catch (err) {
+      console.error('Failed to load tag/issue suggestions', err);
+    }
+  }
+
+  private async loadCompanies() {
+    try {
+      const res = await this.companiesSvc.getAll();
+      this.companies.set(res.rows || []);
+    } catch {
+      this.companies.set([]);
+    }
+  }
+
+  protected async deletePerson() {
+    const id = this.id();
+    if (!id) return;
+    const confirmed = await this.confirmDlg.confirm({
+      title: 'Delete Person',
+      message: 'Are you sure you want to delete this person? This action cannot be undone.',
+      variant: 'danger',
+      confirmText: 'Delete',
+    });
+    if (!confirmed) return;
+    const end = this._loading.begin();
+    try {
+      await this.personsSvc.delete(id);
+      this.personsSvc.triggerRefresh();
+      this.alertSvc.showSuccess('Person deleted');
+      await this.router.navigate(['/people']);
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Unable to delete person';
+      this.alertSvc.showError(message);
+    } finally {
+      end();
+    }
+  }
+
+  public canDeactivate(): Promise<boolean> {
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.formName() || 'this person', () =>
+      this.save(undefined, true),
+    );
+  }
+
+  public async save(done?: () => void, stayPut = false): Promise<boolean> {
+    if (this.saving()) return false;
+    this.form().markAsTouched();
+    if (this.form().invalid()) {
+      // §4: Save never disables — instead of blocking, surface the errors and
+      // move focus to the first invalid field so the user knows what to fix.
+      queueMicrotask(() => {
+        const el = this.host.nativeElement.querySelector<HTMLElement>('.input-error input, [aria-invalid="true"]');
+        el?.focus();
+      });
+      return false;
+    }
+    const raw = this.payload();
+    const data = {
+      ...raw,
+      company_id: raw.company_id || null,
+      assigned_to: raw.assigned_to || null,
+      preferred_contact: raw.preferred_contact || null,
+    } as UpdatePersonsType;
+    return this.id() ? this.update(data, done) : this.add(data, done, stayPut);
+  }
+
+  protected async applyEdit(input: { key: string; value: string; changed: boolean }) {
+    if (input.changed) {
+      const row = { [input.key]: input.value };
+      await this.update(row);
+    }
+  }
+
+  protected async assignToHousehold(household_id: string) {
+    const id = this.id();
+    // NEW PERSON: just store the pending selection; it will be sent on save
+    if (!id) {
+      this.pendingHouseholdId.set(household_id);
+      this.alertSvc.showSuccess('Household selected. It will be saved when you add the person');
+      this.closeAssignDrawer();
+      return;
+    }
+
+    // Ask scope: just this person vs everyone in current household
+    const applyToAll = await this.confirmDlg.confirm({
+      title: 'Change household',
+      message: 'Apply to everyone in the current household, or just this person?',
+      variant: 'info',
+      confirmText: 'Everyone',
+      cancelText: 'Just this person',
+    });
+
+    const currentHousehold = this.householdId();
+
+    const end = this._loading.begin();
+    try {
+      if (applyToAll && currentHousehold) {
+        // Single atomic tRPC call to the backend
+        await this.personsSvc.moveEntireHousehold(currentHousehold, household_id);
+      } else {
+        // Only move this person
+        await this.personsSvc.update(id, { household_id } as UpdatePersonsType);
+      }
+
+      // update local state for current person and UI
+      this.person.update((p) => (p ? { ...p, household_id } : p));
+
+      this.alertSvc.showSuccess('Assigned to selected household');
+      this.closeAssignDrawer();
+    } catch (err) {
+      this.alertSvc.showError(getUserErrorMessage(err, 'Could not assign the household. Please try again.'));
+    } finally {
+      end();
+    }
+  }
+
+  protected closeAssignDrawer() {
+    this.assignDrawerOpen.set(false);
+  }
+
+  protected formatHouseholdRow(row: any) {
+    const address = {
+      apt: row.apt ?? null,
+      street_num: row.street_num ?? '',
+      street1: row.street1 ?? '',
+      street2: row.street2 ?? '',
+      city: row.city ?? '',
+      state: row.state ?? '',
+      zip: row.zip ?? '',
+      country: row.country ?? '',
+    } as AddressType;
+    return this.getFormattedAddress(address);
+  }
+
+  protected getId() {
+    const id = this.person()?.id;
+    if (!id) return null;
+
+    return id as unknown as string;
+  }
+
+  protected getUserName(id: string | null | undefined = null): string {
+    if (!id) return '?';
+    return this.usersById.get(String(id))?.first_name ?? '?';
+  }
+
+  protected navigateToHousehold() {
+    const household_id = this.householdId();
+    if (household_id) {
+      void this.router.navigate(['households', household_id]);
+    }
+  }
+
+  protected onHouseholdSearch(ev: Event) {
+    const target = ev.target as HTMLInputElement | null;
+    const val = target?.value ?? '';
+    this.householdSearch.set(val);
+    void this.fetchHouseholds();
+  }
+
+  protected openAssignDrawer() {
+    this.assignDrawerOpen.set(true);
+    // Initial fetch
+    void this.fetchHouseholds();
+  }
+
+  protected async removeAddress() {
+    const id = this.id();
+    // New person: just clear the pending household — no API call needed yet
+    if (!id) {
+      this.pendingHouseholdId.set(null);
+      return;
+    }
+
+    if (!this.person()) return;
+
+    const confirmed = await this.confirmDlg.confirm({
+      title: 'Remove Address',
+      message: 'This will move the person to a new blank household (clearing address). Continue?',
+      variant: 'danger',
+      confirmText: 'Remove',
+      cancelText: 'Cancel',
+    });
+    if (!confirmed) return;
+
+    const end = this._loading.begin();
+    try {
+      await this.personsSvc.removeHousehold(id);
+      this.person.update((p) => (p ? { ...p, household_id: null } : p));
+      this.alertSvc.showInfo('The person has been removed from the household. You may select a different household');
+    } catch (err) {
+      this.alertSvc.showError(
+        getUserErrorMessage(err, 'Could not remove the person from the household. Please try again.'),
+      );
+    } finally {
+      end();
+    }
+  }
+
+  protected async tagAdded(tag: string) {
+    const id = this.id();
+    if (!id) return;
+    try {
+      await this.personsSvc.attachTag(id, tag, 'tag');
+      await this.tagOptionsSvc.invalidate('tag');
+    } catch (err) {
+      console.error('Failed to attach tag:', err);
+    }
+  }
+
+  protected async tagRemoved(tag: string) {
+    const id = this.id();
+    if (!id) return;
+
+    const restoreTag = () => this.tags.update((curr) => (curr.includes(tag) ? curr : [...curr, tag]));
+
+    try {
+      // Volunteer/staff are first-class person status now (§15), no longer tags —
+      // tag removal is the plain path with no team cascade.
+      await this.personsSvc.detachTag(id, tag, 'tag');
+      await this.updateTags();
+      await this.tagOptionsSvc.invalidate('tag');
+    } catch (err) {
+      console.error('Failed to detach tag:', err);
+      restoreTag();
+    }
+  }
+
+  protected async issueAdded(issue: string) {
+    const id = this.id();
+    if (!id) return;
+    try {
+      await this.personsSvc.attachTag(id, issue, 'issue');
+      await this.tagOptionsSvc.invalidate('issue');
+    } catch (err) {
+      console.error('Failed to attach issue:', err);
+    }
+  }
+
+  protected async issueRemoved(issue: string) {
+    const id = this.id();
+    if (!id) return;
+
+    const restoreIssue = () => this.issues.update((curr) => (curr.includes(issue) ? curr : [...curr, issue]));
+
+    try {
+      await this.personsSvc.detachTag(id, issue, 'issue');
+      await this.updateTags();
+      await this.tagOptionsSvc.invalidate('issue');
+    } catch (err) {
+      console.error('Failed to detach issue:', err);
+      restoreIssue();
+    }
+  }
+
+  private async add(data: UpdatePersonsType, done?: () => void, stayPut = false): Promise<boolean> {
+    // Include any household selected via the drawer before saving
+    const pendingHousehold = this.pendingHouseholdId();
+    if (pendingHousehold) {
+      data = { ...data, household_id: pendingHousehold } as UpdatePersonsType;
+    }
+
+    // do_not_contact is a plain person field — save it with the person.
+    if (this.draftDnc()) {
+      data = { ...data, do_not_contact: true } as UpdatePersonsType;
+    }
+
+    // Volunteer/staff are global person status (§15) — fold non-empty values in.
+    if (this.draftVolunteer()) {
+      data = { ...data, volunteer_status: this.draftVolunteer() } as UpdatePersonsType;
+    }
+    if (this.draftStaff()) {
+      data = { ...data, staff_status: this.draftStaff() } as UpdatePersonsType;
+    }
+
+    // Snapshot the campaign-scoped standing NOW, before the success handler resets
+    // the draft signals — it is applied after the person id exists.
+    const standing = {
+      support: this.draftSupport(),
+      voting: this.draftVoting(),
+      subscribe: this.draftSubscribe(),
+      email: this.payload().email,
+    };
+
+    this.emailError.set(null);
+    this.saving.set(true);
+    const end = this._loading.begin();
+    try {
+      const created: unknown = await this.personsSvc.add(data, { context: { skipErrorHandler: true } });
+      this.alertSvc.showSuccess(`Added ${this.formName() || 'person'}.`);
+      this.personsSvc.triggerRefresh();
+      void this.applyStanding(created, standing);
+      // `stayPut` is the leave guard saving on its way out: the person is stored, so clear the
+      // drafts exactly as the Save button does — it just doesn't hand control back to a done().
+      if (done || stayPut) {
+        done?.();
+        this.pendingHouseholdId.set(null);
+        this.tags.set([]);
+        this.issues.set([]);
+        this.draftSupport.set('');
+        this.draftVoting.set('');
+        this.draftSubscribe.set(false);
+        this.draftDnc.set(false);
+        this.draftVolunteer.set('');
+        this.draftStaff.set('');
+        this.form().reset();
+      }
+      return true;
+    } catch (err: unknown) {
+      if (this.isDuplicateEmailError(err)) {
+        this.emailError.set('This email address is already used by another person.');
+      } else {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
+      }
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
+    }
+  }
+
+  /**
+   * Apply the standing captured on the add form once the person exists (§15).
+   * Campaign-scoped writes are keyed to the active context; a failure here does
+   * not undo the person — it was already saved — so we surface a soft error.
+   */
+  private async applyStanding(
+    created: unknown,
+    standing: { support: SupportLevel | ''; voting: VotingStatus | ''; subscribe: boolean; email: string },
+  ): Promise<void> {
+    const personId = isRecord(created) && created['id'] != null ? String(created['id']) : null;
+    if (!personId) return;
+
+    const wantsFact = !!standing.support || !!standing.voting;
+    const wantsSubscription = standing.subscribe && !!standing.email.trim();
+    if (!wantsFact && !wantsSubscription) return;
+
+    try {
+      await this.campaignContext.ensureLoaded();
+      const campaign_id = this.campaignContext.activeCampaignId();
+      if (!campaign_id) return;
+
+      if (wantsFact) {
+        await this.campaignsSvc.upsertPersonFact({
+          campaign_id,
+          person_id: personId,
+          ...(standing.support ? { support_level: standing.support } : {}),
+          ...(standing.voting ? { voting_status: standing.voting } : {}),
+        });
+      }
+      if (wantsSubscription) {
+        await this.campaignsSvc.setSubscription({ campaign_id, person_id: personId, status: 'subscribed' });
+      }
+    } catch (err) {
+      this.alertSvc.showError(
+        getUserErrorMessage(err, 'The person was added, but their campaign standing could not be saved.'),
+      );
+    }
+  }
+
+  private isDuplicateEmailError(err: unknown): boolean {
+    if (!err || typeof err !== 'object') return false;
+    const e = err as Record<string, any>;
+    // tRPC wraps backend errors; check both data.httpStatus and message
+    return (
+      e['data']?.['httpStatus'] === 409 ||
+      String(e['message'] ?? '')
+        .toLowerCase()
+        .includes('already exists')
+    );
+  }
+
+  private async fetchHouseholds() {
+    try {
+      this.householdsLoading.set(true);
+      const opts = {
+        searchStr: this.householdSearch(),
+        limit: 25,
+        columns: ['id', 'street_num', 'street1', 'street2', 'apt', 'city', 'state', 'zip', 'country', 'persons_count'],
+      };
+      const res = await this.householdsSvc.getAll(opts);
+      this.householdResults.set(res.rows || []);
+    } catch (err) {
+      this.alertSvc.showError(getUserErrorMessage(err, 'Could not load households. Please try again.'));
+      this.householdResults.set([]);
+    } finally {
+      this.householdsLoading.set(false);
+    }
+  }
+
+  private getFormattedAddress(address: AddressType): string {
+    const parts: string[] = [];
+
+    const streetParts = [
+      address.apt ? `Apt ${address.apt}` : null,
+      address.street_num,
+      address.street1,
+      address.street2,
+    ].filter(Boolean);
+
+    const locationParts = [address.city, address.state, address.zip, address.country].filter(Boolean);
+
+    if (streetParts.length) parts.push(streetParts.join(' ').trim());
+    if (locationParts.length) parts.push(locationParts.join(', ').trim());
+
+    const formatted = parts.join(', ').trim();
+    return formatted || 'No Address Assigned';
+  }
+
+  private async loadPerson() {
+    const id = this.id();
+    if (!id) return;
+
+    const end = this._loading.begin();
+    try {
+      this.person.set((await this.personsSvc.getById(id)) as Selectable<Persons>);
+
+      await this.updateTags();
+      await this.loadVolunteerInfo();
+
+      this.refreshForm();
+    } finally {
+      end();
+    }
+  }
+
+  private refreshForm() {
+    const person = this.person();
+    if (!person) return;
+
+    this.payload.set({
+      first_name: person.first_name ?? '',
+      middle_names: person.middle_names ?? '',
+      last_name: person.last_name ?? '',
+      email: person.email ?? '',
+      email2: person.email2 ?? '',
+      home_phone: person.home_phone ?? '',
+      mobile: person.mobile ?? '',
+      notes: person.notes ?? '',
+      company_id: person.company_id ?? '',
+      preferred_contact: person.preferred_contact ?? '',
+      linkedin: person.linkedin ?? '',
+      twitter: person.twitter ?? '',
+      facebook: person.facebook ?? '',
+      instagram: person.instagram ?? '',
+      assigned_to: person.assigned_to ? String(person.assigned_to) : '',
+    });
+  }
+
+  // Friendly labels for the field-naming save toast (§4).
+  private readonly fieldLabels: Record<string, string> = {
+    first_name: 'first name',
+    middle_names: 'middle name',
+    last_name: 'last name',
+    email: 'email',
+    email2: 'secondary email',
+    mobile: 'mobile phone',
+    home_phone: 'home phone',
+    company_id: 'company',
+    preferred_contact: 'preferred contact',
+    assigned_to: 'owner',
+    notes: 'notes',
+    linkedin: 'LinkedIn',
+    twitter: 'X',
+    facebook: 'Facebook',
+    instagram: 'Instagram',
+  };
+
+  private changedFieldLabels(): string[] {
+    const f = this.form as unknown as Record<string, () => { dirty?: () => boolean }>;
+    return Object.keys(this.fieldLabels)
+      .filter((k) => {
+        try {
+          return !!f[k]?.().dirty?.();
+        } catch {
+          return false;
+        }
+      })
+      .map((k) => this.fieldLabels[k]!);
+  }
+
+  private joinWithAnd(items: string[]): string {
+    if (items.length <= 1) return items[0] ?? '';
+    if (items.length === 2) return `${items[0]} and ${items[1]}`;
+    return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+  }
+
+  private async update(data: Partial<UpdatePersonsType>, done?: () => void): Promise<boolean> {
+    const id = this.id();
+    if (!id) return false;
+
+    const changed = this.changedFieldLabels();
+    const savedName = this.formName() || 'person';
+
+    this.emailError.set(null);
+    this.saving.set(true);
+    const end = this._loading.begin();
+    try {
+      await this.personsSvc.update(id, data, { context: { skipErrorHandler: true } });
+      // Name the fields that changed (§4), e.g. "Saved Amira Hassan — email and mobile phone updated".
+      const detail = changed.length ? `: ${this.joinWithAnd(changed)} updated` : '';
+      this.alertSvc.showSuccess(`Saved ${savedName}${detail}.`);
+      this.form().reset();
+      this.personsSvc.triggerRefresh();
+      done?.();
+      return true;
+    } catch (err: unknown) {
+      if (this.isDuplicateEmailError(err)) {
+        this.emailError.set('This email address is already used by another person.');
+      } else {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
+      }
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
+    }
+  }
+
+  private async updateTags() {
+    if (!this.person()) return;
+
+    const id = this.id();
+    const tags = id ? await this.personsSvc.getTags(id, 'tag') : [];
+    this.tags.set(tags);
+
+    const issues = id ? await this.personsSvc.getTags(id, 'issue') : [];
+    this.issues.set(issues);
+  }
+
+  private async loadVolunteerInfo() {
+    const id = this.id();
+    if (!id) return;
+    try {
+      const stats = await this.volunteerSvc.getVolunteerStats(id);
+      this.volunteerStats.set(stats);
+      const history = await this.volunteerSvc.getHistoryForPerson(id);
+      this.volunteerHistory.set(history || []);
+    } catch (err) {
+      console.error('Failed to load volunteer info', err);
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+```
+
 ## File: apps/frontend/src/app/experiences/settings/billing/billing-settings.ts
 ```typescript
 import { DatePipe } from '@angular/common';
@@ -62382,103 +63391,81 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
 }
 ```
 
-## File: apps/frontend/src/app/experiences/tags/ui/tags-admin.html
+## File: apps/frontend/src/app/experiences/tags/ui/issues-admin.html
 ```html
 <div class="flex flex-col gap-4 p-4 sm:p-6">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Tags" [totalSentence]="loaded() ? sentence() : null">
+  <pc-grid-header title="Issues" [totalSentence]="loaded() ? sentence() : null">
     <button type="button" class="btn btn-primary btn-sm gap-2" (click)="openAddDialog()">
-      <pc-icon name="add-label" [size]="4"></pc-icon>
-      New tag
+      <pc-icon name="add-issue" [size]="4"></pc-icon>
+      New issue
     </button>
   </pc-grid-header>
 
-  @if (loaded() && unusedRows().length > 0) {
-  <div class="alert bg-base-200 border border-base-300 flex items-center justify-between gap-4 py-3">
-    <div class="flex items-center gap-3">
-      <pc-icon name="exclamation-circle" class="text-warning shrink-0" [size]="5"></pc-icon>
-      <span class="text-xs text-base-content/80">
-        {{ calloutNames() }}{{ unusedRows().length > 2 ? ' and others' : '' }} haven't been applied in 90 days. Merge or
-        delete {{ unusedRows().length === 1 ? 'it' : 'them' }} to keep the vocabulary sharp.
-      </span>
-    </div>
-    <button
-      type="button"
-      class="btn btn-outline btn-secondary btn-sm shrink-0"
-      (click)="showUnusedOnly.set(!showUnusedOnly())"
-    >
-      {{ showUnusedOnly() ? 'Show all tags' : 'Show the ' + unusedRows().length + ' unused' }}
-    </button>
-  </div>
-  }
-
-  <pc-table [loading]="loading()" [columns]="5">
+  <pc-table [loading]="loading()" [columns]="6">
     <ng-container pcTableHead>
+      <th class="w-10">#</th>
       <!-- min-w keeps narrow viewports from strangling the chip into per-letter
            wrapping; the pc-table-shell scrolls horizontally instead. -->
-      <th class="min-w-44">Tag</th>
-      <th>People</th>
-      <th>Last applied</th>
-      <th>Created by</th>
+      <th class="min-w-44">Issue</th>
+      <th class="min-w-48">People interested</th>
+      <th>Trend</th>
+      <th>Top ward</th>
       <th class="w-10"></th>
     </ng-container>
 
-    @if (visibleRows().length === 0) {
+    @if (loaded() && ranked().length === 0) {
     <tr>
-      <td colspan="5" class="py-12 text-center">
-        <div class="flex flex-col items-center gap-2">
-          <pc-icon name="label" class="text-base-content/30" [size]="8"></pc-icon>
-          <p class="text-xs text-base-content/60">
-            {{ showUnusedOnly() ? 'No unused tags. Nice and tidy.' : 'No tags yet.' }}
-          </p>
-          @if (showUnusedOnly()) {
-          <button type="button" class="btn btn-sm btn-outline btn-secondary" (click)="showUnusedOnly.set(false)">
-            Show all tags
-          </button>
-          } @else {
-          <button type="button" class="btn btn-sm btn-primary" (click)="openAddDialog()">New tag</button>
-          }
-        </div>
+      <td colspan="6">
+        <pc-empty-state
+          icon="shield-exclamation"
+          [bordered]="false"
+          title="No issues yet"
+          hint="Issues flow in from survey forms and profile edits, or start the vocabulary yourself."
+        >
+          <button type="button" class="btn btn-sm btn-primary" (click)="openAddDialog()">New issue</button>
+        </pc-empty-state>
       </td>
     </tr>
-    } @else { @for (row of visibleRows(); track row.id) {
+    } @else { @for (entry of ranked(); track entry.row.id) {
     <tr>
+      <td class="tabular-nums text-base-content/50 text-xs">{{ entry.rank }}</td>
       <td>
-        <div class="flex items-center gap-2">
-          <pc-tagitem [name]="row.name" [color]="row.color" [canDelete]="false" [compact]="true" />
-          @if (isUnused(row)) {
-          <span class="badge badge-ghost badge-sm text-base-content/50">Unused 90d</span>
-          }
+        <pc-tagitem [name]="entry.row.name" [color]="entry.row.color" [canDelete]="false" [compact]="true" />
+      </td>
+      <td>
+        <div class="flex items-center gap-2 text-xs">
+          <div class="h-2 flex-1 rounded-full bg-base-200 overflow-hidden max-w-32">
+            <div class="h-full bg-info rounded-full" [style.width.%]="interestedPercent(entry.row)"></div>
+          </div>
+          <a
+            [routerLink]="'/people'"
+            [queryParams]="{ issue: entry.row.name }"
+            class="link link-hover text-base-content underline decoration-base-content/20 underline-offset-[3px] hover:text-primary hover:decoration-primary tabular-nums"
+          >
+            {{ entry.row.use_count_people.toLocaleString() }}
+          </a>
         </div>
       </td>
-      <td class="tabular-nums">
-        <a
-          [routerLink]="'/people'"
-          [queryParams]="{ tag: row.name }"
-          class="link link-hover text-xs text-base-content underline decoration-base-content/20 underline-offset-[3px] hover:text-primary hover:decoration-primary"
-        >
-          {{ row.use_count_people.toLocaleString() }}
-        </a>
-        @if (row.use_count_households > 0) {
-        <span class="text-xs text-base-content/50">
-          · {{ row.use_count_households.toLocaleString() }} household{{ row.use_count_households === 1 ? '' : 's' }}
-        </span>
-        }
+      <td
+        class="text-xs tabular-nums"
+        [class]="entry.row.recent_applications_30d > 0 ? 'text-success' : 'text-base-content/50'"
+      >
+        {{ trendLabel(entry.row) }}
       </td>
-      <td class="text-xs text-base-content/70">{{ relativeLastApplied(row) }}</td>
-      <td class="text-xs text-base-content/70">{{ row.created_by_name ?? '—' }}</td>
+      <td class="text-xs text-base-content/70">{{ entry.row.top_ward ?? '—' }}</td>
       <td>
-        <pc-row-actions [label]="'Actions for ' + row.name">
+        <pc-row-actions [label]="'Actions for ' + entry.row.name">
           <li>
-            <a (click)="rename(row)"><pc-icon name="pencil-square" [size]="4"></pc-icon> Rename tag</a>
+            <a (click)="rename(entry.row)"><pc-icon name="pencil-square" [size]="4"></pc-icon> Rename issue</a>
           </li>
           <li>
-            <a (click)="merge(row)"><pc-icon name="merge" [size]="4"></pc-icon> Merge into another tag</a>
+            <a (click)="merge(entry.row)"> <pc-icon name="merge" [size]="4"></pc-icon> Merge into another issue </a>
           </li>
           <li><hr class="my-1 border-base-300" /></li>
           <li>
-            <a (click)="delete(row)" class="text-error">
-              <pc-icon name="trash-forever" [size]="4"></pc-icon> Delete tag
+            <a (click)="delete(entry.row)" class="text-error">
+              <pc-icon name="trash-forever" [size]="4"></pc-icon> Delete issue
             </a>
           </li>
         </pc-row-actions>
@@ -62488,11 +63475,12 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   </pc-table>
 
   <p class="text-xs text-base-content/50 px-1">
-    Renames and merges apply everywhere a tag is referenced (people, lists, automations and forms) in one pass.
+    Issues flow in from survey forms and profile edits; the ranking exists for the policy team. Issues stay a separate
+    field from tags everywhere because issues power issue-based filtering and targeting.
   </p>
 </div>
 
-<pc-add-tag-dialog (saved)="onTagSaved()" />
+<pc-add-issue-dialog (saved)="onIssueSaved()" />
 ```
 
 ## File: apps/frontend/src/app/experiences/tasks/ui/task-view.ts
@@ -63528,479 +64516,6 @@ export class TasksBoard implements OnInit {
 
   protected openList(): void {
     void this.router.navigate(['/tasks']);
-  }
-}
-```
-
-## File: apps/frontend/src/app/experiences/users/ui/users-page.html
-```html
-<div class="mx-auto flex w-full max-w-[980px] flex-col gap-5 p-4">
-  <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Users" [totalSentence]="loaded() ? headerSentence() : null">
-    <span class="tooltip-left" [class.tooltip]="inviteLockReason() !== null" [attr.data-tip]="inviteLockReason()">
-      <button
-        type="button"
-        class="btn btn-primary btn-sm"
-        [disabled]="inviteLockReason() !== null"
-        (click)="openInvite()"
-      >
-        <pc-icon name="user-plus" [size]="4"></pc-icon>
-        Invite user
-      </button>
-    </span>
-  </pc-grid-header>
-
-  <!-- Table -->
-  <pc-table [loading]="loading.visible()" [columns]="columnCount()">
-    <ng-container pcTableHead>
-      <th>User</th>
-      <th>Role</th>
-      @if (showCampaignColumn()) {
-      <th>Campaign</th>
-      }
-      <th>Status</th>
-      <th>MFA</th>
-      <th>Last active</th>
-      <th class="w-10"></th>
-    </ng-container>
-
-    @if (loaded() && rows().length === 0) {
-    <tr>
-      <td [attr.colspan]="columnCount()" class="px-6">
-        <pc-empty-state icon="users" [bordered]="false" title="No users yet" hint="Invite your first teammate.">
-          <button type="button" class="btn btn-primary btn-sm" (click)="openInvite()">Invite user</button>
-        </pc-empty-state>
-      </td>
-    </tr>
-    } @else { @for (row of rows(); track row.id) {
-    <tr [class.animate-saved-flash]="flashedId() === row.id" [class.opacity-60]="isDeactivated(row)">
-      <td>
-        <div class="flex items-center gap-3">
-          <pc-user-avatar [avatarUrl]="avatarUrl(row)" [name]="displayName(row)" [size]="9"></pc-user-avatar>
-          <div class="min-w-0">
-            <div class="flex items-center gap-1.5">
-              <a
-                class="link link-hover font-medium text-primary underline decoration-primary/20 underline-offset-[3px]"
-                [routerLink]="['/users', row.id]"
-              >
-                {{ displayName(row) }}
-              </a>
-              @if (isSelf(row)) {
-              <span class="text-xs text-base-content/50">(you)</span>
-              }
-            </div>
-            <p class="max-w-[260px] truncate text-xs text-base-content/50">{{ row.email }}</p>
-          </div>
-        </div>
-      </td>
-      <td>
-        @if (roleLockReason(row); as reason) {
-        <span class="tooltip tooltip-right" [attr.data-tip]="reason">
-          <select class="select select-bordered select-sm w-32" disabled [attr.aria-label]="'Role: ' + reason">
-            <option>{{ roleLabel(row.role) }}</option>
-          </select>
-        </span>
-        } @else {
-        <select
-          class="select select-bordered select-sm w-32"
-          [disabled]="savingIds().has(row.id)"
-          [attr.aria-label]="'Role for ' + displayName(row)"
-          (change)="changeRole(row, $event)"
-        >
-          @for (r of roleOptions(row); track r) {
-          <option [value]="r" [selected]="r === row.role">{{ roleLabel(r) }}</option>
-          }
-        </select>
-        }
-      </td>
-      @if (showCampaignColumn()) {
-      <td>
-        @if (!isCampaignScoped(row)) {
-        <span
-          class="tooltip tooltip-right text-xs text-base-content/60"
-          data-tip="Admins and owners can work in every campaign"
-        >
-          All campaigns
-        </span>
-        } @else {
-        <select
-          class="select select-bordered select-sm w-36"
-          [disabled]="savingIds().has(row.id)"
-          [attr.aria-label]="'Campaign for ' + displayName(row)"
-          (change)="changeCampaign(row, $event)"
-        >
-          @for (c of assignableCampaigns(); track c.id) {
-          <option
-            [value]="c.kind === 'office' ? '' : c.id"
-            [selected]="(c.kind === 'office' ? null : c.id) === row.campaign_id"
-          >
-            {{ c.name }}
-          </option>
-          }
-        </select>
-        }
-      </td>
-      }
-      <td>
-        <pc-status-badge [type]="status(row).tone">{{ status(row).label }}</pc-status-badge>
-      </td>
-      <td>
-        @if (row.two_factor_enabled) {
-        <span class="tooltip" data-tip="MFA enabled">
-          <pc-icon name="check-circle" [size]="5" class="text-success"></pc-icon>
-        </span>
-        } @else {
-        <span class="text-base-content/30">—</span>
-        }
-      </td>
-      <td class="whitespace-nowrap tabular-nums text-base-content/60">{{ lastActiveText(row) }}</td>
-      <td>
-        <pc-row-actions [label]="'Actions for ' + displayName(row)">
-          <li>
-            <a [routerLink]="['/users', row.id]"><pc-icon name="eye" [size]="4"></pc-icon> View profile</a>
-          </li>
-          <li>
-            <a (click)="sendPasswordReset(row)">
-              <pc-icon name="lock-closed" [size]="4"></pc-icon> Send password reset
-            </a>
-          </li>
-        </pc-row-actions>
-      </td>
-    </tr>
-    } }
-
-    <div pcTableFooter class="border-t border-base-200 px-4 py-3 text-xs text-base-content/50">
-      Users are staff logins. Volunteers live in
-      <a routerLink="/teams" class="link link-hover text-primary">Teams</a>
-      and don't need an account.
-    </div>
-  </pc-table>
-
-  <pc-invite-user-dialog [seatUsage]="seatUsage()" (saved)="onInvited()"></pc-invite-user-dialog>
-</div>
-```
-
-## File: apps/frontend/src/app/experiences/users/ui/users-page.ts
-```typescript
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
-import { RouterLink } from '@angular/router';
-import { planDisplayName } from '@common';
-
-import { Icon } from '@icons/icon';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
-import type { PcStatusType } from '@uxcommon/components/status-badge/status-badge';
-import { RowActions } from '@uxcommon/components/row-actions/row-actions';
-import { Table } from '@uxcommon/components/table/table';
-import { UserAvatarComponent } from '@uxcommon/components/user-avatar/user-avatar';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-
-import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
-import { UserService } from '@frontend/services/user.service';
-import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
-import { authRoleLabel } from '../../../../../../../libs/common/src';
-import { CampaignContextService } from '../../../services/campaign-context.service';
-import { UserAdminService } from '../services/useradmin-service';
-import {
-  userIsDeactivated,
-  userLastActiveLabel,
-  userRoleLockReason,
-  userRoleOptions,
-  userStatus,
-} from '../user-status';
-import { InviteUserDialog, type SeatUsage } from './invite-user-dialog';
-import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
-
-export interface UserRow {
-  id: string;
-  email: string;
-  first_name: string;
-  last_name: string;
-  role: string | null;
-  campaign_id: string | null;
-  verified: boolean;
-  two_factor_enabled: boolean;
-  deletion_scheduled_at: string | null;
-  deactivated_at: string | null;
-  last_active_at: string | null;
-  created_at: string | null;
-  avatar_url: string | null;
-}
-
-/**
- * Users admin page — staff logins for this workspace. A bespoke `pc-table` (not the datagrid):
- * inline role select with explained locks, honest status/MFA/last-active columns derived from
- * real session data, and the seat-aware "Invite user" dialog.
- */
-@Component({
-  selector: 'pc-users-page',
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [
-    EmptyState,
-    RouterLink,
-    Icon,
-    StatusBadge,
-    Table,
-    RowActions,
-    UserAvatarComponent,
-    InviteUserDialog,
-    GridHeaderComponent,
-  ],
-  templateUrl: './users-page.html',
-})
-export class UsersPageComponent implements OnInit {
-  private readonly users = inject(UserAdminService);
-  private readonly auth = inject(AuthService);
-  private readonly alerts = inject(AlertService);
-  private readonly userService = inject(UserService);
-  private readonly campaignContext = inject(CampaignContextService);
-
-  private readonly inviteDlg = viewChild.required(InviteUserDialog);
-
-  protected readonly loading = createLoadingGate();
-  protected readonly loaded = signal(false);
-  protected readonly rows = signal<UserRow[]>([]);
-  protected readonly seatUsage = signal<SeatUsage | null>(null);
-
-  /** Row that just saved a role change — drives the one-shot saved flash. */
-  protected readonly flashedId = signal<string | null>(null);
-  /** Rows with an in-flight role change; their select is disabled while saving. */
-  protected readonly savingIds = signal<ReadonlySet<string>>(new Set());
-
-  protected readonly currentUserId = computed(() => {
-    const id = this.auth.getUser()?.id;
-    return id != null ? String(id) : null;
-  });
-  protected readonly currentUserRole = computed(() => this.auth.getUser()?.role ?? null);
-
-  protected readonly activeCount = computed(
-    () => this.rows().filter((r) => r.verified && !userIsDeactivated(r)).length,
-  );
-  protected readonly invitedCount = computed(
-    () => this.rows().filter((r) => !r.verified && !userIsDeactivated(r)).length,
-  );
-  protected readonly deactivatedCount = computed(() => this.rows().filter((r) => userIsDeactivated(r)).length);
-  protected readonly adminCount = computed(
-    () => this.rows().filter((r) => (r.role === 'admin' || r.role === 'owner') && !userIsDeactivated(r)).length,
-  );
-
-  protected readonly seatsRemaining = computed(() => {
-    const usage = this.seatUsage();
-    return usage ? Math.max(0, usage.seatLimit - usage.seatsUsed) : null;
-  });
-
-  /** Campaigns §15 — active contexts an Editor/Viewer can be assigned to. */
-  protected readonly assignableCampaigns = computed(() =>
-    this.campaignContext.campaigns().filter((c) => c.status === 'active'),
-  );
-  /** The column only earns its space once an election campaign exists. */
-  protected readonly showCampaignColumn = computed(() => this.assignableCampaigns().length > 1);
-  protected readonly columnCount = computed(() => (this.showCampaignColumn() ? 7 : 6));
-
-  private readonly userSignal = this.auth.getUserSignal();
-  private readonly isDemo = computed(() => !!this.userSignal()?.tenant_demo_mode_at);
-
-  /** Why inviting is unavailable — null when it isn't. Doubles as the tooltip copy (§2 explained-disabled). */
-  protected readonly inviteLockReason = computed<string | null>(() => {
-    if (this.isDemo()) {
-      return 'Inviting teammates is locked during the demo. Choose a plan, then exit demo mode';
-    }
-    if (this.seatsRemaining() === 0) {
-      return `All ${this.seatUsage()?.seatLimit} seats on the ${this.planLabel()} plan are in use. Upgrade in Settings → Billing`;
-    }
-    return null;
-  });
-
-  protected readonly planLabel = computed(() => {
-    const usage = this.seatUsage();
-    return usage ? planDisplayName(usage.plan) : '';
-  });
-
-  /** Header grain sentence, e.g. "5 users · 3 active, 1 invited · 2 admins · 4 of 10 seats on the Team plan". */
-  protected readonly headerSentence = computed(() => {
-    const total = this.rows().length;
-    const parts = [`${total} user${total === 1 ? '' : 's'}`];
-    const statusBits = [`${this.activeCount()} active`];
-    if (this.invitedCount() > 0) statusBits.push(`${this.invitedCount()} invited`);
-    if (this.deactivatedCount() > 0) statusBits.push(`${this.deactivatedCount()} deactivated`);
-    parts.push(statusBits.join(', '));
-    parts.push(`${this.adminCount()} admin${this.adminCount() === 1 ? '' : 's'}`);
-    const usage = this.seatUsage();
-    if (usage) parts.push(`${usage.seatsUsed} of ${usage.seatLimit} seats on the ${this.planLabel()} plan`);
-    return parts.join(' · ');
-  });
-
-  public ngOnInit(): void {
-    void this.load();
-  }
-
-  protected openInvite(): void {
-    this.inviteDlg().open();
-  }
-
-  protected onInvited(): void {
-    void this.load();
-  }
-
-  protected displayName(row: UserRow): string {
-    return `${row.first_name} ${row.last_name}`.trim() || row.email;
-  }
-
-  protected avatarUrl(row: UserRow): string | null {
-    return row.avatar_url ? (this.userService.resolveAvatarUrl(row.avatar_url) ?? null) : null;
-  }
-
-  protected isSelf(row: UserRow): boolean {
-    return row.id === this.currentUserId();
-  }
-
-  protected roleLabel(role: string | null): string {
-    return authRoleLabel(role);
-  }
-
-  /** Roles the caller may assign on this row; includes the row's current role so the select never shows blank. */
-  protected roleOptions(row: UserRow): string[] {
-    return userRoleOptions(this.currentUserRole(), row.role);
-  }
-
-  /** Why this row's role can't be changed — null when it can. Doubles as the tooltip copy (§2 explained-disabled). */
-  protected roleLockReason(row: UserRow): string | null {
-    return userRoleLockReason({
-      isSelf: this.isSelf(row),
-      callerRole: this.currentUserRole(),
-      targetRole: row.role,
-      deactivated: userIsDeactivated(row),
-    });
-  }
-
-  protected isDeactivated(row: UserRow): boolean {
-    return userIsDeactivated(row);
-  }
-
-  protected status(row: UserRow): { label: string; tone: PcStatusType } {
-    return userStatus(row);
-  }
-
-  protected lastActiveText(row: UserRow): string {
-    return userLastActiveLabel(row);
-  }
-
-  /** Admins/owners aren't scoped by an assignment; everyone else shows their campaign. */
-  protected isCampaignScoped(row: UserRow): boolean {
-    return row.role !== 'admin' && row.role !== 'owner';
-  }
-
-  protected campaignName(campaignId: string | null): string {
-    if (campaignId == null) return 'Office';
-    return this.assignableCampaigns().find((c) => String(c.id) === campaignId)?.name ?? 'Office';
-  }
-
-  protected async changeCampaign(row: UserRow, event: Event): Promise<void> {
-    const select = event.target as HTMLSelectElement;
-    const campaignId = select.value || null;
-    if (campaignId === row.campaign_id) return;
-
-    this.savingIds.update((ids) => new Set(ids).add(row.id));
-    try {
-      await this.users.update(row.id, { campaign_id: campaignId });
-      this.rows.update((rows) => rows.map((r) => (r.id === row.id ? { ...r, campaign_id: campaignId } : r)));
-      this.flashRow(row.id);
-      this.alerts.showSuccess(`${this.displayName(row)} now works in ${this.campaignName(campaignId)}`);
-    } catch (err) {
-      select.value = row.campaign_id ?? '';
-      const message = err instanceof Error && err.message ? err.message : 'Unable to update the campaign';
-      this.alerts.showError(message);
-    } finally {
-      this.savingIds.update((ids) => {
-        const next = new Set(ids);
-        next.delete(row.id);
-        return next;
-      });
-    }
-  }
-
-  protected async changeRole(row: UserRow, event: Event): Promise<void> {
-    const select = event.target as HTMLSelectElement;
-    const role = select.value;
-    if (!role || role === row.role) return;
-
-    this.savingIds.update((ids) => new Set(ids).add(row.id));
-    try {
-      await this.users.update(row.id, { role });
-      this.rows.update((rows) => rows.map((r) => (r.id === row.id ? { ...r, role } : r)));
-      this.flashRow(row.id);
-      this.alerts.showSuccess(`Role updated. ${this.displayName(row)} is now ${this.roleLabel(role)}`);
-    } catch (err) {
-      select.value = row.role ?? '';
-      const message = err instanceof Error && err.message ? err.message : 'Unable to update the role';
-      this.alerts.showError(message);
-    } finally {
-      this.savingIds.update((ids) => {
-        const next = new Set(ids);
-        next.delete(row.id);
-        return next;
-      });
-    }
-  }
-
-  protected async sendPasswordReset(row: UserRow): Promise<void> {
-    try {
-      await this.users.adminTriggerPasswordReset(row.id);
-      this.alerts.showSuccess(`Password reset email sent to ${row.email}`);
-    } catch (err) {
-      const message = err instanceof Error && err.message ? err.message : 'Unable to send the reset email';
-      this.alerts.showError(message);
-    }
-  }
-
-  private async load(): Promise<void> {
-    const end = this.loading.begin();
-    try {
-      const [list, seats] = await Promise.all([
-        this.users.getAll({ startRow: 0, endRow: 500 }),
-        this.users.getSeatUsage(),
-        this.campaignContext.ensureLoaded(),
-      ]);
-      this.rows.set(list.rows.map((raw) => this.toRow(raw)));
-      this.seatUsage.set(seats);
-      this.loaded.set(true);
-    } catch {
-      this.alerts.showError('Unable to load users. Try refreshing the page');
-    } finally {
-      end();
-    }
-  }
-
-  private toRow(raw: Record<string, unknown>): UserRow {
-    return {
-      id: raw['id'] != null ? String(raw['id']) : '',
-      email: typeof raw['email'] === 'string' ? raw['email'] : '',
-      first_name: typeof raw['first_name'] === 'string' ? raw['first_name'] : '',
-      last_name: typeof raw['last_name'] === 'string' ? raw['last_name'] : '',
-      role: typeof raw['role'] === 'string' ? raw['role'] : null,
-      campaign_id: raw['campaign_id'] != null ? String(raw['campaign_id']) : null,
-      verified: raw['verified'] === true,
-      two_factor_enabled: raw['two_factor_enabled'] === true,
-      deletion_scheduled_at: this.toIso(raw['deletion_scheduled_at']),
-      deactivated_at: this.toIso(raw['deactivated_at']),
-      last_active_at: this.toIso(raw['last_active_at']),
-      created_at: this.toIso(raw['created_at']),
-      avatar_url: typeof raw['avatar_url'] === 'string' ? raw['avatar_url'] : null,
-    };
-  }
-
-  private toIso(value: unknown): string | null {
-    if (value instanceof Date) return value.toISOString();
-    if (typeof value === 'string' && value) return value;
-    return null;
-  }
-
-  private flashRow(id: string): void {
-    this.flashedId.set(id);
-    const FLASH_MS = 1300;
-    setTimeout(() => {
-      if (this.flashedId() === id) this.flashedId.set(null);
-    }, FLASH_MS);
   }
 }
 ```
@@ -69744,219 +70259,6 @@ export class DeliveriesRouteDetail {
 }
 ```
 
-## File: apps/frontend/src/app/experiences/deliveries/ui/deliveries-routes.ts
-```typescript
-import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal, viewChild } from '@angular/core';
-import { RouterLink } from '@angular/router';
-
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
-import type { PcStatusType } from '@uxcommon/components/status-badge/status-badge';
-import { RowActions } from '@uxcommon/components/row-actions/row-actions';
-import { Table } from '@uxcommon/components/table/table';
-import { Icon } from '@icons/icon';
-
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
-import { AssignVolunteerDialog } from './assign-volunteer-dialog';
-import { DeliveriesNav } from './deliveries-nav';
-
-import { DeliveriesRoutesService, type DeliveryRouteRow } from '../services/deliveries-routes-service';
-import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
-
-type PersonSearchResult = { id: string; first_name: string | null; last_name: string | null; email: string | null };
-
-const ROUTE_TONE: Record<string, PcStatusType> = {
-  draft: 'neutral',
-  assigned: 'info',
-  in_progress: 'warning',
-  completed: 'success',
-  canceled: 'ghost',
-};
-
-/** Deliveries routes grid (spec §4.3 list). */
-@Component({
-  selector: 'pc-deliveries-routes',
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [
-    EmptyState,
-    RouterLink,
-    StatusBadge,
-    Icon,
-    DatePipe,
-    Table,
-    RowActions,
-    DeliveriesNav,
-    AssignVolunteerDialog,
-  ],
-  templateUrl: './deliveries-routes.html',
-})
-export class DeliveriesRoutes implements OnInit {
-  private readonly svc = inject(DeliveriesRoutesService);
-  private readonly alerts = inject(AlertService);
-  private readonly confirm = inject(ConfirmDialogService);
-  private readonly assignDlg = viewChild.required<AssignVolunteerDialog>('assignDlg');
-  protected readonly loading = createLoadingGate();
-
-  protected readonly rows = signal<DeliveryRouteRow[]>([]);
-  protected readonly loaded = signal(false);
-
-  /** The route the open picker is acting on — the dialog itself is route-agnostic. */
-  private readonly assigningRouteId = signal<string | null>(null);
-
-  public ngOnInit(): void {
-    void this.reload();
-  }
-
-  protected tone(status: string): PcStatusType {
-    return ROUTE_TONE[status] ?? 'neutral';
-  }
-
-  protected label(status: string): string {
-    return status === 'in_progress' ? 'in progress' : status;
-  }
-
-  /** Cancel is meaningless once a route is already canceled or completed. */
-  protected canCancel(status: string): boolean {
-    return status !== 'canceled' && status !== 'completed';
-  }
-
-  /** Delete only while nothing has happened yet (mirrors the route-detail rule). */
-  protected canDelete(status: string): boolean {
-    return status === 'draft' || status === 'assigned';
-  }
-
-  /** Re-sending only makes sense while the route is still live (same statuses as cancel). */
-  protected canResend(status: string): boolean {
-    return this.canCancel(status);
-  }
-
-  protected openAssign(row: DeliveryRouteRow): void {
-    this.assigningRouteId.set(row.id);
-    this.assignDlg().open(row.volunteer_person_id != null);
-  }
-
-  protected async onVolunteerSelected(person: PersonSearchResult | null): Promise<void> {
-    const routeId = this.assigningRouteId();
-    if (!routeId) return;
-    try {
-      const res = await this.svc.assignVolunteer(routeId, person?.id ?? null);
-      if (!person) {
-        this.alerts.showSuccess('Volunteer removed');
-      } else {
-        const phrase = volunteerLinkSentPhrase(res.sent);
-        if (phrase) this.alerts.showSuccess(`Volunteer assigned — ${phrase}`);
-        else
-          this.alerts.showWarn(
-            'Volunteer assigned, but they have no email or mobile on file — use "Copy volunteer link" to share it',
-          );
-      }
-      await this.reload();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error ? err.message : 'Could not update the volunteer');
-    }
-  }
-
-  protected async copyLink(row: DeliveryRouteRow, regenerate = false): Promise<void> {
-    try {
-      const res = await this.svc.mintShareLink(row.id, regenerate);
-      if (res.status === 'exists') {
-        // The raw token is never stored, so the existing link can't be shown again — the only way
-        // to hand the user a copyable link is to mint a fresh one, which retires the old one.
-        const ok = await this.confirm.confirm({
-          title: 'Copy a fresh link?',
-          message:
-            'This route already has an active volunteer link, and for security the existing one can’t be shown again. Copying a fresh link replaces it. The old link stops working, so anyone you already sent it to will need the new one.',
-          variant: 'warning',
-          confirmText: 'Regenerate & copy',
-        });
-        if (ok) await this.copyLink(row, true);
-        return;
-      }
-      const url = companionUrl(`/r/${res.token}`);
-      await navigator.clipboard.writeText(url).catch(() => undefined);
-      // expires_at is null when the workspace disables link expiry (Workspace → App).
-      this.alerts.showSuccess(
-        regenerate
-          ? 'Fresh link copied. The old link no longer works'
-          : res.expires_at
-            ? 'Link copied (valid 30 days)'
-            : 'Link copied',
-      );
-    } catch (err) {
-      this.alerts.showError(err instanceof Error ? err.message : 'Could not create the link');
-    }
-  }
-
-  /** Mint a fresh link and send it to the volunteer's contacts (replaces the previously sent link). */
-  protected async resendLink(row: DeliveryRouteRow): Promise<void> {
-    try {
-      const res = await this.svc.resendVolunteerLink(row.id);
-      const phrase = volunteerLinkSentPhrase(res.sent);
-      this.alerts.showSuccess(phrase ? `Fresh ${phrase}` : 'Link sent');
-    } catch (err) {
-      this.alerts.showError(err instanceof Error ? err.message : 'Could not send the link');
-    }
-  }
-
-  protected async cancelRoute(row: DeliveryRouteRow): Promise<void> {
-    const ok = await this.confirm.confirm({
-      title: 'Cancel this route?',
-      message: 'Its undelivered stops return to the planning pool. Delivered stops keep their record.',
-      variant: 'danger',
-      confirmText: 'Cancel route',
-    });
-    if (!ok) return;
-    try {
-      await this.svc.setStatus(row.id, 'canceled');
-      this.alerts.showSuccess('Route canceled');
-      await this.reload();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error ? err.message : 'Could not cancel the route');
-    }
-  }
-
-  protected async deleteRoute(row: DeliveryRouteRow): Promise<void> {
-    const ok = await this.confirm.confirm({
-      title: 'Delete this route?',
-      message: 'This removes the route. Its stops return to the planning pool.',
-      variant: 'danger',
-    });
-    if (!ok) return;
-    try {
-      await this.svc.delete(row.id);
-      this.alerts.showSuccess('Route deleted');
-      await this.reload();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error ? err.message : 'Could not delete the route');
-    }
-  }
-
-  protected stopsLabel(row: DeliveryRouteRow): string {
-    if (row.stops_total === 0) return '0';
-    if (row.stops_delivered > 0 || row.status === 'in_progress' || row.status === 'completed') {
-      return `${row.stops_delivered} of ${row.stops_total} delivered`;
-    }
-    return String(row.stops_total);
-  }
-
-  private async reload(): Promise<void> {
-    const end = this.loading.begin();
-    try {
-      const list = await this.svc.getAll();
-      this.rows.set(list.rows);
-      this.loaded.set(true);
-    } catch (err) {
-      this.alerts.showError(err instanceof Error ? err.message : 'Could not load routes');
-    } finally {
-      end();
-    }
-  }
-}
-```
-
 ## File: apps/frontend/src/app/experiences/emails/services/store/email-folders.store.ts
 ```typescript
 import { computed, inject, signal, Service } from '@angular/core';
@@ -70435,1336 +70737,6 @@ export function tryImportHtmlToBlocks(html: string): EmailBlock[] | null {
 }
 ```
 
-## File: apps/frontend/src/app/experiences/newsletters/ui/visual-newsletter-editor.html
-```html
-<div
-  class="flex flex-col lg:flex-row gap-6 h-[calc(100vh-270px)] min-h-[600px] border border-base-300 rounded-lg overflow-hidden bg-base-100 shadow-inner"
->
-  <!-- LEFT: VISUAL CANVAS PREVIEW -->
-  <div class="flex-1 flex flex-col bg-base-200 h-full overflow-hidden">
-    <!-- CANVAS HEADER / TOOLBAR -->
-    <div class="flex items-center justify-between px-4 py-3 bg-base-100 border-b border-base-300">
-      <div class="flex items-center gap-2">
-        <span class="pc-eyebrow">Preview Mode:</span>
-        <div class="join">
-          <button
-            type="button"
-            class="btn btn-xs join-item"
-            [class.btn-primary]="previewMode() === 'desktop'"
-            [class.btn-ghost]="previewMode() !== 'desktop'"
-            (click)="previewMode.set('desktop')"
-            title="Desktop View"
-          >
-            <pc-icon name="view-column" [size]="4"></pc-icon>
-            Desktop
-          </button>
-          <button
-            type="button"
-            class="btn btn-xs join-item"
-            [class.btn-primary]="previewMode() === 'mobile'"
-            [class.btn-ghost]="previewMode() !== 'mobile'"
-            (click)="previewMode.set('mobile')"
-            title="Mobile View"
-          >
-            <pc-icon name="collapse-content" [size]="4"></pc-icon>
-            Mobile
-          </button>
-        </div>
-      </div>
-
-      <div class="flex items-center gap-2">
-        <span class="pc-eyebrow">Editor:</span>
-        <button
-          type="button"
-          class="btn btn-xs btn-outline btn-secondary"
-          [class.btn-active]="editorMode() === 'code'"
-          (click)="toggleEditorMode()"
-        >
-          @if (editorMode() === 'visual') {
-          <pc-icon name="file-code" [size]="4" class="mr-1"></pc-icon>
-          View HTML } @else {
-          <pc-icon name="eye" [size]="4" class="mr-1"></pc-icon>
-          Visual Editor }
-        </button>
-      </div>
-    </div>
-
-    <!-- CANVAS CONTENT AREA -->
-    <div cdkScrollable class="flex-1 overflow-y-auto p-6 flex justify-center items-start">
-      @if (editorMode() === 'visual') {
-      <!-- EMAIL CANVAS WRAPPER -->
-      <div
-        class="bg-white text-black shadow-md rounded-lg overflow-hidden transition-all duration-300 relative border border-slate-200"
-        [style.width]="previewMode() === 'mobile' ? '375px' : '100%'"
-        [style.max-width]="previewMode() === 'mobile' ? '375px' : '600px'"
-        style="min-height: 500px"
-      >
-        <!-- CANVAS CONTAINER -->
-        <div class="w-full bg-slate-100 py-6 px-4" style="min-height: 500px">
-          <!-- Inner email content: the canvas drop list -->
-          <div
-            cdkDropList
-            id="pc-canvas-drop-list"
-            [cdkDropListData]="blocks()"
-            (cdkDropListDropped)="onCanvasDrop($event)"
-            class="bg-white rounded-lg border border-slate-200 shadow-sm"
-          >
-            @if (blocks().length === 0) {
-            <div class="p-8 text-center text-slate-400">
-              <pc-icon name="document-text" [size]="8" class="mx-auto text-slate-300 mb-2"></pc-icon>
-              <p class="text-sm font-medium">Your canvas is empty.</p>
-              <p class="text-xs text-slate-400 mt-1">Drag a block here, or pick one from the Blocks panel.</p>
-            </div>
-            } @else { @for (block of blocks(); track block.id; let idx = $index) {
-            <div
-              cdkDrag
-              [cdkDragData]="block"
-              class="group/block relative border-2 transition-all duration-150 cursor-pointer"
-              [class.border-primary]="selectedBlockId() === block.id"
-              [class.border-transparent]="selectedBlockId() !== block.id"
-              [class.hover:border-primary/50]="selectedBlockId() !== block.id"
-              (click)="selectBlock(block.id, $event)"
-            >
-              <div *cdkDragPlaceholder class="pc-drop-indicator"></div>
-              <!-- "+" insertion seam (inserts before this block) -->
-              <div class="group/seam absolute -top-2 inset-x-0 h-4 z-20" (click)="$event.stopPropagation()">
-                <div
-                  class="absolute inset-x-6 top-1/2 h-px bg-primary/40 opacity-0 group-hover/seam:opacity-100 transition-opacity"
-                  [class.opacity-100]="insertMenuIndex() === idx"
-                ></div>
-                <button
-                  type="button"
-                  class="btn btn-primary btn-circle btn-xs absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover/seam:opacity-100 transition-opacity"
-                  [class.opacity-100]="insertMenuIndex() === idx"
-                  (click)="toggleInsertMenu(idx, $event)"
-                  title="Insert block here"
-                >
-                  <pc-icon name="plus" [size]="3"></pc-icon>
-                </button>
-                @if (insertMenuIndex() === idx) {
-                <ul
-                  class="menu menu-sm bg-base-100 text-base-content border border-base-300 rounded-box shadow-lg absolute left-1/2 -translate-x-1/2 top-4 z-30 w-44"
-                >
-                  @for (t of paletteTypes; track t.type) {
-                  <li>
-                    <button type="button" (click)="addBlockAt(t.type, idx)">
-                      <pc-icon [name]="t.icon" [size]="4" [class]="t.iconClass"></pc-icon>
-                      {{ t.label }}
-                    </button>
-                  </li>
-                  }
-                </ul>
-                }
-              </div>
-              <!-- Block controls (visible on hover or while selected) -->
-              <div
-                class="absolute -top-3 right-2 z-10 group-hover/block:flex items-center gap-1 bg-primary text-primary-content rounded px-1 shadow-md"
-                [class.hidden]="selectedBlockId() !== block.id"
-                [class.flex]="selectedBlockId() === block.id"
-              >
-                <button
-                  type="button"
-                  cdkDragHandle
-                  class="p-1 hover:bg-primary-focus rounded cursor-grab active:cursor-grabbing"
-                  (click)="$event.stopPropagation()"
-                  title="Drag to reorder"
-                >
-                  <pc-icon name="bars-3" [size]="3"></pc-icon>
-                </button>
-                <button
-                  type="button"
-                  class="p-1 hover:bg-primary-focus rounded"
-                  (click)="moveBlockUp(idx, $event)"
-                  [disabled]="idx === 0"
-                  title="Move up"
-                >
-                  <pc-icon name="chevron-up" [size]="3"></pc-icon>
-                </button>
-                <button
-                  type="button"
-                  class="p-1 hover:bg-primary-focus rounded"
-                  (click)="moveBlockDown(idx, $event)"
-                  [disabled]="idx === blocks().length - 1"
-                  title="Move down"
-                >
-                  <pc-icon name="chevron-down" [size]="3"></pc-icon>
-                </button>
-                <button
-                  type="button"
-                  class="p-1 hover:bg-primary-focus rounded"
-                  (click)="duplicateBlock(block, $event)"
-                  title="Duplicate block"
-                >
-                  <pc-icon name="document-duplicate" [size]="3"></pc-icon>
-                </button>
-                <button
-                  type="button"
-                  class="p-1 hover:bg-error rounded"
-                  (click)="deleteBlock(block.id, $event)"
-                  title="Delete block"
-                >
-                  <pc-icon name="trash" [size]="3"></pc-icon>
-                </button>
-              </div>
-              <!-- Block Renderers inside standard tables to mimic layout -->
-              <!-- HEADING BLOCK -->
-              @if (block.type === 'heading') {
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td
-                    [style.padding-top.px]="block.styles?.paddingTop || 16"
-                    [style.padding-bottom.px]="block.styles?.paddingBottom || 16"
-                    [style.color]="block.styles?.color || '#1f2937'"
-                    [style.font-size]="block.styles?.fontSize || '24px'"
-                    [style.text-align]="block.styles?.textAlign || 'center'"
-                    class="font-sans font-bold px-6 leading-tight select-none"
-                    [innerHTML]="
-                                            resolveVariablesForPreview(block.content || 'Heading Block', false)
-                                          "
-                  ></td>
-                </tr>
-              </table>
-              }
-
-              <!-- TEXT BLOCK -->
-              @if (block.type === 'text') {
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td
-                    [style.padding-top.px]="block.styles?.paddingTop || 12"
-                    [style.padding-bottom.px]="block.styles?.paddingBottom || 12"
-                    [style.color]="block.styles?.color || '#4b5563'"
-                    [style.font-size]="block.styles?.fontSize || '16px'"
-                    [style.text-align]="block.styles?.textAlign || 'left'"
-                    class="font-sans px-6 leading-relaxed whitespace-pre-wrap select-none"
-                    [innerHTML]="
-                                            resolveVariablesForPreview(
-                                              block.content || 'Click here to write some text...',
-                                              false
-                                            )
-                                          "
-                  ></td>
-                </tr>
-              </table>
-              }
-
-              <!-- IMAGE BLOCK -->
-              @if (block.type === 'image') {
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td
-                    [align]="block.styles?.textAlign || 'center'"
-                    [style.padding-top.px]="block.styles?.paddingTop || 12"
-                    [style.padding-bottom.px]="block.styles?.paddingBottom || 12"
-                    class="px-6"
-                  >
-                    <img
-                      [src]="
-                                              block.imageUrl ||
-                                              'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?auto=format&fit=crop&w=600&q=80'
-                                            "
-                      [alt]="block.imageAlt || 'Newsletter Image'"
-                      [style.max-width]="block.imageWidth || '100%'"
-                      class="w-full height-auto border-0 block rounded"
-                    />
-                  </td>
-                </tr>
-              </table>
-              }
-
-              <!-- BUTTON BLOCK -->
-              @if (block.type === 'button') {
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td
-                    [align]="block.styles?.textAlign || 'center'"
-                    [style.padding-top.px]="block.styles?.paddingTop || 16"
-                    [style.padding-bottom.px]="block.styles?.paddingBottom || 16"
-                    class="px-6"
-                  >
-                    <table border="0" cellpadding="0" cellspacing="0" class="border-separate">
-                      <tr>
-                        <td
-                          align="center"
-                          valign="middle"
-                          [style.background-color]="block.styles?.backgroundColor || '#2563eb'"
-                          [style.border-radius.px]="block.styles?.borderRadius || 6"
-                        >
-                          <span
-                            class="inline-block px-6 py-3 font-sans font-bold select-none text-decoration-none"
-                            [style.color]="block.styles?.color || '#ffffff'"
-                            [style.font-size]="block.styles?.fontSize || '16px'"
-                            [innerHTML]="
-                                                    resolveVariablesForPreview(block.content || 'Click Me', true)
-                                                  "
-                          >
-                          </span>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-              }
-
-              <!-- DIVIDER BLOCK -->
-              @if (block.type === 'divider') {
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td
-                    [style.padding-top.px]="block.styles?.paddingTop || 12"
-                    [style.padding-bottom.px]="block.styles?.paddingBottom || 12"
-                    class="px-6"
-                  >
-                    <div
-                      [style.border-top-width.px]="block.styles?.borderWidth || 1"
-                      [style.border-top-color]="block.styles?.borderColor || '#e5e7eb'"
-                      class="border-t"
-                    ></div>
-                  </td>
-                </tr>
-              </table>
-              }
-
-              <!-- SPACER BLOCK -->
-              @if (block.type === 'spacer') {
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td [style.height.px]="block.styles?.height || 20" style="font-size: 0; line-height: 0">&nbsp;</td>
-                </tr>
-              </table>
-              }
-
-              <!-- SOCIAL LINKS BLOCK -->
-              @if (block.type === 'social') {
-              <table border="0" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td
-                    [align]="block.styles?.textAlign || 'center'"
-                    [style.padding-top.px]="block.styles?.paddingTop || 16"
-                    [style.padding-bottom.px]="block.styles?.paddingBottom || 16"
-                    class="px-6"
-                  >
-                    <table border="0" cellpadding="0" cellspacing="0">
-                      <tr>
-                        @for (social of block.socials || []; track social.platform) {
-                        <td class="px-2">
-                          <span
-                            class="inline-flex items-center justify-center w-8 h-8 select-none"
-                            [style.background-color]="
-                                                      getSocialBgColor(
-                                                        social.platform,
-                                                        block.socialIconStyle || 'circular-solid'
-                                                      )
-                                                    "
-                            [style.color]="
-                                                      getSocialIconColor(
-                                                        social.platform,
-                                                        block.socialIconStyle || 'circular-solid'
-                                                      )
-                                                    "
-                            [style.border-radius]="
-                                                      (block.socialIconStyle || 'circular-solid').startsWith('circular')
-                                                        ? '50%'
-                                                        : '0%'
-                                                    "
-                          >
-                            <svg
-                              viewBox="0 0 24 24"
-                              class="w-4 h-4 fill-current"
-                              style="display: block; width: 16px; height: 16px"
-                            >
-                              <path [attr.d]="socialSvgPaths[social.platform]"></path>
-                            </svg>
-                          </span>
-                        </td>
-                        }
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-              }
-            </div>
-            } }
-
-            <!-- COMPLIANCE FOOTER PREVIEW — appended by the server to every send; not a block, not editable.
-                 Slate palette on purpose: the email canvas is theme-independent white, like its neighbors above. -->
-            <div
-              class="border-t border-dashed border-slate-200 select-none cursor-default"
-              title="This footer is added to every newsletter automatically and can't be removed. Administrators set the address and disclaimer under Workspace settings."
-            >
-              <div class="flex justify-center pt-3">
-                <span
-                  class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-slate-300"
-                >
-                  <pc-icon name="lock-closed" [size]="3"></pc-icon>
-                  Added to every send
-                </span>
-              </div>
-              <div class="px-6 pt-2 pb-6 text-center text-xs text-slate-400 leading-normal">
-                @if (footerOrgName()) {
-                <p class="font-bold">{{ footerOrgName() }}</p>
-                } @if (footerAddress()) {
-                <p class="whitespace-pre-line">{{ footerAddress() }}</p>
-                } @else {
-                <p class="italic">
-                  Your organization's mailing address — an administrator sets it in Workspace settings
-                </p>
-                } @if (footerDisclaimer()) {
-                <p class="mt-1 whitespace-pre-line">{{ footerDisclaimer() }}</p>
-                }
-                <p class="mt-2"><span class="underline">Unsubscribe</span></p>
-                <p class="mt-2 text-slate-300">powered by <span class="underline">pplCRM</span></p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      } @else {
-      <!-- RAW CODE VIEW -->
-      <div class="w-full h-full flex flex-col gap-2">
-        <div class="alert alert-warning text-xs py-2">
-          <pc-icon name="exclamation-triangle" [size]="4" class="mr-1"></pc-icon>
-          <span>
-            <strong>Caution:</strong> Editing raw HTML directly is fully supported, but manual changes cannot be
-            converted back into visual blocks.
-          </span>
-        </div>
-        <textarea
-          class="textarea textarea-bordered font-mono text-xs w-full flex-1"
-          [value]="compiledHtml()"
-          (input)="onRawHtmlInput($event)"
-          placeholder="Paste or edit HTML here..."
-        ></textarea>
-      </div>
-      }
-    </div>
-  </div>
-
-  <!-- RIGHT: CONTROL PANEL -->
-  <aside
-    class="w-full lg:w-96 flex flex-col border-t lg:border-t-0 lg:border-l border-base-300 bg-base-100 h-full overflow-hidden"
-  >
-    <!-- Tabs (the standard pill tab bar) -->
-    <pc-tab-bar
-      class="border-b border-base-300 px-4 py-3"
-      [tabs]="panelTabs"
-      [activeTab]="activeTab()"
-      (activeTabChange)="setPanelTab($event)"
-    />
-
-    <!-- TAB CONTENT -->
-    <div class="flex-1 overflow-y-auto p-4">
-      <!-- BLOCKS TAB -->
-      @if (activeTab() === 'blocks') {
-      <div class="space-y-4">
-        <div>
-          <h3 class="text-sm font-bold text-base-content/75 mb-1">Add Elements</h3>
-          <p class="text-xs text-base-content/60">Click to add, or drag a block into your email.</p>
-        </div>
-
-        <div
-          class="grid grid-cols-2 gap-2"
-          cdkDropList
-          [cdkDropListSortingDisabled]="true"
-          [cdkDropListConnectedTo]="['pc-canvas-drop-list']"
-        >
-          @for (t of paletteTypes; track t.type) {
-          <button
-            type="button"
-            cdkDrag
-            [cdkDragData]="t.type"
-            class="btn btn-outline btn-secondary btn-sm flex justify-start gap-2 h-12"
-            (click)="addBlock(t.type)"
-          >
-            <pc-icon [name]="t.icon" [size]="5" [class]="t.iconClass"></pc-icon>
-            {{ t.label }}
-          </button>
-          }
-        </div>
-
-        <!-- Quick action tip -->
-        <div class="mt-4 rounded bg-info/10 border border-info/20 p-3 text-xs text-info-content">
-          <p>
-            <strong>Tip:</strong> Drag blocks on the canvas to rearrange them; the controls on a selected block move,
-            duplicate, or delete it. The plus between blocks inserts one right there.
-          </p>
-        </div>
-      </div>
-      }
-
-      <!-- EDIT TAB -->
-      @if (activeTab() === 'edit') { @if (selectedBlock(); as block) {
-      <div class="space-y-4">
-        <div class="flex items-center justify-between border-b border-base-200 pb-2">
-          <span class="pc-eyebrow">Selected: {{ block.type }}</span>
-          <button type="button" class="btn btn-xs btn-outline btn-error" (click)="deleteBlock(block.id)">
-            Delete block
-          </button>
-        </div>
-
-        <!-- HEADING AND TEXT EDIT FIELDS -->
-        @if (block.type === 'heading' || block.type === 'text') {
-        <div class="form-control">
-          <label class="label text-xs font-semibold py-1">Text Content</label>
-          @if (block.type === 'heading') {
-          <input
-            #contentField
-            type="text"
-            class="input input-bordered w-full input-sm"
-            [value]="block.content ?? ''"
-            (input)="setBlockText(block, 'content', $event)"
-          />
-          } @else {
-          <textarea
-            #contentField
-            class="textarea textarea-bordered w-full textarea-sm min-h-24"
-            [value]="block.content ?? ''"
-            (input)="setBlockText(block, 'content', $event)"
-          ></textarea>
-          }
-
-          <!-- Quick-Insert Variables -->
-          <div class="mt-2 p-2 bg-base-200/50 rounded-md border border-base-300">
-            <div class="flex items-center justify-between mb-1.5">
-              <span class="pc-eyebrow">Insert Variable</span>
-              <span class="text-[9px] text-base-content/50">Tip: Use &#123;FirstName|Friend&#125; for fallbacks</span>
-            </div>
-            <div class="flex flex-wrap gap-1">
-              @for (variable of textVariables; track variable.name) {
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (mousedown)="$event.preventDefault()"
-                (click)="insertVariable(block, variable.name)"
-                [title]="'Insert ' + variable.label + ' at the cursor'"
-              >
-                + {{ variable.label }}
-              </button>
-              }
-            </div>
-          </div>
-        </div>
-
-        <!-- Text Styles -->
-        <div class="grid grid-cols-2 gap-2">
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Font Size</label>
-            <select
-              class="select select-bordered select-sm w-full"
-              [value]="block.styles?.fontSize ?? ''"
-              (change)="setBlockStyle(block, 'fontSize', $event)"
-            >
-              <option value="12px">12px (Small)</option>
-              <option value="14px">14px</option>
-              <option value="16px">16px (Normal)</option>
-              <option value="18px">18px</option>
-              <option value="20px">20px (H3)</option>
-              <option value="24px">24px (H2)</option>
-              <option value="28px">28px (H1)</option>
-              <option value="32px">32px</option>
-              <option value="36px">36px (Large)</option>
-            </select>
-          </div>
-
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Text Align</label>
-            <select
-              class="select select-bordered select-sm w-full"
-              [value]="block.styles?.textAlign ?? ''"
-              (change)="setBlockAlign(block, $event)"
-            >
-              <option value="left">Left</option>
-              <option value="center">Center</option>
-              <option value="right">Right</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2">
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Text Color</label>
-            <input
-              type="color"
-              class="input input-bordered p-1 w-full h-8"
-              [value]="block.styles?.color ?? ''"
-              (input)="setBlockStyle(block, 'color', $event)"
-            />
-          </div>
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Color Hex</label>
-            <input
-              type="text"
-              class="input input-bordered input-sm w-full font-mono text-xs"
-              [value]="block.styles?.color ?? ''"
-              (input)="setBlockStyle(block, 'color', $event)"
-            />
-          </div>
-        </div>
-        }
-
-        <!-- IMAGE EDIT FIELDS -->
-        @if (block.type === 'image') {
-        <div class="form-control">
-          <label class="label text-xs font-semibold py-1">Image URL</label>
-          <input
-            type="text"
-            class="input input-bordered w-full input-sm"
-            [value]="block.imageUrl ?? ''"
-            (input)="setBlockText(block, 'imageUrl', $event)"
-            placeholder="https://..."
-          />
-        </div>
-
-        <div class="form-control">
-          <label class="label text-xs font-semibold py-1">Alt Text</label>
-          <input
-            type="text"
-            class="input input-bordered w-full input-sm"
-            [value]="block.imageAlt ?? ''"
-            (input)="setBlockText(block, 'imageAlt', $event)"
-          />
-        </div>
-
-        <div class="grid grid-cols-2 gap-2">
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Max Width (e.g. 100%, 300px)</label>
-            <input
-              type="text"
-              class="input input-bordered w-full input-sm"
-              [value]="block.imageWidth ?? ''"
-              (input)="setBlockText(block, 'imageWidth', $event)"
-            />
-          </div>
-
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Alignment</label>
-            <select
-              class="select select-bordered select-sm w-full"
-              [value]="block.styles?.textAlign ?? ''"
-              (change)="setBlockAlign(block, $event)"
-            >
-              <option value="left">Left</option>
-              <option value="center">Center</option>
-              <option value="right">Right</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-control">
-          <label class="label text-xs font-semibold py-1">Link URL (Optional)</label>
-          <input
-            type="text"
-            class="input input-bordered w-full input-sm"
-            [value]="block.linkUrl ?? ''"
-            (input)="setBlockText(block, 'linkUrl', $event)"
-            placeholder="https://..."
-          />
-        </div>
-        }
-
-        <!-- BUTTON EDIT FIELDS -->
-        @if (block.type === 'button') {
-        <div class="form-control">
-          <label class="label text-xs font-semibold py-1">Button Text</label>
-          <input
-            #contentField
-            type="text"
-            class="input input-bordered w-full input-sm"
-            [value]="block.content ?? ''"
-            (input)="setBlockText(block, 'content', $event)"
-          />
-
-          <!-- Quick-Insert Variables -->
-          <div class="mt-2 p-2 bg-base-200/50 rounded-md border border-base-300">
-            <div class="flex items-center justify-between mb-1.5">
-              <span class="pc-eyebrow">Insert Variable</span>
-              <span class="text-[9px] text-base-content/50">Tip: Use &#123;FirstName|Friend&#125; for fallbacks</span>
-            </div>
-            <div class="flex flex-wrap gap-1">
-              @for (variable of buttonVariables; track variable.name) {
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (mousedown)="$event.preventDefault()"
-                (click)="insertVariable(block, variable.name)"
-                [title]="'Insert ' + variable.label + ' at the cursor'"
-              >
-                + {{ variable.label }}
-              </button>
-              }
-            </div>
-          </div>
-        </div>
-
-        <div class="form-control">
-          <label class="label text-xs font-semibold py-1">Link URL</label>
-          <input
-            type="text"
-            class="input input-bordered w-full input-sm"
-            [value]="block.linkUrl ?? ''"
-            (input)="setBlockText(block, 'linkUrl', $event)"
-            placeholder="https://..."
-          />
-        </div>
-
-        <div class="grid grid-cols-2 gap-2">
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Bg Color</label>
-            <input
-              type="color"
-              class="input input-bordered p-1 w-full h-8"
-              [value]="block.styles?.backgroundColor ?? ''"
-              (input)="setBlockStyle(block, 'backgroundColor', $event)"
-            />
-          </div>
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Text Color</label>
-            <input
-              type="color"
-              class="input input-bordered p-1 w-full h-8"
-              [value]="block.styles?.color ?? ''"
-              (input)="setBlockStyle(block, 'color', $event)"
-            />
-          </div>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2">
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Border Radius (px)</label>
-            <input
-              type="number"
-              class="input input-bordered w-full input-sm"
-              [value]="block.styles?.borderRadius ?? ''"
-              (input)="setBlockStyle(block, 'borderRadius', $event)"
-              min="0"
-              max="30"
-            />
-          </div>
-
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Alignment</label>
-            <select
-              class="select select-bordered select-sm w-full"
-              [value]="block.styles?.textAlign ?? ''"
-              (change)="setBlockAlign(block, $event)"
-            >
-              <option value="left">Left</option>
-              <option value="center">Center</option>
-              <option value="right">Right</option>
-            </select>
-          </div>
-        </div>
-        }
-
-        <!-- DIVIDER EDIT FIELDS -->
-        @if (block.type === 'divider') {
-        <div class="grid grid-cols-2 gap-2">
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Divider Color</label>
-            <input
-              type="color"
-              class="input input-bordered p-1 w-full h-8"
-              [value]="block.styles?.borderColor ?? ''"
-              (input)="setBlockStyle(block, 'borderColor', $event)"
-            />
-          </div>
-
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Line Thickness (px)</label>
-            <input
-              type="number"
-              class="input input-bordered w-full input-sm"
-              [value]="block.styles?.borderWidth ?? ''"
-              (input)="setBlockStyle(block, 'borderWidth', $event)"
-              min="1"
-              max="10"
-            />
-          </div>
-        </div>
-        }
-
-        <!-- SPACER EDIT FIELDS -->
-        @if (block.type === 'spacer') {
-        <div class="form-control">
-          <label class="label text-xs font-semibold py-1">Spacer Height (px)</label>
-          <input
-            type="number"
-            class="input input-bordered w-full input-sm"
-            [value]="block.styles?.height ?? ''"
-            (input)="setBlockStyle(block, 'height', $event)"
-            min="5"
-            max="150"
-            step="5"
-          />
-        </div>
-        }
-
-        <!-- SOCIAL LINKS EDIT FIELDS -->
-        @if (block.type === 'social') {
-        <div class="space-y-2">
-          <div class="form-control">
-            <label class="label text-xs font-semibold py-1">Icon Style & Colors</label>
-            <select
-              class="select select-bordered select-sm w-full"
-              [value]="block.socialIconStyle ?? 'circular-solid'"
-              (change)="setSocialIconStyle(block, $event)"
-            >
-              <option value="circular-solid">Circular Brand Color</option>
-              <option value="circular-gray">Circular Grayscale</option>
-              <option value="simple-color">Flat Brand Color</option>
-              <option value="simple-gray">Flat Grayscale</option>
-            </select>
-          </div>
-
-          <label class="label text-xs font-semibold py-1">Social Networks</label>
-          @for (social of block.socials; track social.platform) {
-          <div class="flex flex-col gap-1 border border-base-200 rounded p-2 bg-base-50">
-            <span class="text-[10px] font-bold uppercase text-base-content/60">{{ social.platform }} URL</span>
-            <input
-              type="text"
-              class="input input-bordered input-xs w-full font-mono"
-              [value]="social.url"
-              (input)="setSocialUrl(social, $event)"
-              placeholder="https://..."
-            />
-          </div>
-          }
-
-          <div class="form-control mt-2">
-            <label class="label text-xs font-semibold py-1">Alignment</label>
-            <select
-              class="select select-bordered select-sm w-full"
-              [value]="block.styles?.textAlign ?? ''"
-              (change)="setBlockAlign(block, $event)"
-            >
-              <option value="left">Left</option>
-              <option value="center">Center</option>
-              <option value="right">Right</option>
-            </select>
-          </div>
-        </div>
-        }
-
-        <!-- COMMON BLOCK PADDING SETTINGS -->
-        <div class="border-t border-base-200 pt-3 mt-3">
-          <h4 class="text-xs font-bold text-base-content/60 mb-2">Block Margins</h4>
-          <div class="grid grid-cols-2 gap-2">
-            <div class="form-control">
-              <label class="label text-[10px] uppercase font-bold py-0">Padding Top (px)</label>
-              <input
-                type="number"
-                class="input input-bordered w-full input-sm"
-                [value]="block.styles?.paddingTop ?? ''"
-                (input)="setBlockStyle(block, 'paddingTop', $event)"
-                min="0"
-                max="80"
-              />
-            </div>
-
-            <div class="form-control">
-              <label class="label text-[10px] uppercase font-bold py-0">Padding Bottom (px)</label>
-              <input
-                type="number"
-                class="input input-bordered w-full input-sm"
-                [value]="block.styles?.paddingBottom ?? ''"
-                (input)="setBlockStyle(block, 'paddingBottom', $event)"
-                min="0"
-                max="80"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-      } @else {
-      <div class="h-48 flex flex-col justify-center items-center text-center text-base-content/40 p-4">
-        <pc-icon name="pencil-square" [size]="8" class="text-base-content/30 mb-2"></pc-icon>
-        <p class="text-sm font-semibold">No Block Selected</p>
-        <p class="text-xs mt-1">Click on any block inside the preview area to edit its content and styling.</p>
-      </div>
-      } }
-    </div>
-  </aside>
-</div>
-```
-
-## File: apps/frontend/src/app/experiences/newsletters/ui/visual-newsletter-editor.ts
-```typescript
-import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, type CdkDragDrop } from '@angular/cdk/drag-drop';
-import { CdkScrollable } from '@angular/cdk/scrolling';
-import {
-  Component,
-  ElementRef,
-  Injector,
-  OnInit,
-  afterNextRender,
-  computed,
-  inject,
-  model,
-  signal,
-  viewChild,
-} from '@angular/core';
-import { Icon } from '@icons/icon';
-import type { PcIconNameType } from '@icons/icons.index';
-import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
-
-import { SettingsService } from '../../settings/services/settings-service';
-import {
-  createBlock,
-  insertBlockAt,
-  isEmailBlockType,
-  moveBlock,
-  tryImportHtmlToBlocks,
-  type EmailBlockType,
-} from './newsletter-block-ops';
-import {
-  EmailBlock,
-  socialSvgPaths,
-  getSocialBgColor,
-  getSocialIconColor,
-  getTemplateBlocks,
-  compileBlocksToHtml,
-  compileBlocksToPlainText,
-} from './newsletter-templates';
-
-/** One merge field in the quick-insert panel; clicking the chip drops `{name}` at the caret. */
-interface MergeVariable {
-  name: string;
-  label: string;
-}
-
-/** One palette entry: the tile in the Blocks tab and the "+" insert menu both render from this. */
-interface PaletteEntry {
-  type: EmailBlockType;
-  label: string;
-  icon: PcIconNameType;
-  iconClass: string;
-}
-
-@Component({
-  selector: 'pc-visual-newsletter-editor',
-  imports: [Icon, TabBar, CdkDropList, CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkScrollable],
-  templateUrl: './visual-newsletter-editor.html',
-})
-export class VisualNewsletterEditorComponent implements OnInit {
-  public readonly htmlContent = model<string>('');
-  public readonly plainTextContent = model<string>('');
-
-  protected readonly blocks = signal<EmailBlock[]>([]);
-  protected readonly selectedBlockId = signal<string | null>(null);
-  protected readonly previewMode = signal<'desktop' | 'mobile'>('desktop');
-  protected readonly editorMode = signal<'visual' | 'code'>('visual');
-  protected readonly activeTab = signal<'blocks' | 'edit'>('blocks');
-
-  /** Seam index whose "+" insert picker is open, or null when closed. */
-  protected readonly insertMenuIndex = signal<number | null>(null);
-
-  /** The 7 block types: palette tiles and the "+" insert menu share this list. */
-  protected readonly paletteTypes: readonly PaletteEntry[] = [
-    { type: 'heading', label: 'Heading', icon: 'document-text', iconClass: 'text-primary' },
-    { type: 'text', label: 'Paragraph', icon: 'document-text', iconClass: 'text-success' },
-    { type: 'image', label: 'Image', icon: 'file-image', iconClass: 'text-warning' },
-    { type: 'button', label: 'CTA Button', icon: 'star-filled', iconClass: 'text-info' },
-    { type: 'divider', label: 'Divider', icon: 'bars-3', iconClass: 'text-neutral-content' },
-    { type: 'spacer', label: 'Spacer', icon: 'arrows-pointing-out', iconClass: '' },
-    { type: 'social', label: 'Social Links', icon: 'user-group', iconClass: 'text-primary' },
-  ];
-
-  protected readonly panelTabs: PcTabOption[] = [
-    { id: 'blocks', label: 'Blocks' },
-    { id: 'edit', label: 'Customize' },
-  ];
-
-  protected setPanelTab(tab: string): void {
-    if (tab === 'blocks' || tab === 'edit') this.activeTab.set(tab);
-  }
-
-  protected readonly socialSvgPaths = socialSvgPaths;
-  protected getSocialBgColor(platform: string, style: string) {
-    return getSocialBgColor(platform, style);
-  }
-  protected getSocialIconColor(platform: string, style: string) {
-    return getSocialIconColor(platform, style);
-  }
-
-  private escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
-
-  protected getMockVariableValue(name: string): string | undefined {
-    const mocks: Record<string, string> = {
-      FirstName: 'John',
-      LastName: 'Doe',
-      Email: 'john.doe@example.com',
-      Company: 'Acme Corporation',
-      JobTitle: 'Software Engineer',
-      Phone: '(555) 123-4567',
-    };
-    const key = Object.keys(mocks).find((k) => k.toLowerCase() === name.toLowerCase());
-    return key ? mocks[key] : undefined;
-  }
-
-  protected resolveVariablesForPreview(text: string | undefined, isButton = false): string {
-    if (!text) return '';
-    const escaped = this.escapeHtml(text);
-    return escaped.replace(/\{([a-zA-Z0-9_]+)(?:\|([^}]+))?\}/g, (match, varName, fallback) => {
-      const mockValue = this.getMockVariableValue(varName);
-      const displayValue = mockValue !== undefined ? mockValue : fallback !== undefined ? fallback : match;
-      if (isButton) {
-        return `<span class="border-b border-dashed border-current font-semibold" title="Variable: ${match}">${displayValue}</span>`;
-      }
-      return `<span class="border-b border-dashed border-primary/60 text-primary font-semibold animate-pulse" title="Variable: ${match}">${displayValue}</span>`;
-    });
-  }
-
-  /** Merge fields offered for heading/paragraph copy. */
-  protected readonly textVariables: readonly MergeVariable[] = [
-    { name: 'FirstName', label: 'First Name' },
-    { name: 'LastName', label: 'Last Name' },
-    { name: 'Email', label: 'Email' },
-    { name: 'Company', label: 'Company' },
-    { name: 'JobTitle', label: 'Job Title' },
-    { name: 'Phone', label: 'Phone' },
-  ];
-
-  /** A CTA label only ever personalises on identity, so buttons get the first three. */
-  protected readonly buttonVariables: readonly MergeVariable[] = this.textVariables.slice(0, 3);
-
-  /** The content input/textarea of the selected block — only one is rendered at a time. */
-  private readonly contentField = viewChild<ElementRef<HTMLInputElement | HTMLTextAreaElement>>('contentField');
-
-  private readonly injector = inject(Injector);
-
-  /**
-   * Drops `{Variable}` at the caret (replacing any selection) and leaves the caret just after it.
-   * The chips suppress mousedown so the field keeps focus; when it doesn't have focus — the user
-   * never clicked into it — we append instead of silently writing at position 0.
-   */
-  protected insertVariable(block: EmailBlock, variableName: string): void {
-    const token = `{${variableName}}`;
-    const current = block.content ?? '';
-    const field = this.contentField()?.nativeElement;
-    const focused = field != null && field.ownerDocument.activeElement === field;
-    const start = focused ? (field.selectionStart ?? current.length) : current.length;
-    const end = focused ? (field.selectionEnd ?? start) : current.length;
-
-    block.content = current.slice(0, start) + token + current.slice(end);
-    this.updateBlocks();
-
-    if (!field) return;
-    const caret = start + token.length;
-    // Angular rewrites [value] on the next render, which would push the caret to the end.
-    afterNextRender(
-      () => {
-        field.focus();
-        field.setSelectionRange(caret, caret);
-      },
-      { injector: this.injector },
-    );
-  }
-
-  private readonly settingsSvc = inject(SettingsService);
-
-  /** Org name shown in the compliance-footer preview (the server appends the real footer at send time). */
-  protected readonly footerOrgName = computed(() => {
-    const value = this.settingsSvc.snapshotSignal()['organization.name'];
-    return typeof value === 'string' ? value.trim() : '';
-  });
-
-  /** Org address shown in the compliance-footer preview (the server appends the real one at send time). */
-  protected readonly footerAddress = computed(() => {
-    const value = this.settingsSvc.snapshotSignal()['organization.address'];
-    return typeof value === 'string' ? value.trim() : '';
-  });
-
-  /** Tenant footer disclaimer shown in the compliance-footer preview. */
-  protected readonly footerDisclaimer = computed(() => {
-    const value = this.settingsSvc.snapshotSignal()['communications.footer_disclaimer'];
-    return typeof value === 'string' ? value.trim() : '';
-  });
-
-  // Computed signals
-  protected readonly selectedBlock = computed(() => {
-    const id = this.selectedBlockId();
-    if (!id) return null;
-    return this.blocks().find((b) => b.id === id) ?? null;
-  });
-
-  protected readonly compiledHtml = computed(() => {
-    return compileBlocksToHtml(this.blocks());
-  });
-
-  public ngOnInit(): void {
-    // Best-effort fetch of the address/disclaimer for the compliance-footer preview; the
-    // preview falls back to guidance copy when the snapshot is unavailable.
-    this.settingsSvc.load().catch(() => undefined);
-
-    // Check if the incoming HTML has our saved JSON blocks comment
-    const matched = this.htmlContent().match(/<!-- PPLCRM_VISUAL_BLOCKS_DATA: ([\s\S]*?) -->/);
-    if (matched && matched[1]) {
-      try {
-        const decoded = decodeURIComponent(matched[1].trim());
-        const parsed = JSON.parse(decoded);
-        if (Array.isArray(parsed)) {
-          // Older drafts may carry a removable 'footer' block; the compliance footer is
-          // appended server-side at send time now, so drop it from the design.
-          const blockList = parsed.filter((b) => b?.type !== 'footer');
-          this.blocks.set(blockList);
-          if (blockList.length > 0) {
-            this.selectedBlockId.set(blockList[0].id);
-            this.activeTab.set('edit');
-          }
-          return;
-        }
-      } catch (err) {
-        console.error('Failed to parse embedded visual block metadata. Defaulting to template.', err);
-      }
-    }
-
-    // No embedded block model. The visual editor is the default, so try a best-effort import
-    // of simple legacy HTML into blocks; fall back to raw-HTML mode only when the content
-    // would not survive the round-trip. Empty content starts from the welcome template.
-    const legacyHtml = this.htmlContent().trim();
-    if (!legacyHtml) {
-      this.loadTemplate('welcome', false);
-      return;
-    }
-    const imported = tryImportHtmlToBlocks(legacyHtml);
-    if (imported) {
-      this.blocks.set(imported);
-      this.selectedBlockId.set(imported[0]?.id ?? null);
-      this.activeTab.set('edit');
-    } else {
-      this.editorMode.set('code');
-    }
-  }
-
-  protected selectBlock(id: string, event?: Event): void {
-    if (event) {
-      event.stopPropagation();
-    }
-    this.insertMenuIndex.set(null);
-    this.selectedBlockId.set(id);
-    this.activeTab.set('edit');
-  }
-
-  /** Toggles the "+" insert picker at the given seam index. */
-  protected toggleInsertMenu(index: number, event?: Event): void {
-    if (event) {
-      event.stopPropagation();
-    }
-    this.insertMenuIndex.set(this.insertMenuIndex() === index ? null : index);
-  }
-
-  protected toggleEditorMode(): void {
-    const current = this.editorMode();
-    if (current === 'visual') {
-      this.editorMode.set('code');
-    } else {
-      // Switch back to visual, warning that edits made in code view will be reset
-      this.editorMode.set('visual');
-      this.updateBlocks();
-    }
-  }
-
-  /** Click-to-add path: inserts after the selected block, or appends when nothing is selected. */
-  protected addBlock(type: EmailBlockType): void {
-    const selectedId = this.selectedBlockId();
-    const selectedIdx = selectedId === null ? -1 : this.blocks().findIndex((b) => b.id === selectedId);
-    const index = selectedIdx === -1 ? this.blocks().length : selectedIdx + 1;
-    this.addBlockAt(type, index);
-  }
-
-  /** Inserts a fresh block of the given type at the given index, selects it, and closes any insert menu. */
-  protected addBlockAt(type: EmailBlockType, index: number): void {
-    const newBlock = createBlock(type);
-    this.blocks.set(insertBlockAt(this.blocks(), newBlock, index));
-    this.selectBlock(newBlock.id);
-    this.updateBlocks();
-  }
-
-  /** Handles drops on the canvas: reorder within it, or copy-insert a type dragged from the palette. */
-  protected onCanvasDrop(event: CdkDragDrop<EmailBlock[]>): void {
-    if (event.previousContainer === event.container) {
-      if (event.previousIndex === event.currentIndex) return;
-      this.blocks.set(moveBlock(this.blocks(), event.previousIndex, event.currentIndex));
-      this.updateBlocks();
-      return;
-    }
-    // Palette tile dropped onto the canvas: copy semantics — the tile itself stays in the palette.
-    const data: unknown = event.item.data;
-    if (isEmailBlockType(data)) {
-      this.addBlockAt(data, event.currentIndex);
-    }
-  }
-
-  protected deleteBlock(id: string, event?: Event): void {
-    if (event) {
-      event.stopPropagation();
-    }
-    const filtered = this.blocks().filter((b) => b.id !== id);
-    this.blocks.set(filtered);
-    if (this.selectedBlockId() === id) {
-      this.selectedBlockId.set(filtered[0]?.id ?? null);
-    }
-    this.updateBlocks();
-  }
-
-  protected duplicateBlock(block: EmailBlock, event?: Event): void {
-    if (event) {
-      event.stopPropagation();
-    }
-    const idx = this.blocks().findIndex((b) => b.id === block.id);
-    if (idx === -1) return;
-
-    const id = Math.random().toString(36).substring(2, 9);
-    const clone: EmailBlock = JSON.parse(JSON.stringify(block));
-    clone.id = id;
-
-    this.blocks.set(insertBlockAt(this.blocks(), clone, idx + 1));
-    this.selectBlock(id);
-    this.updateBlocks();
-  }
-
-  protected moveBlockUp(idx: number, event?: Event): void {
-    if (event) {
-      event.stopPropagation();
-    }
-    if (idx <= 0) return;
-    this.blocks.set(moveBlock(this.blocks(), idx, idx - 1));
-    this.updateBlocks();
-  }
-
-  protected moveBlockDown(idx: number, event?: Event): void {
-    if (event) {
-      event.stopPropagation();
-    }
-    if (idx >= this.blocks().length - 1) return;
-    this.blocks.set(moveBlock(this.blocks(), idx, idx + 1));
-    this.updateBlocks();
-  }
-
-  protected updateBlocks(): void {
-    const list = [...this.blocks()];
-    // Trigger signal recomputation and propagation
-    this.blocks.set(list);
-    this.propagateChanges();
-  }
-
-  // --- Ad-hoc style/content knobs (value + input/change handlers, no forms) ---
-
-  /** Writes a plain-text field of the block (content, urls, footer copy) from a native input/textarea event. */
-  protected setBlockText(block: EmailBlock, field: EditableBlockTextField, event: Event): void {
-    block[field] = eventValue(event);
-    this.updateBlocks();
-  }
-
-  /** Writes a string-valued style property (colors, sizes, paddings) from a native control event. */
-  protected setBlockStyle(block: EmailBlock, key: StringStyleKey, event: Event): void {
-    this.ensureStyles(block)[key] = eventValue(event);
-    this.updateBlocks();
-  }
-
-  protected setBlockAlign(block: EmailBlock, event: Event): void {
-    const value = eventValue(event);
-    if (value === 'left' || value === 'center' || value === 'right') {
-      this.ensureStyles(block).textAlign = value;
-      this.updateBlocks();
-    }
-  }
-
-  protected setSocialIconStyle(block: EmailBlock, event: Event): void {
-    const value = eventValue(event);
-    if (
-      value === 'circular-solid' ||
-      value === 'circular-gray' ||
-      value === 'simple-color' ||
-      value === 'simple-gray'
-    ) {
-      block.socialIconStyle = value;
-      this.updateBlocks();
-    }
-  }
-
-  protected setSocialUrl(social: { url: string }, event: Event): void {
-    social.url = eventValue(event);
-    this.updateBlocks();
-  }
-
-  protected onRawHtmlInput(event: Event): void {
-    this.handleRawHtmlEdit(eventValue(event));
-  }
-
-  private ensureStyles(block: EmailBlock): NonNullable<EmailBlock['styles']> {
-    block.styles ??= {};
-    return block.styles;
-  }
-
-  protected handleRawHtmlEdit(html: string): void {
-    this.htmlContent.set(html);
-    // Simple text version conversion from html tags
-    const text = html
-      .replace(/<[^>]*>/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    this.plainTextContent.set(text);
-  }
-
-  protected loadTemplate(preset: 'welcome' | 'product' | 'newsletter' | 'empty', triggerPropagate = true): void {
-    const tpl = getTemplateBlocks(preset);
-    this.blocks.set(tpl);
-    this.selectedBlockId.set(tpl[0]?.id || null);
-    this.activeTab.set('edit');
-
-    if (triggerPropagate) {
-      this.propagateChanges();
-    }
-  }
-
-  private propagateChanges(): void {
-    const html = this.compiledHtml();
-    const text = compileBlocksToPlainText(this.blocks());
-
-    this.htmlContent.set(html);
-    this.plainTextContent.set(text);
-  }
-}
-
-/** Block fields that are edited as free text in the Customize panel. */
-type EditableBlockTextField = 'content' | 'linkUrl' | 'imageUrl' | 'imageAlt' | 'imageWidth';
-
-/** Style keys typed as plain strings on EmailBlock['styles'] (textAlign is handled separately). */
-type StringStyleKey =
-  | 'color'
-  | 'backgroundColor'
-  | 'fontSize'
-  | 'paddingTop'
-  | 'paddingBottom'
-  | 'borderRadius'
-  | 'borderColor'
-  | 'borderWidth'
-  | 'height';
-
-/** Safely reads the string value from a native input/textarea/select event target. */
-function eventValue(event: Event): string {
-  const target = event.target;
-  if (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement
-  ) {
-    return target.value;
-  }
-  return '';
-}
-```
-
 ## File: apps/frontend/src/app/experiences/settings/api-keys/api-keys-settings.ts
 ```typescript
 import { DatePipe } from '@angular/common';
@@ -72196,614 +71168,6 @@ export class ApiKeysSettingsComponent implements OnInit {
     void navigator.clipboard.writeText(key).then(() => {
       this.alerts.showSuccess('API key copied to clipboard');
     });
-  }
-}
-```
-
-## File: apps/frontend/src/app/experiences/tags/ui/issues-admin.html
-```html
-<div class="flex flex-col gap-4 p-4 sm:p-6">
-  <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Issues" [totalSentence]="loaded() ? sentence() : null">
-    <button type="button" class="btn btn-primary btn-sm gap-2" (click)="openAddDialog()">
-      <pc-icon name="add-issue" [size]="4"></pc-icon>
-      New issue
-    </button>
-  </pc-grid-header>
-
-  <pc-table [loading]="loading()" [columns]="6">
-    <ng-container pcTableHead>
-      <th class="w-10">#</th>
-      <!-- min-w keeps narrow viewports from strangling the chip into per-letter
-           wrapping; the pc-table-shell scrolls horizontally instead. -->
-      <th class="min-w-44">Issue</th>
-      <th class="min-w-48">People interested</th>
-      <th>Trend</th>
-      <th>Top ward</th>
-      <th class="w-10"></th>
-    </ng-container>
-
-    @if (loaded() && ranked().length === 0) {
-    <tr>
-      <td colspan="6">
-        <pc-empty-state
-          icon="shield-exclamation"
-          [bordered]="false"
-          title="No issues yet"
-          hint="Issues flow in from survey forms and profile edits, or start the vocabulary yourself."
-        >
-          <button type="button" class="btn btn-sm btn-primary" (click)="openAddDialog()">New issue</button>
-        </pc-empty-state>
-      </td>
-    </tr>
-    } @else { @for (entry of ranked(); track entry.row.id) {
-    <tr>
-      <td class="tabular-nums text-base-content/50 text-xs">{{ entry.rank }}</td>
-      <td>
-        <pc-tagitem [name]="entry.row.name" [color]="entry.row.color" [canDelete]="false" [compact]="true" />
-      </td>
-      <td>
-        <div class="flex items-center gap-2 text-xs">
-          <div class="h-2 flex-1 rounded-full bg-base-200 overflow-hidden max-w-32">
-            <div class="h-full bg-info rounded-full" [style.width.%]="interestedPercent(entry.row)"></div>
-          </div>
-          <a
-            [routerLink]="'/people'"
-            [queryParams]="{ issue: entry.row.name }"
-            class="link link-hover text-base-content underline decoration-base-content/20 underline-offset-[3px] hover:text-primary hover:decoration-primary tabular-nums"
-          >
-            {{ entry.row.use_count_people.toLocaleString() }}
-          </a>
-        </div>
-      </td>
-      <td
-        class="text-xs tabular-nums"
-        [class]="entry.row.recent_applications_30d > 0 ? 'text-success' : 'text-base-content/50'"
-      >
-        {{ trendLabel(entry.row) }}
-      </td>
-      <td class="text-xs text-base-content/70">{{ entry.row.top_ward ?? '—' }}</td>
-      <td>
-        <pc-row-actions [label]="'Actions for ' + entry.row.name">
-          <li>
-            <a (click)="rename(entry.row)"><pc-icon name="pencil-square" [size]="4"></pc-icon> Rename issue</a>
-          </li>
-          <li>
-            <a (click)="merge(entry.row)"> <pc-icon name="merge" [size]="4"></pc-icon> Merge into another issue </a>
-          </li>
-          <li><hr class="my-1 border-base-300" /></li>
-          <li>
-            <a (click)="delete(entry.row)" class="text-error">
-              <pc-icon name="trash-forever" [size]="4"></pc-icon> Delete issue
-            </a>
-          </li>
-        </pc-row-actions>
-      </td>
-    </tr>
-    } }
-  </pc-table>
-
-  <p class="text-xs text-base-content/50 px-1">
-    Issues flow in from survey forms and profile edits; the ranking exists for the policy team. Issues stay a separate
-    field from tags everywhere because issues power issue-based filtering and targeting.
-  </p>
-</div>
-
-<pc-add-issue-dialog (saved)="onIssueSaved()" />
-```
-
-## File: apps/frontend/src/app/experiences/users/ui/user-view.ts
-```typescript
-import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
-import { DatePipe } from '@angular/common';
-import { Router } from '@angular/router';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { createRequestGuard } from '@uxcommon/request-guard';
-import { form, required, email } from '@angular/forms/signals';
-import {
-  IAuthUserDetail,
-  IUserStatsSnapshot,
-  UpdateAuthUserType,
-  authRoleLabel,
-} from '../../../../../../../libs/common/src';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Icon } from '@uxcommon/components/icons/icon';
-import { RecordActivities } from '@experiences/activity/ui/record-activities/record-activities';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { CampaignContextService } from '../../../services/campaign-context.service';
-import { UserAdminService } from '../services/useradmin-service';
-import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
-import { StatCard } from '@uxcommon/components/stat-card/stat-card';
-import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
-import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { DetailItem } from '@uxcommon/components/detail-item/detail-item';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { Input as PcInput } from '@uxcommon/components/input/input';
-import { injectRecordNavigation } from '@frontend/services/record-navigation.service';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-import { getUserErrorMessage } from '../../../services/api/user-message';
-import {
-  userIsDeactivated,
-  userLastActiveLabel,
-  userRoleLockReason,
-  userRoleOptions,
-  userShortDate,
-  userStatus,
-} from '../user-status';
-
-/**
- * The one user page — view and edit in place, no separate edit route (approved design,
- * 2026-07-10 mockup). Rolodex records keep the view/edit split; account-ish pages
- * (Profile, Users) edit in place:
- * - identity fields save explicitly with narrated dirty state (the Profile-page idiom),
- * - role applies instantly with explained locks (the Users-list idiom),
- * - lifecycle actions (password reset, resend invite, deactivate/reactivate, delete)
- *   live where the doctrine puts them (§4).
- */
-@Component({
-  selector: 'pc-user-view',
-  imports: [DatePipe, Icon, RecordActivities, DetailLayout, StatCard, StatusBadge, DetailItem, PcCard, PcInput],
-  templateUrl: './user-view.html',
-})
-export class UserViewComponent {
-  readonly id = input.required<string>();
-
-  protected readonly recordNav = injectRecordNavigation('user', this.id);
-
-  private readonly alerts = inject(AlertService);
-  private readonly router = inject(Router);
-  private readonly users = inject(UserAdminService);
-  private readonly auth = inject(AuthService);
-  private readonly dialogs = inject(ConfirmDialogService);
-  private readonly campaignContext = inject(CampaignContextService);
-
-  private readonly _loading = createLoadingGate();
-  private readonly _requestGuard = createRequestGuard();
-  protected readonly loading = this._loading.visible;
-  protected readonly initialized = signal(false);
-  protected readonly error = signal<string | null>(null);
-  protected readonly stats = signal<IUserStatsSnapshot | null>(null);
-  protected readonly detail = signal<IAuthUserDetail | null>(null);
-
-  protected readonly saving = signal(false);
-  protected readonly resettingPassword = signal(false);
-  protected readonly roleSaving = signal(false);
-  /** One-shot saved flash on the role select after an instant-apply role change. */
-  protected readonly roleFlash = signal(false);
-  /** In-flight resend-invite / deactivate / reactivate action. */
-  protected readonly lifecycleBusy = signal(false);
-
-  protected readonly payload = signal({ email: '', first_name: '', last_name: '' });
-
-  protected readonly form = form(this.payload, (p) => {
-    required(p.email);
-    email(p.email);
-    required(p.first_name);
-  });
-
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-
-  protected readonly currentUserRole = computed(() => this.auth.getUser()?.role ?? null);
-  protected readonly currentUserId = computed(() => {
-    const id = this.auth.getUser()?.id;
-    return id != null ? String(id) : null;
-  });
-
-  protected readonly isSelf = computed(() => String(this.id()) === this.currentUserId());
-  protected readonly isDeactivated = computed(() => {
-    const user = this.detail();
-    return !!user && userIsDeactivated(user);
-  });
-  protected readonly isInvited = computed(() => {
-    const user = this.detail();
-    return !!user && !user.verified && !userIsDeactivated(user);
-  });
-
-  /** Admins may not manage owner accounts — only another owner can. */
-  protected readonly canManageTarget = computed(
-    () => !(this.currentUserRole() === 'admin' && this.detail()?.role === 'owner'),
-  );
-  protected readonly canDelete = computed(() => !!this.detail() && !this.isSelf() && this.canManageTarget());
-  protected readonly showDeactivateAction = computed(
-    () => !!this.detail() && !this.isSelf() && this.canManageTarget() && !this.isDeactivated(),
-  );
-
-  protected readonly status = computed(() => {
-    const user = this.detail();
-    return user ? userStatus(user) : null;
-  });
-
-  protected readonly roleLabel = computed(() => authRoleLabel(this.detail()?.role));
-
-  protected readonly roleLock = computed(() => {
-    const user = this.detail();
-    if (!user) return null;
-    return userRoleLockReason({
-      isSelf: this.isSelf(),
-      callerRole: this.currentUserRole(),
-      targetRole: user.role,
-      deactivated: this.isDeactivated(),
-    });
-  });
-
-  protected readonly roleChoices = computed(() => userRoleOptions(this.currentUserRole(), this.detail()?.role));
-
-  protected roleLabelFor(role: string): string {
-    return authRoleLabel(role);
-  }
-
-  // Campaigns §15 — assignment select (instant-apply, same idiom as Role).
-  protected readonly campaignSaving = signal(false);
-  protected readonly campaignFlash = signal(false);
-  protected readonly assignableCampaigns = computed(() =>
-    this.campaignContext.campaigns().filter((c) => c.status === 'active'),
-  );
-  /** Only worth showing once an election campaign exists alongside the office. */
-  protected readonly showCampaignControl = computed(() => this.assignableCampaigns().length > 1);
-  /** Admins/owners can work in every campaign, so the assignment doesn't scope them. */
-  protected readonly targetIsCampaignScoped = computed(() => {
-    const role = this.detail()?.role;
-    return role !== 'admin' && role !== 'owner';
-  });
-  protected readonly assignedCampaignName = computed(() => {
-    const id = this.detail()?.campaign_id ?? null;
-    if (id == null) return 'Office';
-    return this.assignableCampaigns().find((c) => String(c.id) === id)?.name ?? 'Office';
-  });
-
-  protected async changeCampaign(event: Event): Promise<void> {
-    const select = event.target as HTMLSelectElement;
-    const campaignId = select.value || null;
-    const user = this.detail();
-    if (!user || campaignId === (user.campaign_id ?? null)) return;
-
-    this.campaignSaving.set(true);
-    try {
-      await this.users.update(this.id(), { campaign_id: campaignId } as UpdateAuthUserType);
-      this.detail.update((d) => (d ? { ...d, campaign_id: campaignId } : d));
-      this.users.triggerRefresh();
-      this.campaignFlash.set(true);
-      const FLASH_MS = 1300;
-      setTimeout(() => this.campaignFlash.set(false), FLASH_MS);
-      this.alerts.showSuccess(`${this.displayName()} now works in ${this.assignedCampaignName()}`);
-    } catch (err) {
-      select.value = user.campaign_id ?? '';
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to update the campaign'));
-    } finally {
-      this.campaignSaving.set(false);
-    }
-  }
-
-  protected readonly lastActiveLabel = computed(() => {
-    const user = this.detail();
-    return user ? userLastActiveLabel(user) : '—';
-  });
-
-  /**
-   * Lifecycle context strip in the Access card: names the limbo state and carries its one
-   * next step (§3 offer the exit). Null for active accounts.
-   */
-  protected readonly lifecycleStrip = computed<{
-    tone: 'warning' | 'ghost';
-    text: string;
-    action: 'resend' | 'reactivate' | null;
-    actionLabel: string;
-  } | null>(() => {
-    const user = this.detail();
-    if (!user) return null;
-    const canAct = this.canManageTarget();
-    if (user.deactivated_at) {
-      const since = userShortDate(user.deactivated_at);
-      return {
-        tone: 'ghost',
-        text: `Deactivated${since ? ` ${since}` : ''}. Can't sign in`,
-        action: canAct ? 'reactivate' : null,
-        actionLabel: 'Reactivate user',
-      };
-    }
-    if (user.deletion_scheduled_at) {
-      const when = userShortDate(user.deletion_scheduled_at);
-      return {
-        tone: 'ghost',
-        text: `Deletion scheduled${when ? ` for ${when}` : ''}. Signing back in cancels it`,
-        action: canAct ? 'reactivate' : null,
-        actionLabel: 'Reactivate user',
-      };
-    }
-    if (!user.verified) {
-      const sent = userShortDate(user.created_at);
-      return {
-        tone: 'warning',
-        text: `Invite sent${sent ? ` ${sent}` : ''}. Hasn't signed in yet`,
-        action: canAct ? 'resend' : null,
-        actionLabel: 'Resend invite',
-      };
-    }
-    return null;
-  });
-
-  protected readonly displayName = computed(() => {
-    const user = this.detail();
-    if (!user) return '';
-    const tokens = [user.first_name, user.last_name].filter((t) => !!t && t.trim().length > 0);
-    const name = tokens.join(' ').trim();
-    return name || user.email;
-  });
-
-  protected readonly initials = computed(() => {
-    const user = this.detail();
-    if (!user) return null;
-    const letters = [user.first_name, user.last_name]
-      .map((t) => (t ?? '').trim().charAt(0))
-      .filter(Boolean)
-      .join('')
-      .toUpperCase();
-    return letters || user.email.charAt(0).toUpperCase();
-  });
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => [
-    { label: 'Users', route: '/users' },
-    { label: this.displayName() || 'User' },
-  ]);
-
-  protected readonly activityCards = computed(() => {
-    const s = this.stats();
-    if (!s) return [];
-    return [
-      {
-        key: 'emails',
-        title: 'Emails Assigned',
-        value: s.emails_assigned.total,
-        subtitle: `${s.emails_assigned.open} open · ${s.emails_assigned.closed} closed`,
-        asOf: null,
-      },
-      {
-        key: 'contacts',
-        title: 'Contacts Added',
-        value: s.contacts_added.total,
-        subtitle: s.contacts_added.last_created_at ? 'Last new contact' : 'No contacts yet',
-        asOf: s.contacts_added.last_created_at,
-      },
-      {
-        key: 'imports',
-        title: 'Files Imported',
-        value: s.files_imported.count,
-        subtitle: `${s.files_imported.total_rows} people imported`,
-        asOf: s.files_imported.last_activity_at,
-      },
-      {
-        key: 'exports',
-        title: 'Files Exported',
-        value: s.files_exported.count,
-        subtitle: `${s.files_exported.total_rows} rows exported`,
-        asOf: s.files_exported.last_activity_at,
-      },
-    ];
-  });
-
-  constructor() {
-    effect(() => {
-      const currentId = this.id();
-      untracked(() => {
-        if (!currentId) {
-          this.error.set('Missing user identifier.');
-          return;
-        }
-        void this.load();
-      });
-    });
-  }
-
-  /** Route-level unsaved-changes guard (the edit form lives on this page now). */
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.displayName() || 'this user');
-  }
-
-  protected async save(event?: Event) {
-    event?.preventDefault();
-
-    this.form().markAsTouched();
-    if (this.form().invalid() || !this.id()) {
-      return;
-    }
-
-    this.saving.set(true);
-    this.error.set(null);
-    try {
-      await this.users.update(this.id(), this.buildPayload());
-      this.alerts.showSuccess('User updated');
-      this.users.triggerRefresh();
-      await this.load();
-    } catch (err) {
-      const message = getUserErrorMessage(err, 'Unable to update user');
-      this.error.set(message);
-      this.alerts.showError(message);
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  protected resetForm() {
-    const user = this.detail();
-    if (!user) return;
-    this.setForm(user);
-    this.form().reset();
-  }
-
-  /**
-   * Role is instant-apply (same idiom as the Users list) so a role change never gets
-   * tangled with unsaved identity edits. The detail signal is patched in place rather
-   * than reloaded, to keep any in-progress form edits intact.
-   */
-  protected async changeRole(eventTarget: Event) {
-    const select = eventTarget.target as HTMLSelectElement;
-    const role = select.value;
-    const user = this.detail();
-    if (!role || !user || role === user.role) return;
-
-    this.roleSaving.set(true);
-    try {
-      await this.users.update(this.id(), { role } as UpdateAuthUserType);
-      this.detail.update((d) => (d ? { ...d, role } : d));
-      this.users.triggerRefresh();
-      this.flashRole();
-      this.alerts.showSuccess(`Role updated. ${this.displayName()} is now ${authRoleLabel(role)}`);
-    } catch (err) {
-      select.value = user.role ?? '';
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to update the role'));
-    } finally {
-      this.roleSaving.set(false);
-    }
-  }
-
-  protected async triggerPasswordReset() {
-    if (!this.id()) return;
-    this.resettingPassword.set(true);
-    try {
-      await this.users.adminTriggerPasswordReset(this.id());
-      this.alerts.showSuccess(`Password reset email sent to ${this.detail()?.email ?? 'the user'}`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to trigger password reset'));
-    } finally {
-      this.resettingPassword.set(false);
-    }
-  }
-
-  protected async resendInvite() {
-    if (!this.id() || this.lifecycleBusy()) return;
-    this.lifecycleBusy.set(true);
-    try {
-      await this.users.resendInvite(this.id());
-      this.alerts.showSuccess(`Invitation email sent to ${this.detail()?.email ?? 'the user'}`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to resend the invitation'));
-    } finally {
-      this.lifecycleBusy.set(false);
-    }
-  }
-
-  protected async deactivateUser() {
-    const user = this.detail();
-    if (!user || this.lifecycleBusy()) return;
-
-    const confirmed = await this.dialogs.confirm({
-      title: 'Deactivate user',
-      message: `${this.displayName()} won't be able to sign in until an admin or owner reactivates them. Their role and history are kept.`,
-      variant: 'warning',
-      confirmText: 'Deactivate user',
-    });
-    if (!confirmed) return;
-
-    this.lifecycleBusy.set(true);
-    try {
-      await this.users.deactivate(this.id());
-      this.detail.update((d) => (d ? { ...d, deactivated_at: new Date() } : d));
-      this.users.triggerRefresh();
-      this.alerts.showSuccess(`${this.displayName()} deactivated. They can no longer sign in`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to deactivate user'));
-    } finally {
-      this.lifecycleBusy.set(false);
-    }
-  }
-
-  protected async reactivateUser() {
-    if (!this.id() || this.lifecycleBusy()) return;
-    this.lifecycleBusy.set(true);
-    try {
-      await this.users.reactivate(this.id());
-      this.detail.update((d) => (d ? { ...d, deactivated_at: null, deletion_scheduled_at: null } : d));
-      this.users.triggerRefresh();
-      this.alerts.showSuccess(`${this.displayName()} reactivated. They can sign in again`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to reactivate user'));
-    } finally {
-      this.lifecycleBusy.set(false);
-    }
-  }
-
-  protected async deleteUser() {
-    if (!this.id() || !this.canDelete()) return;
-
-    const confirmed = await this.dialogs.confirm({
-      title: 'Delete user',
-      message: `Delete ${this.displayName()}? Their sign-in is removed permanently and cannot be undone. Their past contributions remain, shown as 'Deleted user'. To keep their history but block access, deactivate instead.`,
-      variant: 'danger',
-      confirmText: 'Delete user',
-    });
-    if (!confirmed) return;
-    const end = this._loading.begin();
-    try {
-      const success = await this.users.delete(this.id());
-      if (!success) {
-        throw new Error('User deletion is not supported');
-      }
-      this.alerts.showSuccess('User deleted');
-      await this.router.navigate(['/users']);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to delete user'));
-    } finally {
-      end();
-    }
-  }
-
-  protected formatAsOf(date: Date | null): string {
-    if (!date) return '—';
-    try {
-      const d = typeof date === 'string' ? new Date(date) : date;
-      return new Intl.DateTimeFormat(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      }).format(d);
-    } catch {
-      return date.toString();
-    }
-  }
-
-  private async load() {
-    const isCurrent = this._requestGuard.begin();
-    const end = this._loading.begin();
-    this.error.set(null);
-    try {
-      const [user] = await Promise.all([this.users.getById(this.id()), this.campaignContext.ensureLoaded()]);
-      if (!isCurrent()) return; // superseded — do not land stale data
-      this.detail.set(user);
-      this.stats.set(user.stats);
-      this.setForm(user);
-      this.form().reset();
-    } catch (err) {
-      const message = getUserErrorMessage(err, 'Failed to load user');
-      this.error.set(message);
-      this.alerts.showError(message);
-    } finally {
-      end();
-      this.initialized.set(true);
-    }
-  }
-
-  private setForm(user: IAuthUserDetail) {
-    this.payload.set({
-      email: user.email,
-      first_name: user.first_name,
-      last_name: user.last_name ?? '',
-    });
-  }
-
-  private buildPayload(): UpdateAuthUserType {
-    const raw = this.payload();
-    const lastName = raw.last_name?.trim() ?? '';
-    return {
-      email: raw.email?.trim() ?? '',
-      first_name: raw.first_name?.trim() ?? '',
-      last_name: lastName.length ? lastName : null,
-    } as UpdateAuthUserType;
-  }
-
-  private flashRole(): void {
-    this.roleFlash.set(true);
-    const FLASH_MS = 1300;
-    setTimeout(() => this.roleFlash.set(false), FLASH_MS);
   }
 }
 ```
@@ -76136,6 +74500,1336 @@ export class NewslettersService extends AbstractAPIService<'newsletters', Update
 }
 ```
 
+## File: apps/frontend/src/app/experiences/newsletters/ui/visual-newsletter-editor.html
+```html
+<div
+  class="flex flex-col lg:flex-row gap-6 h-[calc(100vh-270px)] min-h-[600px] border border-base-300 rounded-lg overflow-hidden bg-base-100 shadow-inner"
+>
+  <!-- LEFT: VISUAL CANVAS PREVIEW -->
+  <div class="flex-1 flex flex-col bg-base-200 h-full overflow-hidden">
+    <!-- CANVAS HEADER / TOOLBAR -->
+    <div class="flex items-center justify-between px-4 py-3 bg-base-100 border-b border-base-300">
+      <div class="flex items-center gap-2">
+        <span class="pc-eyebrow">Preview Mode:</span>
+        <div class="join">
+          <button
+            type="button"
+            class="btn btn-xs join-item"
+            [class.btn-primary]="previewMode() === 'desktop'"
+            [class.btn-ghost]="previewMode() !== 'desktop'"
+            (click)="previewMode.set('desktop')"
+            title="Desktop View"
+          >
+            <pc-icon name="view-column" [size]="4"></pc-icon>
+            Desktop
+          </button>
+          <button
+            type="button"
+            class="btn btn-xs join-item"
+            [class.btn-primary]="previewMode() === 'mobile'"
+            [class.btn-ghost]="previewMode() !== 'mobile'"
+            (click)="previewMode.set('mobile')"
+            title="Mobile View"
+          >
+            <pc-icon name="collapse-content" [size]="4"></pc-icon>
+            Mobile
+          </button>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <span class="pc-eyebrow">Editor:</span>
+        <button
+          type="button"
+          class="btn btn-xs btn-outline btn-secondary"
+          [class.btn-active]="editorMode() === 'code'"
+          (click)="toggleEditorMode()"
+        >
+          @if (editorMode() === 'visual') {
+          <pc-icon name="file-code" [size]="4" class="mr-1"></pc-icon>
+          View HTML } @else {
+          <pc-icon name="eye" [size]="4" class="mr-1"></pc-icon>
+          Visual Editor }
+        </button>
+      </div>
+    </div>
+
+    <!-- CANVAS CONTENT AREA -->
+    <div cdkScrollable class="flex-1 overflow-y-auto p-6 flex justify-center items-start">
+      @if (editorMode() === 'visual') {
+      <!-- EMAIL CANVAS WRAPPER -->
+      <div
+        class="bg-white text-black shadow-md rounded-lg overflow-hidden transition-all duration-300 relative border border-slate-200"
+        [style.width]="previewMode() === 'mobile' ? '375px' : '100%'"
+        [style.max-width]="previewMode() === 'mobile' ? '375px' : '600px'"
+        style="min-height: 500px"
+      >
+        <!-- CANVAS CONTAINER -->
+        <div class="w-full bg-slate-100 py-6 px-4" style="min-height: 500px">
+          <!-- Inner email content: the canvas drop list -->
+          <div
+            cdkDropList
+            id="pc-canvas-drop-list"
+            [cdkDropListData]="blocks()"
+            (cdkDropListDropped)="onCanvasDrop($event)"
+            class="bg-white rounded-lg border border-slate-200 shadow-sm"
+          >
+            @if (blocks().length === 0) {
+            <div class="p-8 text-center text-slate-400">
+              <pc-icon name="document-text" [size]="8" class="mx-auto text-slate-300 mb-2"></pc-icon>
+              <p class="text-sm font-medium">Your canvas is empty.</p>
+              <p class="text-xs text-slate-400 mt-1">Drag a block here, or pick one from the Blocks panel.</p>
+            </div>
+            } @else { @for (block of blocks(); track block.id; let idx = $index) {
+            <div
+              cdkDrag
+              [cdkDragData]="block"
+              class="group/block relative border-2 transition-all duration-150 cursor-pointer"
+              [class.border-primary]="selectedBlockId() === block.id"
+              [class.border-transparent]="selectedBlockId() !== block.id"
+              [class.hover:border-primary/50]="selectedBlockId() !== block.id"
+              (click)="selectBlock(block.id, $event)"
+            >
+              <div *cdkDragPlaceholder class="pc-drop-indicator"></div>
+              <!-- "+" insertion seam (inserts before this block) -->
+              <div class="group/seam absolute -top-2 inset-x-0 h-4 z-20" (click)="$event.stopPropagation()">
+                <div
+                  class="absolute inset-x-6 top-1/2 h-px bg-primary/40 opacity-0 group-hover/seam:opacity-100 transition-opacity"
+                  [class.opacity-100]="insertMenuIndex() === idx"
+                ></div>
+                <button
+                  type="button"
+                  class="btn btn-primary btn-circle btn-xs absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 opacity-0 group-hover/seam:opacity-100 transition-opacity"
+                  [class.opacity-100]="insertMenuIndex() === idx"
+                  (click)="toggleInsertMenu(idx, $event)"
+                  title="Insert block here"
+                >
+                  <pc-icon name="plus" [size]="3"></pc-icon>
+                </button>
+                @if (insertMenuIndex() === idx) {
+                <ul
+                  class="menu menu-sm bg-base-100 text-base-content border border-base-300 rounded-box shadow-lg absolute left-1/2 -translate-x-1/2 top-4 z-30 w-44"
+                >
+                  @for (t of paletteTypes; track t.type) {
+                  <li>
+                    <button type="button" (click)="addBlockAt(t.type, idx)">
+                      <pc-icon [name]="t.icon" [size]="4" [class]="t.iconClass"></pc-icon>
+                      {{ t.label }}
+                    </button>
+                  </li>
+                  }
+                </ul>
+                }
+              </div>
+              <!-- Block controls (visible on hover or while selected) -->
+              <div
+                class="absolute -top-3 right-2 z-10 group-hover/block:flex items-center gap-1 bg-primary text-primary-content rounded px-1 shadow-md"
+                [class.hidden]="selectedBlockId() !== block.id"
+                [class.flex]="selectedBlockId() === block.id"
+              >
+                <button
+                  type="button"
+                  cdkDragHandle
+                  class="p-1 hover:bg-primary-focus rounded cursor-grab active:cursor-grabbing"
+                  (click)="$event.stopPropagation()"
+                  title="Drag to reorder"
+                >
+                  <pc-icon name="bars-3" [size]="3"></pc-icon>
+                </button>
+                <button
+                  type="button"
+                  class="p-1 hover:bg-primary-focus rounded"
+                  (click)="moveBlockUp(idx, $event)"
+                  [disabled]="idx === 0"
+                  title="Move up"
+                >
+                  <pc-icon name="chevron-up" [size]="3"></pc-icon>
+                </button>
+                <button
+                  type="button"
+                  class="p-1 hover:bg-primary-focus rounded"
+                  (click)="moveBlockDown(idx, $event)"
+                  [disabled]="idx === blocks().length - 1"
+                  title="Move down"
+                >
+                  <pc-icon name="chevron-down" [size]="3"></pc-icon>
+                </button>
+                <button
+                  type="button"
+                  class="p-1 hover:bg-primary-focus rounded"
+                  (click)="duplicateBlock(block, $event)"
+                  title="Duplicate block"
+                >
+                  <pc-icon name="document-duplicate" [size]="3"></pc-icon>
+                </button>
+                <button
+                  type="button"
+                  class="p-1 hover:bg-error rounded"
+                  (click)="deleteBlock(block.id, $event)"
+                  title="Delete block"
+                >
+                  <pc-icon name="trash" [size]="3"></pc-icon>
+                </button>
+              </div>
+              <!-- Block Renderers inside standard tables to mimic layout -->
+              <!-- HEADING BLOCK -->
+              @if (block.type === 'heading') {
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td
+                    [style.padding-top.px]="block.styles?.paddingTop || 16"
+                    [style.padding-bottom.px]="block.styles?.paddingBottom || 16"
+                    [style.color]="block.styles?.color || '#1f2937'"
+                    [style.font-size]="block.styles?.fontSize || '24px'"
+                    [style.text-align]="block.styles?.textAlign || 'center'"
+                    class="font-sans font-bold px-6 leading-tight select-none"
+                    [innerHTML]="
+                                            resolveVariablesForPreview(block.content || 'Heading Block', false)
+                                          "
+                  ></td>
+                </tr>
+              </table>
+              }
+
+              <!-- TEXT BLOCK -->
+              @if (block.type === 'text') {
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td
+                    [style.padding-top.px]="block.styles?.paddingTop || 12"
+                    [style.padding-bottom.px]="block.styles?.paddingBottom || 12"
+                    [style.color]="block.styles?.color || '#4b5563'"
+                    [style.font-size]="block.styles?.fontSize || '16px'"
+                    [style.text-align]="block.styles?.textAlign || 'left'"
+                    class="font-sans px-6 leading-relaxed whitespace-pre-wrap select-none"
+                    [innerHTML]="
+                                            resolveVariablesForPreview(
+                                              block.content || 'Click here to write some text...',
+                                              false
+                                            )
+                                          "
+                  ></td>
+                </tr>
+              </table>
+              }
+
+              <!-- IMAGE BLOCK -->
+              @if (block.type === 'image') {
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td
+                    [align]="block.styles?.textAlign || 'center'"
+                    [style.padding-top.px]="block.styles?.paddingTop || 12"
+                    [style.padding-bottom.px]="block.styles?.paddingBottom || 12"
+                    class="px-6"
+                  >
+                    <img
+                      [src]="
+                                              block.imageUrl ||
+                                              'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?auto=format&fit=crop&w=600&q=80'
+                                            "
+                      [alt]="block.imageAlt || 'Newsletter Image'"
+                      [style.max-width]="block.imageWidth || '100%'"
+                      class="w-full height-auto border-0 block rounded"
+                    />
+                  </td>
+                </tr>
+              </table>
+              }
+
+              <!-- BUTTON BLOCK -->
+              @if (block.type === 'button') {
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td
+                    [align]="block.styles?.textAlign || 'center'"
+                    [style.padding-top.px]="block.styles?.paddingTop || 16"
+                    [style.padding-bottom.px]="block.styles?.paddingBottom || 16"
+                    class="px-6"
+                  >
+                    <table border="0" cellpadding="0" cellspacing="0" class="border-separate">
+                      <tr>
+                        <td
+                          align="center"
+                          valign="middle"
+                          [style.background-color]="block.styles?.backgroundColor || '#2563eb'"
+                          [style.border-radius.px]="block.styles?.borderRadius || 6"
+                        >
+                          <span
+                            class="inline-block px-6 py-3 font-sans font-bold select-none text-decoration-none"
+                            [style.color]="block.styles?.color || '#ffffff'"
+                            [style.font-size]="block.styles?.fontSize || '16px'"
+                            [innerHTML]="
+                                                    resolveVariablesForPreview(block.content || 'Click Me', true)
+                                                  "
+                          >
+                          </span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+              }
+
+              <!-- DIVIDER BLOCK -->
+              @if (block.type === 'divider') {
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td
+                    [style.padding-top.px]="block.styles?.paddingTop || 12"
+                    [style.padding-bottom.px]="block.styles?.paddingBottom || 12"
+                    class="px-6"
+                  >
+                    <div
+                      [style.border-top-width.px]="block.styles?.borderWidth || 1"
+                      [style.border-top-color]="block.styles?.borderColor || '#e5e7eb'"
+                      class="border-t"
+                    ></div>
+                  </td>
+                </tr>
+              </table>
+              }
+
+              <!-- SPACER BLOCK -->
+              @if (block.type === 'spacer') {
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td [style.height.px]="block.styles?.height || 20" style="font-size: 0; line-height: 0">&nbsp;</td>
+                </tr>
+              </table>
+              }
+
+              <!-- SOCIAL LINKS BLOCK -->
+              @if (block.type === 'social') {
+              <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td
+                    [align]="block.styles?.textAlign || 'center'"
+                    [style.padding-top.px]="block.styles?.paddingTop || 16"
+                    [style.padding-bottom.px]="block.styles?.paddingBottom || 16"
+                    class="px-6"
+                  >
+                    <table border="0" cellpadding="0" cellspacing="0">
+                      <tr>
+                        @for (social of block.socials || []; track social.platform) {
+                        <td class="px-2">
+                          <span
+                            class="inline-flex items-center justify-center w-8 h-8 select-none"
+                            [style.background-color]="
+                                                      getSocialBgColor(
+                                                        social.platform,
+                                                        block.socialIconStyle || 'circular-solid'
+                                                      )
+                                                    "
+                            [style.color]="
+                                                      getSocialIconColor(
+                                                        social.platform,
+                                                        block.socialIconStyle || 'circular-solid'
+                                                      )
+                                                    "
+                            [style.border-radius]="
+                                                      (block.socialIconStyle || 'circular-solid').startsWith('circular')
+                                                        ? '50%'
+                                                        : '0%'
+                                                    "
+                          >
+                            <svg
+                              viewBox="0 0 24 24"
+                              class="w-4 h-4 fill-current"
+                              style="display: block; width: 16px; height: 16px"
+                            >
+                              <path [attr.d]="socialSvgPaths[social.platform]"></path>
+                            </svg>
+                          </span>
+                        </td>
+                        }
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+              }
+            </div>
+            } }
+
+            <!-- COMPLIANCE FOOTER PREVIEW — appended by the server to every send; not a block, not editable.
+                 Slate palette on purpose: the email canvas is theme-independent white, like its neighbors above. -->
+            <div
+              class="border-t border-dashed border-slate-200 select-none cursor-default"
+              title="This footer is added to every newsletter automatically and can't be removed. Administrators set the address and disclaimer under Workspace settings."
+            >
+              <div class="flex justify-center pt-3">
+                <span
+                  class="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-slate-300"
+                >
+                  <pc-icon name="lock-closed" [size]="3"></pc-icon>
+                  Added to every send
+                </span>
+              </div>
+              <div class="px-6 pt-2 pb-6 text-center text-xs text-slate-400 leading-normal">
+                @if (footerOrgName()) {
+                <p class="font-bold">{{ footerOrgName() }}</p>
+                } @if (footerAddress()) {
+                <p class="whitespace-pre-line">{{ footerAddress() }}</p>
+                } @else {
+                <p class="italic">
+                  Your organization's mailing address — an administrator sets it in Workspace settings
+                </p>
+                } @if (footerDisclaimer()) {
+                <p class="mt-1 whitespace-pre-line">{{ footerDisclaimer() }}</p>
+                }
+                <p class="mt-2"><span class="underline">Unsubscribe</span></p>
+                <p class="mt-2 text-slate-300">powered by <span class="underline">pplCRM</span></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      } @else {
+      <!-- RAW CODE VIEW -->
+      <div class="w-full h-full flex flex-col gap-2">
+        <div class="alert alert-warning text-xs py-2">
+          <pc-icon name="exclamation-triangle" [size]="4" class="mr-1"></pc-icon>
+          <span>
+            <strong>Caution:</strong> Editing raw HTML directly is fully supported, but manual changes cannot be
+            converted back into visual blocks.
+          </span>
+        </div>
+        <textarea
+          class="textarea textarea-bordered font-mono text-xs w-full flex-1"
+          [value]="compiledHtml()"
+          (input)="onRawHtmlInput($event)"
+          placeholder="Paste or edit HTML here..."
+        ></textarea>
+      </div>
+      }
+    </div>
+  </div>
+
+  <!-- RIGHT: CONTROL PANEL -->
+  <aside
+    class="w-full lg:w-96 flex flex-col border-t lg:border-t-0 lg:border-l border-base-300 bg-base-100 h-full overflow-hidden"
+  >
+    <!-- Tabs (the standard pill tab bar) -->
+    <pc-tab-bar
+      class="border-b border-base-300 px-4 py-3"
+      [tabs]="panelTabs"
+      [activeTab]="activeTab()"
+      (activeTabChange)="setPanelTab($event)"
+    />
+
+    <!-- TAB CONTENT -->
+    <div class="flex-1 overflow-y-auto p-4">
+      <!-- BLOCKS TAB -->
+      @if (activeTab() === 'blocks') {
+      <div class="space-y-4">
+        <div>
+          <h3 class="text-sm font-bold text-base-content/75 mb-1">Add Elements</h3>
+          <p class="text-xs text-base-content/60">Click to add, or drag a block into your email.</p>
+        </div>
+
+        <div
+          class="grid grid-cols-2 gap-2"
+          cdkDropList
+          [cdkDropListSortingDisabled]="true"
+          [cdkDropListConnectedTo]="['pc-canvas-drop-list']"
+        >
+          @for (t of paletteTypes; track t.type) {
+          <button
+            type="button"
+            cdkDrag
+            [cdkDragData]="t.type"
+            class="btn btn-outline btn-secondary btn-sm flex justify-start gap-2 h-12"
+            (click)="addBlock(t.type)"
+          >
+            <pc-icon [name]="t.icon" [size]="5" [class]="t.iconClass"></pc-icon>
+            {{ t.label }}
+          </button>
+          }
+        </div>
+
+        <!-- Quick action tip -->
+        <div class="mt-4 rounded bg-info/10 border border-info/20 p-3 text-xs text-info-content">
+          <p>
+            <strong>Tip:</strong> Drag blocks on the canvas to rearrange them; the controls on a selected block move,
+            duplicate, or delete it. The plus between blocks inserts one right there.
+          </p>
+        </div>
+      </div>
+      }
+
+      <!-- EDIT TAB -->
+      @if (activeTab() === 'edit') { @if (selectedBlock(); as block) {
+      <div class="space-y-4">
+        <div class="flex items-center justify-between border-b border-base-200 pb-2">
+          <span class="pc-eyebrow">Selected: {{ block.type }}</span>
+          <button type="button" class="btn btn-xs btn-outline btn-error" (click)="deleteBlock(block.id)">
+            Delete block
+          </button>
+        </div>
+
+        <!-- HEADING AND TEXT EDIT FIELDS -->
+        @if (block.type === 'heading' || block.type === 'text') {
+        <div class="form-control">
+          <label class="label text-xs font-semibold py-1">Text Content</label>
+          @if (block.type === 'heading') {
+          <input
+            #contentField
+            type="text"
+            class="input input-bordered w-full input-sm"
+            [value]="block.content ?? ''"
+            (input)="setBlockText(block, 'content', $event)"
+          />
+          } @else {
+          <textarea
+            #contentField
+            class="textarea textarea-bordered w-full textarea-sm min-h-24"
+            [value]="block.content ?? ''"
+            (input)="setBlockText(block, 'content', $event)"
+          ></textarea>
+          }
+
+          <!-- Quick-Insert Variables -->
+          <div class="mt-2 p-2 bg-base-200/50 rounded-md border border-base-300">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="pc-eyebrow">Insert Variable</span>
+              <span class="text-[9px] text-base-content/50">Tip: Use &#123;FirstName|Friend&#125; for fallbacks</span>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              @for (variable of textVariables; track variable.name) {
+              <button
+                type="button"
+                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
+                (mousedown)="$event.preventDefault()"
+                (click)="insertVariable(block, variable.name)"
+                [title]="'Insert ' + variable.label + ' at the cursor'"
+              >
+                + {{ variable.label }}
+              </button>
+              }
+            </div>
+          </div>
+        </div>
+
+        <!-- Text Styles -->
+        <div class="grid grid-cols-2 gap-2">
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Font Size</label>
+            <select
+              class="select select-bordered select-sm w-full"
+              [value]="block.styles?.fontSize ?? ''"
+              (change)="setBlockStyle(block, 'fontSize', $event)"
+            >
+              <option value="12px">12px (Small)</option>
+              <option value="14px">14px</option>
+              <option value="16px">16px (Normal)</option>
+              <option value="18px">18px</option>
+              <option value="20px">20px (H3)</option>
+              <option value="24px">24px (H2)</option>
+              <option value="28px">28px (H1)</option>
+              <option value="32px">32px</option>
+              <option value="36px">36px (Large)</option>
+            </select>
+          </div>
+
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Text Align</label>
+            <select
+              class="select select-bordered select-sm w-full"
+              [value]="block.styles?.textAlign ?? ''"
+              (change)="setBlockAlign(block, $event)"
+            >
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Text Color</label>
+            <input
+              type="color"
+              class="input input-bordered p-1 w-full h-8"
+              [value]="block.styles?.color ?? ''"
+              (input)="setBlockStyle(block, 'color', $event)"
+            />
+          </div>
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Color Hex</label>
+            <input
+              type="text"
+              class="input input-bordered input-sm w-full font-mono text-xs"
+              [value]="block.styles?.color ?? ''"
+              (input)="setBlockStyle(block, 'color', $event)"
+            />
+          </div>
+        </div>
+        }
+
+        <!-- IMAGE EDIT FIELDS -->
+        @if (block.type === 'image') {
+        <div class="form-control">
+          <label class="label text-xs font-semibold py-1">Image URL</label>
+          <input
+            type="text"
+            class="input input-bordered w-full input-sm"
+            [value]="block.imageUrl ?? ''"
+            (input)="setBlockText(block, 'imageUrl', $event)"
+            placeholder="https://..."
+          />
+        </div>
+
+        <div class="form-control">
+          <label class="label text-xs font-semibold py-1">Alt Text</label>
+          <input
+            type="text"
+            class="input input-bordered w-full input-sm"
+            [value]="block.imageAlt ?? ''"
+            (input)="setBlockText(block, 'imageAlt', $event)"
+          />
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Max Width (e.g. 100%, 300px)</label>
+            <input
+              type="text"
+              class="input input-bordered w-full input-sm"
+              [value]="block.imageWidth ?? ''"
+              (input)="setBlockText(block, 'imageWidth', $event)"
+            />
+          </div>
+
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Alignment</label>
+            <select
+              class="select select-bordered select-sm w-full"
+              [value]="block.styles?.textAlign ?? ''"
+              (change)="setBlockAlign(block, $event)"
+            >
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-control">
+          <label class="label text-xs font-semibold py-1">Link URL (Optional)</label>
+          <input
+            type="text"
+            class="input input-bordered w-full input-sm"
+            [value]="block.linkUrl ?? ''"
+            (input)="setBlockText(block, 'linkUrl', $event)"
+            placeholder="https://..."
+          />
+        </div>
+        }
+
+        <!-- BUTTON EDIT FIELDS -->
+        @if (block.type === 'button') {
+        <div class="form-control">
+          <label class="label text-xs font-semibold py-1">Button Text</label>
+          <input
+            #contentField
+            type="text"
+            class="input input-bordered w-full input-sm"
+            [value]="block.content ?? ''"
+            (input)="setBlockText(block, 'content', $event)"
+          />
+
+          <!-- Quick-Insert Variables -->
+          <div class="mt-2 p-2 bg-base-200/50 rounded-md border border-base-300">
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="pc-eyebrow">Insert Variable</span>
+              <span class="text-[9px] text-base-content/50">Tip: Use &#123;FirstName|Friend&#125; for fallbacks</span>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              @for (variable of buttonVariables; track variable.name) {
+              <button
+                type="button"
+                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
+                (mousedown)="$event.preventDefault()"
+                (click)="insertVariable(block, variable.name)"
+                [title]="'Insert ' + variable.label + ' at the cursor'"
+              >
+                + {{ variable.label }}
+              </button>
+              }
+            </div>
+          </div>
+        </div>
+
+        <div class="form-control">
+          <label class="label text-xs font-semibold py-1">Link URL</label>
+          <input
+            type="text"
+            class="input input-bordered w-full input-sm"
+            [value]="block.linkUrl ?? ''"
+            (input)="setBlockText(block, 'linkUrl', $event)"
+            placeholder="https://..."
+          />
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Bg Color</label>
+            <input
+              type="color"
+              class="input input-bordered p-1 w-full h-8"
+              [value]="block.styles?.backgroundColor ?? ''"
+              (input)="setBlockStyle(block, 'backgroundColor', $event)"
+            />
+          </div>
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Text Color</label>
+            <input
+              type="color"
+              class="input input-bordered p-1 w-full h-8"
+              [value]="block.styles?.color ?? ''"
+              (input)="setBlockStyle(block, 'color', $event)"
+            />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Border Radius (px)</label>
+            <input
+              type="number"
+              class="input input-bordered w-full input-sm"
+              [value]="block.styles?.borderRadius ?? ''"
+              (input)="setBlockStyle(block, 'borderRadius', $event)"
+              min="0"
+              max="30"
+            />
+          </div>
+
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Alignment</label>
+            <select
+              class="select select-bordered select-sm w-full"
+              [value]="block.styles?.textAlign ?? ''"
+              (change)="setBlockAlign(block, $event)"
+            >
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+        </div>
+        }
+
+        <!-- DIVIDER EDIT FIELDS -->
+        @if (block.type === 'divider') {
+        <div class="grid grid-cols-2 gap-2">
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Divider Color</label>
+            <input
+              type="color"
+              class="input input-bordered p-1 w-full h-8"
+              [value]="block.styles?.borderColor ?? ''"
+              (input)="setBlockStyle(block, 'borderColor', $event)"
+            />
+          </div>
+
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Line Thickness (px)</label>
+            <input
+              type="number"
+              class="input input-bordered w-full input-sm"
+              [value]="block.styles?.borderWidth ?? ''"
+              (input)="setBlockStyle(block, 'borderWidth', $event)"
+              min="1"
+              max="10"
+            />
+          </div>
+        </div>
+        }
+
+        <!-- SPACER EDIT FIELDS -->
+        @if (block.type === 'spacer') {
+        <div class="form-control">
+          <label class="label text-xs font-semibold py-1">Spacer Height (px)</label>
+          <input
+            type="number"
+            class="input input-bordered w-full input-sm"
+            [value]="block.styles?.height ?? ''"
+            (input)="setBlockStyle(block, 'height', $event)"
+            min="5"
+            max="150"
+            step="5"
+          />
+        </div>
+        }
+
+        <!-- SOCIAL LINKS EDIT FIELDS -->
+        @if (block.type === 'social') {
+        <div class="space-y-2">
+          <div class="form-control">
+            <label class="label text-xs font-semibold py-1">Icon Style & Colors</label>
+            <select
+              class="select select-bordered select-sm w-full"
+              [value]="block.socialIconStyle ?? 'circular-solid'"
+              (change)="setSocialIconStyle(block, $event)"
+            >
+              <option value="circular-solid">Circular Brand Color</option>
+              <option value="circular-gray">Circular Grayscale</option>
+              <option value="simple-color">Flat Brand Color</option>
+              <option value="simple-gray">Flat Grayscale</option>
+            </select>
+          </div>
+
+          <label class="label text-xs font-semibold py-1">Social Networks</label>
+          @for (social of block.socials; track social.platform) {
+          <div class="flex flex-col gap-1 border border-base-200 rounded p-2 bg-base-50">
+            <span class="text-[10px] font-bold uppercase text-base-content/60">{{ social.platform }} URL</span>
+            <input
+              type="text"
+              class="input input-bordered input-xs w-full font-mono"
+              [value]="social.url"
+              (input)="setSocialUrl(social, $event)"
+              placeholder="https://..."
+            />
+          </div>
+          }
+
+          <div class="form-control mt-2">
+            <label class="label text-xs font-semibold py-1">Alignment</label>
+            <select
+              class="select select-bordered select-sm w-full"
+              [value]="block.styles?.textAlign ?? ''"
+              (change)="setBlockAlign(block, $event)"
+            >
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+        </div>
+        }
+
+        <!-- COMMON BLOCK PADDING SETTINGS -->
+        <div class="border-t border-base-200 pt-3 mt-3">
+          <h4 class="text-xs font-bold text-base-content/60 mb-2">Block Margins</h4>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="form-control">
+              <label class="label text-[10px] uppercase font-bold py-0">Padding Top (px)</label>
+              <input
+                type="number"
+                class="input input-bordered w-full input-sm"
+                [value]="block.styles?.paddingTop ?? ''"
+                (input)="setBlockStyle(block, 'paddingTop', $event)"
+                min="0"
+                max="80"
+              />
+            </div>
+
+            <div class="form-control">
+              <label class="label text-[10px] uppercase font-bold py-0">Padding Bottom (px)</label>
+              <input
+                type="number"
+                class="input input-bordered w-full input-sm"
+                [value]="block.styles?.paddingBottom ?? ''"
+                (input)="setBlockStyle(block, 'paddingBottom', $event)"
+                min="0"
+                max="80"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+      } @else {
+      <div class="h-48 flex flex-col justify-center items-center text-center text-base-content/40 p-4">
+        <pc-icon name="pencil-square" [size]="8" class="text-base-content/30 mb-2"></pc-icon>
+        <p class="text-sm font-semibold">No Block Selected</p>
+        <p class="text-xs mt-1">Click on any block inside the preview area to edit its content and styling.</p>
+      </div>
+      } }
+    </div>
+  </aside>
+</div>
+```
+
+## File: apps/frontend/src/app/experiences/newsletters/ui/visual-newsletter-editor.ts
+```typescript
+import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, type CdkDragDrop } from '@angular/cdk/drag-drop';
+import { CdkScrollable } from '@angular/cdk/scrolling';
+import {
+  Component,
+  ElementRef,
+  Injector,
+  OnInit,
+  afterNextRender,
+  computed,
+  inject,
+  model,
+  signal,
+  viewChild,
+} from '@angular/core';
+import { Icon } from '@icons/icon';
+import type { PcIconNameType } from '@icons/icons.index';
+import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
+
+import { SettingsService } from '../../settings/services/settings-service';
+import {
+  createBlock,
+  insertBlockAt,
+  isEmailBlockType,
+  moveBlock,
+  tryImportHtmlToBlocks,
+  type EmailBlockType,
+} from './newsletter-block-ops';
+import {
+  EmailBlock,
+  socialSvgPaths,
+  getSocialBgColor,
+  getSocialIconColor,
+  getTemplateBlocks,
+  compileBlocksToHtml,
+  compileBlocksToPlainText,
+} from './newsletter-templates';
+
+/** One merge field in the quick-insert panel; clicking the chip drops `{name}` at the caret. */
+interface MergeVariable {
+  name: string;
+  label: string;
+}
+
+/** One palette entry: the tile in the Blocks tab and the "+" insert menu both render from this. */
+interface PaletteEntry {
+  type: EmailBlockType;
+  label: string;
+  icon: PcIconNameType;
+  iconClass: string;
+}
+
+@Component({
+  selector: 'pc-visual-newsletter-editor',
+  imports: [Icon, TabBar, CdkDropList, CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkScrollable],
+  templateUrl: './visual-newsletter-editor.html',
+})
+export class VisualNewsletterEditorComponent implements OnInit {
+  public readonly htmlContent = model<string>('');
+  public readonly plainTextContent = model<string>('');
+
+  protected readonly blocks = signal<EmailBlock[]>([]);
+  protected readonly selectedBlockId = signal<string | null>(null);
+  protected readonly previewMode = signal<'desktop' | 'mobile'>('desktop');
+  protected readonly editorMode = signal<'visual' | 'code'>('visual');
+  protected readonly activeTab = signal<'blocks' | 'edit'>('blocks');
+
+  /** Seam index whose "+" insert picker is open, or null when closed. */
+  protected readonly insertMenuIndex = signal<number | null>(null);
+
+  /** The 7 block types: palette tiles and the "+" insert menu share this list. */
+  protected readonly paletteTypes: readonly PaletteEntry[] = [
+    { type: 'heading', label: 'Heading', icon: 'document-text', iconClass: 'text-primary' },
+    { type: 'text', label: 'Paragraph', icon: 'document-text', iconClass: 'text-success' },
+    { type: 'image', label: 'Image', icon: 'file-image', iconClass: 'text-warning' },
+    { type: 'button', label: 'CTA Button', icon: 'star-filled', iconClass: 'text-info' },
+    { type: 'divider', label: 'Divider', icon: 'bars-3', iconClass: 'text-neutral-content' },
+    { type: 'spacer', label: 'Spacer', icon: 'arrows-pointing-out', iconClass: '' },
+    { type: 'social', label: 'Social Links', icon: 'user-group', iconClass: 'text-primary' },
+  ];
+
+  protected readonly panelTabs: PcTabOption[] = [
+    { id: 'blocks', label: 'Blocks' },
+    { id: 'edit', label: 'Customize' },
+  ];
+
+  protected setPanelTab(tab: string): void {
+    if (tab === 'blocks' || tab === 'edit') this.activeTab.set(tab);
+  }
+
+  protected readonly socialSvgPaths = socialSvgPaths;
+  protected getSocialBgColor(platform: string, style: string) {
+    return getSocialBgColor(platform, style);
+  }
+  protected getSocialIconColor(platform: string, style: string) {
+    return getSocialIconColor(platform, style);
+  }
+
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  protected getMockVariableValue(name: string): string | undefined {
+    const mocks: Record<string, string> = {
+      FirstName: 'John',
+      LastName: 'Doe',
+      Email: 'john.doe@example.com',
+      Company: 'Acme Corporation',
+      JobTitle: 'Software Engineer',
+      Phone: '(555) 123-4567',
+    };
+    const key = Object.keys(mocks).find((k) => k.toLowerCase() === name.toLowerCase());
+    return key ? mocks[key] : undefined;
+  }
+
+  protected resolveVariablesForPreview(text: string | undefined, isButton = false): string {
+    if (!text) return '';
+    const escaped = this.escapeHtml(text);
+    return escaped.replace(/\{([a-zA-Z0-9_]+)(?:\|([^}]+))?\}/g, (match, varName, fallback) => {
+      const mockValue = this.getMockVariableValue(varName);
+      const displayValue = mockValue !== undefined ? mockValue : fallback !== undefined ? fallback : match;
+      if (isButton) {
+        return `<span class="border-b border-dashed border-current font-semibold" title="Variable: ${match}">${displayValue}</span>`;
+      }
+      return `<span class="border-b border-dashed border-primary/60 text-primary font-semibold animate-pulse" title="Variable: ${match}">${displayValue}</span>`;
+    });
+  }
+
+  /** Merge fields offered for heading/paragraph copy. */
+  protected readonly textVariables: readonly MergeVariable[] = [
+    { name: 'FirstName', label: 'First Name' },
+    { name: 'LastName', label: 'Last Name' },
+    { name: 'Email', label: 'Email' },
+    { name: 'Company', label: 'Company' },
+    { name: 'JobTitle', label: 'Job Title' },
+    { name: 'Phone', label: 'Phone' },
+  ];
+
+  /** A CTA label only ever personalises on identity, so buttons get the first three. */
+  protected readonly buttonVariables: readonly MergeVariable[] = this.textVariables.slice(0, 3);
+
+  /** The content input/textarea of the selected block — only one is rendered at a time. */
+  private readonly contentField = viewChild<ElementRef<HTMLInputElement | HTMLTextAreaElement>>('contentField');
+
+  private readonly injector = inject(Injector);
+
+  /**
+   * Drops `{Variable}` at the caret (replacing any selection) and leaves the caret just after it.
+   * The chips suppress mousedown so the field keeps focus; when it doesn't have focus — the user
+   * never clicked into it — we append instead of silently writing at position 0.
+   */
+  protected insertVariable(block: EmailBlock, variableName: string): void {
+    const token = `{${variableName}}`;
+    const current = block.content ?? '';
+    const field = this.contentField()?.nativeElement;
+    const focused = field != null && field.ownerDocument.activeElement === field;
+    const start = focused ? (field.selectionStart ?? current.length) : current.length;
+    const end = focused ? (field.selectionEnd ?? start) : current.length;
+
+    block.content = current.slice(0, start) + token + current.slice(end);
+    this.updateBlocks();
+
+    if (!field) return;
+    const caret = start + token.length;
+    // Angular rewrites [value] on the next render, which would push the caret to the end.
+    afterNextRender(
+      () => {
+        field.focus();
+        field.setSelectionRange(caret, caret);
+      },
+      { injector: this.injector },
+    );
+  }
+
+  private readonly settingsSvc = inject(SettingsService);
+
+  /** Org name shown in the compliance-footer preview (the server appends the real footer at send time). */
+  protected readonly footerOrgName = computed(() => {
+    const value = this.settingsSvc.snapshotSignal()['organization.name'];
+    return typeof value === 'string' ? value.trim() : '';
+  });
+
+  /** Org address shown in the compliance-footer preview (the server appends the real one at send time). */
+  protected readonly footerAddress = computed(() => {
+    const value = this.settingsSvc.snapshotSignal()['organization.address'];
+    return typeof value === 'string' ? value.trim() : '';
+  });
+
+  /** Tenant footer disclaimer shown in the compliance-footer preview. */
+  protected readonly footerDisclaimer = computed(() => {
+    const value = this.settingsSvc.snapshotSignal()['communications.footer_disclaimer'];
+    return typeof value === 'string' ? value.trim() : '';
+  });
+
+  // Computed signals
+  protected readonly selectedBlock = computed(() => {
+    const id = this.selectedBlockId();
+    if (!id) return null;
+    return this.blocks().find((b) => b.id === id) ?? null;
+  });
+
+  protected readonly compiledHtml = computed(() => {
+    return compileBlocksToHtml(this.blocks());
+  });
+
+  public ngOnInit(): void {
+    // Best-effort fetch of the address/disclaimer for the compliance-footer preview; the
+    // preview falls back to guidance copy when the snapshot is unavailable.
+    this.settingsSvc.load().catch(() => undefined);
+
+    // Check if the incoming HTML has our saved JSON blocks comment
+    const matched = this.htmlContent().match(/<!-- PPLCRM_VISUAL_BLOCKS_DATA: ([\s\S]*?) -->/);
+    if (matched && matched[1]) {
+      try {
+        const decoded = decodeURIComponent(matched[1].trim());
+        const parsed = JSON.parse(decoded);
+        if (Array.isArray(parsed)) {
+          // Older drafts may carry a removable 'footer' block; the compliance footer is
+          // appended server-side at send time now, so drop it from the design.
+          const blockList = parsed.filter((b) => b?.type !== 'footer');
+          this.blocks.set(blockList);
+          if (blockList.length > 0) {
+            this.selectedBlockId.set(blockList[0].id);
+            this.activeTab.set('edit');
+          }
+          return;
+        }
+      } catch (err) {
+        console.error('Failed to parse embedded visual block metadata. Defaulting to template.', err);
+      }
+    }
+
+    // No embedded block model. The visual editor is the default, so try a best-effort import
+    // of simple legacy HTML into blocks; fall back to raw-HTML mode only when the content
+    // would not survive the round-trip. Empty content starts from the welcome template.
+    const legacyHtml = this.htmlContent().trim();
+    if (!legacyHtml) {
+      this.loadTemplate('welcome', false);
+      return;
+    }
+    const imported = tryImportHtmlToBlocks(legacyHtml);
+    if (imported) {
+      this.blocks.set(imported);
+      this.selectedBlockId.set(imported[0]?.id ?? null);
+      this.activeTab.set('edit');
+    } else {
+      this.editorMode.set('code');
+    }
+  }
+
+  protected selectBlock(id: string, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.insertMenuIndex.set(null);
+    this.selectedBlockId.set(id);
+    this.activeTab.set('edit');
+  }
+
+  /** Toggles the "+" insert picker at the given seam index. */
+  protected toggleInsertMenu(index: number, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    this.insertMenuIndex.set(this.insertMenuIndex() === index ? null : index);
+  }
+
+  protected toggleEditorMode(): void {
+    const current = this.editorMode();
+    if (current === 'visual') {
+      this.editorMode.set('code');
+    } else {
+      // Switch back to visual, warning that edits made in code view will be reset
+      this.editorMode.set('visual');
+      this.updateBlocks();
+    }
+  }
+
+  /** Click-to-add path: inserts after the selected block, or appends when nothing is selected. */
+  protected addBlock(type: EmailBlockType): void {
+    const selectedId = this.selectedBlockId();
+    const selectedIdx = selectedId === null ? -1 : this.blocks().findIndex((b) => b.id === selectedId);
+    const index = selectedIdx === -1 ? this.blocks().length : selectedIdx + 1;
+    this.addBlockAt(type, index);
+  }
+
+  /** Inserts a fresh block of the given type at the given index, selects it, and closes any insert menu. */
+  protected addBlockAt(type: EmailBlockType, index: number): void {
+    const newBlock = createBlock(type);
+    this.blocks.set(insertBlockAt(this.blocks(), newBlock, index));
+    this.selectBlock(newBlock.id);
+    this.updateBlocks();
+  }
+
+  /** Handles drops on the canvas: reorder within it, or copy-insert a type dragged from the palette. */
+  protected onCanvasDrop(event: CdkDragDrop<EmailBlock[]>): void {
+    if (event.previousContainer === event.container) {
+      if (event.previousIndex === event.currentIndex) return;
+      this.blocks.set(moveBlock(this.blocks(), event.previousIndex, event.currentIndex));
+      this.updateBlocks();
+      return;
+    }
+    // Palette tile dropped onto the canvas: copy semantics — the tile itself stays in the palette.
+    const data: unknown = event.item.data;
+    if (isEmailBlockType(data)) {
+      this.addBlockAt(data, event.currentIndex);
+    }
+  }
+
+  protected deleteBlock(id: string, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    const filtered = this.blocks().filter((b) => b.id !== id);
+    this.blocks.set(filtered);
+    if (this.selectedBlockId() === id) {
+      this.selectedBlockId.set(filtered[0]?.id ?? null);
+    }
+    this.updateBlocks();
+  }
+
+  protected duplicateBlock(block: EmailBlock, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    const idx = this.blocks().findIndex((b) => b.id === block.id);
+    if (idx === -1) return;
+
+    const id = Math.random().toString(36).substring(2, 9);
+    const clone: EmailBlock = JSON.parse(JSON.stringify(block));
+    clone.id = id;
+
+    this.blocks.set(insertBlockAt(this.blocks(), clone, idx + 1));
+    this.selectBlock(id);
+    this.updateBlocks();
+  }
+
+  protected moveBlockUp(idx: number, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    if (idx <= 0) return;
+    this.blocks.set(moveBlock(this.blocks(), idx, idx - 1));
+    this.updateBlocks();
+  }
+
+  protected moveBlockDown(idx: number, event?: Event): void {
+    if (event) {
+      event.stopPropagation();
+    }
+    if (idx >= this.blocks().length - 1) return;
+    this.blocks.set(moveBlock(this.blocks(), idx, idx + 1));
+    this.updateBlocks();
+  }
+
+  protected updateBlocks(): void {
+    const list = [...this.blocks()];
+    // Trigger signal recomputation and propagation
+    this.blocks.set(list);
+    this.propagateChanges();
+  }
+
+  // --- Ad-hoc style/content knobs (value + input/change handlers, no forms) ---
+
+  /** Writes a plain-text field of the block (content, urls, footer copy) from a native input/textarea event. */
+  protected setBlockText(block: EmailBlock, field: EditableBlockTextField, event: Event): void {
+    block[field] = eventValue(event);
+    this.updateBlocks();
+  }
+
+  /** Writes a string-valued style property (colors, sizes, paddings) from a native control event. */
+  protected setBlockStyle(block: EmailBlock, key: StringStyleKey, event: Event): void {
+    this.ensureStyles(block)[key] = eventValue(event);
+    this.updateBlocks();
+  }
+
+  protected setBlockAlign(block: EmailBlock, event: Event): void {
+    const value = eventValue(event);
+    if (value === 'left' || value === 'center' || value === 'right') {
+      this.ensureStyles(block).textAlign = value;
+      this.updateBlocks();
+    }
+  }
+
+  protected setSocialIconStyle(block: EmailBlock, event: Event): void {
+    const value = eventValue(event);
+    if (
+      value === 'circular-solid' ||
+      value === 'circular-gray' ||
+      value === 'simple-color' ||
+      value === 'simple-gray'
+    ) {
+      block.socialIconStyle = value;
+      this.updateBlocks();
+    }
+  }
+
+  protected setSocialUrl(social: { url: string }, event: Event): void {
+    social.url = eventValue(event);
+    this.updateBlocks();
+  }
+
+  protected onRawHtmlInput(event: Event): void {
+    this.handleRawHtmlEdit(eventValue(event));
+  }
+
+  private ensureStyles(block: EmailBlock): NonNullable<EmailBlock['styles']> {
+    block.styles ??= {};
+    return block.styles;
+  }
+
+  protected handleRawHtmlEdit(html: string): void {
+    this.htmlContent.set(html);
+    // Simple text version conversion from html tags
+    const text = html
+      .replace(/<[^>]*>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    this.plainTextContent.set(text);
+  }
+
+  protected loadTemplate(preset: 'welcome' | 'product' | 'newsletter' | 'empty', triggerPropagate = true): void {
+    const tpl = getTemplateBlocks(preset);
+    this.blocks.set(tpl);
+    this.selectedBlockId.set(tpl[0]?.id || null);
+    this.activeTab.set('edit');
+
+    if (triggerPropagate) {
+      this.propagateChanges();
+    }
+  }
+
+  private propagateChanges(): void {
+    const html = this.compiledHtml();
+    const text = compileBlocksToPlainText(this.blocks());
+
+    this.htmlContent.set(html);
+    this.plainTextContent.set(text);
+  }
+}
+
+/** Block fields that are edited as free text in the Customize panel. */
+type EditableBlockTextField = 'content' | 'linkUrl' | 'imageUrl' | 'imageAlt' | 'imageWidth';
+
+/** Style keys typed as plain strings on EmailBlock['styles'] (textAlign is handled separately). */
+type StringStyleKey =
+  | 'color'
+  | 'backgroundColor'
+  | 'fontSize'
+  | 'paddingTop'
+  | 'paddingBottom'
+  | 'borderRadius'
+  | 'borderColor'
+  | 'borderWidth'
+  | 'height';
+
+/** Safely reads the string value from a native input/textarea/select event target. */
+function eventValue(event: Event): string {
+  const target = event.target;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  ) {
+    return target.value;
+  }
+  return '';
+}
+```
+
 ## File: apps/frontend/src/app/experiences/settings/settings.config.ts
 ```typescript
 import type { PcIconNameType } from '@icons/icons.index';
@@ -76526,6 +76220,525 @@ export const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
     ],
   },
 ];
+```
+
+## File: apps/frontend/src/app/experiences/users/ui/user-view.ts
+```typescript
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { DatePipe } from '@angular/common';
+import { Router } from '@angular/router';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { createRequestGuard } from '@uxcommon/request-guard';
+import { form, required, email } from '@angular/forms/signals';
+import {
+  IAuthUserDetail,
+  IUserStatsSnapshot,
+  UpdateAuthUserType,
+  authRoleLabel,
+} from '../../../../../../../libs/common/src';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Icon } from '@uxcommon/components/icons/icon';
+import { RecordActivities } from '@experiences/activity/ui/record-activities/record-activities';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
+import { UserAdminService } from '../services/useradmin-service';
+import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
+import { StatCard } from '@uxcommon/components/stat-card/stat-card';
+import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
+import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { DetailItem } from '@uxcommon/components/detail-item/detail-item';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { Input as PcInput } from '@uxcommon/components/input/input';
+import { injectRecordNavigation } from '@frontend/services/record-navigation.service';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+import { getUserErrorMessage } from '../../../services/api/user-message';
+import {
+  userIsDeactivated,
+  userLastActiveLabel,
+  userRoleLockReason,
+  userRoleOptions,
+  userShortDate,
+  userStatus,
+} from '../user-status';
+
+/**
+ * The one user page — view and edit in place, no separate edit route (approved design,
+ * 2026-07-10 mockup). Rolodex records keep the view/edit split; account-ish pages
+ * (Profile, Users) edit in place:
+ * - identity fields save explicitly with narrated dirty state (the Profile-page idiom),
+ * - role applies instantly with explained locks (the Users-list idiom),
+ * - lifecycle actions (password reset, resend invite, deactivate/reactivate, delete)
+ *   live where the doctrine puts them (§4).
+ */
+@Component({
+  selector: 'pc-user-view',
+  imports: [DatePipe, Icon, RecordActivities, DetailLayout, StatCard, StatusBadge, DetailItem, PcCard, PcInput],
+  templateUrl: './user-view.html',
+})
+export class UserViewComponent {
+  readonly id = input.required<string>();
+
+  protected readonly recordNav = injectRecordNavigation('user', this.id);
+
+  private readonly alerts = inject(AlertService);
+  private readonly router = inject(Router);
+  private readonly users = inject(UserAdminService);
+  private readonly auth = inject(AuthService);
+  private readonly dialogs = inject(ConfirmDialogService);
+  private readonly campaignContext = inject(CampaignContextService);
+
+  private readonly _loading = createLoadingGate();
+  private readonly _requestGuard = createRequestGuard();
+  protected readonly loading = this._loading.visible;
+  protected readonly initialized = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly stats = signal<IUserStatsSnapshot | null>(null);
+  protected readonly detail = signal<IAuthUserDetail | null>(null);
+
+  protected readonly saving = signal(false);
+  protected readonly resettingPassword = signal(false);
+  protected readonly roleSaving = signal(false);
+  /** One-shot saved flash on the role select after an instant-apply role change. */
+  protected readonly roleFlash = signal(false);
+  /** In-flight resend-invite / deactivate / reactivate action. */
+  protected readonly lifecycleBusy = signal(false);
+
+  protected readonly payload = signal({ email: '', first_name: '', last_name: '' });
+
+  protected readonly form = form(this.payload, (p) => {
+    required(p.email);
+    email(p.email);
+    required(p.first_name);
+  });
+
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+
+  protected readonly currentUserRole = computed(() => this.auth.getUser()?.role ?? null);
+  protected readonly currentUserId = computed(() => {
+    const id = this.auth.getUser()?.id;
+    return id != null ? String(id) : null;
+  });
+
+  protected readonly isSelf = computed(() => String(this.id()) === this.currentUserId());
+  protected readonly isDeactivated = computed(() => {
+    const user = this.detail();
+    return !!user && userIsDeactivated(user);
+  });
+  protected readonly isInvited = computed(() => {
+    const user = this.detail();
+    return !!user && !user.verified && !userIsDeactivated(user);
+  });
+
+  /** Admins may not manage owner accounts — only another owner can. */
+  protected readonly canManageTarget = computed(
+    () => !(this.currentUserRole() === 'admin' && this.detail()?.role === 'owner'),
+  );
+  protected readonly canDelete = computed(() => !!this.detail() && !this.isSelf() && this.canManageTarget());
+  protected readonly showDeactivateAction = computed(
+    () => !!this.detail() && !this.isSelf() && this.canManageTarget() && !this.isDeactivated(),
+  );
+
+  protected readonly status = computed(() => {
+    const user = this.detail();
+    return user ? userStatus(user) : null;
+  });
+
+  protected readonly roleLabel = computed(() => authRoleLabel(this.detail()?.role));
+
+  protected readonly roleLock = computed(() => {
+    const user = this.detail();
+    if (!user) return null;
+    return userRoleLockReason({
+      isSelf: this.isSelf(),
+      callerRole: this.currentUserRole(),
+      targetRole: user.role,
+      deactivated: this.isDeactivated(),
+    });
+  });
+
+  protected readonly roleChoices = computed(() => userRoleOptions(this.currentUserRole(), this.detail()?.role));
+
+  protected roleLabelFor(role: string): string {
+    return authRoleLabel(role);
+  }
+
+  // Campaigns §15 — assignment select (instant-apply, same idiom as Role).
+  protected readonly campaignSaving = signal(false);
+  protected readonly campaignFlash = signal(false);
+  protected readonly assignableCampaigns = computed(() =>
+    this.campaignContext.campaigns().filter((c) => c.status === 'active'),
+  );
+  /** Only worth showing once an election campaign exists alongside the office. */
+  protected readonly showCampaignControl = computed(() => this.assignableCampaigns().length > 1);
+  /** Admins/owners can work in every campaign, so the assignment doesn't scope them. */
+  protected readonly targetIsCampaignScoped = computed(() => {
+    const role = this.detail()?.role;
+    return role !== 'admin' && role !== 'owner';
+  });
+  protected readonly assignedCampaignName = computed(() => {
+    const id = this.detail()?.campaign_id ?? null;
+    if (id == null) return 'Office';
+    return this.assignableCampaigns().find((c) => String(c.id) === id)?.name ?? 'Office';
+  });
+
+  protected async changeCampaign(event: Event): Promise<void> {
+    const select = event.target as HTMLSelectElement;
+    const campaignId = select.value || null;
+    const user = this.detail();
+    if (!user || campaignId === (user.campaign_id ?? null)) return;
+
+    this.campaignSaving.set(true);
+    try {
+      await this.users.update(this.id(), { campaign_id: campaignId } as UpdateAuthUserType);
+      this.detail.update((d) => (d ? { ...d, campaign_id: campaignId } : d));
+      this.users.triggerRefresh();
+      this.campaignFlash.set(true);
+      const FLASH_MS = 1300;
+      setTimeout(() => this.campaignFlash.set(false), FLASH_MS);
+      this.alerts.showSuccess(`${this.displayName()} now works in ${this.assignedCampaignName()}`);
+    } catch (err) {
+      select.value = user.campaign_id ?? '';
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to update the campaign'));
+    } finally {
+      this.campaignSaving.set(false);
+    }
+  }
+
+  protected readonly lastActiveLabel = computed(() => {
+    const user = this.detail();
+    return user ? userLastActiveLabel(user) : '—';
+  });
+
+  /**
+   * Lifecycle context strip in the Access card: names the limbo state and carries its one
+   * next step (§3 offer the exit). Null for active accounts.
+   */
+  protected readonly lifecycleStrip = computed<{
+    tone: 'warning' | 'ghost';
+    text: string;
+    action: 'resend' | 'reactivate' | null;
+    actionLabel: string;
+  } | null>(() => {
+    const user = this.detail();
+    if (!user) return null;
+    const canAct = this.canManageTarget();
+    if (user.deactivated_at) {
+      const since = userShortDate(user.deactivated_at);
+      return {
+        tone: 'ghost',
+        text: `Deactivated${since ? ` ${since}` : ''}. Can't sign in`,
+        action: canAct ? 'reactivate' : null,
+        actionLabel: 'Reactivate user',
+      };
+    }
+    if (user.deletion_scheduled_at) {
+      const when = userShortDate(user.deletion_scheduled_at);
+      return {
+        tone: 'ghost',
+        text: `Deletion scheduled${when ? ` for ${when}` : ''}. Signing back in cancels it`,
+        action: canAct ? 'reactivate' : null,
+        actionLabel: 'Reactivate user',
+      };
+    }
+    if (!user.verified) {
+      const sent = userShortDate(user.created_at);
+      return {
+        tone: 'warning',
+        text: `Invite sent${sent ? ` ${sent}` : ''}. Hasn't signed in yet`,
+        action: canAct ? 'resend' : null,
+        actionLabel: 'Resend invite',
+      };
+    }
+    return null;
+  });
+
+  protected readonly displayName = computed(() => {
+    const user = this.detail();
+    if (!user) return '';
+    const tokens = [user.first_name, user.last_name].filter((t) => !!t && t.trim().length > 0);
+    const name = tokens.join(' ').trim();
+    return name || user.email;
+  });
+
+  protected readonly initials = computed(() => {
+    const user = this.detail();
+    if (!user) return null;
+    const letters = [user.first_name, user.last_name]
+      .map((t) => (t ?? '').trim().charAt(0))
+      .filter(Boolean)
+      .join('')
+      .toUpperCase();
+    return letters || user.email.charAt(0).toUpperCase();
+  });
+
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => [
+    { label: 'Users', route: '/users' },
+    { label: this.displayName() || 'User' },
+  ]);
+
+  protected readonly activityCards = computed(() => {
+    const s = this.stats();
+    if (!s) return [];
+    return [
+      {
+        key: 'emails',
+        title: 'Emails Assigned',
+        value: s.emails_assigned.total,
+        subtitle: `${s.emails_assigned.open} open · ${s.emails_assigned.closed} closed`,
+        asOf: null,
+      },
+      {
+        key: 'contacts',
+        title: 'Contacts Added',
+        value: s.contacts_added.total,
+        subtitle: s.contacts_added.last_created_at ? 'Last new contact' : 'No contacts yet',
+        asOf: s.contacts_added.last_created_at,
+      },
+      {
+        key: 'imports',
+        title: 'Files Imported',
+        value: s.files_imported.count,
+        subtitle: `${s.files_imported.total_rows} people imported`,
+        asOf: s.files_imported.last_activity_at,
+      },
+      {
+        key: 'exports',
+        title: 'Files Exported',
+        value: s.files_exported.count,
+        subtitle: `${s.files_exported.total_rows} rows exported`,
+        asOf: s.files_exported.last_activity_at,
+      },
+    ];
+  });
+
+  constructor() {
+    effect(() => {
+      const currentId = this.id();
+      untracked(() => {
+        if (!currentId) {
+          this.error.set('Missing user identifier.');
+          return;
+        }
+        void this.load();
+      });
+    });
+  }
+
+  /** Route-level unsaved-changes guard (the edit form lives on this page now). */
+  public canDeactivate(): Promise<boolean> {
+    // save() never navigates on this page, so the guard can call it as-is.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.displayName() || 'this user', () => this.save());
+  }
+
+  protected async save(event?: Event): Promise<boolean> {
+    event?.preventDefault();
+
+    this.form().markAsTouched();
+    if (this.form().invalid() || !this.id()) {
+      return false;
+    }
+
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      await this.users.update(this.id(), this.buildPayload());
+      this.alerts.showSuccess('User updated');
+      this.users.triggerRefresh();
+      await this.load();
+      return true;
+    } catch (err) {
+      const message = getUserErrorMessage(err, 'Unable to update user');
+      this.error.set(message);
+      this.alerts.showError(message);
+      return false;
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected resetForm() {
+    const user = this.detail();
+    if (!user) return;
+    this.setForm(user);
+    this.form().reset();
+  }
+
+  /**
+   * Role is instant-apply (same idiom as the Users list) so a role change never gets
+   * tangled with unsaved identity edits. The detail signal is patched in place rather
+   * than reloaded, to keep any in-progress form edits intact.
+   */
+  protected async changeRole(eventTarget: Event) {
+    const select = eventTarget.target as HTMLSelectElement;
+    const role = select.value;
+    const user = this.detail();
+    if (!role || !user || role === user.role) return;
+
+    this.roleSaving.set(true);
+    try {
+      await this.users.update(this.id(), { role } as UpdateAuthUserType);
+      this.detail.update((d) => (d ? { ...d, role } : d));
+      this.users.triggerRefresh();
+      this.flashRole();
+      this.alerts.showSuccess(`Role updated. ${this.displayName()} is now ${authRoleLabel(role)}`);
+    } catch (err) {
+      select.value = user.role ?? '';
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to update the role'));
+    } finally {
+      this.roleSaving.set(false);
+    }
+  }
+
+  protected async triggerPasswordReset() {
+    if (!this.id()) return;
+    this.resettingPassword.set(true);
+    try {
+      await this.users.adminTriggerPasswordReset(this.id());
+      this.alerts.showSuccess(`Password reset email sent to ${this.detail()?.email ?? 'the user'}`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to trigger password reset'));
+    } finally {
+      this.resettingPassword.set(false);
+    }
+  }
+
+  protected async resendInvite() {
+    if (!this.id() || this.lifecycleBusy()) return;
+    this.lifecycleBusy.set(true);
+    try {
+      await this.users.resendInvite(this.id());
+      this.alerts.showSuccess(`Invitation email sent to ${this.detail()?.email ?? 'the user'}`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to resend the invitation'));
+    } finally {
+      this.lifecycleBusy.set(false);
+    }
+  }
+
+  protected async deactivateUser() {
+    const user = this.detail();
+    if (!user || this.lifecycleBusy()) return;
+
+    const confirmed = await this.dialogs.confirm({
+      title: 'Deactivate user',
+      message: `${this.displayName()} won't be able to sign in until an admin or owner reactivates them. Their role and history are kept.`,
+      variant: 'warning',
+      confirmText: 'Deactivate user',
+    });
+    if (!confirmed) return;
+
+    this.lifecycleBusy.set(true);
+    try {
+      await this.users.deactivate(this.id());
+      this.detail.update((d) => (d ? { ...d, deactivated_at: new Date() } : d));
+      this.users.triggerRefresh();
+      this.alerts.showSuccess(`${this.displayName()} deactivated. They can no longer sign in`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to deactivate user'));
+    } finally {
+      this.lifecycleBusy.set(false);
+    }
+  }
+
+  protected async reactivateUser() {
+    if (!this.id() || this.lifecycleBusy()) return;
+    this.lifecycleBusy.set(true);
+    try {
+      await this.users.reactivate(this.id());
+      this.detail.update((d) => (d ? { ...d, deactivated_at: null, deletion_scheduled_at: null } : d));
+      this.users.triggerRefresh();
+      this.alerts.showSuccess(`${this.displayName()} reactivated. They can sign in again`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to reactivate user'));
+    } finally {
+      this.lifecycleBusy.set(false);
+    }
+  }
+
+  protected async deleteUser() {
+    if (!this.id() || !this.canDelete()) return;
+
+    const confirmed = await this.dialogs.confirm({
+      title: 'Delete user',
+      message: `Delete ${this.displayName()}? Their sign-in is removed permanently and cannot be undone. Their past contributions remain, shown as 'Deleted user'. To keep their history but block access, deactivate instead.`,
+      variant: 'danger',
+      confirmText: 'Delete user',
+    });
+    if (!confirmed) return;
+    const end = this._loading.begin();
+    try {
+      const success = await this.users.delete(this.id());
+      if (!success) {
+        throw new Error('User deletion is not supported');
+      }
+      this.alerts.showSuccess('User deleted');
+      await this.router.navigate(['/users']);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to delete user'));
+    } finally {
+      end();
+    }
+  }
+
+  protected formatAsOf(date: Date | null): string {
+    if (!date) return '—';
+    try {
+      const d = typeof date === 'string' ? new Date(date) : date;
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }).format(d);
+    } catch {
+      return date.toString();
+    }
+  }
+
+  private async load() {
+    const isCurrent = this._requestGuard.begin();
+    const end = this._loading.begin();
+    this.error.set(null);
+    try {
+      const [user] = await Promise.all([this.users.getById(this.id()), this.campaignContext.ensureLoaded()]);
+      if (!isCurrent()) return; // superseded — do not land stale data
+      this.detail.set(user);
+      this.stats.set(user.stats);
+      this.setForm(user);
+      this.form().reset();
+    } catch (err) {
+      const message = getUserErrorMessage(err, 'Failed to load user');
+      this.error.set(message);
+      this.alerts.showError(message);
+    } finally {
+      end();
+      this.initialized.set(true);
+    }
+  }
+
+  private setForm(user: IAuthUserDetail) {
+    this.payload.set({
+      email: user.email,
+      first_name: user.first_name,
+      last_name: user.last_name ?? '',
+    });
+  }
+
+  private buildPayload(): UpdateAuthUserType {
+    const raw = this.payload();
+    const lastName = raw.last_name?.trim() ?? '';
+    return {
+      email: raw.email?.trim() ?? '',
+      first_name: raw.first_name?.trim() ?? '',
+      last_name: lastName.length ? lastName : null,
+    } as UpdateAuthUserType;
+  }
+
+  private flashRole(): void {
+    this.roleFlash.set(true);
+    const FLASH_MS = 1300;
+    setTimeout(() => this.roleFlash.set(false), FLASH_MS);
+  }
+}
 ```
 
 ## File: apps/frontend/src/styles.css
@@ -79763,749 +79976,6 @@ export const PRIVACY_DOC: LegalDoc = {
 };
 ```
 
-## File: apps/frontend/src/app/experiences/newsletters/ui/newsletter-add.html
-```html
-<div class="flex h-full flex-col bg-base-100">
-  <header class="border-b border-base-200 px-6 py-4">
-    <button
-      type="button"
-      class="mb-2 flex items-center gap-1 text-xs text-base-content/60 hover:text-primary"
-      (click)="close()"
-    >
-      <pc-icon name="chevron-left" [size]="3"></pc-icon>
-      Newsletters
-    </button>
-    <p class="pc-eyebrow">{{ isEditing ? 'Edit draft' : 'Newsletter' }}</p>
-    <h1 class="text-[22px] font-bold text-base-content">
-      {{ isEditing ? editName() || 'Untitled newsletter' : 'New newsletter' }}
-    </h1>
-
-    <!-- Pill steps: current = solid, already-reached = tint & clickable, not-yet-reached = muted & locked
-         (narrates why). Reachability is the high-water mark, not the current step, so stepping Back
-         doesn't re-lock a step you already completed. -->
-    <ol class="mt-4 hidden flex-wrap gap-2 sm:flex">
-      @for (label of steps; track label; let idx = $index) { @let stepNo = idx + 1; @let isCurrent = currentStep() ===
-      stepNo; @let isDone = currentStep() > stepNo; @let isLocked = !canReachStep(stepNo); @let isUnlocked = !isCurrent
-      && !isLocked;
-      <li>
-        <button
-          type="button"
-          class="flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors"
-          [class.bg-primary]="isCurrent"
-          [class.text-primary-content]="isCurrent"
-          [class.bg-primary/10]="isUnlocked"
-          [class.text-primary]="isUnlocked"
-          [class.cursor-pointer]="isUnlocked"
-          [class.hover:bg-primary/20]="isUnlocked"
-          [class.bg-base-200]="isLocked"
-          [class.text-base-content/50]="isLocked"
-          [class.cursor-not-allowed]="isLocked"
-          [class.tooltip]="isLocked"
-          [class.tooltip-bottom]="isLocked"
-          [attr.data-tip]="isLocked ? lockedStepTooltip : null"
-          [attr.aria-disabled]="isLocked"
-          (click)="goToStep(stepNo)"
-        >
-          <span
-            class="flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold"
-            [class.bg-primary-content/25]="isCurrent"
-            [class.bg-primary/15]="isUnlocked"
-            [class.bg-base-300]="isLocked"
-          >
-            @if (isDone) { <pc-icon name="check-circle" [size]="3"></pc-icon> } @else { {{ stepNo }} }
-          </span>
-          <span>{{ label }}</span>
-        </button>
-      </li>
-      }
-    </ol>
-  </header>
-
-  <main class="flex-1 overflow-y-auto px-6 py-6">
-    <!-- The wizard needs desktop real estate; on a phone we say so instead of rendering a broken editor. -->
-    <div class="sm:hidden">
-      <pc-empty-state
-        icon="pencil-square"
-        [bordered]="false"
-        [title]="isEditing ? 'Drafts are edited on a desktop' : 'Newsletters are created on a desktop'"
-        hint="Open pplCRM on a desktop to work on this. You can still view reports and send finished drafts from your phone."
-      >
-        <a routerLink="/newsletters" class="btn btn-primary btn-sm">Back to newsletters</a>
-      </pc-empty-state>
-    </div>
-
-    @if (isEditing && !editLoaded()) {
-    <!-- Edit mode: the draft is still loading; the gate keeps this from flashing on fast responses. -->
-    <div class="hidden justify-center py-16 sm:flex">
-      @if (editLoading()) { <span class="loading loading-spinner loading-md text-primary"></span> }
-    </div>
-    } @else {
-    <form
-      class="mx-auto hidden w-full flex-col gap-6 sm:flex"
-      [class.max-w-3xl]="currentStepId() !== 'content'"
-      [class.max-w-none]="currentStepId() === 'content'"
-    >
-      @switch (currentStepId()) {
-
-      <!-- ============ TEMPLATE ============ -->
-      @case ('template') {
-      <div class="grid gap-5 sm:grid-cols-2">
-        @for (t of templateOptions; track t.id) {
-        <button
-          type="button"
-          class="overflow-hidden rounded-xl border text-left transition-colors"
-          [class.border-primary]="isPresetSelected(t.id)"
-          [class.bg-primary/5]="isPresetSelected(t.id)"
-          [class.border-base-300]="!isPresetSelected(t.id)"
-          [class.hover:border-primary/50]="!isPresetSelected(t.id)"
-          (click)="selectTemplate(t.id)"
-        >
-          <div class="h-40 overflow-hidden border-b border-base-200 bg-base-200/40">
-            <pc-template-thumb [html]="presetPreviewHtml(t.id)"></pc-template-thumb>
-          </div>
-          <div class="p-4">
-            <h4 class="flex items-center gap-1.5 text-[15px] font-semibold text-base-content">
-              <pc-icon [name]="t.icon" [size]="4" class="text-primary"></pc-icon>
-              {{ t.name }}
-            </h4>
-            <p class="mt-0.5 text-xs text-base-content/60">{{ t.description }}</p>
-          </div>
-        </button>
-        }
-      </div>
-
-      <!-- Your templates — hidden entirely while the tenant has none (the presets are the empty case) -->
-      @if (templatesLoading()) {
-      <section>
-        <h3 class="mb-3 pc-eyebrow">Your templates</h3>
-        <div class="grid gap-5 sm:grid-cols-2">
-          <div class="skeleton h-40 rounded-xl"></div>
-          <div class="skeleton h-40 rounded-xl"></div>
-        </div>
-      </section>
-      } @else if (savedTemplates().length) {
-      <section>
-        <h3 class="mb-3 pc-eyebrow">Your templates</h3>
-        <div class="grid gap-5 sm:grid-cols-2">
-          @for (tpl of savedTemplates(); track tpl.id) {
-          <div
-            class="relative overflow-hidden rounded-xl border transition-colors"
-            [class.border-primary]="isSavedSelected(tpl.id)"
-            [class.bg-primary/5]="isSavedSelected(tpl.id)"
-            [class.border-base-300]="!isSavedSelected(tpl.id)"
-            [class.hover:border-primary/50]="!isSavedSelected(tpl.id)"
-          >
-            <button type="button" class="block w-full text-left" (click)="selectSavedTemplate(tpl)">
-              <div class="h-40 overflow-hidden border-b border-base-200 bg-base-200/40">
-                <pc-template-thumb [html]="tpl.html_content"></pc-template-thumb>
-              </div>
-              <div class="p-4 pr-12">
-                <h4 class="flex items-center gap-1.5 text-[15px] font-semibold text-base-content">
-                  <pc-icon name="bookmark" [size]="4" class="text-primary"></pc-icon>
-                  {{ tpl.name }}
-                </h4>
-                <p class="mt-0.5 text-xs text-base-content/60">{{ savedTemplateSubtitle(tpl) }}</p>
-              </div>
-            </button>
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs btn-circle absolute bottom-3 right-3 text-error"
-              [title]="'Delete template ' + tpl.name"
-              (click)="deleteSavedTemplate(tpl)"
-            >
-              <pc-icon name="trash" [size]="4"></pc-icon>
-            </button>
-          </div>
-          }
-        </div>
-      </section>
-      }
-
-      <!-- Cross-link: per-person triggered email is the Automations page's job, not a newsletter. -->
-      <div class="rounded-lg border border-base-200 bg-base-200/40 p-4">
-        <p class="text-xs text-base-content/60">
-          Want to email each supporter when <span class="font-semibold">they</span> do something (join, donate, sign up
-          to volunteer)? That's an <a routerLink="/automations" class="link link-primary font-medium">Automation</a>.
-        </p>
-      </div>
-      }
-
-      <!-- ============ CONTENT ============ -->
-      @case ('content') {
-      <div class="space-y-4">
-        <div
-          class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-base-200 bg-base-100 p-3"
-        >
-          <p class="max-w-xl text-xs text-base-content/60">
-            Personalize with merge fields like
-            <code class="rounded bg-base-200 px-1 py-0.5 font-mono text-[11px] text-base-content/80"
-              >{{ mergeFieldExample }}</code
-            >. The footer disclaimer and unsubscribe link are appended automatically from
-            <a [routerLink]="commsSettingsLink" class="link link-primary">Workspace settings → Communications</a>.
-          </p>
-          <div class="flex flex-wrap items-center gap-2">
-            <button type="button" class="btn btn-sm btn-outline btn-secondary" (click)="openSaveTemplate()">
-              <pc-icon name="bookmark" [size]="4"></pc-icon>
-              Save as template
-            </button>
-            <button
-              type="button"
-              class="btn btn-sm btn-outline btn-secondary"
-              [disabled]="preflightRunning()"
-              (click)="runFullPreflight()"
-            >
-              @if (preflightRunning()) { <span class="loading loading-spinner loading-xs"></span> } @else {
-              <pc-icon name="check-circle" [size]="4"></pc-icon> } Check deliverability
-            </button>
-            <span class="tooltip-left" [class.tooltip]="isDemo()" [attr.data-tip]="isDemo() ? demoSendTooltip : null">
-              <button
-                type="button"
-                class="btn btn-sm btn-outline btn-secondary"
-                [disabled]="isDemo()"
-                (click)="sendTestEmail()"
-              >
-                <pc-icon name="paper-airplane" [size]="4"></pc-icon>
-                Send test email
-              </button>
-            </span>
-          </div>
-        </div>
-        <pc-visual-newsletter-editor
-          [htmlContent]="regularPayload().htmlContent"
-          [plainTextContent]="regularPayload().plainTextContent"
-          (htmlContentChange)="onEditorHtmlChange($event)"
-          (plainTextContentChange)="onEditorTextChange($event)"
-        ></pc-visual-newsletter-editor>
-      </div>
-      }
-
-      <!-- ============ AUDIENCE & DETAILS ============ -->
-      @case ('audience') {
-      <div class="grid gap-6 md:grid-cols-2">
-        <!-- Email details -->
-        <div class="space-y-4 rounded-xl border border-base-200 bg-base-100 p-5">
-          <div class="flex items-center gap-2 border-b border-base-200 pb-3">
-            <pc-icon name="document-text" [size]="4" class="text-primary"></pc-icon>
-            <h3 class="pc-eyebrow">Email details</h3>
-          </div>
-
-          <div>
-            <label class="mb-1 block text-xs font-medium">Subject</label>
-            <input
-              #subjectInput
-              class="input input-bordered input-sm w-full"
-              [formField]="regularForm.subject"
-              placeholder="What recipients see first"
-              (input)="onFieldInput()"
-            />
-            <p
-              class="mt-1 text-xs"
-              [class.text-error]="isInvalid('subject')"
-              [class.text-base-content/55]="!isInvalid('subject')"
-            >
-              {{ subjectCoach }}
-            </p>
-          </div>
-
-          <div>
-            <label class="mb-1 block text-xs font-medium">Preview text</label>
-            <input
-              class="input input-bordered input-sm w-full"
-              [formField]="regularForm.previewText"
-              placeholder="Optional. Shows after the subject in most inboxes"
-              (input)="onFieldInput()"
-            />
-          </div>
-
-          <div>
-            <label class="mb-1 block text-xs font-medium">From name</label>
-            <input
-              #fromNameInput
-              class="input input-bordered input-sm w-full"
-              [formField]="regularForm.fromName"
-              placeholder="Who is sending"
-              (input)="onFieldInput()"
-            />
-            @if (isInvalid('fromName')) {
-            <p class="mt-1 text-xs text-error">{{ fromNameCoach }}</p>
-            }
-          </div>
-
-          <div>
-            <label class="mb-1 block text-xs font-medium">From address</label>
-            @if (verifiedSenders().length) {
-            <select
-              #fromAddressInput
-              class="select select-bordered select-sm w-full"
-              [formField]="regularForm.fromAddress"
-              (change)="onFieldInput()"
-            >
-              <option value="" disabled>Choose a verified sender</option>
-              @for (sender of verifiedSenders(); track sender) {
-              <option [value]="sender">{{ sender }}</option>
-              }
-            </select>
-            <button type="button" class="link link-primary mt-1 text-xs" (click)="goToVerifySender()">
-              Verify a new sender…
-            </button>
-            } @else {
-            <div class="rounded-lg border border-dashed border-base-300 p-4 text-center">
-              <p class="text-xs text-base-content/60">
-                No verified senders yet. A verified address stops your sends from bouncing or spoofing.
-              </p>
-              <button type="button" class="btn btn-xs btn-primary mt-2" (click)="goToVerifySender()">
-                Verify a sender
-              </button>
-            </div>
-            } @if (isInvalid('fromAddress')) {
-            <p class="mt-1 text-xs text-error">{{ fromAddressCoach }}</p>
-            } @if (verifiedSenders().length) {
-            <p class="mt-1 text-xs text-base-content/50">Prefilled from Workspace settings → Communications.</p>
-            }
-          </div>
-        </div>
-
-        <!-- Audience -->
-        <div class="space-y-5 rounded-xl border border-base-200 bg-base-100 p-5">
-          <div class="flex items-center gap-2 border-b border-base-200 pb-3">
-            <pc-icon name="user-group" [size]="4" class="text-primary"></pc-icon>
-            <h3 class="pc-eyebrow">Audience</h3>
-          </div>
-
-          <!-- Include lists -->
-          <div>
-            <h4 class="mb-2 pc-eyebrow">Include lists</h4>
-            @if (loadingLists()) {
-            <div class="skeleton h-5 w-2/3"></div>
-            } @else {
-            <div class="flex flex-wrap gap-1.5">
-              @for (id of includeListIds(); track id) {
-              <span
-                class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
-              >
-                <span class="tabular-nums">{{ listName(id) }} · {{ formatCount(listSize(id)) }}</span>
-                <button type="button" (click)="removeIncludeList(id)" aria-label="Remove list">
-                  <pc-icon name="x-mark" [size]="3"></pc-icon>
-                </button>
-              </span>
-              } @for (l of includeListSuggestions(); track l.id) {
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition-colors hover:border-primary hover:text-primary"
-                (click)="addIncludeList(l.id)"
-              >
-                <pc-icon name="plus" [size]="3"></pc-icon>
-                <span class="tabular-nums">{{ l.name }} · {{ formatCount(l.size) }}</span>
-              </button>
-              } @if (!includeListIds().length && !includeListSuggestions().length) {
-              <span class="text-xs text-base-content/50">No lists yet. Create one to target contacts.</span>
-              }
-            </div>
-            }
-          </div>
-
-          <!-- Include tags -->
-          <div>
-            <h4 class="mb-2 pc-eyebrow">Include tags</h4>
-            @if (loadingTags()) {
-            <div class="skeleton h-5 w-2/3"></div>
-            } @else {
-            <div class="flex flex-wrap gap-1.5">
-              @for (name of includeTagsList(); track name) {
-              <span
-                class="inline-flex items-center gap-1 rounded-full bg-secondary/15 px-2.5 py-1 text-xs font-medium text-secondary"
-              >
-                <span class="tabular-nums">{{ name }} · {{ formatCount(tagUsage(name)) }}</span>
-                <button type="button" (click)="removeIncludeTag(name)" aria-label="Remove tag">
-                  <pc-icon name="x-mark" [size]="3"></pc-icon>
-                </button>
-              </span>
-              } @for (t of includeTagSuggestions(); track t.id) {
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition-colors hover:border-secondary hover:text-secondary"
-                (click)="addIncludeTag(t.name)"
-              >
-                <pc-icon name="plus" [size]="3"></pc-icon>
-                <span class="tabular-nums">{{ t.name }} · {{ formatCount(t.usage) }}</span>
-              </button>
-              } @if (!includeTagsList().length && !includeTagSuggestions().length) {
-              <span class="text-xs text-base-content/50">No tags yet.</span>
-              }
-            </div>
-            }
-          </div>
-
-          <!-- Exclude lists -->
-          <div>
-            <h4 class="mb-2 pc-eyebrow">Exclude lists</h4>
-            @if (!loadingLists()) {
-            <div class="flex flex-wrap gap-1.5">
-              @for (id of excludeListIds(); track id) {
-              <span
-                class="inline-flex items-center gap-1 rounded-full bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
-              >
-                <span class="tabular-nums">{{ listName(id) }} · {{ formatCount(listSize(id)) }}</span>
-                <button type="button" (click)="removeExcludeList(id)" aria-label="Remove exclusion">
-                  <pc-icon name="x-mark" [size]="3"></pc-icon>
-                </button>
-              </span>
-              } @for (l of excludeListSuggestions(); track l.id) {
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition-colors hover:border-error hover:text-error"
-                (click)="addExcludeList(l.id)"
-              >
-                <pc-icon name="plus" [size]="3"></pc-icon>
-                <span class="tabular-nums">{{ l.name }} · {{ formatCount(l.size) }}</span>
-              </button>
-              } @if (!excludeListIds().length && !excludeListSuggestions().length) {
-              <span class="text-xs text-base-content/50">No lists to exclude.</span>
-              }
-            </div>
-            }
-          </div>
-
-          <!-- Exclude tags -->
-          <div>
-            <h4 class="mb-2 pc-eyebrow">Exclude tags</h4>
-            @if (!loadingTags()) {
-            <div class="flex flex-wrap gap-1.5">
-              @for (name of excludeTagsList(); track name) {
-              <span
-                class="inline-flex items-center gap-1 rounded-full bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
-              >
-                <span class="tabular-nums">{{ name }} · {{ formatCount(tagUsage(name)) }}</span>
-                <button type="button" (click)="removeExcludeTag(name)" aria-label="Remove exclusion">
-                  <pc-icon name="x-mark" [size]="3"></pc-icon>
-                </button>
-              </span>
-              } @for (t of excludeTagSuggestions(); track t.id) {
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition-colors hover:border-error hover:text-error"
-                (click)="addExcludeTag(t.name)"
-              >
-                <pc-icon name="plus" [size]="3"></pc-icon>
-                <span class="tabular-nums">{{ t.name }} · {{ formatCount(t.usage) }}</span>
-              </button>
-              } @if (!excludeTagsList().length && !excludeTagSuggestions().length) {
-              <span class="text-xs text-base-content/50">No tags to exclude.</span>
-              }
-            </div>
-            }
-          </div>
-
-          <!-- Estimated audience — the math, in public -->
-          <div class="rounded-lg border border-base-300 bg-base-200/30 p-4">
-            <div class="mb-3 flex items-center gap-2">
-              <pc-icon name="user-group" [size]="4" class="text-primary"></pc-icon>
-              <span class="pc-eyebrow">Estimated audience</span>
-            </div>
-            @if (hasAudienceSelection()) {
-            <dl class="space-y-1.5 text-sm">
-              <div class="flex items-center justify-between">
-                <dt class="text-base-content/70">In included lists</dt>
-                <dd class="tabular-nums">+{{ formatCount(includedListsTotal()) }}</dd>
-              </div>
-              <div class="flex items-center justify-between">
-                <dt class="text-base-content/70">Matching included tags</dt>
-                <dd class="tabular-nums">+{{ formatCount(includedTagsTotal()) }}</dd>
-              </div>
-              @if (excludedListsTotal()) {
-              <div class="flex items-center justify-between">
-                <dt class="text-base-content/70">Excluded by lists</dt>
-                <dd class="tabular-nums">−{{ formatCount(excludedListsTotal()) }}</dd>
-              </div>
-              } @if (excludedTagsTotal()) {
-              <div class="flex items-center justify-between">
-                <dt class="text-base-content/70">Excluded by tags</dt>
-                <dd class="tabular-nums">−{{ formatCount(excludedTagsTotal()) }}</dd>
-              </div>
-              }
-              <div class="flex items-center justify-between border-t border-base-300 pt-2 font-semibold">
-                <dt>Total</dt>
-                <dd class="tabular-nums text-primary">{{ peopleLabel(estimatedAudienceCount()) }}</dd>
-              </div>
-            </dl>
-            <p class="mt-2 text-[11px] text-base-content/55">
-              @if (skipBounced()) { Overlap between lists and tags is removed, and previously bounced addresses are
-              skipped, when you send. } @else { Overlap is removed when you send. Bounced addresses are
-              <strong>not</strong> being skipped (Workspace setting). }
-            </p>
-            } @else {
-            <p class="text-sm text-base-content/60">Add a list or tag above to see who this newsletter reaches.</p>
-            }
-          </div>
-        </div>
-      </div>
-      }
-
-      <!-- ============ REVIEW (& send / & start) ============ -->
-      @case ('review') {
-      <div class="grid gap-6 md:grid-cols-2">
-        <!-- Review -->
-        <div class="rounded-xl border border-base-200 bg-base-100 p-5">
-          <h3 class="mb-3 border-b border-base-200 pb-3 pc-eyebrow">Review</h3>
-          <dl class="divide-y divide-base-200 text-sm">
-            <div class="flex items-center justify-between gap-4 py-2.5">
-              <dt class="text-base-content/60">Template</dt>
-              <dd class="font-medium">{{ selectedTemplateName() }}</dd>
-            </div>
-            <div class="flex items-center justify-between gap-4 py-2.5">
-              <dt class="text-base-content/60">Subject</dt>
-              <dd class="truncate text-right font-medium">{{ regularPayload().subject || '—' }}</dd>
-            </div>
-            <div class="flex items-center justify-between gap-4 py-2.5">
-              <dt class="text-base-content/60">From</dt>
-              <dd class="truncate text-right font-medium">
-                {{ regularPayload().fromName }} &lt;{{ regularPayload().fromAddress || '—' }}&gt;
-              </dd>
-            </div>
-            <div class="flex items-center justify-between gap-4 py-2.5">
-              <dt class="text-base-content/60">Audience</dt>
-              <dd class="font-medium tabular-nums text-primary">{{ peopleLabel(estimatedAudienceCount()) }}</dd>
-            </div>
-            @if (sendQuota(); as quota) { @if (quota.remaining != null && quota.cap != null) {
-            <div class="flex items-center justify-between gap-4 py-2.5">
-              <dt class="text-base-content/60">Monthly allowance</dt>
-              <dd class="font-medium tabular-nums" [class.text-error]="quotaShortfall()">
-                {{ formatCount(quota.remaining) }} of {{ formatCount(quota.cap) }} emails left
-              </dd>
-            </div>
-            } }
-            <div class="flex items-center justify-between gap-4 py-2.5">
-              <dt class="text-base-content/60">Timing</dt>
-              <dd class="text-right font-medium">
-                @if (regularPayload().timingMode === 'schedule') { {{ scheduledDateDisplay() }} } @else { Send now }
-              </dd>
-            </div>
-          </dl>
-          @if (quotaShortfall()) {
-          <div class="alert alert-warning mt-3 items-start text-sm" role="alert">
-            <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
-            <span>
-              This audience is larger than the {{ formatCount(sendQuota()?.remaining ?? 0) }} emails left in your plan's
-              monthly allowance@if (quotaResetLabel()) { (resets {{ quotaResetLabel() }})}. Narrow the audience, or
-              <a routerLink="/workspace/billing" class="link">upgrade your plan</a>
-              for a larger allowance.
-            </span>
-          </div>
-          }
-        </div>
-
-        <!-- Send timing -->
-        <div class="rounded-xl border border-base-200 bg-base-100 p-5">
-          <h3 class="mb-3 border-b border-base-200 pb-3 pc-eyebrow">Send timing</h3>
-          <div class="space-y-3">
-            <label
-              class="flex cursor-pointer items-start gap-3 rounded-lg border border-base-200 p-3 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
-            >
-              <input
-                type="radio"
-                name="timingMode"
-                class="radio radio-sm radio-primary mt-0.5"
-                value="now"
-                [checked]="regularPayload().timingMode === 'now'"
-                (change)="setTimingMode('now')"
-              />
-              <span>
-                <span class="block text-sm font-medium">Send now</span>
-                <span class="block text-xs text-base-content/60">Queued the moment you confirm.</span>
-              </span>
-            </label>
-            <label
-              class="flex cursor-pointer items-start gap-3 rounded-lg border border-base-200 p-3 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
-            >
-              <input
-                type="radio"
-                name="timingMode"
-                class="radio radio-sm radio-primary mt-0.5"
-                value="schedule"
-                [checked]="regularPayload().timingMode === 'schedule'"
-                (change)="setTimingMode('schedule')"
-              />
-              <span>
-                <span class="block text-sm font-medium">Schedule for later</span>
-                <span class="block text-xs text-base-content/60">Delivered automatically at the time you pick.</span>
-              </span>
-            </label>
-          </div>
-
-          @if (regularPayload().timingMode === 'schedule') {
-          <div class="mt-4 grid gap-4 sm:grid-cols-2">
-            <div class="relative flex flex-col gap-1">
-              <label class="text-xs font-medium">Send date</label>
-              <button
-                type="button"
-                class="btn btn-sm btn-outline btn-secondary justify-between"
-                (click)="toggleDatePicker()"
-              >
-                <span>{{ scheduledDateDisplay() }}</span>
-                <pc-icon name="chevron-down" [size]="4"></pc-icon>
-              </button>
-              @if (showDatePicker()) {
-              <div class="absolute left-0 top-full z-20 mt-2">
-                <calendar-date
-                  class="cally rounded-box border border-base-300 bg-base-100 shadow-lg"
-                  [value]="scheduledDateValue()"
-                  (change)="onScheduledDateChange($event)"
-                >
-                  <calendar-month></calendar-month>
-                </calendar-date>
-              </div>
-              }
-            </div>
-            <div class="flex flex-col gap-1">
-              <label class="text-xs font-medium">Send time</label>
-              <input
-                type="time"
-                class="input input-bordered input-sm w-full"
-                [formField]="regularForm.scheduledTime"
-                (input)="onTimingChange()"
-              />
-            </div>
-            @if (timingNeedsDate() && showFieldErrors()) {
-            <p class="text-xs text-error sm:col-span-2">{{ scheduleCoach }}</p>
-            }
-          </div>
-          }
-        </div>
-      </div>
-
-      <!-- Deliverability check -->
-      <section class="mt-6 rounded-xl border border-base-200 bg-base-100 p-5">
-        <div class="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-base-200 pb-3">
-          <h3 class="pc-eyebrow">Deliverability check</h3>
-          <button
-            type="button"
-            class="btn btn-sm btn-outline btn-secondary"
-            [disabled]="preflightRunning()"
-            (click)="runFullPreflight()"
-          >
-            @if (preflightRunning()) { <span class="loading loading-spinner loading-xs"></span> Checking… } @else {
-            <pc-icon name="arrow-path" [size]="4"></pc-icon>
-            {{ preflightView().kind === 'full' ? 'Re-run full check' : 'Run full check' }} }
-          </button>
-        </div>
-        <div class="flex flex-col gap-5 sm:flex-row sm:items-start">
-          <div class="flex shrink-0 flex-col items-center gap-2">
-            <div
-              class="radial-progress {{ preflightGaugeClass(preflightView().band) }}"
-              [style.--value]="preflightView().score"
-              role="progressbar"
-              [attr.aria-valuenow]="preflightView().score"
-              aria-valuemin="0"
-              aria-valuemax="100"
-            >
-              <span class="text-lg font-semibold tabular-nums">{{ preflightView().score }}</span>
-            </div>
-            <p class="max-w-[10rem] text-center text-xs font-medium">{{ preflightBandCopy(preflightView().band) }}</p>
-          </div>
-          <div class="min-w-0 flex-1 space-y-3">
-            @if (preflightView().kind === 'quick') {
-            <p class="text-xs text-base-content/60">
-              Quick check of the content only. Run the full check to include the spam-filter score and the AI content
-              review.
-            </p>
-            } @else if (preflightView().aiStatus === 'unavailable') {
-            <p class="text-xs text-base-content/60">
-              The AI content review couldn't run this time — the score reflects the other checks.
-            </p>
-            } @else if (preflightView().aiStatus === 'not_required') {
-            <p class="text-xs text-base-content/60">
-              The AI content review wasn't needed for this check — the score reflects the standard checks.
-            </p>
-            } @if (preflightView().findings.length === 0) {
-            <p class="text-sm text-base-content/70">
-              No issues found. Inbox placement still depends mostly on your sender reputation and how recipients engage,
-              so keep sending to people who asked to hear from you.
-            </p>
-            } @else {
-            <ul class="divide-y divide-base-200">
-              @for (f of preflightView().findings; track f.code) {
-              <li class="flex items-start gap-3 py-2.5">
-                <span [class]="preflightSeverityClass(f.severity)">
-                  <pc-icon [name]="preflightSeverityIcon(f.severity)" [size]="5"></pc-icon>
-                </span>
-                <span class="min-w-0 flex-1">
-                  <span class="block text-sm font-medium">{{ f.message }}</span>
-                  <span class="block text-xs text-base-content/60">{{ f.hint }}</span>
-                </span>
-                @if (f.deduction > 0) {
-                <span class="shrink-0 text-xs tabular-nums text-base-content/50">−{{ f.deduction }} pts</span>
-                }
-              </li>
-              }
-            </ul>
-            }
-          </div>
-        </div>
-      </section>
-      } }
-    </form>
-    }
-  </main>
-
-  <!-- Persistent footer: Back/Cancel · Save draft · [spacer] · Next / Send to N people -->
-  @if (!isEditing || editLoaded()) {
-  <footer class="hidden items-center gap-3 border-t border-base-200 bg-base-100 px-6 py-4 sm:flex">
-    <button type="button" class="btn btn-ghost btn-sm" (click)="handleBack()">
-      <pc-icon name="chevron-left" [size]="4"></pc-icon>
-      Back
-    </button>
-    <button type="button" class="btn btn-ghost btn-sm" [disabled]="saving()" (click)="saveDraft()">
-      @if (saving()) { <span class="loading loading-spinner loading-xs"></span> } Save draft
-    </button>
-    <div class="flex-1"></div>
-    @if (!isLastStep()) {
-    <button type="button" class="btn btn-primary btn-sm" (click)="handleNext()">
-      Next
-      <pc-icon name="chevron-right" [size]="4"></pc-icon>
-    </button>
-    } @else {
-    <span class="tooltip-left" [class.tooltip]="!!sendBlockedTooltip()" [attr.data-tip]="sendBlockedTooltip()">
-      <button
-        type="button"
-        class="btn btn-primary btn-sm"
-        [disabled]="saving() || !!sendBlockedTooltip()"
-        (click)="sendRegular()"
-      >
-        @if (saving()) { <span class="loading loading-spinner loading-xs"></span> } @else {
-        <pc-icon name="paper-airplane" [size]="4"></pc-icon> } @if (regularPayload().timingMode === 'schedule') {
-        Schedule for {{ peopleLabel(estimatedAudienceCount()) }} } @else { Send to {{
-        peopleLabel(estimatedAudienceCount()) }} }
-      </button>
-    </span>
-    }
-  </footer>
-  }
-
-  <!-- Save as template: the house modal with the one field the action needs -->
-  <pc-modal-shell title="Save as template" icon="bookmark" [open]="saveTemplateOpen()" (closed)="closeSaveTemplate()">
-    <p class="mb-3 text-xs text-base-content/60">
-      Saves the current design to <span class="font-medium">Your templates</span> so any newsletter can start from it.
-    </p>
-    <label class="mb-1 block text-xs font-medium" for="templateName">Template name</label>
-    <input
-      id="templateName"
-      class="input input-bordered input-sm w-full"
-      placeholder="For example, Monthly update"
-      [formField]="templateNameForm.name"
-    />
-    @if (templateNameInvalid()) {
-    <p class="mt-1 text-xs text-error">Give the template a name so you can find it later.</p>
-    }
-    <div pc-modal-footer>
-      <button type="button" class="btn btn-sm btn-outline btn-accent" (click)="closeSaveTemplate()">Cancel</button>
-      <button type="button" class="btn btn-sm btn-primary" [disabled]="savingTemplate()" (click)="saveAsTemplate()">
-        @if (savingTemplate()) { <span class="loading loading-spinner loading-xs"></span> } Save template
-      </button>
-    </div>
-  </pc-modal-shell>
-</div>
-```
-
 ## File: apps/frontend/src/app/experiences/settings/settings-page.html
 ```html
 <div class="mx-auto w-full max-w-7xl px-4 py-6 md:px-8">
@@ -81948,6 +81418,1595 @@ export const EULA_DOC: LegalDoc = {
 };
 ```
 
+## File: apps/frontend/src/app/experiences/newsletters/ui/newsletter-add.html
+```html
+<div class="flex h-full flex-col bg-base-100">
+  <header class="border-b border-base-200 px-6 py-4">
+    <button
+      type="button"
+      class="mb-2 flex items-center gap-1 text-xs text-base-content/60 hover:text-primary"
+      (click)="close()"
+    >
+      <pc-icon name="chevron-left" [size]="3"></pc-icon>
+      Newsletters
+    </button>
+    <p class="pc-eyebrow">{{ isEditing ? 'Edit draft' : 'Newsletter' }}</p>
+    <h1 class="text-[22px] font-bold text-base-content">
+      {{ isEditing ? editName() || 'Untitled newsletter' : 'New newsletter' }}
+    </h1>
+
+    <!-- Pill steps: current = solid, already-reached = tint & clickable, not-yet-reached = muted & locked
+         (narrates why). Reachability is the high-water mark, not the current step, so stepping Back
+         doesn't re-lock a step you already completed. -->
+    <ol class="mt-4 hidden flex-wrap gap-2 sm:flex">
+      @for (label of steps; track label; let idx = $index) { @let stepNo = idx + 1; @let isCurrent = currentStep() ===
+      stepNo; @let isDone = currentStep() > stepNo; @let isLocked = !canReachStep(stepNo); @let isUnlocked = !isCurrent
+      && !isLocked;
+      <li>
+        <button
+          type="button"
+          class="flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors"
+          [class.bg-primary]="isCurrent"
+          [class.text-primary-content]="isCurrent"
+          [class.bg-primary/10]="isUnlocked"
+          [class.text-primary]="isUnlocked"
+          [class.cursor-pointer]="isUnlocked"
+          [class.hover:bg-primary/20]="isUnlocked"
+          [class.bg-base-200]="isLocked"
+          [class.text-base-content/50]="isLocked"
+          [class.cursor-not-allowed]="isLocked"
+          [class.tooltip]="isLocked"
+          [class.tooltip-bottom]="isLocked"
+          [attr.data-tip]="isLocked ? lockedStepTooltip : null"
+          [attr.aria-disabled]="isLocked"
+          (click)="goToStep(stepNo)"
+        >
+          <span
+            class="flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold"
+            [class.bg-primary-content/25]="isCurrent"
+            [class.bg-primary/15]="isUnlocked"
+            [class.bg-base-300]="isLocked"
+          >
+            @if (isDone) { <pc-icon name="check-circle" [size]="3"></pc-icon> } @else { {{ stepNo }} }
+          </span>
+          <span>{{ label }}</span>
+        </button>
+      </li>
+      }
+    </ol>
+  </header>
+
+  <main class="flex-1 overflow-y-auto px-6 py-6">
+    <!-- The wizard needs desktop real estate; on a phone we say so instead of rendering a broken editor. -->
+    <div class="sm:hidden">
+      <pc-empty-state
+        icon="pencil-square"
+        [bordered]="false"
+        [title]="isEditing ? 'Drafts are edited on a desktop' : 'Newsletters are created on a desktop'"
+        hint="Open pplCRM on a desktop to work on this. You can still view reports and send finished drafts from your phone."
+      >
+        <a routerLink="/newsletters" class="btn btn-primary btn-sm">Back to newsletters</a>
+      </pc-empty-state>
+    </div>
+
+    @if (isEditing && !editLoaded()) {
+    <!-- Edit mode: the draft is still loading; the gate keeps this from flashing on fast responses. -->
+    <div class="hidden justify-center py-16 sm:flex">
+      @if (editLoading()) { <span class="loading loading-spinner loading-md text-primary"></span> }
+    </div>
+    } @else {
+    <form
+      class="mx-auto hidden w-full flex-col gap-6 sm:flex"
+      [class.max-w-3xl]="currentStepId() !== 'content'"
+      [class.max-w-none]="currentStepId() === 'content'"
+    >
+      @switch (currentStepId()) {
+
+      <!-- ============ TEMPLATE ============ -->
+      @case ('template') {
+      <div class="grid gap-5 sm:grid-cols-2">
+        @for (t of templateOptions; track t.id) {
+        <button
+          type="button"
+          class="overflow-hidden rounded-xl border text-left transition-colors"
+          [class.border-primary]="isPresetSelected(t.id)"
+          [class.bg-primary/5]="isPresetSelected(t.id)"
+          [class.border-base-300]="!isPresetSelected(t.id)"
+          [class.hover:border-primary/50]="!isPresetSelected(t.id)"
+          (click)="selectTemplate(t.id)"
+        >
+          <div class="h-40 overflow-hidden border-b border-base-200 bg-base-200/40">
+            <pc-template-thumb [html]="presetPreviewHtml(t.id)"></pc-template-thumb>
+          </div>
+          <div class="p-4">
+            <h4 class="flex items-center gap-1.5 text-[15px] font-semibold text-base-content">
+              <pc-icon [name]="t.icon" [size]="4" class="text-primary"></pc-icon>
+              {{ t.name }}
+            </h4>
+            <p class="mt-0.5 text-xs text-base-content/60">{{ t.description }}</p>
+          </div>
+        </button>
+        }
+      </div>
+
+      <!-- Your templates — hidden entirely while the tenant has none (the presets are the empty case) -->
+      @if (templatesLoading()) {
+      <section>
+        <h3 class="mb-3 pc-eyebrow">Your templates</h3>
+        <div class="grid gap-5 sm:grid-cols-2">
+          <div class="skeleton h-40 rounded-xl"></div>
+          <div class="skeleton h-40 rounded-xl"></div>
+        </div>
+      </section>
+      } @else if (savedTemplates().length) {
+      <section>
+        <h3 class="mb-3 pc-eyebrow">Your templates</h3>
+        <div class="grid gap-5 sm:grid-cols-2">
+          @for (tpl of savedTemplates(); track tpl.id) {
+          <div
+            class="relative overflow-hidden rounded-xl border transition-colors"
+            [class.border-primary]="isSavedSelected(tpl.id)"
+            [class.bg-primary/5]="isSavedSelected(tpl.id)"
+            [class.border-base-300]="!isSavedSelected(tpl.id)"
+            [class.hover:border-primary/50]="!isSavedSelected(tpl.id)"
+          >
+            <button type="button" class="block w-full text-left" (click)="selectSavedTemplate(tpl)">
+              <div class="h-40 overflow-hidden border-b border-base-200 bg-base-200/40">
+                <pc-template-thumb [html]="tpl.html_content"></pc-template-thumb>
+              </div>
+              <div class="p-4 pr-12">
+                <h4 class="flex items-center gap-1.5 text-[15px] font-semibold text-base-content">
+                  <pc-icon name="bookmark" [size]="4" class="text-primary"></pc-icon>
+                  {{ tpl.name }}
+                </h4>
+                <p class="mt-0.5 text-xs text-base-content/60">{{ savedTemplateSubtitle(tpl) }}</p>
+              </div>
+            </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs btn-circle absolute bottom-3 right-3 text-error"
+              [title]="'Delete template ' + tpl.name"
+              (click)="deleteSavedTemplate(tpl)"
+            >
+              <pc-icon name="trash" [size]="4"></pc-icon>
+            </button>
+          </div>
+          }
+        </div>
+      </section>
+      }
+
+      <!-- Cross-link: per-person triggered email is the Automations page's job, not a newsletter. -->
+      <div class="rounded-lg border border-base-200 bg-base-200/40 p-4">
+        <p class="text-xs text-base-content/60">
+          Want to email each supporter when <span class="font-semibold">they</span> do something (join, donate, sign up
+          to volunteer)? That's an <a routerLink="/automations" class="link link-primary font-medium">Automation</a>.
+        </p>
+      </div>
+      }
+
+      <!-- ============ CONTENT ============ -->
+      @case ('content') {
+      <div class="space-y-4">
+        <div
+          class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-base-200 bg-base-100 p-3"
+        >
+          <p class="max-w-xl text-xs text-base-content/60">
+            Personalize with merge fields like
+            <code class="rounded bg-base-200 px-1 py-0.5 font-mono text-[11px] text-base-content/80"
+              >{{ mergeFieldExample }}</code
+            >. The footer disclaimer and unsubscribe link are appended automatically from
+            <a [routerLink]="commsSettingsLink" class="link link-primary">Workspace settings → Communications</a>.
+          </p>
+          <div class="flex flex-wrap items-center gap-2">
+            <button type="button" class="btn btn-sm btn-outline btn-secondary" (click)="openSaveTemplate()">
+              <pc-icon name="bookmark" [size]="4"></pc-icon>
+              Save as template
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm btn-outline btn-secondary"
+              [disabled]="preflightRunning()"
+              (click)="runFullPreflight()"
+            >
+              @if (preflightRunning()) { <span class="loading loading-spinner loading-xs"></span> } @else {
+              <pc-icon name="check-circle" [size]="4"></pc-icon> } Check deliverability
+            </button>
+            <span class="tooltip-left" [class.tooltip]="isDemo()" [attr.data-tip]="isDemo() ? demoSendTooltip : null">
+              <button
+                type="button"
+                class="btn btn-sm btn-outline btn-secondary"
+                [disabled]="isDemo()"
+                (click)="sendTestEmail()"
+              >
+                <pc-icon name="paper-airplane" [size]="4"></pc-icon>
+                Send test email
+              </button>
+            </span>
+          </div>
+        </div>
+        <pc-visual-newsletter-editor
+          [htmlContent]="regularPayload().htmlContent"
+          [plainTextContent]="regularPayload().plainTextContent"
+          (htmlContentChange)="onEditorHtmlChange($event)"
+          (plainTextContentChange)="onEditorTextChange($event)"
+        ></pc-visual-newsletter-editor>
+      </div>
+      }
+
+      <!-- ============ AUDIENCE & DETAILS ============ -->
+      @case ('audience') {
+      <div class="grid gap-6 md:grid-cols-2">
+        <!-- Email details -->
+        <div class="space-y-4 rounded-xl border border-base-200 bg-base-100 p-5">
+          <div class="flex items-center gap-2 border-b border-base-200 pb-3">
+            <pc-icon name="document-text" [size]="4" class="text-primary"></pc-icon>
+            <h3 class="pc-eyebrow">Email details</h3>
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-medium">Subject</label>
+            <input
+              #subjectInput
+              class="input input-bordered input-sm w-full"
+              [formField]="regularForm.subject"
+              placeholder="What recipients see first"
+              (input)="onFieldInput()"
+            />
+            <p
+              class="mt-1 text-xs"
+              [class.text-error]="isInvalid('subject')"
+              [class.text-base-content/55]="!isInvalid('subject')"
+            >
+              {{ subjectCoach }}
+            </p>
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-medium">Preview text</label>
+            <input
+              class="input input-bordered input-sm w-full"
+              [formField]="regularForm.previewText"
+              placeholder="Optional. Shows after the subject in most inboxes"
+              (input)="onFieldInput()"
+            />
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-medium">From name</label>
+            <input
+              #fromNameInput
+              class="input input-bordered input-sm w-full"
+              [formField]="regularForm.fromName"
+              placeholder="Who is sending"
+              (input)="onFieldInput()"
+            />
+            @if (isInvalid('fromName')) {
+            <p class="mt-1 text-xs text-error">{{ fromNameCoach }}</p>
+            }
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-medium">From address</label>
+            @if (verifiedSenders().length) {
+            <select
+              #fromAddressInput
+              class="select select-bordered select-sm w-full"
+              [formField]="regularForm.fromAddress"
+              (change)="onFieldInput()"
+            >
+              <option value="" disabled>Choose a verified sender</option>
+              @for (sender of verifiedSenders(); track sender) {
+              <option [value]="sender">{{ sender }}</option>
+              }
+            </select>
+            <button type="button" class="link link-primary mt-1 text-xs" (click)="goToVerifySender()">
+              Verify a new sender…
+            </button>
+            } @else {
+            <div class="rounded-lg border border-dashed border-base-300 p-4 text-center">
+              <p class="text-xs text-base-content/60">
+                No verified senders yet. A verified address stops your sends from bouncing or spoofing.
+              </p>
+              <button type="button" class="btn btn-xs btn-primary mt-2" (click)="goToVerifySender()">
+                Verify a sender
+              </button>
+            </div>
+            } @if (isInvalid('fromAddress')) {
+            <p class="mt-1 text-xs text-error">{{ fromAddressCoach }}</p>
+            } @if (verifiedSenders().length) {
+            <p class="mt-1 text-xs text-base-content/50">Prefilled from Workspace settings → Communications.</p>
+            }
+          </div>
+        </div>
+
+        <!-- Audience -->
+        <div class="space-y-5 rounded-xl border border-base-200 bg-base-100 p-5">
+          <div class="flex items-center gap-2 border-b border-base-200 pb-3">
+            <pc-icon name="user-group" [size]="4" class="text-primary"></pc-icon>
+            <h3 class="pc-eyebrow">Audience</h3>
+          </div>
+
+          <!-- Include lists -->
+          <div>
+            <h4 class="mb-2 pc-eyebrow">Include lists</h4>
+            @if (loadingLists()) {
+            <div class="skeleton h-5 w-2/3"></div>
+            } @else {
+            <div class="flex flex-wrap gap-1.5">
+              @for (id of includeListIds(); track id) {
+              <span
+                class="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary"
+              >
+                <span class="tabular-nums">{{ listName(id) }} · {{ formatCount(listSize(id)) }}</span>
+                <button type="button" (click)="removeIncludeList(id)" aria-label="Remove list">
+                  <pc-icon name="x-mark" [size]="3"></pc-icon>
+                </button>
+              </span>
+              } @for (l of includeListSuggestions(); track l.id) {
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition-colors hover:border-primary hover:text-primary"
+                (click)="addIncludeList(l.id)"
+              >
+                <pc-icon name="plus" [size]="3"></pc-icon>
+                <span class="tabular-nums">{{ l.name }} · {{ formatCount(l.size) }}</span>
+              </button>
+              } @if (!includeListIds().length && !includeListSuggestions().length) {
+              <span class="text-xs text-base-content/50">No lists yet. Create one to target contacts.</span>
+              }
+            </div>
+            }
+          </div>
+
+          <!-- Include tags -->
+          <div>
+            <h4 class="mb-2 pc-eyebrow">Include tags</h4>
+            @if (loadingTags()) {
+            <div class="skeleton h-5 w-2/3"></div>
+            } @else {
+            <div class="flex flex-wrap gap-1.5">
+              @for (name of includeTagsList(); track name) {
+              <span
+                class="inline-flex items-center gap-1 rounded-full bg-secondary/15 px-2.5 py-1 text-xs font-medium text-secondary"
+              >
+                <span class="tabular-nums">{{ name }} · {{ formatCount(tagUsage(name)) }}</span>
+                <button type="button" (click)="removeIncludeTag(name)" aria-label="Remove tag">
+                  <pc-icon name="x-mark" [size]="3"></pc-icon>
+                </button>
+              </span>
+              } @for (t of includeTagSuggestions(); track t.id) {
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition-colors hover:border-secondary hover:text-secondary"
+                (click)="addIncludeTag(t.name)"
+              >
+                <pc-icon name="plus" [size]="3"></pc-icon>
+                <span class="tabular-nums">{{ t.name }} · {{ formatCount(t.usage) }}</span>
+              </button>
+              } @if (!includeTagsList().length && !includeTagSuggestions().length) {
+              <span class="text-xs text-base-content/50">No tags yet.</span>
+              }
+            </div>
+            }
+          </div>
+
+          <!-- Exclude lists -->
+          <div>
+            <h4 class="mb-2 pc-eyebrow">Exclude lists</h4>
+            @if (!loadingLists()) {
+            <div class="flex flex-wrap gap-1.5">
+              @for (id of excludeListIds(); track id) {
+              <span
+                class="inline-flex items-center gap-1 rounded-full bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
+              >
+                <span class="tabular-nums">{{ listName(id) }} · {{ formatCount(listSize(id)) }}</span>
+                <button type="button" (click)="removeExcludeList(id)" aria-label="Remove exclusion">
+                  <pc-icon name="x-mark" [size]="3"></pc-icon>
+                </button>
+              </span>
+              } @for (l of excludeListSuggestions(); track l.id) {
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition-colors hover:border-error hover:text-error"
+                (click)="addExcludeList(l.id)"
+              >
+                <pc-icon name="plus" [size]="3"></pc-icon>
+                <span class="tabular-nums">{{ l.name }} · {{ formatCount(l.size) }}</span>
+              </button>
+              } @if (!excludeListIds().length && !excludeListSuggestions().length) {
+              <span class="text-xs text-base-content/50">No lists to exclude.</span>
+              }
+            </div>
+            }
+          </div>
+
+          <!-- Exclude tags -->
+          <div>
+            <h4 class="mb-2 pc-eyebrow">Exclude tags</h4>
+            @if (!loadingTags()) {
+            <div class="flex flex-wrap gap-1.5">
+              @for (name of excludeTagsList(); track name) {
+              <span
+                class="inline-flex items-center gap-1 rounded-full bg-error/10 px-2.5 py-1 text-xs font-medium text-error"
+              >
+                <span class="tabular-nums">{{ name }} · {{ formatCount(tagUsage(name)) }}</span>
+                <button type="button" (click)="removeExcludeTag(name)" aria-label="Remove exclusion">
+                  <pc-icon name="x-mark" [size]="3"></pc-icon>
+                </button>
+              </span>
+              } @for (t of excludeTagSuggestions(); track t.id) {
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2.5 py-1 text-xs font-medium text-base-content/70 transition-colors hover:border-error hover:text-error"
+                (click)="addExcludeTag(t.name)"
+              >
+                <pc-icon name="plus" [size]="3"></pc-icon>
+                <span class="tabular-nums">{{ t.name }} · {{ formatCount(t.usage) }}</span>
+              </button>
+              } @if (!excludeTagsList().length && !excludeTagSuggestions().length) {
+              <span class="text-xs text-base-content/50">No tags to exclude.</span>
+              }
+            </div>
+            }
+          </div>
+
+          <!-- Estimated audience — the math, in public -->
+          <div class="rounded-lg border border-base-300 bg-base-200/30 p-4">
+            <div class="mb-3 flex items-center gap-2">
+              <pc-icon name="user-group" [size]="4" class="text-primary"></pc-icon>
+              <span class="pc-eyebrow">Estimated audience</span>
+            </div>
+            @if (hasAudienceSelection()) {
+            <dl class="space-y-1.5 text-sm">
+              <div class="flex items-center justify-between">
+                <dt class="text-base-content/70">In included lists</dt>
+                <dd class="tabular-nums">+{{ formatCount(includedListsTotal()) }}</dd>
+              </div>
+              <div class="flex items-center justify-between">
+                <dt class="text-base-content/70">Matching included tags</dt>
+                <dd class="tabular-nums">+{{ formatCount(includedTagsTotal()) }}</dd>
+              </div>
+              @if (excludedListsTotal()) {
+              <div class="flex items-center justify-between">
+                <dt class="text-base-content/70">Excluded by lists</dt>
+                <dd class="tabular-nums">−{{ formatCount(excludedListsTotal()) }}</dd>
+              </div>
+              } @if (excludedTagsTotal()) {
+              <div class="flex items-center justify-between">
+                <dt class="text-base-content/70">Excluded by tags</dt>
+                <dd class="tabular-nums">−{{ formatCount(excludedTagsTotal()) }}</dd>
+              </div>
+              }
+              <div class="flex items-center justify-between border-t border-base-300 pt-2 font-semibold">
+                <dt>Total</dt>
+                <dd class="tabular-nums text-primary">{{ peopleLabel(estimatedAudienceCount()) }}</dd>
+              </div>
+            </dl>
+            <p class="mt-2 text-[11px] text-base-content/55">
+              @if (skipBounced()) { Overlap between lists and tags is removed, and previously bounced addresses are
+              skipped, when you send. } @else { Overlap is removed when you send. Bounced addresses are
+              <strong>not</strong> being skipped (Workspace setting). }
+            </p>
+            } @else {
+            <p class="text-sm text-base-content/60">Add a list or tag above to see who this newsletter reaches.</p>
+            }
+          </div>
+        </div>
+      </div>
+      }
+
+      <!-- ============ REVIEW (& send / & start) ============ -->
+      @case ('review') {
+      <div class="grid gap-6 md:grid-cols-2">
+        <!-- Review -->
+        <div class="rounded-xl border border-base-200 bg-base-100 p-5">
+          <h3 class="mb-3 border-b border-base-200 pb-3 pc-eyebrow">Review</h3>
+          <dl class="divide-y divide-base-200 text-sm">
+            <div class="flex items-center justify-between gap-4 py-2.5">
+              <dt class="text-base-content/60">Template</dt>
+              <dd class="font-medium">{{ selectedTemplateName() }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 py-2.5">
+              <dt class="text-base-content/60">Subject</dt>
+              <dd class="truncate text-right font-medium">{{ regularPayload().subject || '—' }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 py-2.5">
+              <dt class="text-base-content/60">From</dt>
+              <dd class="truncate text-right font-medium">
+                {{ regularPayload().fromName }} &lt;{{ regularPayload().fromAddress || '—' }}&gt;
+              </dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 py-2.5">
+              <dt class="text-base-content/60">Audience</dt>
+              <dd class="font-medium tabular-nums text-primary">{{ peopleLabel(estimatedAudienceCount()) }}</dd>
+            </div>
+            @if (sendQuota(); as quota) { @if (quota.remaining != null && quota.cap != null) {
+            <div class="flex items-center justify-between gap-4 py-2.5">
+              <dt class="text-base-content/60">Monthly allowance</dt>
+              <dd class="font-medium tabular-nums" [class.text-error]="quotaShortfall()">
+                {{ formatCount(quota.remaining) }} of {{ formatCount(quota.cap) }} emails left
+              </dd>
+            </div>
+            } }
+            <div class="flex items-center justify-between gap-4 py-2.5">
+              <dt class="text-base-content/60">Timing</dt>
+              <dd class="text-right font-medium">
+                @if (regularPayload().timingMode === 'schedule') { {{ scheduledDateDisplay() }} } @else { Send now }
+              </dd>
+            </div>
+          </dl>
+          @if (quotaShortfall()) {
+          <div class="alert alert-warning mt-3 items-start text-sm" role="alert">
+            <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
+            <span>
+              This audience is larger than the {{ formatCount(sendQuota()?.remaining ?? 0) }} emails left in your plan's
+              monthly allowance@if (quotaResetLabel()) { (resets {{ quotaResetLabel() }})}. Narrow the audience, or
+              <a routerLink="/workspace/billing" class="link">upgrade your plan</a>
+              for a larger allowance.
+            </span>
+          </div>
+          }
+        </div>
+
+        <!-- Send timing -->
+        <div class="rounded-xl border border-base-200 bg-base-100 p-5">
+          <h3 class="mb-3 border-b border-base-200 pb-3 pc-eyebrow">Send timing</h3>
+          <div class="space-y-3">
+            <label
+              class="flex cursor-pointer items-start gap-3 rounded-lg border border-base-200 p-3 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+            >
+              <input
+                type="radio"
+                name="timingMode"
+                class="radio radio-sm radio-primary mt-0.5"
+                value="now"
+                [checked]="regularPayload().timingMode === 'now'"
+                (change)="setTimingMode('now')"
+              />
+              <span>
+                <span class="block text-sm font-medium">Send now</span>
+                <span class="block text-xs text-base-content/60">Queued the moment you confirm.</span>
+              </span>
+            </label>
+            <label
+              class="flex cursor-pointer items-start gap-3 rounded-lg border border-base-200 p-3 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+            >
+              <input
+                type="radio"
+                name="timingMode"
+                class="radio radio-sm radio-primary mt-0.5"
+                value="schedule"
+                [checked]="regularPayload().timingMode === 'schedule'"
+                (change)="setTimingMode('schedule')"
+              />
+              <span>
+                <span class="block text-sm font-medium">Schedule for later</span>
+                <span class="block text-xs text-base-content/60">Delivered automatically at the time you pick.</span>
+              </span>
+            </label>
+          </div>
+
+          @if (regularPayload().timingMode === 'schedule') {
+          <div class="mt-4 grid gap-4 sm:grid-cols-2">
+            <div class="relative flex flex-col gap-1">
+              <label class="text-xs font-medium">Send date</label>
+              <button
+                type="button"
+                class="btn btn-sm btn-outline btn-secondary justify-between"
+                (click)="toggleDatePicker()"
+              >
+                <span>{{ scheduledDateDisplay() }}</span>
+                <pc-icon name="chevron-down" [size]="4"></pc-icon>
+              </button>
+              @if (showDatePicker()) {
+              <div class="absolute left-0 top-full z-20 mt-2">
+                <calendar-date
+                  class="cally rounded-box border border-base-300 bg-base-100 shadow-lg"
+                  [value]="scheduledDateValue()"
+                  (change)="onScheduledDateChange($event)"
+                >
+                  <calendar-month></calendar-month>
+                </calendar-date>
+              </div>
+              }
+            </div>
+            <div class="flex flex-col gap-1">
+              <label class="text-xs font-medium">Send time</label>
+              <input
+                type="time"
+                class="input input-bordered input-sm w-full"
+                [formField]="regularForm.scheduledTime"
+                (input)="onTimingChange()"
+              />
+            </div>
+            @if (timingNeedsDate() && showFieldErrors()) {
+            <p class="text-xs text-error sm:col-span-2">{{ scheduleCoach }}</p>
+            }
+          </div>
+          }
+        </div>
+      </div>
+
+      <!-- Deliverability check -->
+      <section class="mt-6 rounded-xl border border-base-200 bg-base-100 p-5">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-base-200 pb-3">
+          <h3 class="pc-eyebrow">Deliverability check</h3>
+          <button
+            type="button"
+            class="btn btn-sm btn-outline btn-secondary"
+            [disabled]="preflightRunning()"
+            (click)="runFullPreflight()"
+          >
+            @if (preflightRunning()) { <span class="loading loading-spinner loading-xs"></span> Checking… } @else {
+            <pc-icon name="arrow-path" [size]="4"></pc-icon>
+            {{ preflightView().kind === 'full' ? 'Re-run full check' : 'Run full check' }} }
+          </button>
+        </div>
+        <div class="flex flex-col gap-5 sm:flex-row sm:items-start">
+          <div class="flex shrink-0 flex-col items-center gap-2">
+            <div
+              class="radial-progress {{ preflightGaugeClass(preflightView().band) }}"
+              [style.--value]="preflightView().score"
+              role="progressbar"
+              [attr.aria-valuenow]="preflightView().score"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span class="text-lg font-semibold tabular-nums">{{ preflightView().score }}</span>
+            </div>
+            <p class="max-w-[10rem] text-center text-xs font-medium">{{ preflightBandCopy(preflightView().band) }}</p>
+          </div>
+          <div class="min-w-0 flex-1 space-y-3">
+            @if (preflightView().kind === 'quick') {
+            <p class="text-xs text-base-content/60">
+              Quick check of the content only. Run the full check to include the spam-filter score and the AI content
+              review.
+            </p>
+            } @else if (preflightView().aiStatus === 'unavailable') {
+            <p class="text-xs text-base-content/60">
+              The AI content review couldn't run this time — the score reflects the other checks.
+            </p>
+            } @else if (preflightView().aiStatus === 'not_required') {
+            <p class="text-xs text-base-content/60">
+              The AI content review wasn't needed for this check — the score reflects the standard checks.
+            </p>
+            } @if (preflightView().findings.length === 0) {
+            <p class="text-sm text-base-content/70">
+              No issues found. Inbox placement still depends mostly on your sender reputation and how recipients engage,
+              so keep sending to people who asked to hear from you.
+            </p>
+            } @else {
+            <ul class="divide-y divide-base-200">
+              @for (f of preflightView().findings; track f.code) {
+              <li class="flex items-start gap-3 py-2.5">
+                <span [class]="preflightSeverityClass(f.severity)">
+                  <pc-icon [name]="preflightSeverityIcon(f.severity)" [size]="5"></pc-icon>
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block text-sm font-medium">{{ f.message }}</span>
+                  <span class="block text-xs text-base-content/60">{{ f.hint }}</span>
+                </span>
+                @if (f.deduction > 0) {
+                <span class="shrink-0 text-xs tabular-nums text-base-content/50">−{{ f.deduction }} pts</span>
+                }
+              </li>
+              }
+            </ul>
+            }
+          </div>
+        </div>
+      </section>
+      } }
+    </form>
+    }
+  </main>
+
+  <!-- Persistent footer: Back/Cancel · Save draft · [spacer] · Next / Send to N people -->
+  @if (!isEditing || editLoaded()) {
+  <footer class="hidden items-center gap-3 border-t border-base-200 bg-base-100 px-6 py-4 sm:flex">
+    <button type="button" class="btn btn-ghost btn-sm" (click)="handleBack()">
+      <pc-icon name="chevron-left" [size]="4"></pc-icon>
+      Back
+    </button>
+    <button type="button" class="btn btn-ghost btn-sm" [disabled]="saving()" (click)="saveDraft()">
+      @if (saving()) { <span class="loading loading-spinner loading-xs"></span> } Save draft
+    </button>
+    <div class="flex-1"></div>
+    @if (!isLastStep()) {
+    <button type="button" class="btn btn-primary btn-sm" (click)="handleNext()">
+      Next
+      <pc-icon name="chevron-right" [size]="4"></pc-icon>
+    </button>
+    } @else {
+    <span class="tooltip-left" [class.tooltip]="!!sendBlockedTooltip()" [attr.data-tip]="sendBlockedTooltip()">
+      <button
+        type="button"
+        class="btn btn-primary btn-sm"
+        [disabled]="saving() || !!sendBlockedTooltip()"
+        (click)="sendRegular()"
+      >
+        @if (saving()) { <span class="loading loading-spinner loading-xs"></span> } @else {
+        <pc-icon name="paper-airplane" [size]="4"></pc-icon> } @if (regularPayload().timingMode === 'schedule') {
+        Schedule for {{ peopleLabel(estimatedAudienceCount()) }} } @else { Send to {{
+        peopleLabel(estimatedAudienceCount()) }} }
+      </button>
+    </span>
+    }
+  </footer>
+  }
+
+  <!-- Save as template: the house modal with the one field the action needs -->
+  <pc-modal-shell title="Save as template" icon="bookmark" [open]="saveTemplateOpen()" (closed)="closeSaveTemplate()">
+    <p class="mb-3 text-xs text-base-content/60">
+      Saves the current design to <span class="font-medium">Your templates</span> so any newsletter can start from it.
+    </p>
+    <label class="mb-1 block text-xs font-medium" for="templateName">Template name</label>
+    <input
+      id="templateName"
+      class="input input-bordered input-sm w-full"
+      placeholder="For example, Monthly update"
+      [formField]="templateNameForm.name"
+    />
+    @if (templateNameInvalid()) {
+    <p class="mt-1 text-xs text-error">Give the template a name so you can find it later.</p>
+    }
+    <div pc-modal-footer>
+      <button type="button" class="btn btn-sm btn-outline btn-accent" (click)="closeSaveTemplate()">Cancel</button>
+      <button type="button" class="btn btn-sm btn-primary" [disabled]="savingTemplate()" (click)="saveAsTemplate()">
+        @if (savingTemplate()) { <span class="loading loading-spinner loading-xs"></span> } Save template
+      </button>
+    </div>
+  </pc-modal-shell>
+</div>
+```
+
+## File: apps/frontend/src/app/experiences/settings/settings-page.ts
+```typescript
+import { DatePipe } from '@angular/common';
+import { Component, OnInit, WritableSignal, computed, effect, inject, input, signal } from '@angular/core';
+import { FormField, email, form, pattern, validate } from '@angular/forms/signals';
+import { ActivatedRoute, Router } from '@angular/router';
+import { Icon } from '@icons/icon';
+import { PcIconNameType } from '@icons/icons.index';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+
+import { IAuthUserDetail, SettingsEntryType, UpdateAuthUserType } from '../../../../../../libs/common/src';
+import { AuthService } from '../../auth/auth-service';
+import { UserService } from '../../services/user.service';
+import { HouseholdsService } from '../households/services/households-service';
+import { AccountSettingsComponent } from './account/account-settings';
+import { ApiKeysSettingsComponent } from './api-keys/api-keys-settings';
+import { BillingSettingsComponent } from './billing/billing-settings';
+import { CampaignsSettingsComponent } from './campaigns/campaigns-settings';
+import { DomainSettingsComponent } from './domains/domains-settings';
+import { DonationsSettingsComponent } from './donations/donations-settings';
+import { GoogleSyncSettings } from './google-sync/google-sync-settings';
+import { MsSyncSettings } from './ms-sync/ms-sync-settings';
+import { PasskeySettingsComponent } from './security/passkey-settings';
+import { SettingsService, TenantSettingsSnapshot } from './services/settings-service';
+import {
+  PERSONAL_NAV_GROUPS,
+  SETTINGS_SECTIONS,
+  SettingsFieldConfig,
+  SettingsNavGroup,
+  SettingsSectionConfig,
+  WORKSPACE_NAV_GROUPS,
+} from './settings.config';
+import { StorageSettingsComponent } from './storage/storage-settings';
+
+interface SectionFieldState {
+  config: SettingsFieldConfig;
+  controlName: string;
+}
+
+/** Mirror of settings.getPhoneVerificationStatus — phones arrive masked from the backend. */
+interface PhoneVerificationStatus {
+  verified: boolean;
+  verifiedAt: Date | string | null;
+  phone: string | null;
+  pendingPhone: string | null;
+  required: boolean;
+}
+
+interface SectionState {
+  config: SettingsSectionConfig;
+  fields: SectionFieldState[];
+  form: any;
+  payload: WritableSignal<Record<string, any>>;
+}
+
+/** Self-saving sections rendered outside the config-driven form flow. One entry
+ *  drives both the sidebar nav button and the content shell, so the two can
+ *  never drift apart again. */
+interface CustomSectionConfig {
+  description: string;
+  icon: PcIconNameType;
+  id: string;
+  mode: 'settings' | 'workspace';
+  title: string;
+}
+
+/** One sidebar nav entry, merged from either section source. `section` is set
+ *  only for form-driven sections and drives the unsaved-changes dot. */
+interface NavItem {
+  icon: PcIconNameType;
+  id: string;
+  section?: SectionState;
+  title: string;
+}
+
+interface NavGroup {
+  items: NavItem[];
+  label: string | null;
+}
+
+const CUSTOM_SECTIONS: CustomSectionConfig[] = [
+  {
+    id: 'campaigns',
+    mode: 'workspace',
+    icon: 'square-3-stack-3d',
+    title: 'Campaigns',
+    description:
+      'Separate working contexts (your permanent office plus election campaigns) that share one contact list. Admins manage them and assign users to them.',
+  },
+  {
+    id: 'passkeys',
+    mode: 'settings',
+    icon: 'lock-closed',
+    title: 'Passkeys',
+    description: 'Manage your passkeys for fast, phishing-resistant sign-in using your device biometrics or PIN.',
+  },
+  {
+    id: 'email-sync',
+    mode: 'workspace',
+    icon: 'envelope',
+    title: 'Email sync',
+    description:
+      'Connect your email provider to automatically sync incoming and outgoing emails into your pplcrm inbox.',
+  },
+  {
+    id: 'domains',
+    mode: 'workspace',
+    icon: 'globe-americas',
+    title: 'Domain verification',
+    description: 'Configure DNS verification records (SPF, DKIM, DMARC) so you can send emails from your own domain.',
+  },
+  {
+    id: 'donations',
+    mode: 'workspace',
+    icon: 'currency-dollar',
+    title: 'Donations',
+    description:
+      'Configure donation limit, residency restrictions, progressive tax credit tiers, and connect your Stripe account.',
+  },
+  {
+    id: 'storage',
+    mode: 'workspace',
+    icon: 'archive-box',
+    title: 'Storage',
+    description: 'Plan quota, usage, and the files taking up the most space.',
+  },
+  {
+    id: 'billing',
+    mode: 'workspace',
+    icon: 'credit-card',
+    title: 'Billing',
+    description: 'Manage your subscription plans, view invoice details, and update payment methods.',
+  },
+  {
+    id: 'account',
+    mode: 'workspace',
+    icon: 'user-circle',
+    title: 'Account',
+    description: 'Manage your organization account: pause billing or permanently delete all data.',
+  },
+  {
+    id: 'api-keys',
+    mode: 'workspace',
+    icon: 'lock-closed',
+    title: 'API keys',
+    description: 'One key for server-side integrations: submit forms, RSVPs, and signups, or connect Zapier.',
+  },
+];
+
+@Component({
+  selector: 'pc-settings-page',
+  imports: [
+    FormField,
+    Icon,
+    MsSyncSettings,
+    GoogleSyncSettings,
+    BillingSettingsComponent,
+    CampaignsSettingsComponent,
+    DomainSettingsComponent,
+    DonationsSettingsComponent,
+    AccountSettingsComponent,
+    ApiKeysSettingsComponent,
+    PasskeySettingsComponent,
+    StorageSettingsComponent,
+    DatePipe,
+    EmptyState,
+  ],
+  templateUrl: './settings-page.html',
+})
+export class SettingsPage implements OnInit {
+  private readonly alerts = inject(AlertService);
+  private readonly auth = inject(AuthService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+  private readonly userService = inject(UserService);
+
+  protected readonly currentMode: 'settings' | 'workspace';
+  protected readonly currentUserDetail = signal<IAuthUserDetail | null>(null);
+  private readonly userSignal = this.auth.getUserSignal();
+  /** Sender verification, domain verification, and mailbox sync are blocked server-side
+   *  during the demo; the inline banners explain it (§2 explained-disabled). Ordinary
+   *  workspace settings save normally in demo mode. */
+  protected readonly isDemo = computed(() => !!this.userSignal()?.tenant_demo_mode_at);
+  protected readonly emailCooldownSeconds = signal<Record<string, number>>({});
+  protected readonly lastFingerprintRecomputeTime = signal<Date | null>(null);
+  protected readonly fingerprintRecomputeNextAvailable = computed(() => {
+    const lastTime = this.lastFingerprintRecomputeTime();
+    if (!lastTime) return null;
+    const nextAvailable = new Date(lastTime.getTime());
+    nextAvailable.setMonth(nextAvailable.getMonth() + 1);
+    return nextAvailable;
+  });
+  protected readonly hasLoaded = signal(false);
+  protected readonly householdsSvc = inject(HouseholdsService);
+  protected readonly isFingerprintRecomputeCooldown = computed(() => {
+    const nextAvailable = this.fingerprintRecomputeNextAvailable();
+    if (!nextAvailable) return false;
+    return Date.now() < nextAvailable.getTime();
+  });
+  protected readonly lastRequestedEmail = signal<string | null>(null);
+  protected readonly lastVerificationTimes = signal<Record<string, number>>({});
+  protected readonly recomputingFingerprints = signal(false);
+  protected readonly savingSectionId = signal<string | null>(null);
+  protected readonly sectionStates: SectionState[];
+  protected readonly sections = SETTINGS_SECTIONS;
+  protected readonly selectedSectionId = signal<string>('');
+  // The config-driven section currently shown, so the header Save/Cancel act on it.
+  // Custom self-saving sections (billing, domains, email-sync, etc.) aren't in sectionStates → returns null.
+  protected readonly headerSection = computed<SectionState | null>(() => {
+    const id = this.selectedSectionId();
+    return this.visibleSections.find((s) => s.config.id === id) ?? null;
+  });
+  protected readonly senderEmailInput = signal('');
+  // Sending-phone verification (anti-abuse gate for Free-plan newsletter sends).
+  protected readonly phoneStatus = signal<PhoneVerificationStatus | null>(null);
+  protected readonly phoneInput = signal('');
+  protected readonly phoneCodeInput = signal('');
+  protected readonly phoneBusy = signal(false);
+  protected readonly phoneCodeSentTo = signal<string | null>(null);
+  protected readonly settingsSvc = inject(SettingsService);
+  private readonly snapshotSignal = this.settingsSvc.snapshotSignal;
+  protected readonly verifiedEmailsList = computed<string[]>(() => {
+    return this.settingsSvc.getValue<string[]>('communications.verified_emails') || [];
+  });
+  protected readonly verifyingEmail = signal<string | null>(null);
+
+  protected trackField = (_: number, field: SectionFieldState) => field.controlName;
+  protected trackSection = (_: number, section: SectionState) => section.config.id;
+
+  /** The custom (self-saving) sections visible in the current mode. */
+  protected get visibleCustomSections(): CustomSectionConfig[] {
+    return CUSTOM_SECTIONS.filter((s) => s.mode === this.currentMode);
+  }
+
+  /** The sidebar nav: both section sources merged in the order declared by the
+   *  mode's nav groups. Sections missing from the declaration are appended to
+   *  the last group so a new section can never silently vanish from the nav. */
+  protected get navGroups(): NavGroup[] {
+    const byId = new Map<string, NavItem>();
+    for (const s of this.visibleSections) {
+      byId.set(s.config.id, { id: s.config.id, title: s.config.title, icon: s.config.icon, section: s });
+    }
+    for (const c of this.visibleCustomSections) {
+      byId.set(c.id, { id: c.id, title: c.title, icon: c.icon });
+    }
+    const declared: SettingsNavGroup[] = this.currentMode === 'workspace' ? WORKSPACE_NAV_GROUPS : PERSONAL_NAV_GROUPS;
+    const groups: NavGroup[] = declared.map((g) => ({
+      label: g.label,
+      items: g.ids.map((id) => byId.get(id)).filter((item): item is NavItem => item != null),
+    }));
+    const declaredIds = new Set(declared.flatMap((g) => g.ids));
+    const leftovers = [...byId.values()].filter((item) => !declaredIds.has(item.id));
+    const lastGroup = groups.at(-1);
+    if (leftovers.length > 0 && lastGroup) {
+      lastGroup.items.push(...leftovers);
+    }
+    return groups.filter((g) => g.items.length > 0);
+  }
+
+  /** Custom sections whose actions the demo guard blocks; they render an explaining banner
+   *  and their controls are disabled instead of failing server-side. */
+  protected isDemoLocked(sectionId: string): boolean {
+    return this.isDemo() && (sectionId === 'email-sync' || sectionId === 'domains' || sectionId === 'donations');
+  }
+
+  /** Nav-button classes shared by config-driven and custom section buttons. */
+  protected navClass(id: string): string {
+    return this.isSelected(id) ? 'bg-primary/10 text-primary' : 'text-base-content/70 hover:bg-base-200/60';
+  }
+
+  public readonly section = input<string>();
+
+  constructor() {
+    this.currentMode = (this.route.snapshot.data['mode'] as 'settings' | 'workspace') || 'settings';
+    this.sectionStates = this.sections.map((section) => this.buildSectionState(section));
+
+    // Navbar crumb ("Settings"/"Workspace") comes from the route's `data.breadcrumb`
+    // via BreadcrumbDefaultsService — no manual publish needed here anymore.
+
+    effect(() => {
+      const s = this.section();
+      if (s) {
+        this.selectedSectionId.set(s);
+      } else {
+        if (this.currentMode === 'settings') {
+          this.selectedSectionId.set('notifications');
+        } else if (this.currentMode === 'workspace') {
+          this.selectedSectionId.set('organization');
+        }
+      }
+    });
+
+    effect(() => {
+      const snapshot = this.snapshotSignal();
+      this.applySnapshot(snapshot, false);
+    });
+
+    effect(() => {
+      const snapshot = this.snapshotSignal();
+      const verifiedEmails = (snapshot['communications.verified_emails'] as string[]) || [];
+
+      const commsSection = this.sections.find((s) => s.id === 'communications');
+      if (commsSection) {
+        const fromEmailField = commsSection.fields.find((f) => f.key === 'communications.default_from_email');
+        const replyToField = commsSection.fields.find((f) => f.key === 'communications.reply_to');
+
+        const options = [
+          { label: 'Select a verified email', value: '' },
+          ...verifiedEmails.map((email) => ({ label: email, value: email })),
+        ];
+
+        if (fromEmailField) {
+          fromEmailField.options = options;
+        }
+        if (replyToField) {
+          replyToField.options = options;
+        }
+      }
+    });
+  }
+
+  protected get visibleSections(): SectionState[] {
+    if (this.currentMode === 'settings') {
+      return this.sectionStates.filter((s) => s.config.id === 'notifications' || s.config.id === 'appearance');
+    }
+    if (this.currentMode === 'workspace') {
+      return this.sectionStates.filter((s) => s.config.id !== 'notifications' && s.config.id !== 'appearance');
+    }
+    return [];
+  }
+
+  public ngOnInit(): void {
+    void this.loadOnInit();
+  }
+
+  private async loadOnInit(): Promise<void> {
+    await this.settingsSvc.load();
+    this.hasLoaded.set(true);
+    this.applySnapshot(this.settingsSvc.snapshot(), true);
+    await this.loadUserPrefs();
+    await this.loadLastFingerprintRecomputeTime();
+    if (this.currentMode === 'workspace') {
+      await this.loadPhoneStatus();
+    }
+  }
+
+  private async loadPhoneStatus(): Promise<void> {
+    try {
+      this.phoneStatus.set(await this.settingsSvc.getPhoneVerificationStatus());
+    } catch {
+      // Non-blocking: the communications section still renders without the phone card state.
+    }
+  }
+
+  protected async requestPhoneCode(): Promise<void> {
+    const phone = this.phoneInput().trim();
+    if (!phone) return;
+    this.phoneBusy.set(true);
+    try {
+      const result = await this.settingsSvc.requestPhoneVerification(phone);
+      this.phoneCodeSentTo.set(result.phone);
+      this.phoneCodeInput.set('');
+      this.alerts.showSuccess(`We texted a verification code to ${result.phone}.`);
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not send the code.');
+    } finally {
+      this.phoneBusy.set(false);
+    }
+  }
+
+  protected async confirmPhoneCode(): Promise<void> {
+    const code = this.phoneCodeInput().trim();
+    if (!code) return;
+    this.phoneBusy.set(true);
+    try {
+      const result = await this.settingsSvc.confirmPhoneVerification(code);
+      this.alerts.showSuccess(`Phone ${result.phone} is verified — you're clear to send newsletters.`);
+      this.phoneCodeSentTo.set(null);
+      this.phoneInput.set('');
+      this.phoneCodeInput.set('');
+      await this.loadPhoneStatus();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not verify the code.');
+    } finally {
+      this.phoneBusy.set(false);
+    }
+  }
+
+  // Working-days chips, rendered Mon→Sun; stored canonically in this order as a comma-joined string.
+  protected readonly dayChips: ReadonlyArray<{ value: number; label: string }> = [
+    { value: 1, label: 'Mon' },
+    { value: 2, label: 'Tue' },
+    { value: 3, label: 'Wed' },
+    { value: 4, label: 'Thu' },
+    { value: 5, label: 'Fri' },
+    { value: 6, label: 'Sat' },
+    { value: 0, label: 'Sun' },
+  ];
+
+  private parseDays(raw: unknown): Set<number> {
+    return new Set(
+      String(raw ?? '')
+        .split(',')
+        .map((s) => Number(s.trim()))
+        .filter((n) => !Number.isNaN(n)),
+    );
+  }
+
+  protected isDaySelected(section: SectionState, controlName: string, day: number): boolean {
+    return this.parseDays(section.payload()[controlName]).has(day);
+  }
+
+  protected toggleDay(section: SectionState, controlName: string, day: number): void {
+    const days = this.parseDays(section.payload()[controlName]);
+    if (days.has(day)) days.delete(day);
+    else days.add(day);
+    const ordered = this.dayChips
+      .map((c) => c.value)
+      .filter((d) => days.has(d))
+      .join(',');
+    section.payload.update((p) => ({ ...p, [controlName]: ordered }));
+    section.form[controlName]().markAsDirty();
+  }
+
+  protected getNotificationGroups(section: SectionState) {
+    const groups: { label: string; helper: string; emailField: any; inAppField: any }[] = [];
+    const fields = section.fields;
+
+    for (const field of fields) {
+      if (field.config.key.endsWith('_in_app')) continue;
+
+      const inAppControlName = `${field.controlName}_in_app`;
+      const inAppField = fields.find((f) => f.controlName === inAppControlName);
+
+      groups.push({
+        label: field.config.label,
+        helper: field.config.helper || '',
+        emailField: field,
+        inAppField: inAppField,
+      });
+    }
+    return groups;
+  }
+
+  protected isEmailVerified(email: string | null | undefined): boolean {
+    if (!email) return false;
+    const verified = this.settingsSvc.getValue<string[]>('communications.verified_emails') || [];
+    return verified.includes(email.toLowerCase().trim());
+  }
+
+  protected isSaving(section: SectionState) {
+    return this.savingSectionId() === section.config.id;
+  }
+
+  protected isSectionDirty(section: SectionState) {
+    return section.form().dirty();
+  }
+
+  protected isSectionInvalid(section: SectionState) {
+    return section.form().invalid();
+  }
+
+  protected isSelected(sectionId: string) {
+    return this.selectedSectionId() === sectionId;
+  }
+
+  protected isVerifyCooldown(email: string | null | undefined): boolean {
+    if (!email) return false;
+    const lastTime = this.lastVerificationTimes()[email.toLowerCase().trim()];
+    if (!lastTime) return false;
+    return Date.now() - lastTime < 60000;
+  }
+
+  protected async loadLastFingerprintRecomputeTime() {
+    try {
+      const res = await this.householdsSvc.getLastFingerprintRecomputation();
+      if (res && res.lastRunAt) {
+        this.lastFingerprintRecomputeTime.set(new Date(res.lastRunAt));
+      } else {
+        this.lastFingerprintRecomputeTime.set(null);
+      }
+    } catch (err) {
+      console.error('Failed to load last fingerprint recompute time', err);
+    }
+  }
+
+  protected async loadUserPrefs() {
+    try {
+      const currentUser = await this.auth.getCurrentUser();
+      if (currentUser) {
+        const user = await this.userService.getProfileById(currentUser.id);
+        this.currentUserDetail.set(user);
+        const prefs = user.notification_preferences || {
+          mention_in_comment: true,
+          mention_in_comment_in_app: true,
+          task_assigned: true,
+          task_assigned_in_app: true,
+          task_due: true,
+          task_due_in_app: true,
+          person_assigned: true,
+          person_assigned_in_app: true,
+          email_assigned: true,
+          email_assigned_in_app: true,
+          export_ready: true,
+          export_ready_in_app: true,
+          import_summary: true,
+          import_summary_in_app: true,
+        };
+        const notifState = this.sectionStates.find((s) => s.config.id === 'notifications');
+        if (notifState) {
+          notifState.payload.update((p) => ({
+            ...p,
+            notifications_mention_in_comment: prefs.mention_in_comment ?? true,
+            notifications_mention_in_comment_in_app: prefs.mention_in_comment_in_app ?? true,
+            notifications_task_assigned: prefs.task_assigned ?? true,
+            notifications_task_assigned_in_app: prefs.task_assigned_in_app ?? true,
+            notifications_task_due: prefs.task_due ?? true,
+            notifications_task_due_in_app: prefs.task_due_in_app ?? true,
+            notifications_person_assigned: prefs.person_assigned ?? true,
+            notifications_person_assigned_in_app: prefs.person_assigned_in_app ?? true,
+            notifications_email_assigned: prefs.email_assigned ?? true,
+            notifications_email_assigned_in_app: prefs.email_assigned_in_app ?? true,
+            notifications_export_ready: prefs.export_ready ?? true,
+            notifications_export_ready_in_app: prefs.export_ready_in_app ?? true,
+            notifications_import_summary: prefs.import_summary ?? true,
+            notifications_import_summary_in_app: prefs.import_summary_in_app ?? true,
+          }));
+          notifState.form().reset();
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load user preferences in settings page', err);
+    }
+  }
+
+  protected async recomputeAddressFingerprints() {
+    if (this.isFingerprintRecomputeCooldown()) {
+      this.alerts.showError('Fingerprints can only be recomputed once a month.');
+      return;
+    }
+
+    this.recomputingFingerprints.set(true);
+    try {
+      await this.householdsSvc.recomputeAddressFingerprints();
+      this.alerts.showSuccess('Background job queued to recompute address fingerprints.');
+      await this.loadLastFingerprintRecomputeTime();
+    } catch (err) {
+      this.alerts.showError(
+        err instanceof Error && err.message ? err.message : 'Failed to trigger address fingerprint recomputation.',
+      );
+    } finally {
+      this.recomputingFingerprints.set(false);
+    }
+  }
+
+  protected resetSection(section: SectionState) {
+    this.applySnapshot(this.settingsSvc.snapshot(), true, section);
+    if (section.config.id === 'notifications') {
+      void this.loadUserPrefs();
+    }
+  }
+
+  protected async saveSection(section: SectionState) {
+    if (!section.form().dirty()) return;
+
+    const entries: SettingsEntryType[] = [];
+    for (const field of section.fields) {
+      const fieldSignal = (section.form as any)[field.controlName]();
+      if (!fieldSignal.dirty()) continue;
+
+      // Skip user notification preferences from tenant settings upsert
+      if (section.config.id === 'notifications') {
+        continue;
+      }
+
+      const value = this.prepareOutgoingValue(field.config, fieldSignal.value());
+      entries.push({ key: field.config.key, value });
+    }
+
+    this.savingSectionId.set(section.config.id);
+    try {
+      if (entries.length > 0) {
+        const snapshot = await this.settingsSvc.upsert(entries);
+        this.applySnapshot(snapshot ?? this.settingsSvc.snapshot(), true, section);
+      }
+
+      if (section.config.id === 'notifications') {
+        const user = this.currentUserDetail();
+        if (user) {
+          const raw = section.payload();
+          const parseBool = (val: any) => val === true || val === 'true';
+          const payload: UpdateAuthUserType = {
+            notification_preferences: {
+              mention_in_comment: parseBool(raw['notifications_mention_in_comment']),
+              mention_in_comment_in_app: parseBool(raw['notifications_mention_in_comment_in_app']),
+              task_assigned: parseBool(raw['notifications_task_assigned']),
+              task_assigned_in_app: parseBool(raw['notifications_task_assigned_in_app']),
+              task_due: parseBool(raw['notifications_task_due']),
+              task_due_in_app: parseBool(raw['notifications_task_due_in_app']),
+              person_assigned: parseBool(raw['notifications_person_assigned']),
+              person_assigned_in_app: parseBool(raw['notifications_person_assigned_in_app']),
+              email_assigned: parseBool(raw['notifications_email_assigned']),
+              email_assigned_in_app: parseBool(raw['notifications_email_assigned_in_app']),
+              export_ready: parseBool(raw['notifications_export_ready']),
+              export_ready_in_app: parseBool(raw['notifications_export_ready_in_app']),
+              import_summary: parseBool(raw['notifications_import_summary']),
+              import_summary_in_app: parseBool(raw['notifications_import_summary_in_app']),
+            },
+          };
+          await this.userService.updateUserProfile(user.id, payload);
+          await this.loadUserPrefs();
+        }
+      }
+      this.alerts.showSuccess('Settings updated successfully');
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Failed to save settings';
+      this.alerts.showError(message);
+    } finally {
+      this.savingSectionId.set(null);
+    }
+  }
+
+  protected selectSection(sectionId: string) {
+    void this.router.navigate(['/', this.currentMode, sectionId]);
+  }
+
+  protected async verifySenderEmail(email: string | null | undefined) {
+    if (!email) return;
+    const normalized = email.toLowerCase().trim();
+
+    if (this.isVerifyCooldown(normalized)) {
+      this.alerts.showError('Please wait at least one minute before requesting verification again.');
+      return;
+    }
+
+    this.verifyingEmail.set(normalized);
+
+    try {
+      await this.settingsSvc.requestEmailVerification(normalized);
+      this.lastVerificationTimes.update((prev) => ({
+        ...prev,
+        [normalized]: Date.now(),
+      }));
+      this.startEmailCooldown(normalized);
+      this.lastRequestedEmail.set(normalized);
+      // Clear only after success — on failure the user keeps their input to retry.
+      this.senderEmailInput.set('');
+      this.alerts.showSuccess(
+        `Verification email sent to ${email}. Please check your inbox (and spam folder) and click the verification link.`,
+      );
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to send verification email.');
+    } finally {
+      this.verifyingEmail.set(null);
+    }
+  }
+
+  private applySnapshot(snapshot: TenantSettingsSnapshot, resetDirty: boolean, target?: SectionState) {
+    const sections = target ? [target] : this.sectionStates;
+
+    for (const state of sections) {
+      const nextPayload = { ...state.payload() };
+      let changed = false;
+
+      for (const field of state.fields) {
+        const fieldSignal = (state.form as any)[field.controlName]();
+        if (!resetDirty && fieldSignal.dirty()) continue;
+
+        // Skip user notification preferences from tenant settings snapshot update
+        if (state.config.id === 'notifications') {
+          continue;
+        }
+
+        const incoming = this.normalizeIncomingValue(field.config, snapshot[field.config.key]);
+        if (nextPayload[field.controlName] !== incoming) {
+          nextPayload[field.controlName] = incoming;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        state.payload.set(nextPayload);
+      }
+
+      if (resetDirty) {
+        state.form().reset();
+      }
+    }
+  }
+
+  private buildSectionState(section: SettingsSectionConfig): SectionState {
+    const initialPayload: Record<string, any> = {};
+    const fieldStates: SectionFieldState[] = [];
+
+    for (const field of section.fields) {
+      const controlName = this.controlNameFor(field.key);
+      initialPayload[controlName] = this.normalizeIncomingValue(
+        field,
+        this.settingsSvc.getValue(field.key, field.defaultValue),
+      );
+      fieldStates.push({ config: field, controlName });
+    }
+
+    const payload = signal(initialPayload);
+    const formSignal = form(payload, (p) => {
+      for (const field of section.fields) {
+        const controlName = this.controlNameFor(field.key);
+        if (field.type === 'email') {
+          email(p[controlName]);
+        }
+        if (field.type === 'url') {
+          pattern(p[controlName], /^https?:\/\//i);
+        }
+        if (field.key === 'communications.default_from_email' || field.key === 'communications.reply_to') {
+          validate(p[controlName], (ctx) => {
+            const val = ((ctx.value() as string) || '').toLowerCase().trim();
+            if (!val) return null;
+            const verified = this.settingsSvc.getValue<string[]>('communications.verified_emails') || [];
+            if (!verified.includes(val)) {
+              return { kind: 'not-verified', message: 'Email address must be verified.' };
+            }
+            return null;
+          });
+        }
+      }
+    });
+
+    return { config: section, payload, form: formSignal, fields: fieldStates };
+  }
+
+  private controlNameFor(key: string) {
+    return key.replace(/[^a-zA-Z0-9]+/g, '_');
+  }
+
+  private defaultForField(field: SettingsFieldConfig) {
+    switch (field.type) {
+      case 'toggle':
+        return false;
+      case 'number':
+        return null;
+      case 'select':
+        return field.options?.[0]?.value ?? '';
+      default:
+        return '';
+    }
+  }
+
+  private normalizeIncomingValue(field: SettingsFieldConfig, raw: unknown) {
+    const fallback = field.defaultValue ?? this.defaultForField(field);
+
+    switch (field.type) {
+      case 'toggle':
+        return Boolean(raw ?? fallback ?? false);
+      case 'number': {
+        if (raw === null || raw === undefined || raw === '') return fallback ?? null;
+        const numeric = typeof raw === 'number' ? raw : Number(raw);
+        return Number.isFinite(numeric) ? numeric : (fallback ?? null);
+      }
+      case 'select': {
+        const options = field.options ?? [];
+        const candidate = raw === undefined || raw === null ? fallback : String(raw);
+        const match = options.find((option) => option.value === candidate);
+        if (match) return match.value;
+        return (fallback ?? options[0]?.value ?? '') as string;
+      }
+      case 'date':
+        return typeof raw === 'string' && raw.length ? raw : ((fallback as string) ?? '');
+      case 'day-toggles':
+        // Stored/consumed by the backend as a comma-separated day-number string (e.g. "1,2,3,4,5").
+        return raw === undefined || raw === null ? ((fallback as string) ?? '') : String(raw);
+      case 'email':
+      case 'tel':
+      case 'password':
+      case 'url':
+      case 'text':
+        return raw === undefined || raw === null ? ((fallback as string) ?? '') : String(raw);
+      case 'textarea':
+        return raw === undefined || raw === null ? ((fallback as string) ?? '') : String(raw);
+      default:
+        return raw ?? fallback ?? '';
+    }
+  }
+
+  private prepareOutgoingValue(field: SettingsFieldConfig, value: unknown) {
+    switch (field.type) {
+      case 'toggle':
+        return Boolean(value);
+      case 'number': {
+        if (value === '' || value === null || value === undefined) return null;
+        const numeric = typeof value === 'number' ? value : Number(value);
+        return Number.isFinite(numeric) ? numeric : null;
+      }
+      case 'select': {
+        const candidate = value === null || value === undefined ? '' : String(value);
+        const options = field.options ?? [];
+        const match = options.find((option) => option.value === candidate);
+        return match ? match.value : this.defaultForField(field);
+      }
+      case 'date':
+        return typeof value === 'string' ? value : value ? String(value) : '';
+      case 'day-toggles':
+        return value === null || value === undefined ? '' : String(value);
+      case 'textarea':
+      case 'text':
+      case 'email':
+      case 'tel':
+      case 'password':
+      case 'url':
+        return value === null || value === undefined ? '' : String(value);
+      default:
+        return value ?? '';
+    }
+  }
+
+  private startEmailCooldown(email: string) {
+    this.emailCooldownSeconds.update((prev) => ({ ...prev, [email]: 60 }));
+    const interval = setInterval(() => {
+      const current = this.emailCooldownSeconds()[email] || 0;
+      if (current <= 1) {
+        clearInterval(interval);
+        this.emailCooldownSeconds.update((prev) => {
+          const next = { ...prev };
+          delete next[email];
+          return next;
+        });
+      } else {
+        this.emailCooldownSeconds.update((prev) => ({ ...prev, [email]: current - 1 }));
+      }
+    }, 1000);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+```
+
 ## File: apps/frontend/src/app/experiences/newsletters/ui/newsletter-add.ts
 ```typescript
 import {
@@ -83198,852 +84257,6 @@ interface RegularNewsletterPayload {
   timingMode: TimingMode;
   scheduledDate: string;
   scheduledTime: string;
-}
-```
-
-## File: apps/frontend/src/app/experiences/settings/settings-page.ts
-```typescript
-import { DatePipe } from '@angular/common';
-import { Component, OnInit, WritableSignal, computed, effect, inject, input, signal } from '@angular/core';
-import { FormField, email, form, pattern, validate } from '@angular/forms/signals';
-import { ActivatedRoute, Router } from '@angular/router';
-import { Icon } from '@icons/icon';
-import { PcIconNameType } from '@icons/icons.index';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
-
-import { IAuthUserDetail, SettingsEntryType, UpdateAuthUserType } from '../../../../../../libs/common/src';
-import { AuthService } from '../../auth/auth-service';
-import { UserService } from '../../services/user.service';
-import { HouseholdsService } from '../households/services/households-service';
-import { AccountSettingsComponent } from './account/account-settings';
-import { ApiKeysSettingsComponent } from './api-keys/api-keys-settings';
-import { BillingSettingsComponent } from './billing/billing-settings';
-import { CampaignsSettingsComponent } from './campaigns/campaigns-settings';
-import { DomainSettingsComponent } from './domains/domains-settings';
-import { DonationsSettingsComponent } from './donations/donations-settings';
-import { GoogleSyncSettings } from './google-sync/google-sync-settings';
-import { MsSyncSettings } from './ms-sync/ms-sync-settings';
-import { PasskeySettingsComponent } from './security/passkey-settings';
-import { SettingsService, TenantSettingsSnapshot } from './services/settings-service';
-import {
-  PERSONAL_NAV_GROUPS,
-  SETTINGS_SECTIONS,
-  SettingsFieldConfig,
-  SettingsNavGroup,
-  SettingsSectionConfig,
-  WORKSPACE_NAV_GROUPS,
-} from './settings.config';
-import { StorageSettingsComponent } from './storage/storage-settings';
-
-interface SectionFieldState {
-  config: SettingsFieldConfig;
-  controlName: string;
-}
-
-/** Mirror of settings.getPhoneVerificationStatus — phones arrive masked from the backend. */
-interface PhoneVerificationStatus {
-  verified: boolean;
-  verifiedAt: Date | string | null;
-  phone: string | null;
-  pendingPhone: string | null;
-  required: boolean;
-}
-
-interface SectionState {
-  config: SettingsSectionConfig;
-  fields: SectionFieldState[];
-  form: any;
-  payload: WritableSignal<Record<string, any>>;
-}
-
-/** Self-saving sections rendered outside the config-driven form flow. One entry
- *  drives both the sidebar nav button and the content shell, so the two can
- *  never drift apart again. */
-interface CustomSectionConfig {
-  description: string;
-  icon: PcIconNameType;
-  id: string;
-  mode: 'settings' | 'workspace';
-  title: string;
-}
-
-/** One sidebar nav entry, merged from either section source. `section` is set
- *  only for form-driven sections and drives the unsaved-changes dot. */
-interface NavItem {
-  icon: PcIconNameType;
-  id: string;
-  section?: SectionState;
-  title: string;
-}
-
-interface NavGroup {
-  items: NavItem[];
-  label: string | null;
-}
-
-const CUSTOM_SECTIONS: CustomSectionConfig[] = [
-  {
-    id: 'campaigns',
-    mode: 'workspace',
-    icon: 'square-3-stack-3d',
-    title: 'Campaigns',
-    description:
-      'Separate working contexts (your permanent office plus election campaigns) that share one contact list. Admins manage them and assign users to them.',
-  },
-  {
-    id: 'passkeys',
-    mode: 'settings',
-    icon: 'lock-closed',
-    title: 'Passkeys',
-    description: 'Manage your passkeys for fast, phishing-resistant sign-in using your device biometrics or PIN.',
-  },
-  {
-    id: 'email-sync',
-    mode: 'workspace',
-    icon: 'envelope',
-    title: 'Email sync',
-    description:
-      'Connect your email provider to automatically sync incoming and outgoing emails into your pplcrm inbox.',
-  },
-  {
-    id: 'domains',
-    mode: 'workspace',
-    icon: 'globe-americas',
-    title: 'Domain verification',
-    description: 'Configure DNS verification records (SPF, DKIM, DMARC) so you can send emails from your own domain.',
-  },
-  {
-    id: 'donations',
-    mode: 'workspace',
-    icon: 'currency-dollar',
-    title: 'Donations',
-    description:
-      'Configure donation limit, residency restrictions, progressive tax credit tiers, and connect your Stripe account.',
-  },
-  {
-    id: 'storage',
-    mode: 'workspace',
-    icon: 'archive-box',
-    title: 'Storage',
-    description: 'Plan quota, usage, and the files taking up the most space.',
-  },
-  {
-    id: 'billing',
-    mode: 'workspace',
-    icon: 'credit-card',
-    title: 'Billing',
-    description: 'Manage your subscription plans, view invoice details, and update payment methods.',
-  },
-  {
-    id: 'account',
-    mode: 'workspace',
-    icon: 'user-circle',
-    title: 'Account',
-    description: 'Manage your organization account: pause billing or permanently delete all data.',
-  },
-  {
-    id: 'api-keys',
-    mode: 'workspace',
-    icon: 'lock-closed',
-    title: 'API keys',
-    description: 'One key for server-side integrations: submit forms, RSVPs, and signups, or connect Zapier.',
-  },
-];
-
-@Component({
-  selector: 'pc-settings-page',
-  imports: [
-    FormField,
-    Icon,
-    MsSyncSettings,
-    GoogleSyncSettings,
-    BillingSettingsComponent,
-    CampaignsSettingsComponent,
-    DomainSettingsComponent,
-    DonationsSettingsComponent,
-    AccountSettingsComponent,
-    ApiKeysSettingsComponent,
-    PasskeySettingsComponent,
-    StorageSettingsComponent,
-    DatePipe,
-    EmptyState,
-  ],
-  templateUrl: './settings-page.html',
-})
-export class SettingsPage implements OnInit {
-  private readonly alerts = inject(AlertService);
-  private readonly auth = inject(AuthService);
-  private readonly route = inject(ActivatedRoute);
-  private readonly router = inject(Router);
-  private readonly userService = inject(UserService);
-
-  protected readonly currentMode: 'settings' | 'workspace';
-  protected readonly currentUserDetail = signal<IAuthUserDetail | null>(null);
-  private readonly userSignal = this.auth.getUserSignal();
-  /** Sender verification, domain verification, and mailbox sync are blocked server-side
-   *  during the demo; the inline banners explain it (§2 explained-disabled). Ordinary
-   *  workspace settings save normally in demo mode. */
-  protected readonly isDemo = computed(() => !!this.userSignal()?.tenant_demo_mode_at);
-  protected readonly emailCooldownSeconds = signal<Record<string, number>>({});
-  protected readonly lastFingerprintRecomputeTime = signal<Date | null>(null);
-  protected readonly fingerprintRecomputeNextAvailable = computed(() => {
-    const lastTime = this.lastFingerprintRecomputeTime();
-    if (!lastTime) return null;
-    const nextAvailable = new Date(lastTime.getTime());
-    nextAvailable.setMonth(nextAvailable.getMonth() + 1);
-    return nextAvailable;
-  });
-  protected readonly hasLoaded = signal(false);
-  protected readonly householdsSvc = inject(HouseholdsService);
-  protected readonly isFingerprintRecomputeCooldown = computed(() => {
-    const nextAvailable = this.fingerprintRecomputeNextAvailable();
-    if (!nextAvailable) return false;
-    return Date.now() < nextAvailable.getTime();
-  });
-  protected readonly lastRequestedEmail = signal<string | null>(null);
-  protected readonly lastVerificationTimes = signal<Record<string, number>>({});
-  protected readonly recomputingFingerprints = signal(false);
-  protected readonly savingSectionId = signal<string | null>(null);
-  protected readonly sectionStates: SectionState[];
-  protected readonly sections = SETTINGS_SECTIONS;
-  protected readonly selectedSectionId = signal<string>('');
-  // The config-driven section currently shown, so the header Save/Cancel act on it.
-  // Custom self-saving sections (billing, domains, email-sync, etc.) aren't in sectionStates → returns null.
-  protected readonly headerSection = computed<SectionState | null>(() => {
-    const id = this.selectedSectionId();
-    return this.visibleSections.find((s) => s.config.id === id) ?? null;
-  });
-  protected readonly senderEmailInput = signal('');
-  // Sending-phone verification (anti-abuse gate for Free-plan newsletter sends).
-  protected readonly phoneStatus = signal<PhoneVerificationStatus | null>(null);
-  protected readonly phoneInput = signal('');
-  protected readonly phoneCodeInput = signal('');
-  protected readonly phoneBusy = signal(false);
-  protected readonly phoneCodeSentTo = signal<string | null>(null);
-  protected readonly settingsSvc = inject(SettingsService);
-  private readonly snapshotSignal = this.settingsSvc.snapshotSignal;
-  protected readonly verifiedEmailsList = computed<string[]>(() => {
-    return this.settingsSvc.getValue<string[]>('communications.verified_emails') || [];
-  });
-  protected readonly verifyingEmail = signal<string | null>(null);
-
-  protected trackField = (_: number, field: SectionFieldState) => field.controlName;
-  protected trackSection = (_: number, section: SectionState) => section.config.id;
-
-  /** The custom (self-saving) sections visible in the current mode. */
-  protected get visibleCustomSections(): CustomSectionConfig[] {
-    return CUSTOM_SECTIONS.filter((s) => s.mode === this.currentMode);
-  }
-
-  /** The sidebar nav: both section sources merged in the order declared by the
-   *  mode's nav groups. Sections missing from the declaration are appended to
-   *  the last group so a new section can never silently vanish from the nav. */
-  protected get navGroups(): NavGroup[] {
-    const byId = new Map<string, NavItem>();
-    for (const s of this.visibleSections) {
-      byId.set(s.config.id, { id: s.config.id, title: s.config.title, icon: s.config.icon, section: s });
-    }
-    for (const c of this.visibleCustomSections) {
-      byId.set(c.id, { id: c.id, title: c.title, icon: c.icon });
-    }
-    const declared: SettingsNavGroup[] = this.currentMode === 'workspace' ? WORKSPACE_NAV_GROUPS : PERSONAL_NAV_GROUPS;
-    const groups: NavGroup[] = declared.map((g) => ({
-      label: g.label,
-      items: g.ids.map((id) => byId.get(id)).filter((item): item is NavItem => item != null),
-    }));
-    const declaredIds = new Set(declared.flatMap((g) => g.ids));
-    const leftovers = [...byId.values()].filter((item) => !declaredIds.has(item.id));
-    const lastGroup = groups.at(-1);
-    if (leftovers.length > 0 && lastGroup) {
-      lastGroup.items.push(...leftovers);
-    }
-    return groups.filter((g) => g.items.length > 0);
-  }
-
-  /** Custom sections whose actions the demo guard blocks; they render an explaining banner
-   *  and their controls are disabled instead of failing server-side. */
-  protected isDemoLocked(sectionId: string): boolean {
-    return this.isDemo() && (sectionId === 'email-sync' || sectionId === 'domains' || sectionId === 'donations');
-  }
-
-  /** Nav-button classes shared by config-driven and custom section buttons. */
-  protected navClass(id: string): string {
-    return this.isSelected(id) ? 'bg-primary/10 text-primary' : 'text-base-content/70 hover:bg-base-200/60';
-  }
-
-  public readonly section = input<string>();
-
-  constructor() {
-    this.currentMode = (this.route.snapshot.data['mode'] as 'settings' | 'workspace') || 'settings';
-    this.sectionStates = this.sections.map((section) => this.buildSectionState(section));
-
-    // Navbar crumb ("Settings"/"Workspace") comes from the route's `data.breadcrumb`
-    // via BreadcrumbDefaultsService — no manual publish needed here anymore.
-
-    effect(() => {
-      const s = this.section();
-      if (s) {
-        this.selectedSectionId.set(s);
-      } else {
-        if (this.currentMode === 'settings') {
-          this.selectedSectionId.set('notifications');
-        } else if (this.currentMode === 'workspace') {
-          this.selectedSectionId.set('organization');
-        }
-      }
-    });
-
-    effect(() => {
-      const snapshot = this.snapshotSignal();
-      this.applySnapshot(snapshot, false);
-    });
-
-    effect(() => {
-      const snapshot = this.snapshotSignal();
-      const verifiedEmails = (snapshot['communications.verified_emails'] as string[]) || [];
-
-      const commsSection = this.sections.find((s) => s.id === 'communications');
-      if (commsSection) {
-        const fromEmailField = commsSection.fields.find((f) => f.key === 'communications.default_from_email');
-        const replyToField = commsSection.fields.find((f) => f.key === 'communications.reply_to');
-
-        const options = [
-          { label: 'Select a verified email', value: '' },
-          ...verifiedEmails.map((email) => ({ label: email, value: email })),
-        ];
-
-        if (fromEmailField) {
-          fromEmailField.options = options;
-        }
-        if (replyToField) {
-          replyToField.options = options;
-        }
-      }
-    });
-  }
-
-  protected get visibleSections(): SectionState[] {
-    if (this.currentMode === 'settings') {
-      return this.sectionStates.filter((s) => s.config.id === 'notifications' || s.config.id === 'appearance');
-    }
-    if (this.currentMode === 'workspace') {
-      return this.sectionStates.filter((s) => s.config.id !== 'notifications' && s.config.id !== 'appearance');
-    }
-    return [];
-  }
-
-  public ngOnInit(): void {
-    void this.loadOnInit();
-  }
-
-  private async loadOnInit(): Promise<void> {
-    await this.settingsSvc.load();
-    this.hasLoaded.set(true);
-    this.applySnapshot(this.settingsSvc.snapshot(), true);
-    await this.loadUserPrefs();
-    await this.loadLastFingerprintRecomputeTime();
-    if (this.currentMode === 'workspace') {
-      await this.loadPhoneStatus();
-    }
-  }
-
-  private async loadPhoneStatus(): Promise<void> {
-    try {
-      this.phoneStatus.set(await this.settingsSvc.getPhoneVerificationStatus());
-    } catch {
-      // Non-blocking: the communications section still renders without the phone card state.
-    }
-  }
-
-  protected async requestPhoneCode(): Promise<void> {
-    const phone = this.phoneInput().trim();
-    if (!phone) return;
-    this.phoneBusy.set(true);
-    try {
-      const result = await this.settingsSvc.requestPhoneVerification(phone);
-      this.phoneCodeSentTo.set(result.phone);
-      this.phoneCodeInput.set('');
-      this.alerts.showSuccess(`We texted a verification code to ${result.phone}.`);
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not send the code.');
-    } finally {
-      this.phoneBusy.set(false);
-    }
-  }
-
-  protected async confirmPhoneCode(): Promise<void> {
-    const code = this.phoneCodeInput().trim();
-    if (!code) return;
-    this.phoneBusy.set(true);
-    try {
-      const result = await this.settingsSvc.confirmPhoneVerification(code);
-      this.alerts.showSuccess(`Phone ${result.phone} is verified — you're clear to send newsletters.`);
-      this.phoneCodeSentTo.set(null);
-      this.phoneInput.set('');
-      this.phoneCodeInput.set('');
-      await this.loadPhoneStatus();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not verify the code.');
-    } finally {
-      this.phoneBusy.set(false);
-    }
-  }
-
-  // Working-days chips, rendered Mon→Sun; stored canonically in this order as a comma-joined string.
-  protected readonly dayChips: ReadonlyArray<{ value: number; label: string }> = [
-    { value: 1, label: 'Mon' },
-    { value: 2, label: 'Tue' },
-    { value: 3, label: 'Wed' },
-    { value: 4, label: 'Thu' },
-    { value: 5, label: 'Fri' },
-    { value: 6, label: 'Sat' },
-    { value: 0, label: 'Sun' },
-  ];
-
-  private parseDays(raw: unknown): Set<number> {
-    return new Set(
-      String(raw ?? '')
-        .split(',')
-        .map((s) => Number(s.trim()))
-        .filter((n) => !Number.isNaN(n)),
-    );
-  }
-
-  protected isDaySelected(section: SectionState, controlName: string, day: number): boolean {
-    return this.parseDays(section.payload()[controlName]).has(day);
-  }
-
-  protected toggleDay(section: SectionState, controlName: string, day: number): void {
-    const days = this.parseDays(section.payload()[controlName]);
-    if (days.has(day)) days.delete(day);
-    else days.add(day);
-    const ordered = this.dayChips
-      .map((c) => c.value)
-      .filter((d) => days.has(d))
-      .join(',');
-    section.payload.update((p) => ({ ...p, [controlName]: ordered }));
-    section.form[controlName]().markAsDirty();
-  }
-
-  protected getNotificationGroups(section: SectionState) {
-    const groups: { label: string; helper: string; emailField: any; inAppField: any }[] = [];
-    const fields = section.fields;
-
-    for (const field of fields) {
-      if (field.config.key.endsWith('_in_app')) continue;
-
-      const inAppControlName = `${field.controlName}_in_app`;
-      const inAppField = fields.find((f) => f.controlName === inAppControlName);
-
-      groups.push({
-        label: field.config.label,
-        helper: field.config.helper || '',
-        emailField: field,
-        inAppField: inAppField,
-      });
-    }
-    return groups;
-  }
-
-  protected isEmailVerified(email: string | null | undefined): boolean {
-    if (!email) return false;
-    const verified = this.settingsSvc.getValue<string[]>('communications.verified_emails') || [];
-    return verified.includes(email.toLowerCase().trim());
-  }
-
-  protected isSaving(section: SectionState) {
-    return this.savingSectionId() === section.config.id;
-  }
-
-  protected isSectionDirty(section: SectionState) {
-    return section.form().dirty();
-  }
-
-  protected isSectionInvalid(section: SectionState) {
-    return section.form().invalid();
-  }
-
-  protected isSelected(sectionId: string) {
-    return this.selectedSectionId() === sectionId;
-  }
-
-  protected isVerifyCooldown(email: string | null | undefined): boolean {
-    if (!email) return false;
-    const lastTime = this.lastVerificationTimes()[email.toLowerCase().trim()];
-    if (!lastTime) return false;
-    return Date.now() - lastTime < 60000;
-  }
-
-  protected async loadLastFingerprintRecomputeTime() {
-    try {
-      const res = await this.householdsSvc.getLastFingerprintRecomputation();
-      if (res && res.lastRunAt) {
-        this.lastFingerprintRecomputeTime.set(new Date(res.lastRunAt));
-      } else {
-        this.lastFingerprintRecomputeTime.set(null);
-      }
-    } catch (err) {
-      console.error('Failed to load last fingerprint recompute time', err);
-    }
-  }
-
-  protected async loadUserPrefs() {
-    try {
-      const currentUser = await this.auth.getCurrentUser();
-      if (currentUser) {
-        const user = await this.userService.getProfileById(currentUser.id);
-        this.currentUserDetail.set(user);
-        const prefs = user.notification_preferences || {
-          mention_in_comment: true,
-          mention_in_comment_in_app: true,
-          task_assigned: true,
-          task_assigned_in_app: true,
-          task_due: true,
-          task_due_in_app: true,
-          person_assigned: true,
-          person_assigned_in_app: true,
-          email_assigned: true,
-          email_assigned_in_app: true,
-          export_ready: true,
-          export_ready_in_app: true,
-          import_summary: true,
-          import_summary_in_app: true,
-        };
-        const notifState = this.sectionStates.find((s) => s.config.id === 'notifications');
-        if (notifState) {
-          notifState.payload.update((p) => ({
-            ...p,
-            notifications_mention_in_comment: prefs.mention_in_comment ?? true,
-            notifications_mention_in_comment_in_app: prefs.mention_in_comment_in_app ?? true,
-            notifications_task_assigned: prefs.task_assigned ?? true,
-            notifications_task_assigned_in_app: prefs.task_assigned_in_app ?? true,
-            notifications_task_due: prefs.task_due ?? true,
-            notifications_task_due_in_app: prefs.task_due_in_app ?? true,
-            notifications_person_assigned: prefs.person_assigned ?? true,
-            notifications_person_assigned_in_app: prefs.person_assigned_in_app ?? true,
-            notifications_email_assigned: prefs.email_assigned ?? true,
-            notifications_email_assigned_in_app: prefs.email_assigned_in_app ?? true,
-            notifications_export_ready: prefs.export_ready ?? true,
-            notifications_export_ready_in_app: prefs.export_ready_in_app ?? true,
-            notifications_import_summary: prefs.import_summary ?? true,
-            notifications_import_summary_in_app: prefs.import_summary_in_app ?? true,
-          }));
-          notifState.form().reset();
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load user preferences in settings page', err);
-    }
-  }
-
-  protected async recomputeAddressFingerprints() {
-    if (this.isFingerprintRecomputeCooldown()) {
-      this.alerts.showError('Fingerprints can only be recomputed once a month.');
-      return;
-    }
-
-    this.recomputingFingerprints.set(true);
-    try {
-      await this.householdsSvc.recomputeAddressFingerprints();
-      this.alerts.showSuccess('Background job queued to recompute address fingerprints.');
-      await this.loadLastFingerprintRecomputeTime();
-    } catch (err) {
-      this.alerts.showError(
-        err instanceof Error && err.message ? err.message : 'Failed to trigger address fingerprint recomputation.',
-      );
-    } finally {
-      this.recomputingFingerprints.set(false);
-    }
-  }
-
-  protected resetSection(section: SectionState) {
-    this.applySnapshot(this.settingsSvc.snapshot(), true, section);
-    if (section.config.id === 'notifications') {
-      void this.loadUserPrefs();
-    }
-  }
-
-  protected async saveSection(section: SectionState) {
-    if (!section.form().dirty()) return;
-
-    const entries: SettingsEntryType[] = [];
-    for (const field of section.fields) {
-      const fieldSignal = (section.form as any)[field.controlName]();
-      if (!fieldSignal.dirty()) continue;
-
-      // Skip user notification preferences from tenant settings upsert
-      if (section.config.id === 'notifications') {
-        continue;
-      }
-
-      const value = this.prepareOutgoingValue(field.config, fieldSignal.value());
-      entries.push({ key: field.config.key, value });
-    }
-
-    this.savingSectionId.set(section.config.id);
-    try {
-      if (entries.length > 0) {
-        const snapshot = await this.settingsSvc.upsert(entries);
-        this.applySnapshot(snapshot ?? this.settingsSvc.snapshot(), true, section);
-      }
-
-      if (section.config.id === 'notifications') {
-        const user = this.currentUserDetail();
-        if (user) {
-          const raw = section.payload();
-          const parseBool = (val: any) => val === true || val === 'true';
-          const payload: UpdateAuthUserType = {
-            notification_preferences: {
-              mention_in_comment: parseBool(raw['notifications_mention_in_comment']),
-              mention_in_comment_in_app: parseBool(raw['notifications_mention_in_comment_in_app']),
-              task_assigned: parseBool(raw['notifications_task_assigned']),
-              task_assigned_in_app: parseBool(raw['notifications_task_assigned_in_app']),
-              task_due: parseBool(raw['notifications_task_due']),
-              task_due_in_app: parseBool(raw['notifications_task_due_in_app']),
-              person_assigned: parseBool(raw['notifications_person_assigned']),
-              person_assigned_in_app: parseBool(raw['notifications_person_assigned_in_app']),
-              email_assigned: parseBool(raw['notifications_email_assigned']),
-              email_assigned_in_app: parseBool(raw['notifications_email_assigned_in_app']),
-              export_ready: parseBool(raw['notifications_export_ready']),
-              export_ready_in_app: parseBool(raw['notifications_export_ready_in_app']),
-              import_summary: parseBool(raw['notifications_import_summary']),
-              import_summary_in_app: parseBool(raw['notifications_import_summary_in_app']),
-            },
-          };
-          await this.userService.updateUserProfile(user.id, payload);
-          await this.loadUserPrefs();
-        }
-      }
-      this.alerts.showSuccess('Settings updated successfully');
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : isRecord(err) &&
-              isRecord(err['data']) &&
-              typeof err['data']['message'] === 'string' &&
-              err['data']['message']
-            ? err['data']['message']
-            : 'Failed to save settings';
-      this.alerts.showError(message);
-    } finally {
-      this.savingSectionId.set(null);
-    }
-  }
-
-  protected selectSection(sectionId: string) {
-    void this.router.navigate(['/', this.currentMode, sectionId]);
-  }
-
-  protected async verifySenderEmail(email: string | null | undefined) {
-    if (!email) return;
-    const normalized = email.toLowerCase().trim();
-
-    if (this.isVerifyCooldown(normalized)) {
-      this.alerts.showError('Please wait at least one minute before requesting verification again.');
-      return;
-    }
-
-    this.verifyingEmail.set(normalized);
-
-    try {
-      await this.settingsSvc.requestEmailVerification(normalized);
-      this.lastVerificationTimes.update((prev) => ({
-        ...prev,
-        [normalized]: Date.now(),
-      }));
-      this.startEmailCooldown(normalized);
-      this.lastRequestedEmail.set(normalized);
-      // Clear only after success — on failure the user keeps their input to retry.
-      this.senderEmailInput.set('');
-      this.alerts.showSuccess(
-        `Verification email sent to ${email}. Please check your inbox (and spam folder) and click the verification link.`,
-      );
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to send verification email.');
-    } finally {
-      this.verifyingEmail.set(null);
-    }
-  }
-
-  private applySnapshot(snapshot: TenantSettingsSnapshot, resetDirty: boolean, target?: SectionState) {
-    const sections = target ? [target] : this.sectionStates;
-
-    for (const state of sections) {
-      const nextPayload = { ...state.payload() };
-      let changed = false;
-
-      for (const field of state.fields) {
-        const fieldSignal = (state.form as any)[field.controlName]();
-        if (!resetDirty && fieldSignal.dirty()) continue;
-
-        // Skip user notification preferences from tenant settings snapshot update
-        if (state.config.id === 'notifications') {
-          continue;
-        }
-
-        const incoming = this.normalizeIncomingValue(field.config, snapshot[field.config.key]);
-        if (nextPayload[field.controlName] !== incoming) {
-          nextPayload[field.controlName] = incoming;
-          changed = true;
-        }
-      }
-
-      if (changed) {
-        state.payload.set(nextPayload);
-      }
-
-      if (resetDirty) {
-        state.form().reset();
-      }
-    }
-  }
-
-  private buildSectionState(section: SettingsSectionConfig): SectionState {
-    const initialPayload: Record<string, any> = {};
-    const fieldStates: SectionFieldState[] = [];
-
-    for (const field of section.fields) {
-      const controlName = this.controlNameFor(field.key);
-      initialPayload[controlName] = this.normalizeIncomingValue(
-        field,
-        this.settingsSvc.getValue(field.key, field.defaultValue),
-      );
-      fieldStates.push({ config: field, controlName });
-    }
-
-    const payload = signal(initialPayload);
-    const formSignal = form(payload, (p) => {
-      for (const field of section.fields) {
-        const controlName = this.controlNameFor(field.key);
-        if (field.type === 'email') {
-          email(p[controlName]);
-        }
-        if (field.type === 'url') {
-          pattern(p[controlName], /^https?:\/\//i);
-        }
-        if (field.key === 'communications.default_from_email' || field.key === 'communications.reply_to') {
-          validate(p[controlName], (ctx) => {
-            const val = ((ctx.value() as string) || '').toLowerCase().trim();
-            if (!val) return null;
-            const verified = this.settingsSvc.getValue<string[]>('communications.verified_emails') || [];
-            if (!verified.includes(val)) {
-              return { kind: 'not-verified', message: 'Email address must be verified.' };
-            }
-            return null;
-          });
-        }
-      }
-    });
-
-    return { config: section, payload, form: formSignal, fields: fieldStates };
-  }
-
-  private controlNameFor(key: string) {
-    return key.replace(/[^a-zA-Z0-9]+/g, '_');
-  }
-
-  private defaultForField(field: SettingsFieldConfig) {
-    switch (field.type) {
-      case 'toggle':
-        return false;
-      case 'number':
-        return null;
-      case 'select':
-        return field.options?.[0]?.value ?? '';
-      default:
-        return '';
-    }
-  }
-
-  private normalizeIncomingValue(field: SettingsFieldConfig, raw: unknown) {
-    const fallback = field.defaultValue ?? this.defaultForField(field);
-
-    switch (field.type) {
-      case 'toggle':
-        return Boolean(raw ?? fallback ?? false);
-      case 'number': {
-        if (raw === null || raw === undefined || raw === '') return fallback ?? null;
-        const numeric = typeof raw === 'number' ? raw : Number(raw);
-        return Number.isFinite(numeric) ? numeric : (fallback ?? null);
-      }
-      case 'select': {
-        const options = field.options ?? [];
-        const candidate = raw === undefined || raw === null ? fallback : String(raw);
-        const match = options.find((option) => option.value === candidate);
-        if (match) return match.value;
-        return (fallback ?? options[0]?.value ?? '') as string;
-      }
-      case 'date':
-        return typeof raw === 'string' && raw.length ? raw : ((fallback as string) ?? '');
-      case 'day-toggles':
-        // Stored/consumed by the backend as a comma-separated day-number string (e.g. "1,2,3,4,5").
-        return raw === undefined || raw === null ? ((fallback as string) ?? '') : String(raw);
-      case 'email':
-      case 'tel':
-      case 'password':
-      case 'url':
-      case 'text':
-        return raw === undefined || raw === null ? ((fallback as string) ?? '') : String(raw);
-      case 'textarea':
-        return raw === undefined || raw === null ? ((fallback as string) ?? '') : String(raw);
-      default:
-        return raw ?? fallback ?? '';
-    }
-  }
-
-  private prepareOutgoingValue(field: SettingsFieldConfig, value: unknown) {
-    switch (field.type) {
-      case 'toggle':
-        return Boolean(value);
-      case 'number': {
-        if (value === '' || value === null || value === undefined) return null;
-        const numeric = typeof value === 'number' ? value : Number(value);
-        return Number.isFinite(numeric) ? numeric : null;
-      }
-      case 'select': {
-        const candidate = value === null || value === undefined ? '' : String(value);
-        const options = field.options ?? [];
-        const match = options.find((option) => option.value === candidate);
-        return match ? match.value : this.defaultForField(field);
-      }
-      case 'date':
-        return typeof value === 'string' ? value : value ? String(value) : '';
-      case 'day-toggles':
-        return value === null || value === undefined ? '' : String(value);
-      case 'textarea':
-      case 'text':
-      case 'email':
-      case 'tel':
-      case 'password':
-      case 'url':
-        return value === null || value === undefined ? '' : String(value);
-      default:
-        return value ?? '';
-    }
-  }
-
-  private startEmailCooldown(email: string) {
-    this.emailCooldownSeconds.update((prev) => ({ ...prev, [email]: 60 }));
-    const interval = setInterval(() => {
-      const current = this.emailCooldownSeconds()[email] || 0;
-      if (current <= 1) {
-        clearInterval(interval);
-        this.emailCooldownSeconds.update((prev) => {
-          const next = { ...prev };
-          delete next[email];
-          return next;
-        });
-      } else {
-        this.emailCooldownSeconds.update((prev) => ({ ...prev, [email]: current - 1 }));
-      }
-    }, 1000);
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 ```
 

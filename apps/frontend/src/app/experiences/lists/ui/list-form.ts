@@ -21,6 +21,53 @@ import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 
 import { QueryBuilderField, QueryBuilderComponent } from '@frontend/shared/components/query-builder/query-builder';
 import { QueryBuilderNode, QueryBuilderGroupNode, cloneQueryBuilderNode } from '../../../../../../../libs/common/src';
+import { RULE_FIELD_CHOICES, ruleFieldLabel } from '@experiences/lists/services/list-rule-fields';
+
+interface RuleOperator {
+  value: string;
+  label: string;
+}
+
+const TAG_OPERATORS: RuleOperator[] = [
+  { value: 'eq', label: 'is' },
+  { value: 'neq', label: 'is not' },
+  { value: 'contains', label: 'contains' },
+  { value: 'notContains', label: 'does not contain' },
+  { value: 'equals', label: 'equals' },
+  { value: 'notEquals', label: 'does not equal' },
+  { value: 'startsWith', label: 'starts with' },
+  { value: 'endsWith', label: 'ends with' },
+  { value: 'isEmpty', label: 'is empty' },
+  { value: 'isNotEmpty', label: 'is not empty' },
+];
+
+const TEXT_OPERATORS: RuleOperator[] = [
+  { value: 'contains', label: 'contains' },
+  { value: 'notContains', label: 'does not contain' },
+  { value: 'equals', label: 'equals' },
+  { value: 'notEquals', label: 'does not equal' },
+  { value: 'startsWith', label: 'starts with' },
+  { value: 'endsWith', label: 'ends with' },
+  { value: 'isEmpty', label: 'is empty' },
+  { value: 'isNotEmpty', label: 'is not empty' },
+];
+
+/**
+ * Status fields hold one value from a fixed set, so they get a picker instead
+ * of a free-text box — and "is set / is not set" reads better than "is empty"
+ * for a status that is simply absent (§15: NULL = not a volunteer / never asked).
+ */
+const CHOICE_OPERATORS: RuleOperator[] = [
+  { value: 'eq', label: 'is' },
+  { value: 'neq', label: 'is not' },
+  { value: 'isNotEmpty', label: 'is set' },
+  { value: 'isEmpty', label: 'is not set' },
+];
+
+const BOOLEAN_OPERATORS: RuleOperator[] = [
+  { value: 'eq', label: 'is' },
+  { value: 'neq', label: 'is not' },
+];
 
 @Component({
   selector: 'pc-household-filter-grid',
@@ -171,6 +218,10 @@ export class ListForm implements OnInit {
   protected readonly id = signal<string | null>(null);
   protected readonly isNew = signal<boolean>(true);
 
+  /** Built-in list marker (§8) — set when editing one of the product-owned lists. */
+  protected readonly systemKey = signal<string | null>(null);
+  protected readonly isSystem = computed<boolean>(() => this.systemKey() != null);
+
   /** Disables Save immediately on click — the loading gate stays false for its first
    *  300ms by design, which would leave a double-click window. */
   protected readonly saving = signal(false);
@@ -219,6 +270,7 @@ export class ListForm implements OnInit {
     try {
       const list = (await this.listsSvc.getById(id)) as any;
       if (list) {
+        this.systemKey.set(list.system_key ?? null);
         this.payload.set({
           name: list.name ?? '',
           description: list.description ?? '',
@@ -297,59 +349,67 @@ export class ListForm implements OnInit {
     rules: [],
   });
 
+  /**
+   * The fields a rule can be written against, per list type. Names are the keys
+   * the backend's `columnMapping` resolves; labels and choices come from
+   * list-rule-fields so the picker and the saved definition read alike.
+   *
+   * Ordered by what people reach for: who they are (tags/issues), then their
+   * standing with the campaign (volunteer, subscriber, staff, support, voting,
+   * DNC), then contact details and address.
+   */
   protected readonly listFields = computed<QueryBuilderField[]>(() => {
     const isPeople = this.listType() === 'people';
-    const tagOperators = [
-      { value: 'eq', label: 'is' },
-      { value: 'neq', label: 'is not' },
-      { value: 'contains', label: 'contains' },
-      { value: 'notContains', label: 'does not contain' },
-      { value: 'equals', label: 'equals' },
-      { value: 'notEquals', label: 'does not equal' },
-      { value: 'startsWith', label: 'starts with' },
-      { value: 'endsWith', label: 'ends with' },
-      { value: 'isEmpty', label: 'is empty' },
-      { value: 'isNotEmpty', label: 'is not empty' },
-    ];
-    const textOperators = [
-      { value: 'contains', label: 'contains' },
-      { value: 'notContains', label: 'does not contain' },
-      { value: 'equals', label: 'equals' },
-      { value: 'notEquals', label: 'does not equal' },
-      { value: 'startsWith', label: 'starts with' },
-      { value: 'endsWith', label: 'ends with' },
-      { value: 'isEmpty', label: 'is empty' },
-      { value: 'isNotEmpty', label: 'is not empty' },
-    ];
+
+    const field = (name: string, inputType: QueryBuilderField['inputType'], operators: RuleOperator[]) => ({
+      name,
+      label: ruleFieldLabel(name),
+      operators,
+      inputType,
+      ...(RULE_FIELD_CHOICES[name] ? { choices: RULE_FIELD_CHOICES[name] } : {}),
+    });
+
+    const text = (name: string) => field(name, 'text', TEXT_OPERATORS);
+    const tag = (name: string) => field(name, 'autocomplete', TAG_OPERATORS);
+    const choice = (name: string) => field(name, 'select', CHOICE_OPERATORS);
 
     if (isPeople) {
       return [
-        { name: 'tags', label: 'Tags', operators: tagOperators, inputType: 'autocomplete' as const },
-        { name: 'issues', label: 'Issues', operators: tagOperators, inputType: 'autocomplete' as const },
-        { name: 'first_name', label: 'First Name', operators: textOperators, inputType: 'text' as const },
-        { name: 'last_name', label: 'Last Name', operators: textOperators, inputType: 'text' as const },
-        { name: 'email', label: 'Email', operators: textOperators, inputType: 'text' as const },
-        { name: 'mobile', label: 'Mobile', operators: textOperators, inputType: 'text' as const },
-        { name: 'company_name', label: 'Company', operators: textOperators, inputType: 'text' as const },
-        { name: 'city', label: 'City', operators: textOperators, inputType: 'text' as const },
-        { name: 'state', label: 'State/Province', operators: textOperators, inputType: 'text' as const },
-        { name: 'street1', label: 'Street 1', operators: textOperators, inputType: 'text' as const },
-        { name: 'street_num', label: 'Street Number', operators: textOperators, inputType: 'text' as const },
-        { name: 'zip', label: 'Zip Code', operators: textOperators, inputType: 'text' as const },
-      ];
-    } else {
-      return [
-        { name: 'tags', label: 'Tags', operators: tagOperators, inputType: 'autocomplete' as const },
-        { name: 'issues', label: 'Issues', operators: tagOperators, inputType: 'autocomplete' as const },
-        { name: 'city', label: 'City', operators: textOperators, inputType: 'text' as const },
-        { name: 'state', label: 'State/Province', operators: textOperators, inputType: 'text' as const },
-        { name: 'street1', label: 'Street 1', operators: textOperators, inputType: 'text' as const },
-        { name: 'street2', label: 'Street 2', operators: textOperators, inputType: 'text' as const },
-        { name: 'street_num', label: 'Street Number', operators: textOperators, inputType: 'text' as const },
-        { name: 'zip', label: 'Zip Code', operators: textOperators, inputType: 'text' as const },
-        { name: 'home_phone', label: 'Home Phone', operators: textOperators, inputType: 'text' as const },
+        tag('tags'),
+        tag('issues'),
+        choice('volunteer_status'),
+        choice('subscription_status'),
+        choice('staff_status'),
+        choice('support_level'),
+        choice('voting_status'),
+        // A boolean is either set or not — "is not set" would be a lie.
+        field('do_not_contact', 'select', BOOLEAN_OPERATORS),
+        text('first_name'),
+        text('last_name'),
+        text('email'),
+        text('mobile'),
+        text('company_name'),
+        text('city'),
+        text('state'),
+        text('street1'),
+        text('street_num'),
+        text('zip'),
+        text('country'),
+        text('notes'),
       ];
     }
+    return [
+      tag('tags'),
+      tag('issues'),
+      text('city'),
+      text('state'),
+      text('street1'),
+      text('street2'),
+      text('street_num'),
+      text('zip'),
+      text('country'),
+      text('home_phone'),
+    ];
   });
 
   protected externalRowFilter = (row: any) => {
@@ -534,7 +594,7 @@ export class ListForm implements OnInit {
 
   protected async deleteList() {
     const id = this.id();
-    if (this.isNew() || !id) return;
+    if (this.isNew() || !id || this.isSystem()) return;
     let consumers: unknown = null;
     try {
       consumers = await this.listsSvc.getConsumers(id);

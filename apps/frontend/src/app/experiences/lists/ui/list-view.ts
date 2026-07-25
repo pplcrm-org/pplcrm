@@ -44,6 +44,9 @@ export class ListView implements OnDestroy {
 
   protected isPeople = computed(() => this.object() === 'people');
 
+  /** Built-in lists (§8) — product-owned, so undeletable and unrenameable. */
+  protected readonly isSystem = computed(() => this.listData()?.system_key != null);
+
   constructor() {
     effect(() => {
       const currentId = this.id();
@@ -129,7 +132,7 @@ export class ListView implements OnDestroy {
 
   protected async deleteList() {
     const id = this.id();
-    if (!id) return;
+    if (!id || this.isSystem()) return;
     let consumers: unknown = null;
     try {
       consumers = await this.lists.getConsumers(id);

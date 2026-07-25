@@ -119,6 +119,7 @@ export {
   SetCampaignSubscriptionObj,
   CarryOverCampaignObj,
   SUBSCRIPTION_STATUSES,
+  SUBSCRIPTION_STATUS_LABELS,
   CONSENT_SOURCES,
   CAMPAIGN_KINDS,
   CAMPAIGN_STATUSES,
@@ -305,6 +306,9 @@ export type {
 } from './lib/schemas/campaigns.schema';
 export type { DncChannel, VolunteerStatus, StaffStatus } from './lib/schemas/persons.schema';
 export type { GridColumnFilter, GridFilterModel } from './lib/schemas/core.schema';
+
+export type { SystemListKey, SystemListDef } from './lib/system-lists';
+export { SYSTEM_LIST_KEYS, SYSTEM_LISTS, systemListDefinition } from './lib/system-lists';
 
 export type { InteractionType, LogInteractionType } from './lib/schemas/activity.schema';
 

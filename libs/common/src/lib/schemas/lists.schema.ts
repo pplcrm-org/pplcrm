@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { getAllOptions, nameSchema, descriptionSchema, idSchema } from './core.schema';
+import { SYSTEM_LIST_KEYS } from '../system-lists';
 
 export const AddListObj = z.object({
   /** Campaigns §15 — the context this segment belongs to; backend defaults to the office. */
@@ -27,6 +28,12 @@ export const ListsObj = z.object({
     .optional(),
   last_refreshed_at: z.coerce.date().nullable().optional(),
   status: z.enum(['idle', 'refreshing', 'failed']).optional(),
+  /**
+   * Built-in list marker (§8) — set on the two lists the product owns and
+   * re-creates. Read-only: it is absent from Add/Update on purpose, so no
+   * client can mint or un-mint a built-in.
+   */
+  system_key: z.enum(SYSTEM_LIST_KEYS).nullable().optional(),
 });
 
 export const UpdateListObj = z.object({

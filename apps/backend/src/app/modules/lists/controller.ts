@@ -14,6 +14,7 @@ import { PersonsController } from '../persons/controller';
 import { ListsRepo } from './repositories/lists.repo';
 import { MapListsHouseholdsRepo } from './repositories/map-lists-households.repo';
 import { MapListsPersonsRepo } from './repositories/map-lists-persons.repo';
+import { ensureSystemLists, queueSystemListRefreshes } from './system-lists';
 import type { OperationDataType, TypeTenantId } from '../../../../../../libs/common/src/lib/kysely.models';
 import { WorkflowsController } from '../workflows/controller';
 import { logger } from '../../logger';
@@ -57,6 +58,7 @@ interface ListShape {
   object: 'people' | 'households';
   is_dynamic: boolean;
   definition: getAllOptionsType | null;
+  campaign_id: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -74,12 +76,28 @@ function toListShape(row: unknown): ListShape | null {
   const object = row['object'];
   if (object !== 'people' && object !== 'households') return null;
   const parsed = getAllOptions.safeParse(row['definition'] ?? undefined);
+  const campaignId = row['campaign_id'];
   return {
     id: String(row['id']),
     object,
     is_dynamic: row['is_dynamic'] === true,
     definition: parsed.success ? (parsed.data ?? null) : null,
+    campaign_id: campaignId == null ? null : String(campaignId),
   };
+}
+
+/**
+ * Run a list's rules in the campaign context the list belongs to (§15).
+ *
+ * Rules can reach campaign-scoped facts — subscription status, support level,
+ * voting status — and those joins resolve against `options.campaignId`. Without
+ * this the built-in "All Subscribers" list (and any user rule on a
+ * campaign-scoped field) would silently match nothing, because the repo falls
+ * back to campaign '0'. A definition that already carries a campaignId keeps it.
+ */
+function scopedDefinition(definition: getAllOptionsType, campaign_id: string | null | undefined): getAllOptionsType {
+  if (!campaign_id) return definition;
+  return { ...(definition ?? {}), campaignId: (definition ?? {})?.campaignId ?? String(campaign_id) };
 }
 
 export class ListsController extends BaseController<'lists', ListsRepo> {
@@ -91,6 +109,46 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
 
   constructor() {
     super(new ListsRepo());
+  }
+
+  /**
+   * The Lists read path. Creates any missing built-in lists for the context
+   * being read first (§8) — that is what guarantees "All Subscribers" and "All
+   * Volunteers" are there for tenants that predate the feature, for campaigns
+   * created later, and after a tenant exits demo mode. It is a no-op insert on
+   * every call after the first.
+   *
+   * A failure to seed must not blank the page, so it is logged and swallowed;
+   * the user's own lists still load.
+   */
+  public async getAllForContext(auth: IAuthKeyPayload, options?: getAllOptionsType) {
+    try {
+      // Archived campaigns are read-only history (§15) — resolveForWrite would
+      // reject them, so skip seeding rather than log a failure on every read.
+      const campaign_id = await this.resolveSeedableCampaign(auth.tenant_id, options?.campaignId);
+      if (campaign_id) {
+        const inserted = await ensureSystemLists({ tenant_id: auth.tenant_id, campaign_id, user_id: auth.user_id });
+        if (inserted > 0) {
+          await queueSystemListRefreshes({ tenant_id: auth.tenant_id, campaign_id, user_id: auth.user_id });
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Failed to ensure the built-in lists exist');
+    }
+    return this.getAllWithCounts(auth.tenant_id, options);
+  }
+
+  /** The active (non-archived) campaign to seed built-ins into, or null. */
+  private async resolveSeedableCampaign(tenant_id: string, campaign_id?: string): Promise<string | null> {
+    const row = await this.getRepo()
+      .db.selectFrom('campaigns')
+      .select(['id', 'status'])
+      .where('tenant_id', '=', tenant_id)
+      .$if(!!campaign_id, (qb) => qb.where('id', '=', campaign_id as string))
+      .$if(!campaign_id, (qb) => qb.where('kind', '=', 'office'))
+      .executeTakeFirst();
+    if (!row || row.status === 'archived') return null;
+    return String(row.id);
   }
 
   public async addList(payload: AddListType, auth: IAuthKeyPayload) {
@@ -170,8 +228,9 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
           rows: rows as OperationDataType<'map_lists_households', 'insert'>[],
         });
       } else if (payload.definition) {
+        const definition = scopedDefinition(payload.definition as getAllOptionsType, row.campaign_id);
         if (payload.object === 'people') {
-          const result = await this.personsController.getAllWithAddress(auth, payload.definition as getAllOptionsType);
+          const result = await this.personsController.getAllWithAddress(auth, definition);
           const rows = result.rows.map((p) => ({
             tenant_id: auth.tenant_id,
             list_id: list.id,
@@ -193,10 +252,7 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
             }
           }
         } else if (payload.object === 'households') {
-          const result = await this.householdsController.getAllWithPeopleCount(
-            auth,
-            payload.definition as getAllOptionsType,
-          );
+          const result = await this.householdsController.getAllWithPeopleCount(auth, definition);
           const rows = result.rows.map((h) => ({
             tenant_id: auth.tenant_id,
             list_id: list.id,
@@ -272,7 +328,7 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
       return list;
     }
 
-    const definition = list.definition as getAllOptionsType;
+    const definition = scopedDefinition(list.definition as getAllOptionsType, list.campaign_id);
     if (!definition) {
       // Set back to idle if no definition
       await this.update({
@@ -427,7 +483,11 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
     const list = (await this.getOneById({ tenant_id: auth.tenant_id, id })) as any;
     if (!list) return 0;
     if (list.is_dynamic && list.definition) {
-      const opts = { ...(list.definition as getAllOptionsType), startRow: 0, endRow: 0 };
+      const opts = {
+        ...scopedDefinition(list.definition as getAllOptionsType, list.campaign_id),
+        startRow: 0,
+        endRow: 0,
+      };
       if (list.object === 'people') {
         const data = await this.personsController.getAllWithAddress(auth, opts);
         return data.count;
@@ -471,12 +531,13 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
 
     // Smart list: re-run the definition against live data.
     if (list.is_dynamic && list.definition) {
+      const definition = scopedDefinition(list.definition, list.campaign_id);
       if (list.object === 'people') {
-        const data = await this.personsController.getAllWithAddress(auth, list.definition);
+        const data = await this.personsController.getAllWithAddress(auth, definition);
         const ids = data.rows.map((r) => String(r['id']));
         return { object: 'people', ids, count: data.count };
       }
-      const data = await this.householdsController.getAllWithPeopleCount(auth, list.definition);
+      const data = await this.householdsController.getAllWithPeopleCount(auth, definition);
       const ids = data.rows.map((r) => String(r['id']));
       return { object: 'households', ids, count: data.count };
     }
@@ -554,6 +615,28 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
   }
 
   public async updateList(id: string, row: UpdateListType, auth: IAuthKeyPayload) {
+    // Built-ins (§8) own their name and their rules — those are what make them
+    // recognisable and re-creatable. The description stays editable.
+    const existing = await this.getRepo()
+      .db.selectFrom('lists')
+      .select(['name', 'system_key'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('id', '=', id)
+      .executeTakeFirst();
+    if (existing?.system_key) {
+      const changesIdentity =
+        (row.name !== undefined && row.name !== existing.name) ||
+        row.object !== undefined ||
+        row.is_dynamic !== undefined ||
+        row.definition !== undefined;
+      if (changesIdentity) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: `“${existing.name}” is a built-in list — its name and rules are fixed. You can still edit its description.`,
+        });
+      }
+    }
+
     const rowWithUpdatedBy = {
       ...row,
       updatedby_id: auth.user_id,
@@ -598,7 +681,34 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
     return result;
   }
 
+  /**
+   * The built-in lists (§8) are product-owned: they can't be deleted, here or
+   * in bulk. FORBIDDEN, not UNAUTHORIZED — this is a permission on the row, not
+   * a session failure (throwing UNAUTHORIZED would sign the user out).
+   */
+  private async assertDeletable(tenant_id: string, ids: string[]): Promise<void> {
+    if (!ids.length) return;
+    const systemRows = await this.getRepo()
+      .db.selectFrom('lists')
+      .select(['name'])
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', ids)
+      .where('system_key', 'is not', null)
+      .execute();
+    if (!systemRows.length) return;
+    const names = systemRows.map((r) => `“${r.name}”`).join(', ');
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message:
+        systemRows.length === 1
+          ? `${names} is a built-in list and can't be deleted. It keeps itself up to date.`
+          : `${names} are built-in lists and can't be deleted. They keep themselves up to date.`,
+    });
+  }
+
   public override async delete(tenant_id: string, idToDelete: string, userId?: string) {
+    await this.assertDeletable(tenant_id, [idToDelete]);
+
     await this.mapListsPersonsRepo.db
       .deleteFrom('map_lists_persons')
       .where('tenant_id', '=', tenant_id)
@@ -616,6 +726,7 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
 
   public override async deleteMany(tenant_id: string, idsToDelete: string[]) {
     if (idsToDelete.length === 0) return false;
+    await this.assertDeletable(tenant_id, idsToDelete);
 
     await this.mapListsPersonsRepo.db
       .deleteFrom('map_lists_persons')

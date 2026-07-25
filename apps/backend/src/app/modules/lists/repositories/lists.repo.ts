@@ -105,6 +105,8 @@ export class ListsRepo extends BaseRepository<'lists'> {
         // infer functional dependency from lists.id here), or the aggregate
         // query fails with "column lists.definition must appear in the GROUP BY".
         'lists.definition',
+        // Built-in marker (§8) — drives the row's `deletable` flag below.
+        'lists.system_key',
         sql<number>`COUNT(DISTINCT map_lists_persons.person_id)`.as('people_count'),
         sql<number>`COUNT(DISTINCT map_lists_households.household_id)`.as('household_count'),
         sql<string>`CONCAT(authusers.first_name, ' ', authusers.last_name)`.as('created_by'),
@@ -146,6 +148,7 @@ export class ListsRepo extends BaseRepository<'lists'> {
         'lists.updated_at',
         'lists.last_refreshed_at',
         'lists.definition',
+        'lists.system_key',
         'authusers.first_name',
         'authusers.last_name',
       ])
@@ -189,6 +192,11 @@ export class ListsRepo extends BaseRepository<'lists'> {
       updated_at: r.updated_at,
       last_refreshed_at: r.last_refreshed_at,
       definition: r.definition,
+      system_key: r.system_key ?? null,
+      // The datagrid's generic non-deletable guard reads `deletable` (same
+      // contract as tags): it drops the row from bulk delete and blocks
+      // renaming it inline. Built-in lists (§8) are the only false here.
+      deletable: r.system_key == null,
       // MEMBERS: the real snapshot/refreshed member count, tabular for both
       // smart and static lists (smart lists persist members after each refresh).
       list_size: r.object === 'people' ? Number(r.people_count) : Number(r.household_count),

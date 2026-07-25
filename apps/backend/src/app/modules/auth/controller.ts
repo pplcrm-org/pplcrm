@@ -50,6 +50,7 @@ import { EmailRepo } from '../emails/repositories/email.repo';
 import { PersonsRepo } from '../persons/repositories/persons.repo';
 import { UserProfiles } from '../userprofiles/repositories/userprofiles.repo';
 import { seedStarterForms, seedStarterTags } from './onboarding-seed';
+import { ensureSystemLists, queueSystemListRefreshes } from '../lists/system-lists';
 import { DEMO_MODE_INVITES_BLOCKED_MESSAGE, assertNotDemoMode } from '../demo/demo-guard';
 import { seedDemoData } from '../demo/demo-seed';
 import { AuthUsersRepo } from './repositories/authusers.repo';
@@ -1472,6 +1473,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         // not — see modules/demo. Tags first: the demo seeder attaches to them by name.
         await seedStarterTags({ tenant_id, user_id: userId }, trx);
         const starterForms = await seedStarterForms({ tenant_id, user_id: userId, campaign_id: campaign.id }, trx);
+        // Built-in lists (§8) — product-owned, so they are seeded here rather
+        // than with the demo data and survive exiting demo mode.
+        await ensureSystemLists({ tenant_id, user_id: userId, campaign_id: String(campaign.id) }, trx);
         await seedDemoData(
           {
             tenant_id,
@@ -1482,6 +1486,10 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
           },
           trx,
         );
+        // Queue the built-ins' first membership refresh AFTER the demo people
+        // exist (and in the same transaction — transactional outbox), so the
+        // Lists page shows real counts on first visit instead of two zeroes.
+        await queueSystemListRefreshes({ tenant_id, user_id: userId, campaign_id: String(campaign.id) }, trx);
 
         const codeObj = await this.getRepo().addPasswordResetCode(user.id, trx);
         const verificationCode = codeObj?.password_reset_code;

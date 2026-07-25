@@ -24,14 +24,16 @@ describe('ListsRouter', () => {
     mockAuthDb();
   });
 
-  it('should call the custom getAll on the controller with just the tenant_id', async () => {
-    const mockLists = [{ id: '1', name: 'VIPs' }];
-    const spy = vi.spyOn(ListsController.prototype, 'getAll').mockResolvedValue(mockLists as any);
+  // Both read paths go through getAllForContext, which materializes the
+  // built-in lists (§8) for the context being read before delegating.
+  it('should route getAll through getAllForContext', async () => {
+    const mockLists = { rows: [{ id: '1', name: 'VIPs' }], count: 1 };
+    const spy = vi.spyOn(ListsController.prototype, 'getAllForContext').mockResolvedValue(mockLists as any);
 
     const caller = ListsRouter.createCaller({ auth } as any);
     const result = await caller.getAll();
 
-    expect(spy).toHaveBeenCalledWith('1');
+    expect(spy).toHaveBeenCalledWith(auth, undefined);
     expect(result).toEqual(mockLists);
   });
 
