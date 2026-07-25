@@ -15,15 +15,21 @@ describe('Sidebar Component', () => {
   let mockAuthService: any;
   let mockTasksSvc: any;
 
-  beforeEach(async () => {
+  /** The component samples matchMedia('(min-width: 1024px)') once, at construction — so call this
+   *  before creating the fixture you want to test. */
+  function setLargeScreen(matches: boolean): void {
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
       value: vi.fn().mockReturnValue({
-        matches: false,
+        matches,
         addEventListener: vi.fn(),
         removeEventListener: vi.fn(),
       }),
     });
+  }
+
+  beforeEach(async () => {
+    setLargeScreen(false);
     mockSidebarSvc = {
       getItems: vi.fn().mockReturnValue(signal([{ label: 'Test Item' }])),
       closeMobile: vi.fn(),
@@ -95,10 +101,20 @@ describe('Sidebar Component', () => {
     expect(component['items']().map((item: { name: string }) => item.name)).toEqual(['People']);
   });
 
-  it('should honor collapse state when the sidebar is expanded', () => {
+  it('should honor collapse state on the expanded desktop sidebar', () => {
+    // The only place chevrons exist: large screen, full drawer, mobile menu closed.
+    setLargeScreen(true);
     mockSidebarSvc.isCollapsed.mockReturnValue(true);
-    // isMobileOpen is true in the default mock, so the sidebar is not effectively narrow
-    expect(component['isVisuallyCollapsed']('section1')).toBe(true);
+    mockSidebarSvc.isMobileOpen.mockReturnValue(false);
+    const desktop = TestBed.createComponent(Sidebar).componentInstance;
+    expect(desktop['isVisuallyCollapsed']('section1')).toBe(true);
+  });
+
+  it('should ignore collapse state in the full-screen mobile menu', () => {
+    mockSidebarSvc.isCollapsed.mockReturnValue(true);
+    // isMobileOpen is true in the default mock. The mobile menu has no chevrons, so a collapsed
+    // section would be a dead end — it always shows everything.
+    expect(component['isVisuallyCollapsed']('section1')).toBe(false);
   });
 
   it('should ignore collapse state on the narrow icon rail', () => {

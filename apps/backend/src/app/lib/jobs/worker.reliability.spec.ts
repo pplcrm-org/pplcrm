@@ -2,6 +2,7 @@ import { sql } from 'kysely';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { BaseRepository } from '../../lib/base.repo';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../test-utils/exclusive-db-lock';
 import { scheduleNextRun } from './reschedule';
 import { BackgroundJobWorker } from './worker';
 
@@ -17,6 +18,10 @@ interface WorkerInternals {
   recoverStaleJobs(): Promise<void>;
 }
 const asInternals = (w: BackgroundJobWorker): WorkerInternals => w as unknown as WorkerInternals;
+
+// These specs commit pending/processing rows that a concurrent claimer would happily pick up,
+// which is exactly what breaks job-claim.spec.ts's global-FIFO assertions. Take turns.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 describe('scheduleNextRun dedup', () => {
   const db = (BaseRepository as any)._db;

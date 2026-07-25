@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { BaseRepository } from '../base.repo';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../test-utils/exclusive-db-lock';
 import { claimNextPendingJob } from './job-claim';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test reaches the shared Kysely handle
 const db = (BaseRepository as any)._db;
 
 const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);
+
+// Every assertion here is about which row claimNextPendingJob picks out of the *whole* table, so
+// no other spec file may hold a pending job while these run.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 describe('claimNextPendingJob (per-tenant in-flight fairness)', () => {
   const createdJobs: string[] = [];
