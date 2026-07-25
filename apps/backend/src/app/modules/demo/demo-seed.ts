@@ -9,6 +9,7 @@ import { legMinutes, roadKm } from '../../lib/routing/geo';
 import type { LatLng } from '../../lib/routing/geo';
 import { SERVICE_MINUTES_PER_STOP, SHARE_TOKEN_TTL_DAYS } from '../../lib/routing/route-constants';
 import { backfillMissingSlugs } from '../../lib/slug';
+import { DuplicateMaintenanceService } from '../persons/services/duplicate-maintenance.service';
 import {
   DEMO_CITY,
   DEMO_COMPANIES,
@@ -770,6 +771,19 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     .returning('id')
     .execute();
   const donationIds = donationRows.map((r) => String(r.id));
+
+  // ── Duplicates queue (§9.3) ───────────────────────────────────────────────
+  //    The dataset deliberately contains the leftovers of a March CSV import
+  //    (see the *-import keys in demo-seed-data), and the "Clean up duplicate
+  //    entries" task points at them. Run the real sweep over the rows we just
+  //    inserted rather than hand-writing potential_duplicates rows, so the
+  //    group keys and reason strings are byte-identical to what the nightly
+  //    cron would produce — otherwise the first sweep after signup would
+  //    rewrite the queue and any "Not duplicates" dismissal made in between
+  //    would stop matching. potential_duplicates cascades on person /
+  //    household / company delete, so exit-demo takes these with it and they
+  //    need no manifest entry.
+  await new DuplicateMaintenanceService().recomputeAllDuplicates(tenant_id, trx);
 
   // ── Manifest + flag (atomic with the data) ────────────────────────────────
   const manifest: DemoSeedManifest = {

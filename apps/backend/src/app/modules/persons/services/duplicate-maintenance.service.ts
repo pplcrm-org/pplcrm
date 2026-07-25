@@ -1,5 +1,6 @@
 import { sql } from 'kysely';
-import type { OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
+import type { Kysely, Transaction } from 'kysely';
+import type { Models, OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { PersonsRepo } from '../repositories/persons.repo';
 import { DuplicatesRepo } from '../../duplicates/repositories/duplicates.repo';
 
@@ -7,12 +8,17 @@ export class DuplicateMaintenanceService {
   private readonly personsRepo = new PersonsRepo();
   private readonly duplicatesRepo = new DuplicatesRepo();
 
-  public async recomputeAllDuplicates(tenantId: string): Promise<void> {
-    const db = this.personsRepo.db;
+  /**
+   * Rebuilds the tenant's `potential_duplicates` queue from scratch. Normally the nightly
+   * `recompute_all_duplicates` cron calls this; pass `trx` to run it inside an open
+   * transaction (demo seeding at signup) so it sees the rows that transaction just wrote.
+   */
+  public async recomputeAllDuplicates(tenantId: string, trx?: Transaction<Models>): Promise<void> {
+    const db: Kysely<Models> = trx ?? this.personsRepo.db;
 
     // §9.3 rule: "'Not duplicates' remembered so the pair isn't re-flagged." Read the
     // tenant's dismissals up front and filter every candidate group against it below.
-    const dismissedGroupKeys = await this.duplicatesRepo.getDismissedGroupKeys(tenantId);
+    const dismissedGroupKeys = await this.duplicatesRepo.getDismissedGroupKeys(tenantId, trx);
 
     // 1. Delete all potential duplicates for the tenant
     await db.deleteFrom('potential_duplicates').where('tenant_id', '=', tenantId).execute();
@@ -77,6 +83,10 @@ export class DuplicateMaintenanceService {
       .where(sql`trim(households.address_fp_full)`, '!=', '')
       .groupBy([sql`lower(persons.first_name)`, sql`lower(persons.last_name)`, 'households.address_fp_full'])
       .having(sql`count(persons.id)`, '>', 1)
+      // Only CROSS-household matches: two people with one name inside a single household are
+      // already the "Same Household" group above, and flagging them here too would put the
+      // identical pair on the Duplicates page twice under two different reasons.
+      .having(sql`count(distinct persons.household_id)`, '>', 1)
       .execute();
 
     // 4. Collect names of people to construct friendly reasons
@@ -187,7 +197,11 @@ export class DuplicateMaintenanceService {
         .where('id', 'in', Array.from(hhIds))
         .execute();
 
-      const hhMap = new Map<string, Record<string, unknown>>();
+      // Typed off the query itself rather than Record<string, unknown> — the frontend
+      // type-checks this file through the tRPC router graph under
+      // noPropertyAccessFromIndexSignature, where `first.street_num` on an index type fails.
+      type HouseholdRow = (typeof dbRows)[number];
+      const hhMap = new Map<string, HouseholdRow>();
       for (const row of dbRows) {
         hhMap.set(String(row.id), row);
       }
@@ -195,7 +209,7 @@ export class DuplicateMaintenanceService {
       for (const group of duplicateAddresses) {
         const groupHouseholds = group.ids
           .map((id) => hhMap.get(String(id)))
-          .filter((x): x is Record<string, unknown> => !!x);
+          .filter((x): x is HouseholdRow => x != null);
 
         if (groupHouseholds.length > 1) {
           const first = groupHouseholds[0];
@@ -248,7 +262,8 @@ export class DuplicateMaintenanceService {
         .where('id', 'in', Array.from(companyIds))
         .execute();
 
-      const companyMap = new Map<string, Record<string, unknown>>();
+      type CompanyRow = (typeof dbRows)[number];
+      const companyMap = new Map<string, CompanyRow>();
       for (const row of dbRows) {
         companyMap.set(String(row.id), row);
       }
@@ -256,7 +271,7 @@ export class DuplicateMaintenanceService {
       for (const group of duplicateNames) {
         const groupCompanies = group.ids
           .map((id) => companyMap.get(String(id)))
-          .filter((x): x is Record<string, unknown> => !!x);
+          .filter((x): x is CompanyRow => x != null);
 
         if (groupCompanies.length > 1) {
           const first = groupCompanies[0];

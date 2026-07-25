@@ -131,7 +131,8 @@ describe('demo seeding and exit-demo', () => {
       | 'delivery_routes'
       | 'delivery_route_stops'
       | 'donations'
-      | 'donation_pledges',
+      | 'donation_pledges'
+      | 'potential_duplicates',
     tenant_id: string,
   ): Promise<number> => {
     const rows = await ctx.trx.selectFrom(table).select('tenant_id').where('tenant_id', '=', tenant_id).execute();
@@ -271,6 +272,47 @@ describe('demo seeding and exit-demo', () => {
     await expect(assertNotDemoMode(trx, f.tenant_id)).rejects.toBeInstanceOf(ForbiddenError);
   });
 
+  it('seeds a duplicates queue the March-import leftovers explain', async () => {
+    const f = await seedFixture();
+    const trx = ctx.trx;
+
+    const rows = await trx
+      .selectFrom('potential_duplicates')
+      .select(['group_key', 'reason', 'person_id', 'household_id', 'company_id'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    expect(rows.length).toBeGreaterThan(0);
+
+    // Every seeded group is a PAIR — the page only pre-selects target/source for two-card
+    // groups, and a demo that opens on a three-way cluster is a worse first impression.
+    const byGroup = new Map<string, typeof rows>();
+    for (const row of rows) {
+      byGroup.set(row.group_key, [...(byGroup.get(row.group_key) ?? []), row]);
+    }
+    expect([...byGroup.values()].every((g) => g.length === 2)).toBe(true);
+
+    // One group per entity tab, and both confidence bands on the People tab:
+    // a same-household name match reads as "possible", a same-address one as "high".
+    const personGroups = [...byGroup.values()].filter((g) => g.every((r) => r.person_id != null));
+    expect(personGroups.some((g) => g[0]?.reason.includes('Same Household'))).toBe(true);
+    expect(personGroups.some((g) => g[0]?.reason.includes('Same Address'))).toBe(true);
+    // ...and never the same pair under two reasons (see recomputeAllDuplicates' cross-household
+    // condition) — each duplicated person appears in exactly one group.
+    const personIds = rows.filter((r) => r.person_id != null).map((r) => String(r.person_id));
+    expect(new Set(personIds).size).toBe(personIds.length);
+
+    expect(
+      [...byGroup.values()].some((g) =>
+        g.every((r) => r.household_id != null && r.reason.includes('Matching Address')),
+      ),
+    ).toBe(true);
+    expect(
+      [...byGroup.values()].some((g) =>
+        g.every((r) => r.company_id != null && r.reason.includes('Matching Company Name')),
+      ),
+    ).toBe(true);
+  });
+
   it('stores newsletter aggregates that reconcile with the raw events', async () => {
     const f = await seedFixture();
     const trx = ctx.trx;
@@ -393,6 +435,8 @@ describe('demo seeding and exit-demo', () => {
     expect(await count('delivery_route_stops', f.tenant_id)).toBe(0);
     expect(await count('donations', f.tenant_id)).toBe(0);
     expect(await count('donation_pledges', f.tenant_id)).toBe(0);
+    // Not manifest-tracked: potential_duplicates cascades off persons/households/companies.
+    expect(await count('potential_duplicates', f.tenant_id)).toBe(0);
 
     // Kept: starter forms (still drafts), the starter tag/issue vocabulary
     // (fully editable), and the user's own rows.

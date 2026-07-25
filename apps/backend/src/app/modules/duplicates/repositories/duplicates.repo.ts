@@ -1,5 +1,7 @@
 import { sql } from 'kysely';
+import type { Transaction } from 'kysely';
 
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { BaseRepository } from '../../../lib/base.repo';
 
 /** Cross-entity duplicate-admin concerns that don't belong to persons/households/companies
@@ -60,9 +62,11 @@ export class DuplicatesRepo extends BaseRepository<'potential_duplicates'> {
   }
 
   /** The set of group_keys this tenant has already said "not duplicates" about — consumed by
-   * `DuplicateMaintenanceService.recomputeAllDuplicates` so the sweep doesn't re-flag them. */
-  public async getDismissedGroupKeys(tenant_id: string): Promise<Set<string>> {
-    const rows = await this.db
+   * `DuplicateMaintenanceService.recomputeAllDuplicates` so the sweep doesn't re-flag them.
+   * `trx` is passed when the sweep runs inside someone else's transaction (demo seeding at
+   * signup) so it reads the same uncommitted state the sweep is about to write against. */
+  public async getDismissedGroupKeys(tenant_id: string, trx?: Transaction<Models>): Promise<Set<string>> {
+    const rows = await (trx ?? this.db)
       .selectFrom('dismissed_duplicate_groups')
       .select('group_key')
       .where('tenant_id', '=', tenant_id)

@@ -276,6 +276,18 @@ export const DEMO_COMPANIES: DemoCompanyDef[] = [
     phone: '613-555-0107',
     industry: 'Fitness',
   },
+  // ── March import duplicate (Duplicates → Companies) ──────────────────────
+  // Same name as co-bytown, so the sweep groups the pair on lower(trim(name)).
+  // Contact details differ, which is what makes the merge worth doing.
+  {
+    key: 'co-bytown-import',
+    name: 'Bytown Coffee Roasters',
+    description: 'Café and roastery — Wellington West.',
+    website: 'https://bytowncoffee.example.com',
+    email: 'orders@bytowncoffee.example.com',
+    phone: '613-555-0182',
+    industry: 'Food & Beverage',
+  },
 ];
 
 export const DEMO_HOUSEHOLDS: DemoHouseholdDef[] = [
@@ -510,6 +522,21 @@ export const DEMO_HOUSEHOLDS: DemoHouseholdDef[] = [
     lat: 45.3846,
     lng: -75.6414,
     ward: 'Alta Vista',
+  },
+
+  // ── March import duplicate (Duplicates → Households) ────────────────────
+  // The same address as hh-kilborn typed with an abbreviated street type:
+  // address_normalize expands "Ave." to "avenue", so both rows land on one
+  // address_fp_full and the sweep flags them as a matching-address pair.
+  {
+    key: 'hh-kilborn-import',
+    street_num: '1128',
+    street1: 'Kilborn Ave.',
+    zip: 'K1H 6L1',
+    lat: 45.3867,
+    lng: -75.6544,
+    ward: 'Alta Vista',
+    notes: 'Came in on the March CSV import.',
   },
 ];
 
@@ -1213,6 +1240,48 @@ export const DEMO_PERSONS: DemoPersonDef[] = [
     email: 'samir.gupta@example.com',
     createdDaysAgo: 1,
     supportLevel: 'leaning',
+  },
+
+  // ── March CSV import duplicates (Duplicates page, §9.3) ─────────────────
+  // Thin rows the March volunteer CSV re-created for people already on file —
+  // the mess the "Clean up duplicate entries from the spring import" task
+  // points at. Each pairs with exactly ONE existing person, so every group on
+  // the Duplicates page is a two-card pair with a target/source pre-selected:
+  //   • same name in the same household            → "possible" confidence
+  //   • same name at the same address (hh-kilborn  → "high" confidence
+  //     + hh-kilborn-import, one address_fp_full)
+  // Person emails are unique per tenant (idx_persons_tenant_email_unique), so
+  // an email-match group can't be seeded — these rows instead carry partly
+  // conflicting, partly missing contact details, which is what a merge fixes.
+  {
+    key: 'kevin-obrien-import',
+    first_name: 'Kevin',
+    last_name: "O'Brien",
+    household: 'hh-frank',
+    email: 'k.obrien@example.net',
+    mobile: '613-555-0231',
+    createdDaysAgo: 12,
+    notes: 'March CSV import — a different mobile and email than the record already on file.',
+  },
+  {
+    key: 'ayesha-rahman-import',
+    first_name: 'Ayesha',
+    last_name: 'Rahman',
+    household: 'hh-kilborn-import',
+    email: 'a.rahman@example.org',
+    mobile: '613-555-0232',
+    createdDaysAgo: 11,
+    tags: ['faith community'],
+    notes: 'March CSV import — same address as the Rahman household, typed as "Kilborn Ave.".',
+  },
+  {
+    key: 'bruce-whitfield-import',
+    first_name: 'Bruce',
+    last_name: 'Whitfield',
+    household: 'hh-pleasantpark',
+    mobile: '613-555-0233',
+    createdDaysAgo: 10,
+    notes: 'March CSV import — this row is missing the do-not-contact flag the older record carries.',
   },
 ];
 
