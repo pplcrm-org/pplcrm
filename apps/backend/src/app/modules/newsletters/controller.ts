@@ -21,7 +21,7 @@ import { BaseController } from '../../lib/base.controller';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
 import { ListsController } from '../lists/controller';
 import { NewslettersRepo } from './repositories/newsletters.repo';
-import { BadRequestError, ConflictError, NotFoundError } from '../../errors/app-errors';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '../../errors/app-errors';
 import { assertNotDemoMode } from '../demo/demo-guard';
 import {
   assertTenantMaySendNewsletter,
@@ -700,7 +700,11 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
     return { cap, used, remaining: Math.max(0, cap - used), resetsAt: window.resetsAt.toISOString() };
   }
 
-  public async sendTestEmail(tenant_id: string, input: SendTestEmailInput): Promise<{ to: string; delivered: number }> {
+  public async sendTestEmail(
+    auth: IAuthKeyPayload,
+    input: SendTestEmailInput,
+  ): Promise<{ to: string; delivered: number }> {
+    const tenant_id = auth.tenant_id;
     await assertNotDemoMode(this.getRepo().db, tenant_id);
     const db = this.getRepo().db;
 
@@ -708,6 +712,26 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
     // suspended/paused, and throttled so they can't be scripted into a bulk channel.
     assertTenantSendingNotBlocked(await loadSendingTenant(db, tenant_id));
     checkRateLimit(`sendTestEmail:${tenant_id}`, 20, 60 * 60 * 1000);
+
+    // A test send is a preview to YOURSELF. The recipient is pinned to the caller's own account
+    // address (read from the DB, never from the token or the request body) because this endpoint
+    // can otherwise be driven directly to mail arbitrary HTML to an arbitrary stranger — and, via
+    // the platform fallback below, to do it from a pplcrm.com address. The UI already only ever
+    // sends the signed-in user's address, so this rejects no legitimate call.
+    const caller = await db
+      .selectFrom('authusers')
+      .select('email')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', auth.user_id)
+      .executeTakeFirst();
+    if (!caller?.email) {
+      throw new NotFoundError('We could not find your account email address for the test send.');
+    }
+    if (input.to.toLowerCase().trim() !== caller.email.toLowerCase().trim()) {
+      throw new ForbiddenError(
+        `A test send can only go to your own address (${caller.email}). To reach other people, send the newsletter.`,
+      );
+    }
 
     // Resolve the sender: prefer the caller-supplied from name/email, then the workspace
     // Communications settings, then the platform preview fallback. Unlike a real broadcast, a test
@@ -723,13 +747,30 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
         'communications.default_from_name',
         'communications.default_from_email',
         'communications.reply_to',
+        'communications.verified_emails',
       ])
       .execute();
 
     const settingsMap: Record<string, string> = {};
+    let verifiedEmails: string[] = [];
     for (const row of settingsRows) {
-      if (typeof row.value === 'string') {
+      if (row.key === 'communications.verified_emails') {
+        if (Array.isArray(row.value)) {
+          verifiedEmails = row.value.map((e) => String(e).toLowerCase().trim());
+        }
+      } else if (typeof row.value === 'string') {
         settingsMap[row.key] = row.value;
+      }
+    }
+
+    // Same rule the settings save path applies (settings/controller.ts): a From address the tenant
+    // has not proven it controls never reaches the wire. Without this, the caller picks the header.
+    if (input.fromEmail) {
+      const requestedFrom = input.fromEmail.toLowerCase().trim();
+      if (!verifiedEmails.includes(requestedFrom)) {
+        throw new ForbiddenError(
+          `${input.fromEmail} is not a verified sending address. Verify it in Workspace settings before sending from it.`,
+        );
       }
     }
 
