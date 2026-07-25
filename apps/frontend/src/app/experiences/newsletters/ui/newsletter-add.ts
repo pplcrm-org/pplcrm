@@ -165,6 +165,11 @@ export class NewsletterAddComponent implements OnInit {
   protected readonly availableLists = signal<Array<{ id: string; name: string; size: number }>>([]);
   protected readonly availableTags = signal<Array<{ id: string; name: string; usage: number }>>([]);
   protected readonly currentStep = signal<StepIndex>(1);
+  /**
+   * High-water mark: the furthest step the wizard has ever reached. Stepping back must not re-lock
+   * a step you already completed — otherwise "Back" silently throws away progress you can see.
+   */
+  protected readonly furthestStep = signal<StepIndex>(1);
   protected readonly excludeListIds = computed(() => this.regularPayload().excludeLists);
   protected readonly excludeTagsList = computed(() => this.regularPayload().excludeTags);
   protected readonly includeListIds = computed(() => this.regularPayload().includeLists);
@@ -294,30 +299,39 @@ export class NewsletterAddComponent implements OnInit {
     }
   }
 
-  /** Route-level leave guard (wired via unsavedChangesGuard in dashboard.routes.ts). */
-  public canDeactivate(): Promise<boolean> {
-    if (!this.dirty()) return Promise.resolve(true);
-    return this.confirmDlg.confirm({
+  /**
+   * Route-level leave guard (wired via unsavedChangesGuard in dashboard.routes.ts).
+   * Offers the way out of the trap, not just the two ways to lose: saving the draft
+   * is the emphasized default, discarding is the de-emphasized escape.
+   */
+  public async canDeactivate(): Promise<boolean> {
+    if (!this.dirty()) return true;
+    const choice = await this.confirmDlg.choose<LeaveChoice>({
       title: 'Leave without saving?',
       message:
-        'Your changes to your draft newsletter (template, audience and copy) will be lost. Save it as a draft to keep working on it later.',
+        'Your changes to your draft newsletter (template, audience and copy) are not saved yet. Save it as a draft to keep working on it later.',
       variant: 'warning',
-      confirmText: 'Discard draft',
+      choices: [
+        { label: 'Save draft', value: 'save', variant: 'info' },
+        { label: 'Discard draft', value: 'discard', variant: 'warning' },
+      ],
       cancelText: 'Keep editing',
-      emphasizeCancel: true,
     });
+    // A failed save keeps the user on the wizard with their work intact (the toast says why).
+    if (choice === 'save') return this.persistDraft();
+    return choice === 'discard';
   }
 
   // --- Step navigation ------------------------------------------------------
 
   protected canReachStep(step: number): boolean {
-    return step <= this.currentStep();
+    return step <= this.furthestStep();
   }
 
   protected goToStep(targetStep: number): void {
-    // Completed or current steps are clickable; future steps stay locked (they narrate why via tooltip).
+    // Anything already reached is clickable; steps beyond it stay locked (they narrate why via tooltip).
     if (this.canReachStep(targetStep)) {
-      this.currentStep.set(targetStep as StepIndex);
+      this.setStep(targetStep as StepIndex);
     }
   }
 
@@ -326,7 +340,7 @@ export class NewsletterAddComponent implements OnInit {
     if (step === 1) {
       this.close();
     } else {
-      this.currentStep.set((step - 1) as StepIndex);
+      this.setStep((step - 1) as StepIndex);
     }
   }
 
@@ -337,13 +351,19 @@ export class NewsletterAddComponent implements OnInit {
 
     if (step >= this.stepIds.length) return;
     this.showFieldErrors.set(false);
-    this.currentStep.set((step + 1) as StepIndex);
+    this.setStep((step + 1) as StepIndex);
   }
 
   /** Jump to a step by meaning, not number. */
   private goToStepId(id: WizardStepId): void {
     const index = this.stepIds.indexOf(id);
-    if (index >= 0) this.currentStep.set((index + 1) as StepIndex);
+    if (index >= 0) this.setStep((index + 1) as StepIndex);
+  }
+
+  /** The single writer for step state, so the high-water mark can never drift from where we've been. */
+  private setStep(step: StepIndex): void {
+    this.currentStep.set(step);
+    if (step > this.furthestStep()) this.furthestStep.set(step);
   }
 
   // --- Template -------------------------------------------------------------
@@ -741,9 +761,18 @@ export class NewsletterAddComponent implements OnInit {
   // --- Save draft -----------------------------------------------------------
 
   protected async saveDraft(): Promise<void> {
-    if (this.saving()) return;
+    if (await this.persistDraft()) this.close();
+  }
+
+  /**
+   * Writes the wizard's current state as a draft and reports whether it landed. Kept separate from
+   * saveDraft() so the leave guard can save without navigating itself (the router is already
+   * navigating), and can keep the user here when the save fails.
+   */
+  private async persistDraft(): Promise<boolean> {
+    if (this.saving()) return false;
     // Edit mode: never write an empty payload over the draft before hydration lands.
-    if (this.isEditing && !this.editLoaded()) return;
+    if (this.isEditing && !this.editLoaded()) return false;
     const raw = this.regularPayload();
     const subject = raw.subject || 'Untitled draft';
     this.saving.set(true);
@@ -758,9 +787,10 @@ export class NewsletterAddComponent implements OnInit {
       this.alertSvc.showSuccess(
         this.editId ? `Saved draft "${subject}"` : `Saved draft "${subject}". Find it in Newsletters`,
       );
-      this.close();
+      return true;
     } catch (err) {
       this.alertSvc.showError(this.errorMessage(err, 'We could not save your draft. Try again.'));
+      return false;
     } finally {
       this.saving.set(false);
     }
@@ -890,7 +920,10 @@ export class NewsletterAddComponent implements OnInit {
       }));
       this.editName.set(name);
       // The template step is moot for an existing draft; its saved content is the design.
-      this.currentStep.set(2);
+      this.setStep(2);
+      // A saved draft already carries content, audience and details, so nothing is "not yet reached" —
+      // reopening one must not re-lock the steps the user had already worked through.
+      this.furthestStep.set(this.stepIds.length as StepIndex);
       this.editLoaded.set(true);
       this.dirty.set(false);
     } catch (err) {
@@ -1195,6 +1228,9 @@ type TemplatePreset = 'welcome' | 'product' | 'newsletter' | 'empty';
 type TemplateSelection = { kind: 'preset'; id: TemplatePreset } | { kind: 'saved'; id: string };
 
 type TimingMode = 'now' | 'schedule';
+
+/** The two ways out of the leave guard; cancelling it (Keep editing) resolves to null instead. */
+type LeaveChoice = 'save' | 'discard';
 
 interface RegularNewsletterPayload {
   subject: string;

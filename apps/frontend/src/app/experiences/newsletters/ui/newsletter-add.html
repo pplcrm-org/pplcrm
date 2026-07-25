@@ -13,20 +13,23 @@
       {{ isEditing ? editName() || 'Untitled newsletter' : 'New newsletter' }}
     </h1>
 
-    <!-- Pill steps: current = solid, completed = tint & clickable, future = muted & locked (narrates why) -->
+    <!-- Pill steps: current = solid, already-reached = tint & clickable, not-yet-reached = muted & locked
+         (narrates why). Reachability is the high-water mark, not the current step, so stepping Back
+         doesn't re-lock a step you already completed. -->
     <ol class="mt-4 hidden flex-wrap gap-2 sm:flex">
       @for (label of steps; track label; let idx = $index) { @let stepNo = idx + 1; @let isCurrent = currentStep() ===
-      stepNo; @let isDone = currentStep() > stepNo; @let isLocked = stepNo > currentStep();
+      stepNo; @let isDone = currentStep() > stepNo; @let isLocked = !canReachStep(stepNo); @let isUnlocked = !isCurrent
+      && !isLocked;
       <li>
         <button
           type="button"
           class="flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors"
           [class.bg-primary]="isCurrent"
           [class.text-primary-content]="isCurrent"
-          [class.bg-primary/10]="isDone"
-          [class.text-primary]="isDone"
-          [class.cursor-pointer]="isDone"
-          [class.hover:bg-primary/20]="isDone"
+          [class.bg-primary/10]="isUnlocked"
+          [class.text-primary]="isUnlocked"
+          [class.cursor-pointer]="isUnlocked"
+          [class.hover:bg-primary/20]="isUnlocked"
           [class.bg-base-200]="isLocked"
           [class.text-base-content/50]="isLocked"
           [class.cursor-not-allowed]="isLocked"
@@ -39,7 +42,7 @@
           <span
             class="flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold"
             [class.bg-primary-content/25]="isCurrent"
-            [class.bg-primary/15]="isDone"
+            [class.bg-primary/15]="isUnlocked"
             [class.bg-base-300]="isLocked"
           >
             @if (isDone) { <pc-icon name="check-circle" [size]="3"></pc-icon> } @else { {{ stepNo }} }
