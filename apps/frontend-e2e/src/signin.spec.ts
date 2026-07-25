@@ -1,214 +1,119 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+/**
+ * Sign-in is critical journey #1: every other authenticated surface is behind it, so the
+ * `@smoke` tests here are the ones CI gates deploys on (see .github/workflows/verify.yml).
+ *
+ * The page is a STATE MACHINE, not a single form (apps/frontend/src/app/auth/signin-page):
+ *   'email' -> Continue -> auth.checkEmail -> 'passkey' (hasPasskeys) | 'password'
+ * There is no password field on first paint. Tests that need it must go through
+ * `gotoPasswordStep()`, which stubs auth.checkEmail so the step transition is deterministic
+ * and does not depend on a running backend.
+ */
+
+/** Stub auth.checkEmail so Continue lands on the password step (no passkey, no backend). */
+async function stubCheckEmail(page: Page, hasPasskeys = false): Promise<void> {
+  await page.route(/\/auth\.checkEmail/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ result: { data: { json: { hasPasskeys } } } }),
+    }),
+  );
+}
+
+/** Drive the email step and land on the password step. */
+async function gotoPasswordStep(page: Page, email = 'test@example.com'): Promise<void> {
+  await stubCheckEmail(page);
+  await page.goto('/signin');
+  await page.getByLabel('Email').fill(email);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByText('Enter your password')).toBeVisible();
+}
 
 test.describe('Authentication', () => {
-  test.describe('Sign-in Page', () => {
-    test('should load sign-in page', async ({ page }) => {
+  test.describe('Email step', () => {
+    test('@smoke loads the sign-in page on the email step', async ({ page }) => {
       await page.goto('/signin');
-      await expect(page.getByText('Enter your email and password to sign in')).toBeVisible();
+      await expect(page.getByText('Enter your email to sign in')).toBeVisible();
     });
 
-    test('should display sign-in form elements', async ({ page }) => {
+    test('@smoke shows the email field and Continue, but no password yet', async ({ page }) => {
       await page.goto('/signin');
 
-      // Check for form elements
-      await expect(page.locator('input[type="email"], input[placeholder*="email" i]')).toBeVisible();
-      await expect(page.locator('input[type="password"], input[placeholder*="password" i]')).toBeVisible();
-      await expect(page.locator('button[type="submit"], button:has-text("Sign in")')).toBeVisible();
+      await expect(page.getByLabel('Email')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
+      // The password field belongs to a later step — asserting its absence is what pins
+      // the two-step contract in place.
+      await expect(page.getByLabel('Password')).toHaveCount(0);
     });
 
-    test('should show validation errors for empty form', async ({ page }) => {
+    test('rejects an invalid email instead of advancing', async ({ page }) => {
+      await stubCheckEmail(page);
       await page.goto('/signin');
 
-      // Try to submit empty form
-      await page.locator('button[type="submit"], button:has-text("Sign in")').click();
+      await page.getByLabel('Email').fill('invalid-email');
+      await page.getByRole('button', { name: 'Continue' }).click();
 
-      // Should show validation errors
-      await expect(page.locator('.error, .invalid, [role="alert"]')).toBeVisible();
-    });
-
-    test('should show validation error for invalid email', async ({ page }) => {
-      await page.goto('/signin');
-
-      // Enter invalid email
-      await page.locator('input[type="email"], input[placeholder*="email" i]').fill('invalid-email');
-      await page.locator('input[type="password"], input[placeholder*="password" i]').fill('password123');
-
-      // Try to submit
-      await page.locator('button[type="submit"], button:has-text("Sign in")').click();
-
-      // Should show email validation error
-      await expect(page.locator('.error, .invalid')).toBeVisible();
-    });
-
-    test('should toggle password visibility', async ({ page }) => {
-      await page.goto('/signin');
-
-      const passwordInput = page.locator('input[type="password"], input[placeholder*="password" i]');
-      const toggleButton = page.locator('[data-testid="password-toggle"], .password-toggle, button:has(svg)').last();
-
-      // Enter password
-      await passwordInput.fill('testpassword');
-
-      // Click toggle button if it exists
-      if ((await toggleButton.count()) > 0) {
-        await toggleButton.click();
-
-        // Check if input type changed to text
-        const inputType = await passwordInput.getAttribute('type');
-        expect(inputType).toBe('text');
-      }
-    });
-
-    test('should handle remember me checkbox', async ({ page }) => {
-      await page.goto('/signin');
-
-      const rememberCheckbox = page.locator('input[type="checkbox"], .checkbox');
-
-      if ((await rememberCheckbox.count()) > 0) {
-        // Check the remember me option
-        await rememberCheckbox.check();
-        await expect(rememberCheckbox).toBeChecked();
-
-        // Uncheck it
-        await rememberCheckbox.uncheck();
-        await expect(rememberCheckbox).not.toBeChecked();
-      }
+      // Stays on the email step; the alert toast carries the message.
+      await expect(page.getByText('Enter your email to sign in')).toBeVisible();
+      await expect(page.getByLabel('Password')).toHaveCount(0);
     });
   });
 
-  test.describe('Authentication Guards', () => {
-    test('should redirect unauthenticated users to sign-in', async ({ page }) => {
-      // Try to access protected route
-      await page.goto('/summary');
+  test.describe('Password step', () => {
+    test('@smoke advances from email to password', async ({ page }) => {
+      await gotoPasswordStep(page);
 
-      // Should redirect to sign-in
+      await expect(page.getByLabel('Password')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'SIGN IN' })).toBeVisible();
+      // The chosen email is echoed back with a Change affordance.
+      await expect(page.getByText('test@example.com')).toBeVisible();
+    });
+
+    test('offers remember-me and forgot-password on the password step', async ({ page }) => {
+      await gotoPasswordStep(page);
+
+      const rememberMe = page.locator('#remember_me');
+      await expect(rememberMe).toBeVisible();
+      await rememberMe.check();
+      await expect(rememberMe).toBeChecked();
+
+      await expect(page.getByRole('link', { name: 'Forgot your password?' })).toBeVisible();
+    });
+
+    test('Change returns to the email step', async ({ page }) => {
+      await gotoPasswordStep(page);
+
+      await page.getByRole('button', { name: 'Change' }).click();
+
+      await expect(page.getByText('Enter your email to sign in')).toBeVisible();
+      await expect(page.getByLabel('Password')).toHaveCount(0);
+    });
+
+    test('routes to the passkey step when the account has passkeys', async ({ page }) => {
+      await stubCheckEmail(page, true);
+      await page.goto('/signin');
+
+      await page.getByLabel('Email').fill('passkey-user@example.com');
+      await page.getByRole('button', { name: 'Continue' }).click();
+
+      await expect(page.getByRole('heading', { name: 'Sign in with passkey' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Use password instead' })).toBeVisible();
+    });
+  });
+
+  test.describe('Authentication guards', () => {
+    test('@smoke redirects unauthenticated users to sign-in', async ({ page }) => {
+      await page.goto('/summary');
       await expect(page).toHaveURL(/\/signin/);
     });
-
-    test('should redirect authenticated users away from sign-in', async ({ page }) => {
-      page.on('console', (msg) => console.log('BROWSER LOG:', msg.text()));
-      page.on('pageerror', (err) => console.log('BROWSER ERROR:', err.message));
-
-      // Mock currentUser query response for tRPC using RegExp
-      await page.route(/\/auth\.currentUser/, async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ result: { data: { json: { id: '123', email: 'test@example.com' } } } }),
-        });
-      });
-
-      // Mock global notifications, dashboard stats, and tags queries to prevent UNAUTHORIZED redirects
-      await page.route(/\/notifications\.getUnreadCount/, async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ result: { data: { json: 0 } } }),
-        });
-      });
-
-      await page.route(/\/notifications\.getLatest/, async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ result: { data: { json: [] } } }),
-        });
-      });
-
-      await page.route(/\/tags\.getAllWithCounts/, async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ result: { data: { json: { rows: [], count: 0 } } } }),
-        });
-      });
-
-      await page.route(/\/dashboard\.getStats/, async (route) => {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            result: {
-              data: {
-                json: {
-                  avgFirstResponseHours: 0,
-                  avgTimeToCloseHours: 0,
-                  emailsAssigned: [],
-                  emailsClosed: [],
-                  contactsGrowth: [],
-                  unassignedCount: 0,
-                  totalOpenCount: 0,
-                  userStats: [],
-                  unassignedSlaBreaches: 0,
-                  unassignedEmailSlaBreaches: 0,
-                  unassignedTaskSlaBreaches: 0,
-                },
-              },
-            },
-          }),
-        });
-      });
-
-      // Mock authentication state
-      await page.addInitScript(() => {
-        localStorage.setItem('auth_token', 'mock-token');
-      });
-
-      // Try to access sign-in page
-      await page.goto('/signin');
-
-      // Should redirect to dashboard or main app
-      await expect(page).not.toHaveURL(/\/signin/);
-    });
   });
 
-  test.describe('Sign-up Flow', () => {
-    test('should navigate to sign-up from sign-in', async ({ page }) => {
-      await page.goto('/signin');
+  test.describe('Error handling', () => {
+    test('surfaces an error when sign-in credentials are rejected', async ({ page }) => {
+      await gotoPasswordStep(page);
 
-      // Look for sign-up link
-      const signUpLink = page.locator('a:has-text("Sign up"), a:has-text("Create account"), [href*="signup"]');
-
-      if ((await signUpLink.count()) > 0) {
-        await signUpLink.click();
-        await expect(page).toHaveURL(/\/signup/);
-      }
-    });
-
-    test('should display sign-up form if available', async ({ page }) => {
-      await page.goto('/signup');
-
-      // Check if sign-up page exists and has form elements
-      const emailInput = page.locator('input[type="email"], input[placeholder*="email" i]');
-      const passwordInput = page.locator('input[type="password"], input[placeholder*="password" i]');
-
-      if ((await emailInput.count()) > 0) {
-        await expect(emailInput).toBeVisible();
-        await expect(passwordInput).toBeVisible();
-      }
-    });
-  });
-
-  test.describe('Error Handling', () => {
-    test('should handle network errors during sign-in', async ({ page }) => {
-      await page.goto('/signin');
-
-      // Mock network failure on the tRPC signIn mutation
-      await page.route(/\/auth\.signIn/, (route) => route.abort());
-
-      // Fill form and submit
-      await page.locator('input[type="email"], input[placeholder*="email" i]').fill('test@example.com');
-      await page.locator('input[type="password"], input[placeholder*="password" i]').fill('password123');
-      await page.locator('button[type="submit"], button:has-text("Sign in")').click();
-
-      // Should show error message
-      await expect(page.locator('.error, .alert, [role="alert"]')).toBeVisible();
-    });
-
-    test('should handle invalid credentials', async ({ page }) => {
-      await page.goto('/signin');
-
-      // Mock 401 response on the tRPC signIn mutation
       await page.route(/\/auth\.signIn/, (route) =>
         route.fulfill({
           status: 401,
@@ -217,52 +122,45 @@ test.describe('Authentication', () => {
         }),
       );
 
-      // Fill form and submit
-      await page.locator('input[type="email"], input[placeholder*="email" i]').fill('wrong@example.com');
-      await page.locator('input[type="password"], input[placeholder*="password" i]').fill('wrongpassword');
-      await page.locator('button[type="submit"], button:has-text("Sign in")').click();
+      await page.getByLabel('Password').fill('wrongpassword');
+      await page.getByRole('button', { name: 'SIGN IN' }).click();
 
-      // Should show error message
-      await expect(page.locator('.error, .alert, [role="alert"]')).toBeVisible();
+      await expect(page.locator('[role="alert"], .alert')).toBeVisible();
+    });
+
+    test('surfaces an error when the backend is unreachable', async ({ page }) => {
+      await page.goto('/signin');
+      await page.route(/\/auth\.checkEmail/, (route) => route.abort());
+
+      await page.getByLabel('Email').fill('test@example.com');
+      await page.getByRole('button', { name: 'Continue' }).click();
+
+      // Unreachable backend must keep the user on the email step rather than walking them
+      // into a password prompt that cannot succeed (signin-page.ts continueWithEmail).
+      await expect(page.locator('[role="alert"], .alert')).toBeVisible();
+      await expect(page.getByLabel('Password')).toHaveCount(0);
     });
   });
 
   test.describe('Accessibility', () => {
-    test('should have proper form labels and ARIA attributes', async ({ page }) => {
+    test('labels the email field and keeps it keyboard reachable', async ({ page }) => {
       await page.goto('/signin');
 
-      // Check for proper labeling
-      const emailInput = page.locator('input[type="email"], input[placeholder*="email" i]');
-      const passwordInput = page.locator('input[type="password"], input[placeholder*="password" i]');
+      const email = page.getByLabel('Email');
+      await expect(email).toHaveAttribute('aria-label', 'Email');
 
-      // Should have labels or aria-label
-      await expect(emailInput).toHaveAttribute('aria-label');
-      await expect(passwordInput).toHaveAttribute('aria-label');
+      await email.focus();
+      await expect(email).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(page.getByRole('button', { name: 'Continue' })).toBeFocused();
     });
+  });
 
-    test('should be keyboard navigable', async ({ page }) => {
+  test.describe('Sign-up navigation', () => {
+    test('links to sign-up from the email step', async ({ page }) => {
       await page.goto('/signin');
-
-      // Focus email input first
-      const emailInput = page.locator('input[type="email"], input[placeholder*="email" i]');
-      await emailInput.focus();
-      await expect(emailInput).toBeFocused();
-
-      // Tab to password
-      await page.keyboard.press('Tab');
-      await expect(page.locator('input[type="password"], input[placeholder*="password" i]')).toBeFocused();
-
-      // Tab to remember_me checkbox
-      await page.keyboard.press('Tab');
-      await expect(page.locator('input[type="checkbox"]')).toBeFocused();
-
-      // Tab to forgot password link
-      await page.keyboard.press('Tab');
-      await expect(page.locator('a:has-text("Forgot your password?")')).toBeFocused();
-
-      // Tab to submit button
-      await page.keyboard.press('Tab');
-      await expect(page.locator('button[type="submit"], button:has-text("Sign in")')).toBeFocused();
+      await page.getByRole('link', { name: 'SIGN UP' }).click();
+      await expect(page).toHaveURL(/\/signup/);
     });
   });
 });

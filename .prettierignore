@@ -7,3 +7,6 @@
 .nx/self-healing
 # Generated repomix codebase maps — not hand-formatted
 **/STRUCTURE.md
+
+# Generated help-centre docs (tsx codegen, rebuilt as a `build` dep) — not hand-formatted
+apps/website/src/generated

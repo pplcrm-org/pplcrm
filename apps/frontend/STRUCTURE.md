@@ -7349,51 +7349,6 @@ export class DeliveriesRequests implements OnInit {
 }
 ```
 
-## File: apps/frontend/src/app/experiences/deliveries/ui/yard-sign-standing.html
-```html
-<label class="flex flex-col gap-1">
-  @if (showLabel()) {
-  <span class="text-[11px] font-medium text-base-content/60" i18n>Yard sign</span>
-  } @if (householdId()) {
-  <select
-    class="select select-bordered select-sm w-full"
-    [value]="request()?.status ?? ''"
-    [disabled]="saving() || readonlyContext() || blockedByOtherCampaign()"
-    (change)="onStatusChange($event)"
-  >
-    @if (!request()) {
-    <option value="" i18n>None requested</option>
-    } @for (status of statuses; track status) {
-    <option [value]="status">{{ labels[status] }}</option>
-    }
-  </select>
-  @if (blockedByOtherCampaign()) {
-  <!-- One open request per household, tenant-wide — say who holds it instead of a dead 409. -->
-  <p class="text-[11px] text-base-content/40">
-    <ng-container i18n>Sign already requested in</ng-container> {{ openElsewhere()?.campaign_name }}
-    <ng-container i18n>— one open request per household.</ng-container>
-  </p>
-  } } @else {
-  <!-- No address, no lawn — guide to the fix instead of a dead disabled control. -->
-  <p class="py-1 text-[11px] text-base-content/40" i18n>Needs an address. Assign a household first.</p>
-  }
-</label>
-
-@if (request(); as r) { @if (metaLine()) {
-<p class="mt-1 text-[10px] text-base-content/40">{{ metaLine() }}</p>
-} @if (r.route_id) {
-<p class="mt-1 text-[10px]">
-  <a class="link link-primary" [routerLink]="['/deliveries/routes', r.route_id]">
-    <ng-container i18n>On route:</ng-container> {{ r.route_name }}
-  </a>
-</p>
-} @else if (r.status === 'approved' && r.skip_reason) {
-<p class="mt-1 text-[10px] text-base-content/40">
-  <ng-container i18n>Last attempt skipped:</ng-container> {{ r.skip_reason.toLowerCase() }}
-</p>
-} }
-```
-
 ## File: apps/frontend/src/app/experiences/donations/ui/donations-grid.ts
 ```typescript
 import { Component, inject, signal, computed, OnInit, viewChild } from '@angular/core';
@@ -13247,6 +13202,395 @@ export class PublicFormComponent implements OnInit {
       this.submitting.set(false);
     }
   }
+}
+```
+
+## File: apps/frontend/src/app/experiences/fundraising/ui/fundraising-form.ts
+```typescript
+import { Component, OnInit, signal, computed, inject } from '@angular/core';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { form, FormField, validateStandardSchema, submit } from '@angular/forms/signals';
+import { ActivatedRoute, Router, RouterModule } from '@angular/router';
+import { AddWebFormObj } from '../../../../../../../libs/common/src';
+import { ListsService } from '@experiences/lists/services/lists-service';
+import { FormsService } from '@experiences/forms/services/forms-service';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Tags } from '@experiences/tags/ui/tags';
+import { TagItem } from '@uxcommon/components/tags/tagitem';
+import { Icon } from '@icons/icon';
+import { FormActions } from '@uxcommon/components/form-actions/form-actions';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { SettingsService } from '@experiences/settings/services/settings-service';
+import { DonationsService } from '../../../services/api/donations-service';
+import { environment } from '../../../../environments/environment';
+import { donationPageUrl } from '../../../shared/public-pages';
+import { AuthService } from '../../../auth/auth-service';
+
+@Component({
+  selector: 'pc-fundraising-form',
+  imports: [FormField, RouterModule, Tags, TagItem, Icon, FormActions, PcCard],
+  templateUrl: './fundraising-form.html',
+})
+export class FundraisingFormComponent implements OnInit {
+  private readonly auth = inject(AuthService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+  private readonly formsSvc = inject(FormsService);
+  private readonly listsSvc = inject(ListsService);
+  private readonly alertSvc = inject(AlertService);
+  private readonly dialogs = inject(ConfirmDialogService);
+  private readonly settingsSvc = inject(SettingsService);
+  private readonly donationsSvc = inject(DonationsService);
+
+  private readonly _loading = createLoadingGate();
+  protected readonly loading = this._loading.visible;
+  protected readonly isInitialized = signal(false);
+  protected readonly saving = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly isNew = signal(true);
+  protected readonly formId = signal<string | null>(null);
+  // Public lookups are keyed (tenant, slug) — the UUID is internal only.
+  protected readonly formSlug = signal<string | null>(null);
+
+  protected setType(type: 'donation' | 'recurring_donation') {
+    this.payload.update((p) => ({ ...p, form_type: type }));
+  }
+
+  // Connect readiness comes from the residency context (defaults true to avoid a banner flash
+  // before it loads); tenants no longer hold Stripe keys.
+  protected readonly stripeConnected = signal(true);
+
+  // Donations are paused until the tenant confirms residency restrictions in Workspace → Donations.
+  // Defaults to true so no false "paused" banner flashes before the context loads.
+  protected readonly residencyAcknowledged = signal(true);
+
+  protected readonly availableLists = signal<Array<{ id: string; name: string }>>([]);
+  protected readonly selectedLists = signal<string[]>([]);
+  protected readonly selectedTags = signal<string[]>([]);
+  protected readonly selectedFields = signal<string[]>(['first_name', 'last_name', 'email', 'mobile', 'notes']);
+
+  protected readonly payload = signal({
+    name: '',
+    description: '',
+    redirect_url: '',
+    status: 'active' as 'active' | 'archived',
+    send_confirmation: true,
+    send_alert: true,
+    form_type: 'donation' as 'donation' | 'recurring_donation',
+  });
+
+  protected readonly form = form(this.payload, (p) => {
+    validateStandardSchema(p, AddWebFormObj);
+  });
+
+  protected readonly isRecurring = computed(() => this.payload().form_type === 'recurring_donation');
+
+  protected readonly embedSnippet = computed(() => {
+    const slug = this.formSlug();
+    if (!slug) return '';
+    const apiOrigin = environment.apiUrl.replace(/\/$/, '');
+    const tenantSlug = this.auth.getUser()?.tenant_slug ?? '';
+    const recurring = this.isRecurring();
+
+    const amountField = recurring
+      ? `
+  <div style="margin-bottom: 16px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Monthly Pledge Amount ($) *</label>
+    <input type="number" name="monthly_amount" min="1" step="1" placeholder="25" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+    <small style="font-size: 12px; color: #666;">You will be billed this amount every month.</small>
+  </div>`
+      : `
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Donation Amount ($ CAD) *</label>
+    <input type="number" name="amount" min="1" step="any" placeholder="E.g. 50.00" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+  </div>`;
+
+    const submitLabel = recurring ? 'Start Monthly Pledge' : 'Donate Now';
+
+    return `<!-- pplCRM Embeddable Donation Form -->
+<form action="${apiOrigin}/api/forms/submit/${slug}?t=${encodeURIComponent(tenantSlug)}" method="POST" style="max-width: 400px; font-family: sans-serif;">
+  <input type="text" name="_hp" style="display:none !important" tabindex="-1" autocomplete="off" />
+
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">First Name *</label>
+    <input type="text" name="first_name" placeholder="John" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Last Name *</label>
+    <input type="text" name="last_name" placeholder="Doe" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Email Address *</label>
+    <input type="email" name="email" placeholder="you@example.com" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Street Address *</label>
+    <input type="text" name="street1" placeholder="E.g. 123 Main St" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">City *</label>
+    <input type="text" name="city" placeholder="E.g. Toronto" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Country of Residence *</label>
+    <select name="country" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;">
+      <option value="CA">Canada</option>
+      <option value="US">United States</option>
+      <option value="GB">United Kingdom</option>
+      <option value="AU">Australia</option>
+    </select>
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">State / Province *</label>
+    <input type="text" name="state" placeholder="E.g. ON or NY" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+  </div>
+
+  <div style="margin-bottom: 12px;">
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Zip / Postal Code *</label>
+    <input type="text" name="zip" placeholder="E.g. M5V 2T6" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
+  </div>${amountField}
+
+  <button type="submit" style="background-color: #0ea5e9; color: white; padding: 10px 16px; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; width: 100%;">${submitLabel}</button>
+</form>`;
+  });
+
+  protected readonly formUrl = computed(() => {
+    const slug = this.formSlug();
+    if (!slug) return '';
+    const tenantSlug = this.auth.getUser()?.tenant_slug ?? '';
+    return donationPageUrl(tenantSlug, slug);
+  });
+
+  public ngOnInit(): void {
+    const id = this.route.snapshot.paramMap.get('id');
+    if (id && id !== 'add') {
+      this.isNew.set(false);
+      this.formId.set(id);
+    }
+    void this.loadLists();
+    void this.settingsSvc.load();
+    void this.loadResidencyContext();
+  }
+
+  private async loadResidencyContext(): Promise<void> {
+    try {
+      const ctx = await this.donationsSvc.getResidencyContext();
+      this.residencyAcknowledged.set(ctx.residencyAcknowledged);
+      this.stripeConnected.set(ctx.stripeConnected);
+    } catch {
+      // non-fatal — leave the banners hidden if the context can't be read
+    }
+  }
+
+  protected listName(id: string): string {
+    const match = this.availableLists().find((list) => list.id === id);
+    return match?.name ?? 'List';
+  }
+
+  protected handleListSelect(event: Event): void {
+    const select = event.target as HTMLSelectElement | null;
+    if (!select) return;
+    const value = select.value;
+    if (!value) return;
+    const current = new Set(this.selectedLists());
+    if (!current.has(value)) {
+      current.add(value);
+      this.selectedLists.set(Array.from(current));
+    }
+    select.value = '';
+  }
+
+  protected removeList(listId: string): void {
+    this.selectedLists.set(this.selectedLists().filter((id) => id !== listId));
+  }
+
+  protected handleTagsChange(tags: string[]): void {
+    this.selectedTags.set(Array.isArray(tags) ? [...tags] : []);
+  }
+
+  protected copySnippet(): void {
+    const code = this.embedSnippet();
+    if (!code) return;
+    navigator.clipboard.writeText(code).then(
+      () => this.alertSvc.showSuccess('Donation page snippet copied to clipboard!'),
+      () => this.alertSvc.showError('Failed to copy to clipboard.'),
+    );
+  }
+
+  protected copyUrl(): void {
+    const url = this.formUrl();
+    if (!url) return;
+    navigator.clipboard.writeText(url).then(
+      () => this.alertSvc.showSuccess('Donation page URL copied!'),
+      () => this.alertSvc.showError('Failed to copy URL.'),
+    );
+  }
+
+  protected async deleteForm() {
+    const id = this.formId();
+    if (!id) return;
+    const confirmed = await this.dialogs.confirm({
+      title: 'Delete Donation Page',
+      message: 'Are you sure you want to delete this donation page? This action cannot be undone.',
+      variant: 'danger',
+      confirmText: 'Delete',
+    });
+    if (!confirmed) return;
+    this.saving.set(true);
+    try {
+      await this.formsSvc.delete(id);
+      this.formsSvc.triggerRefresh();
+      this.alertSvc.showSuccess('Donation page deleted');
+      await this.router.navigate(['/donations']);
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Unable to delete donation page';
+      this.alertSvc.showError(message);
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async save(done?: (() => void) | Event) {
+    if (done instanceof Event) {
+      done.preventDefault();
+    }
+
+    this.form().markAsTouched();
+    if (this.form().invalid()) {
+      this.alertSvc.showError('Please check your inputs.');
+      return;
+    }
+
+    this.saving.set(true);
+    this.error.set(null);
+
+    await submit(this.form, {
+      action: async () => {
+        const values = this.payload();
+
+        try {
+          if (this.isNew()) {
+            const payload = {
+              name: values.name?.trim() ?? '',
+              description: values.description?.trim() || null,
+              redirect_url: values.redirect_url?.trim() || null,
+              target_tags: this.selectedTags().length ? this.selectedTags() : null,
+              target_lists: this.selectedLists().length ? this.selectedLists() : null,
+              status: values.status,
+              fields: this.selectedFields(),
+              send_confirmation: !!values.send_confirmation,
+              send_alert: !!values.send_alert,
+              form_type: values.form_type,
+            };
+            const result = (await this.formsSvc.add(payload)) as { id: string };
+            this.alertSvc.showSuccess('Donation page created successfully!');
+            void this.router.navigate(['/donation-pages', result.id]);
+          } else {
+            const id = this.formId()!;
+            const payload = {
+              name: values.name?.trim() ?? '',
+              description: values.description?.trim() || null,
+              redirect_url: values.redirect_url?.trim() || null,
+              target_tags: this.selectedTags().length ? this.selectedTags() : null,
+              target_lists: this.selectedLists().length ? this.selectedLists() : null,
+              status: values.status,
+              fields: this.selectedFields(),
+              send_confirmation: !!values.send_confirmation,
+              send_alert: !!values.send_alert,
+            };
+            await this.formsSvc.update(id, payload);
+            this.alertSvc.showSuccess('Donation page updated successfully!');
+            if (typeof done === 'function') {
+              done();
+            } else {
+              void this.router.navigate(['/donation-pages', id]);
+            }
+          }
+        } catch (err) {
+          const msg = err instanceof Error && err.message ? err.message : 'An error occurred while saving.';
+          this.error.set(msg);
+          this.alertSvc.showError(msg);
+        } finally {
+          this.saving.set(false);
+        }
+        return null;
+      },
+    });
+  }
+
+  private async loadLists(): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      const result = await this.listsSvc.getAll({ limit: 100 });
+      const rows = Array.isArray(result?.rows) ? result.rows : [];
+      this.availableLists.set(
+        rows.map((row: any) => ({
+          id: String(row.id),
+          name: String(row.name),
+        })),
+      );
+      if (!this.isNew()) {
+        await this.loadPageDetails();
+      }
+    } catch (err) {
+      console.error('Failed to load lists', err);
+    } finally {
+      this.isInitialized.set(true);
+      end();
+    }
+  }
+
+  private async loadPageDetails(): Promise<void> {
+    const id = this.formId();
+    if (!id) return;
+    const end = this._loading.begin();
+    try {
+      const record = (await this.formsSvc.getById(id)) as any;
+      if (record) {
+        this.formSlug.set(record.slug ?? null);
+        this.payload.set({
+          name: record.name ?? '',
+          description: record.description ?? '',
+          redirect_url: record.redirect_url ?? '',
+          status: (record.status as 'active' | 'archived') ?? 'active',
+          send_confirmation: record.send_confirmation !== false,
+          send_alert: record.send_alert !== false,
+          form_type: (record.form_type as 'donation' | 'recurring_donation') ?? 'donation',
+        });
+        this.form().reset();
+        this.selectedTags.set(Array.isArray(record.target_tags) ? record.target_tags : []);
+        this.selectedLists.set(Array.isArray(record.target_lists) ? record.target_lists : []);
+        if (record.fields) {
+          const fields = Array.isArray(record.fields) ? record.fields : JSON.parse(record.fields);
+          this.selectedFields.set(fields);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load page details', err);
+      this.error.set('Failed to load page details.');
+    } finally {
+      end();
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 ```
 
@@ -20840,6 +21184,1319 @@ export class AccountSettingsComponent extends TRPCService<any> implements OnInit
 }
 ```
 
+## File: apps/frontend/src/app/experiences/settings/donations/donations-settings.html
+```html
+<div class="space-y-8">
+  <!-- Compliance Disclaimer (top priority) -->
+  <div
+    class="alert alert-info text-xs rounded-xl p-3 border-info/30 bg-info/5 text-info-content shadow-sm flex items-start gap-3"
+  >
+    <pc-icon name="information-circle" [size]="5" class="shrink-0 mt-0.5 text-info"></pc-icon>
+    <div>
+      <strong class="font-semibold">Compliance is your responsibility</strong>
+      <p class="mt-0.5 text-base-content/70">
+        You are solely responsible for ensuring that your donation collection, contribution limits, residency rules, and
+        tax-receipting comply with the campaign finance and charitable-solicitation laws that apply to you and your
+        contributors. pplCRM is a software platform only — the settings below are tools you configure, and we make no
+        representation or warranty that any configuration satisfies your legal obligations. When in doubt, consult a
+        qualified legal or compliance advisor.
+      </p>
+    </div>
+  </div>
+
+  <!-- Donations paused: residency not yet acknowledged (fail-closed gate) -->
+  @if (!residencyAcknowledged()) {
+  <div class="alert alert-warning shadow-sm">
+    <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
+    <div>
+      <span class="font-bold">Donations are paused</span>
+      <p class="text-xs mt-0.5">
+        Confirm your residency restrictions below before this organization can accept donations.
+      </p>
+    </div>
+  </div>
+  }
+
+  <!-- Stripe Connect Section — hosted onboarding; no keys to paste -->
+  <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6">
+    <div class="border-b border-base-200 pb-3 flex items-center justify-between gap-2">
+      <h3 class="text-lg font-semibold flex items-center gap-2">
+        <pc-icon name="credit-card" class="text-primary" [size]="5"></pc-icon>
+        Stripe
+      </h3>
+      <div class="flex items-center gap-2">
+        @if (stripeStatus()?.isMockMode) {
+        <span class="badge badge-sm badge-info font-medium">Mock mode</span>
+        } @else {
+        <span
+          class="badge badge-sm font-medium"
+          [class.badge-success]="stripeConfigured() && stripeStatus()?.chargesEnabled"
+          [class.badge-warning]="stripeConfigured() && !stripeStatus()?.chargesEnabled"
+          [class.badge-neutral]="!stripeConfigured()"
+        >
+          {{ !stripeConfigured() ? 'Not connected' : stripeStatus()?.chargesEnabled ? 'Connected' : 'Onboarding
+          incomplete' }}
+        </span>
+        } @if (stripeConfigured()) {
+        <button type="button" class="btn btn-xs btn-outline btn-error" (click)="removeStripeConfig()">
+          <pc-icon name="trash" [size]="3"></pc-icon>
+          Remove connection
+        </button>
+        }
+      </div>
+    </div>
+
+    <!-- Where donations are processed / where donor payment data is stored -->
+    <div class="alert alert-info shadow-sm">
+      <pc-icon name="information-circle" [size]="5"></pc-icon>
+      <div>
+        <span class="font-bold">{{ processingNotice().heading }}</span>
+        <p class="text-xs mt-0.5">{{ processingNotice().body }}</p>
+      </div>
+    </div>
+
+    <p class="text-xs text-base-content/65 max-w-2xl">
+      Donations are charged directly to your campaign's own Stripe account, so your campaign stays the merchant of
+      record. pplCRM deducts a 1% platform fee from card donations; Stripe's own processing fees also apply. There are
+      no API keys to paste: connecting sends you to Stripe to verify your campaign, then brings you back here.
+    </p>
+
+    @if (stripeStatus()?.isMockMode) {
+    <div class="alert alert-info text-xs shadow-sm">
+      <pc-icon name="information-circle" [size]="5"></pc-icon>
+      <span>
+        No platform Stripe key is configured, so donations run in mock mode — checkout produces simulated sessions and
+        no real charges.
+      </span>
+    </div>
+    } @else if (!stripeConfigured()) {
+    <!-- Pre-connection explainer: answers "why do I need my own Stripe account" before asking for it -->
+    <div class="pc-panel p-4 space-y-3 max-w-2xl">
+      <p class="pc-eyebrow">Why you connect your own Stripe account</p>
+      <ul class="space-y-2.5 text-xs text-base-content/75">
+        <li class="flex items-start gap-2.5">
+          <pc-icon name="banknotes" class="text-primary shrink-0 mt-0.5" [size]="4"></pc-icon>
+          <span>
+            <strong class="font-semibold text-base-content/90">Donations go straight to your campaign.</strong>
+            Campaign finance rules generally require contributions to be received by the campaign itself. Money moves
+            from the donor's card to your own bank account and never passes through pplCRM.
+          </span>
+        </li>
+        <li class="flex items-start gap-2.5">
+          <pc-icon name="lock-closed" class="text-primary shrink-0 mt-0.5" [size]="4"></pc-icon>
+          <span>
+            <strong class="font-semibold text-base-content/90">Stripe safeguards every payment.</strong>
+            We leave money handling to Stripe because payment security is its entire business. Stripe is certified to
+            PCI DSS Level 1, the industry's highest payment-security standard, and card details never touch pplCRM's
+            servers.
+          </span>
+        </li>
+        <li class="flex items-start gap-2.5">
+          <pc-icon name="user-circle" class="text-primary shrink-0 mt-0.5" [size]="4"></pc-icon>
+          <span>
+            <strong class="font-semibold text-base-content/90">You stay in control.</strong>
+            The Stripe account is yours: you manage payouts, refunds, and disputes from your own Stripe dashboard, and
+            your processing history stays with you. Verification happens once and takes about five to ten minutes.
+          </span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- Not connected: pick the campaign's country, then hand off to Stripe-hosted onboarding -->
+    <div class="flex flex-col sm:flex-row sm:items-end gap-3 pt-1">
+      <div class="flex flex-col gap-1.5">
+        <label for="stripe_country" class="text-xs font-semibold text-base-content/90">Campaign country</label>
+        <select
+          id="stripe_country"
+          class="select select-bordered select-sm w-full sm:w-64"
+          (change)="stripeCountry.set($any($event.target).value)"
+        >
+          @for (c of stripeConnectCountries; track c.code) {
+          <option [value]="c.code" [selected]="c.code === stripeCountry()">{{ c.name }}</option>
+          }
+        </select>
+        <p class="text-[11px] text-base-content/50">
+          Where your campaign is legally based. Stripe collects everything else during onboarding.
+        </p>
+      </div>
+      <button type="button" class="btn btn-primary btn-sm" [disabled]="isConnectingStripe()" (click)="connectStripe()">
+        <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true">
+          <path
+            d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.594-7.305h.003z"
+          />
+        </svg>
+        {{ isConnectingStripe() ? 'Redirecting to Stripe…' : 'Connect with Stripe' }}
+      </button>
+    </div>
+    } @else if (!stripeStatus()?.chargesEnabled) {
+    <!-- Onboarding started but not finished — charges stay disabled until Stripe verifies -->
+    <div class="alert alert-warning shadow-sm">
+      <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
+      <div class="flex-1">
+        <span class="font-bold">Finish your Stripe onboarding</span>
+        <p class="text-xs mt-0.5">
+          Stripe still needs information before your campaign can accept card donations. Resume where you left off —
+          this page updates automatically once Stripe verifies your account.
+        </p>
+      </div>
+      <button type="button" class="btn btn-sm btn-warning" [disabled]="isConnectingStripe()" (click)="connectStripe()">
+        Resume onboarding
+      </button>
+    </div>
+    } @else {
+    <!-- Connected and charges enabled -->
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+      <p class="text-xs text-base-content/80 flex items-center gap-1.5">
+        <pc-icon name="check-circle" class="text-success" [size]="4"></pc-icon>
+        Your Stripe account is connected and can accept donations.
+      </p>
+      <button
+        type="button"
+        class="btn btn-sm btn-outline shrink-0"
+        [disabled]="isOpeningStripeDashboard()"
+        (click)="openStripeDashboard()"
+      >
+        <pc-icon name="arrow-top-right-on-square" [size]="4"></pc-icon>
+        Open Stripe dashboard
+      </button>
+    </div>
+    }
+  </div>
+
+  <!-- Donation Limit & Residency Restrictions Section -->
+  <div class="grid gap-6 md:grid-cols-2">
+    <!-- Donation Periods card -->
+    <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6 flex flex-col">
+      <div class="border-b border-base-200 pb-3 flex items-center justify-between">
+        <h3 class="text-lg font-semibold flex items-center gap-2">
+          <pc-icon name="calendar" class="text-primary" [size]="5"></pc-icon>
+          Donation Limit Periods
+        </h3>
+        <button
+          type="button"
+          class="btn btn-xs btn-primary"
+          (click)="showAddPeriod.set(true)"
+          [hidden]="showAddPeriod()"
+        >
+          <pc-icon name="plus" [size]="3"></pc-icon>
+          Add Period
+        </button>
+      </div>
+      <p class="text-xs text-base-content/60">
+        Define campaign periods with custom date ranges and maximum limits instead of a flat calendar year. The active
+        period covering today is used for all eligibility checks. If no period is defined, the fallback annual limit
+        below applies.
+      </p>
+
+      <!-- Existing periods list -->
+      <div class="space-y-2">
+        @for (period of donationPeriods(); track period.id) {
+        <div class="flex items-start justify-between gap-3 p-3 rounded-lg border border-base-200 bg-base-100 text-xs">
+          <div class="space-y-0.5 flex-1 min-w-0">
+            <div class="font-bold text-base-content truncate">{{ period.name }}</div>
+            <div class="text-base-content/60">
+              {{ formatDate(period.start_date) }} – {{ period.end_date ? formatDate(period.end_date) : 'No end date' }}
+            </div>
+            <div class="flex items-center gap-2 mt-1">
+              <span class="font-semibold text-primary">${{ (period.limit_amount / 100).toLocaleString() }} limit</span>
+              @if (isPeriodActive(period)) {
+              <pc-status-badge type="success">Active now</pc-status-badge>
+              } @else if (period.is_active) {
+              <pc-status-badge type="neutral">Enabled</pc-status-badge>
+              } @else {
+              <pc-status-badge type="ghost">Disabled</pc-status-badge>
+              }
+            </div>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            <input
+              type="checkbox"
+              class="toggle toggle-xs toggle-success"
+              [checked]="period.is_active"
+              (change)="togglePeriodActive(period)"
+              title="Enable/disable period"
+            />
+            <button type="button" class="btn btn-xs btn-ghost text-error" (click)="deletePeriod(period)">
+              <pc-icon name="trash" [size]="3"></pc-icon>
+            </button>
+          </div>
+        </div>
+        } @empty {
+        <div class="text-xs text-base-content/50 italic py-2 text-center">
+          No periods defined. Using fallback annual limit.
+        </div>
+        }
+      </div>
+
+      <!-- Add period form -->
+      @if (showAddPeriod()) {
+      <div class="space-y-3 p-4 rounded-xl border border-base-300 bg-base-200/20 mt-1">
+        <h4 class="text-xs font-bold text-base-content/90">New Donation Period</h4>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-xs font-semibold">Period Name</label>
+          <input
+            type="text"
+            class="input input-sm input-bordered bg-base-200/30"
+            placeholder="e.g. 2024 Municipal Campaign"
+            [value]="newPeriodName()"
+            (input)="newPeriodName.set($any($event.target).value)"
+          />
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs font-semibold">Start Date</label>
+            <input
+              type="date"
+              class="input input-sm input-bordered bg-base-200/30"
+              [value]="newPeriodStartDate()"
+              (input)="newPeriodStartDate.set($any($event.target).value)"
+            />
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-xs font-semibold">End Date <span class="text-base-content/40">(optional)</span></label>
+            <input
+              type="date"
+              class="input input-sm input-bordered bg-base-200/30"
+              [value]="newPeriodEndDate()"
+              (input)="newPeriodEndDate.set($any($event.target).value)"
+            />
+          </div>
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-xs font-semibold">Limit per Donor ($)</label>
+          <div class="relative max-w-xs">
+            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-base-content/50 font-bold">$</span>
+            <input
+              type="number"
+              class="input input-sm input-bordered bg-base-200/30 pl-6 w-full no-spinner"
+              [formField]="newPeriodLimitForm"
+            />
+          </div>
+        </div>
+        <div class="flex items-center gap-2 pt-1">
+          <button type="button" class="btn btn-sm btn-primary" (click)="addPeriod()" [disabled]="isSavingPeriod()">
+            @if (isSavingPeriod()) { <span class="loading loading-spinner loading-xs"></span> } Save Period
+          </button>
+          <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="showAddPeriod.set(false)">
+            Cancel
+          </button>
+        </div>
+      </div>
+      }
+
+      <!-- Fallback annual limit (used when no period is active) -->
+      <div class="border-t border-base-200 pt-4 mt-2">
+        <p class="text-xs text-base-content/50 mb-2 font-semibold">Fallback: Calendar Year Limit</p>
+        <p class="text-[11px] text-base-content/40 mb-2">Used when no donation period covers the current date.</p>
+        <div class="relative max-w-xs">
+          <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs text-base-content/50 font-semibold">$</span>
+          <input
+            id="donation_limit"
+            type="number"
+            min="1"
+            class="input input-bordered focus:input-primary w-full pl-8 bg-base-200/30 text-xs font-semibold no-spinner"
+            [value]="donationLimit()"
+            (input)="donationLimit.set($any($event.target).value)"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- Residency restrictions card -->
+    <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6">
+      <h3 class="text-lg font-semibold flex items-center gap-2 border-b border-base-200 pb-3">
+        <pc-icon name="map-pin" class="text-primary" [size]="5"></pc-icon>
+        Residency Restrictions
+      </h3>
+      <p class="text-xs text-base-content/60">
+        Filter and restrict eligibility based on where the donor resides. Useful for regional municipal, provincial, or
+        state elections.
+      </p>
+
+      <div class="space-y-4">
+        <!-- Toggle Restriction -->
+        <label class="flex items-center gap-3 cursor-pointer py-1">
+          <input
+            id="restrict_residency"
+            type="checkbox"
+            class="toggle toggle-primary toggle-md"
+            [checked]="restrictResidency()"
+            (change)="restrictResidency.set($any($event.target).checked)"
+          />
+          <span class="text-xs font-semibold text-base-content/90"> Enforce residency restrictions </span>
+        </label>
+
+        @if (restrictResidency()) {
+        <div class="space-y-4 pt-2 animate-fade-in relative">
+          <!-- Autocomplete Allowed Countries Picker -->
+          <div class="flex flex-col gap-1.5 relative">
+            <label class="text-xs font-semibold text-base-content/85"> Allowed Countries </label>
+            <div class="flex flex-wrap gap-1.5 p-2 bg-base-200/30 rounded-lg border border-base-200">
+              @for (cCode of selectedCountries(); track cCode) {
+              <span class="badge badge-sm badge-primary gap-1.5 py-2 px-2.5 font-medium">
+                {{ getCountryName(cCode) }}
+                <button
+                  type="button"
+                  class="text-[10px] hover:text-base-content font-bold"
+                  (click)="removeCountry(cCode)"
+                >
+                  ×
+                </button>
+              </span>
+              }
+              <input
+                type="text"
+                placeholder="Type to search country..."
+                class="bg-transparent border-none outline-none text-xs flex-1 min-w-[120px]"
+                [value]="countrySearch()"
+                (input)="countrySearch.set($any($event.target).value); showCountryDropdown.set(true)"
+                (focus)="showCountryDropdown.set(true)"
+                (blur)="showCountryDropdown.set(false)"
+              />
+            </div>
+
+            @if (showCountryDropdown() && availableCountriesToSelect().length) {
+            <!-- Use mousedown to prevent input blur before selecting -->
+            <ul
+              class="absolute z-50 left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto bg-base-100 border border-base-300 rounded-lg shadow-lg py-1 text-xs"
+            >
+              @for (c of availableCountriesToSelect(); track c.code) {
+              <li>
+                <button
+                  type="button"
+                  class="w-full text-left px-3 py-2 hover:bg-base-200/50 font-medium"
+                  (mousedown)="selectCountry(c); $event.preventDefault()"
+                >
+                  {{ c.name }} ({{ c.code }})
+                </button>
+              </li>
+              }
+            </ul>
+            }
+          </div>
+          <!-- Allowed Province/State Checkboxes for Selected Countries -->
+          @if (isCanadaSelected() || isUsaSelected() || isGermanySelected() || isFranceSelected() || isIndiaSelected())
+          {
+          <div class="flex flex-col gap-3 p-4 pc-panel max-h-64 overflow-y-auto">
+            <label class="text-xs font-bold text-base-content/85 uppercase tracking-wide">
+              Allowed Provinces & States
+            </label>
+
+            @if (isCanadaSelected()) {
+            <div class="space-y-1.5">
+              <span class="text-[11px] font-bold text-primary/80">Canada Provinces</span>
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                @for (p of canadaProvinces; track p.code) {
+                <label class="flex items-center gap-2 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-xs checkbox-primary"
+                    [checked]="selectedRegions().includes(p.code)"
+                    (change)="toggleRegion(p.code)"
+                  />
+                  <span>{{ p.name }} ({{ p.code }})</span>
+                </label>
+                }
+              </div>
+            </div>
+            } @if (isUsaSelected()) { @if (isCanadaSelected()) {
+            <div class="divider my-1"></div>
+            }
+            <div class="space-y-1.5">
+              <span class="text-[11px] font-bold text-primary/80">United States States</span>
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                @for (s of usStates; track s.code) {
+                <label class="flex items-center gap-2 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-xs checkbox-primary"
+                    [checked]="selectedRegions().includes(s.code)"
+                    (change)="toggleRegion(s.code)"
+                  />
+                  <span>{{ s.name }} ({{ s.code }})</span>
+                </label>
+                }
+              </div>
+            </div>
+            } @if (isGermanySelected()) { @if (isCanadaSelected() || isUsaSelected()) {
+            <div class="divider my-1"></div>
+            }
+            <div class="space-y-1.5">
+              <span class="text-[11px] font-bold text-primary/80">Germany States</span>
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                @for (s of germanyStates; track s.code) {
+                <label class="flex items-center gap-2 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-xs checkbox-primary"
+                    [checked]="selectedRegions().includes(s.code)"
+                    (change)="toggleRegion(s.code)"
+                  />
+                  <span>{{ s.name }} ({{ s.code }})</span>
+                </label>
+                }
+              </div>
+            </div>
+            } @if (isFranceSelected()) { @if (isCanadaSelected() || isUsaSelected() || isGermanySelected()) {
+            <div class="divider my-1"></div>
+            }
+            <div class="space-y-1.5">
+              <span class="text-[11px] font-bold text-primary/80">France Regions</span>
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                @for (r of franceRegions; track r.code) {
+                <label class="flex items-center gap-2 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-xs checkbox-primary"
+                    [checked]="selectedRegions().includes(r.code)"
+                    (change)="toggleRegion(r.code)"
+                  />
+                  <span>{{ r.name }} ({{ r.code }})</span>
+                </label>
+                }
+              </div>
+            </div>
+            } @if (isIndiaSelected()) { @if (isCanadaSelected() || isUsaSelected() || isGermanySelected() ||
+            isFranceSelected()) {
+            <div class="divider my-1"></div>
+            }
+            <div class="space-y-1.5">
+              <span class="text-[11px] font-bold text-primary/80">India States & UTs</span>
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                @for (s of indiaStates; track s.code) {
+                <label class="flex items-center gap-2 cursor-pointer text-xs">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-xs checkbox-primary"
+                    [checked]="selectedRegions().includes(s.code)"
+                    (change)="toggleRegion(s.code)"
+                  />
+                  <span>{{ s.name }} ({{ s.code }})</span>
+                </label>
+                }
+              </div>
+            </div>
+            }
+          </div>
+          }
+        </div>
+        }
+      </div>
+    </div>
+  </div>
+
+  <!-- Tax Credit Configuration -->
+  <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6">
+    <h3 class="text-lg font-semibold flex items-center gap-2 border-b border-base-200 pb-3">
+      <pc-icon name="chart-pie" class="text-primary" [size]="5"></pc-icon>
+      Tax Credit Tiers
+    </h3>
+    <p class="text-xs text-base-content/60">
+      Define progressive tax credit brackets. Tax credits are computed automatically based on cumulative donations
+      inside a calendar year.
+    </p>
+
+    <!-- Table of existing tiers -->
+    <div class="mt-3">
+      <pc-table [columns]="4">
+        <ng-container pcTableHead>
+          <th>Bracket Tier</th>
+          <th>Up to Limit</th>
+          <th>Credit Percentage</th>
+          <th class="text-right w-24">Actions</th>
+        </ng-container>
+        @for (tier of taxCreditTiers(); track $index) {
+        <tr>
+          <td class="font-bold text-base-content">Tier {{ $index + 1 }}</td>
+          <td class="font-semibold text-base-content/80">${{ tier.limit.toLocaleString() }}</td>
+          <td>
+            <span class="badge badge-success gap-1 font-semibold py-2 px-2.5"> {{ tier.rate * 100 }}% </span>
+          </td>
+          <td class="text-right">
+            <button
+              type="button"
+              class="btn btn-xs btn-ghost text-error font-medium hover:bg-error/10"
+              (click)="removeTier($index)"
+            >
+              Delete
+            </button>
+          </td>
+        </tr>
+        } @empty {
+        <tr>
+          <td colspan="4" class="text-center py-6 text-base-content/50 italic">
+            No tax credit tiers defined yet. Add a tier below to set up credit calculations.
+          </td>
+        </tr>
+        }
+      </pc-table>
+    </div>
+
+    <!-- Progressive bracket summary -->
+    @if (taxCreditTiers().length) {
+    <div class="mt-4 p-4 rounded-xl border border-base-200 bg-base-200/20 text-xs">
+      <h4 class="font-bold text-base-content/85 flex items-center gap-1.5 mb-2">
+        <pc-icon name="information-circle" class="text-primary" [size]="4"></pc-icon>
+        Tax Credit Bracket Summary (Plain Language)
+      </h4>
+      <ul class="list-disc list-inside space-y-1 text-base-content/75 font-semibold">
+        @for (line of taxCreditSummary(); track $index) {
+        <li>{{ line }}</li>
+        }
+      </ul>
+    </div>
+    }
+
+    <!-- Add new tier form -->
+    <div class="card pc-panel p-4 mt-3 flex flex-col sm:flex-row sm:items-end gap-4">
+      <!-- Tier Limit -->
+      <div class="flex flex-col gap-1.5 w-full sm:flex-1">
+        <label for="new_limit" class="text-xs font-semibold text-base-content/95">Bracket upper limit ($)</label>
+        <div class="relative">
+          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-base-content/40 font-bold">$</span>
+          <input
+            id="new_limit"
+            type="number"
+            placeholder="500"
+            class="input input-bordered focus:input-primary w-full pl-6 bg-base-200/20 text-xs font-semibold no-spinner"
+            [formField]="newLimitForm"
+          />
+        </div>
+      </div>
+
+      <!-- Tier Rate -->
+      <div class="flex flex-col gap-1.5 w-full sm:flex-1">
+        <label for="new_rate" class="text-xs font-semibold text-base-content/95">Credit percentage (%)</label>
+        <div class="relative">
+          <input
+            id="new_rate"
+            type="number"
+            placeholder="75"
+            class="input input-bordered focus:input-primary w-full pr-7 bg-base-200/20 text-xs font-semibold no-spinner"
+            [formField]="newRateForm"
+          />
+          <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-base-content/40 font-bold">%</span>
+        </div>
+      </div>
+
+      <!-- Add button -->
+      <button type="button" class="btn btn-sm btn-primary w-full sm:w-auto font-semibold" (click)="addTier()">
+        <pc-icon name="plus" [size]="4"></pc-icon>
+        Add tier
+      </button>
+    </div>
+  </div>
+
+  <!-- Action buttons footer -->
+  <div class="border-t border-base-200 pt-6 mt-8 flex items-center justify-between">
+    <div>
+      @if (isSaving()) {
+      <span class="text-xs font-medium text-base-content/60 flex items-center">
+        <span class="loading loading-spinner loading-xs mr-2"></span>
+        Saving donations configuration…
+      </span>
+      }
+    </div>
+
+    <div class="flex items-center gap-3">
+      <button
+        type="button"
+        class="btn btn-ghost hover:bg-base-200 font-semibold text-xs"
+        (click)="reset()"
+        [disabled]="isSaving()"
+      >
+        Reset
+      </button>
+      <button
+        type="button"
+        class="btn btn-primary min-w-[120px] font-semibold text-xs"
+        (click)="save()"
+        [disabled]="isSaving()"
+      >
+        @if (isSaving()) {
+        <span class="loading loading-spinner loading-xs mr-2"></span>
+        } Save Changes
+      </button>
+    </div>
+  </div>
+</div>
+```
+
+## File: apps/frontend/src/app/experiences/settings/donations/donations-settings.ts
+```typescript
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { FormField, form, max, min } from '@angular/forms/signals';
+import { ActivatedRoute } from '@angular/router';
+import { STRIPE_CONNECT_COUNTRIES, type StripeConnectCountry } from '@common';
+import { Icon } from '@icons/icon';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
+import { Table } from '@uxcommon/components/table/table';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { DonationsService } from '../../../services/api/donations-service';
+import { TokenService } from '../../../services/api/token-service';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { SettingsService } from '../services/settings-service';
+
+/** Where donations are processed and payment data stored, derived from the Stripe Connect state. */
+export interface ProcessingNotice {
+  heading: string;
+  body: string;
+}
+
+export interface ResidencyContext {
+  country: string | null;
+  residencyAcknowledged: boolean;
+}
+
+/** Mirror of the backend's `donations.getStripeConnectStatus` result. */
+export interface StripeConnectStatus {
+  connected: boolean;
+  accountId: string | null;
+  detailsSubmitted: boolean;
+  chargesEnabled: boolean;
+  requirementsDue: string[];
+  isMockMode: boolean;
+}
+
+export interface TaxCreditTier {
+  limit: number;
+  rate: number;
+}
+
+export interface DonationPeriod {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string | null;
+  limit_amount: number;
+  is_active: boolean;
+}
+
+@Component({
+  selector: 'pc-donations-settings',
+  imports: [FormField, Icon, Table, StatusBadge],
+  templateUrl: './donations-settings.html',
+  styleUrl: './donations-settings.css',
+})
+export class DonationsSettingsComponent implements OnInit {
+  private readonly settingsSvc = inject(SettingsService);
+  private readonly alerts = inject(AlertService);
+  private readonly tokenSvc = inject(TokenService);
+  private readonly donationsSvc = inject(DonationsService);
+  private readonly dialogs = inject(ConfirmDialogService);
+  private readonly route = inject(ActivatedRoute);
+
+  private readonly _loading = createLoadingGate();
+
+  // Stripe Connect: no tenant-held keys — the tenant onboards on Stripe and we track status only.
+  protected readonly stripeStatus = signal<StripeConnectStatus | null>(null);
+  protected readonly isConnectingStripe = signal(false);
+  protected readonly isOpeningStripeDashboard = signal(false);
+  protected readonly stripeConnectCountries = STRIPE_CONNECT_COUNTRIES;
+  protected readonly stripeCountry = signal<StripeConnectCountry>('US');
+
+  // "Configured" reflects what is actually persisted: a connected account exists (mock mode
+  // doesn't count).
+  protected readonly stripeConfigured = computed(() => {
+    const status = this.stripeStatus();
+    return !!status?.connected && !status.isMockMode;
+  });
+
+  // Residency gate: donations stay paused until the tenant confirms residency restrictions once.
+  protected readonly residencyAcknowledged = signal(false);
+  protected readonly residencyContext = signal<ResidencyContext | null>(null);
+
+  protected readonly donationLimit = signal(1000);
+  protected readonly restrictResidency = signal(false);
+  protected readonly taxCreditTiers = signal<TaxCreditTier[]>([]);
+
+  // Donation periods
+  protected readonly donationPeriods = signal<DonationPeriod[]>([]);
+  protected readonly showAddPeriod = signal(false);
+  protected readonly newPeriodName = signal('');
+  protected readonly newPeriodStartDate = signal('');
+  protected readonly newPeriodEndDate = signal('');
+  protected readonly newPeriodLimit = signal<number | null>(1000);
+  /** Binds the period-limit number input; native number parsing yields null when cleared. */
+  protected readonly newPeriodLimitForm = form(this.newPeriodLimit, (p) => {
+    min(p, 1);
+  });
+  protected readonly isSavingPeriod = signal(false);
+
+  // New multi-country autocomplete & states checkboxes
+  protected readonly selectedCountries = signal<string[]>([]);
+  protected readonly selectedRegions = signal<string[]>([]);
+
+  protected readonly countrySearch = signal('');
+  protected readonly showCountryDropdown = signal(false);
+
+  protected readonly allCountries = [
+    { code: 'CA', name: 'Canada' },
+    { code: 'US', name: 'United States' },
+    { code: 'GB', name: 'United Kingdom' },
+    { code: 'AU', name: 'Australia' },
+    { code: 'NZ', name: 'New Zealand' },
+    { code: 'FR', name: 'France' },
+    { code: 'DE', name: 'Germany' },
+    { code: 'IN', name: 'India' },
+    { code: 'IT', name: 'Italy' },
+    { code: 'ES', name: 'Spain' },
+    { code: 'NL', name: 'Netherlands' },
+  ];
+
+  protected readonly canadaProvinces = [
+    { code: 'ON', name: 'Ontario' },
+    { code: 'QC', name: 'Quebec' },
+    { code: 'BC', name: 'British Columbia' },
+    { code: 'AB', name: 'Alberta' },
+    { code: 'MB', name: 'Manitoba' },
+    { code: 'SK', name: 'Saskatchewan' },
+    { code: 'NS', name: 'Nova Scotia' },
+    { code: 'NB', name: 'New Brunswick' },
+    { code: 'NL', name: 'Newfoundland and Labrador' },
+    { code: 'PE', name: 'Prince Edward Island' },
+    { code: 'NT', name: 'Northwest Territories' },
+    { code: 'YT', name: 'Yukon' },
+    { code: 'NU', name: 'Nunavut' },
+  ];
+
+  protected readonly usStates = [
+    { code: 'AL', name: 'Alabama' },
+    { code: 'AK', name: 'Alaska' },
+    { code: 'AZ', name: 'Arizona' },
+    { code: 'AR', name: 'Arkansas' },
+    { code: 'CA', name: 'California' },
+    { code: 'CO', name: 'Colorado' },
+    { code: 'CT', name: 'Connecticut' },
+    { code: 'DE', name: 'Delaware' },
+    { code: 'FL', name: 'Florida' },
+    { code: 'GA', name: 'Georgia' },
+    { code: 'HI', name: 'Hawaii' },
+    { code: 'ID', name: 'Idaho' },
+    { code: 'IL', name: 'Illinois' },
+    { code: 'IN', name: 'Indiana' },
+    { code: 'IA', name: 'Iowa' },
+    { code: 'KS', name: 'Kansas' },
+    { code: 'KY', name: 'Kentucky' },
+    { code: 'LA', name: 'Louisiana' },
+    { code: 'ME', name: 'Maine' },
+    { code: 'MD', name: 'Maryland' },
+    { code: 'MA', name: 'Massachusetts' },
+    { code: 'MI', name: 'Michigan' },
+    { code: 'MN', name: 'Minnesota' },
+    { code: 'MS', name: 'Mississippi' },
+    { code: 'MO', name: 'Missouri' },
+    { code: 'MT', name: 'Montana' },
+    { code: 'NE', name: 'Nebraska' },
+    { code: 'NV', name: 'Nevada' },
+    { code: 'NH', name: 'New Hampshire' },
+    { code: 'NJ', name: 'New Jersey' },
+    { code: 'NM', name: 'New Mexico' },
+    { code: 'NY', name: 'New York' },
+    { code: 'NC', name: 'North Carolina' },
+    { code: 'ND', name: 'North Dakota' },
+    { code: 'OH', name: 'Ohio' },
+    { code: 'OK', name: 'Oklahoma' },
+    { code: 'OR', name: 'Oregon' },
+    { code: 'PA', name: 'Pennsylvania' },
+    { code: 'RI', name: 'Rhode Island' },
+    { code: 'SC', name: 'South Carolina' },
+    { code: 'SD', name: 'South Dakota' },
+    { code: 'TN', name: 'Tennessee' },
+    { code: 'TX', name: 'Texas' },
+    { code: 'UT', name: 'Utah' },
+    { code: 'VT', name: 'Vermont' },
+    { code: 'VA', name: 'Virginia' },
+    { code: 'WA', name: 'Washington' },
+    { code: 'WV', name: 'West Virginia' },
+    { code: 'WI', name: 'Wisconsin' },
+    { code: 'WY', name: 'Wyoming' },
+  ];
+
+  protected readonly germanyStates = [
+    { code: 'DE-BW', name: 'Baden-Württemberg' },
+    { code: 'DE-BY', name: 'Bavaria' },
+    { code: 'DE-BE', name: 'Berlin' },
+    { code: 'DE-BB', name: 'Brandenburg' },
+    { code: 'DE-HB', name: 'Bremen' },
+    { code: 'DE-HH', name: 'Hamburg' },
+    { code: 'DE-HE', name: 'Hesse' },
+    { code: 'DE-MV', name: 'Mecklenburg-Vorpommern' },
+    { code: 'DE-NI', name: 'Lower Saxony' },
+    { code: 'DE-NW', name: 'North Rhine-Westphalia' },
+    { code: 'DE-RP', name: 'Rhineland-Palatinate' },
+    { code: 'DE-SL', name: 'Saarland' },
+    { code: 'DE-SN', name: 'Saxony' },
+    { code: 'DE-ST', name: 'Saxony-Anhalt' },
+    { code: 'DE-SH', name: 'Schleswig-Holstein' },
+    { code: 'DE-TH', name: 'Thuringia' },
+  ];
+
+  protected readonly franceRegions = [
+    { code: 'FR-ARA', name: 'Auvergne-Rhône-Alpes' },
+    { code: 'FR-BFC', name: 'Bourgogne-Franche-Comté' },
+    { code: 'FR-BRE', name: 'Brittany' },
+    { code: 'FR-CVL', name: 'Centre-Val de Loire' },
+    { code: 'FR-COR', name: 'Corsica' },
+    { code: 'FR-GES', name: 'Grand Est' },
+    { code: 'FR-HDF', name: 'Hauts-de-France' },
+    { code: 'FR-IDF', name: 'Île-de-France' },
+    { code: 'FR-NOR', name: 'Normandy' },
+    { code: 'FR-NAQ', name: 'Nouvelle-Aquitaine' },
+    { code: 'FR-OCC', name: 'Occitania' },
+    { code: 'FR-PDL', name: 'Pays de la Loire' },
+    { code: 'FR-PAC', name: "Provence-Alpes-Côte d'Azur" },
+  ];
+
+  protected readonly indiaStates = [
+    { code: 'IN-AP', name: 'Andhra Pradesh' },
+    { code: 'IN-AR', name: 'Arunachal Pradesh' },
+    { code: 'IN-AS', name: 'Assam' },
+    { code: 'IN-BR', name: 'Bihar' },
+    { code: 'IN-CG', name: 'Chhattisgarh' },
+    { code: 'IN-GA', name: 'Goa' },
+    { code: 'IN-GJ', name: 'Gujarat' },
+    { code: 'IN-HR', name: 'Haryana' },
+    { code: 'IN-HP', name: 'Himachal Pradesh' },
+    { code: 'IN-JH', name: 'Jharkhand' },
+    { code: 'IN-KA', name: 'Karnataka' },
+    { code: 'IN-KL', name: 'Kerala' },
+    { code: 'IN-MP', name: 'Madhya Pradesh' },
+    { code: 'IN-MH', name: 'Maharashtra' },
+    { code: 'IN-MN', name: 'Manipur' },
+    { code: 'IN-ML', name: 'Meghalaya' },
+    { code: 'IN-MZ', name: 'Mizoram' },
+    { code: 'IN-NL', name: 'Nagaland' },
+    { code: 'IN-OD', name: 'Odisha' },
+    { code: 'IN-PB', name: 'Punjab' },
+    { code: 'IN-RJ', name: 'Rajasthan' },
+    { code: 'IN-SK', name: 'Sikkim' },
+    { code: 'IN-TN', name: 'Tamil Nadu' },
+    { code: 'IN-TG', name: 'Telangana' },
+    { code: 'IN-TR', name: 'Tripura' },
+    { code: 'IN-UP', name: 'Uttar Pradesh' },
+    { code: 'IN-UT', name: 'Uttarakhand' },
+    { code: 'IN-WB', name: 'West Bengal' },
+    { code: 'IN-DL', name: 'Delhi (UT)' },
+    { code: 'IN-JK', name: 'Jammu and Kashmir (UT)' },
+    { code: 'IN-LA', name: 'Ladakh (UT)' },
+    { code: 'IN-PY', name: 'Puducherry (UT)' },
+  ];
+
+  // Tiers editing inputs
+  protected readonly newLimit = signal<number | null>(null);
+  protected readonly newLimitForm = form(this.newLimit, (p) => {
+    min(p, 1);
+  });
+  protected readonly newRate = signal<number | null>(null);
+  protected readonly newRateForm = form(this.newRate, (p) => {
+    min(p, 0);
+    max(p, 100);
+  });
+
+  protected readonly isSaving = signal(false);
+
+  protected readonly tenantId = computed(() => {
+    const token = this.tokenSvc.getAuthToken();
+    if (!token) return '';
+    try {
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(atob(parts[1]!));
+        return String(payload.tenant_id || '');
+      }
+    } catch (e) {
+      console.error('Failed to parse auth token payload', e);
+    }
+    return '';
+  });
+
+  protected readonly availableCountriesToSelect = computed(() => {
+    const search = this.countrySearch().toLowerCase().trim();
+    const selected = new Set(this.selectedCountries());
+    return this.allCountries.filter(
+      (c) => !selected.has(c.code) && (c.name.toLowerCase().includes(search) || c.code.toLowerCase().includes(search)),
+    );
+  });
+
+  // Where donations are processed and where donor payment data is stored — driven by whether the
+  // tenant's Stripe account is actually connected.
+  protected readonly processingNotice = computed<ProcessingNotice>(() => {
+    if (this.stripeConfigured()) {
+      return {
+        heading: 'Donations are processed in the United States',
+        body: 'Donations are processed by Stripe (United States). Donor payment data is stored in the US.',
+      };
+    }
+    return {
+      heading: 'Connect Stripe to accept donations',
+      body: 'Donations are processed by Stripe. Connect your Stripe account below to start accepting donations.',
+    };
+  });
+
+  protected readonly isCanadaSelected = computed(() => this.selectedCountries().includes('CA'));
+  protected readonly isUsaSelected = computed(() => this.selectedCountries().includes('US'));
+  protected readonly isGermanySelected = computed(() => this.selectedCountries().includes('DE'));
+  protected readonly isFranceSelected = computed(() => this.selectedCountries().includes('FR'));
+  protected readonly isIndiaSelected = computed(() => this.selectedCountries().includes('IN'));
+
+  // Plain-language calculation summary
+  protected readonly taxCreditSummary = computed(() => {
+    const sorted = [...this.taxCreditTiers()].sort((a, b) => a.limit - b.limit);
+    if (sorted.length === 0) {
+      return ['No tax credit tiers defined. Donations will not receive any tax credit.'];
+    }
+
+    const lines: string[] = [];
+    let previousLimit = 0;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const tier = sorted[i]!;
+      const ratePct = Math.round(tier.rate * 100);
+
+      if (i === 0) {
+        lines.push(`${ratePct}% credit on the first $${tier.limit} donated.`);
+      } else {
+        const range = `$${previousLimit + 1} to $${tier.limit}`;
+        lines.push(`${ratePct}% credit on the next $${tier.limit - previousLimit} donated (amounts from ${range}).`);
+      }
+      previousLimit = tier.limit;
+    }
+
+    lines.push(`0% credit on any amounts exceeding $${previousLimit}.`);
+    return lines;
+  });
+
+  ngOnInit(): void {
+    void this.loadOnInit();
+  }
+
+  private async loadOnInit(): Promise<void> {
+    // Handle the Stripe-hosted onboarding return redirect (same pattern as the mailbox connects).
+    const params = this.route.snapshot.queryParamMap;
+    if (params.has('stripe_connected')) {
+      this.alerts.showSuccess('Stripe onboarding complete. Verifying your account status…');
+    } else if (params.has('stripe_refresh')) {
+      this.alerts.showError('Stripe onboarding was interrupted — resume it below when you are ready.');
+    }
+
+    await this.settingsSvc.load();
+    this.loadValues();
+    await this.loadStripeStatus();
+    await this.loadPeriods();
+    await this.loadResidencyContext();
+  }
+
+  private async loadStripeStatus(): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      const status = await this.donationsSvc.getStripeConnectStatus();
+      this.stripeStatus.set(status);
+    } catch {
+      // non-fatal — the card falls back to its "not connected" state
+    } finally {
+      end();
+    }
+  }
+
+  private async loadResidencyContext(): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      const ctx = await this.donationsSvc.getResidencyContext();
+      this.residencyContext.set(ctx);
+      // Default the Connect country select to the org's country when it's one Stripe supports.
+      const match = this.stripeConnectCountries.find((c) => c.code === ctx.country);
+      if (match) {
+        this.stripeCountry.set(match.code);
+      }
+    } catch {
+      // non-fatal — the disclaimers simply stay in their fail-safe (shown) state
+    } finally {
+      end();
+    }
+  }
+
+  private async loadPeriods() {
+    try {
+      const periods = await this.donationsSvc.getDonationPeriods();
+      this.donationPeriods.set(periods as any);
+    } catch {
+      // non-fatal — periods table may not exist yet if migration hasn't run
+    }
+  }
+
+  protected async addPeriod() {
+    const name = this.newPeriodName().trim();
+    const start = this.newPeriodStartDate().trim();
+    const limit = Number(this.newPeriodLimit());
+
+    if (!name) {
+      this.alerts.showError('Period name is required');
+      return;
+    }
+    if (!start) {
+      this.alerts.showError('Start date is required');
+      return;
+    }
+    if (!limit || limit <= 0) {
+      this.alerts.showError('Limit amount must be greater than 0');
+      return;
+    }
+
+    const endDate = this.newPeriodEndDate().trim() || null;
+    if (endDate && endDate <= start) {
+      this.alerts.showError('End date must be after start date');
+      return;
+    }
+
+    this.isSavingPeriod.set(true);
+    try {
+      await this.donationsSvc.createDonationPeriod({
+        name,
+        start_date: start,
+        end_date: endDate,
+        limit_amount: limit * 100,
+      });
+      this.alerts.showSuccess(`Donation period "${name}" created`);
+      this.newPeriodName.set('');
+      this.newPeriodStartDate.set('');
+      this.newPeriodEndDate.set('');
+      this.newPeriodLimit.set(1000);
+      this.showAddPeriod.set(false);
+      await this.loadPeriods();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to create donation period');
+    } finally {
+      this.isSavingPeriod.set(false);
+    }
+  }
+
+  protected async togglePeriodActive(period: DonationPeriod) {
+    try {
+      await this.donationsSvc.updateDonationPeriod({ id: period.id, is_active: !period.is_active });
+      await this.loadPeriods();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to update period');
+    }
+  }
+
+  protected async deletePeriod(period: DonationPeriod) {
+    const confirmed = await this.dialogs.confirm({
+      title: `Delete period "${period.name}"?`,
+      message: 'This cannot be undone. Existing donations collected during this period will not be affected.',
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await this.donationsSvc.deleteDonationPeriod(period.id);
+      this.alerts.showSuccess('Period deleted');
+      await this.loadPeriods();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to delete period');
+    }
+  }
+
+  protected formatDate(dateStr: string | null): string {
+    if (!dateStr) return 'No end date';
+    return new Date(dateStr).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  protected isPeriodActive(period: DonationPeriod): boolean {
+    const today = new Date().toISOString().slice(0, 10);
+    return period.is_active && period.start_date <= today && (!period.end_date || period.end_date >= today);
+  }
+
+  private loadValues() {
+    this.donationLimit.set(this.settingsSvc.getValue<number>('donations.limit', 1000));
+    this.restrictResidency.set(this.settingsSvc.getValue<boolean>('donations.restrict_residency', false));
+    this.residencyAcknowledged.set(this.settingsSvc.getValue<boolean>('donations.residency_acknowledged', false));
+
+    // Load countries
+    const countriesStr = this.settingsSvc.getValue<string>('donations.allowed_countries', 'CA');
+    const parsedCountries = countriesStr
+      .split(',')
+      .map((c) => c.trim())
+      .filter(Boolean);
+    this.selectedCountries.set(parsedCountries);
+
+    // Load regions (provinces / states)
+    const regionsStr = this.settingsSvc.getValue<string>('donations.allowed_regions', 'ON');
+    const parsedRegions = regionsStr
+      .split(',')
+      .map((r) => r.trim())
+      .filter(Boolean);
+    this.selectedRegions.set(parsedRegions);
+
+    // Load tax tiers
+    const tiersRaw = this.settingsSvc.getValue<any>('donations.tax_credit_tiers', []);
+    let parsedTiers: TaxCreditTier[] = [];
+    if (typeof tiersRaw === 'string') {
+      try {
+        parsedTiers = JSON.parse(tiersRaw);
+      } catch {
+        parsedTiers = [];
+      }
+    } else if (Array.isArray(tiersRaw)) {
+      parsedTiers = tiersRaw;
+    }
+    this.taxCreditTiers.set(parsedTiers.sort((a, b) => a.limit - b.limit));
+  }
+
+  protected selectCountry(country: { code: string; name: string }) {
+    this.selectedCountries.update((list) => [...list, country.code]);
+    this.countrySearch.set('');
+    this.showCountryDropdown.set(false);
+  }
+
+  protected removeCountry(code: string) {
+    this.selectedCountries.update((list) => list.filter((c) => c !== code));
+    // Clean up regions for removed countries
+    if (code === 'CA') {
+      const provinceCodes = new Set(this.canadaProvinces.map((p) => p.code));
+      this.selectedRegions.update((list) => list.filter((r) => !provinceCodes.has(r)));
+    } else if (code === 'US') {
+      const stateCodes = new Set(this.usStates.map((s) => s.code));
+      this.selectedRegions.update((list) => list.filter((r) => !stateCodes.has(r)));
+    } else if (code === 'DE') {
+      const stateCodes = new Set(this.germanyStates.map((s) => s.code));
+      this.selectedRegions.update((list) => list.filter((r) => !stateCodes.has(r)));
+    } else if (code === 'FR') {
+      const regionCodes = new Set(this.franceRegions.map((r) => r.code));
+      this.selectedRegions.update((list) => list.filter((r) => !regionCodes.has(r)));
+    } else if (code === 'IN') {
+      const stateCodes = new Set(this.indiaStates.map((s) => s.code));
+      this.selectedRegions.update((list) => list.filter((r) => !stateCodes.has(r)));
+    }
+  }
+
+  protected toggleRegion(code: string) {
+    this.selectedRegions.update((list) => (list.includes(code) ? list.filter((r) => r !== code) : [...list, code]));
+  }
+
+  protected getCountryName(code: string): string {
+    const found = this.allCountries.find((c) => c.code === code);
+    return found ? found.name : code;
+  }
+
+  protected addTier() {
+    const limit = this.newLimit();
+    const rateInput = this.newRate();
+
+    if (limit === null || limit <= 0) {
+      this.alerts.showError('Limit must be greater than 0');
+      return;
+    }
+    if (rateInput === null || rateInput < 0 || rateInput > 100) {
+      this.alerts.showError('Rate must be between 0% and 100%');
+      return;
+    }
+
+    const rate = rateInput / 100;
+
+    const current = this.taxCreditTiers();
+    if (current.some((t) => t.limit === limit)) {
+      this.alerts.showError('A tier with this limit already exists');
+      return;
+    }
+
+    const updated = [...current, { limit, rate }].sort((a, b) => a.limit - b.limit);
+    this.taxCreditTiers.set(updated);
+
+    this.newLimit.set(null);
+    this.newRate.set(null);
+  }
+
+  protected removeTier(index: number) {
+    const updated = this.taxCreditTiers().filter((_, i) => i !== index);
+    this.taxCreditTiers.set(updated);
+  }
+
+  protected reset() {
+    this.loadValues();
+    this.alerts.showSuccess('Settings reset to saved values');
+  }
+
+  /** Start (or resume) Stripe-hosted Connect onboarding — redirect-and-return, like the mailbox
+   * connects. Stripe brings the user back to this page with ?stripe_connected / ?stripe_refresh. */
+  protected async connectStripe() {
+    this.isConnectingStripe.set(true);
+    try {
+      const { url } = await this.donationsSvc.startStripeOnboarding(this.stripeCountry());
+      window.location.href = url;
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to start Stripe onboarding');
+      this.isConnectingStripe.set(false);
+    }
+  }
+
+  /** Open the campaign's Stripe Express dashboard (login links are single-use, so fetch fresh). */
+  protected async openStripeDashboard() {
+    this.isOpeningStripeDashboard.set(true);
+    try {
+      const { url } = await this.donationsSvc.createStripeLoginLink();
+      window.open(url, '_blank', 'noopener');
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to open the Stripe dashboard');
+    } finally {
+      this.isOpeningStripeDashboard.set(false);
+    }
+  }
+
+  /** Forget the Stripe connection. The campaign's Stripe account itself is theirs and is not
+   * deleted. */
+  protected async removeStripeConfig() {
+    const confirmed = await this.dialogs.confirm({
+      title: 'Remove Stripe connection?',
+      message:
+        'Donations will stop until you reconnect Stripe. Your Stripe account is not deleted — reconnecting later starts a fresh onboarding.',
+      confirmText: 'Remove connection',
+      cancelText: 'Cancel',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await this.donationsSvc.disconnectStripe();
+      await this.loadStripeStatus();
+      this.alerts.showSuccess('Stripe connection removed');
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to remove Stripe connection');
+    }
+  }
+
+  protected async save() {
+    this.isSaving.set(true);
+    try {
+      // Stripe holds no keys — its connection is managed by the Connect onboarding buttons, not
+      // this save.
+      const entries = [
+        { key: 'donations.limit', value: Number(this.donationLimit()) },
+        { key: 'donations.restrict_residency', value: this.restrictResidency() },
+        { key: 'donations.allowed_countries', value: this.selectedCountries().join(',') },
+        { key: 'donations.allowed_regions', value: this.selectedRegions().join(',') },
+        { key: 'donations.tax_credit_tiers', value: JSON.stringify(this.taxCreditTiers()) },
+        // Saving the residency card — restricting or allowing everyone — is the explicit choice that
+        // lifts the "donations paused" gate, so record the acknowledgment alongside it.
+        { key: 'donations.residency_acknowledged', value: true },
+      ];
+
+      await this.settingsSvc.upsert(entries);
+      this.residencyAcknowledged.set(true);
+      this.residencyContext.update((ctx) => (ctx ? { ...ctx, residencyAcknowledged: true } : ctx));
+      this.alerts.showSuccess('Donations configuration saved successfully');
+    } catch (err) {
+      this.alerts.showError(
+        err instanceof Error && err.message ? err.message : 'Failed to save donations configuration',
+      );
+    } finally {
+      this.isSaving.set(false);
+    }
+  }
+}
+```
+
 ## File: apps/frontend/src/app/experiences/settings/security/passkey-settings.html
 ```html
 <div class="space-y-6">
@@ -26299,6 +27956,158 @@ export class ConnectionsService extends TRPCService<'person_connections'> {
 }
 ```
 
+## File: apps/frontend/src/app/services/api/donations-service.ts
+```typescript
+import { Service } from '@angular/core';
+import type { StripeConnectCountry } from '@common';
+import { TRPCService } from './trpc-service';
+
+@Service()
+export class DonationsService extends TRPCService<'donations'> {
+  // ── One-time donations ──────────────────────────────────────────────────────
+
+  public listDonations() {
+    return this.api.donations.listDonations.query();
+  }
+
+  public getHistory(personId: string) {
+    return this.api.donations.getPersonDonationHistory.query(personId);
+  }
+
+  public getStats(personId: string) {
+    return this.api.donations.getDonationStats.query(personId);
+  }
+
+  public checkEligibility(payload: {
+    personId: string;
+    amountCents: number;
+    address: { country?: string; state?: string };
+    isRecurring?: boolean;
+    remainingMonths?: number;
+  }) {
+    return this.api.donations.checkEligibility.query(payload);
+  }
+
+  public createCheckout(payload: {
+    personId: string;
+    amountCents: number;
+    address: { country?: string; state?: string };
+  }) {
+    return this.api.donations.createCheckout.mutate(payload);
+  }
+
+  public confirmDonation(sessionId: string) {
+    return this.api.donations.confirmDonation.mutate({ sessionId });
+  }
+
+  /** Record an offline gift (Fig. 15 "Record donation" dialog) — cash, check, or bank transfer. */
+  public recordDonation(payload: {
+    personId: string;
+    amountCents: number;
+    method: 'card' | 'check' | 'cash' | 'bank_transfer';
+  }) {
+    return this.api.donations.recordDonation.mutate(payload);
+  }
+
+  public confirmMockDonation(payload: {
+    personId: string;
+    amountCents: number;
+    sessionId: string;
+    province: string;
+    country: string;
+  }) {
+    return this.api.donations.confirmMockDonation.mutate(payload);
+  }
+
+  // ── Recurring pledges ───────────────────────────────────────────────────────
+
+  public createRecurringCheckout(payload: {
+    personId: string;
+    monthlyAmountCents: number;
+    address: { country?: string; state?: string };
+  }) {
+    return this.api.donations.createRecurringCheckout.mutate(payload);
+  }
+
+  public confirmMockPledge(payload: {
+    personId: string;
+    monthlyAmountCents: number;
+    mockSubId: string;
+    province: string;
+    country: string;
+  }) {
+    return this.api.donations.confirmMockPledge.mutate(payload);
+  }
+
+  public listPledges() {
+    return this.api.donations.listPledges.query();
+  }
+
+  public getPersonPledges(personId: string) {
+    return this.api.donations.getPersonPledges.query(personId);
+  }
+
+  public cancelPledge(pledgeId: string) {
+    return this.api.donations.cancelPledge.mutate({ pledgeId });
+  }
+
+  // ── Donation periods ────────────────────────────────────────────────────────
+
+  public getDonationPeriods() {
+    return this.api.donations.getDonationPeriods.query();
+  }
+
+  public createDonationPeriod(payload: {
+    name: string;
+    start_date: string;
+    end_date?: string | null;
+    limit_amount: number;
+  }) {
+    return this.api.donations.createDonationPeriod.mutate(payload);
+  }
+
+  public updateDonationPeriod(payload: {
+    id: string;
+    name?: string;
+    start_date?: string;
+    end_date?: string | null;
+    limit_amount?: number;
+    is_active?: boolean;
+  }) {
+    return this.api.donations.updateDonationPeriod.mutate(payload);
+  }
+
+  public deleteDonationPeriod(id: string) {
+    return this.api.donations.deleteDonationPeriod.mutate({ id });
+  }
+
+  /** Country / residency-acknowledged / Connect-readiness context that drives the donation settings disclaimers. */
+  public getResidencyContext() {
+    return this.api.donations.getResidencyContext.query();
+  }
+
+  // ── Stripe Connect (hosted onboarding; no tenant-held secrets) ────────────────
+
+  public getStripeConnectStatus() {
+    return this.api.donations.getStripeConnectStatus.query();
+  }
+
+  /** Create the connected account (first call) and return the Stripe-hosted onboarding URL. */
+  public startStripeOnboarding(country: StripeConnectCountry) {
+    return this.api.donations.startStripeOnboarding.mutate({ country });
+  }
+
+  /** Express-dashboard login link for the "Open Stripe dashboard" button. */
+  public createStripeLoginLink() {
+    return this.api.donations.createStripeLoginLink.mutate();
+  }
+
+  public disconnectStripe() {
+    return this.api.donations.disconnectStripe.mutate();
+  }
+}
+```
+
 ## File: apps/frontend/src/app/services/api/http-download.ts
 ```typescript
 /**
@@ -30802,19 +32611,30 @@ module.exports = {
 ```typescript
 import { defineConfig, devices } from '@playwright/test';
 
+const isCI = !!process.env.CI;
+
 export default defineConfig({
   testDir: './src',
   fullyParallel: true,
-  forbidOnly: !!process.env.CI,
-  retries: 0,
-  reporter: 'list',
+  forbidOnly: isCI,
+  // CI gates deploys on this suite (.github/workflows/verify.yml), so a single infrastructure
+  // hiccup shouldn't block a release — but retries stay off locally, where a flake is a signal
+  // worth seeing rather than papering over.
+  retries: isCI ? 2 : 0,
+  reporter: isCI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: 'http://localhost:4200',
+    // Only kept for a retried (i.e. already-suspect) test — traces are large and the happy path
+    // doesn't need them.
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
   },
   webServer: {
     command: 'npx nx serve frontend',
     url: 'http://localhost:4200',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: !isCI,
+    // A cold CI runner compiling the Angular app blows straight past Playwright's 60s default.
+    timeout: isCI ? 300_000 : 120_000,
   },
   projects: [
     {
@@ -36208,185 +38028,6 @@ export class CampaignFormComponent implements OnInit {
 }
 ```
 
-## File: apps/frontend/src/app/experiences/campaigns/ui/campaign-view.ts
-```typescript
-import { DatePipe } from '@angular/common';
-import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
-import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { RecordActivities } from '@experiences/activity/ui/record-activities/record-activities';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { DetailRow } from '@uxcommon/components/detail-row/detail-row';
-import { Icon } from '@icons/icon';
-import { ProfileCard } from '@uxcommon/components/profile-card/profile-card';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { createRequestGuard } from '@uxcommon/request-guard';
-
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { CampaignContextService } from '../../../services/campaign-context.service';
-import { CampaignDetail, CampaignsService } from '../services/campaigns-service';
-import { getUserErrorMessage } from '@frontend/services/api/user-message';
-
-/**
- * Campaigns §15 — campaign detail. Elections can be archived (read-only history)
- * and unarchived; the office context is permanent and shows neither action.
- */
-@Component({
-  selector: 'pc-campaign-view',
-  imports: [DatePipe, RouterModule, RecordActivities, DetailLayout, ProfileCard, DetailRow, Icon],
-  templateUrl: './campaign-view.html',
-})
-export class CampaignViewComponent {
-  readonly id = input.required<string>();
-
-  private readonly alerts = inject(AlertService);
-  private readonly campaignsSvc = inject(CampaignsService);
-  private readonly context = inject(CampaignContextService);
-  private readonly route = inject(ActivatedRoute);
-  private readonly router = inject(Router);
-  private readonly dialogs = inject(ConfirmDialogService);
-
-  private readonly _loading = createLoadingGate();
-  private readonly _requestGuard = createRequestGuard();
-  protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
-  protected readonly campaign = signal<Record<string, unknown> | null>(null);
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => [
-    { label: 'Campaigns', route: '/workspace/campaigns' },
-    { label: this.name() || 'Campaign' },
-  ]);
-
-  protected readonly name = computed(() => this.str('name'));
-  protected readonly description = computed(() => this.str('description'));
-  protected readonly notes = computed(() => this.str('notes'));
-  protected readonly kind = computed(() => this.str('kind') || 'election');
-  protected readonly status = computed(() => this.str('status') || 'active');
-  protected readonly startdate = computed(() => this.str('startdate'));
-  protected readonly enddate = computed(() => this.str('enddate'));
-  protected readonly isOffice = computed(() => this.kind() === 'office');
-  protected readonly isArchived = computed(() => this.status() === 'archived');
-  protected readonly isCurrentContext = computed(() => this.context.activeCampaignId() === this.id());
-
-  // Carry-over (§15): seed this campaign from a prior one.
-  protected readonly carrySourceId = signal('');
-  protected readonly carryCopySupport = signal(true);
-  protected readonly carryCopySubscriptions = signal(false);
-  protected readonly carryRunning = signal(false);
-  protected readonly carrySources = computed(() => this.context.campaigns().filter((c) => c.id !== this.id()));
-
-  constructor() {
-    effect(() => {
-      const currentId = this.id();
-      void untracked(() => this.load(currentId));
-    });
-  }
-
-  protected editCampaign() {
-    void this.router.navigate(['edit'], { relativeTo: this.route });
-  }
-
-  protected async workInThis(): Promise<void> {
-    try {
-      await this.context.setActive(this.id());
-      this.alerts.showSuccess(`Now working in ${this.name()}`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Could not switch campaign. Please try again.'));
-    }
-  }
-
-  protected onCarrySourceChange(event: Event): void {
-    this.carrySourceId.set((event.target as HTMLSelectElement).value);
-  }
-
-  protected async runCarryOver(): Promise<void> {
-    const sourceId = this.carrySourceId();
-    if (!sourceId) return;
-    if (this.carryCopySubscriptions()) {
-      const confirmed = await this.dialogs.confirm({
-        title: 'Copy email subscriptions?',
-        message:
-          'Consent collected by one campaign or the office does not automatically extend to another. Copying subscription lists across contexts is your compliance call. Confirm only if you are satisfied the consent carries over.',
-        variant: 'danger',
-        confirmText: 'I understand, copy subscriptions',
-      });
-      if (!confirmed) return;
-    }
-    this.carryRunning.set(true);
-    try {
-      const result = await this.campaignsSvc.carryOver({
-        source_campaign_id: sourceId,
-        target_campaign_id: this.id(),
-        copy_support: this.carryCopySupport(),
-        copy_subscriptions: this.carryCopySubscriptions(),
-      });
-      const r = result as { support_copied?: number; subscriptions_copied?: number };
-      this.alerts.showSuccess(
-        `Carried over ${r.support_copied ?? 0} support level(s) and ${r.subscriptions_copied ?? 0} subscription(s)`,
-      );
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Carry-over failed. Please try again.'));
-    } finally {
-      this.carryRunning.set(false);
-    }
-  }
-
-  protected async archive(): Promise<void> {
-    const confirmed = await this.dialogs.confirm({
-      title: 'Archive campaign',
-      message:
-        'Archiving makes this campaign read-only: its supporter data, consent, and outreach history stay viewable, but nothing new can be recorded in it. Users assigned to this campaign move back to the office context. Open yard-sign requests in this campaign are declined and its delivery routes are canceled. You can unarchive it later.',
-      confirmText: 'Archive',
-    });
-    if (!confirmed) return;
-    const end = this._loading.begin();
-    try {
-      await this.campaignsSvc.archive(this.id());
-      await Promise.all([this.load(this.id()), this.context.refresh()]);
-      this.alerts.showSuccess('Campaign archived');
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to archive the campaign'));
-    } finally {
-      end();
-    }
-  }
-
-  protected async unarchive(): Promise<void> {
-    const end = this._loading.begin();
-    try {
-      await this.campaignsSvc.unarchive(this.id());
-      await Promise.all([this.load(this.id()), this.context.refresh()]);
-      this.alerts.showSuccess('Campaign unarchived');
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to unarchive the campaign'));
-    } finally {
-      end();
-    }
-  }
-
-  private async load(id: string): Promise<void> {
-    const isCurrent = this._requestGuard.begin();
-    const end = this._loading.begin();
-    try {
-      const data: CampaignDetail = await this.campaignsSvc.getById(id);
-      if (!isCurrent()) return;
-      this.campaign.set((data ?? null) as Record<string, unknown> | null);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Could not load the campaign. Please try again.'));
-    } finally {
-      end();
-      this.initialized.set(true);
-    }
-  }
-
-  private str(key: string): string {
-    const value = this.campaign()?.[key];
-    return typeof value === 'string' ? value : '';
-  }
-}
-```
-
 ## File: apps/frontend/src/app/experiences/canvassing/services/canvassing-service.ts
 ```typescript
 import { Service } from '@angular/core';
@@ -37117,146 +38758,49 @@ export class DeliveriesNav {
 }
 ```
 
-## File: apps/frontend/src/app/experiences/deliveries/ui/yard-sign-standing.ts
-```typescript
-import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
-import { RouterLink } from '@angular/router';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { DELIVERY_REQUEST_STATUSES, DELIVERY_REQUEST_STATUS_LABELS } from '../../../../../../../libs/common/src';
-import type { DeliveryRequestStatus } from '../../../../../../../libs/common/src';
-
-import { getUserErrorMessage } from '@frontend/services/api/user-message';
-import { CampaignContextService } from '../../../services/campaign-context.service';
-import { RouterOutputs } from '../../../services/api/trpc-types';
-import { DeliveriesRequestsService } from '../services/deliveries-requests-service';
-
-export type YardSignRequest = NonNullable<RouterOutputs['deliveries']['getSignStatus']['request']>;
-export type YardSignOpenElsewhere = NonNullable<RouterOutputs['deliveries']['getSignStatus']['open_in_other_campaign']>;
-
-/**
- * The yard-sign standing control (Deliveries §14): one select that reads and flips the
- * household's delivery-request status in the ACTIVE campaign context. The truth stays in
- * `delivery_requests` — "None requested" = no row, and the route line is derived from the
- * active (pending) stop, never a stored flag. Embedded in the person Campaign standing card
- * and the household view; flipping to Delivered covers signs installed without the app.
- */
-@Component({
-  selector: 'pc-yard-sign-standing',
-  imports: [RouterLink],
-  templateUrl: './yard-sign-standing.html',
-  host: { class: 'block min-w-0' },
-})
-export class YardSignStanding {
-  /** The household the sign belongs to; null = person without an address (muted guidance state). */
-  readonly householdId = input.required<string | null>();
-  /** When set (person view), a request created here is attributed to this person as requester. */
-  readonly personId = input<string | null>(null);
-  /** Off when the host surface already titles the section (the household card's eyebrow). */
-  readonly showLabel = input<boolean>(true);
-
-  protected readonly context = inject(CampaignContextService);
-  private readonly svc = inject(DeliveriesRequestsService);
-  private readonly alerts = inject(AlertService);
-
-  protected readonly statuses = DELIVERY_REQUEST_STATUSES;
-  protected readonly labels = DELIVERY_REQUEST_STATUS_LABELS;
-
-  private readonly _loading = createLoadingGate();
-  protected readonly loading = this._loading.visible;
-  protected readonly saving = signal(false);
-  protected readonly request = signal<YardSignRequest | null>(null);
-  /** Set when ANOTHER campaign holds the household's one open request — creating here can only 409. */
-  protected readonly openElsewhere = signal<YardSignOpenElsewhere | null>(null);
-
-  protected readonly readonlyContext = this.context.isArchivedContext;
-  /** No local open request to manage and another campaign holds the slot: the select is a dead end. */
-  protected readonly blockedByOtherCampaign = computed(() => !this.request() && this.openElsewhere() !== null);
-
-  /** "Requested by Jane · web form · Jun 12" — parts drop out honestly when absent. */
-  protected readonly metaLine = computed(() => {
-    const r = this.request();
-    if (!r) return '';
-    const parts: string[] = [];
-    if (r.person_name) parts.push(`Requested by ${r.person_name}`);
-    parts.push(this.sourceLabel(r.source));
-    const date = this.formatDate(r.updated_at);
-    if (date) parts.push(date);
-    return parts.join(' · ');
-  });
-
-  /** Human label for a request's origin. Typed `string` so a widened source union
-   *  (web_form | manual | canvass) needs no change here. */
-  private sourceLabel(source: string): string {
-    if (source === 'web_form') return 'web form';
-    if (source === 'canvass') return 'canvass';
-    return 'manual';
-  }
-
-  constructor() {
-    effect(() => {
-      const householdId = this.householdId();
-      const campaignId = this.context.activeCampaignId();
-      void untracked(() => this.load(householdId, campaignId));
-    });
-    // Degrade quietly if the context can't load — the control shows "None requested".
-    this.context.ensureLoaded().catch(() => void 0);
-  }
-
-  protected async onStatusChange(event: Event): Promise<void> {
-    const value = (event.target as HTMLSelectElement).value as DeliveryRequestStatus | '';
-    const householdId = this.householdId();
-    if (!value || !householdId) return;
-    this.saving.set(true);
-    try {
-      const existing = this.request();
-      if (existing) {
-        await this.svc.setStatus([existing.id], value);
-        this.alerts.showSuccess('Yard sign updated');
-      } else {
-        const created = await this.svc.add({
-          household_id: householdId,
-          person_id: this.personId(),
-          campaign_id: this.context.activeCampaignId() ?? undefined,
-        });
-        if (value !== 'new') await this.svc.setStatus([created.id], value);
-        this.alerts.showSuccess('Yard sign recorded');
-      }
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Could not update the yard sign. Please try again.'));
-    } finally {
-      this.saving.set(false);
-      await this.load(householdId, this.context.activeCampaignId());
+## File: apps/frontend/src/app/experiences/deliveries/ui/yard-sign-standing.html
+```html
+<label class="flex flex-col gap-1">
+  @if (showLabel()) {
+  <span class="text-[11px] font-medium text-base-content/60" i18n>Yard sign</span>
+  } @if (householdId()) {
+  <select
+    class="select select-bordered select-sm w-full"
+    [value]="request()?.status ?? ''"
+    [disabled]="saving() || readonlyContext() || blockedByOtherCampaign()"
+    (change)="onStatusChange($event)"
+  >
+    @if (!request()) {
+    <option value="" i18n>None requested</option>
+    } @for (status of statuses; track status) {
+    <option [value]="status">{{ labels[status] }}</option>
     }
+  </select>
+  @if (blockedByOtherCampaign()) {
+  <!-- One open request per household, tenant-wide — say who holds it instead of a dead 409. -->
+  <p class="text-[11px] text-base-content/40">
+    <ng-container i18n>Sign already requested in</ng-container> {{ openElsewhere()?.campaign_name }}
+    <ng-container i18n>— one open request per household.</ng-container>
+  </p>
+  } } @else {
+  <!-- No address, no lawn — guide to the fix instead of a dead disabled control. -->
+  <p class="py-1 text-[11px] text-base-content/40" i18n>Needs an address. Assign a household first.</p>
   }
+</label>
 
-  private async load(householdId: string | null, campaignId: string | null): Promise<void> {
-    if (!householdId || !campaignId) {
-      this.request.set(null);
-      this.openElsewhere.set(null);
-      return;
-    }
-    const end = this._loading.begin();
-    try {
-      const res = await this.svc.getSignStatus(householdId, campaignId);
-      this.request.set(res.request);
-      this.openElsewhere.set(res.open_in_other_campaign ?? null);
-    } catch {
-      // Degrade to "None requested" rather than blocking the page.
-      this.request.set(null);
-      this.openElsewhere.set(null);
-    } finally {
-      end();
-    }
-  }
-
-  private formatDate(value: Date | string | null): string {
-    if (!value) return '';
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  }
-}
+@if (request(); as r) { @if (metaLine()) {
+<p class="mt-1 text-[10px] text-base-content/40">{{ metaLine() }}</p>
+} @if (r.route_id) {
+<p class="mt-1 text-[10px]">
+  <a class="link link-primary" [routerLink]="['/deliveries/routes', r.route_id]">
+    <ng-container i18n>On route:</ng-container> {{ r.route_name }}
+  </a>
+</p>
+} @else if (r.status === 'approved' && r.skip_reason) {
+<p class="mt-1 text-[10px] text-base-content/40">
+  <ng-container i18n>Last attempt skipped:</ng-container> {{ r.skip_reason.toLowerCase() }}
+</p>
+} }
 ```
 
 ## File: apps/frontend/src/app/experiences/donations/ui/donations-grid.html
@@ -41686,395 +43230,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     }
   </main>
 </div>
-```
-
-## File: apps/frontend/src/app/experiences/fundraising/ui/fundraising-form.ts
-```typescript
-import { Component, OnInit, signal, computed, inject } from '@angular/core';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { form, FormField, validateStandardSchema, submit } from '@angular/forms/signals';
-import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { AddWebFormObj } from '../../../../../../../libs/common/src';
-import { ListsService } from '@experiences/lists/services/lists-service';
-import { FormsService } from '@experiences/forms/services/forms-service';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Tags } from '@experiences/tags/ui/tags';
-import { TagItem } from '@uxcommon/components/tags/tagitem';
-import { Icon } from '@icons/icon';
-import { FormActions } from '@uxcommon/components/form-actions/form-actions';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { SettingsService } from '@experiences/settings/services/settings-service';
-import { DonationsService } from '../../../services/api/donations-service';
-import { environment } from '../../../../environments/environment';
-import { donationPageUrl } from '../../../shared/public-pages';
-import { AuthService } from '../../../auth/auth-service';
-
-@Component({
-  selector: 'pc-fundraising-form',
-  imports: [FormField, RouterModule, Tags, TagItem, Icon, FormActions, PcCard],
-  templateUrl: './fundraising-form.html',
-})
-export class FundraisingFormComponent implements OnInit {
-  private readonly auth = inject(AuthService);
-  private readonly route = inject(ActivatedRoute);
-  private readonly router = inject(Router);
-  private readonly formsSvc = inject(FormsService);
-  private readonly listsSvc = inject(ListsService);
-  private readonly alertSvc = inject(AlertService);
-  private readonly dialogs = inject(ConfirmDialogService);
-  private readonly settingsSvc = inject(SettingsService);
-  private readonly donationsSvc = inject(DonationsService);
-
-  private readonly _loading = createLoadingGate();
-  protected readonly loading = this._loading.visible;
-  protected readonly isInitialized = signal(false);
-  protected readonly saving = signal(false);
-  protected readonly error = signal<string | null>(null);
-  protected readonly isNew = signal(true);
-  protected readonly formId = signal<string | null>(null);
-  // Public lookups are keyed (tenant, slug) — the UUID is internal only.
-  protected readonly formSlug = signal<string | null>(null);
-
-  protected setType(type: 'donation' | 'recurring_donation') {
-    this.payload.update((p) => ({ ...p, form_type: type }));
-  }
-
-  // Connect readiness comes from the residency context (defaults true to avoid a banner flash
-  // before it loads); tenants no longer hold Stripe keys.
-  protected readonly stripeConnected = signal(true);
-
-  // Donations are paused until the tenant confirms residency restrictions in Workspace → Donations.
-  // Defaults to true so no false "paused" banner flashes before the context loads.
-  protected readonly residencyAcknowledged = signal(true);
-
-  protected readonly availableLists = signal<Array<{ id: string; name: string }>>([]);
-  protected readonly selectedLists = signal<string[]>([]);
-  protected readonly selectedTags = signal<string[]>([]);
-  protected readonly selectedFields = signal<string[]>(['first_name', 'last_name', 'email', 'mobile', 'notes']);
-
-  protected readonly payload = signal({
-    name: '',
-    description: '',
-    redirect_url: '',
-    status: 'active' as 'active' | 'archived',
-    send_confirmation: true,
-    send_alert: true,
-    form_type: 'donation' as 'donation' | 'recurring_donation',
-  });
-
-  protected readonly form = form(this.payload, (p) => {
-    validateStandardSchema(p, AddWebFormObj);
-  });
-
-  protected readonly isRecurring = computed(() => this.payload().form_type === 'recurring_donation');
-
-  protected readonly embedSnippet = computed(() => {
-    const slug = this.formSlug();
-    if (!slug) return '';
-    const apiOrigin = environment.apiUrl.replace(/\/$/, '');
-    const tenantSlug = this.auth.getUser()?.tenant_slug ?? '';
-    const recurring = this.isRecurring();
-
-    const amountField = recurring
-      ? `
-  <div style="margin-bottom: 16px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Monthly Pledge Amount ($) *</label>
-    <input type="number" name="monthly_amount" min="1" step="1" placeholder="25" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-    <small style="font-size: 12px; color: #666;">You will be billed this amount every month.</small>
-  </div>`
-      : `
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Donation Amount ($ CAD) *</label>
-    <input type="number" name="amount" min="1" step="any" placeholder="E.g. 50.00" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-  </div>`;
-
-    const submitLabel = recurring ? 'Start Monthly Pledge' : 'Donate Now';
-
-    return `<!-- pplCRM Embeddable Donation Form -->
-<form action="${apiOrigin}/api/forms/submit/${slug}?t=${encodeURIComponent(tenantSlug)}" method="POST" style="max-width: 400px; font-family: sans-serif;">
-  <input type="text" name="_hp" style="display:none !important" tabindex="-1" autocomplete="off" />
-
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">First Name *</label>
-    <input type="text" name="first_name" placeholder="John" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-  </div>
-
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Last Name *</label>
-    <input type="text" name="last_name" placeholder="Doe" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-  </div>
-
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Email Address *</label>
-    <input type="email" name="email" placeholder="you@example.com" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-  </div>
-
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Street Address *</label>
-    <input type="text" name="street1" placeholder="E.g. 123 Main St" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-  </div>
-
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">City *</label>
-    <input type="text" name="city" placeholder="E.g. Toronto" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-  </div>
-
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Country of Residence *</label>
-    <select name="country" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;">
-      <option value="CA">Canada</option>
-      <option value="US">United States</option>
-      <option value="GB">United Kingdom</option>
-      <option value="AU">Australia</option>
-    </select>
-  </div>
-
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">State / Province *</label>
-    <input type="text" name="state" placeholder="E.g. ON or NY" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-  </div>
-
-  <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Zip / Postal Code *</label>
-    <input type="text" name="zip" placeholder="E.g. M5V 2T6" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
-  </div>${amountField}
-
-  <button type="submit" style="background-color: #0ea5e9; color: white; padding: 10px 16px; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; width: 100%;">${submitLabel}</button>
-</form>`;
-  });
-
-  protected readonly formUrl = computed(() => {
-    const slug = this.formSlug();
-    if (!slug) return '';
-    const tenantSlug = this.auth.getUser()?.tenant_slug ?? '';
-    return donationPageUrl(tenantSlug, slug);
-  });
-
-  public ngOnInit(): void {
-    const id = this.route.snapshot.paramMap.get('id');
-    if (id && id !== 'add') {
-      this.isNew.set(false);
-      this.formId.set(id);
-    }
-    void this.loadLists();
-    void this.settingsSvc.load();
-    void this.loadResidencyContext();
-  }
-
-  private async loadResidencyContext(): Promise<void> {
-    try {
-      const ctx = await this.donationsSvc.getResidencyContext();
-      this.residencyAcknowledged.set(ctx.residencyAcknowledged);
-      this.stripeConnected.set(ctx.stripeConnected);
-    } catch {
-      // non-fatal — leave the banners hidden if the context can't be read
-    }
-  }
-
-  protected listName(id: string): string {
-    const match = this.availableLists().find((list) => list.id === id);
-    return match?.name ?? 'List';
-  }
-
-  protected handleListSelect(event: Event): void {
-    const select = event.target as HTMLSelectElement | null;
-    if (!select) return;
-    const value = select.value;
-    if (!value) return;
-    const current = new Set(this.selectedLists());
-    if (!current.has(value)) {
-      current.add(value);
-      this.selectedLists.set(Array.from(current));
-    }
-    select.value = '';
-  }
-
-  protected removeList(listId: string): void {
-    this.selectedLists.set(this.selectedLists().filter((id) => id !== listId));
-  }
-
-  protected handleTagsChange(tags: string[]): void {
-    this.selectedTags.set(Array.isArray(tags) ? [...tags] : []);
-  }
-
-  protected copySnippet(): void {
-    const code = this.embedSnippet();
-    if (!code) return;
-    navigator.clipboard.writeText(code).then(
-      () => this.alertSvc.showSuccess('Donation page snippet copied to clipboard!'),
-      () => this.alertSvc.showError('Failed to copy to clipboard.'),
-    );
-  }
-
-  protected copyUrl(): void {
-    const url = this.formUrl();
-    if (!url) return;
-    navigator.clipboard.writeText(url).then(
-      () => this.alertSvc.showSuccess('Donation page URL copied!'),
-      () => this.alertSvc.showError('Failed to copy URL.'),
-    );
-  }
-
-  protected async deleteForm() {
-    const id = this.formId();
-    if (!id) return;
-    const confirmed = await this.dialogs.confirm({
-      title: 'Delete Donation Page',
-      message: 'Are you sure you want to delete this donation page? This action cannot be undone.',
-      variant: 'danger',
-      confirmText: 'Delete',
-    });
-    if (!confirmed) return;
-    this.saving.set(true);
-    try {
-      await this.formsSvc.delete(id);
-      this.formsSvc.triggerRefresh();
-      this.alertSvc.showSuccess('Donation page deleted');
-      await this.router.navigate(['/donations']);
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message
-          ? err.message
-          : isRecord(err) &&
-              isRecord(err['data']) &&
-              typeof err['data']['message'] === 'string' &&
-              err['data']['message']
-            ? err['data']['message']
-            : 'Unable to delete donation page';
-      this.alertSvc.showError(message);
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  protected async save(done?: (() => void) | Event) {
-    if (done instanceof Event) {
-      done.preventDefault();
-    }
-
-    this.form().markAsTouched();
-    if (this.form().invalid()) {
-      this.alertSvc.showError('Please check your inputs.');
-      return;
-    }
-
-    this.saving.set(true);
-    this.error.set(null);
-
-    await submit(this.form, {
-      action: async () => {
-        const values = this.payload();
-
-        try {
-          if (this.isNew()) {
-            const payload = {
-              name: values.name?.trim() ?? '',
-              description: values.description?.trim() || null,
-              redirect_url: values.redirect_url?.trim() || null,
-              target_tags: this.selectedTags().length ? this.selectedTags() : null,
-              target_lists: this.selectedLists().length ? this.selectedLists() : null,
-              status: values.status,
-              fields: this.selectedFields(),
-              send_confirmation: !!values.send_confirmation,
-              send_alert: !!values.send_alert,
-              form_type: values.form_type,
-            };
-            const result = (await this.formsSvc.add(payload)) as { id: string };
-            this.alertSvc.showSuccess('Donation page created successfully!');
-            void this.router.navigate(['/donation-pages', result.id]);
-          } else {
-            const id = this.formId()!;
-            const payload = {
-              name: values.name?.trim() ?? '',
-              description: values.description?.trim() || null,
-              redirect_url: values.redirect_url?.trim() || null,
-              target_tags: this.selectedTags().length ? this.selectedTags() : null,
-              target_lists: this.selectedLists().length ? this.selectedLists() : null,
-              status: values.status,
-              fields: this.selectedFields(),
-              send_confirmation: !!values.send_confirmation,
-              send_alert: !!values.send_alert,
-            };
-            await this.formsSvc.update(id, payload);
-            this.alertSvc.showSuccess('Donation page updated successfully!');
-            if (typeof done === 'function') {
-              done();
-            } else {
-              void this.router.navigate(['/donation-pages', id]);
-            }
-          }
-        } catch (err) {
-          const msg = err instanceof Error && err.message ? err.message : 'An error occurred while saving.';
-          this.error.set(msg);
-          this.alertSvc.showError(msg);
-        } finally {
-          this.saving.set(false);
-        }
-        return null;
-      },
-    });
-  }
-
-  private async loadLists(): Promise<void> {
-    const end = this._loading.begin();
-    try {
-      const result = await this.listsSvc.getAll({ limit: 100 });
-      const rows = Array.isArray(result?.rows) ? result.rows : [];
-      this.availableLists.set(
-        rows.map((row: any) => ({
-          id: String(row.id),
-          name: String(row.name),
-        })),
-      );
-      if (!this.isNew()) {
-        await this.loadPageDetails();
-      }
-    } catch (err) {
-      console.error('Failed to load lists', err);
-    } finally {
-      this.isInitialized.set(true);
-      end();
-    }
-  }
-
-  private async loadPageDetails(): Promise<void> {
-    const id = this.formId();
-    if (!id) return;
-    const end = this._loading.begin();
-    try {
-      const record = (await this.formsSvc.getById(id)) as any;
-      if (record) {
-        this.formSlug.set(record.slug ?? null);
-        this.payload.set({
-          name: record.name ?? '',
-          description: record.description ?? '',
-          redirect_url: record.redirect_url ?? '',
-          status: (record.status as 'active' | 'archived') ?? 'active',
-          send_confirmation: record.send_confirmation !== false,
-          send_alert: record.send_alert !== false,
-          form_type: (record.form_type as 'donation' | 'recurring_donation') ?? 'donation',
-        });
-        this.form().reset();
-        this.selectedTags.set(Array.isArray(record.target_tags) ? record.target_tags : []);
-        this.selectedLists.set(Array.isArray(record.target_lists) ? record.target_lists : []);
-        if (record.fields) {
-          const fields = Array.isArray(record.fields) ? record.fields : JSON.parse(record.fields);
-          this.selectedFields.set(fields);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load page details', err);
-      this.error.set('Failed to load page details.');
-    } finally {
-      end();
-    }
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 ```
 
 ## File: apps/frontend/src/app/experiences/help/ui/help-home.html
@@ -54020,158 +55175,6 @@ export class BugReportsService extends TRPCService<'bug_reports'> {
 }
 ```
 
-## File: apps/frontend/src/app/services/api/donations-service.ts
-```typescript
-import { Service } from '@angular/core';
-import type { StripeConnectCountry } from '@common';
-import { TRPCService } from './trpc-service';
-
-@Service()
-export class DonationsService extends TRPCService<'donations'> {
-  // ── One-time donations ──────────────────────────────────────────────────────
-
-  public listDonations() {
-    return this.api.donations.listDonations.query();
-  }
-
-  public getHistory(personId: string) {
-    return this.api.donations.getPersonDonationHistory.query(personId);
-  }
-
-  public getStats(personId: string) {
-    return this.api.donations.getDonationStats.query(personId);
-  }
-
-  public checkEligibility(payload: {
-    personId: string;
-    amountCents: number;
-    address: { country?: string; state?: string };
-    isRecurring?: boolean;
-    remainingMonths?: number;
-  }) {
-    return this.api.donations.checkEligibility.query(payload);
-  }
-
-  public createCheckout(payload: {
-    personId: string;
-    amountCents: number;
-    address: { country?: string; state?: string };
-  }) {
-    return this.api.donations.createCheckout.mutate(payload);
-  }
-
-  public confirmDonation(sessionId: string) {
-    return this.api.donations.confirmDonation.mutate({ sessionId });
-  }
-
-  /** Record an offline gift (Fig. 15 "Record donation" dialog) — cash, check, or bank transfer. */
-  public recordDonation(payload: {
-    personId: string;
-    amountCents: number;
-    method: 'card' | 'check' | 'cash' | 'bank_transfer';
-  }) {
-    return this.api.donations.recordDonation.mutate(payload);
-  }
-
-  public confirmMockDonation(payload: {
-    personId: string;
-    amountCents: number;
-    sessionId: string;
-    province: string;
-    country: string;
-  }) {
-    return this.api.donations.confirmMockDonation.mutate(payload);
-  }
-
-  // ── Recurring pledges ───────────────────────────────────────────────────────
-
-  public createRecurringCheckout(payload: {
-    personId: string;
-    monthlyAmountCents: number;
-    address: { country?: string; state?: string };
-  }) {
-    return this.api.donations.createRecurringCheckout.mutate(payload);
-  }
-
-  public confirmMockPledge(payload: {
-    personId: string;
-    monthlyAmountCents: number;
-    mockSubId: string;
-    province: string;
-    country: string;
-  }) {
-    return this.api.donations.confirmMockPledge.mutate(payload);
-  }
-
-  public listPledges() {
-    return this.api.donations.listPledges.query();
-  }
-
-  public getPersonPledges(personId: string) {
-    return this.api.donations.getPersonPledges.query(personId);
-  }
-
-  public cancelPledge(pledgeId: string) {
-    return this.api.donations.cancelPledge.mutate({ pledgeId });
-  }
-
-  // ── Donation periods ────────────────────────────────────────────────────────
-
-  public getDonationPeriods() {
-    return this.api.donations.getDonationPeriods.query();
-  }
-
-  public createDonationPeriod(payload: {
-    name: string;
-    start_date: string;
-    end_date?: string | null;
-    limit_amount: number;
-  }) {
-    return this.api.donations.createDonationPeriod.mutate(payload);
-  }
-
-  public updateDonationPeriod(payload: {
-    id: string;
-    name?: string;
-    start_date?: string;
-    end_date?: string | null;
-    limit_amount?: number;
-    is_active?: boolean;
-  }) {
-    return this.api.donations.updateDonationPeriod.mutate(payload);
-  }
-
-  public deleteDonationPeriod(id: string) {
-    return this.api.donations.deleteDonationPeriod.mutate({ id });
-  }
-
-  /** Country / residency-acknowledged / Connect-readiness context that drives the donation settings disclaimers. */
-  public getResidencyContext() {
-    return this.api.donations.getResidencyContext.query();
-  }
-
-  // ── Stripe Connect (hosted onboarding; no tenant-held secrets) ────────────────
-
-  public getStripeConnectStatus() {
-    return this.api.donations.getStripeConnectStatus.query();
-  }
-
-  /** Create the connected account (first call) and return the Stripe-hosted onboarding URL. */
-  public startStripeOnboarding(country: StripeConnectCountry) {
-    return this.api.donations.startStripeOnboarding.mutate({ country });
-  }
-
-  /** Express-dashboard login link for the "Open Stripe dashboard" button. */
-  public createStripeLoginLink() {
-    return this.api.donations.createStripeLoginLink.mutate();
-  }
-
-  public disconnectStripe() {
-    return this.api.donations.disconnectStripe.mutate();
-  }
-}
-```
-
 ## File: apps/frontend/src/app/services/api/events-service.ts
 ```typescript
 import { Service } from '@angular/core';
@@ -54607,55 +55610,6 @@ function httpUnbatchedLink(tokenSvc: TokenService, getAbortSignal: () => AbortSi
       return authToken ? { Authorization: `Bearer ${authToken}` } : {};
     },
   });
-}
-```
-
-## File: apps/frontend/src/app/services/api/user-message.ts
-```typescript
-import { JSendServerError } from '../../../../../../libs/common/src';
-import { TRPCClientError } from '@trpc/client';
-
-import { ApiError } from './api-error';
-
-/** Shown whenever a request never got a response from the backend (offline, outage, edge 503). */
-export const SERVER_UNREACHABLE_MESSAGE =
-  "We can't reach the server right now. Check your internet connection and try again in a moment.";
-
-/**
- * True when the request never produced a server-authored error: the backend is down/unreachable or
- * the client is offline. A tRPC error that actually came from the server always carries a `data`
- * payload with a code; a fetch-level failure (or an edge backend-down 503 with a non-tRPC body)
- * does not. Says nothing about the session — callers must NOT treat this as a sign-out signal.
- */
-export function isServerUnreachable(error: unknown): boolean {
-  if (error instanceof ApiError) return isServerUnreachable(error.originalError);
-  return error instanceof TRPCClientError && error.data == null;
-}
-
-/**
- * Returns a message that is safe to show to the user.
- *
- * Server errors (tRPC / JSend) are already sanitized by the backend, so their
- * message is shown as-is. A plain `new Error('…')` is app-authored copy and
- * passes through too. Anything else (TypeError, DOMException, third-party
- * errors) would leak internals into the UI, so the caller's fallback is shown
- * instead — the full error still goes to the console via the usual handlers.
- */
-export function getUserErrorMessage(error: unknown, fallback: string): string {
-  // A raw fetch failure would surface as browser-speak ("Failed to fetch") — translate it.
-  if (isServerUnreachable(error)) {
-    return SERVER_UNREACHABLE_MESSAGE;
-  }
-  if (error instanceof ApiError || error instanceof TRPCClientError) {
-    return error.message || fallback;
-  }
-  if (error instanceof JSendServerError) {
-    return error.messageText || fallback;
-  }
-  if (error instanceof Error && error.constructor === Error && error.message) {
-    return error.message;
-  }
-  return fallback;
 }
 ```
 
@@ -55777,6 +56731,107 @@ export class GrainTabs {
 </div>
 ```
 
+## File: apps/frontend/src/app/shared/public-pages.ts
+```typescript
+import { environment } from '../../environments/environment';
+
+/**
+ * Helpers for the tenant-subdomain public page model. Every public surface (forms /f/:slug,
+ * event RSVP /e/:slug, volunteer /volunteer + /v/:slug, donations) lives on
+ * `https://<tenantSlug>.<publicBaseDomain>/<path>`; the SPA passes its own subdomain to the API as
+ * `?t=` so tenant resolution works on any host (including dev, where the Host header is enough in
+ * Chrome via `<slug>.localhost` but not guaranteed elsewhere).
+ */
+
+/**
+ * Base for public-page API calls (unauthenticated `fetch` to REST `/api/*`).
+ *
+ * In production these pages are served on the dedicated public origin `<org>.pplforms.com`, whose
+ * reverse proxy forwards `/api` and `/d` to the backend. So public calls must be **same-origin**
+ * (origin-relative `''`) — hitting the absolute `api.pplcrm.com` origin would be cross-origin and
+ * CORS-blocked (CORS is deliberately locked to the CRM origin only). In dev we keep the absolute
+ * `apiUrl`, which the backend CORS already allows for `localhost:4200`.
+ */
+export function apiBase(): string {
+  return environment.production ? '' : environment.apiUrl.replace(/\/$/, '');
+}
+
+/**
+ * The tenant subdomain the current page is being served on
+ * (`riverton.mydomain.com` → `riverton`), or null on the bare app host.
+ */
+export function tenantFromHost(): string | null {
+  const host = window.location.hostname.toLowerCase();
+  const base = environment.publicBaseDomain.toLowerCase();
+  if (!host || host === base) return null;
+  const suffix = `.${base}`;
+  if (!host.endsWith(suffix)) return null;
+  const label = host.slice(0, -suffix.length);
+  if (!label || label.includes('.')) return null;
+  return label;
+}
+
+/** `?t=<tenant>` query suffix for public API calls made from a public page. */
+export function tenantQuery(): string {
+  const tenant = tenantFromHost();
+  return tenant ? `?t=${encodeURIComponent(tenant)}` : '';
+}
+
+/**
+ * Shareable public URL for authenticated admin UI: `https://<tenantSlug>.<base>/<path>`, falling
+ * back to the current origin when no tenant subdomain is configured (dev without wildcard DNS).
+ * `path` must not start with a slash.
+ */
+export function publicPageUrl(tenantSlug: string | null | undefined, path: string): string {
+  const base = environment.publicBaseDomain;
+  if (tenantSlug && base) {
+    return `https://${tenantSlug}.${base}/${path}`;
+  }
+  return `${window.location.origin}/${path}`;
+}
+
+/**
+ * Public URL for a donation page. Donation pages are **server-rendered by the backend** (they carry
+ * the Stripe checkout), not an SPA route. In production they're served at
+ * `<org>.pplforms.com/d/:slug` — the pplforms edge Worker rewrites `/d/*` → the backend's
+ * `/api/forms/d/*` and injects `?t=<org>` from the subdomain. In dev there's no Worker, so hit the
+ * backend directly with an explicit `?t=`.
+ */
+export function donationPageUrl(tenantSlug: string | null | undefined, slug: string): string {
+  if (environment.production) {
+    return publicPageUrl(tenantSlug, `d/${slug}`);
+  }
+  const t = tenantSlug ? `?t=${encodeURIComponent(tenantSlug)}` : '';
+  return `${environment.apiUrl.replace(/\/$/, '')}/api/forms/d/${slug}${t}`;
+}
+
+/**
+ * Absolute URL to a volunteer companion surface (canvass `/t/:token`, deliveries `/r/:token`). In
+ * production the companion apps are path-routed on the CRM's own domain, so we use the current
+ * origin; in dev they run on a separate port, so `environment.companionOrigin` overrides it —
+ * otherwise a copied link would point back at the CRM host and 404. `path` must start with a slash.
+ */
+export function companionUrl(path: string): string {
+  return `${environment.companionOrigin || window.location.origin}${path}`;
+}
+
+/** Which channels the backend sent a volunteer's personal link through on assignment. */
+export interface VolunteerLinkSent {
+  email: boolean;
+  sms: boolean;
+}
+
+/**
+ * Human phrasing for the assignment toast: 'link sent by email and text', or null when
+ * nothing could be sent (no contacts on file) — callers warn and point at Copy link.
+ */
+export function volunteerLinkSentPhrase(sent: VolunteerLinkSent | null | undefined): string | null {
+  if (!sent || (!sent.email && !sent.sms)) return null;
+  const channels = [sent.email ? 'email' : null, sent.sms ? 'text' : null].filter(Boolean).join(' and ');
+  return `link sent by ${channels}`;
+}
+```
+
 ## File: apps/frontend/src/app/app.config.ts
 ```typescript
 import type { ApplicationConfig } from '@angular/core';
@@ -56096,6 +57151,121 @@ const config: Config = {
 };
 
 export default config;
+```
+
+## File: apps/frontend/project.json
+```json
+{
+  "name": "frontend",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "prefix": "pplcrm",
+  "sourceRoot": "apps/frontend/src",
+  "tags": [],
+  "targets": {
+    "generate-context": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx repomix --output apps/frontend/STRUCTURE.md --include \"apps/frontend/src/**/*\" --ignore \"apps/backend/**,apps/libs/**,libs/**,**/STRUCTURE.md,**/*.spec.ts\" --style markdown"
+      }
+    },
+    "build": {
+      "executor": "@angular/build:application",
+      "dependsOn": ["generate-context"],
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "production",
+      "options": {
+        "outputPath": "dist/apps/frontend",
+        "index": "apps/frontend/src/index.html",
+        "browser": "apps/frontend/src/main.ts",
+        "tsConfig": "apps/frontend/tsconfig.app.json",
+        "assets": ["apps/frontend/src/favicon.ico", "apps/frontend/src/assets"],
+        "styles": ["apps/frontend/src/styles.css"],
+        "scripts": [],
+        "polyfills": ["@angular/localize/init"],
+        "define": {
+          "import.meta.env.VITE_GOOGLE_MAPS_API_KEY": "\"__PPLCRM_MAPS_KEY__\""
+        }
+      },
+      "configurations": {
+        "production": {
+          "optimization": {
+            "scripts": true,
+            "styles": {
+              "minify": true,
+              "inlineCritical": false
+            },
+            "fonts": {
+              "inline": false
+            }
+          },
+          "budgets": [
+            {
+              "type": "initial",
+              "maximumWarning": "3mb",
+              "maximumError": "4mb"
+            },
+            {
+              "type": "anyComponentStyle",
+              "maximumWarning": "2kb",
+              "maximumError": "4kb"
+            }
+          ],
+          "outputHashing": "all",
+          "fileReplacements": [
+            {
+              "replace": "apps/frontend/src/environments/environment.ts",
+              "with": "apps/frontend/src/environments/environment.prod.ts"
+            }
+          ]
+        },
+        "development": {
+          "optimization": false,
+          "extractLicenses": false,
+          "sourceMap": true
+        }
+      }
+    },
+    "serve": {
+      "executor": "@angular/build:dev-server",
+      "defaultConfiguration": "development",
+      "options": {
+        "buildTarget": "frontend:build",
+        "port": 4200
+      },
+      "configurations": {
+        "production": {
+          "buildTarget": "frontend:build:production"
+        },
+        "development": {
+          "buildTarget": "frontend:build:development"
+        }
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "outputs": ["{workspaceRoot}/coverage/apps/frontend"],
+      "options": {
+        "cwd": "apps/frontend",
+        "command": "vitest run"
+      }
+    },
+    "extract-i18n": {
+      "executor": "@angular/build:extract-i18n",
+      "options": {
+        "buildTarget": "frontend:build"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["apps/frontend/**/*.ts", "apps/frontend/**/*.html"]
+      }
+    }
+  }
+}
 ```
 
 ## File: apps/frontend/vite.config.ts
@@ -57768,422 +58938,182 @@ main().catch((error: unknown): void => {
 });
 ```
 
-## File: apps/frontend/src/app/auth/signin-page/signin-page.ts
+## File: apps/frontend/src/app/experiences/campaigns/ui/campaign-view.ts
 ```typescript
-import { Component, OnDestroy, OnInit, computed, effect, inject, signal } from '@angular/core';
-import { FormField, email, form, minLength, pattern, required, submit } from '@angular/forms/signals';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { GENERIC_SIGNIN_ERROR } from '../../../../../../libs/common/src';
-import { Icon } from '@icons/icon';
+import { DatePipe } from '@angular/common';
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { ActivatedRoute, Router, RouterModule } from '@angular/router';
+import { RecordActivities } from '@experiences/activity/ui/record-activities/record-activities';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { DetailRow } from '@uxcommon/components/detail-row/detail-row';
+import { Icon } from '@icons/icon';
+import { ProfileCard } from '@uxcommon/components/profile-card/profile-card';
 import { createLoadingGate } from '@uxcommon/loading-gate';
+import { createRequestGuard } from '@uxcommon/request-guard';
 
-import { TokenService } from '../../services/api/token-service';
-import { SERVER_UNREACHABLE_MESSAGE, getUserErrorMessage, isServerUnreachable } from '../../services/api/user-message';
-import { AuthLayoutComponent } from 'apps/frontend/src/app/auth/auth-layout';
-import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
+import { CampaignDetail, CampaignsService } from '../services/campaigns-service';
+import { getUserErrorMessage } from '@frontend/services/api/user-message';
 
-type SignInStep = 'email' | 'passkey' | 'password' | '2fa' | 'passkey-setup';
-
+/**
+ * Campaigns §15 — campaign detail. Elections can be archived (read-only history)
+ * and unarchived; the office context is permanent and shows neither action.
+ */
 @Component({
-  selector: 'pc-login',
-  imports: [FormField, RouterLink, Icon, AuthLayoutComponent],
-  templateUrl: './signin-page.html',
+  selector: 'pc-campaign-view',
+  imports: [DatePipe, RouterModule, RecordActivities, DetailLayout, ProfileCard, DetailRow, Icon],
+  templateUrl: './campaign-view.html',
 })
-export class SignInPage implements OnInit, OnDestroy {
-  private readonly alertSvc = inject(AlertService);
-  private readonly authService = inject(AuthService);
+export class CampaignViewComponent {
+  readonly id = input.required<string>();
+
+  private readonly alerts = inject(AlertService);
+  private readonly campaignsSvc = inject(CampaignsService);
+  private readonly context = inject(CampaignContextService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
-  private readonly suppressNavigation = signal<boolean>(false);
-  private readonly tokenService = inject(TokenService);
+  private readonly dialogs = inject(ConfirmDialogService);
 
-  private _countdownInterval: ReturnType<typeof setInterval> | null = null;
-  private _resendCooldownInterval: ReturnType<typeof setInterval> | null = null;
-  private _loading = createLoadingGate();
+  private readonly _loading = createLoadingGate();
+  private readonly _requestGuard = createRequestGuard();
+  protected readonly isLoading = this._loading.visible;
+  protected readonly initialized = signal(false);
+  protected readonly campaign = signal<Record<string, unknown> | null>(null);
 
-  protected readonly step = signal<SignInStep>('email');
-  protected readonly emailData = signal({ email: '' });
-  protected readonly passwordData = signal({ password: '' });
-  protected readonly otpData = signal({ code: '' });
-  protected readonly emailFor2FA = signal<string>('');
-  protected readonly pendingEmail = signal<string>('');
-  protected readonly rateLimitSecondsLeft = signal<number>(0);
-  protected readonly rateLimitMins = computed(() => Math.floor(this.rateLimitSecondsLeft() / 60));
-  protected readonly rateLimitRemSecs = computed(() => this.rateLimitSecondsLeft() % 60);
-  protected readonly resending = signal<boolean>(false);
-  protected readonly resendCooldownSeconds = signal<number>(0);
-  protected readonly resendCooldownMins = computed(() => Math.floor(this.resendCooldownSeconds() / 60));
-  protected readonly resendCooldownRemSecs = computed(() => this.resendCooldownSeconds() % 60);
-  protected readonly settingUpPasskey = signal<boolean>(false);
-  protected readonly verificationPending = signal<boolean>(false);
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => [
+    { label: 'Campaigns', route: '/workspace/campaigns' },
+    { label: this.name() || 'Campaign' },
+  ]);
 
-  protected isLoading = this._loading.visible;
-  protected persistence = signal(this.tokenService.getPersistence());
+  protected readonly name = computed(() => this.str('name'));
+  protected readonly description = computed(() => this.str('description'));
+  protected readonly notes = computed(() => this.str('notes'));
+  protected readonly kind = computed(() => this.str('kind') || 'election');
+  protected readonly status = computed(() => this.str('status') || 'active');
+  protected readonly startdate = computed(() => this.str('startdate'));
+  protected readonly enddate = computed(() => this.str('enddate'));
+  protected readonly isOffice = computed(() => this.kind() === 'office');
+  protected readonly isArchived = computed(() => this.status() === 'archived');
+  protected readonly isCurrentContext = computed(() => this.context.activeCampaignId() === this.id());
 
-  public readonly emailForm = form(this.emailData, (p) => {
-    required(p.email);
-    email(p.email);
-  });
-
-  public readonly passwordForm = form(this.passwordData, (p) => {
-    required(p.password);
-    minLength(p.password, 8);
-  });
-
-  public readonly otpForm = form(this.otpData, (p) => {
-    required(p.code);
-    pattern(p.code, /^\d{6}$/);
-  });
+  // Carry-over (§15): seed this campaign from a prior one.
+  protected readonly carrySourceId = signal('');
+  protected readonly carryCopySupport = signal(true);
+  protected readonly carryCopySubscriptions = signal(false);
+  protected readonly carryRunning = signal(false);
+  protected readonly carrySources = computed(() => this.context.campaigns().filter((c) => c.id !== this.id()));
 
   constructor() {
     effect(() => {
-      const user = this.authService.getUserSignal();
-      if (user() && !this.suppressNavigation()) void this.router.navigate(['dashboard']);
+      const currentId = this.id();
+      void untracked(() => this.load(currentId));
     });
   }
 
-  public get emailField() {
-    return this.emailForm.email();
+  protected editCampaign() {
+    void this.router.navigate(['edit'], { relativeTo: this.route });
   }
 
-  public get password() {
-    return this.passwordForm.password();
-  }
-
-  public get code() {
-    return this.otpForm.code();
-  }
-
-  public ngOnInit() {
-    const params = this.route.snapshot.queryParamMap;
-    const emailVal = params.get('email') || '';
-    if (params.get('emailChanged') === 'true' || params.get('verificationPending') === 'true') {
-      this.verificationPending.set(true);
-      this.pendingEmail.set(emailVal);
-      if (emailVal) {
-        this.emailForm.email().value.set(emailVal);
-        this.step.set('password');
-      }
-    } else if (params.get('returnUrl')) {
-      // A returnUrl is only ever set when an expired/revoked session bounced the user here
-      // (the auth guard redirects without one), so explain the involuntary sign-out.
-      this.alertSvc.showInfo('Your session has expired. Please sign in again.');
+  protected async workInThis(): Promise<void> {
+    try {
+      await this.context.setActive(this.id());
+      this.alerts.showSuccess(`Now working in ${this.name()}`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Could not switch campaign. Please try again.'));
     }
   }
 
-  public ngOnDestroy() {
-    this.clearCountdown();
-    this.clearResendCooldown();
+  protected onCarrySourceChange(event: Event): void {
+    this.carrySourceId.set((event.target as HTMLSelectElement).value);
   }
 
-  public goBackToEmail() {
-    this.step.set('email');
-    this.verificationPending.set(false);
-    this.passwordData.update((p) => ({ ...p, password: '' }));
-    this.otpData.update((o) => ({ ...o, code: '' }));
-  }
-
-  public usePasswordInstead() {
-    this.step.set('password');
-  }
-
-  public async continueWithEmail(event?: Event) {
-    event?.preventDefault();
-
-    const rawEmail = this.emailData().email;
-    const emailVal = rawEmail.trim().toLowerCase();
-
-    if (rawEmail !== emailVal) {
-      this.emailForm.email().value.set(emailVal);
+  protected async runCarryOver(): Promise<void> {
+    const sourceId = this.carrySourceId();
+    if (!sourceId) return;
+    if (this.carryCopySubscriptions()) {
+      const confirmed = await this.dialogs.confirm({
+        title: 'Copy email subscriptions?',
+        message:
+          'Consent collected by one campaign or the office does not automatically extend to another. Copying subscription lists across contexts is your compliance call. Confirm only if you are satisfied the consent carries over.',
+        variant: 'danger',
+        confirmText: 'I understand, copy subscriptions',
+      });
+      if (!confirmed) return;
     }
+    this.carryRunning.set(true);
+    try {
+      const result = await this.campaignsSvc.carryOver({
+        source_campaign_id: sourceId,
+        target_campaign_id: this.id(),
+        copy_support: this.carryCopySupport(),
+        copy_subscriptions: this.carryCopySubscriptions(),
+      });
+      const r = result as { support_copied?: number; subscriptions_copied?: number };
+      this.alerts.showSuccess(
+        `Carried over ${r.support_copied ?? 0} support level(s) and ${r.subscriptions_copied ?? 0} subscription(s)`,
+      );
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Carry-over failed. Please try again.'));
+    } finally {
+      this.carryRunning.set(false);
+    }
+  }
 
-    this.emailForm().markAsTouched();
-
-    await submit(this.emailForm, {
-      action: async () => {
-        let hasPasskeys = false;
-        const end = this._loading.begin();
-        try {
-          ({ hasPasskeys } = await this.authService.checkEmail(emailVal));
-        } catch (err) {
-          // Backend unreachable: say so now and stay on the email step, instead of walking the
-          // user into a password prompt that cannot possibly succeed.
-          if (isServerUnreachable(err)) {
-            this.alertSvc.showError(SERVER_UNREACHABLE_MESSAGE);
-            return null;
-          }
-          // any other failure — fall through to password
-        } finally {
-          end();
-        }
-
-        if (hasPasskeys) {
-          this.step.set('passkey');
-          await this.signInWithPasskey();
-        } else {
-          this.step.set('password');
-        }
-
-        return null;
-      },
-      onInvalid: () => {
-        const f = this.emailForm.email();
-        const hasRequired = f.errors().some((e) => e.kind === 'required');
-        this.alertSvc.showError(hasRequired ? 'Email is required.' : 'Please enter a valid email address.');
-      },
+  protected async archive(): Promise<void> {
+    const confirmed = await this.dialogs.confirm({
+      title: 'Archive campaign',
+      message:
+        'Archiving makes this campaign read-only: its supporter data, consent, and outreach history stay viewable, but nothing new can be recorded in it. Users assigned to this campaign move back to the office context. Open yard-sign requests in this campaign are declined and its delivery routes are canceled. You can unarchive it later.',
+      confirmText: 'Archive',
     });
-  }
-
-  public async signInWithPasskey() {
+    if (!confirmed) return;
     const end = this._loading.begin();
     try {
-      const result = await this.authService.signInWithPasskey(this.persistence());
-      if (result.cancelled) {
-        this.step.set('password');
-        return;
-      }
-      if (!result.user) throw new Error('Passkey authentication failed. Please try again.');
+      await this.campaignsSvc.archive(this.id());
+      await Promise.all([this.load(this.id()), this.context.refresh()]);
+      this.alerts.showSuccess('Campaign archived');
     } catch (err) {
-      if (err instanceof Error && err.name === 'NotAllowedError') {
-        this.step.set('password');
-        return;
-      }
-      this.handleError(err);
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to archive the campaign'));
     } finally {
       end();
     }
   }
 
-  public async signIn(event?: Event) {
-    event?.preventDefault();
-
-    this.tokenService.clearAll();
-
-    const emailVal = this.emailData().email.trim().toLowerCase();
-    const passwordVal = this.passwordData().password;
-
-    this.verificationPending.set(false);
-    this.passwordForm().markAsTouched();
-
-    await submit(this.passwordForm, {
-      action: async () => {
-        const end = this._loading.begin();
-        try {
-          this.suppressNavigation.set(true);
-          const res = await this.authService.signIn({
-            email: emailVal,
-            password: passwordVal,
-            rememberMe: this.persistence(),
-          });
-          if (res.requires2FA) {
-            this.suppressNavigation.set(false);
-            this.step.set('2fa');
-            this.emailFor2FA.set(res.email || emailVal);
-            this.otpData.update((o) => ({ ...o, code: '' }));
-          } else {
-            const user = this.authService.getUser();
-            const dismissed = !!user?.passkey_setup_dismissed_at;
-            if (!dismissed) {
-              const passkeys = (await this.authService.listPasskeys().catch(() => [])) as any[];
-              if (passkeys.length === 0) {
-                this.step.set('passkey-setup');
-                return null;
-              }
-            }
-            this.suppressNavigation.set(false);
-          }
-        } catch (err) {
-          this.suppressNavigation.set(false);
-          this.handleError(err, emailVal);
-        } finally {
-          end();
-        }
-        return null;
-      },
-      onInvalid: () => {
-        const f = this.passwordForm.password();
-        const hasMinLength = f.errors().some((e) => e.kind === 'minLength');
-        this.alertSvc.showError(
-          hasMinLength ? 'Password must be at least 8 characters.' : 'Please enter your password.',
-        );
-      },
-    });
-  }
-
-  public async verify2FA(event?: Event) {
-    event?.preventDefault();
-
-    this.otpForm().markAsTouched();
-
-    await submit(this.otpForm, {
-      action: async () => {
-        const end = this._loading.begin();
-        try {
-          const emailVal = this.emailFor2FA();
-          const codeVal = this.otpData().code.trim();
-          await this.authService.verify2FA({
-            email: emailVal,
-            code: codeVal,
-            rememberMe: this.persistence(),
-          });
-        } catch (err) {
-          this.handleError(err);
-        } finally {
-          end();
-        }
-        return null;
-      },
-      onInvalid: () => {
-        const f = this.otpForm.code();
-        const hasRequired = f.errors().some((e) => e.kind === 'required');
-        const hasPattern = f.errors().some((e) => e.kind === 'pattern');
-        const msg = hasRequired
-          ? 'Verification code is required.'
-          : hasPattern
-            ? 'Verification code must be exactly 6 digits.'
-            : 'Please enter a valid verification code.';
-        this.alertSvc.showError(msg);
-      },
-    });
-  }
-
-  public async setupPasskey() {
-    this.settingUpPasskey.set(true);
+  protected async unarchive(): Promise<void> {
+    const end = this._loading.begin();
     try {
-      const result = await this.authService.registerPasskey();
-      if (result.verified) {
-        this.alertSvc.showSuccess('Passkey set up successfully!');
-      }
+      await this.campaignsSvc.unarchive(this.id());
+      await Promise.all([this.load(this.id()), this.context.refresh()]);
+      this.alerts.showSuccess('Campaign unarchived');
     } catch (err) {
-      if (!(err instanceof Error && err.name === 'NotAllowedError')) {
-        this.alertSvc.showError(getUserErrorMessage(err, 'Failed to set up the passkey. Please try again.'));
-      }
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to unarchive the campaign'));
     } finally {
-      this.settingUpPasskey.set(false);
-      this.suppressNavigation.set(false);
+      end();
     }
   }
 
-  public async skipPasskeySetup() {
+  private async load(id: string): Promise<void> {
+    const isCurrent = this._requestGuard.begin();
+    const end = this._loading.begin();
     try {
-      await this.authService.dismissPasskeyPrompt();
-    } catch {
-      // non-fatal — still allow navigation
-    }
-    this.suppressNavigation.set(false);
-  }
-
-  public togglePersistence(target: EventTarget | null) {
-    if (!target) return;
-    const checked = (target as HTMLInputElement).checked;
-    this.tokenService.setPersistence(checked);
-    this.persistence.set(checked);
-  }
-
-  public async resendVerification() {
-    const emailVal = this.pendingEmail().trim();
-    if (!emailVal || this.resendCooldownSeconds() > 0) return;
-    this.resending.set(true);
-    try {
-      await this.authService.resendVerificationEmail(emailVal);
-      this.alertSvc.showSuccess('Verification email sent successfully!');
-      this.startResendCooldown(60);
+      const data: CampaignDetail = await this.campaignsSvc.getById(id);
+      if (!isCurrent()) return;
+      this.campaign.set((data ?? null) as Record<string, unknown> | null);
     } catch (err) {
-      const tRPCData = getTRPCData(err);
-      const retryAfterSec =
-        (typeof tRPCData?.['retryAfterSec'] === 'number' ? tRPCData['retryAfterSec'] : undefined) ??
-        this.parseRetryAfterSec(err instanceof Error && err.message ? err.message : '');
-      if (retryAfterSec) {
-        this.startResendCooldown(retryAfterSec);
-      } else {
-        this.alertSvc.showError(getUserErrorMessage(err, 'Could not send the verification email. Please try again.'));
-      }
+      this.alerts.showError(getUserErrorMessage(err, 'Could not load the campaign. Please try again.'));
     } finally {
-      this.resending.set(false);
+      end();
+      this.initialized.set(true);
     }
   }
 
-  private clearCountdown() {
-    if (this._countdownInterval !== null) {
-      clearInterval(this._countdownInterval);
-      this._countdownInterval = null;
-    }
+  private str(key: string): string {
+    const value = this.campaign()?.[key];
+    return typeof value === 'string' ? value : '';
   }
-
-  private clearResendCooldown() {
-    if (this._resendCooldownInterval !== null) {
-      clearInterval(this._resendCooldownInterval);
-      this._resendCooldownInterval = null;
-    }
-  }
-
-  private startResendCooldown(seconds: number) {
-    this.clearResendCooldown();
-    this.resendCooldownSeconds.set(seconds);
-    this._resendCooldownInterval = setInterval(() => {
-      const current = this.resendCooldownSeconds();
-      if (current <= 1) {
-        this.resendCooldownSeconds.set(0);
-        this.clearResendCooldown();
-      } else {
-        this.resendCooldownSeconds.update((s) => s - 1);
-      }
-    }, 1000);
-  }
-
-  private handleError(err: unknown, emailVal?: string) {
-    const tRPCData = getTRPCData(err);
-    const message = getUserErrorMessage(err, 'Something went wrong, please try again');
-    const retryAfterSec =
-      (typeof tRPCData?.['retryAfterSec'] === 'number' ? tRPCData['retryAfterSec'] : undefined) ??
-      this.parseRetryAfterSec(message);
-    if (retryAfterSec) {
-      this.startRateLimitCountdown(retryAfterSec);
-      return;
-    }
-    const code = typeof tRPCData?.['code'] === 'string' ? tRPCData['code'] : undefined;
-    if (emailVal && message.toLowerCase().includes('not verified')) {
-      this.verificationPending.set(true);
-      this.pendingEmail.set(emailVal);
-      this.alertSvc.showError(message);
-    } else if (emailVal && (code === 'UNAUTHORIZED' || code === 'NOT_FOUND')) {
-      this.alertSvc.showError(GENERIC_SIGNIN_ERROR);
-    } else {
-      this.alertSvc.showError(message);
-    }
-  }
-
-  private parseRetryAfterSec(message: string): number | undefined {
-    const match = message?.match(/retry in (\d+) second/i);
-    return match ? parseInt(match[1]!, 10) : undefined;
-  }
-
-  private startRateLimitCountdown(seconds: number) {
-    this.clearCountdown();
-    this.rateLimitSecondsLeft.set(seconds);
-
-    this._countdownInterval = setInterval(() => {
-      const current = this.rateLimitSecondsLeft();
-      if (current < 1) {
-        this.clearCountdown();
-      } else {
-        this.rateLimitSecondsLeft.update((s) => s - 1);
-      }
-    }, 1000);
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-/** Extract the tRPC error `data` payload (e.g. rate-limit metadata) from a caught error. */
-function getTRPCData(err: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(err)) return undefined;
-  const originalError = err['originalError'];
-  if (isRecord(originalError) && isRecord(originalError['data'])) return originalError['data'];
-  return isRecord(err['data']) ? err['data'] : undefined;
 }
 ```
 
@@ -59391,6 +60321,148 @@ export class DeliveriesRoutesService extends AbstractAPIService<'delivery_routes
 
   <pc-assign-volunteer-dialog #assignDlg (selected)="onVolunteerSelected($event)"></pc-assign-volunteer-dialog>
 </div>
+```
+
+## File: apps/frontend/src/app/experiences/deliveries/ui/yard-sign-standing.ts
+```typescript
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { DELIVERY_REQUEST_STATUSES, DELIVERY_REQUEST_STATUS_LABELS } from '../../../../../../../libs/common/src';
+import type { DeliveryRequestStatus } from '../../../../../../../libs/common/src';
+
+import { getUserErrorMessage } from '@frontend/services/api/user-message';
+import { CampaignContextService } from '../../../services/campaign-context.service';
+import { RouterOutputs } from '../../../services/api/trpc-types';
+import { DeliveriesRequestsService } from '../services/deliveries-requests-service';
+
+export type YardSignRequest = NonNullable<RouterOutputs['deliveries']['getSignStatus']['request']>;
+export type YardSignOpenElsewhere = NonNullable<RouterOutputs['deliveries']['getSignStatus']['open_in_other_campaign']>;
+
+/**
+ * The yard-sign standing control (Deliveries §14): one select that reads and flips the
+ * household's delivery-request status in the ACTIVE campaign context. The truth stays in
+ * `delivery_requests` — "None requested" = no row, and the route line is derived from the
+ * active (pending) stop, never a stored flag. Embedded in the person Campaign standing card
+ * and the household view; flipping to Delivered covers signs installed without the app.
+ */
+@Component({
+  selector: 'pc-yard-sign-standing',
+  imports: [RouterLink],
+  templateUrl: './yard-sign-standing.html',
+  host: { class: 'block min-w-0' },
+})
+export class YardSignStanding {
+  /** The household the sign belongs to; null = person without an address (muted guidance state). */
+  readonly householdId = input.required<string | null>();
+  /** When set (person view), a request created here is attributed to this person as requester. */
+  readonly personId = input<string | null>(null);
+  /** Off when the host surface already titles the section (the household card's eyebrow). */
+  readonly showLabel = input<boolean>(true);
+
+  protected readonly context = inject(CampaignContextService);
+  private readonly svc = inject(DeliveriesRequestsService);
+  private readonly alerts = inject(AlertService);
+
+  protected readonly statuses = DELIVERY_REQUEST_STATUSES;
+  protected readonly labels = DELIVERY_REQUEST_STATUS_LABELS;
+
+  private readonly _loading = createLoadingGate();
+  protected readonly loading = this._loading.visible;
+  protected readonly saving = signal(false);
+  protected readonly request = signal<YardSignRequest | null>(null);
+  /** Set when ANOTHER campaign holds the household's one open request — creating here can only 409. */
+  protected readonly openElsewhere = signal<YardSignOpenElsewhere | null>(null);
+
+  protected readonly readonlyContext = this.context.isArchivedContext;
+  /** No local open request to manage and another campaign holds the slot: the select is a dead end. */
+  protected readonly blockedByOtherCampaign = computed(() => !this.request() && this.openElsewhere() !== null);
+
+  /** "Requested by Jane · web form · Jun 12" — parts drop out honestly when absent. */
+  protected readonly metaLine = computed(() => {
+    const r = this.request();
+    if (!r) return '';
+    const parts: string[] = [];
+    if (r.person_name) parts.push(`Requested by ${r.person_name}`);
+    parts.push(this.sourceLabel(r.source));
+    const date = this.formatDate(r.updated_at);
+    if (date) parts.push(date);
+    return parts.join(' · ');
+  });
+
+  /** Human label for a request's origin. Typed `string` so a widened source union
+   *  (web_form | manual | canvass) needs no change here. */
+  private sourceLabel(source: string): string {
+    if (source === 'web_form') return 'web form';
+    if (source === 'canvass') return 'canvass';
+    return 'manual';
+  }
+
+  constructor() {
+    effect(() => {
+      const householdId = this.householdId();
+      const campaignId = this.context.activeCampaignId();
+      void untracked(() => this.load(householdId, campaignId));
+    });
+    // Degrade quietly if the context can't load — the control shows "None requested".
+    this.context.ensureLoaded().catch(() => void 0);
+  }
+
+  protected async onStatusChange(event: Event): Promise<void> {
+    const value = (event.target as HTMLSelectElement).value as DeliveryRequestStatus | '';
+    const householdId = this.householdId();
+    if (!value || !householdId) return;
+    this.saving.set(true);
+    try {
+      const existing = this.request();
+      if (existing) {
+        await this.svc.setStatus([existing.id], value);
+        this.alerts.showSuccess('Yard sign updated');
+      } else {
+        const created = await this.svc.add({
+          household_id: householdId,
+          person_id: this.personId(),
+          campaign_id: this.context.activeCampaignId() ?? undefined,
+        });
+        if (value !== 'new') await this.svc.setStatus([created.id], value);
+        this.alerts.showSuccess('Yard sign recorded');
+      }
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Could not update the yard sign. Please try again.'));
+    } finally {
+      this.saving.set(false);
+      await this.load(householdId, this.context.activeCampaignId());
+    }
+  }
+
+  private async load(householdId: string | null, campaignId: string | null): Promise<void> {
+    if (!householdId || !campaignId) {
+      this.request.set(null);
+      this.openElsewhere.set(null);
+      return;
+    }
+    const end = this._loading.begin();
+    try {
+      const res = await this.svc.getSignStatus(householdId, campaignId);
+      this.request.set(res.request);
+      this.openElsewhere.set(res.open_in_other_campaign ?? null);
+    } catch {
+      // Degrade to "None requested" rather than blocking the page.
+      this.request.set(null);
+      this.openElsewhere.set(null);
+    } finally {
+      end();
+    }
+  }
+
+  private formatDate(value: Date | string | null): string {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+}
 ```
 
 ## File: apps/frontend/src/app/experiences/emails/services/emails-service.ts
@@ -61310,1319 +62382,6 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
 }
 ```
 
-## File: apps/frontend/src/app/experiences/settings/donations/donations-settings.html
-```html
-<div class="space-y-8">
-  <!-- Compliance Disclaimer (top priority) -->
-  <div
-    class="alert alert-info text-xs rounded-xl p-3 border-info/30 bg-info/5 text-info-content shadow-sm flex items-start gap-3"
-  >
-    <pc-icon name="information-circle" [size]="5" class="shrink-0 mt-0.5 text-info"></pc-icon>
-    <div>
-      <strong class="font-semibold">Compliance is your responsibility</strong>
-      <p class="mt-0.5 text-base-content/70">
-        You are solely responsible for ensuring that your donation collection, contribution limits, residency rules, and
-        tax-receipting comply with the campaign finance and charitable-solicitation laws that apply to you and your
-        contributors. pplCRM is a software platform only — the settings below are tools you configure, and we make no
-        representation or warranty that any configuration satisfies your legal obligations. When in doubt, consult a
-        qualified legal or compliance advisor.
-      </p>
-    </div>
-  </div>
-
-  <!-- Donations paused: residency not yet acknowledged (fail-closed gate) -->
-  @if (!residencyAcknowledged()) {
-  <div class="alert alert-warning shadow-sm">
-    <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
-    <div>
-      <span class="font-bold">Donations are paused</span>
-      <p class="text-xs mt-0.5">
-        Confirm your residency restrictions below before this organization can accept donations.
-      </p>
-    </div>
-  </div>
-  }
-
-  <!-- Stripe Connect Section — hosted onboarding; no keys to paste -->
-  <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6">
-    <div class="border-b border-base-200 pb-3 flex items-center justify-between gap-2">
-      <h3 class="text-lg font-semibold flex items-center gap-2">
-        <pc-icon name="credit-card" class="text-primary" [size]="5"></pc-icon>
-        Stripe
-      </h3>
-      <div class="flex items-center gap-2">
-        @if (stripeStatus()?.isMockMode) {
-        <span class="badge badge-sm badge-info font-medium">Mock mode</span>
-        } @else {
-        <span
-          class="badge badge-sm font-medium"
-          [class.badge-success]="stripeConfigured() && stripeStatus()?.chargesEnabled"
-          [class.badge-warning]="stripeConfigured() && !stripeStatus()?.chargesEnabled"
-          [class.badge-neutral]="!stripeConfigured()"
-        >
-          {{ !stripeConfigured() ? 'Not connected' : stripeStatus()?.chargesEnabled ? 'Connected' : 'Onboarding
-          incomplete' }}
-        </span>
-        } @if (stripeConfigured()) {
-        <button type="button" class="btn btn-xs btn-outline btn-error" (click)="removeStripeConfig()">
-          <pc-icon name="trash" [size]="3"></pc-icon>
-          Remove connection
-        </button>
-        }
-      </div>
-    </div>
-
-    <!-- Where donations are processed / where donor payment data is stored -->
-    <div class="alert alert-info shadow-sm">
-      <pc-icon name="information-circle" [size]="5"></pc-icon>
-      <div>
-        <span class="font-bold">{{ processingNotice().heading }}</span>
-        <p class="text-xs mt-0.5">{{ processingNotice().body }}</p>
-      </div>
-    </div>
-
-    <p class="text-xs text-base-content/65 max-w-2xl">
-      Donations are charged directly to your campaign's own Stripe account, so your campaign stays the merchant of
-      record. pplCRM deducts a 1% platform fee from card donations; Stripe's own processing fees also apply. There are
-      no API keys to paste: connecting sends you to Stripe to verify your campaign, then brings you back here.
-    </p>
-
-    @if (stripeStatus()?.isMockMode) {
-    <div class="alert alert-info text-xs shadow-sm">
-      <pc-icon name="information-circle" [size]="5"></pc-icon>
-      <span>
-        No platform Stripe key is configured, so donations run in mock mode — checkout produces simulated sessions and
-        no real charges.
-      </span>
-    </div>
-    } @else if (!stripeConfigured()) {
-    <!-- Pre-connection explainer: answers "why do I need my own Stripe account" before asking for it -->
-    <div class="pc-panel p-4 space-y-3 max-w-2xl">
-      <p class="pc-eyebrow">Why you connect your own Stripe account</p>
-      <ul class="space-y-2.5 text-xs text-base-content/75">
-        <li class="flex items-start gap-2.5">
-          <pc-icon name="banknotes" class="text-primary shrink-0 mt-0.5" [size]="4"></pc-icon>
-          <span>
-            <strong class="font-semibold text-base-content/90">Donations go straight to your campaign.</strong>
-            Campaign finance rules generally require contributions to be received by the campaign itself. Money moves
-            from the donor's card to your own bank account and never passes through pplCRM.
-          </span>
-        </li>
-        <li class="flex items-start gap-2.5">
-          <pc-icon name="lock-closed" class="text-primary shrink-0 mt-0.5" [size]="4"></pc-icon>
-          <span>
-            <strong class="font-semibold text-base-content/90">Stripe safeguards every payment.</strong>
-            We leave money handling to Stripe because payment security is its entire business. Stripe is certified to
-            PCI DSS Level 1, the industry's highest payment-security standard, and card details never touch pplCRM's
-            servers.
-          </span>
-        </li>
-        <li class="flex items-start gap-2.5">
-          <pc-icon name="user-circle" class="text-primary shrink-0 mt-0.5" [size]="4"></pc-icon>
-          <span>
-            <strong class="font-semibold text-base-content/90">You stay in control.</strong>
-            The Stripe account is yours: you manage payouts, refunds, and disputes from your own Stripe dashboard, and
-            your processing history stays with you. Verification happens once and takes about five to ten minutes.
-          </span>
-        </li>
-      </ul>
-    </div>
-
-    <!-- Not connected: pick the campaign's country, then hand off to Stripe-hosted onboarding -->
-    <div class="flex flex-col sm:flex-row sm:items-end gap-3 pt-1">
-      <div class="flex flex-col gap-1.5">
-        <label for="stripe_country" class="text-xs font-semibold text-base-content/90">Campaign country</label>
-        <select
-          id="stripe_country"
-          class="select select-bordered select-sm w-full sm:w-64"
-          (change)="stripeCountry.set($any($event.target).value)"
-        >
-          @for (c of stripeConnectCountries; track c.code) {
-          <option [value]="c.code" [selected]="c.code === stripeCountry()">{{ c.name }}</option>
-          }
-        </select>
-        <p class="text-[11px] text-base-content/50">
-          Where your campaign is legally based. Stripe collects everything else during onboarding.
-        </p>
-      </div>
-      <button type="button" class="btn btn-primary btn-sm" [disabled]="isConnectingStripe()" (click)="connectStripe()">
-        <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true">
-          <path
-            d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.594-7.305h.003z"
-          />
-        </svg>
-        {{ isConnectingStripe() ? 'Redirecting to Stripe…' : 'Connect with Stripe' }}
-      </button>
-    </div>
-    } @else if (!stripeStatus()?.chargesEnabled) {
-    <!-- Onboarding started but not finished — charges stay disabled until Stripe verifies -->
-    <div class="alert alert-warning shadow-sm">
-      <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
-      <div class="flex-1">
-        <span class="font-bold">Finish your Stripe onboarding</span>
-        <p class="text-xs mt-0.5">
-          Stripe still needs information before your campaign can accept card donations. Resume where you left off —
-          this page updates automatically once Stripe verifies your account.
-        </p>
-      </div>
-      <button type="button" class="btn btn-sm btn-warning" [disabled]="isConnectingStripe()" (click)="connectStripe()">
-        Resume onboarding
-      </button>
-    </div>
-    } @else {
-    <!-- Connected and charges enabled -->
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-      <p class="text-xs text-base-content/80 flex items-center gap-1.5">
-        <pc-icon name="check-circle" class="text-success" [size]="4"></pc-icon>
-        Your Stripe account is connected and can accept donations.
-      </p>
-      <button
-        type="button"
-        class="btn btn-sm btn-outline shrink-0"
-        [disabled]="isOpeningStripeDashboard()"
-        (click)="openStripeDashboard()"
-      >
-        <pc-icon name="arrow-top-right-on-square" [size]="4"></pc-icon>
-        Open Stripe dashboard
-      </button>
-    </div>
-    }
-  </div>
-
-  <!-- Donation Limit & Residency Restrictions Section -->
-  <div class="grid gap-6 md:grid-cols-2">
-    <!-- Donation Periods card -->
-    <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6 flex flex-col">
-      <div class="border-b border-base-200 pb-3 flex items-center justify-between">
-        <h3 class="text-lg font-semibold flex items-center gap-2">
-          <pc-icon name="calendar" class="text-primary" [size]="5"></pc-icon>
-          Donation Limit Periods
-        </h3>
-        <button
-          type="button"
-          class="btn btn-xs btn-primary"
-          (click)="showAddPeriod.set(true)"
-          [hidden]="showAddPeriod()"
-        >
-          <pc-icon name="plus" [size]="3"></pc-icon>
-          Add Period
-        </button>
-      </div>
-      <p class="text-xs text-base-content/60">
-        Define campaign periods with custom date ranges and maximum limits instead of a flat calendar year. The active
-        period covering today is used for all eligibility checks. If no period is defined, the fallback annual limit
-        below applies.
-      </p>
-
-      <!-- Existing periods list -->
-      <div class="space-y-2">
-        @for (period of donationPeriods(); track period.id) {
-        <div class="flex items-start justify-between gap-3 p-3 rounded-lg border border-base-200 bg-base-100 text-xs">
-          <div class="space-y-0.5 flex-1 min-w-0">
-            <div class="font-bold text-base-content truncate">{{ period.name }}</div>
-            <div class="text-base-content/60">
-              {{ formatDate(period.start_date) }} – {{ period.end_date ? formatDate(period.end_date) : 'No end date' }}
-            </div>
-            <div class="flex items-center gap-2 mt-1">
-              <span class="font-semibold text-primary">${{ (period.limit_amount / 100).toLocaleString() }} limit</span>
-              @if (isPeriodActive(period)) {
-              <pc-status-badge type="success">Active now</pc-status-badge>
-              } @else if (period.is_active) {
-              <pc-status-badge type="neutral">Enabled</pc-status-badge>
-              } @else {
-              <pc-status-badge type="ghost">Disabled</pc-status-badge>
-              }
-            </div>
-          </div>
-          <div class="flex items-center gap-1 shrink-0">
-            <input
-              type="checkbox"
-              class="toggle toggle-xs toggle-success"
-              [checked]="period.is_active"
-              (change)="togglePeriodActive(period)"
-              title="Enable/disable period"
-            />
-            <button type="button" class="btn btn-xs btn-ghost text-error" (click)="deletePeriod(period)">
-              <pc-icon name="trash" [size]="3"></pc-icon>
-            </button>
-          </div>
-        </div>
-        } @empty {
-        <div class="text-xs text-base-content/50 italic py-2 text-center">
-          No periods defined. Using fallback annual limit.
-        </div>
-        }
-      </div>
-
-      <!-- Add period form -->
-      @if (showAddPeriod()) {
-      <div class="space-y-3 p-4 rounded-xl border border-base-300 bg-base-200/20 mt-1">
-        <h4 class="text-xs font-bold text-base-content/90">New Donation Period</h4>
-        <div class="flex flex-col gap-1.5">
-          <label class="text-xs font-semibold">Period Name</label>
-          <input
-            type="text"
-            class="input input-sm input-bordered bg-base-200/30"
-            placeholder="e.g. 2024 Municipal Campaign"
-            [value]="newPeriodName()"
-            (input)="newPeriodName.set($any($event.target).value)"
-          />
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <div class="flex flex-col gap-1.5">
-            <label class="text-xs font-semibold">Start Date</label>
-            <input
-              type="date"
-              class="input input-sm input-bordered bg-base-200/30"
-              [value]="newPeriodStartDate()"
-              (input)="newPeriodStartDate.set($any($event.target).value)"
-            />
-          </div>
-          <div class="flex flex-col gap-1.5">
-            <label class="text-xs font-semibold">End Date <span class="text-base-content/40">(optional)</span></label>
-            <input
-              type="date"
-              class="input input-sm input-bordered bg-base-200/30"
-              [value]="newPeriodEndDate()"
-              (input)="newPeriodEndDate.set($any($event.target).value)"
-            />
-          </div>
-        </div>
-        <div class="flex flex-col gap-1.5">
-          <label class="text-xs font-semibold">Limit per Donor ($)</label>
-          <div class="relative max-w-xs">
-            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-base-content/50 font-bold">$</span>
-            <input
-              type="number"
-              class="input input-sm input-bordered bg-base-200/30 pl-6 w-full no-spinner"
-              [formField]="newPeriodLimitForm"
-            />
-          </div>
-        </div>
-        <div class="flex items-center gap-2 pt-1">
-          <button type="button" class="btn btn-sm btn-primary" (click)="addPeriod()" [disabled]="isSavingPeriod()">
-            @if (isSavingPeriod()) { <span class="loading loading-spinner loading-xs"></span> } Save Period
-          </button>
-          <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="showAddPeriod.set(false)">
-            Cancel
-          </button>
-        </div>
-      </div>
-      }
-
-      <!-- Fallback annual limit (used when no period is active) -->
-      <div class="border-t border-base-200 pt-4 mt-2">
-        <p class="text-xs text-base-content/50 mb-2 font-semibold">Fallback: Calendar Year Limit</p>
-        <p class="text-[11px] text-base-content/40 mb-2">Used when no donation period covers the current date.</p>
-        <div class="relative max-w-xs">
-          <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs text-base-content/50 font-semibold">$</span>
-          <input
-            id="donation_limit"
-            type="number"
-            min="1"
-            class="input input-bordered focus:input-primary w-full pl-8 bg-base-200/30 text-xs font-semibold no-spinner"
-            [value]="donationLimit()"
-            (input)="donationLimit.set($any($event.target).value)"
-          />
-        </div>
-      </div>
-    </div>
-
-    <!-- Residency restrictions card -->
-    <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6">
-      <h3 class="text-lg font-semibold flex items-center gap-2 border-b border-base-200 pb-3">
-        <pc-icon name="map-pin" class="text-primary" [size]="5"></pc-icon>
-        Residency Restrictions
-      </h3>
-      <p class="text-xs text-base-content/60">
-        Filter and restrict eligibility based on where the donor resides. Useful for regional municipal, provincial, or
-        state elections.
-      </p>
-
-      <div class="space-y-4">
-        <!-- Toggle Restriction -->
-        <label class="flex items-center gap-3 cursor-pointer py-1">
-          <input
-            id="restrict_residency"
-            type="checkbox"
-            class="toggle toggle-primary toggle-md"
-            [checked]="restrictResidency()"
-            (change)="restrictResidency.set($any($event.target).checked)"
-          />
-          <span class="text-xs font-semibold text-base-content/90"> Enforce residency restrictions </span>
-        </label>
-
-        @if (restrictResidency()) {
-        <div class="space-y-4 pt-2 animate-fade-in relative">
-          <!-- Autocomplete Allowed Countries Picker -->
-          <div class="flex flex-col gap-1.5 relative">
-            <label class="text-xs font-semibold text-base-content/85"> Allowed Countries </label>
-            <div class="flex flex-wrap gap-1.5 p-2 bg-base-200/30 rounded-lg border border-base-200">
-              @for (cCode of selectedCountries(); track cCode) {
-              <span class="badge badge-sm badge-primary gap-1.5 py-2 px-2.5 font-medium">
-                {{ getCountryName(cCode) }}
-                <button
-                  type="button"
-                  class="text-[10px] hover:text-base-content font-bold"
-                  (click)="removeCountry(cCode)"
-                >
-                  ×
-                </button>
-              </span>
-              }
-              <input
-                type="text"
-                placeholder="Type to search country..."
-                class="bg-transparent border-none outline-none text-xs flex-1 min-w-[120px]"
-                [value]="countrySearch()"
-                (input)="countrySearch.set($any($event.target).value); showCountryDropdown.set(true)"
-                (focus)="showCountryDropdown.set(true)"
-                (blur)="showCountryDropdown.set(false)"
-              />
-            </div>
-
-            @if (showCountryDropdown() && availableCountriesToSelect().length) {
-            <!-- Use mousedown to prevent input blur before selecting -->
-            <ul
-              class="absolute z-50 left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto bg-base-100 border border-base-300 rounded-lg shadow-lg py-1 text-xs"
-            >
-              @for (c of availableCountriesToSelect(); track c.code) {
-              <li>
-                <button
-                  type="button"
-                  class="w-full text-left px-3 py-2 hover:bg-base-200/50 font-medium"
-                  (mousedown)="selectCountry(c); $event.preventDefault()"
-                >
-                  {{ c.name }} ({{ c.code }})
-                </button>
-              </li>
-              }
-            </ul>
-            }
-          </div>
-          <!-- Allowed Province/State Checkboxes for Selected Countries -->
-          @if (isCanadaSelected() || isUsaSelected() || isGermanySelected() || isFranceSelected() || isIndiaSelected())
-          {
-          <div class="flex flex-col gap-3 p-4 pc-panel max-h-64 overflow-y-auto">
-            <label class="text-xs font-bold text-base-content/85 uppercase tracking-wide">
-              Allowed Provinces & States
-            </label>
-
-            @if (isCanadaSelected()) {
-            <div class="space-y-1.5">
-              <span class="text-[11px] font-bold text-primary/80">Canada Provinces</span>
-              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                @for (p of canadaProvinces; track p.code) {
-                <label class="flex items-center gap-2 cursor-pointer text-xs">
-                  <input
-                    type="checkbox"
-                    class="checkbox checkbox-xs checkbox-primary"
-                    [checked]="selectedRegions().includes(p.code)"
-                    (change)="toggleRegion(p.code)"
-                  />
-                  <span>{{ p.name }} ({{ p.code }})</span>
-                </label>
-                }
-              </div>
-            </div>
-            } @if (isUsaSelected()) { @if (isCanadaSelected()) {
-            <div class="divider my-1"></div>
-            }
-            <div class="space-y-1.5">
-              <span class="text-[11px] font-bold text-primary/80">United States States</span>
-              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                @for (s of usStates; track s.code) {
-                <label class="flex items-center gap-2 cursor-pointer text-xs">
-                  <input
-                    type="checkbox"
-                    class="checkbox checkbox-xs checkbox-primary"
-                    [checked]="selectedRegions().includes(s.code)"
-                    (change)="toggleRegion(s.code)"
-                  />
-                  <span>{{ s.name }} ({{ s.code }})</span>
-                </label>
-                }
-              </div>
-            </div>
-            } @if (isGermanySelected()) { @if (isCanadaSelected() || isUsaSelected()) {
-            <div class="divider my-1"></div>
-            }
-            <div class="space-y-1.5">
-              <span class="text-[11px] font-bold text-primary/80">Germany States</span>
-              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                @for (s of germanyStates; track s.code) {
-                <label class="flex items-center gap-2 cursor-pointer text-xs">
-                  <input
-                    type="checkbox"
-                    class="checkbox checkbox-xs checkbox-primary"
-                    [checked]="selectedRegions().includes(s.code)"
-                    (change)="toggleRegion(s.code)"
-                  />
-                  <span>{{ s.name }} ({{ s.code }})</span>
-                </label>
-                }
-              </div>
-            </div>
-            } @if (isFranceSelected()) { @if (isCanadaSelected() || isUsaSelected() || isGermanySelected()) {
-            <div class="divider my-1"></div>
-            }
-            <div class="space-y-1.5">
-              <span class="text-[11px] font-bold text-primary/80">France Regions</span>
-              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                @for (r of franceRegions; track r.code) {
-                <label class="flex items-center gap-2 cursor-pointer text-xs">
-                  <input
-                    type="checkbox"
-                    class="checkbox checkbox-xs checkbox-primary"
-                    [checked]="selectedRegions().includes(r.code)"
-                    (change)="toggleRegion(r.code)"
-                  />
-                  <span>{{ r.name }} ({{ r.code }})</span>
-                </label>
-                }
-              </div>
-            </div>
-            } @if (isIndiaSelected()) { @if (isCanadaSelected() || isUsaSelected() || isGermanySelected() ||
-            isFranceSelected()) {
-            <div class="divider my-1"></div>
-            }
-            <div class="space-y-1.5">
-              <span class="text-[11px] font-bold text-primary/80">India States & UTs</span>
-              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                @for (s of indiaStates; track s.code) {
-                <label class="flex items-center gap-2 cursor-pointer text-xs">
-                  <input
-                    type="checkbox"
-                    class="checkbox checkbox-xs checkbox-primary"
-                    [checked]="selectedRegions().includes(s.code)"
-                    (change)="toggleRegion(s.code)"
-                  />
-                  <span>{{ s.name }} ({{ s.code }})</span>
-                </label>
-                }
-              </div>
-            </div>
-            }
-          </div>
-          }
-        </div>
-        }
-      </div>
-    </div>
-  </div>
-
-  <!-- Tax Credit Configuration -->
-  <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6">
-    <h3 class="text-lg font-semibold flex items-center gap-2 border-b border-base-200 pb-3">
-      <pc-icon name="chart-pie" class="text-primary" [size]="5"></pc-icon>
-      Tax Credit Tiers
-    </h3>
-    <p class="text-xs text-base-content/60">
-      Define progressive tax credit brackets. Tax credits are computed automatically based on cumulative donations
-      inside a calendar year.
-    </p>
-
-    <!-- Table of existing tiers -->
-    <div class="mt-3">
-      <pc-table [columns]="4">
-        <ng-container pcTableHead>
-          <th>Bracket Tier</th>
-          <th>Up to Limit</th>
-          <th>Credit Percentage</th>
-          <th class="text-right w-24">Actions</th>
-        </ng-container>
-        @for (tier of taxCreditTiers(); track $index) {
-        <tr>
-          <td class="font-bold text-base-content">Tier {{ $index + 1 }}</td>
-          <td class="font-semibold text-base-content/80">${{ tier.limit.toLocaleString() }}</td>
-          <td>
-            <span class="badge badge-success gap-1 font-semibold py-2 px-2.5"> {{ tier.rate * 100 }}% </span>
-          </td>
-          <td class="text-right">
-            <button
-              type="button"
-              class="btn btn-xs btn-ghost text-error font-medium hover:bg-error/10"
-              (click)="removeTier($index)"
-            >
-              Delete
-            </button>
-          </td>
-        </tr>
-        } @empty {
-        <tr>
-          <td colspan="4" class="text-center py-6 text-base-content/50 italic">
-            No tax credit tiers defined yet. Add a tier below to set up credit calculations.
-          </td>
-        </tr>
-        }
-      </pc-table>
-    </div>
-
-    <!-- Progressive bracket summary -->
-    @if (taxCreditTiers().length) {
-    <div class="mt-4 p-4 rounded-xl border border-base-200 bg-base-200/20 text-xs">
-      <h4 class="font-bold text-base-content/85 flex items-center gap-1.5 mb-2">
-        <pc-icon name="information-circle" class="text-primary" [size]="4"></pc-icon>
-        Tax Credit Bracket Summary (Plain Language)
-      </h4>
-      <ul class="list-disc list-inside space-y-1 text-base-content/75 font-semibold">
-        @for (line of taxCreditSummary(); track $index) {
-        <li>{{ line }}</li>
-        }
-      </ul>
-    </div>
-    }
-
-    <!-- Add new tier form -->
-    <div class="card pc-panel p-4 mt-3 flex flex-col sm:flex-row sm:items-end gap-4">
-      <!-- Tier Limit -->
-      <div class="flex flex-col gap-1.5 w-full sm:flex-1">
-        <label for="new_limit" class="text-xs font-semibold text-base-content/95">Bracket upper limit ($)</label>
-        <div class="relative">
-          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-base-content/40 font-bold">$</span>
-          <input
-            id="new_limit"
-            type="number"
-            placeholder="500"
-            class="input input-bordered focus:input-primary w-full pl-6 bg-base-200/20 text-xs font-semibold no-spinner"
-            [formField]="newLimitForm"
-          />
-        </div>
-      </div>
-
-      <!-- Tier Rate -->
-      <div class="flex flex-col gap-1.5 w-full sm:flex-1">
-        <label for="new_rate" class="text-xs font-semibold text-base-content/95">Credit percentage (%)</label>
-        <div class="relative">
-          <input
-            id="new_rate"
-            type="number"
-            placeholder="75"
-            class="input input-bordered focus:input-primary w-full pr-7 bg-base-200/20 text-xs font-semibold no-spinner"
-            [formField]="newRateForm"
-          />
-          <span class="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-base-content/40 font-bold">%</span>
-        </div>
-      </div>
-
-      <!-- Add button -->
-      <button type="button" class="btn btn-sm btn-primary w-full sm:w-auto font-semibold" (click)="addTier()">
-        <pc-icon name="plus" [size]="4"></pc-icon>
-        Add tier
-      </button>
-    </div>
-  </div>
-
-  <!-- Action buttons footer -->
-  <div class="border-t border-base-200 pt-6 mt-8 flex items-center justify-between">
-    <div>
-      @if (isSaving()) {
-      <span class="text-xs font-medium text-base-content/60 flex items-center">
-        <span class="loading loading-spinner loading-xs mr-2"></span>
-        Saving donations configuration…
-      </span>
-      }
-    </div>
-
-    <div class="flex items-center gap-3">
-      <button
-        type="button"
-        class="btn btn-ghost hover:bg-base-200 font-semibold text-xs"
-        (click)="reset()"
-        [disabled]="isSaving()"
-      >
-        Reset
-      </button>
-      <button
-        type="button"
-        class="btn btn-primary min-w-[120px] font-semibold text-xs"
-        (click)="save()"
-        [disabled]="isSaving()"
-      >
-        @if (isSaving()) {
-        <span class="loading loading-spinner loading-xs mr-2"></span>
-        } Save Changes
-      </button>
-    </div>
-  </div>
-</div>
-```
-
-## File: apps/frontend/src/app/experiences/settings/donations/donations-settings.ts
-```typescript
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
-import { FormField, form, max, min } from '@angular/forms/signals';
-import { ActivatedRoute } from '@angular/router';
-import { STRIPE_CONNECT_COUNTRIES, type StripeConnectCountry } from '@common';
-import { Icon } from '@icons/icon';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
-import { Table } from '@uxcommon/components/table/table';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { DonationsService } from '../../../services/api/donations-service';
-import { TokenService } from '../../../services/api/token-service';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { SettingsService } from '../services/settings-service';
-
-/** Where donations are processed and payment data stored, derived from the Stripe Connect state. */
-export interface ProcessingNotice {
-  heading: string;
-  body: string;
-}
-
-export interface ResidencyContext {
-  country: string | null;
-  residencyAcknowledged: boolean;
-}
-
-/** Mirror of the backend's `donations.getStripeConnectStatus` result. */
-export interface StripeConnectStatus {
-  connected: boolean;
-  accountId: string | null;
-  detailsSubmitted: boolean;
-  chargesEnabled: boolean;
-  requirementsDue: string[];
-  isMockMode: boolean;
-}
-
-export interface TaxCreditTier {
-  limit: number;
-  rate: number;
-}
-
-export interface DonationPeriod {
-  id: string;
-  name: string;
-  start_date: string;
-  end_date: string | null;
-  limit_amount: number;
-  is_active: boolean;
-}
-
-@Component({
-  selector: 'pc-donations-settings',
-  imports: [FormField, Icon, Table, StatusBadge],
-  templateUrl: './donations-settings.html',
-  styleUrl: './donations-settings.css',
-})
-export class DonationsSettingsComponent implements OnInit {
-  private readonly settingsSvc = inject(SettingsService);
-  private readonly alerts = inject(AlertService);
-  private readonly tokenSvc = inject(TokenService);
-  private readonly donationsSvc = inject(DonationsService);
-  private readonly dialogs = inject(ConfirmDialogService);
-  private readonly route = inject(ActivatedRoute);
-
-  private readonly _loading = createLoadingGate();
-
-  // Stripe Connect: no tenant-held keys — the tenant onboards on Stripe and we track status only.
-  protected readonly stripeStatus = signal<StripeConnectStatus | null>(null);
-  protected readonly isConnectingStripe = signal(false);
-  protected readonly isOpeningStripeDashboard = signal(false);
-  protected readonly stripeConnectCountries = STRIPE_CONNECT_COUNTRIES;
-  protected readonly stripeCountry = signal<StripeConnectCountry>('US');
-
-  // "Configured" reflects what is actually persisted: a connected account exists (mock mode
-  // doesn't count).
-  protected readonly stripeConfigured = computed(() => {
-    const status = this.stripeStatus();
-    return !!status?.connected && !status.isMockMode;
-  });
-
-  // Residency gate: donations stay paused until the tenant confirms residency restrictions once.
-  protected readonly residencyAcknowledged = signal(false);
-  protected readonly residencyContext = signal<ResidencyContext | null>(null);
-
-  protected readonly donationLimit = signal(1000);
-  protected readonly restrictResidency = signal(false);
-  protected readonly taxCreditTiers = signal<TaxCreditTier[]>([]);
-
-  // Donation periods
-  protected readonly donationPeriods = signal<DonationPeriod[]>([]);
-  protected readonly showAddPeriod = signal(false);
-  protected readonly newPeriodName = signal('');
-  protected readonly newPeriodStartDate = signal('');
-  protected readonly newPeriodEndDate = signal('');
-  protected readonly newPeriodLimit = signal<number | null>(1000);
-  /** Binds the period-limit number input; native number parsing yields null when cleared. */
-  protected readonly newPeriodLimitForm = form(this.newPeriodLimit, (p) => {
-    min(p, 1);
-  });
-  protected readonly isSavingPeriod = signal(false);
-
-  // New multi-country autocomplete & states checkboxes
-  protected readonly selectedCountries = signal<string[]>([]);
-  protected readonly selectedRegions = signal<string[]>([]);
-
-  protected readonly countrySearch = signal('');
-  protected readonly showCountryDropdown = signal(false);
-
-  protected readonly allCountries = [
-    { code: 'CA', name: 'Canada' },
-    { code: 'US', name: 'United States' },
-    { code: 'GB', name: 'United Kingdom' },
-    { code: 'AU', name: 'Australia' },
-    { code: 'NZ', name: 'New Zealand' },
-    { code: 'FR', name: 'France' },
-    { code: 'DE', name: 'Germany' },
-    { code: 'IN', name: 'India' },
-    { code: 'IT', name: 'Italy' },
-    { code: 'ES', name: 'Spain' },
-    { code: 'NL', name: 'Netherlands' },
-  ];
-
-  protected readonly canadaProvinces = [
-    { code: 'ON', name: 'Ontario' },
-    { code: 'QC', name: 'Quebec' },
-    { code: 'BC', name: 'British Columbia' },
-    { code: 'AB', name: 'Alberta' },
-    { code: 'MB', name: 'Manitoba' },
-    { code: 'SK', name: 'Saskatchewan' },
-    { code: 'NS', name: 'Nova Scotia' },
-    { code: 'NB', name: 'New Brunswick' },
-    { code: 'NL', name: 'Newfoundland and Labrador' },
-    { code: 'PE', name: 'Prince Edward Island' },
-    { code: 'NT', name: 'Northwest Territories' },
-    { code: 'YT', name: 'Yukon' },
-    { code: 'NU', name: 'Nunavut' },
-  ];
-
-  protected readonly usStates = [
-    { code: 'AL', name: 'Alabama' },
-    { code: 'AK', name: 'Alaska' },
-    { code: 'AZ', name: 'Arizona' },
-    { code: 'AR', name: 'Arkansas' },
-    { code: 'CA', name: 'California' },
-    { code: 'CO', name: 'Colorado' },
-    { code: 'CT', name: 'Connecticut' },
-    { code: 'DE', name: 'Delaware' },
-    { code: 'FL', name: 'Florida' },
-    { code: 'GA', name: 'Georgia' },
-    { code: 'HI', name: 'Hawaii' },
-    { code: 'ID', name: 'Idaho' },
-    { code: 'IL', name: 'Illinois' },
-    { code: 'IN', name: 'Indiana' },
-    { code: 'IA', name: 'Iowa' },
-    { code: 'KS', name: 'Kansas' },
-    { code: 'KY', name: 'Kentucky' },
-    { code: 'LA', name: 'Louisiana' },
-    { code: 'ME', name: 'Maine' },
-    { code: 'MD', name: 'Maryland' },
-    { code: 'MA', name: 'Massachusetts' },
-    { code: 'MI', name: 'Michigan' },
-    { code: 'MN', name: 'Minnesota' },
-    { code: 'MS', name: 'Mississippi' },
-    { code: 'MO', name: 'Missouri' },
-    { code: 'MT', name: 'Montana' },
-    { code: 'NE', name: 'Nebraska' },
-    { code: 'NV', name: 'Nevada' },
-    { code: 'NH', name: 'New Hampshire' },
-    { code: 'NJ', name: 'New Jersey' },
-    { code: 'NM', name: 'New Mexico' },
-    { code: 'NY', name: 'New York' },
-    { code: 'NC', name: 'North Carolina' },
-    { code: 'ND', name: 'North Dakota' },
-    { code: 'OH', name: 'Ohio' },
-    { code: 'OK', name: 'Oklahoma' },
-    { code: 'OR', name: 'Oregon' },
-    { code: 'PA', name: 'Pennsylvania' },
-    { code: 'RI', name: 'Rhode Island' },
-    { code: 'SC', name: 'South Carolina' },
-    { code: 'SD', name: 'South Dakota' },
-    { code: 'TN', name: 'Tennessee' },
-    { code: 'TX', name: 'Texas' },
-    { code: 'UT', name: 'Utah' },
-    { code: 'VT', name: 'Vermont' },
-    { code: 'VA', name: 'Virginia' },
-    { code: 'WA', name: 'Washington' },
-    { code: 'WV', name: 'West Virginia' },
-    { code: 'WI', name: 'Wisconsin' },
-    { code: 'WY', name: 'Wyoming' },
-  ];
-
-  protected readonly germanyStates = [
-    { code: 'DE-BW', name: 'Baden-Württemberg' },
-    { code: 'DE-BY', name: 'Bavaria' },
-    { code: 'DE-BE', name: 'Berlin' },
-    { code: 'DE-BB', name: 'Brandenburg' },
-    { code: 'DE-HB', name: 'Bremen' },
-    { code: 'DE-HH', name: 'Hamburg' },
-    { code: 'DE-HE', name: 'Hesse' },
-    { code: 'DE-MV', name: 'Mecklenburg-Vorpommern' },
-    { code: 'DE-NI', name: 'Lower Saxony' },
-    { code: 'DE-NW', name: 'North Rhine-Westphalia' },
-    { code: 'DE-RP', name: 'Rhineland-Palatinate' },
-    { code: 'DE-SL', name: 'Saarland' },
-    { code: 'DE-SN', name: 'Saxony' },
-    { code: 'DE-ST', name: 'Saxony-Anhalt' },
-    { code: 'DE-SH', name: 'Schleswig-Holstein' },
-    { code: 'DE-TH', name: 'Thuringia' },
-  ];
-
-  protected readonly franceRegions = [
-    { code: 'FR-ARA', name: 'Auvergne-Rhône-Alpes' },
-    { code: 'FR-BFC', name: 'Bourgogne-Franche-Comté' },
-    { code: 'FR-BRE', name: 'Brittany' },
-    { code: 'FR-CVL', name: 'Centre-Val de Loire' },
-    { code: 'FR-COR', name: 'Corsica' },
-    { code: 'FR-GES', name: 'Grand Est' },
-    { code: 'FR-HDF', name: 'Hauts-de-France' },
-    { code: 'FR-IDF', name: 'Île-de-France' },
-    { code: 'FR-NOR', name: 'Normandy' },
-    { code: 'FR-NAQ', name: 'Nouvelle-Aquitaine' },
-    { code: 'FR-OCC', name: 'Occitania' },
-    { code: 'FR-PDL', name: 'Pays de la Loire' },
-    { code: 'FR-PAC', name: "Provence-Alpes-Côte d'Azur" },
-  ];
-
-  protected readonly indiaStates = [
-    { code: 'IN-AP', name: 'Andhra Pradesh' },
-    { code: 'IN-AR', name: 'Arunachal Pradesh' },
-    { code: 'IN-AS', name: 'Assam' },
-    { code: 'IN-BR', name: 'Bihar' },
-    { code: 'IN-CG', name: 'Chhattisgarh' },
-    { code: 'IN-GA', name: 'Goa' },
-    { code: 'IN-GJ', name: 'Gujarat' },
-    { code: 'IN-HR', name: 'Haryana' },
-    { code: 'IN-HP', name: 'Himachal Pradesh' },
-    { code: 'IN-JH', name: 'Jharkhand' },
-    { code: 'IN-KA', name: 'Karnataka' },
-    { code: 'IN-KL', name: 'Kerala' },
-    { code: 'IN-MP', name: 'Madhya Pradesh' },
-    { code: 'IN-MH', name: 'Maharashtra' },
-    { code: 'IN-MN', name: 'Manipur' },
-    { code: 'IN-ML', name: 'Meghalaya' },
-    { code: 'IN-MZ', name: 'Mizoram' },
-    { code: 'IN-NL', name: 'Nagaland' },
-    { code: 'IN-OD', name: 'Odisha' },
-    { code: 'IN-PB', name: 'Punjab' },
-    { code: 'IN-RJ', name: 'Rajasthan' },
-    { code: 'IN-SK', name: 'Sikkim' },
-    { code: 'IN-TN', name: 'Tamil Nadu' },
-    { code: 'IN-TG', name: 'Telangana' },
-    { code: 'IN-TR', name: 'Tripura' },
-    { code: 'IN-UP', name: 'Uttar Pradesh' },
-    { code: 'IN-UT', name: 'Uttarakhand' },
-    { code: 'IN-WB', name: 'West Bengal' },
-    { code: 'IN-DL', name: 'Delhi (UT)' },
-    { code: 'IN-JK', name: 'Jammu and Kashmir (UT)' },
-    { code: 'IN-LA', name: 'Ladakh (UT)' },
-    { code: 'IN-PY', name: 'Puducherry (UT)' },
-  ];
-
-  // Tiers editing inputs
-  protected readonly newLimit = signal<number | null>(null);
-  protected readonly newLimitForm = form(this.newLimit, (p) => {
-    min(p, 1);
-  });
-  protected readonly newRate = signal<number | null>(null);
-  protected readonly newRateForm = form(this.newRate, (p) => {
-    min(p, 0);
-    max(p, 100);
-  });
-
-  protected readonly isSaving = signal(false);
-
-  protected readonly tenantId = computed(() => {
-    const token = this.tokenSvc.getAuthToken();
-    if (!token) return '';
-    try {
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        const payload = JSON.parse(atob(parts[1]!));
-        return String(payload.tenant_id || '');
-      }
-    } catch (e) {
-      console.error('Failed to parse auth token payload', e);
-    }
-    return '';
-  });
-
-  protected readonly availableCountriesToSelect = computed(() => {
-    const search = this.countrySearch().toLowerCase().trim();
-    const selected = new Set(this.selectedCountries());
-    return this.allCountries.filter(
-      (c) => !selected.has(c.code) && (c.name.toLowerCase().includes(search) || c.code.toLowerCase().includes(search)),
-    );
-  });
-
-  // Where donations are processed and where donor payment data is stored — driven by whether the
-  // tenant's Stripe account is actually connected.
-  protected readonly processingNotice = computed<ProcessingNotice>(() => {
-    if (this.stripeConfigured()) {
-      return {
-        heading: 'Donations are processed in the United States',
-        body: 'Donations are processed by Stripe (United States). Donor payment data is stored in the US.',
-      };
-    }
-    return {
-      heading: 'Connect Stripe to accept donations',
-      body: 'Donations are processed by Stripe. Connect your Stripe account below to start accepting donations.',
-    };
-  });
-
-  protected readonly isCanadaSelected = computed(() => this.selectedCountries().includes('CA'));
-  protected readonly isUsaSelected = computed(() => this.selectedCountries().includes('US'));
-  protected readonly isGermanySelected = computed(() => this.selectedCountries().includes('DE'));
-  protected readonly isFranceSelected = computed(() => this.selectedCountries().includes('FR'));
-  protected readonly isIndiaSelected = computed(() => this.selectedCountries().includes('IN'));
-
-  // Plain-language calculation summary
-  protected readonly taxCreditSummary = computed(() => {
-    const sorted = [...this.taxCreditTiers()].sort((a, b) => a.limit - b.limit);
-    if (sorted.length === 0) {
-      return ['No tax credit tiers defined. Donations will not receive any tax credit.'];
-    }
-
-    const lines: string[] = [];
-    let previousLimit = 0;
-
-    for (let i = 0; i < sorted.length; i++) {
-      const tier = sorted[i]!;
-      const ratePct = Math.round(tier.rate * 100);
-
-      if (i === 0) {
-        lines.push(`${ratePct}% credit on the first $${tier.limit} donated.`);
-      } else {
-        const range = `$${previousLimit + 1} to $${tier.limit}`;
-        lines.push(`${ratePct}% credit on the next $${tier.limit - previousLimit} donated (amounts from ${range}).`);
-      }
-      previousLimit = tier.limit;
-    }
-
-    lines.push(`0% credit on any amounts exceeding $${previousLimit}.`);
-    return lines;
-  });
-
-  ngOnInit(): void {
-    void this.loadOnInit();
-  }
-
-  private async loadOnInit(): Promise<void> {
-    // Handle the Stripe-hosted onboarding return redirect (same pattern as the mailbox connects).
-    const params = this.route.snapshot.queryParamMap;
-    if (params.has('stripe_connected')) {
-      this.alerts.showSuccess('Stripe onboarding complete. Verifying your account status…');
-    } else if (params.has('stripe_refresh')) {
-      this.alerts.showError('Stripe onboarding was interrupted — resume it below when you are ready.');
-    }
-
-    await this.settingsSvc.load();
-    this.loadValues();
-    await this.loadStripeStatus();
-    await this.loadPeriods();
-    await this.loadResidencyContext();
-  }
-
-  private async loadStripeStatus(): Promise<void> {
-    const end = this._loading.begin();
-    try {
-      const status = await this.donationsSvc.getStripeConnectStatus();
-      this.stripeStatus.set(status);
-    } catch {
-      // non-fatal — the card falls back to its "not connected" state
-    } finally {
-      end();
-    }
-  }
-
-  private async loadResidencyContext(): Promise<void> {
-    const end = this._loading.begin();
-    try {
-      const ctx = await this.donationsSvc.getResidencyContext();
-      this.residencyContext.set(ctx);
-      // Default the Connect country select to the org's country when it's one Stripe supports.
-      const match = this.stripeConnectCountries.find((c) => c.code === ctx.country);
-      if (match) {
-        this.stripeCountry.set(match.code);
-      }
-    } catch {
-      // non-fatal — the disclaimers simply stay in their fail-safe (shown) state
-    } finally {
-      end();
-    }
-  }
-
-  private async loadPeriods() {
-    try {
-      const periods = await this.donationsSvc.getDonationPeriods();
-      this.donationPeriods.set(periods as any);
-    } catch {
-      // non-fatal — periods table may not exist yet if migration hasn't run
-    }
-  }
-
-  protected async addPeriod() {
-    const name = this.newPeriodName().trim();
-    const start = this.newPeriodStartDate().trim();
-    const limit = Number(this.newPeriodLimit());
-
-    if (!name) {
-      this.alerts.showError('Period name is required');
-      return;
-    }
-    if (!start) {
-      this.alerts.showError('Start date is required');
-      return;
-    }
-    if (!limit || limit <= 0) {
-      this.alerts.showError('Limit amount must be greater than 0');
-      return;
-    }
-
-    const endDate = this.newPeriodEndDate().trim() || null;
-    if (endDate && endDate <= start) {
-      this.alerts.showError('End date must be after start date');
-      return;
-    }
-
-    this.isSavingPeriod.set(true);
-    try {
-      await this.donationsSvc.createDonationPeriod({
-        name,
-        start_date: start,
-        end_date: endDate,
-        limit_amount: limit * 100,
-      });
-      this.alerts.showSuccess(`Donation period "${name}" created`);
-      this.newPeriodName.set('');
-      this.newPeriodStartDate.set('');
-      this.newPeriodEndDate.set('');
-      this.newPeriodLimit.set(1000);
-      this.showAddPeriod.set(false);
-      await this.loadPeriods();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to create donation period');
-    } finally {
-      this.isSavingPeriod.set(false);
-    }
-  }
-
-  protected async togglePeriodActive(period: DonationPeriod) {
-    try {
-      await this.donationsSvc.updateDonationPeriod({ id: period.id, is_active: !period.is_active });
-      await this.loadPeriods();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to update period');
-    }
-  }
-
-  protected async deletePeriod(period: DonationPeriod) {
-    const confirmed = await this.dialogs.confirm({
-      title: `Delete period "${period.name}"?`,
-      message: 'This cannot be undone. Existing donations collected during this period will not be affected.',
-      confirmText: 'Delete',
-      cancelText: 'Cancel',
-      variant: 'danger',
-    });
-    if (!confirmed) return;
-    try {
-      await this.donationsSvc.deleteDonationPeriod(period.id);
-      this.alerts.showSuccess('Period deleted');
-      await this.loadPeriods();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to delete period');
-    }
-  }
-
-  protected formatDate(dateStr: string | null): string {
-    if (!dateStr) return 'No end date';
-    return new Date(dateStr).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' });
-  }
-
-  protected isPeriodActive(period: DonationPeriod): boolean {
-    const today = new Date().toISOString().slice(0, 10);
-    return period.is_active && period.start_date <= today && (!period.end_date || period.end_date >= today);
-  }
-
-  private loadValues() {
-    this.donationLimit.set(this.settingsSvc.getValue<number>('donations.limit', 1000));
-    this.restrictResidency.set(this.settingsSvc.getValue<boolean>('donations.restrict_residency', false));
-    this.residencyAcknowledged.set(this.settingsSvc.getValue<boolean>('donations.residency_acknowledged', false));
-
-    // Load countries
-    const countriesStr = this.settingsSvc.getValue<string>('donations.allowed_countries', 'CA');
-    const parsedCountries = countriesStr
-      .split(',')
-      .map((c) => c.trim())
-      .filter(Boolean);
-    this.selectedCountries.set(parsedCountries);
-
-    // Load regions (provinces / states)
-    const regionsStr = this.settingsSvc.getValue<string>('donations.allowed_regions', 'ON');
-    const parsedRegions = regionsStr
-      .split(',')
-      .map((r) => r.trim())
-      .filter(Boolean);
-    this.selectedRegions.set(parsedRegions);
-
-    // Load tax tiers
-    const tiersRaw = this.settingsSvc.getValue<any>('donations.tax_credit_tiers', []);
-    let parsedTiers: TaxCreditTier[] = [];
-    if (typeof tiersRaw === 'string') {
-      try {
-        parsedTiers = JSON.parse(tiersRaw);
-      } catch {
-        parsedTiers = [];
-      }
-    } else if (Array.isArray(tiersRaw)) {
-      parsedTiers = tiersRaw;
-    }
-    this.taxCreditTiers.set(parsedTiers.sort((a, b) => a.limit - b.limit));
-  }
-
-  protected selectCountry(country: { code: string; name: string }) {
-    this.selectedCountries.update((list) => [...list, country.code]);
-    this.countrySearch.set('');
-    this.showCountryDropdown.set(false);
-  }
-
-  protected removeCountry(code: string) {
-    this.selectedCountries.update((list) => list.filter((c) => c !== code));
-    // Clean up regions for removed countries
-    if (code === 'CA') {
-      const provinceCodes = new Set(this.canadaProvinces.map((p) => p.code));
-      this.selectedRegions.update((list) => list.filter((r) => !provinceCodes.has(r)));
-    } else if (code === 'US') {
-      const stateCodes = new Set(this.usStates.map((s) => s.code));
-      this.selectedRegions.update((list) => list.filter((r) => !stateCodes.has(r)));
-    } else if (code === 'DE') {
-      const stateCodes = new Set(this.germanyStates.map((s) => s.code));
-      this.selectedRegions.update((list) => list.filter((r) => !stateCodes.has(r)));
-    } else if (code === 'FR') {
-      const regionCodes = new Set(this.franceRegions.map((r) => r.code));
-      this.selectedRegions.update((list) => list.filter((r) => !regionCodes.has(r)));
-    } else if (code === 'IN') {
-      const stateCodes = new Set(this.indiaStates.map((s) => s.code));
-      this.selectedRegions.update((list) => list.filter((r) => !stateCodes.has(r)));
-    }
-  }
-
-  protected toggleRegion(code: string) {
-    this.selectedRegions.update((list) => (list.includes(code) ? list.filter((r) => r !== code) : [...list, code]));
-  }
-
-  protected getCountryName(code: string): string {
-    const found = this.allCountries.find((c) => c.code === code);
-    return found ? found.name : code;
-  }
-
-  protected addTier() {
-    const limit = this.newLimit();
-    const rateInput = this.newRate();
-
-    if (limit === null || limit <= 0) {
-      this.alerts.showError('Limit must be greater than 0');
-      return;
-    }
-    if (rateInput === null || rateInput < 0 || rateInput > 100) {
-      this.alerts.showError('Rate must be between 0% and 100%');
-      return;
-    }
-
-    const rate = rateInput / 100;
-
-    const current = this.taxCreditTiers();
-    if (current.some((t) => t.limit === limit)) {
-      this.alerts.showError('A tier with this limit already exists');
-      return;
-    }
-
-    const updated = [...current, { limit, rate }].sort((a, b) => a.limit - b.limit);
-    this.taxCreditTiers.set(updated);
-
-    this.newLimit.set(null);
-    this.newRate.set(null);
-  }
-
-  protected removeTier(index: number) {
-    const updated = this.taxCreditTiers().filter((_, i) => i !== index);
-    this.taxCreditTiers.set(updated);
-  }
-
-  protected reset() {
-    this.loadValues();
-    this.alerts.showSuccess('Settings reset to saved values');
-  }
-
-  /** Start (or resume) Stripe-hosted Connect onboarding — redirect-and-return, like the mailbox
-   * connects. Stripe brings the user back to this page with ?stripe_connected / ?stripe_refresh. */
-  protected async connectStripe() {
-    this.isConnectingStripe.set(true);
-    try {
-      const { url } = await this.donationsSvc.startStripeOnboarding(this.stripeCountry());
-      window.location.href = url;
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to start Stripe onboarding');
-      this.isConnectingStripe.set(false);
-    }
-  }
-
-  /** Open the campaign's Stripe Express dashboard (login links are single-use, so fetch fresh). */
-  protected async openStripeDashboard() {
-    this.isOpeningStripeDashboard.set(true);
-    try {
-      const { url } = await this.donationsSvc.createStripeLoginLink();
-      window.open(url, '_blank', 'noopener');
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to open the Stripe dashboard');
-    } finally {
-      this.isOpeningStripeDashboard.set(false);
-    }
-  }
-
-  /** Forget the Stripe connection. The campaign's Stripe account itself is theirs and is not
-   * deleted. */
-  protected async removeStripeConfig() {
-    const confirmed = await this.dialogs.confirm({
-      title: 'Remove Stripe connection?',
-      message:
-        'Donations will stop until you reconnect Stripe. Your Stripe account is not deleted — reconnecting later starts a fresh onboarding.',
-      confirmText: 'Remove connection',
-      cancelText: 'Cancel',
-      variant: 'danger',
-    });
-    if (!confirmed) return;
-    try {
-      await this.donationsSvc.disconnectStripe();
-      await this.loadStripeStatus();
-      this.alerts.showSuccess('Stripe connection removed');
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to remove Stripe connection');
-    }
-  }
-
-  protected async save() {
-    this.isSaving.set(true);
-    try {
-      // Stripe holds no keys — its connection is managed by the Connect onboarding buttons, not
-      // this save.
-      const entries = [
-        { key: 'donations.limit', value: Number(this.donationLimit()) },
-        { key: 'donations.restrict_residency', value: this.restrictResidency() },
-        { key: 'donations.allowed_countries', value: this.selectedCountries().join(',') },
-        { key: 'donations.allowed_regions', value: this.selectedRegions().join(',') },
-        { key: 'donations.tax_credit_tiers', value: JSON.stringify(this.taxCreditTiers()) },
-        // Saving the residency card — restricting or allowing everyone — is the explicit choice that
-        // lifts the "donations paused" gate, so record the acknowledgment alongside it.
-        { key: 'donations.residency_acknowledged', value: true },
-      ];
-
-      await this.settingsSvc.upsert(entries);
-      this.residencyAcknowledged.set(true);
-      this.residencyContext.update((ctx) => (ctx ? { ...ctx, residencyAcknowledged: true } : ctx));
-      this.alerts.showSuccess('Donations configuration saved successfully');
-    } catch (err) {
-      this.alerts.showError(
-        err instanceof Error && err.message ? err.message : 'Failed to save donations configuration',
-      );
-    } finally {
-      this.isSaving.set(false);
-    }
-  }
-}
-```
-
 ## File: apps/frontend/src/app/experiences/tags/ui/tags-admin.html
 ```html
 <div class="flex flex-col gap-4 p-4 sm:p-6">
@@ -63769,522 +63528,6 @@ export class TasksBoard implements OnInit {
 
   protected openList(): void {
     void this.router.navigate(['/tasks']);
-  }
-}
-```
-
-## File: apps/frontend/src/app/experiences/users/ui/user-view.ts
-```typescript
-import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
-import { DatePipe } from '@angular/common';
-import { Router } from '@angular/router';
-import { createLoadingGate } from '@uxcommon/loading-gate';
-import { createRequestGuard } from '@uxcommon/request-guard';
-import { form, required, email } from '@angular/forms/signals';
-import {
-  IAuthUserDetail,
-  IUserStatsSnapshot,
-  UpdateAuthUserType,
-  authRoleLabel,
-} from '../../../../../../../libs/common/src';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { Icon } from '@uxcommon/components/icons/icon';
-import { RecordActivities } from '@experiences/activity/ui/record-activities/record-activities';
-import { ConfirmDialogService } from '../../../services/shared-dialog.service';
-import { CampaignContextService } from '../../../services/campaign-context.service';
-import { UserAdminService } from '../services/useradmin-service';
-import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
-import { StatCard } from '@uxcommon/components/stat-card/stat-card';
-import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
-import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
-import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
-import { DetailItem } from '@uxcommon/components/detail-item/detail-item';
-import { Card as PcCard } from '@uxcommon/components/card/card';
-import { Input as PcInput } from '@uxcommon/components/input/input';
-import { injectRecordNavigation } from '@frontend/services/record-navigation.service';
-import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
-import { getUserErrorMessage } from '../../../services/api/user-message';
-import {
-  userIsDeactivated,
-  userLastActiveLabel,
-  userRoleLockReason,
-  userRoleOptions,
-  userShortDate,
-  userStatus,
-} from '../user-status';
-
-/**
- * The one user page — view and edit in place, no separate edit route (approved design,
- * 2026-07-10 mockup). Rolodex records keep the view/edit split; account-ish pages
- * (Profile, Users) edit in place:
- * - identity fields save explicitly with narrated dirty state (the Profile-page idiom),
- * - role applies instantly with explained locks (the Users-list idiom),
- * - lifecycle actions (password reset, resend invite, deactivate/reactivate, delete)
- *   live where the doctrine puts them (§4).
- */
-@Component({
-  selector: 'pc-user-view',
-  imports: [DatePipe, Icon, RecordActivities, DetailLayout, StatCard, StatusBadge, DetailItem, PcCard, PcInput],
-  templateUrl: './user-view.html',
-})
-export class UserViewComponent {
-  readonly id = input.required<string>();
-
-  protected readonly recordNav = injectRecordNavigation('user', this.id);
-
-  private readonly alerts = inject(AlertService);
-  private readonly router = inject(Router);
-  private readonly users = inject(UserAdminService);
-  private readonly auth = inject(AuthService);
-  private readonly dialogs = inject(ConfirmDialogService);
-  private readonly campaignContext = inject(CampaignContextService);
-
-  private readonly _loading = createLoadingGate();
-  private readonly _requestGuard = createRequestGuard();
-  protected readonly loading = this._loading.visible;
-  protected readonly initialized = signal(false);
-  protected readonly error = signal<string | null>(null);
-  protected readonly stats = signal<IUserStatsSnapshot | null>(null);
-  protected readonly detail = signal<IAuthUserDetail | null>(null);
-
-  protected readonly saving = signal(false);
-  protected readonly resettingPassword = signal(false);
-  protected readonly roleSaving = signal(false);
-  /** One-shot saved flash on the role select after an instant-apply role change. */
-  protected readonly roleFlash = signal(false);
-  /** In-flight resend-invite / deactivate / reactivate action. */
-  protected readonly lifecycleBusy = signal(false);
-
-  protected readonly payload = signal({ email: '', first_name: '', last_name: '' });
-
-  protected readonly form = form(this.payload, (p) => {
-    required(p.email);
-    email(p.email);
-    required(p.first_name);
-  });
-
-  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
-
-  protected readonly currentUserRole = computed(() => this.auth.getUser()?.role ?? null);
-  protected readonly currentUserId = computed(() => {
-    const id = this.auth.getUser()?.id;
-    return id != null ? String(id) : null;
-  });
-
-  protected readonly isSelf = computed(() => String(this.id()) === this.currentUserId());
-  protected readonly isDeactivated = computed(() => {
-    const user = this.detail();
-    return !!user && userIsDeactivated(user);
-  });
-  protected readonly isInvited = computed(() => {
-    const user = this.detail();
-    return !!user && !user.verified && !userIsDeactivated(user);
-  });
-
-  /** Admins may not manage owner accounts — only another owner can. */
-  protected readonly canManageTarget = computed(
-    () => !(this.currentUserRole() === 'admin' && this.detail()?.role === 'owner'),
-  );
-  protected readonly canDelete = computed(() => !!this.detail() && !this.isSelf() && this.canManageTarget());
-  protected readonly showDeactivateAction = computed(
-    () => !!this.detail() && !this.isSelf() && this.canManageTarget() && !this.isDeactivated(),
-  );
-
-  protected readonly status = computed(() => {
-    const user = this.detail();
-    return user ? userStatus(user) : null;
-  });
-
-  protected readonly roleLabel = computed(() => authRoleLabel(this.detail()?.role));
-
-  protected readonly roleLock = computed(() => {
-    const user = this.detail();
-    if (!user) return null;
-    return userRoleLockReason({
-      isSelf: this.isSelf(),
-      callerRole: this.currentUserRole(),
-      targetRole: user.role,
-      deactivated: this.isDeactivated(),
-    });
-  });
-
-  protected readonly roleChoices = computed(() => userRoleOptions(this.currentUserRole(), this.detail()?.role));
-
-  protected roleLabelFor(role: string): string {
-    return authRoleLabel(role);
-  }
-
-  // Campaigns §15 — assignment select (instant-apply, same idiom as Role).
-  protected readonly campaignSaving = signal(false);
-  protected readonly campaignFlash = signal(false);
-  protected readonly assignableCampaigns = computed(() =>
-    this.campaignContext.campaigns().filter((c) => c.status === 'active'),
-  );
-  /** Only worth showing once an election campaign exists alongside the office. */
-  protected readonly showCampaignControl = computed(() => this.assignableCampaigns().length > 1);
-  /** Admins/owners can work in every campaign, so the assignment doesn't scope them. */
-  protected readonly targetIsCampaignScoped = computed(() => {
-    const role = this.detail()?.role;
-    return role !== 'admin' && role !== 'owner';
-  });
-  protected readonly assignedCampaignName = computed(() => {
-    const id = this.detail()?.campaign_id ?? null;
-    if (id == null) return 'Office';
-    return this.assignableCampaigns().find((c) => String(c.id) === id)?.name ?? 'Office';
-  });
-
-  protected async changeCampaign(event: Event): Promise<void> {
-    const select = event.target as HTMLSelectElement;
-    const campaignId = select.value || null;
-    const user = this.detail();
-    if (!user || campaignId === (user.campaign_id ?? null)) return;
-
-    this.campaignSaving.set(true);
-    try {
-      await this.users.update(this.id(), { campaign_id: campaignId } as UpdateAuthUserType);
-      this.detail.update((d) => (d ? { ...d, campaign_id: campaignId } : d));
-      this.users.triggerRefresh();
-      this.campaignFlash.set(true);
-      const FLASH_MS = 1300;
-      setTimeout(() => this.campaignFlash.set(false), FLASH_MS);
-      this.alerts.showSuccess(`${this.displayName()} now works in ${this.assignedCampaignName()}`);
-    } catch (err) {
-      select.value = user.campaign_id ?? '';
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to update the campaign'));
-    } finally {
-      this.campaignSaving.set(false);
-    }
-  }
-
-  protected readonly lastActiveLabel = computed(() => {
-    const user = this.detail();
-    return user ? userLastActiveLabel(user) : '—';
-  });
-
-  /**
-   * Lifecycle context strip in the Access card: names the limbo state and carries its one
-   * next step (§3 offer the exit). Null for active accounts.
-   */
-  protected readonly lifecycleStrip = computed<{
-    tone: 'warning' | 'ghost';
-    text: string;
-    action: 'resend' | 'reactivate' | null;
-    actionLabel: string;
-  } | null>(() => {
-    const user = this.detail();
-    if (!user) return null;
-    const canAct = this.canManageTarget();
-    if (user.deactivated_at) {
-      const since = userShortDate(user.deactivated_at);
-      return {
-        tone: 'ghost',
-        text: `Deactivated${since ? ` ${since}` : ''}. Can't sign in`,
-        action: canAct ? 'reactivate' : null,
-        actionLabel: 'Reactivate user',
-      };
-    }
-    if (user.deletion_scheduled_at) {
-      const when = userShortDate(user.deletion_scheduled_at);
-      return {
-        tone: 'ghost',
-        text: `Deletion scheduled${when ? ` for ${when}` : ''}. Signing back in cancels it`,
-        action: canAct ? 'reactivate' : null,
-        actionLabel: 'Reactivate user',
-      };
-    }
-    if (!user.verified) {
-      const sent = userShortDate(user.created_at);
-      return {
-        tone: 'warning',
-        text: `Invite sent${sent ? ` ${sent}` : ''}. Hasn't signed in yet`,
-        action: canAct ? 'resend' : null,
-        actionLabel: 'Resend invite',
-      };
-    }
-    return null;
-  });
-
-  protected readonly displayName = computed(() => {
-    const user = this.detail();
-    if (!user) return '';
-    const tokens = [user.first_name, user.last_name].filter((t) => !!t && t.trim().length > 0);
-    const name = tokens.join(' ').trim();
-    return name || user.email;
-  });
-
-  protected readonly initials = computed(() => {
-    const user = this.detail();
-    if (!user) return null;
-    const letters = [user.first_name, user.last_name]
-      .map((t) => (t ?? '').trim().charAt(0))
-      .filter(Boolean)
-      .join('')
-      .toUpperCase();
-    return letters || user.email.charAt(0).toUpperCase();
-  });
-
-  protected readonly crumbs = computed<PcBreadcrumb[]>(() => [
-    { label: 'Users', route: '/users' },
-    { label: this.displayName() || 'User' },
-  ]);
-
-  protected readonly activityCards = computed(() => {
-    const s = this.stats();
-    if (!s) return [];
-    return [
-      {
-        key: 'emails',
-        title: 'Emails Assigned',
-        value: s.emails_assigned.total,
-        subtitle: `${s.emails_assigned.open} open · ${s.emails_assigned.closed} closed`,
-        asOf: null,
-      },
-      {
-        key: 'contacts',
-        title: 'Contacts Added',
-        value: s.contacts_added.total,
-        subtitle: s.contacts_added.last_created_at ? 'Last new contact' : 'No contacts yet',
-        asOf: s.contacts_added.last_created_at,
-      },
-      {
-        key: 'imports',
-        title: 'Files Imported',
-        value: s.files_imported.count,
-        subtitle: `${s.files_imported.total_rows} people imported`,
-        asOf: s.files_imported.last_activity_at,
-      },
-      {
-        key: 'exports',
-        title: 'Files Exported',
-        value: s.files_exported.count,
-        subtitle: `${s.files_exported.total_rows} rows exported`,
-        asOf: s.files_exported.last_activity_at,
-      },
-    ];
-  });
-
-  constructor() {
-    effect(() => {
-      const currentId = this.id();
-      untracked(() => {
-        if (!currentId) {
-          this.error.set('Missing user identifier.');
-          return;
-        }
-        void this.load();
-      });
-    });
-  }
-
-  /** Route-level unsaved-changes guard (the edit form lives on this page now). */
-  public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.displayName() || 'this user');
-  }
-
-  protected async save(event?: Event) {
-    event?.preventDefault();
-
-    this.form().markAsTouched();
-    if (this.form().invalid() || !this.id()) {
-      return;
-    }
-
-    this.saving.set(true);
-    this.error.set(null);
-    try {
-      await this.users.update(this.id(), this.buildPayload());
-      this.alerts.showSuccess('User updated');
-      this.users.triggerRefresh();
-      await this.load();
-    } catch (err) {
-      const message = getUserErrorMessage(err, 'Unable to update user');
-      this.error.set(message);
-      this.alerts.showError(message);
-    } finally {
-      this.saving.set(false);
-    }
-  }
-
-  protected resetForm() {
-    const user = this.detail();
-    if (!user) return;
-    this.setForm(user);
-    this.form().reset();
-  }
-
-  /**
-   * Role is instant-apply (same idiom as the Users list) so a role change never gets
-   * tangled with unsaved identity edits. The detail signal is patched in place rather
-   * than reloaded, to keep any in-progress form edits intact.
-   */
-  protected async changeRole(eventTarget: Event) {
-    const select = eventTarget.target as HTMLSelectElement;
-    const role = select.value;
-    const user = this.detail();
-    if (!role || !user || role === user.role) return;
-
-    this.roleSaving.set(true);
-    try {
-      await this.users.update(this.id(), { role } as UpdateAuthUserType);
-      this.detail.update((d) => (d ? { ...d, role } : d));
-      this.users.triggerRefresh();
-      this.flashRole();
-      this.alerts.showSuccess(`Role updated. ${this.displayName()} is now ${authRoleLabel(role)}`);
-    } catch (err) {
-      select.value = user.role ?? '';
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to update the role'));
-    } finally {
-      this.roleSaving.set(false);
-    }
-  }
-
-  protected async triggerPasswordReset() {
-    if (!this.id()) return;
-    this.resettingPassword.set(true);
-    try {
-      await this.users.adminTriggerPasswordReset(this.id());
-      this.alerts.showSuccess(`Password reset email sent to ${this.detail()?.email ?? 'the user'}`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to trigger password reset'));
-    } finally {
-      this.resettingPassword.set(false);
-    }
-  }
-
-  protected async resendInvite() {
-    if (!this.id() || this.lifecycleBusy()) return;
-    this.lifecycleBusy.set(true);
-    try {
-      await this.users.resendInvite(this.id());
-      this.alerts.showSuccess(`Invitation email sent to ${this.detail()?.email ?? 'the user'}`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to resend the invitation'));
-    } finally {
-      this.lifecycleBusy.set(false);
-    }
-  }
-
-  protected async deactivateUser() {
-    const user = this.detail();
-    if (!user || this.lifecycleBusy()) return;
-
-    const confirmed = await this.dialogs.confirm({
-      title: 'Deactivate user',
-      message: `${this.displayName()} won't be able to sign in until an admin or owner reactivates them. Their role and history are kept.`,
-      variant: 'warning',
-      confirmText: 'Deactivate user',
-    });
-    if (!confirmed) return;
-
-    this.lifecycleBusy.set(true);
-    try {
-      await this.users.deactivate(this.id());
-      this.detail.update((d) => (d ? { ...d, deactivated_at: new Date() } : d));
-      this.users.triggerRefresh();
-      this.alerts.showSuccess(`${this.displayName()} deactivated. They can no longer sign in`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to deactivate user'));
-    } finally {
-      this.lifecycleBusy.set(false);
-    }
-  }
-
-  protected async reactivateUser() {
-    if (!this.id() || this.lifecycleBusy()) return;
-    this.lifecycleBusy.set(true);
-    try {
-      await this.users.reactivate(this.id());
-      this.detail.update((d) => (d ? { ...d, deactivated_at: null, deletion_scheduled_at: null } : d));
-      this.users.triggerRefresh();
-      this.alerts.showSuccess(`${this.displayName()} reactivated. They can sign in again`);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to reactivate user'));
-    } finally {
-      this.lifecycleBusy.set(false);
-    }
-  }
-
-  protected async deleteUser() {
-    if (!this.id() || !this.canDelete()) return;
-
-    const confirmed = await this.dialogs.confirm({
-      title: 'Delete user',
-      message: `Delete ${this.displayName()}? Their sign-in is removed permanently and cannot be undone. Their past contributions remain, shown as 'Deleted user'. To keep their history but block access, deactivate instead.`,
-      variant: 'danger',
-      confirmText: 'Delete user',
-    });
-    if (!confirmed) return;
-    const end = this._loading.begin();
-    try {
-      const success = await this.users.delete(this.id());
-      if (!success) {
-        throw new Error('User deletion is not supported');
-      }
-      this.alerts.showSuccess('User deleted');
-      await this.router.navigate(['/users']);
-    } catch (err) {
-      this.alerts.showError(getUserErrorMessage(err, 'Unable to delete user'));
-    } finally {
-      end();
-    }
-  }
-
-  protected formatAsOf(date: Date | null): string {
-    if (!date) return '—';
-    try {
-      const d = typeof date === 'string' ? new Date(date) : date;
-      return new Intl.DateTimeFormat(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      }).format(d);
-    } catch {
-      return date.toString();
-    }
-  }
-
-  private async load() {
-    const isCurrent = this._requestGuard.begin();
-    const end = this._loading.begin();
-    this.error.set(null);
-    try {
-      const [user] = await Promise.all([this.users.getById(this.id()), this.campaignContext.ensureLoaded()]);
-      if (!isCurrent()) return; // superseded — do not land stale data
-      this.detail.set(user);
-      this.stats.set(user.stats);
-      this.setForm(user);
-      this.form().reset();
-    } catch (err) {
-      const message = getUserErrorMessage(err, 'Failed to load user');
-      this.error.set(message);
-      this.alerts.showError(message);
-    } finally {
-      end();
-      this.initialized.set(true);
-    }
-  }
-
-  private setForm(user: IAuthUserDetail) {
-    this.payload.set({
-      email: user.email,
-      first_name: user.first_name,
-      last_name: user.last_name ?? '',
-    });
-  }
-
-  private buildPayload(): UpdateAuthUserType {
-    const raw = this.payload();
-    const lastName = raw.last_name?.trim() ?? '';
-    return {
-      email: raw.email?.trim() ?? '',
-      first_name: raw.first_name?.trim() ?? '',
-      last_name: lastName.length ? lastName : null,
-    } as UpdateAuthUserType;
-  }
-
-  private flashRole(): void {
-    this.roleFlash.set(true);
-    const FLASH_MS = 1300;
-    setTimeout(() => this.roleFlash.set(false), FLASH_MS);
   }
 }
 ```
@@ -65447,6 +64690,71 @@ export class Navbar implements OnDestroy {
   protected toggleTheme(): void {
     this.themeSvc.toggleTheme();
   }
+}
+```
+
+## File: apps/frontend/src/app/services/api/user-message.ts
+```typescript
+import { JSendServerError } from '../../../../../../libs/common/src';
+import { TRPCClientError } from '@trpc/client';
+
+import { ApiError } from './api-error';
+
+/** Shown whenever a request never got a response from the backend (offline, outage, edge 503). */
+export const SERVER_UNREACHABLE_MESSAGE =
+  "We can't reach the server right now. Check your internet connection and try again in a moment.";
+
+/**
+ * True when the request never produced a server-authored error: the backend is down/unreachable or
+ * the client is offline. A tRPC error that actually came from the server always carries a `data`
+ * payload with a code; a fetch-level failure (or an edge backend-down 503 with a non-tRPC body)
+ * does not. Says nothing about the session — callers must NOT treat this as a sign-out signal.
+ *
+ * Caveat the wrapper chain creates: when our errorLink emits an ApiError, tRPC's client re-wraps
+ * it into a fresh TRPCClientError with no `data`, keeping the original as `cause`. So a missing
+ * `data` on the outer error proves nothing by itself — only a chain with no server-authored error
+ * anywhere in it means the server never answered.
+ */
+export function isServerUnreachable(error: unknown): boolean {
+  if (error instanceof ApiError) return isServerUnreachable(error.originalError);
+  return error instanceof TRPCClientError && !hasServerAuthoredError(error, 0);
+}
+
+const MAX_CAUSE_DEPTH = 5;
+
+/** Walks cause/originalError links looking for a tRPC error that carries a server `data` payload. */
+function hasServerAuthoredError(error: unknown, depth: number): boolean {
+  if (depth > MAX_CAUSE_DEPTH || error == null) return false;
+  if (error instanceof TRPCClientError && error.data != null) return true;
+  if (error instanceof ApiError) return hasServerAuthoredError(error.originalError, depth + 1);
+  if (error instanceof Error) return hasServerAuthoredError(error.cause, depth + 1);
+  return false;
+}
+
+/**
+ * Returns a message that is safe to show to the user.
+ *
+ * Server errors (tRPC / JSend) are already sanitized by the backend, so their
+ * message is shown as-is. A plain `new Error('…')` is app-authored copy and
+ * passes through too. Anything else (TypeError, DOMException, third-party
+ * errors) would leak internals into the UI, so the caller's fallback is shown
+ * instead — the full error still goes to the console via the usual handlers.
+ */
+export function getUserErrorMessage(error: unknown, fallback: string): string {
+  // A raw fetch failure would surface as browser-speak ("Failed to fetch") — translate it.
+  if (isServerUnreachable(error)) {
+    return SERVER_UNREACHABLE_MESSAGE;
+  }
+  if (error instanceof ApiError || error instanceof TRPCClientError) {
+    return error.message || fallback;
+  }
+  if (error instanceof JSendServerError) {
+    return error.messageText || fallback;
+  }
+  if (error instanceof Error && error.constructor === Error && error.message) {
+    return error.message;
+  }
+  return fallback;
 }
 ```
 
@@ -68514,107 +67822,6 @@ export class GridActionComponent {
 }
 ```
 
-## File: apps/frontend/src/app/shared/public-pages.ts
-```typescript
-import { environment } from '../../environments/environment';
-
-/**
- * Helpers for the tenant-subdomain public page model. Every public surface (forms /f/:slug,
- * event RSVP /e/:slug, volunteer /volunteer + /v/:slug, donations) lives on
- * `https://<tenantSlug>.<publicBaseDomain>/<path>`; the SPA passes its own subdomain to the API as
- * `?t=` so tenant resolution works on any host (including dev, where the Host header is enough in
- * Chrome via `<slug>.localhost` but not guaranteed elsewhere).
- */
-
-/**
- * Base for public-page API calls (unauthenticated `fetch` to REST `/api/*`).
- *
- * In production these pages are served on the dedicated public origin `<org>.pplforms.com`, whose
- * reverse proxy forwards `/api` and `/d` to the backend. So public calls must be **same-origin**
- * (origin-relative `''`) — hitting the absolute `api.pplcrm.com` origin would be cross-origin and
- * CORS-blocked (CORS is deliberately locked to the CRM origin only). In dev we keep the absolute
- * `apiUrl`, which the backend CORS already allows for `localhost:4200`.
- */
-export function apiBase(): string {
-  return environment.production ? '' : environment.apiUrl.replace(/\/$/, '');
-}
-
-/**
- * The tenant subdomain the current page is being served on
- * (`riverton.mydomain.com` → `riverton`), or null on the bare app host.
- */
-export function tenantFromHost(): string | null {
-  const host = window.location.hostname.toLowerCase();
-  const base = environment.publicBaseDomain.toLowerCase();
-  if (!host || host === base) return null;
-  const suffix = `.${base}`;
-  if (!host.endsWith(suffix)) return null;
-  const label = host.slice(0, -suffix.length);
-  if (!label || label.includes('.')) return null;
-  return label;
-}
-
-/** `?t=<tenant>` query suffix for public API calls made from a public page. */
-export function tenantQuery(): string {
-  const tenant = tenantFromHost();
-  return tenant ? `?t=${encodeURIComponent(tenant)}` : '';
-}
-
-/**
- * Shareable public URL for authenticated admin UI: `https://<tenantSlug>.<base>/<path>`, falling
- * back to the current origin when no tenant subdomain is configured (dev without wildcard DNS).
- * `path` must not start with a slash.
- */
-export function publicPageUrl(tenantSlug: string | null | undefined, path: string): string {
-  const base = environment.publicBaseDomain;
-  if (tenantSlug && base) {
-    return `https://${tenantSlug}.${base}/${path}`;
-  }
-  return `${window.location.origin}/${path}`;
-}
-
-/**
- * Public URL for a donation page. Donation pages are **server-rendered by the backend** (they carry
- * the Stripe checkout), not an SPA route. In production they're served at
- * `<org>.pplforms.com/d/:slug` — the pplforms edge Worker rewrites `/d/*` → the backend's
- * `/api/forms/d/*` and injects `?t=<org>` from the subdomain. In dev there's no Worker, so hit the
- * backend directly with an explicit `?t=`.
- */
-export function donationPageUrl(tenantSlug: string | null | undefined, slug: string): string {
-  if (environment.production) {
-    return publicPageUrl(tenantSlug, `d/${slug}`);
-  }
-  const t = tenantSlug ? `?t=${encodeURIComponent(tenantSlug)}` : '';
-  return `${environment.apiUrl.replace(/\/$/, '')}/api/forms/d/${slug}${t}`;
-}
-
-/**
- * Absolute URL to a volunteer companion surface (canvass `/t/:token`, deliveries `/r/:token`). In
- * production the companion apps are path-routed on the CRM's own domain, so we use the current
- * origin; in dev they run on a separate port, so `environment.companionOrigin` overrides it —
- * otherwise a copied link would point back at the CRM host and 404. `path` must start with a slash.
- */
-export function companionUrl(path: string): string {
-  return `${environment.companionOrigin || window.location.origin}${path}`;
-}
-
-/** Which channels the backend sent a volunteer's personal link through on assignment. */
-export interface VolunteerLinkSent {
-  email: boolean;
-  sms: boolean;
-}
-
-/**
- * Human phrasing for the assignment toast: 'link sent by email and text', or null when
- * nothing could be sent (no contacts on file) — callers warn and point at Copy link.
- */
-export function volunteerLinkSentPhrase(sent: VolunteerLinkSent | null | undefined): string | null {
-  if (!sent || (!sent.email && !sent.sms)) return null;
-  const channels = [sent.email ? 'email' : null, sent.sms ? 'text' : null].filter(Boolean).join(' and ');
-  return `link sent by ${channels}`;
-}
-```
-
 ## File: apps/frontend/src/app/dashboard.routes.ts
 ```typescript
 import type { Routes } from '@angular/router';
@@ -69182,6 +68389,255 @@ export const dashboardRoutes: Routes = [
 ];
 ```
 
+## File: apps/website/src/app/pricing/pricing-page.html
+```html
+<pc-site-header variant="solid" />
+
+<!-- Hero -->
+<section class="border-b border-line bg-base-200 px-5 py-16 sm:px-8">
+  <div class="mx-auto max-w-[760px] text-center">
+    <div class="eyebrow">Pricing</div>
+    <h1 class="mt-3 text-[clamp(2rem,6vw,2.625rem)] font-bold tracking-[-0.02em]">Fair, simple pricing.</h1>
+    <p class="mx-auto mt-3.5 max-w-[560px] text-[16px] leading-relaxed text-base-content/60">
+      Unlimited contacts and households on every plan, including Free. You pay only for features and email subscribers,
+      never for the size of your list.
+    </p>
+  </div>
+</section>
+
+<!-- Slider + plan cards: the one input that re-prices the three cards below. -->
+<section class="px-5 pt-12 sm:px-8">
+  <div class="site-wrap rounded-xl border border-line bg-base-100 px-6 py-5">
+    <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+      <label for="subscriber-slider" class="text-[14.5px] font-semibold">
+        How many email subscribers do you have?
+      </label>
+      <div class="text-[15px] font-bold tabular-nums text-primary">{{ subscribersLabel() }} subscribers</div>
+    </div>
+    <input
+      id="subscriber-slider"
+      type="range"
+      min="0"
+      [max]="maxStopIndex"
+      step="1"
+      class="range range-primary range-sm mt-4 w-full"
+      [value]="stopIndex()"
+      (input)="onSlide($event)"
+    />
+    <div class="mt-1.5 flex justify-between text-[11px] tabular-nums text-base-content/40">
+      <span>1,000</span>
+      <span>200,000</span>
+    </div>
+
+    <!-- Monthly / Annual billing toggle -->
+    <div class="mt-4 flex flex-col items-center gap-2 border-t border-line pt-4">
+      <div role="tablist" class="tabs tabs-boxed tabs-sm">
+        <button role="tab" class="tab" [class.tab-active]="interval() === 'month'" (click)="setInterval('month')">
+          Monthly
+        </button>
+        <button role="tab" class="tab" [class.tab-active]="interval() === 'year'" (click)="setInterval('year')">
+          Annual
+        </button>
+      </div>
+      <span class="rounded-full bg-success/12 px-2.5 py-1 text-[11px] font-semibold text-success">
+        Annual billing: {{ annualBadge }}
+      </span>
+    </div>
+  </div>
+
+  <!-- Plan cards -->
+  <div class="site-wrap mt-4 grid gap-4 sm:grid-cols-3">
+    @for (tier of tiers; track tier.key) {
+    <div
+      class="flex flex-col rounded-xl bg-base-100 p-6"
+      [class]="tier.featured ? 'border-2 border-primary' : 'border border-line'"
+    >
+      <div class="flex h-6 items-center justify-between">
+        <div class="text-[16px] font-semibold">{{ tier.name }}</div>
+        @if (tier.featured) {
+        <span class="rounded-full bg-primary/12 px-2.5 py-1 text-[11px] font-semibold text-primary"> Best value </span>
+        }
+      </div>
+      <div class="mt-3 min-h-[52px]">
+        @if (!overMax(tier)) {
+        <div class="text-[30px] font-bold tabular-nums leading-none">{{ priceLabel(tier) }}</div>
+        <div class="mt-1.5 text-[12px] text-base-content/50">
+          {{ cadence(tier) }} · at {{ subscribersLabel() }} subscribers
+        </div>
+        @if (annualNote(tier); as note) {
+        <div class="mt-1 text-[12px] font-medium text-success">{{ note }}</div>
+        } } @else if (tier.key === 'free') {
+        <div class="text-[30px] font-bold tabular-nums leading-none text-base-content/35">{{ zeroPrice() }}</div>
+        <div class="mt-1.5 text-[12px] text-base-content/50">Covers up to 1,000 subscribers</div>
+        } @else {
+        <div class="pt-1.5 text-[18px] font-semibold leading-none text-base-content/70">Contact us</div>
+        <div class="mt-2 text-[12px] text-base-content/50">
+          For more than {{ maxSubscribersLabel(tier) }} subscribers
+        </div>
+        }
+      </div>
+      <p class="mt-3 text-[13.5px] leading-relaxed text-base-content/70">{{ stepUpLabel(tier) }}</p>
+      <p class="mt-2 text-[12px] leading-relaxed text-base-content/50">{{ capsLine(tier) }}</p>
+      <div class="mt-auto pt-5">
+        <a
+          [href]="signupUrl"
+          class="btn w-full rounded-field text-[13.5px] font-semibold"
+          [class]="tier.featured ? 'btn-primary' : 'btn-outline btn-primary'"
+          >Start free</a
+        >
+      </div>
+    </div>
+    }
+  </div>
+
+  @if (interval() === 'year') {
+  <p class="site-wrap mt-3 text-center text-[12px] text-base-content/50">
+    Per-month prices on annual billing are rounded to the nearest dollar. You're billed once a year, at the exact annual
+    total shown on each card.
+  </p>
+  }
+
+  <!-- Included in every plan -->
+  <div class="site-wrap mt-4 rounded-xl border border-line bg-base-50 p-6">
+    <div class="eyebrow">Included in every plan, including Free</div>
+    <ul class="mt-4 grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
+      @for (item of includedEverywhere; track item) {
+      <li class="flex items-center gap-2 text-[13px] text-base-content/70">
+        <pc-site-icon name="check-circle" [size]="15" class="flex-none text-primary" />
+        <span>{{ item }}</span>
+      </li>
+      }
+    </ul>
+  </div>
+</section>
+
+<!-- What differs between plans -->
+<section class="px-5 py-12 sm:px-8">
+  <div class="site-wrap">
+    <h2 class="text-[clamp(1.375rem,4vw,1.625rem)] font-bold tracking-[-0.01em]">What changes as you step up.</h2>
+    <p class="mt-2 max-w-[620px] text-[13.5px] text-base-content/60">
+      The grid below only lists what differs between plans; everything above is in all of them.
+    </p>
+  </div>
+
+  <div class="site-wrap mt-5 overflow-x-auto rounded-xl border border-line bg-base-100">
+    <table class="w-full min-w-[640px] border-separate border-spacing-0">
+      <thead>
+        <tr>
+          <th class="sticky left-0 z-[2] w-[240px] border-b border-line bg-base-100 px-5 py-4 text-left align-bottom">
+            <div class="text-[12.5px] font-normal text-base-content/50">
+              Prices shown at {{ subscribersLabel() }} subscribers
+            </div>
+          </th>
+          @for (tier of tiers; track tier.key) {
+          <th
+            class="min-w-[150px] border-b border-line px-4 py-4 text-center"
+            [class]="tier.featured ? 'bg-primary/5' : ''"
+          >
+            <div class="text-[15px] font-semibold">{{ tier.name }}</div>
+            <div class="mt-0.5 text-[12.5px] font-normal tabular-nums text-base-content/60">
+              @if (!overMax(tier)) { {{ priceLabel(tier) }} {{ cadence(tier) }} } @else if (tier.key === 'free') { Up to
+              1,000 subscribers } @else { Contact us }
+            </div>
+          </th>
+          }
+        </tr>
+      </thead>
+      <tbody>
+        @for (group of diffMatrix; track group.category; let groupLast = $last) {
+        <tr>
+          <th class="sticky left-0 z-[1] bg-base-100 px-5 pb-2 pt-6 text-left">
+            <span class="text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
+              {{ group.category }}
+            </span>
+          </th>
+          @for (tier of tiers; track tier.key) {
+          <td class="pb-2 pt-6" [class]="tier.featured ? 'bg-primary/5' : ''"></td>
+          }
+        </tr>
+        @for (row of group.rows; track row.label; let rowLast = $last) {
+        <tr>
+          <th
+            class="sticky left-0 z-[1] border-line bg-base-100 px-5 py-3 text-left text-[13.5px] font-normal text-base-content/80"
+            [class.border-b]="!(groupLast && rowLast)"
+          >
+            {{ row.label }}
+          </th>
+          @for (tier of tiers; track tier.key) {
+          <!-- `relative` contains the absolute sr-only spans, so they can't widen the page
+               past the overflow-x wrapper on small screens. -->
+          <td
+            class="relative border-line px-4 py-3 text-center text-[13px] text-base-content/70"
+            [class.border-b]="!(groupLast && rowLast)"
+            [class]="tier.featured ? 'bg-primary/5' : ''"
+          >
+            @let value = matrixValue(row, tier); @if (value === true) {
+            <svg class="mx-auto h-4 w-4 text-primary" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4l3.3 3.3 6.8-6.8a1 1 0 0 1 1.4 0Z"
+                clip-rule="evenodd"
+              />
+            </svg>
+            <span class="sr-only">Included</span>
+            } @else if (value === false) {
+            <span class="text-base-content/30" aria-hidden="true">—</span>
+            <span class="sr-only">Not included</span>
+            } @else { {{ value }} }
+          </td>
+          }
+        </tr>
+        } }
+      </tbody>
+    </table>
+  </div>
+
+  @if (isConverted()) {
+  <p
+    class="site-wrap mt-4 rounded-xl border border-line bg-base-200/60 px-5 py-3 text-center text-[13px] text-base-content/70"
+  >
+    Prices shown in {{ currencySymbol() }} are estimates at today's exchange rate. You'll be billed in US dollars.
+  </p>
+  }
+
+  <p class="site-wrap mt-5 text-center text-[13.5px] text-base-content/60">
+    Need more than 200,000 subscribers, SSO or custom contracts?
+    <a class="font-semibold text-primary hover:text-secondary" [href]="mailto">Talk to us</a>.
+  </p>
+
+  <p class="site-wrap mt-3 text-center text-[13px] text-base-content/50">
+    Donations processed through Stripe carry a 1% platform fee plus Stripe’s own processing fees. Subscriptions have no
+    hidden fees.
+  </p>
+
+  <p class="site-wrap mt-3 text-center text-[13px] text-base-content/50">
+    Volunteers join the companion apps by invite and never take a staff seat. Questions about a plan?
+    <a class="font-semibold text-primary hover:text-secondary" [href]="mailto">Write to us</a> or
+    <a class="font-semibold text-primary hover:text-secondary" routerLink="/faq">read the FAQ</a>.
+  </p>
+</section>
+
+<!-- CTA band -->
+<section class="bg-navy px-5 py-14 text-center sm:px-8">
+  <h2 class="text-[clamp(1.375rem,4vw,1.625rem)] font-bold tracking-[-0.01em] text-white">
+    Every plan starts on sample data.
+  </h2>
+  <div class="mt-6 flex flex-wrap items-center justify-center gap-3.5">
+    <a [href]="signupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">
+      Start free with sample data
+    </a>
+    <a
+      [href]="mailto"
+      class="rounded-field border border-white/35 px-6 py-2.5 text-[14.5px] font-semibold text-white/85 hover:bg-white/10"
+    >
+      Book a 15-minute walkthrough
+    </a>
+  </div>
+</section>
+
+<pc-site-footer />
+```
+
 ## File: apps/website/src/app/ui/currency.service.ts
 ```typescript
 import { afterNextRender, computed, Injectable, signal } from '@angular/core';
@@ -69474,6 +68930,429 @@ export class CurrencyService {
     </pc-website-root>
   </body>
 </html>
+```
+
+## File: apps/frontend/src/app/auth/signin-page/signin-page.ts
+```typescript
+import { Component, OnDestroy, OnInit, computed, effect, inject, signal } from '@angular/core';
+import { FormField, email, form, minLength, pattern, required, submit } from '@angular/forms/signals';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { GENERIC_SIGNIN_ERROR } from '../../../../../../libs/common/src';
+import { Icon } from '@icons/icon';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+
+import { TokenService } from '../../services/api/token-service';
+import { SERVER_UNREACHABLE_MESSAGE, getUserErrorMessage, isServerUnreachable } from '../../services/api/user-message';
+import { AuthLayoutComponent } from 'apps/frontend/src/app/auth/auth-layout';
+import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
+
+type SignInStep = 'email' | 'passkey' | 'password' | '2fa' | 'passkey-setup';
+
+@Component({
+  selector: 'pc-login',
+  imports: [FormField, RouterLink, Icon, AuthLayoutComponent],
+  templateUrl: './signin-page.html',
+})
+export class SignInPage implements OnInit, OnDestroy {
+  private readonly alertSvc = inject(AlertService);
+  private readonly authService = inject(AuthService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+  private readonly suppressNavigation = signal<boolean>(false);
+  private readonly tokenService = inject(TokenService);
+
+  private _countdownInterval: ReturnType<typeof setInterval> | null = null;
+  private _resendCooldownInterval: ReturnType<typeof setInterval> | null = null;
+  private _loading = createLoadingGate();
+
+  protected readonly step = signal<SignInStep>('email');
+  protected readonly emailData = signal({ email: '' });
+  protected readonly passwordData = signal({ password: '' });
+  protected readonly otpData = signal({ code: '' });
+  protected readonly emailFor2FA = signal<string>('');
+  protected readonly pendingEmail = signal<string>('');
+  protected readonly rateLimitSecondsLeft = signal<number>(0);
+  protected readonly rateLimitMins = computed(() => Math.floor(this.rateLimitSecondsLeft() / 60));
+  protected readonly rateLimitRemSecs = computed(() => this.rateLimitSecondsLeft() % 60);
+  protected readonly resending = signal<boolean>(false);
+  protected readonly resendCooldownSeconds = signal<number>(0);
+  protected readonly resendCooldownMins = computed(() => Math.floor(this.resendCooldownSeconds() / 60));
+  protected readonly resendCooldownRemSecs = computed(() => this.resendCooldownSeconds() % 60);
+  protected readonly settingUpPasskey = signal<boolean>(false);
+  protected readonly verificationPending = signal<boolean>(false);
+
+  protected isLoading = this._loading.visible;
+  protected persistence = signal(this.tokenService.getPersistence());
+
+  public readonly emailForm = form(this.emailData, (p) => {
+    required(p.email);
+    email(p.email);
+  });
+
+  public readonly passwordForm = form(this.passwordData, (p) => {
+    required(p.password);
+    minLength(p.password, 8);
+  });
+
+  public readonly otpForm = form(this.otpData, (p) => {
+    required(p.code);
+    pattern(p.code, /^\d{6}$/);
+  });
+
+  constructor() {
+    effect(() => {
+      const user = this.authService.getUserSignal();
+      if (user() && !this.suppressNavigation()) void this.router.navigate(['dashboard']);
+    });
+  }
+
+  public get emailField() {
+    return this.emailForm.email();
+  }
+
+  public get password() {
+    return this.passwordForm.password();
+  }
+
+  public get code() {
+    return this.otpForm.code();
+  }
+
+  public ngOnInit() {
+    const params = this.route.snapshot.queryParamMap;
+    const emailVal = params.get('email') || '';
+    if (params.get('emailChanged') === 'true' || params.get('verificationPending') === 'true') {
+      this.verificationPending.set(true);
+      this.pendingEmail.set(emailVal);
+      if (emailVal) {
+        this.emailForm.email().value.set(emailVal);
+        this.step.set('password');
+      }
+    } else if (params.get('returnUrl')) {
+      // A returnUrl is only ever set when an expired/revoked session bounced the user here
+      // (the auth guard redirects without one), so explain the involuntary sign-out.
+      this.alertSvc.showInfo('Your session has expired. Please sign in again.');
+    }
+  }
+
+  public ngOnDestroy() {
+    this.clearCountdown();
+    this.clearResendCooldown();
+  }
+
+  public goBackToEmail() {
+    this.step.set('email');
+    this.verificationPending.set(false);
+    this.passwordData.update((p) => ({ ...p, password: '' }));
+    this.otpData.update((o) => ({ ...o, code: '' }));
+  }
+
+  public usePasswordInstead() {
+    this.step.set('password');
+  }
+
+  public async continueWithEmail(event?: Event) {
+    event?.preventDefault();
+
+    const rawEmail = this.emailData().email;
+    const emailVal = rawEmail.trim().toLowerCase();
+
+    if (rawEmail !== emailVal) {
+      this.emailForm.email().value.set(emailVal);
+    }
+
+    this.emailForm().markAsTouched();
+
+    await submit(this.emailForm, {
+      action: async () => {
+        let hasPasskeys = false;
+        const end = this._loading.begin();
+        try {
+          ({ hasPasskeys } = await this.authService.checkEmail(emailVal));
+        } catch (err) {
+          // Backend unreachable: say so now and stay on the email step, instead of walking the
+          // user into a password prompt that cannot possibly succeed.
+          if (isServerUnreachable(err)) {
+            this.alertSvc.showError(SERVER_UNREACHABLE_MESSAGE);
+            return null;
+          }
+          // any other failure — fall through to password
+        } finally {
+          end();
+        }
+
+        if (hasPasskeys) {
+          this.step.set('passkey');
+          await this.signInWithPasskey();
+        } else {
+          this.step.set('password');
+        }
+
+        return null;
+      },
+      onInvalid: () => {
+        const f = this.emailForm.email();
+        const hasRequired = f.errors().some((e) => e.kind === 'required');
+        this.alertSvc.showError(hasRequired ? 'Email is required.' : 'Please enter a valid email address.');
+      },
+    });
+  }
+
+  public async signInWithPasskey() {
+    const end = this._loading.begin();
+    try {
+      const result = await this.authService.signInWithPasskey(this.persistence());
+      if (result.cancelled) {
+        this.step.set('password');
+        return;
+      }
+      if (!result.user) throw new Error('Passkey authentication failed. Please try again.');
+    } catch (err) {
+      if (err instanceof Error && err.name === 'NotAllowedError') {
+        this.step.set('password');
+        return;
+      }
+      this.handleError(err);
+    } finally {
+      end();
+    }
+  }
+
+  public async signIn(event?: Event) {
+    event?.preventDefault();
+
+    this.tokenService.clearAll();
+
+    const emailVal = this.emailData().email.trim().toLowerCase();
+    const passwordVal = this.passwordData().password;
+
+    this.verificationPending.set(false);
+    this.passwordForm().markAsTouched();
+
+    await submit(this.passwordForm, {
+      action: async () => {
+        const end = this._loading.begin();
+        try {
+          this.suppressNavigation.set(true);
+          const res = await this.authService.signIn({
+            email: emailVal,
+            password: passwordVal,
+            rememberMe: this.persistence(),
+          });
+          if (res.requires2FA) {
+            this.suppressNavigation.set(false);
+            this.step.set('2fa');
+            this.emailFor2FA.set(res.email || emailVal);
+            this.otpData.update((o) => ({ ...o, code: '' }));
+          } else {
+            const user = this.authService.getUser();
+            const dismissed = !!user?.passkey_setup_dismissed_at;
+            if (!dismissed) {
+              const passkeys = (await this.authService.listPasskeys().catch(() => [])) as any[];
+              if (passkeys.length === 0) {
+                this.step.set('passkey-setup');
+                return null;
+              }
+            }
+            this.suppressNavigation.set(false);
+          }
+        } catch (err) {
+          this.suppressNavigation.set(false);
+          this.handleError(err, emailVal);
+        } finally {
+          end();
+        }
+        return null;
+      },
+      onInvalid: () => {
+        const f = this.passwordForm.password();
+        const hasMinLength = f.errors().some((e) => e.kind === 'minLength');
+        this.alertSvc.showError(
+          hasMinLength ? 'Password must be at least 8 characters.' : 'Please enter your password.',
+        );
+      },
+    });
+  }
+
+  public async verify2FA(event?: Event) {
+    event?.preventDefault();
+
+    this.otpForm().markAsTouched();
+
+    await submit(this.otpForm, {
+      action: async () => {
+        const end = this._loading.begin();
+        try {
+          const emailVal = this.emailFor2FA();
+          const codeVal = this.otpData().code.trim();
+          await this.authService.verify2FA({
+            email: emailVal,
+            code: codeVal,
+            rememberMe: this.persistence(),
+          });
+        } catch (err) {
+          this.handleError(err);
+        } finally {
+          end();
+        }
+        return null;
+      },
+      onInvalid: () => {
+        const f = this.otpForm.code();
+        const hasRequired = f.errors().some((e) => e.kind === 'required');
+        const hasPattern = f.errors().some((e) => e.kind === 'pattern');
+        const msg = hasRequired
+          ? 'Verification code is required.'
+          : hasPattern
+            ? 'Verification code must be exactly 6 digits.'
+            : 'Please enter a valid verification code.';
+        this.alertSvc.showError(msg);
+      },
+    });
+  }
+
+  public async setupPasskey() {
+    this.settingUpPasskey.set(true);
+    try {
+      const result = await this.authService.registerPasskey();
+      if (result.verified) {
+        this.alertSvc.showSuccess('Passkey set up successfully!');
+      }
+    } catch (err) {
+      if (!(err instanceof Error && err.name === 'NotAllowedError')) {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Failed to set up the passkey. Please try again.'));
+      }
+    } finally {
+      this.settingUpPasskey.set(false);
+      this.suppressNavigation.set(false);
+    }
+  }
+
+  public async skipPasskeySetup() {
+    try {
+      await this.authService.dismissPasskeyPrompt();
+    } catch {
+      // non-fatal — still allow navigation
+    }
+    this.suppressNavigation.set(false);
+  }
+
+  public togglePersistence(target: EventTarget | null) {
+    if (!target) return;
+    const checked = (target as HTMLInputElement).checked;
+    this.tokenService.setPersistence(checked);
+    this.persistence.set(checked);
+  }
+
+  public async resendVerification() {
+    const emailVal = this.pendingEmail().trim();
+    if (!emailVal || this.resendCooldownSeconds() > 0) return;
+    this.resending.set(true);
+    try {
+      await this.authService.resendVerificationEmail(emailVal);
+      this.alertSvc.showSuccess('Verification email sent successfully!');
+      this.startResendCooldown(60);
+    } catch (err) {
+      const tRPCData = getTRPCData(err);
+      const retryAfterSec =
+        (typeof tRPCData?.['retryAfterSec'] === 'number' ? tRPCData['retryAfterSec'] : undefined) ??
+        this.parseRetryAfterSec(err instanceof Error && err.message ? err.message : '');
+      if (retryAfterSec) {
+        this.startResendCooldown(retryAfterSec);
+      } else {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not send the verification email. Please try again.'));
+      }
+    } finally {
+      this.resending.set(false);
+    }
+  }
+
+  private clearCountdown() {
+    if (this._countdownInterval !== null) {
+      clearInterval(this._countdownInterval);
+      this._countdownInterval = null;
+    }
+  }
+
+  private clearResendCooldown() {
+    if (this._resendCooldownInterval !== null) {
+      clearInterval(this._resendCooldownInterval);
+      this._resendCooldownInterval = null;
+    }
+  }
+
+  private startResendCooldown(seconds: number) {
+    this.clearResendCooldown();
+    this.resendCooldownSeconds.set(seconds);
+    this._resendCooldownInterval = setInterval(() => {
+      const current = this.resendCooldownSeconds();
+      if (current <= 1) {
+        this.resendCooldownSeconds.set(0);
+        this.clearResendCooldown();
+      } else {
+        this.resendCooldownSeconds.update((s) => s - 1);
+      }
+    }, 1000);
+  }
+
+  private handleError(err: unknown, emailVal?: string) {
+    const tRPCData = getTRPCData(err);
+    const message = getUserErrorMessage(err, 'Something went wrong, please try again');
+    const retryAfterSec =
+      (typeof tRPCData?.['retryAfterSec'] === 'number' ? tRPCData['retryAfterSec'] : undefined) ??
+      this.parseRetryAfterSec(message);
+    if (retryAfterSec) {
+      this.startRateLimitCountdown(retryAfterSec);
+      return;
+    }
+    const code = typeof tRPCData?.['code'] === 'string' ? tRPCData['code'] : undefined;
+    if (emailVal && message.toLowerCase().includes('not verified')) {
+      this.verificationPending.set(true);
+      this.pendingEmail.set(emailVal);
+      this.alertSvc.showError(message);
+    } else if (emailVal && (code === 'UNAUTHORIZED' || code === 'NOT_FOUND')) {
+      this.alertSvc.showError(GENERIC_SIGNIN_ERROR);
+    } else {
+      this.alertSvc.showError(message);
+    }
+  }
+
+  private parseRetryAfterSec(message: string): number | undefined {
+    const match = message?.match(/retry in (\d+) second/i);
+    return match ? parseInt(match[1]!, 10) : undefined;
+  }
+
+  private startRateLimitCountdown(seconds: number) {
+    this.clearCountdown();
+    this.rateLimitSecondsLeft.set(seconds);
+
+    this._countdownInterval = setInterval(() => {
+      const current = this.rateLimitSecondsLeft();
+      if (current < 1) {
+        this.clearCountdown();
+      } else {
+        this.rateLimitSecondsLeft.update((s) => s - 1);
+      }
+    }, 1000);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** Extract the tRPC error `data` payload (e.g. rate-limit metadata) from a caught error. */
+function getTRPCData(err: unknown, depth = 0): Record<string, unknown> | undefined {
+  const MAX_CAUSE_DEPTH = 5;
+  if (depth > MAX_CAUSE_DEPTH || !isRecord(err)) return undefined;
+  const originalError = err['originalError'];
+  if (isRecord(originalError) && isRecord(originalError['data'])) return originalError['data'];
+  if (isRecord(err['data'])) return err['data'];
+  // tRPC re-wraps the errorLink's ApiError into a data-less TRPCClientError; the server-authored
+  // error (and its data payload) survives underneath as `cause`/`originalError`.
+  return getTRPCData(err['cause'] ?? originalError, depth + 1);
+}
 ```
 
 ## File: apps/frontend/src/app/experiences/deliveries/ui/deliveries-route-detail.ts
@@ -72402,6 +72281,522 @@ export class ApiKeysSettingsComponent implements OnInit {
 <pc-add-issue-dialog (saved)="onIssueSaved()" />
 ```
 
+## File: apps/frontend/src/app/experiences/users/ui/user-view.ts
+```typescript
+import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { DatePipe } from '@angular/common';
+import { Router } from '@angular/router';
+import { createLoadingGate } from '@uxcommon/loading-gate';
+import { createRequestGuard } from '@uxcommon/request-guard';
+import { form, required, email } from '@angular/forms/signals';
+import {
+  IAuthUserDetail,
+  IUserStatsSnapshot,
+  UpdateAuthUserType,
+  authRoleLabel,
+} from '../../../../../../../libs/common/src';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Icon } from '@uxcommon/components/icons/icon';
+import { RecordActivities } from '@experiences/activity/ui/record-activities/record-activities';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
+import { UserAdminService } from '../services/useradmin-service';
+import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
+import { StatCard } from '@uxcommon/components/stat-card/stat-card';
+import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
+import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
+import { DetailItem } from '@uxcommon/components/detail-item/detail-item';
+import { Card as PcCard } from '@uxcommon/components/card/card';
+import { Input as PcInput } from '@uxcommon/components/input/input';
+import { injectRecordNavigation } from '@frontend/services/record-navigation.service';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
+import { getUserErrorMessage } from '../../../services/api/user-message';
+import {
+  userIsDeactivated,
+  userLastActiveLabel,
+  userRoleLockReason,
+  userRoleOptions,
+  userShortDate,
+  userStatus,
+} from '../user-status';
+
+/**
+ * The one user page — view and edit in place, no separate edit route (approved design,
+ * 2026-07-10 mockup). Rolodex records keep the view/edit split; account-ish pages
+ * (Profile, Users) edit in place:
+ * - identity fields save explicitly with narrated dirty state (the Profile-page idiom),
+ * - role applies instantly with explained locks (the Users-list idiom),
+ * - lifecycle actions (password reset, resend invite, deactivate/reactivate, delete)
+ *   live where the doctrine puts them (§4).
+ */
+@Component({
+  selector: 'pc-user-view',
+  imports: [DatePipe, Icon, RecordActivities, DetailLayout, StatCard, StatusBadge, DetailItem, PcCard, PcInput],
+  templateUrl: './user-view.html',
+})
+export class UserViewComponent {
+  readonly id = input.required<string>();
+
+  protected readonly recordNav = injectRecordNavigation('user', this.id);
+
+  private readonly alerts = inject(AlertService);
+  private readonly router = inject(Router);
+  private readonly users = inject(UserAdminService);
+  private readonly auth = inject(AuthService);
+  private readonly dialogs = inject(ConfirmDialogService);
+  private readonly campaignContext = inject(CampaignContextService);
+
+  private readonly _loading = createLoadingGate();
+  private readonly _requestGuard = createRequestGuard();
+  protected readonly loading = this._loading.visible;
+  protected readonly initialized = signal(false);
+  protected readonly error = signal<string | null>(null);
+  protected readonly stats = signal<IUserStatsSnapshot | null>(null);
+  protected readonly detail = signal<IAuthUserDetail | null>(null);
+
+  protected readonly saving = signal(false);
+  protected readonly resettingPassword = signal(false);
+  protected readonly roleSaving = signal(false);
+  /** One-shot saved flash on the role select after an instant-apply role change. */
+  protected readonly roleFlash = signal(false);
+  /** In-flight resend-invite / deactivate / reactivate action. */
+  protected readonly lifecycleBusy = signal(false);
+
+  protected readonly payload = signal({ email: '', first_name: '', last_name: '' });
+
+  protected readonly form = form(this.payload, (p) => {
+    required(p.email);
+    email(p.email);
+    required(p.first_name);
+  });
+
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+
+  protected readonly currentUserRole = computed(() => this.auth.getUser()?.role ?? null);
+  protected readonly currentUserId = computed(() => {
+    const id = this.auth.getUser()?.id;
+    return id != null ? String(id) : null;
+  });
+
+  protected readonly isSelf = computed(() => String(this.id()) === this.currentUserId());
+  protected readonly isDeactivated = computed(() => {
+    const user = this.detail();
+    return !!user && userIsDeactivated(user);
+  });
+  protected readonly isInvited = computed(() => {
+    const user = this.detail();
+    return !!user && !user.verified && !userIsDeactivated(user);
+  });
+
+  /** Admins may not manage owner accounts — only another owner can. */
+  protected readonly canManageTarget = computed(
+    () => !(this.currentUserRole() === 'admin' && this.detail()?.role === 'owner'),
+  );
+  protected readonly canDelete = computed(() => !!this.detail() && !this.isSelf() && this.canManageTarget());
+  protected readonly showDeactivateAction = computed(
+    () => !!this.detail() && !this.isSelf() && this.canManageTarget() && !this.isDeactivated(),
+  );
+
+  protected readonly status = computed(() => {
+    const user = this.detail();
+    return user ? userStatus(user) : null;
+  });
+
+  protected readonly roleLabel = computed(() => authRoleLabel(this.detail()?.role));
+
+  protected readonly roleLock = computed(() => {
+    const user = this.detail();
+    if (!user) return null;
+    return userRoleLockReason({
+      isSelf: this.isSelf(),
+      callerRole: this.currentUserRole(),
+      targetRole: user.role,
+      deactivated: this.isDeactivated(),
+    });
+  });
+
+  protected readonly roleChoices = computed(() => userRoleOptions(this.currentUserRole(), this.detail()?.role));
+
+  protected roleLabelFor(role: string): string {
+    return authRoleLabel(role);
+  }
+
+  // Campaigns §15 — assignment select (instant-apply, same idiom as Role).
+  protected readonly campaignSaving = signal(false);
+  protected readonly campaignFlash = signal(false);
+  protected readonly assignableCampaigns = computed(() =>
+    this.campaignContext.campaigns().filter((c) => c.status === 'active'),
+  );
+  /** Only worth showing once an election campaign exists alongside the office. */
+  protected readonly showCampaignControl = computed(() => this.assignableCampaigns().length > 1);
+  /** Admins/owners can work in every campaign, so the assignment doesn't scope them. */
+  protected readonly targetIsCampaignScoped = computed(() => {
+    const role = this.detail()?.role;
+    return role !== 'admin' && role !== 'owner';
+  });
+  protected readonly assignedCampaignName = computed(() => {
+    const id = this.detail()?.campaign_id ?? null;
+    if (id == null) return 'Office';
+    return this.assignableCampaigns().find((c) => String(c.id) === id)?.name ?? 'Office';
+  });
+
+  protected async changeCampaign(event: Event): Promise<void> {
+    const select = event.target as HTMLSelectElement;
+    const campaignId = select.value || null;
+    const user = this.detail();
+    if (!user || campaignId === (user.campaign_id ?? null)) return;
+
+    this.campaignSaving.set(true);
+    try {
+      await this.users.update(this.id(), { campaign_id: campaignId } as UpdateAuthUserType);
+      this.detail.update((d) => (d ? { ...d, campaign_id: campaignId } : d));
+      this.users.triggerRefresh();
+      this.campaignFlash.set(true);
+      const FLASH_MS = 1300;
+      setTimeout(() => this.campaignFlash.set(false), FLASH_MS);
+      this.alerts.showSuccess(`${this.displayName()} now works in ${this.assignedCampaignName()}`);
+    } catch (err) {
+      select.value = user.campaign_id ?? '';
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to update the campaign'));
+    } finally {
+      this.campaignSaving.set(false);
+    }
+  }
+
+  protected readonly lastActiveLabel = computed(() => {
+    const user = this.detail();
+    return user ? userLastActiveLabel(user) : '—';
+  });
+
+  /**
+   * Lifecycle context strip in the Access card: names the limbo state and carries its one
+   * next step (§3 offer the exit). Null for active accounts.
+   */
+  protected readonly lifecycleStrip = computed<{
+    tone: 'warning' | 'ghost';
+    text: string;
+    action: 'resend' | 'reactivate' | null;
+    actionLabel: string;
+  } | null>(() => {
+    const user = this.detail();
+    if (!user) return null;
+    const canAct = this.canManageTarget();
+    if (user.deactivated_at) {
+      const since = userShortDate(user.deactivated_at);
+      return {
+        tone: 'ghost',
+        text: `Deactivated${since ? ` ${since}` : ''}. Can't sign in`,
+        action: canAct ? 'reactivate' : null,
+        actionLabel: 'Reactivate user',
+      };
+    }
+    if (user.deletion_scheduled_at) {
+      const when = userShortDate(user.deletion_scheduled_at);
+      return {
+        tone: 'ghost',
+        text: `Deletion scheduled${when ? ` for ${when}` : ''}. Signing back in cancels it`,
+        action: canAct ? 'reactivate' : null,
+        actionLabel: 'Reactivate user',
+      };
+    }
+    if (!user.verified) {
+      const sent = userShortDate(user.created_at);
+      return {
+        tone: 'warning',
+        text: `Invite sent${sent ? ` ${sent}` : ''}. Hasn't signed in yet`,
+        action: canAct ? 'resend' : null,
+        actionLabel: 'Resend invite',
+      };
+    }
+    return null;
+  });
+
+  protected readonly displayName = computed(() => {
+    const user = this.detail();
+    if (!user) return '';
+    const tokens = [user.first_name, user.last_name].filter((t) => !!t && t.trim().length > 0);
+    const name = tokens.join(' ').trim();
+    return name || user.email;
+  });
+
+  protected readonly initials = computed(() => {
+    const user = this.detail();
+    if (!user) return null;
+    const letters = [user.first_name, user.last_name]
+      .map((t) => (t ?? '').trim().charAt(0))
+      .filter(Boolean)
+      .join('')
+      .toUpperCase();
+    return letters || user.email.charAt(0).toUpperCase();
+  });
+
+  protected readonly crumbs = computed<PcBreadcrumb[]>(() => [
+    { label: 'Users', route: '/users' },
+    { label: this.displayName() || 'User' },
+  ]);
+
+  protected readonly activityCards = computed(() => {
+    const s = this.stats();
+    if (!s) return [];
+    return [
+      {
+        key: 'emails',
+        title: 'Emails Assigned',
+        value: s.emails_assigned.total,
+        subtitle: `${s.emails_assigned.open} open · ${s.emails_assigned.closed} closed`,
+        asOf: null,
+      },
+      {
+        key: 'contacts',
+        title: 'Contacts Added',
+        value: s.contacts_added.total,
+        subtitle: s.contacts_added.last_created_at ? 'Last new contact' : 'No contacts yet',
+        asOf: s.contacts_added.last_created_at,
+      },
+      {
+        key: 'imports',
+        title: 'Files Imported',
+        value: s.files_imported.count,
+        subtitle: `${s.files_imported.total_rows} people imported`,
+        asOf: s.files_imported.last_activity_at,
+      },
+      {
+        key: 'exports',
+        title: 'Files Exported',
+        value: s.files_exported.count,
+        subtitle: `${s.files_exported.total_rows} rows exported`,
+        asOf: s.files_exported.last_activity_at,
+      },
+    ];
+  });
+
+  constructor() {
+    effect(() => {
+      const currentId = this.id();
+      untracked(() => {
+        if (!currentId) {
+          this.error.set('Missing user identifier.');
+          return;
+        }
+        void this.load();
+      });
+    });
+  }
+
+  /** Route-level unsaved-changes guard (the edit form lives on this page now). */
+  public canDeactivate(): Promise<boolean> {
+    return this.unsavedChanges.confirmDiscardIfDirty(this.displayName() || 'this user');
+  }
+
+  protected async save(event?: Event) {
+    event?.preventDefault();
+
+    this.form().markAsTouched();
+    if (this.form().invalid() || !this.id()) {
+      return;
+    }
+
+    this.saving.set(true);
+    this.error.set(null);
+    try {
+      await this.users.update(this.id(), this.buildPayload());
+      this.alerts.showSuccess('User updated');
+      this.users.triggerRefresh();
+      await this.load();
+    } catch (err) {
+      const message = getUserErrorMessage(err, 'Unable to update user');
+      this.error.set(message);
+      this.alerts.showError(message);
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected resetForm() {
+    const user = this.detail();
+    if (!user) return;
+    this.setForm(user);
+    this.form().reset();
+  }
+
+  /**
+   * Role is instant-apply (same idiom as the Users list) so a role change never gets
+   * tangled with unsaved identity edits. The detail signal is patched in place rather
+   * than reloaded, to keep any in-progress form edits intact.
+   */
+  protected async changeRole(eventTarget: Event) {
+    const select = eventTarget.target as HTMLSelectElement;
+    const role = select.value;
+    const user = this.detail();
+    if (!role || !user || role === user.role) return;
+
+    this.roleSaving.set(true);
+    try {
+      await this.users.update(this.id(), { role } as UpdateAuthUserType);
+      this.detail.update((d) => (d ? { ...d, role } : d));
+      this.users.triggerRefresh();
+      this.flashRole();
+      this.alerts.showSuccess(`Role updated. ${this.displayName()} is now ${authRoleLabel(role)}`);
+    } catch (err) {
+      select.value = user.role ?? '';
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to update the role'));
+    } finally {
+      this.roleSaving.set(false);
+    }
+  }
+
+  protected async triggerPasswordReset() {
+    if (!this.id()) return;
+    this.resettingPassword.set(true);
+    try {
+      await this.users.adminTriggerPasswordReset(this.id());
+      this.alerts.showSuccess(`Password reset email sent to ${this.detail()?.email ?? 'the user'}`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to trigger password reset'));
+    } finally {
+      this.resettingPassword.set(false);
+    }
+  }
+
+  protected async resendInvite() {
+    if (!this.id() || this.lifecycleBusy()) return;
+    this.lifecycleBusy.set(true);
+    try {
+      await this.users.resendInvite(this.id());
+      this.alerts.showSuccess(`Invitation email sent to ${this.detail()?.email ?? 'the user'}`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to resend the invitation'));
+    } finally {
+      this.lifecycleBusy.set(false);
+    }
+  }
+
+  protected async deactivateUser() {
+    const user = this.detail();
+    if (!user || this.lifecycleBusy()) return;
+
+    const confirmed = await this.dialogs.confirm({
+      title: 'Deactivate user',
+      message: `${this.displayName()} won't be able to sign in until an admin or owner reactivates them. Their role and history are kept.`,
+      variant: 'warning',
+      confirmText: 'Deactivate user',
+    });
+    if (!confirmed) return;
+
+    this.lifecycleBusy.set(true);
+    try {
+      await this.users.deactivate(this.id());
+      this.detail.update((d) => (d ? { ...d, deactivated_at: new Date() } : d));
+      this.users.triggerRefresh();
+      this.alerts.showSuccess(`${this.displayName()} deactivated. They can no longer sign in`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to deactivate user'));
+    } finally {
+      this.lifecycleBusy.set(false);
+    }
+  }
+
+  protected async reactivateUser() {
+    if (!this.id() || this.lifecycleBusy()) return;
+    this.lifecycleBusy.set(true);
+    try {
+      await this.users.reactivate(this.id());
+      this.detail.update((d) => (d ? { ...d, deactivated_at: null, deletion_scheduled_at: null } : d));
+      this.users.triggerRefresh();
+      this.alerts.showSuccess(`${this.displayName()} reactivated. They can sign in again`);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to reactivate user'));
+    } finally {
+      this.lifecycleBusy.set(false);
+    }
+  }
+
+  protected async deleteUser() {
+    if (!this.id() || !this.canDelete()) return;
+
+    const confirmed = await this.dialogs.confirm({
+      title: 'Delete user',
+      message: `Delete ${this.displayName()}? Their sign-in is removed permanently and cannot be undone. Their past contributions remain, shown as 'Deleted user'. To keep their history but block access, deactivate instead.`,
+      variant: 'danger',
+      confirmText: 'Delete user',
+    });
+    if (!confirmed) return;
+    const end = this._loading.begin();
+    try {
+      const success = await this.users.delete(this.id());
+      if (!success) {
+        throw new Error('User deletion is not supported');
+      }
+      this.alerts.showSuccess('User deleted');
+      await this.router.navigate(['/users']);
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Unable to delete user'));
+    } finally {
+      end();
+    }
+  }
+
+  protected formatAsOf(date: Date | null): string {
+    if (!date) return '—';
+    try {
+      const d = typeof date === 'string' ? new Date(date) : date;
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }).format(d);
+    } catch {
+      return date.toString();
+    }
+  }
+
+  private async load() {
+    const isCurrent = this._requestGuard.begin();
+    const end = this._loading.begin();
+    this.error.set(null);
+    try {
+      const [user] = await Promise.all([this.users.getById(this.id()), this.campaignContext.ensureLoaded()]);
+      if (!isCurrent()) return; // superseded — do not land stale data
+      this.detail.set(user);
+      this.stats.set(user.stats);
+      this.setForm(user);
+      this.form().reset();
+    } catch (err) {
+      const message = getUserErrorMessage(err, 'Failed to load user');
+      this.error.set(message);
+      this.alerts.showError(message);
+    } finally {
+      end();
+      this.initialized.set(true);
+    }
+  }
+
+  private setForm(user: IAuthUserDetail) {
+    this.payload.set({
+      email: user.email,
+      first_name: user.first_name,
+      last_name: user.last_name ?? '',
+    });
+  }
+
+  private buildPayload(): UpdateAuthUserType {
+    const raw = this.payload();
+    const lastName = raw.last_name?.trim() ?? '';
+    return {
+      email: raw.email?.trim() ?? '',
+      first_name: raw.first_name?.trim() ?? '',
+      last_name: lastName.length ? lastName : null,
+    } as UpdateAuthUserType;
+  }
+
+  private flashRole(): void {
+    this.roleFlash.set(true);
+    const FLASH_MS = 1300;
+    setTimeout(() => this.roleFlash.set(false), FLASH_MS);
+  }
+}
+```
+
 ## File: apps/frontend/src/app/experiences/workflows/ui/workflow-form.html
 ```html
 <div class="mx-auto flex h-full min-h-[calc(100vh-120px)] max-w-7xl flex-col gap-6 p-6">
@@ -74563,370 +74958,6 @@ export class ErrorService {
   </button>
   }
 </div>
-```
-
-## File: apps/frontend/project.json
-```json
-{
-  "name": "frontend",
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "projectType": "application",
-  "prefix": "pplcrm",
-  "sourceRoot": "apps/frontend/src",
-  "tags": [],
-  "targets": {
-    "generate-context": {
-      "executor": "nx:run-commands",
-      "options": {
-        "command": "npx repomix --output apps/frontend/STRUCTURE.md --include \"apps/frontend/src/**/*\" --ignore \"apps/backend/**,apps/libs/**,libs/**,**/STRUCTURE.md,**/*.spec.ts\" --style markdown"
-      }
-    },
-    "build": {
-      "executor": "@angular/build:application",
-      "dependsOn": ["generate-context"],
-      "outputs": ["{options.outputPath}"],
-      "defaultConfiguration": "production",
-      "options": {
-        "outputPath": "dist/apps/frontend",
-        "index": "apps/frontend/src/index.html",
-        "browser": "apps/frontend/src/main.ts",
-        "tsConfig": "apps/frontend/tsconfig.app.json",
-        "assets": ["apps/frontend/src/favicon.ico", "apps/frontend/src/assets"],
-        "styles": ["apps/frontend/src/styles.css"],
-        "scripts": [],
-        "polyfills": ["@angular/localize/init"],
-        "define": {
-          "import.meta.env.VITE_GOOGLE_MAPS_API_KEY": "\"__PPLCRM_MAPS_KEY__\""
-        }
-      },
-      "configurations": {
-        "production": {
-          "optimization": {
-            "scripts": true,
-            "styles": {
-              "minify": true,
-              "inlineCritical": false
-            },
-            "fonts": {
-              "inline": false
-            }
-          },
-          "budgets": [
-            {
-              "type": "initial",
-              "maximumWarning": "3mb",
-              "maximumError": "4mb"
-            },
-            {
-              "type": "anyComponentStyle",
-              "maximumWarning": "2kb",
-              "maximumError": "4kb"
-            }
-          ],
-          "outputHashing": "all",
-          "fileReplacements": [
-            {
-              "replace": "apps/frontend/src/environments/environment.ts",
-              "with": "apps/frontend/src/environments/environment.prod.ts"
-            }
-          ]
-        },
-        "development": {
-          "optimization": false,
-          "extractLicenses": false,
-          "sourceMap": true
-        }
-      }
-    },
-    "serve": {
-      "executor": "@angular/build:dev-server",
-      "defaultConfiguration": "development",
-      "options": {
-        "buildTarget": "frontend:build",
-        "port": 4200
-      },
-      "configurations": {
-        "production": {
-          "buildTarget": "frontend:build:production"
-        },
-        "development": {
-          "buildTarget": "frontend:build:development"
-        }
-      }
-    },
-    "test": {
-      "executor": "nx:run-commands",
-      "cache": true,
-      "outputs": ["{workspaceRoot}/coverage/apps/frontend"],
-      "options": {
-        "cwd": "apps/frontend",
-        "command": "vitest run"
-      }
-    },
-    "extract-i18n": {
-      "executor": "@angular/build:extract-i18n",
-      "options": {
-        "buildTarget": "frontend:build"
-      }
-    },
-    "lint": {
-      "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
-      "options": {
-        "lintFilePatterns": ["apps/frontend/**/*.ts", "apps/frontend/**/*.html"]
-      }
-    }
-  }
-}
-```
-
-## File: apps/website/src/app/pricing/pricing-page.html
-```html
-<pc-site-header variant="solid" />
-
-<!-- Hero -->
-<section class="border-b border-line bg-base-200 px-5 py-16 sm:px-8">
-  <div class="mx-auto max-w-[760px] text-center">
-    <div class="eyebrow">Pricing</div>
-    <h1 class="mt-3 text-[clamp(2rem,6vw,2.625rem)] font-bold tracking-[-0.02em]">Fair, simple pricing.</h1>
-    <p class="mx-auto mt-3.5 max-w-[560px] text-[16px] leading-relaxed text-base-content/60">
-      Unlimited contacts and households on every plan, including Free. You pay only for features and email subscribers,
-      never for the size of your list.
-    </p>
-  </div>
-</section>
-
-<!-- Slider + plan cards: the one input that re-prices the three cards below. -->
-<section class="px-5 pt-12 sm:px-8">
-  <div class="site-wrap rounded-xl border border-line bg-base-100 px-6 py-5">
-    <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
-      <label for="subscriber-slider" class="text-[14.5px] font-semibold">
-        How many email subscribers do you have?
-      </label>
-      <div class="text-[15px] font-bold tabular-nums text-primary">{{ subscribersLabel() }} subscribers</div>
-    </div>
-    <input
-      id="subscriber-slider"
-      type="range"
-      min="0"
-      [max]="maxStopIndex"
-      step="1"
-      class="range range-primary range-sm mt-4 w-full"
-      [value]="stopIndex()"
-      (input)="onSlide($event)"
-    />
-    <div class="mt-1.5 flex justify-between text-[11px] tabular-nums text-base-content/40">
-      <span>1,000</span>
-      <span>200,000</span>
-    </div>
-
-    <!-- Monthly / Annual billing toggle -->
-    <div class="mt-4 flex flex-col items-center gap-2 border-t border-line pt-4">
-      <div role="tablist" class="tabs tabs-boxed tabs-sm">
-        <button role="tab" class="tab" [class.tab-active]="interval() === 'month'" (click)="setInterval('month')">
-          Monthly
-        </button>
-        <button role="tab" class="tab" [class.tab-active]="interval() === 'year'" (click)="setInterval('year')">
-          Annual
-        </button>
-      </div>
-      <span class="rounded-full bg-success/12 px-2.5 py-1 text-[11px] font-semibold text-success">
-        Annual billing: {{ annualBadge }}
-      </span>
-    </div>
-  </div>
-
-  <!-- Plan cards -->
-  <div class="site-wrap mt-4 grid gap-4 sm:grid-cols-3">
-    @for (tier of tiers; track tier.key) {
-    <div
-      class="flex flex-col rounded-xl bg-base-100 p-6"
-      [class]="tier.featured ? 'border-2 border-primary' : 'border border-line'"
-    >
-      <div class="flex h-6 items-center justify-between">
-        <div class="text-[16px] font-semibold">{{ tier.name }}</div>
-        @if (tier.featured) {
-        <span class="rounded-full bg-primary/12 px-2.5 py-1 text-[11px] font-semibold text-primary"> Best value </span>
-        }
-      </div>
-      <div class="mt-3 min-h-[52px]">
-        @if (!overMax(tier)) {
-        <div class="text-[30px] font-bold tabular-nums leading-none">{{ priceLabel(tier) }}</div>
-        <div class="mt-1.5 text-[12px] text-base-content/50">
-          {{ cadence(tier) }} · at {{ subscribersLabel() }} subscribers
-        </div>
-        @if (annualNote(tier); as note) {
-        <div class="mt-1 text-[12px] font-medium text-success">{{ note }}</div>
-        } } @else if (tier.key === 'free') {
-        <div class="text-[30px] font-bold tabular-nums leading-none text-base-content/35">{{ zeroPrice() }}</div>
-        <div class="mt-1.5 text-[12px] text-base-content/50">Covers up to 1,000 subscribers</div>
-        } @else {
-        <div class="pt-1.5 text-[18px] font-semibold leading-none text-base-content/70">Contact us</div>
-        <div class="mt-2 text-[12px] text-base-content/50">
-          For more than {{ maxSubscribersLabel(tier) }} subscribers
-        </div>
-        }
-      </div>
-      <p class="mt-3 text-[13.5px] leading-relaxed text-base-content/70">{{ stepUpLabel(tier) }}</p>
-      <p class="mt-2 text-[12px] leading-relaxed text-base-content/50">{{ capsLine(tier) }}</p>
-      <div class="mt-auto pt-5">
-        <a
-          [href]="signupUrl"
-          class="btn w-full rounded-field text-[13.5px] font-semibold"
-          [class]="tier.featured ? 'btn-primary' : 'btn-outline btn-primary'"
-          >Start free</a
-        >
-      </div>
-    </div>
-    }
-  </div>
-
-  @if (interval() === 'year') {
-  <p class="site-wrap mt-3 text-center text-[12px] text-base-content/50">
-    Per-month prices on annual billing are rounded to the nearest dollar. You're billed once a year, at the exact annual
-    total shown on each card.
-  </p>
-  }
-
-  <!-- Included in every plan -->
-  <div class="site-wrap mt-4 rounded-xl border border-line bg-base-50 p-6">
-    <div class="eyebrow">Included in every plan, including Free</div>
-    <ul class="mt-4 grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
-      @for (item of includedEverywhere; track item) {
-      <li class="flex items-center gap-2 text-[13px] text-base-content/70">
-        <pc-site-icon name="check-circle" [size]="15" class="flex-none text-primary" />
-        <span>{{ item }}</span>
-      </li>
-      }
-    </ul>
-  </div>
-</section>
-
-<!-- What differs between plans -->
-<section class="px-5 py-12 sm:px-8">
-  <div class="site-wrap">
-    <h2 class="text-[clamp(1.375rem,4vw,1.625rem)] font-bold tracking-[-0.01em]">What changes as you step up.</h2>
-    <p class="mt-2 max-w-[620px] text-[13.5px] text-base-content/60">
-      The grid below only lists what differs between plans; everything above is in all of them.
-    </p>
-  </div>
-
-  <div class="site-wrap mt-5 overflow-x-auto rounded-xl border border-line bg-base-100">
-    <table class="w-full min-w-[640px] border-separate border-spacing-0">
-      <thead>
-        <tr>
-          <th class="sticky left-0 z-[2] w-[240px] border-b border-line bg-base-100 px-5 py-4 text-left align-bottom">
-            <div class="text-[12.5px] font-normal text-base-content/50">
-              Prices shown at {{ subscribersLabel() }} subscribers
-            </div>
-          </th>
-          @for (tier of tiers; track tier.key) {
-          <th
-            class="min-w-[150px] border-b border-line px-4 py-4 text-center"
-            [class]="tier.featured ? 'bg-primary/5' : ''"
-          >
-            <div class="text-[15px] font-semibold">{{ tier.name }}</div>
-            <div class="mt-0.5 text-[12.5px] font-normal tabular-nums text-base-content/60">
-              @if (!overMax(tier)) { {{ priceLabel(tier) }} {{ cadence(tier) }} } @else if (tier.key === 'free') { Up to
-              1,000 subscribers } @else { Contact us }
-            </div>
-          </th>
-          }
-        </tr>
-      </thead>
-      <tbody>
-        @for (group of diffMatrix; track group.category; let groupLast = $last) {
-        <tr>
-          <th class="sticky left-0 z-[1] bg-base-100 px-5 pb-2 pt-6 text-left">
-            <span class="text-[11px] font-semibold uppercase tracking-[0.08em] text-primary">
-              {{ group.category }}
-            </span>
-          </th>
-          @for (tier of tiers; track tier.key) {
-          <td class="pb-2 pt-6" [class]="tier.featured ? 'bg-primary/5' : ''"></td>
-          }
-        </tr>
-        @for (row of group.rows; track row.label; let rowLast = $last) {
-        <tr>
-          <th
-            class="sticky left-0 z-[1] border-line bg-base-100 px-5 py-3 text-left text-[13.5px] font-normal text-base-content/80"
-            [class.border-b]="!(groupLast && rowLast)"
-          >
-            {{ row.label }}
-          </th>
-          @for (tier of tiers; track tier.key) {
-          <!-- `relative` contains the absolute sr-only spans, so they can't widen the page
-               past the overflow-x wrapper on small screens. -->
-          <td
-            class="relative border-line px-4 py-3 text-center text-[13px] text-base-content/70"
-            [class.border-b]="!(groupLast && rowLast)"
-            [class]="tier.featured ? 'bg-primary/5' : ''"
-          >
-            @let value = matrixValue(row, tier); @if (value === true) {
-            <svg class="mx-auto h-4 w-4 text-primary" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path
-                fill-rule="evenodd"
-                d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0L3.3 9.7a1 1 0 1 1 1.4-1.4l3.3 3.3 6.8-6.8a1 1 0 0 1 1.4 0Z"
-                clip-rule="evenodd"
-              />
-            </svg>
-            <span class="sr-only">Included</span>
-            } @else if (value === false) {
-            <span class="text-base-content/30" aria-hidden="true">—</span>
-            <span class="sr-only">Not included</span>
-            } @else { {{ value }} }
-          </td>
-          }
-        </tr>
-        } }
-      </tbody>
-    </table>
-  </div>
-
-  @if (isConverted()) {
-  <p
-    class="site-wrap mt-4 rounded-xl border border-line bg-base-200/60 px-5 py-3 text-center text-[13px] text-base-content/70"
-  >
-    Prices shown in {{ currencySymbol() }} are estimates at today's exchange rate. You'll be billed in US dollars.
-  </p>
-  }
-
-  <p class="site-wrap mt-5 text-center text-[13.5px] text-base-content/60">
-    Need more than 200,000 subscribers, SSO or custom contracts?
-    <a class="font-semibold text-primary hover:text-secondary" [href]="mailto">Talk to us</a>.
-  </p>
-
-  <p class="site-wrap mt-3 text-center text-[13px] text-base-content/50">
-    Donations processed through Stripe carry a 1% platform fee plus Stripe’s own processing fees. Subscriptions have no
-    hidden fees.
-  </p>
-
-  <p class="site-wrap mt-3 text-center text-[13px] text-base-content/50">
-    Volunteers join the companion apps by invite and never take a staff seat. Questions about a plan?
-    <a class="font-semibold text-primary hover:text-secondary" [href]="mailto">Write to us</a> or
-    <a class="font-semibold text-primary hover:text-secondary" routerLink="/faq">read the FAQ</a>.
-  </p>
-</section>
-
-<!-- CTA band -->
-<section class="bg-navy px-5 py-14 text-center sm:px-8">
-  <h2 class="text-[clamp(1.375rem,4vw,1.625rem)] font-bold tracking-[-0.01em] text-white">
-    Every plan starts on sample data.
-  </h2>
-  <div class="mt-6 flex flex-wrap items-center justify-center gap-3.5">
-    <a [href]="signupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">
-      Start free with sample data
-    </a>
-    <a
-      [href]="mailto"
-      class="rounded-field border border-white/35 px-6 py-2.5 text-[14.5px] font-semibold text-white/85 hover:bg-white/10"
-    >
-      Book a 15-minute walkthrough
-    </a>
-  </div>
-</section>
-
-<pc-site-footer />
 ```
 
 ## File: apps/website/src/app/pricing/pricing-page.ts
@@ -81658,7 +81689,7 @@ export const EULA_DOC: LegalDoc = {
   title: 'End user license agreement',
   intro:
     'The agreement between you and pplCRM when you use the service. Plain language where the law allows it, and no surprises hiding in the numbered clauses.',
-  updated: 'July 23, 2026',
+  updated: 'July 24, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -81787,6 +81818,7 @@ export const EULA_DOC: LegalDoc = {
         'Each plan includes a monthly newsletter-email allowance (shown on the [pricing page](/pricing)), and it is enforced at send time: a send larger than what remains of your allowance is declined with the exact numbers, and the allowance resets each billing month. Emails sent by automations count toward the same allowance. Growing your list raises your bracket — and your allowance — automatically.',
         'Every newsletter passes a deliverability check before it sends. Content that scores in the blocked band — phishing-shaped links, scam patterns, or commercial marketing unrelated to your organization’s cause — will not send until fixed. Fundraising, auctions and event promotion are normal newsletter content and are not affected.',
         'Sending pauses automatically if your hard-bounce rate exceeds 5%, and is suspended if your spam-complaint rate exceeds 1%. We do this to protect both your sending reputation and everyone else’s; write to us to review and resume.',
+        'Imported contact lists are checked on the way in: each address’s domain is verified and disposable addresses are flagged. Undeliverable addresses are suppressed automatically, and an import with an unusually high rate of them — the hallmark of a purchased or scraped list — pauses your sending pending review.',
       ],
     },
     {
@@ -83982,7 +84014,7 @@ export const SECURITY_DOC: LegalDoc = {
   title: 'Security',
   intro:
     'Boring, deliberate security: what we actually do to protect your list, described specifically enough to be checked. No badges we have not earned.',
-  updated: 'July 21, 2026',
+  updated: 'July 24, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -84073,7 +84105,7 @@ export const SECURITY_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'Outbound email is guarded because deliverability and trust are shared resources. Newsletters only leave from a domain you have verified with SPF and DKIM. New senders warm up under caps. Every newsletter also passes a deliverability check before it sends — a 0–100 score over content best practices plus an AI review that catches phishing-shaped and scam-like content; drafts scoring below 50 cannot send until fixed. The AI review runs on every send, on every plan — it exists to stop a compromised account from blasting phishing before a single message leaves, not just to police new signups. Each plan’s monthly email allowance (2× your subscriber cap on Free, 8× on Grassroots, 12× on Movement) is enforced in the send path, and emails sent by automations count toward the same allowance — send volume is tied to the audience size a workspace actually pays for, so a small plan cannot be used to blast a huge imported list. Sending pauses automatically when hard bounces exceed 5% and is suspended when spam complaints exceed 1%. Suppression is enforced in the send path itself, for newsletters and automation emails alike: unsubscribed, bounced and do-not-contact addresses are excluded from every future send, and nobody in your workspace can override that.',
+      text: 'Outbound email is guarded because deliverability and trust are shared resources. Newsletters only leave from a domain you have verified with SPF and DKIM. New senders warm up under caps. Every newsletter also passes a deliverability check before it sends — a 0–100 score over content best practices plus an AI review that catches phishing-shaped and scam-like content; drafts scoring below 50 cannot send until fixed. The AI review runs on every send, on every plan — it exists to stop a compromised account from blasting phishing before a single message leaves, not just to police new signups. Each plan’s monthly email allowance (2× your subscriber cap on Free, 8× on Grassroots, 12× on Movement) is enforced in the send path, and emails sent by automations count toward the same allowance — send volume is tied to the audience size a workspace actually pays for, so a small plan cannot be used to blast a huge imported list. Sending pauses automatically when hard bounces exceed 5% and is suspended when spam complaints exceed 1%. Imported contact lists are checked on import — each address’s domain is verified and disposable addresses flagged — and undeliverable addresses are suppressed automatically; an import with an extreme rate of them pauses sending pending review. Suppression is enforced in the send path itself, for newsletters and automation emails alike: unsubscribed, bounced and do-not-contact addresses are excluded from every future send, and nobody in your workspace can override that.',
     },
     {
       kind: 'h2',

@@ -1,0 +1,187 @@
+name: Verify
+
+# The pre-deploy quality gate. Until this existed, `deploy.yml` went straight from `npm ci` to
+# a production rollout with no lint, no tests and no e2e — which is exactly how stale specs and
+# broken code reached main unnoticed (see the pplcrm-quality-gate skill).
+#
+# `deploy.yml` calls this workflow via `workflow_call` and will not deploy unless every job here
+# is green, so main is gated by the same checks a PR is.
+#
+# Job split rationale:
+#   lint    — BOTH lint paths, because they enforce disjoint rule sets (CLAUDE.md §6):
+#             `nx lint` carries the multi-tenant local/no-unscoped-db-query rule; plain root
+#             eslint carries no-floating-promises / no-misused-promises, which nx lint does NOT
+#             enforce for frontend and uxcommon.
+#   test    — needs a REAL Postgres: backend specs run against a disposable `pplcrm_test` DB
+#             (apps/backend/vite.config.ts globalSetup), there is no DB mocking layer.
+#   build   — the four deployables, production config, same command deploy.yml uses.
+#   e2e     — Playwright, `@smoke`-tagged only. See the grep note on that job.
+
+on:
+  pull_request:
+  # NOT `push: branches: [main]` — deploy.yml calls this workflow on every main push, so a
+  # standalone push trigger would run the whole gate twice for the same commit.
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '26'
+  # Same rationale as deploy.yml: nx.json carries an unclaimed nxCloudId that fails the run once
+  # past its connect window.
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the changed-file diff below has a merge base to work from.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # Project-local configs — the ONLY path that enforces local/no-unscoped-db-query (the
+      # multi-tenant leak guard) via apps/backend/eslint.config.cjs.
+      - name: Lint (nx project configs)
+        run: npx nx run-many -t lint -p frontend backend common uxcommon
+      # Root config on CHANGED FILES ONLY — deliberately the same scope the pre-commit hook uses.
+      #
+      # This step exists to close a specific gap: `nx lint frontend` / `nx lint uxcommon` do not
+      # enforce no-floating-promises / no-misused-promises, because those project configs don't
+      # spread the root config (pplcrm-quality-gate skill). Root eslint does.
+      #
+      # It is scoped to changed files rather than the whole repo because the repo currently has 13
+      # PRE-EXISTING root-config errors in 6 files (@angular-eslint/no-input-rename in
+      # sticky-pin.directive.ts, no-output-native in the two datagrid filters + side-drawer +
+      # tagitem, and no-undef in apps/website/tools/social/render.mjs). Clearing those means
+      # renaming public component inputs/outputs and updating every template that binds them —
+      # a real refactor, not a CI concern. Repo-wide enforcement can replace this step once they
+      # are fixed; until then this still blocks any NEW violation from landing.
+      - name: Lint changed files (root config — pre-commit hook parity)
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
+          else
+            base="$(git rev-parse HEAD~1 2>/dev/null || true)"
+          fi
+          if [ -z "${base:-}" ]; then
+            echo "No base commit to diff against (initial commit) — skipping."
+            exit 0
+          fi
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.ts' '*.html')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No .ts/.html files changed — nothing to lint."
+            exit 0
+          fi
+          printf 'Linting %d changed file(s):\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+          npx eslint "${files[@]}" --report-unused-disable-directives-severity=off
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Mirrors the gitignored .env.test that developers use locally. The least-privilege role
+      # split is reproduced here (app = CRUD only, owner = DDL) so specs exercise the same
+      # permission model as production rather than running as a superuser.
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      DB_NAME: pplcrm_test
+      DB_USER: pplcrm_app
+      DB_PASSWORD: ci-app-pw
+      DB_MIGRATION_USER: pplcrm_owner
+      DB_MIGRATION_PASSWORD: ci-owner-pw
+      DB_SSL: 'false'
+      JWT_SECRET: ci-jwt-secret
+      SHARED_SECRET: ci-shared-secret
+      # Explicit opt-ins the specs assert against (settings/controller.spec.ts verifies a domain
+      # only because this is true). Both fail closed when unset, so they must be set here.
+      ALLOW_MOCK_PAYMENTS: 'true'
+      ALLOW_MOCK_DOMAIN_VERIFICATION: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # The two roles must exist before setup-test-db.sh runs — it hard-fails if they are
+      # missing rather than silently creating a superuser-owned DB.
+      - name: Create least-privilege DB roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 <<SQL
+          CREATE ROLE pplcrm_owner LOGIN PASSWORD '${DB_MIGRATION_PASSWORD}';
+          CREATE ROLE pplcrm_app   LOGIN PASSWORD '${DB_PASSWORD}';
+          SQL
+      # Reuse the project's own provisioning script rather than duplicating its grants here, so
+      # CI follows automatically when the role model changes.
+      - name: Provision pplcrm_test
+        env:
+          PGSUPERUSER: postgres
+          PGPASSWORD: postgres
+        run: apps/backend/scripts/setup-test-db.sh
+      # Schema is built by globalSetup (0001_baseline) on the first backend run.
+      - name: Unit + integration tests
+        run: npx nx run-many -t test -p frontend backend common uxcommon
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Build all deployables
+        run: npx nx run-many -t build -p backend frontend companion website --configuration=production
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright chromium
+        run: npx playwright install --with-deps chromium
+      # `@smoke` only, deliberately. The suite also contains specs written against a pre-two-step
+      # -signin UI that have been failing unnoticed precisely because nothing ran them; gating on
+      # the whole suite today would mean gating on red. Tests earn the tag once they are verified
+      # green and cover a journey worth blocking a deploy for. Untagged specs still live in the
+      # repo and can be run locally with `npx nx e2e frontend-e2e`.
+      - name: E2E smoke
+        run: npx nx e2e frontend-e2e --grep @smoke
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/frontend-e2e/playwright-report
+            apps/frontend-e2e/test-results
+            test-results
+          retention-days: 7
+          if-no-files-found: ignore
