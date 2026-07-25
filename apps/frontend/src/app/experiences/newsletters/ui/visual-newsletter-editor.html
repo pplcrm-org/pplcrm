@@ -471,6 +471,7 @@
           <label class="label text-xs font-semibold py-1">Text Content</label>
           @if (block.type === 'heading') {
           <input
+            #contentField
             type="text"
             class="input input-bordered w-full input-sm"
             [value]="block.content ?? ''"
@@ -478,6 +479,7 @@
           />
           } @else {
           <textarea
+            #contentField
             class="textarea textarea-bordered w-full textarea-sm min-h-24"
             [value]="block.content ?? ''"
             (input)="setBlockText(block, 'content', $event)"
@@ -491,54 +493,17 @@
               <span class="text-[9px] text-base-content/50">Tip: Use &#123;FirstName|Friend&#125; for fallbacks</span>
             </div>
             <div class="flex flex-wrap gap-1">
+              @for (variable of textVariables; track variable.name) {
               <button
                 type="button"
                 class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'FirstName')"
-                title="Click to insert First Name placeholder"
+                (mousedown)="$event.preventDefault()"
+                (click)="insertVariable(block, variable.name)"
+                [title]="'Insert ' + variable.label + ' at the cursor'"
               >
-                + First Name
+                + {{ variable.label }}
               </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'LastName')"
-                title="Click to insert Last Name placeholder"
-              >
-                + Last Name
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'Email')"
-                title="Click to insert Email placeholder"
-              >
-                + Email
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'Company')"
-                title="Click to insert Company placeholder"
-              >
-                + Company
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'JobTitle')"
-                title="Click to insert Job Title placeholder"
-              >
-                + Job Title
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'Phone')"
-                title="Click to insert Phone placeholder"
-              >
-                + Phone
-              </button>
+              }
             </div>
           </div>
         </div>
@@ -665,6 +630,7 @@
         <div class="form-control">
           <label class="label text-xs font-semibold py-1">Button Text</label>
           <input
+            #contentField
             type="text"
             class="input input-bordered w-full input-sm"
             [value]="block.content ?? ''"
@@ -678,30 +644,17 @@
               <span class="text-[9px] text-base-content/50">Tip: Use &#123;FirstName|Friend&#125; for fallbacks</span>
             </div>
             <div class="flex flex-wrap gap-1">
+              @for (variable of buttonVariables; track variable.name) {
               <button
                 type="button"
                 class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'FirstName')"
-                title="Click to insert First Name placeholder"
+                (mousedown)="$event.preventDefault()"
+                (click)="insertVariable(block, variable.name)"
+                [title]="'Insert ' + variable.label + ' at the cursor'"
               >
-                + First Name
+                + {{ variable.label }}
               </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'LastName')"
-                title="Click to insert Last Name placeholder"
-              >
-                + Last Name
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'Email')"
-                title="Click to insert Email placeholder"
-              >
-                + Email
-              </button>
+              }
             </div>
           </div>
         </div>
