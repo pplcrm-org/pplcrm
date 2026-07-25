@@ -14,9 +14,10 @@ import { DemoService } from './services/demo.service';
  * one place to exit demo mode. Demo mode is the pre-plan test drive — the
  * backend refuses to exit until the tenant has an active subscription, and it
  * blocks outward-facing configuration (senders, domains, mailbox sync,
- * newsletter sending, teammate invites) while the flag is set. Exiting deletes the seeded data
- * (the six draft forms, the built-in tags, and anything the user created are
- * kept) and refreshes the session so the shell banner disappears immediately.
+ * newsletter sending, teammate invites) while the flag is set. Exiting deletes only the rows the
+ * seeder tracked in its manifest; the starter forms, the built-in tags and issues, the two
+ * undeletable system lists (All Subscribers / All Volunteers), and anything the user created are
+ * kept. It then refreshes the session so the shell banner disappears immediately.
  */
 @Component({
   selector: 'pc-demo-mode-card',
@@ -38,8 +39,9 @@ import { DemoService } from './services/demo.service';
           <p class="text-sm text-base-content/60">
             Sending email, inviting teammates, sender setup (verifying sender emails and domains, connecting a mailbox),
             and donation setup (connecting Stripe) stay locked during the demo; everything else, including workspace
-            settings, works normally. When you’re ready, choose a plan, then exit demo mode. Your six draft forms, the
-            built-in tags, and anything you created yourself will be kept.
+            settings, works normally. When you’re ready, choose a plan, then exit demo mode. Your starter forms, the
+            built-in tags and issues, your All Subscribers and All Volunteers lists, and anything you created yourself
+            will be kept.
           </p>
 
           <div class="card-actions items-center gap-3">
@@ -75,9 +77,12 @@ export class DemoModeCard {
     const confirmed = await this.dialogs.confirm({
       title: 'Remove all demo data?',
       message:
-        'The sample people, households, companies, tags, issues, tasks, lists, team, events, emails, newsletters, ' +
-        'and the three demo teammates will be permanently deleted. Your six draft forms and anything you created ' +
-        'yourself will be kept.',
+        'Permanently deleted: the sample people, households, companies, tasks, teams, volunteer events, ' +
+        'newsletters and their reports, inbox emails, canvassing turfs and knocks, delivery routes, recorded ' +
+        'donations, the three sample lists, and the three demo teammates.\n\n' +
+        'Kept: your All Subscribers and All Volunteers lists, your starter forms, the built-in tags and issues, ' +
+        'your workspace settings, and everything you created yourself. Anyone you marked as a volunteer stays a ' +
+        'volunteer.',
       variant: 'danger',
       confirmText: 'Remove demo data',
     });

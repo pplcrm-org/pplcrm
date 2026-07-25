@@ -143,6 +143,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
         items: [
           '**Your six draft forms**: volunteer signup, newsletter sign-up, one-time and recurring donations, yard sign request, and the issues survey. Their sample responses are removed with the demo people.',
           '**The starter tags and issues**: the tag labels (community leader, lawn sign location, and so on) and the issues list stay as a ready-made vocabulary for your real contacts. They lose their demo attachments and are fully yours to rename, recolor, merge, or delete on the [Tags](/tags) and [Issues](/issues) pages.',
+          '**Your All Subscribers and All Volunteers lists**: the two built-in lists on the [Lists](/lists) page cannot be deleted and survive the reset. They empty out along with the demo people, then refill themselves as you add real contacts. The three sample lists seeded with the demo (Volunteer prospects, Main street businesses, Newsletter subscribers) are removed.',
           '**Anything you created yourself** while exploring: your own contacts, tasks, notes, and settings survive. A contact you added to a demo household keeps its record; it just loses that address. Tags you applied to your own contacts stay applied.',
         ],
       },
