@@ -29,7 +29,7 @@ The content is organized as follows:
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
 - Only files matching these patterns are included: libs/**/*, apps/**/*, scriptis/**/*, apps/backend/src/**/*
-- Files matching these patterns are excluded: **/*.test.ts, **/*.spec.ts, **/dist/**, **/build/**, **/node_modules/**, **/.git/**, **/package-lock.json, **/yarn.lock, **/*.picture, **/*.png, **/*.jpg, **/*.jpeg, **/*.svg, **/*.ico, **/apps/frontend/**, **/apps/libs/uxcommon/**, **/libs/**, **/STRUCTURE.md, **/_migrations/schema.sql, **/*.spec.ts
+- Files matching these patterns are excluded: **/*.test.ts, **/*.spec.ts, **/dist/**, **/build/**, **/node_modules/**, **/.git/**, **/package-lock.json, **/yarn.lock, **/*.picture, **/*.png, **/*.jpg, **/*.jpeg, **/*.svg, **/*.ico, apps/frontend/**, apps/libs/**, libs/**, **/STRUCTURE.md, **/_migrations/schema.sql, **/*.spec.ts
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
 - Files are sorted by Git change count (files with more changes are at the bottom)
@@ -124,6 +124,7 @@ apps/
             sms.service.ts
           test-utils/
             db-test-isolation.ts
+            exclusive-db-lock.ts
           address-normalize.ts
           api-key.ts
           auth-util.ts
@@ -1847,548 +1848,6 @@ export async function geocodeAndMapHousehold(householdId: string, tenantId: stri
     .execute();
 
   logger.info(`Geocoding & GIS mapping completed successfully for household ${householdId}. Status set to success.`);
-}
-````
-
-## File: apps/backend/src/app/lib/jobs/handlers/billing.handlers.ts
-````typescript
-import type { Kysely } from 'kysely';
-import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { CRON_JOBS } from '../cron-registry';
-import type { JobPayloadOf } from '../job-payloads';
-import { scheduleNextRun } from '../reschedule';
-
-export async function handleZapierTrigger(payload: JobPayloadOf<'zapier_trigger'>): Promise<void> {
-  const { ZapierService } = await import('../../../modules/zapier/zapier.service');
-  const zapierService = new ZapierService();
-  await zapierService.fireTrigger(payload.tenant_id, payload.event_type, payload.data);
-}
-
-export async function handleCheckUsageLimits(
-  payload: JobPayloadOf<'check_usage_limits'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  const { checkTenantUsage } = await import('../../../modules/billing/usage-limits');
-  await checkTenantUsage(payload.tenant_id, db);
-}
-
-export async function handleCheckAllUsageLimits(db: Kysely<Models>): Promise<void> {
-  const { checkAllUsageLimits } = await import('../../../modules/billing/usage-limits');
-  await checkAllUsageLimits(db);
-  await scheduleNextRun(db, 'check_all_usage_limits', CRON_JOBS.check_all_usage_limits);
-}
-````
-
-## File: apps/backend/src/app/lib/jobs/handlers/maintenance.handlers.ts
-````typescript
-import type { Kysely } from 'kysely';
-import { sql } from 'kysely';
-import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { fingerprintFull, fingerprintStreet } from '../../address-normalize';
-import { geocodeAndMapHousehold } from '../../gis/geocoding';
-import { logger } from '../../../logger';
-import { ActivityController } from '../../../modules/activity/controller';
-import { ListsController } from '../../../modules/lists/controller';
-import { DuplicateMaintenanceService } from '../../../modules/persons/services/duplicate-maintenance.service';
-import { CRON_JOBS } from '../cron-registry';
-import type { JobPayloadOf } from '../job-payloads';
-import { scheduleNextRun } from '../reschedule';
-
-export async function handleRefreshList(payload: JobPayloadOf<'refresh_list'>): Promise<void> {
-  const listsController = new ListsController();
-  await listsController.executeListRefresh(payload.tenant_id, payload.list_id, payload.user_id);
-}
-
-export async function handleEnrichCompanyGoogle(
-  payload: JobPayloadOf<'enrich_company_google'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  const { CompaniesEnrichmentService } =
-    await import('../../../modules/companies/services/companies-enrichment.service');
-  const enrichmentSvc = new CompaniesEnrichmentService(db);
-  await enrichmentSvc.enrichCompany(payload.company_id, payload.tenant_id, payload.force ?? false);
-}
-
-export async function handleRefreshCompaniesGoogle(
-  payload: JobPayloadOf<'refresh_companies_google'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  const { CompaniesEnrichmentService } =
-    await import('../../../modules/companies/services/companies-enrichment.service');
-  const enrichmentSvc = new CompaniesEnrichmentService(db);
-  await enrichmentSvc.queueUnenrichedCompanies(payload.tenant_id ?? undefined);
-
-  // Only the global (cron-style) run reschedules itself.
-  if (!payload.tenant_id) {
-    await scheduleNextRun(db, 'refresh_companies_google', CRON_JOBS.refresh_companies_google);
-  }
-}
-
-export async function handleCleanupActivities(db: Kysely<Models>): Promise<void> {
-  const activityController = new ActivityController();
-  await activityController.deleteOldActivities();
-
-  await scheduleNextRun(db, 'cleanup_activities', CRON_JOBS.cleanup_activities);
-}
-
-// P-3 (schema review 2026-07-06, §5): retention for the append-mostly tables
-// that otherwise grow without bound. user_activity and newsletter_events already
-// have their own prune jobs (cleanup_activities / prune_newsletter_events); this
-// covers the remaining three. Deletes run in bounded batches so a large backlog
-// never takes a long lock or a huge WAL spike.
-const RETENTION_BATCH = 5000;
-const COMPLETED_JOBS_RETENTION_DAYS = 7;
-// Failed jobs are the only dead-letter record of what went wrong — kept far longer than
-// completed jobs so there's still something to diagnose against days (or weeks) after the fact.
-const FAILED_JOBS_RETENTION_DAYS = 30;
-const WEBHOOK_EVENTS_RETENTION_DAYS = 90;
-const EXPIRED_SESSION_GRACE_DAYS = 30;
-// Chunk size for the keyset-paginated address-fingerprint recompute below.
-const ADDRESS_FINGERPRINT_PAGE_SIZE = 1000;
-
-async function deleteInBatches(runOnce: () => Promise<bigint>): Promise<bigint> {
-  let total = 0n;
-  for (;;) {
-    const deleted = await runOnce();
-    total += deleted;
-    if (deleted < BigInt(RETENTION_BATCH)) break;
-  }
-  return total;
-}
-
-export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
-  // Completed background jobs older than the retention window — this is the sole owner of
-  // routine background_jobs pruning (the scheduled-deletions handler used to also prune
-  // completed jobs on its own overlapping schedule; that's been removed in favor of this job).
-  const prunedCompletedJobs = await deleteInBatches(async () => {
-    const res = await sql`
-      DELETE FROM background_jobs
-      WHERE ctid IN (
-        SELECT ctid FROM background_jobs
-        WHERE status = 'completed'
-          AND updated_at < now() - make_interval(days => ${COMPLETED_JOBS_RETENTION_DAYS})
-        LIMIT ${RETENTION_BATCH})
-    `.execute(db);
-    return res.numAffectedRows ?? 0n;
-  });
-
-  // Failed jobs are the only dead-letter record of what went wrong, so they get a much longer
-  // window than completed jobs. The currently-'processing' retention job itself is never matched.
-  const prunedFailedJobs = await deleteInBatches(async () => {
-    const res = await sql`
-      DELETE FROM background_jobs
-      WHERE ctid IN (
-        SELECT ctid FROM background_jobs
-        WHERE status = 'failed'
-          AND updated_at < now() - make_interval(days => ${FAILED_JOBS_RETENTION_DAYS})
-        LIMIT ${RETENTION_BATCH})
-    `.execute(db);
-    return res.numAffectedRows ?? 0n;
-  });
-
-  // Processed Stripe/webhook events past their retention window, plus failed ones — failed rows
-  // may have a NULL processed_at (they never reached 'processed'), so fall back to updated_at,
-  // which trg_webhook_events_updated_at bumps on every status change.
-  const prunedWebhooks = await deleteInBatches(async () => {
-    const res = await sql`
-      DELETE FROM webhook_events
-      WHERE ctid IN (
-        SELECT ctid FROM webhook_events
-        WHERE (status = 'processed'
-                AND processed_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS}))
-           OR (status = 'failed'
-                AND updated_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS}))
-        LIMIT ${RETENTION_BATCH})
-    `.execute(db);
-    return res.numAffectedRows ?? 0n;
-  });
-
-  // Long-expired sessions (revocation/sign-out handles the live ones; this sweeps
-  // the rows that just linger). NULL expires_at means non-expiring — left alone.
-  const prunedSessions = await deleteInBatches(async () => {
-    const res = await sql`
-      DELETE FROM sessions
-      WHERE ctid IN (
-        SELECT ctid FROM sessions
-        WHERE expires_at IS NOT NULL
-          AND expires_at < now() - make_interval(days => ${EXPIRED_SESSION_GRACE_DAYS})
-        LIMIT ${RETENTION_BATCH})
-    `.execute(db);
-    return res.numAffectedRows ?? 0n;
-  });
-
-  logger.info(
-    {
-      prunedCompletedJobs: prunedCompletedJobs.toString(),
-      prunedFailedJobs: prunedFailedJobs.toString(),
-      prunedWebhooks: prunedWebhooks.toString(),
-      prunedSessions: prunedSessions.toString(),
-    },
-    'Retention prune complete',
-  );
-
-  await scheduleNextRun(db, 'prune_retention', CRON_JOBS.prune_retention);
-}
-
-export async function handleRecomputeAllDuplicates(db: Kysely<Models>): Promise<void> {
-  const lastJob = await db
-    .selectFrom('background_jobs')
-    .select(['updated_at'])
-    .where('status', '=', 'completed')
-    .where(sql`payload->>'type'`, '=', 'recompute_all_duplicates')
-    .orderBy('updated_at', 'desc')
-    .limit(1)
-    .executeTakeFirst();
-
-  const tenants = await db.selectFrom('tenants').select('id').execute();
-  const maintenanceSvc = new DuplicateMaintenanceService();
-  const lastRunTime = lastJob?.updated_at ? new Date(lastJob.updated_at) : null;
-
-  // Collapse the old "did anything change" probe — 3 queries × every tenant — into 3 queries
-  // total, run once, each returning the distinct tenants with a row changed since the last run.
-  // `null` means "no prior run", i.e. recompute unconditionally for every tenant (original
-  // behavior when lastRunTime was falsy).
-  let tenantsToRecompute: Set<string> | null = null;
-  if (lastRunTime) {
-    tenantsToRecompute = new Set<string>();
-    for (const table of ['persons', 'households', 'companies'] as const) {
-      const changedTenants = await db
-        .selectFrom(table)
-        .select('tenant_id')
-        .where('updated_at', '>', lastRunTime)
-        .groupBy('tenant_id')
-        .execute();
-      for (const row of changedTenants) {
-        tenantsToRecompute.add(String(row.tenant_id));
-      }
-    }
-  }
-
-  for (const tenant of tenants) {
-    const tenantId = String(tenant.id);
-    if (tenantsToRecompute && !tenantsToRecompute.has(tenantId)) continue;
-
-    try {
-      await maintenanceSvc.recomputeAllDuplicates(tenantId);
-    } catch (tenantErr) {
-      logger.error({ err: tenantErr }, `Failed to recompute duplicates for tenant ${tenant.id}`);
-    }
-  }
-
-  await scheduleNextRun(db, 'recompute_all_duplicates', CRON_JOBS.recompute_all_duplicates);
-}
-
-export async function handleRecomputeAddressFingerprints(
-  payload: JobPayloadOf<'recompute_address_fingerprints'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  const tenantIds: string[] = [];
-  if (payload.tenant_id) {
-    tenantIds.push(payload.tenant_id);
-  } else {
-    const tenants = await db.selectFrom('tenants').select('id').execute();
-    for (const tenant of tenants) {
-      tenantIds.push(String(tenant.id));
-    }
-  }
-
-  for (const tenantId of tenantIds) {
-    try {
-      await recomputeTenantAddressFingerprints(tenantId, db);
-    } catch (tenantErr) {
-      logger.error({ err: tenantErr }, `Failed to recompute address fingerprints for tenant ${tenantId}`);
-    }
-  }
-
-  // Schedule next run if periodic/cron-like (no tenant_id)
-  if (!payload.tenant_id) {
-    await scheduleNextRun(db, 'recompute_address_fingerprints', CRON_JOBS.recompute_address_fingerprints);
-  }
-}
-
-export async function handleGeocodeHousehold(
-  payload: JobPayloadOf<'geocode_household'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  await geocodeAndMapHousehold(payload.household_id, payload.tenant_id, db);
-}
-
-/** One page of households, keyset-paginated by id, carrying only the columns the fingerprint
- *  helpers need (the previous version loaded every column of every household into memory).
- *  Return type is inferred: the row shape follows the Kysely model's column types exactly. */
-async function fetchHouseholdFingerprintPage(db: Kysely<Models>, tenantId: string, cursorId: string | null) {
-  let query = db
-    .selectFrom('households')
-    .select([
-      'id',
-      'street_num',
-      'street1',
-      'street2',
-      'apt',
-      'city',
-      'state',
-      'zip',
-      'country',
-      'address_fp_street',
-      'address_fp_full',
-    ])
-    .where('tenant_id', '=', tenantId)
-    .orderBy('id', 'asc')
-    .limit(ADDRESS_FINGERPRINT_PAGE_SIZE);
-
-  if (cursorId !== null) {
-    query = query.where('id', '>', cursorId);
-  }
-
-  return query.execute();
-}
-
-async function recomputeTenantAddressFingerprints(tenantId: string, db: Kysely<Models>): Promise<void> {
-  let cursorId: string | null = null;
-
-  for (;;) {
-    const households = await fetchHouseholdFingerprintPage(db, tenantId, cursorId);
-    if (households.length === 0) break;
-
-    const changed: { id: string; fpStreet: string | null; fpFull: string | null }[] = [];
-    for (const hh of households) {
-      const fp_street = fingerprintStreet({
-        street_num: hh.street_num,
-        street1: hh.street1,
-        street2: hh.street2,
-      });
-      const fp_full = fingerprintFull({
-        apt: hh.apt,
-        street_num: hh.street_num,
-        street1: hh.street1,
-        street2: hh.street2,
-        city: hh.city,
-        state: hh.state,
-        zip: hh.zip,
-        country: hh.country,
-      });
-
-      if (hh.address_fp_street !== fp_street || hh.address_fp_full !== fp_full) {
-        changed.push({ id: hh.id, fpStreet: fp_street, fpFull: fp_full });
-      }
-    }
-
-    // One round trip per chunk (not per row): batch every changed row in this page into a
-    // single UPDATE ... FROM (VALUES ...) statement.
-    if (changed.length > 0) {
-      const values = sql.join(changed.map((c) => sql`(${c.id}::bigint, ${c.fpStreet}::text, ${c.fpFull}::text)`));
-
-      await sql`
-        UPDATE households AS h
-        SET address_fp_street = v.fp_street,
-            address_fp_full = v.fp_full,
-            updated_at = now()
-        FROM (VALUES ${values}) AS v(id, fp_street, fp_full)
-        WHERE h.id = v.id AND h.tenant_id = ${tenantId}
-      `.execute(db);
-    }
-
-    const lastRow = households[households.length - 1];
-    // Unreachable: the `households.length === 0` check above guarantees an element exists here;
-    // this guard exists only to satisfy noUncheckedIndexedAccess.
-    if (!lastRow) break;
-    cursorId = lastRow.id;
-    if (households.length < ADDRESS_FINGERPRINT_PAGE_SIZE) break;
-  }
-
-  const maintenanceSvc = new DuplicateMaintenanceService();
-  await maintenanceSvc.recomputeAllDuplicates(tenantId);
-}
-````
-
-## File: apps/backend/src/app/lib/jobs/handlers/sync.handlers.ts
-````typescript
-import type { Kysely } from 'kysely';
-import { sql } from 'kysely';
-import { env } from '../../../../env';
-import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { logger } from '../../../logger';
-import { GoogleOAuthService } from '../../../modules/google-sync/google-oauth.service';
-import { GoogleSyncService } from '../../../modules/google-sync/google-sync.service';
-import { MsOAuthService } from '../../../modules/ms-sync/ms-oauth.service';
-import { MsSyncService } from '../../../modules/ms-sync/ms-sync.service';
-import { CRON_JOBS } from '../cron-registry';
-import type { JobPayloadOf } from '../job-payloads';
-import { scheduleNextRun } from '../reschedule';
-
-export async function handleScheduleSyncJobs(db: Kysely<Models>): Promise<void> {
-  await queueUserSyncJobs(db);
-
-  await scheduleNextRun(db, 'schedule_sync_jobs', CRON_JOBS.schedule_sync_jobs);
-}
-
-export async function handleGoogleSync(payload: JobPayloadOf<'google_sync'>, db: Kysely<Models>): Promise<void> {
-  const oauthSvc = new GoogleOAuthService(db, {
-    clientId: env.googleClientId ?? '',
-    clientSecret: env.googleClientSecret ?? '',
-    redirectUri: env.googleRedirectUri ?? `${env.apiUrl}/auth/google/callback`,
-  });
-  const syncSvc = new GoogleSyncService(db, oauthSvc);
-  await syncSvc.syncTenant(payload.tenantId, payload.campaignId, payload.requestedBy);
-}
-
-export async function handleMsSync(payload: JobPayloadOf<'ms_sync'>, db: Kysely<Models>): Promise<void> {
-  const oauthSvc = new MsOAuthService(db, {
-    clientId: env.msClientId ?? '',
-    clientSecret: env.msClientSecret ?? '',
-    tenantId: env.msTenantId ?? 'common',
-    redirectUri: env.msRedirectUri ?? `${env.apiUrl}/auth/ms/callback`,
-  });
-  const syncSvc = new MsSyncService(db, oauthSvc);
-  await syncSvc.syncTenant(payload.tenantId, payload.campaignId, payload.requestedBy);
-}
-
-async function queueUserSyncJobs(db: Kysely<Models>): Promise<void> {
-  try {
-    // §15 — connections are per-campaign, so schedule one sync job per connected
-    // (tenant, campaign) mailbox rather than one per tenant.
-    const googleTokens = await db.selectFrom('google_oauth_tokens').select(['tenant_id', 'campaign_id']).execute();
-
-    for (const token of googleTokens) {
-      const tenantId = String(token.tenant_id);
-      const campaignId = String(token.campaign_id);
-
-      const existing = await db
-        .selectFrom('background_jobs')
-        .select('id')
-        .where('status', 'in', ['pending', 'processing'])
-        .where(sql`payload->>'type'`, '=', 'google_sync')
-        .where(sql`payload->>'tenantId'`, '=', tenantId)
-        .where(sql`payload->>'campaignId'`, '=', campaignId)
-        .executeTakeFirst();
-
-      if (!existing) {
-        logger.info(`Auto-scheduling Google sync job for tenant ${tenantId} campaign ${campaignId}`);
-        await db
-          .insertInto('background_jobs')
-          .values({
-            tenant_id: tenantId,
-            queue: 'default',
-            status: 'pending',
-            payload: JSON.stringify({
-              type: 'google_sync',
-              tenantId,
-              campaignId,
-              requestedBy: 'system',
-            }),
-            run_at: new Date(),
-            max_attempts: 3,
-          })
-          .execute();
-      }
-    }
-
-    const msTokens = await db.selectFrom('ms_oauth_tokens').select(['tenant_id', 'campaign_id']).execute();
-
-    for (const token of msTokens) {
-      const tenantId = String(token.tenant_id);
-      const campaignId = String(token.campaign_id);
-
-      const existing = await db
-        .selectFrom('background_jobs')
-        .select('id')
-        .where('status', 'in', ['pending', 'processing'])
-        .where(sql`payload->>'type'`, '=', 'ms_sync')
-        .where(sql`payload->>'tenantId'`, '=', tenantId)
-        .where(sql`payload->>'campaignId'`, '=', campaignId)
-        .executeTakeFirst();
-
-      if (!existing) {
-        logger.info(`Auto-scheduling MS sync job for tenant ${tenantId} campaign ${campaignId}`);
-        await db
-          .insertInto('background_jobs')
-          .values({
-            tenant_id: tenantId,
-            queue: 'default',
-            status: 'pending',
-            payload: JSON.stringify({
-              type: 'ms_sync',
-              tenantId,
-              campaignId,
-              requestedBy: 'system',
-            }),
-            run_at: new Date(),
-            max_attempts: 3,
-          })
-          .execute();
-      }
-    }
-  } catch (err) {
-    logger.error({ err }, 'Failed to queue tenant sync jobs');
-  }
-}
-````
-
-## File: apps/backend/src/app/lib/jobs/cron-registry.ts
-````typescript
-import type { JobType } from './job-payloads';
-import { DAY_MS, FIVE_MINUTES_MS, HOUR_MS, TEN_MINUTES_MS } from './reschedule';
-
-/**
- * Single source of truth for every self-rescheduling (cron-style) background job.
- *
- * Consumed in three places so the set can never drift again:
- *  - worker.start() seeds one pending row per entry at boot;
- *  - each handler's end-of-run scheduleNextRun() pulls its interval from here;
- *  - the worker's permanent-failure path re-seeds the cron at the same interval,
- *    so a cron chain can never silently die between deploys.
- *
- * Adding a recurring job = add its entry here; the seed loop and the failure
- * reschedule pick it up automatically.
- */
-export const CRON_JOBS = {
-  ops_watchdog: FIVE_MINUTES_MS,
-  process_scheduled_newsletters: FIVE_MINUTES_MS,
-  process_drip_workflows: TEN_MINUTES_MS,
-  schedule_sync_jobs: TEN_MINUTES_MS,
-  detect_task_sla_breaches: HOUR_MS,
-  check_all_usage_limits: DAY_MS,
-  check_due_tasks: DAY_MS,
-  cleanup_activities: DAY_MS,
-  detect_lapsed_supporters: DAY_MS,
-  perform_scheduled_deletions: DAY_MS,
-  prune_newsletter_events: DAY_MS,
-  prune_retention: DAY_MS,
-  recompute_address_fingerprints: DAY_MS,
-  recompute_all_duplicates: DAY_MS,
-  refresh_companies_google: DAY_MS,
-} as const satisfies Partial<Record<JobType, number>>;
-
-export type CronJobType = keyof typeof CRON_JOBS;
-
-export function isCronJobType(type: string): type is CronJobType {
-  return Object.hasOwn(CRON_JOBS, type);
-}
-
-/**
- * Wall-clock caps for a single job execution. A handler that exceeds its cap is
- * treated as failed; because the timed-out promise cannot be cancelled and may
- * still be writing, the worker defers the retry long enough for the zombie to
- * finish or die before the retry could overlap it.
- */
-export const DEFAULT_JOB_TIMEOUT_MS = 15 * 60 * 1000;
-export const LONG_JOB_TIMEOUT_MS = 60 * 60 * 1000;
-
-// Long-runners: bulk sends, whole-table exports, mailbox syncs, tenant wipes.
-const JOB_TIMEOUT_OVERRIDES = {
-  'send-newsletter': LONG_JOB_TIMEOUT_MS,
-  export_csv: LONG_JOB_TIMEOUT_MS,
-  google_sync: LONG_JOB_TIMEOUT_MS,
-  ms_sync: LONG_JOB_TIMEOUT_MS,
-  perform_scheduled_deletions: LONG_JOB_TIMEOUT_MS,
-} as const satisfies Partial<Record<JobType, number>>;
-
-export function jobTimeoutMs(type: string | undefined): number {
-  // Legacy CSV imports carry no `type` on their payload; they process whole
-  // uploaded files, so they get the long cap rather than the default.
-  if (type == null) return LONG_JOB_TIMEOUT_MS;
-  const overrides: Partial<Record<string, number>> = JOB_TIMEOUT_OVERRIDES;
-  return overrides[type] ?? DEFAULT_JOB_TIMEOUT_MS;
 }
 ````
 
@@ -26205,19 +25664,30 @@ export default defineConfig(() => ({
 ````typescript
 import { defineConfig, devices } from '@playwright/test';
 
+const isCI = !!process.env.CI;
+
 export default defineConfig({
   testDir: './src',
   fullyParallel: true,
-  forbidOnly: !!process.env.CI,
-  retries: 0,
-  reporter: 'list',
+  forbidOnly: isCI,
+  // CI gates deploys on this suite (.github/workflows/verify.yml), so a single infrastructure
+  // hiccup shouldn't block a release — but retries stay off locally, where a flake is a signal
+  // worth seeing rather than papering over.
+  retries: isCI ? 2 : 0,
+  reporter: isCI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
     baseURL: 'http://localhost:4200',
+    // Only kept for a retried (i.e. already-suspect) test — traces are large and the happy path
+    // doesn't need them.
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
   },
   webServer: {
     command: 'npx nx serve frontend',
     url: 'http://localhost:4200',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: !isCI,
+    // A cold CI runner compiling the Angular app blows straight past Playwright's 60s default.
+    timeout: isCI ? 300_000 : 120_000,
   },
   projects: [
     {
@@ -29805,6 +29275,35 @@ export async function enqueueGeocodeJobs(
 }
 ````
 
+## File: apps/backend/src/app/lib/jobs/handlers/billing.handlers.ts
+````typescript
+import type { Kysely } from 'kysely';
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { CRON_JOBS } from '../cron-registry';
+import type { JobPayloadOf } from '../job-payloads';
+import { scheduleNextRun } from '../reschedule';
+
+export async function handleZapierTrigger(payload: JobPayloadOf<'zapier_trigger'>): Promise<void> {
+  const { ZapierService } = await import('../../../modules/zapier/zapier.service');
+  const zapierService = new ZapierService();
+  await zapierService.fireTrigger(payload.tenant_id, payload.event_type, payload.data);
+}
+
+export async function handleCheckUsageLimits(
+  payload: JobPayloadOf<'check_usage_limits'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  const { checkTenantUsage } = await import('../../../modules/billing/usage-limits');
+  await checkTenantUsage(payload.tenant_id, db);
+}
+
+export async function handleCheckAllUsageLimits(db: Kysely<Models>): Promise<void> {
+  const { checkAllUsageLimits } = await import('../../../modules/billing/usage-limits');
+  await checkAllUsageLimits(db);
+  await scheduleNextRun(db, 'check_all_usage_limits', CRON_JOBS.check_all_usage_limits);
+}
+````
+
 ## File: apps/backend/src/app/lib/jobs/handlers/import-verification.ts
 ````typescript
 import type { Kysely } from 'kysely';
@@ -29938,6 +29437,519 @@ export async function runImportEmailVerification(
     logger.error({ err, importId: payload.import_id }, 'Import email verification failed (import unaffected)');
     return null;
   }
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/handlers/maintenance.handlers.ts
+````typescript
+import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { fingerprintFull, fingerprintStreet } from '../../address-normalize';
+import { geocodeAndMapHousehold } from '../../gis/geocoding';
+import { logger } from '../../../logger';
+import { ActivityController } from '../../../modules/activity/controller';
+import { ListsController } from '../../../modules/lists/controller';
+import { DuplicateMaintenanceService } from '../../../modules/persons/services/duplicate-maintenance.service';
+import { CRON_JOBS } from '../cron-registry';
+import type { JobPayloadOf } from '../job-payloads';
+import { scheduleNextRun } from '../reschedule';
+
+export async function handleRefreshList(payload: JobPayloadOf<'refresh_list'>): Promise<void> {
+  const listsController = new ListsController();
+  await listsController.executeListRefresh(payload.tenant_id, payload.list_id, payload.user_id);
+}
+
+export async function handleEnrichCompanyGoogle(
+  payload: JobPayloadOf<'enrich_company_google'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  const { CompaniesEnrichmentService } =
+    await import('../../../modules/companies/services/companies-enrichment.service');
+  const enrichmentSvc = new CompaniesEnrichmentService(db);
+  await enrichmentSvc.enrichCompany(payload.company_id, payload.tenant_id, payload.force ?? false);
+}
+
+export async function handleRefreshCompaniesGoogle(
+  payload: JobPayloadOf<'refresh_companies_google'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  const { CompaniesEnrichmentService } =
+    await import('../../../modules/companies/services/companies-enrichment.service');
+  const enrichmentSvc = new CompaniesEnrichmentService(db);
+  await enrichmentSvc.queueUnenrichedCompanies(payload.tenant_id ?? undefined);
+
+  // Only the global (cron-style) run reschedules itself.
+  if (!payload.tenant_id) {
+    await scheduleNextRun(db, 'refresh_companies_google', CRON_JOBS.refresh_companies_google);
+  }
+}
+
+export async function handleCleanupActivities(db: Kysely<Models>): Promise<void> {
+  const activityController = new ActivityController();
+  await activityController.deleteOldActivities();
+
+  await scheduleNextRun(db, 'cleanup_activities', CRON_JOBS.cleanup_activities);
+}
+
+// P-3 (schema review 2026-07-06, §5): retention for the append-mostly tables
+// that otherwise grow without bound. user_activity and newsletter_events already
+// have their own prune jobs (cleanup_activities / prune_newsletter_events); this
+// covers the remaining three. Deletes run in bounded batches so a large backlog
+// never takes a long lock or a huge WAL spike.
+const RETENTION_BATCH = 5000;
+const COMPLETED_JOBS_RETENTION_DAYS = 7;
+// Failed jobs are the only dead-letter record of what went wrong — kept far longer than
+// completed jobs so there's still something to diagnose against days (or weeks) after the fact.
+const FAILED_JOBS_RETENTION_DAYS = 30;
+const WEBHOOK_EVENTS_RETENTION_DAYS = 90;
+const EXPIRED_SESSION_GRACE_DAYS = 30;
+// Chunk size for the keyset-paginated address-fingerprint recompute below.
+const ADDRESS_FINGERPRINT_PAGE_SIZE = 1000;
+
+async function deleteInBatches(runOnce: () => Promise<bigint>): Promise<bigint> {
+  let total = 0n;
+  for (;;) {
+    const deleted = await runOnce();
+    total += deleted;
+    if (deleted < BigInt(RETENTION_BATCH)) break;
+  }
+  return total;
+}
+
+export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
+  // Completed background jobs older than the retention window — this is the sole owner of
+  // routine background_jobs pruning (the scheduled-deletions handler used to also prune
+  // completed jobs on its own overlapping schedule; that's been removed in favor of this job).
+  const prunedCompletedJobs = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM background_jobs
+      WHERE ctid IN (
+        SELECT ctid FROM background_jobs
+        WHERE status = 'completed'
+          AND updated_at < now() - make_interval(days => ${COMPLETED_JOBS_RETENTION_DAYS})
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
+  // Failed jobs are the only dead-letter record of what went wrong, so they get a much longer
+  // window than completed jobs. The currently-'processing' retention job itself is never matched.
+  const prunedFailedJobs = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM background_jobs
+      WHERE ctid IN (
+        SELECT ctid FROM background_jobs
+        WHERE status = 'failed'
+          AND updated_at < now() - make_interval(days => ${FAILED_JOBS_RETENTION_DAYS})
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
+  // Processed Stripe/webhook events past their retention window, plus failed ones — failed rows
+  // may have a NULL processed_at (they never reached 'processed'), so fall back to updated_at,
+  // which trg_webhook_events_updated_at bumps on every status change.
+  const prunedWebhooks = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM webhook_events
+      WHERE ctid IN (
+        SELECT ctid FROM webhook_events
+        WHERE (status = 'processed'
+                AND processed_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS}))
+           OR (status = 'failed'
+                AND updated_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS}))
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
+  // Long-expired sessions (revocation/sign-out handles the live ones; this sweeps
+  // the rows that just linger). NULL expires_at means non-expiring — left alone.
+  const prunedSessions = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM sessions
+      WHERE ctid IN (
+        SELECT ctid FROM sessions
+        WHERE expires_at IS NOT NULL
+          AND expires_at < now() - make_interval(days => ${EXPIRED_SESSION_GRACE_DAYS})
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
+  logger.info(
+    {
+      prunedCompletedJobs: prunedCompletedJobs.toString(),
+      prunedFailedJobs: prunedFailedJobs.toString(),
+      prunedWebhooks: prunedWebhooks.toString(),
+      prunedSessions: prunedSessions.toString(),
+    },
+    'Retention prune complete',
+  );
+
+  await scheduleNextRun(db, 'prune_retention', CRON_JOBS.prune_retention);
+}
+
+export async function handleRecomputeAllDuplicates(db: Kysely<Models>): Promise<void> {
+  const lastJob = await db
+    .selectFrom('background_jobs')
+    .select(['updated_at'])
+    .where('status', '=', 'completed')
+    .where(sql`payload->>'type'`, '=', 'recompute_all_duplicates')
+    .orderBy('updated_at', 'desc')
+    .limit(1)
+    .executeTakeFirst();
+
+  const tenants = await db.selectFrom('tenants').select('id').execute();
+  const maintenanceSvc = new DuplicateMaintenanceService();
+  const lastRunTime = lastJob?.updated_at ? new Date(lastJob.updated_at) : null;
+
+  // Collapse the old "did anything change" probe — 3 queries × every tenant — into 3 queries
+  // total, run once, each returning the distinct tenants with a row changed since the last run.
+  // `null` means "no prior run", i.e. recompute unconditionally for every tenant (original
+  // behavior when lastRunTime was falsy).
+  let tenantsToRecompute: Set<string> | null = null;
+  if (lastRunTime) {
+    tenantsToRecompute = new Set<string>();
+    for (const table of ['persons', 'households', 'companies'] as const) {
+      const changedTenants = await db
+        .selectFrom(table)
+        .select('tenant_id')
+        .where('updated_at', '>', lastRunTime)
+        .groupBy('tenant_id')
+        .execute();
+      for (const row of changedTenants) {
+        tenantsToRecompute.add(String(row.tenant_id));
+      }
+    }
+  }
+
+  for (const tenant of tenants) {
+    const tenantId = String(tenant.id);
+    if (tenantsToRecompute && !tenantsToRecompute.has(tenantId)) continue;
+
+    try {
+      await maintenanceSvc.recomputeAllDuplicates(tenantId);
+    } catch (tenantErr) {
+      logger.error({ err: tenantErr }, `Failed to recompute duplicates for tenant ${tenant.id}`);
+    }
+  }
+
+  await scheduleNextRun(db, 'recompute_all_duplicates', CRON_JOBS.recompute_all_duplicates);
+}
+
+export async function handleRecomputeAddressFingerprints(
+  payload: JobPayloadOf<'recompute_address_fingerprints'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  const tenantIds: string[] = [];
+  if (payload.tenant_id) {
+    tenantIds.push(payload.tenant_id);
+  } else {
+    const tenants = await db.selectFrom('tenants').select('id').execute();
+    for (const tenant of tenants) {
+      tenantIds.push(String(tenant.id));
+    }
+  }
+
+  for (const tenantId of tenantIds) {
+    try {
+      await recomputeTenantAddressFingerprints(tenantId, db);
+    } catch (tenantErr) {
+      logger.error({ err: tenantErr }, `Failed to recompute address fingerprints for tenant ${tenantId}`);
+    }
+  }
+
+  // Schedule next run if periodic/cron-like (no tenant_id)
+  if (!payload.tenant_id) {
+    await scheduleNextRun(db, 'recompute_address_fingerprints', CRON_JOBS.recompute_address_fingerprints);
+  }
+}
+
+export async function handleGeocodeHousehold(
+  payload: JobPayloadOf<'geocode_household'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  await geocodeAndMapHousehold(payload.household_id, payload.tenant_id, db);
+}
+
+/** One page of households, keyset-paginated by id, carrying only the columns the fingerprint
+ *  helpers need (the previous version loaded every column of every household into memory).
+ *  Return type is inferred: the row shape follows the Kysely model's column types exactly. */
+async function fetchHouseholdFingerprintPage(db: Kysely<Models>, tenantId: string, cursorId: string | null) {
+  let query = db
+    .selectFrom('households')
+    .select([
+      'id',
+      'street_num',
+      'street1',
+      'street2',
+      'apt',
+      'city',
+      'state',
+      'zip',
+      'country',
+      'address_fp_street',
+      'address_fp_full',
+    ])
+    .where('tenant_id', '=', tenantId)
+    .orderBy('id', 'asc')
+    .limit(ADDRESS_FINGERPRINT_PAGE_SIZE);
+
+  if (cursorId !== null) {
+    query = query.where('id', '>', cursorId);
+  }
+
+  return query.execute();
+}
+
+async function recomputeTenantAddressFingerprints(tenantId: string, db: Kysely<Models>): Promise<void> {
+  let cursorId: string | null = null;
+
+  for (;;) {
+    const households = await fetchHouseholdFingerprintPage(db, tenantId, cursorId);
+    if (households.length === 0) break;
+
+    const changed: { id: string; fpStreet: string | null; fpFull: string | null }[] = [];
+    for (const hh of households) {
+      const fp_street = fingerprintStreet({
+        street_num: hh.street_num,
+        street1: hh.street1,
+        street2: hh.street2,
+      });
+      const fp_full = fingerprintFull({
+        apt: hh.apt,
+        street_num: hh.street_num,
+        street1: hh.street1,
+        street2: hh.street2,
+        city: hh.city,
+        state: hh.state,
+        zip: hh.zip,
+        country: hh.country,
+      });
+
+      if (hh.address_fp_street !== fp_street || hh.address_fp_full !== fp_full) {
+        changed.push({ id: hh.id, fpStreet: fp_street, fpFull: fp_full });
+      }
+    }
+
+    // One round trip per chunk (not per row): batch every changed row in this page into a
+    // single UPDATE ... FROM (VALUES ...) statement.
+    if (changed.length > 0) {
+      const values = sql.join(changed.map((c) => sql`(${c.id}::bigint, ${c.fpStreet}::text, ${c.fpFull}::text)`));
+
+      await sql`
+        UPDATE households AS h
+        SET address_fp_street = v.fp_street,
+            address_fp_full = v.fp_full,
+            updated_at = now()
+        FROM (VALUES ${values}) AS v(id, fp_street, fp_full)
+        WHERE h.id = v.id AND h.tenant_id = ${tenantId}
+      `.execute(db);
+    }
+
+    const lastRow = households[households.length - 1];
+    // Unreachable: the `households.length === 0` check above guarantees an element exists here;
+    // this guard exists only to satisfy noUncheckedIndexedAccess.
+    if (!lastRow) break;
+    cursorId = lastRow.id;
+    if (households.length < ADDRESS_FINGERPRINT_PAGE_SIZE) break;
+  }
+
+  const maintenanceSvc = new DuplicateMaintenanceService();
+  await maintenanceSvc.recomputeAllDuplicates(tenantId);
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/handlers/sync.handlers.ts
+````typescript
+import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
+import { env } from '../../../../env';
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { logger } from '../../../logger';
+import { GoogleOAuthService } from '../../../modules/google-sync/google-oauth.service';
+import { GoogleSyncService } from '../../../modules/google-sync/google-sync.service';
+import { MsOAuthService } from '../../../modules/ms-sync/ms-oauth.service';
+import { MsSyncService } from '../../../modules/ms-sync/ms-sync.service';
+import { CRON_JOBS } from '../cron-registry';
+import type { JobPayloadOf } from '../job-payloads';
+import { scheduleNextRun } from '../reschedule';
+
+export async function handleScheduleSyncJobs(db: Kysely<Models>): Promise<void> {
+  await queueUserSyncJobs(db);
+
+  await scheduleNextRun(db, 'schedule_sync_jobs', CRON_JOBS.schedule_sync_jobs);
+}
+
+export async function handleGoogleSync(payload: JobPayloadOf<'google_sync'>, db: Kysely<Models>): Promise<void> {
+  const oauthSvc = new GoogleOAuthService(db, {
+    clientId: env.googleClientId ?? '',
+    clientSecret: env.googleClientSecret ?? '',
+    redirectUri: env.googleRedirectUri ?? `${env.apiUrl}/auth/google/callback`,
+  });
+  const syncSvc = new GoogleSyncService(db, oauthSvc);
+  await syncSvc.syncTenant(payload.tenantId, payload.campaignId, payload.requestedBy);
+}
+
+export async function handleMsSync(payload: JobPayloadOf<'ms_sync'>, db: Kysely<Models>): Promise<void> {
+  const oauthSvc = new MsOAuthService(db, {
+    clientId: env.msClientId ?? '',
+    clientSecret: env.msClientSecret ?? '',
+    tenantId: env.msTenantId ?? 'common',
+    redirectUri: env.msRedirectUri ?? `${env.apiUrl}/auth/ms/callback`,
+  });
+  const syncSvc = new MsSyncService(db, oauthSvc);
+  await syncSvc.syncTenant(payload.tenantId, payload.campaignId, payload.requestedBy);
+}
+
+async function queueUserSyncJobs(db: Kysely<Models>): Promise<void> {
+  try {
+    // §15 — connections are per-campaign, so schedule one sync job per connected
+    // (tenant, campaign) mailbox rather than one per tenant.
+    const googleTokens = await db.selectFrom('google_oauth_tokens').select(['tenant_id', 'campaign_id']).execute();
+
+    for (const token of googleTokens) {
+      const tenantId = String(token.tenant_id);
+      const campaignId = String(token.campaign_id);
+
+      const existing = await db
+        .selectFrom('background_jobs')
+        .select('id')
+        .where('status', 'in', ['pending', 'processing'])
+        .where(sql`payload->>'type'`, '=', 'google_sync')
+        .where(sql`payload->>'tenantId'`, '=', tenantId)
+        .where(sql`payload->>'campaignId'`, '=', campaignId)
+        .executeTakeFirst();
+
+      if (!existing) {
+        logger.info(`Auto-scheduling Google sync job for tenant ${tenantId} campaign ${campaignId}`);
+        await db
+          .insertInto('background_jobs')
+          .values({
+            tenant_id: tenantId,
+            queue: 'default',
+            status: 'pending',
+            payload: JSON.stringify({
+              type: 'google_sync',
+              tenantId,
+              campaignId,
+              requestedBy: 'system',
+            }),
+            run_at: new Date(),
+            max_attempts: 3,
+          })
+          .execute();
+      }
+    }
+
+    const msTokens = await db.selectFrom('ms_oauth_tokens').select(['tenant_id', 'campaign_id']).execute();
+
+    for (const token of msTokens) {
+      const tenantId = String(token.tenant_id);
+      const campaignId = String(token.campaign_id);
+
+      const existing = await db
+        .selectFrom('background_jobs')
+        .select('id')
+        .where('status', 'in', ['pending', 'processing'])
+        .where(sql`payload->>'type'`, '=', 'ms_sync')
+        .where(sql`payload->>'tenantId'`, '=', tenantId)
+        .where(sql`payload->>'campaignId'`, '=', campaignId)
+        .executeTakeFirst();
+
+      if (!existing) {
+        logger.info(`Auto-scheduling MS sync job for tenant ${tenantId} campaign ${campaignId}`);
+        await db
+          .insertInto('background_jobs')
+          .values({
+            tenant_id: tenantId,
+            queue: 'default',
+            status: 'pending',
+            payload: JSON.stringify({
+              type: 'ms_sync',
+              tenantId,
+              campaignId,
+              requestedBy: 'system',
+            }),
+            run_at: new Date(),
+            max_attempts: 3,
+          })
+          .execute();
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to queue tenant sync jobs');
+  }
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/cron-registry.ts
+````typescript
+import type { JobType } from './job-payloads';
+import { DAY_MS, FIVE_MINUTES_MS, HOUR_MS, TEN_MINUTES_MS } from './reschedule';
+
+/**
+ * Single source of truth for every self-rescheduling (cron-style) background job.
+ *
+ * Consumed in three places so the set can never drift again:
+ *  - worker.start() seeds one pending row per entry at boot;
+ *  - each handler's end-of-run scheduleNextRun() pulls its interval from here;
+ *  - the worker's permanent-failure path re-seeds the cron at the same interval,
+ *    so a cron chain can never silently die between deploys.
+ *
+ * Adding a recurring job = add its entry here; the seed loop and the failure
+ * reschedule pick it up automatically.
+ */
+export const CRON_JOBS = {
+  ops_watchdog: FIVE_MINUTES_MS,
+  process_scheduled_newsletters: FIVE_MINUTES_MS,
+  process_drip_workflows: TEN_MINUTES_MS,
+  schedule_sync_jobs: TEN_MINUTES_MS,
+  detect_task_sla_breaches: HOUR_MS,
+  check_all_usage_limits: DAY_MS,
+  check_due_tasks: DAY_MS,
+  cleanup_activities: DAY_MS,
+  detect_lapsed_supporters: DAY_MS,
+  perform_scheduled_deletions: DAY_MS,
+  prune_newsletter_events: DAY_MS,
+  prune_retention: DAY_MS,
+  recompute_address_fingerprints: DAY_MS,
+  recompute_all_duplicates: DAY_MS,
+  refresh_companies_google: DAY_MS,
+} as const satisfies Partial<Record<JobType, number>>;
+
+export type CronJobType = keyof typeof CRON_JOBS;
+
+export function isCronJobType(type: string): type is CronJobType {
+  return Object.hasOwn(CRON_JOBS, type);
+}
+
+/**
+ * Wall-clock caps for a single job execution. A handler that exceeds its cap is
+ * treated as failed; because the timed-out promise cannot be cancelled and may
+ * still be writing, the worker defers the retry long enough for the zombie to
+ * finish or die before the retry could overlap it.
+ */
+export const DEFAULT_JOB_TIMEOUT_MS = 15 * 60 * 1000;
+export const LONG_JOB_TIMEOUT_MS = 60 * 60 * 1000;
+
+// Long-runners: bulk sends, whole-table exports, mailbox syncs, tenant wipes.
+const JOB_TIMEOUT_OVERRIDES = {
+  'send-newsletter': LONG_JOB_TIMEOUT_MS,
+  export_csv: LONG_JOB_TIMEOUT_MS,
+  google_sync: LONG_JOB_TIMEOUT_MS,
+  ms_sync: LONG_JOB_TIMEOUT_MS,
+  perform_scheduled_deletions: LONG_JOB_TIMEOUT_MS,
+} as const satisfies Partial<Record<JobType, number>>;
+
+export function jobTimeoutMs(type: string | undefined): number {
+  // Legacy CSV imports carry no `type` on their payload; they process whole
+  // uploaded files, so they get the long cap rather than the default.
+  if (type == null) return LONG_JOB_TIMEOUT_MS;
+  const overrides: Partial<Record<string, number>> = JOB_TIMEOUT_OVERRIDES;
+  return overrides[type] ?? DEFAULT_JOB_TIMEOUT_MS;
 }
 ````
 
@@ -30619,6 +30631,67 @@ export async function notifyVolunteerOfLink(
   }
 
   return { email: email != null, sms: sms != null };
+}
+````
+
+## File: apps/backend/src/app/lib/test-utils/exclusive-db-lock.ts
+````typescript
+import type { ControlledTransaction } from 'kysely';
+import { sql } from 'kysely';
+import { afterAll, beforeAll } from 'vitest';
+
+import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
+import { BaseRepository } from '../base.repo';
+
+/**
+ * Advisory-lock keys, one per shared resource that specs must not contend over. Keep them unique
+ * and stable -- two unrelated spec files sharing a key would serialize for no reason.
+ */
+export const DB_TEST_LOCKS = {
+  /** The `background_jobs` table as a whole queue: any spec that asserts against global claim
+   *  order, or leaves a `pending` row visible to a claimer, must hold this. */
+  BACKGROUND_JOB_QUEUE: 81_400_001,
+} as const;
+
+/** A spec file may sit behind a contended lock for as long as the other holder's whole run takes. */
+const LOCK_WAIT_TIMEOUT_MS = 120_000;
+
+/**
+ * Serializes this spec file against every other file holding the same key.
+ *
+ * Backend specs run against one shared local Postgres, and Vitest runs spec *files* in parallel.
+ * `useTestTransaction()` handles the common case -- rows a test writes stay invisible to everyone
+ * else. It cannot help when the code under test reads the table *globally*: `claimNextPendingJob`
+ * picks the lowest-id runnable row in the whole table, so a `pending` row another spec file
+ * committed mid-run is a real, claimable job and breaks a FIFO assertion (and gets stolen out from
+ * under that other file). No amount of per-test cleanup fixes it -- the window is the overlap
+ * between two files, not between two tests.
+ *
+ * So the contending files take turns instead. The lock is held by a transaction opened in
+ * `beforeAll` and rolled back in `afterAll`: Kysely's `startTransaction()` pins one pooled
+ * connection for its lifetime, which is what makes the lock outlive a single query, and
+ * `pg_advisory_xact_lock` releases automatically when that transaction ends -- including when the
+ * process is killed mid-run, so a crashed file can't wedge the next one.
+ *
+ * Usage -- call once at the top level of the file, outside any `describe`:
+ * ```ts
+ * useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
+ * ```
+ */
+export function useExclusiveDbLock(key: number): void {
+  let holder: ControlledTransaction<Models> | undefined;
+
+  beforeAll(async () => {
+    holder = await BaseRepository.dbInstance.startTransaction().execute();
+    await sql`select pg_advisory_xact_lock(${key}::bigint)`.execute(holder);
+  }, LOCK_WAIT_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (holder && !holder.isCommitted && !holder.isRolledBack) {
+      await holder.rollback().execute();
+    }
+    holder = undefined;
+  });
 }
 ````
 
@@ -38506,108 +38579,6 @@ const config: Config = {
 export default config;
 ````
 
-## File: apps/backend/project.json
-````json
-{
-  "name": "backend",
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "sourceRoot": "apps/backend/src",
-  "projectType": "application",
-  "tags": [],
-  "targets": {
-    "generate-context": {
-      "executor": "nx:run-commands",
-      "options": {
-        "command": "npx repomix --output apps/backend/STRUCTURE.md --include \"apps/backend/src/**/*\" --ignore \"apps/frontend/**,apps/libs/**,libs/**,**/STRUCTURE.md,**/_migrations/schema_dump.sql,**/*.spec.ts\""
-      }
-    },
-    "build": {
-      "executor": "@nx/esbuild:esbuild",
-      "dependsOn": ["generate-context"],
-      "outputs": ["{options.outputPath}"],
-      "defaultConfiguration": "production",
-      "options": {
-        "platform": "node",
-        "outputPath": "dist/apps/backend",
-        "format": ["esm"],
-        "main": "apps/backend/src/main.ts",
-        "tsConfig": "apps/backend/tsconfig.app.json",
-        "assets": ["apps/backend/src/assets"],
-        "generatePackageJson": false,
-        "esbuildOptions": {
-          "packages": "external",
-          "external": ["aws-sdk", "nock", "mock-aws-s3"],
-          "loader": {
-            ".html": "text"
-          },
-          "sourcemap": "inline",
-          "outExtension": {
-            ".js": ".js"
-          }
-        }
-      },
-      "configurations": {
-        "development": {
-          "bundle": true
-        },
-        "production": {
-          "bundle": true,
-          "esbuildOptions": {
-            "sourcemap": false,
-            "packages": "external",
-            "external": ["aws-sdk", "nock", "mock-aws-s3"],
-            "loader": {
-              ".html": "text"
-            },
-            "outExtension": {
-              ".js": ".js"
-            }
-          }
-        }
-      }
-    },
-    "serve": {
-      "executor": "@nx/js:node",
-      "defaultConfiguration": "development",
-      "options": {
-        "buildTarget": "backend:build"
-      },
-      "configurations": {
-        "development": {
-          "buildTarget": "backend:build:development",
-          "runtimeArgs": [
-            "--inspect=9229",
-            "--enable-source-maps",
-            "--env-file=.env.development",
-            "--disable-warning=DEP0205"
-          ]
-        },
-        "production": {
-          "buildTarget": "backend:build:production",
-          "runtimeArgs": ["--enable-source-maps", "--env-file=.env.production", "--disable-warning=DEP0205"]
-        }
-      }
-    },
-    "test": {
-      "executor": "nx:run-commands",
-      "cache": true,
-      "outputs": ["{workspaceRoot}/coverage/apps/backend"],
-      "options": {
-        "cwd": "apps/backend",
-        "command": "vitest run"
-      }
-    },
-    "lint": {
-      "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
-      "options": {
-        "lintFilePatterns": ["apps/backend/**/*.ts"]
-      }
-    }
-  }
-}
-````
-
 ## File: apps/companion/src/app/canvass/canvass-store.ts
 ````typescript
 import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core';
@@ -42145,1375 +42116,6 @@ function getEntityFilterValues(entityFilter: string): string[] {
     return ['tag', 'tags'];
   }
   return [ent];
-}
-````
-
-## File: apps/backend/src/app/lib/jobs/handlers/ops.handlers.ts
-````typescript
-import { sql } from 'kysely';
-import type { Kysely } from 'kysely';
-import { z } from 'zod';
-import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { env } from '../../../../env';
-import { logger } from '../../../logger';
-import type { MailAttachment } from '../../mail/transactional-mail.service';
-import { TransactionalEmailService } from '../../mail/transactional-mail.service';
-import { StorageService } from '../../storage.service';
-import { CRON_JOBS } from '../cron-registry';
-import type { JobPayloadOf } from '../job-payloads';
-import { scheduleNextRun } from '../reschedule';
-
-const mailService = new TransactionalEmailService();
-
-const HEARTBEAT_NAME = 'ops_watchdog';
-// First run (or lost details) looks back this far for failures.
-const DEFAULT_LOOKBACK_MS = 15 * 60 * 1000;
-// Oldest eligible pending job older than this = the queue is jammed/backlogged.
-const BACKLOG_ALERT_MS = 15 * 60 * 1000;
-// Identical digests within this window are suppressed (mainly repeats of a persistent backlog).
-const ALERT_SUPPRESSION_MS = 6 * 60 * 60 * 1000;
-
-// details is untyped jsonb; parse defensively and fall back to {} on any historical shape.
-const heartbeatDetailsSchema = z
-  .object({
-    last_checked_at: z.string().optional(),
-    last_alert_fingerprint: z.string().optional(),
-    last_alerted_at: z.string().optional(),
-  })
-  .catch({});
-
-interface FailureGroup {
-  key: string;
-  count: number;
-  sample_error: string;
-}
-
-/**
- * Ops watchdog — the "who tells the operator" half of observability (the Azure availability
- * probes are the "is it up" half; see infra/azure/main.bicep).
- *
- * Every cycle it:
- *   1. digests NEW failures since the last cycle (failed background_jobs / webhook_events, a
- *      backlogged queue, newly sending-paused tenants) and emails them to OPS_ALERT_EMAIL;
- *   2. updates the `ops_heartbeats` row that `GET /healthz/worker` reads — the dead-man beat.
- *      The beat happens ONLY when a full claim→execute→complete cycle works, which is exactly
- *      what makes the external probe catch a wedged worker while the API stays healthy.
- *
- * All queries here are cross-tenant by design (this is a platform-level operator digest, not a
- * tenant surface) — lib/jobs/handlers is outside the local/no-unscoped-db-query rule's scope.
- */
-export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
-  const now = new Date();
-
-  const row = await db
-    .selectFrom('ops_heartbeats')
-    .select('details')
-    .where('name', '=', HEARTBEAT_NAME)
-    .executeTakeFirst();
-  const details = heartbeatDetailsSchema.parse(row?.details ?? {});
-  const watermark = details.last_checked_at
-    ? new Date(details.last_checked_at)
-    : new Date(now.getTime() - DEFAULT_LOOKBACK_MS);
-
-  // Newly dead-lettered background jobs since the last cycle, grouped by job type.
-  const failedJobs: FailureGroup[] = await db
-    .selectFrom('background_jobs')
-    .select([
-      sql<string>`coalesce(payload->>'type', 'unknown')`.as('key'),
-      sql<number>`count(*)::int`.as('count'),
-      sql<string>`max(left(coalesce(error, ''), 300))`.as('sample_error'),
-    ])
-    .where('status', '=', 'failed')
-    .where('updated_at', '>', watermark)
-    .groupBy(sql`coalesce(payload->>'type', 'unknown')`)
-    .execute();
-
-  // Newly failed Stripe webhook events (drained by webhook-worker.ts).
-  const failedWebhooks: FailureGroup[] = await db
-    .selectFrom('webhook_events')
-    .select([
-      'type as key',
-      sql<number>`count(*)::int`.as('count'),
-      sql<string>`max(left(coalesce(error, ''), 300))`.as('sample_error'),
-    ])
-    .where('status', '=', 'failed')
-    .where('updated_at', '>', watermark)
-    .groupBy('type')
-    .execute();
-
-  // Queue health: oldest job that is eligible to run but still pending.
-  const backlog = await db
-    .selectFrom('background_jobs')
-    .select(sql<Date | null>`min(run_at)`.as('oldest_run_at'))
-    .where('status', '=', 'pending')
-    .where('run_at', '<=', now)
-    .executeTakeFirst();
-  const backlogAgeMs = backlog?.oldest_run_at ? now.getTime() - new Date(backlog.oldest_run_at).getTime() : 0;
-  const backlogged = backlogAgeMs > BACKLOG_ALERT_MS;
-
-  // Tenants tripped into sending-pause since the last cycle (see pplcrm-sending-guards).
-  const newlyPausedTenants = await db
-    .selectFrom('tenants')
-    .select(['id', 'name', 'sending_paused_at'])
-    .where('sending_paused_at', '>', watermark)
-    .execute();
-
-  const sections: string[] = [];
-  if (failedJobs.length > 0) {
-    sections.push(formatFailureSection('Failed background jobs', failedJobs));
-  }
-  if (failedWebhooks.length > 0) {
-    sections.push(formatFailureSection('Failed webhook events', failedWebhooks));
-  }
-  if (backlogged) {
-    sections.push(
-      `Queue backlog: the oldest runnable pending job has been waiting ${Math.round(backlogAgeMs / 60000)} minutes.`,
-    );
-  }
-  if (newlyPausedTenants.length > 0) {
-    const lines = newlyPausedTenants.map((t) => `  - ${t.name} (tenant ${t.id})`);
-    sections.push(`Tenants newly paused from sending:\n${lines.join('\n')}`);
-  }
-
-  let alertFingerprint = details.last_alert_fingerprint;
-  let alertedAt = details.last_alerted_at;
-  if (sections.length > 0) {
-    // Fingerprint on the *categories* of trouble, not raw counts — a persistent backlog
-    // shouldn't re-alert every 5 minutes, but a new failure category (or one escalating by an
-    // order of magnitude, e.g. 9 -> 10 failures) should alert immediately. failedJobs/failedWebhooks
-    // rows come from a GROUP BY on `status = 'failed'` rows, so count is always >= 1 and
-    // Math.log10(count) is always defined.
-    const fingerprint = [
-      ...failedJobs.map((g) => `job:${g.key}:m${Math.floor(Math.log10(g.count))}`),
-      ...failedWebhooks.map((g) => `webhook:${g.key}:m${Math.floor(Math.log10(g.count))}`),
-      backlogged ? 'backlog' : '',
-      ...newlyPausedTenants.map((t) => `paused:${t.id}`),
-    ]
-      .filter(Boolean)
-      .sort()
-      .join('|');
-    const suppressed =
-      fingerprint === details.last_alert_fingerprint &&
-      details.last_alerted_at != null &&
-      now.getTime() - new Date(details.last_alerted_at).getTime() < ALERT_SUPPRESSION_MS;
-
-    if (suppressed) {
-      logger.info({ fingerprint }, 'Ops watchdog: findings unchanged, alert suppressed');
-    } else if (env.opsAlertEmail == null) {
-      logger.warn({ sections }, 'Ops watchdog found problems but OPS_ALERT_EMAIL is not set — no email sent');
-    } else {
-      const body = sections.join('\n\n');
-      logger.warn({ sections }, 'Ops watchdog: sending problem digest');
-      // Send directly (not via the mail queue): if the queue is the sick component, the alert
-      // would sit behind the very backlog it is reporting.
-      await mailService.sendMail({
-        to: env.opsAlertEmail,
-        subject: `pplCRM ops: ${summarize(failedJobs, failedWebhooks, backlogged, newlyPausedTenants.length)}`,
-        text: body,
-        html: `<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(body)}</pre>`,
-      });
-      alertFingerprint = fingerprint;
-      alertedAt = now.toISOString();
-    }
-  }
-
-  // The dead-man beat — reached only when the whole cycle above succeeded. Upsert so a missing
-  // row (fresh DB) heals itself rather than failing the cron forever.
-  const newDetails = JSON.stringify({
-    last_checked_at: now.toISOString(),
-    last_alert_fingerprint: alertFingerprint,
-    last_alerted_at: alertedAt,
-  });
-  await db
-    .insertInto('ops_heartbeats')
-    .values({ name: HEARTBEAT_NAME, beat_at: now, details: newDetails })
-    .onConflict((oc) => oc.column('name').doUpdateSet({ beat_at: now, details: newDetails }))
-    .execute();
-
-  await scheduleNextRun(db, 'ops_watchdog', CRON_JOBS.ops_watchdog);
-}
-
-// Postmark's total-message cap is 10 MB; leave headroom for the body + inline logo.
-const MAX_SCREENSHOT_ATTACH_BYTES = 7 * 1024 * 1024;
-
-/**
- * Email a user-submitted bug report to the operator (see modules/bug-reports). Sent to
- * OPS_ALERT_EMAIL with the Postmark from-address as the fallback — a bug report must not be
- * silently dropped just because the ops alert address isn't configured. The screenshot is
- * attached to the email itself: the blob is private and the operator has no tenant session,
- * so an attachment is the only zero-auth way for them to see it.
- */
-export async function handleSendBugReportEmail(
-  payload: JobPayloadOf<'send-bug-report-email'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  const report = await db
-    .selectFrom('bug_reports')
-    .selectAll()
-    .where('tenant_id', '=', payload.tenant_id)
-    .where('id', '=', payload.bugReportId)
-    .executeTakeFirst();
-  if (!report) {
-    logger.warn({ bugReportId: payload.bugReportId }, 'Bug report email: report row not found, skipping');
-    return;
-  }
-
-  const reporter = await db
-    .selectFrom('authusers')
-    .select(['email', 'first_name', 'last_name', 'role', 'campaign_id'])
-    .where('tenant_id', '=', payload.tenant_id)
-    .where('id', '=', report.created_by)
-    .executeTakeFirst();
-  const tenant = await db.selectFrom('tenants').select(['name']).where('id', '=', payload.tenant_id).executeTakeFirst();
-
-  const attachments: MailAttachment[] = [];
-  let screenshotNote = 'none';
-  if (report.screenshot_file_id) {
-    const file = await db
-      .selectFrom('files')
-      .select(['filename', 'mime_type', 'size_bytes', 'storage_key'])
-      .where('tenant_id', '=', payload.tenant_id)
-      .where('id', '=', report.screenshot_file_id)
-      .executeTakeFirst();
-    if (!file) {
-      screenshotNote = 'referenced upload no longer exists';
-    } else if (Number(file.size_bytes ?? 0) > MAX_SCREENSHOT_ATTACH_BYTES) {
-      screenshotNote = `too large to attach (${file.filename}, ${file.size_bytes} bytes, storage key ${file.storage_key})`;
-    } else {
-      try {
-        const data = await new StorageService().download(file.storage_key);
-        attachments.push({
-          name: file.filename || 'screenshot.png',
-          contentBase64: data.toString('base64'),
-          contentType: file.mime_type ?? 'application/octet-stream',
-        });
-        screenshotNote = `attached (${file.filename})`;
-      } catch (err) {
-        logger.error({ err, bugReportId: payload.bugReportId }, 'Bug report email: screenshot download failed');
-        screenshotNote = `download failed (storage key ${file.storage_key})`;
-      }
-    }
-  }
-
-  const reporterName = [reporter?.first_name, reporter?.last_name].filter(Boolean).join(' ') || 'unknown';
-  const body = [
-    `Reference: BR-${report.id}`,
-    `Tenant: ${tenant?.name ?? 'unknown'} (${payload.tenant_id})`,
-    `Reporter: ${reporterName} <${reporter?.email ?? 'unknown'}> — role ${reporter?.role ?? 'unknown'}, campaign ${reporter?.campaign_id ?? 'none'}`,
-    `Submitted: ${new Date(report.created_at).toISOString()}`,
-    `Page: ${report.page_url ?? 'not captured'}`,
-    `Browser: ${report.user_agent ?? 'not captured'}`,
-    `Viewport: ${report.viewport ?? 'not captured'}`,
-    `Screenshot: ${screenshotNote}`,
-    '',
-    'Description:',
-    report.description,
-  ].join('\n');
-
-  await mailService.sendMail({
-    to: env.opsAlertEmail ?? env.postmarkFromEmail,
-    subject: `pplCRM bug report BR-${report.id} (tenant ${payload.tenant_id})`,
-    text: body,
-    html: `<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(body)}</pre>`,
-    attachments,
-  });
-}
-
-function formatFailureSection(title: string, groups: FailureGroup[]): string {
-  const lines = groups.map(
-    (g) => `  - ${g.key}: ${g.count} failed. Last error: ${g.sample_error || '(none recorded)'}`,
-  );
-  return `${title}:\n${lines.join('\n')}`;
-}
-
-function summarize(
-  failedJobs: FailureGroup[],
-  failedWebhooks: FailureGroup[],
-  backlogged: boolean,
-  pausedCount: number,
-): string {
-  const parts: string[] = [];
-  const jobCount = failedJobs.reduce((sum, g) => sum + g.count, 0);
-  const webhookCount = failedWebhooks.reduce((sum, g) => sum + g.count, 0);
-  if (jobCount > 0) parts.push(`${jobCount} failed job${jobCount === 1 ? '' : 's'}`);
-  if (webhookCount > 0) parts.push(`${webhookCount} failed webhook${webhookCount === 1 ? '' : 's'}`);
-  if (backlogged) parts.push('queue backlog');
-  if (pausedCount > 0) parts.push(`${pausedCount} tenant${pausedCount === 1 ? '' : 's'} paused`);
-  return parts.join(', ');
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-````
-
-## File: apps/backend/src/app/lib/jobs/handlers/workflows.handlers.ts
-````typescript
-import type { Kysely, Selectable, Transaction } from 'kysely';
-import { sql } from 'kysely';
-import { WORKFLOW_EXIT_CONDITIONS, WORKFLOW_SEND_CONDITIONS, calculateWorkingTimeMs, planAllowsFeature } from '@common';
-import type { WorkflowExitCondition, WorkflowSendCondition } from '@common';
-import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { env } from '../../../../env';
-import { logger } from '../../../logger';
-import {
-  AUTOMATION_PHONE_UNVERIFIED_MESSAGE,
-  assertTenantSendingNotBlocked,
-  hasVerifiedSendingDomain,
-  loadSendingTenant,
-  needsPhoneVerification,
-  remainingSendAllowance,
-} from '../../../modules/newsletters/send-guards';
-import { encodeUnsubscribeToken } from '../../../modules/newsletters/unsubscribe-token';
-import { resolveAutomationSendConsent } from '../../../modules/workflows/automation-consent';
-import { CRON_JOBS } from '../cron-registry';
-import { DAY_MS, HOUR_MS, scheduleNextRun, TEN_MINUTES_MS } from '../reschedule';
-
-const ENROLLMENT_BATCH_SIZE = 500;
-
-/** The recipient must not be emailed (unsubscribed/suppressed/DNC). Recorded as a 'skipped'
- * run — not a failure — and the sequence advances past the step. */
-class SkipStepError extends Error {}
-
-/** The tenant temporarily can't send (paused/suspended/payment hold/allowance exhausted).
- * The enrollment is deferred an hour WITHOUT advancing — the email is delayed, never lost. */
-class RetryLaterError extends Error {}
-// Guard against a malformed sequence (e.g. an accidental cycle of zero-delay steps) monopolising
-// a worker tick. A real sequence pauses at each `wait`, so this only ever bites pathological data.
-const MAX_ACTIONS_PER_TICK = 50;
-
-// Spec §16 execution: process active enrollments whose next_run_at is due. A step's `kind`
-// decides what happens — `wait` reschedules and pauses the sequence; every action kind executes
-// immediately (chaining through consecutive actions in one tick) and writes a workflow_runs row
-// so the list's RUNS 30D / LAST RUN and the editor's RECENT RUNS reflect reality. Paused
-// automations are skipped: "Pausing stops new runs immediately — nothing queues while paused."
-export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<void> {
-  const now = new Date();
-  const pendingEnrollments = await db
-    .selectFrom('workflow_enrollments')
-    .selectAll()
-    .where('status', '=', 'active')
-    .where('next_run_at', '<=', now)
-    .limit(ENROLLMENT_BATCH_SIZE)
-    .execute();
-
-  // Plan gate, checked at processing time (once per tenant per tick): a tenant downgraded
-  // below the 'automations' feature's minimum plan must not keep running the automations it
-  // built while entitled. Ungated enrollments behave exactly like a paused workflow — nothing
-  // sends, nothing advances, nothing is deleted — and resume cleanly on re-upgrade.
-  const automationsAllowedByTenant = new Map<string, boolean>();
-
-  for (const enrollment of pendingEnrollments) {
-    try {
-      const tenantId = String(enrollment.tenant_id);
-      let automationsAllowed = automationsAllowedByTenant.get(tenantId);
-      if (automationsAllowed === undefined) {
-        const tenantRow = await db
-          .selectFrom('tenants')
-          .select('subscription_plan')
-          .where('id', '=', tenantId)
-          .executeTakeFirst();
-        automationsAllowed = planAllowsFeature(tenantRow?.subscription_plan, 'automations');
-        automationsAllowedByTenant.set(tenantId, automationsAllowed);
-        if (!automationsAllowed) {
-          logger.info(
-            { tenantId, plan: tenantRow?.subscription_plan ?? null },
-            '[plan-gate] Tenant plan does not include automations — drip enrollments deferred, not run',
-          );
-        }
-      }
-      if (!automationsAllowed) {
-        await db
-          .updateTable('workflow_enrollments')
-          .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
-          .where('id', '=', enrollment.id)
-          .execute();
-        continue;
-      }
-
-      await db.transaction().execute(async (trx) => {
-        const lockedEnrollment = await trx
-          .selectFrom('workflow_enrollments')
-          .selectAll()
-          .where('id', '=', enrollment.id)
-          .where('status', '=', 'active')
-          .where('next_run_at', '<=', now)
-          .forUpdate()
-          .skipLocked()
-          .executeTakeFirst();
-
-        if (!lockedEnrollment) return;
-
-        const workflow = await trx
-          .selectFrom('workflows')
-          .select(['id', 'name', 'status', 'createdby_id', 'exit_conditions'])
-          .where('id', '=', lockedEnrollment.workflow_id)
-          .executeTakeFirst();
-
-        // Workflow gone, or paused → do not run. Push the enrollment forward so a paused
-        // automation doesn't hot-loop the batch; it resumes cleanly when un-paused.
-        if (!workflow) {
-          await completeEnrollment(trx, lockedEnrollment.id);
-          return;
-        }
-        if (workflow.status === 'paused') {
-          await trx
-            .updateTable('workflow_enrollments')
-            .set({ next_run_at: new Date(Date.now() + TEN_MINUTES_MS), updated_at: new Date() })
-            .where('id', '=', lockedEnrollment.id)
-            .execute();
-          return;
-        }
-
-        const person = await trx
-          .selectFrom('persons')
-          .select(['id', 'email', 'first_name', 'last_name'])
-          .where('id', '=', lockedEnrollment.person_id)
-          .executeTakeFirst();
-
-        // Sequence-level goals: the moment one is met the enrollment ends — a supporter who
-        // already donated must not get the rest of the ask sequence.
-        const exitReason = await findMetExitCondition(trx, {
-          tenantId: lockedEnrollment.tenant_id,
-          enrollmentId: lockedEnrollment.id,
-          personId: lockedEnrollment.person_id,
-          enrolledAt: new Date(lockedEnrollment.enrolled_at),
-          exitConditions: workflow.exit_conditions,
-        });
-        if (exitReason) {
-          await recordRun(trx, {
-            tenantId: lockedEnrollment.tenant_id,
-            workflowId: lockedEnrollment.workflow_id,
-            enrollmentId: lockedEnrollment.id,
-            personId: lockedEnrollment.person_id,
-            stepNumber: null,
-            stepKind: 'exit',
-            status: 'success',
-            error: exitReason,
-          });
-          await trx
-            .updateTable('workflow_enrollments')
-            .set({ status: 'exited', next_run_at: null, updated_at: new Date() })
-            .where('id', '=', lockedEnrollment.id)
-            .execute();
-          return;
-        }
-
-        const actorId = workflow.createdby_id ? String(workflow.createdby_id) : null;
-        let currentStepNumber = lockedEnrollment.current_step_number;
-
-        for (let i = 0; i < MAX_ACTIONS_PER_TICK; i++) {
-          const step = await trx
-            .selectFrom('workflow_steps')
-            .selectAll()
-            .where('workflow_id', '=', lockedEnrollment.workflow_id)
-            .where('step_number', '=', currentStepNumber)
-            .executeTakeFirst();
-
-          if (!step) {
-            await completeEnrollment(trx, lockedEnrollment.id);
-            return;
-          }
-
-          const nextStep = await trx
-            .selectFrom('workflow_steps')
-            .select(['step_number'])
-            .where('workflow_id', '=', lockedEnrollment.workflow_id)
-            .where('step_number', '>', currentStepNumber)
-            .orderBy('step_number', 'asc')
-            .limit(1)
-            .executeTakeFirst();
-
-          // `wait`: schedule the delay, advance past the wait, and stop for this tick.
-          if (step.kind === 'wait') {
-            const delayMs =
-              step.delay_unit === 'hours' ? step.delay_days * 60 * 60 * 1000 : step.delay_days * 24 * 60 * 60 * 1000;
-            if (nextStep) {
-              await trx
-                .updateTable('workflow_enrollments')
-                .set({
-                  current_step_number: nextStep.step_number,
-                  next_run_at: new Date(Date.now() + delayMs),
-                  updated_at: new Date(),
-                })
-                .where('id', '=', lockedEnrollment.id)
-                .execute();
-            } else {
-              await completeEnrollment(trx, lockedEnrollment.id);
-            }
-            return;
-          }
-
-          // Action step: execute, record the run (success, skipped, or failed), then advance.
-          // send_email records its own run first (the delivery job carries the run id for
-          // engagement stamping); every other kind is recorded here after executing.
-          try {
-            const outcome = await executeActionStep(trx, {
-              tenantId: lockedEnrollment.tenant_id,
-              workflowId: lockedEnrollment.workflow_id,
-              enrollmentId: lockedEnrollment.id,
-              actorId,
-              person: person ?? null,
-              step,
-            });
-            if (!outcome.runRecorded) {
-              await recordRun(trx, {
-                tenantId: lockedEnrollment.tenant_id,
-                workflowId: lockedEnrollment.workflow_id,
-                enrollmentId: lockedEnrollment.id,
-                personId: lockedEnrollment.person_id,
-                stepNumber: step.step_number,
-                stepKind: step.kind,
-                status: 'success',
-                error: null,
-              });
-            }
-          } catch (err) {
-            // Tenant-level sending block: defer the whole enrollment an hour without advancing
-            // or recording a run — a welcome email during a payment hold is late, not lost.
-            if (err instanceof RetryLaterError) {
-              await trx
-                .updateTable('workflow_enrollments')
-                .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
-                .where('id', '=', lockedEnrollment.id)
-                .execute();
-              logger.info(
-                { workflowId: lockedEnrollment.workflow_id, reason: err.message },
-                'Automation send deferred — tenant sending blocked or allowance exhausted',
-              );
-              return;
-            }
-            const message = err instanceof Error ? err.message : String(err);
-            await recordRun(trx, {
-              tenantId: lockedEnrollment.tenant_id,
-              workflowId: lockedEnrollment.workflow_id,
-              enrollmentId: lockedEnrollment.id,
-              personId: lockedEnrollment.person_id,
-              stepNumber: step.step_number,
-              stepKind: step.kind,
-              status: err instanceof SkipStepError ? 'skipped' : 'failed',
-              error: message,
-            });
-            if (!(err instanceof SkipStepError)) {
-              logger.error({ err }, `Workflow ${lockedEnrollment.workflow_id} step ${step.step_number} failed`);
-            }
-            // Narrate-and-continue: the failing/skipped step is recorded; the sequence advances
-            // so one bad step doesn't wedge the enrollment forever (spec §16).
-          }
-
-          if (!nextStep) {
-            await completeEnrollment(trx, lockedEnrollment.id);
-            return;
-          }
-          currentStepNumber = nextStep.step_number;
-          await trx
-            .updateTable('workflow_enrollments')
-            .set({ current_step_number: currentStepNumber, next_run_at: new Date(), updated_at: new Date() })
-            .where('id', '=', lockedEnrollment.id)
-            .execute();
-        }
-      });
-    } catch (err) {
-      logger.error({ err }, `Failed to process workflow enrollment ${enrollment.id}`);
-    }
-  }
-
-  // A full batch means there is likely more work waiting — requeue immediately.
-  const delayMs = pendingEnrollments.length === ENROLLMENT_BATCH_SIZE ? 0 : CRON_JOBS.process_drip_workflows;
-  await scheduleNextRun(db, 'process_drip_workflows', delayMs);
-}
-
-const LAPSED_DEFAULT_DAYS = 90;
-const LAPSED_MIN_DAYS = 7;
-const MAX_LAPSED_ENROLLMENTS_PER_RUN = 500;
-
-/**
- * Daily scan behind the `supporter_lapsed` trigger ("Supporter goes quiet"). For each active
- * workflow on that trigger, find subscribed people whose consent predates the workflow's
- * inactivity window (trigger_event_id, days; default 90) and who have no opens/clicks inside
- * it, then enroll them through the normal trigger path (conditions respected).
- *
- * Re-enrollment hygiene: `enrollPerson` only blocks people with an ACTIVE enrollment, so a
- * completed win-back sequence would otherwise re-enroll the same person every day. Anyone
- * enrolled in this workflow within the last 2×N days is excluded — a person gets at most one
- * win-back per two windows. First activation on a big stale list is capped at 500 enrollments
- * per workflow per day (the sends are additionally metered by the tenant's caps).
- */
-export async function handleDetectLapsedSupporters(db: Kysely<Models>): Promise<void> {
-  const now = new Date();
-  const lapsedWorkflows = await db
-    .selectFrom('workflows')
-    .select(['id', 'tenant_id', 'trigger_event_id'])
-    .where('trigger_type', '=', 'supporter_lapsed')
-    .where('status', '=', 'active')
-    .execute();
-
-  if (lapsedWorkflows.length > 0) {
-    const { WorkflowsController } = await import('../../../modules/workflows/controller');
-    const controller = new WorkflowsController();
-
-    for (const wf of lapsedWorkflows) {
-      const tenantId = String(wf.tenant_id);
-      const workflowId = String(wf.id);
-      const days = Math.max(LAPSED_MIN_DAYS, parseInt(wf.trigger_event_id ?? '', 10) || LAPSED_DEFAULT_DAYS);
-      const cutoff = new Date(now.getTime() - days * DAY_MS);
-      const dedupeCutoff = new Date(now.getTime() - 2 * days * DAY_MS);
-
-      try {
-        const candidates = await db
-          .selectFrom('persons')
-          .select(['persons.id'])
-          .where('persons.tenant_id', '=', tenantId)
-          .where('persons.email', 'is not', null)
-          .where('persons.email', '!=', '')
-          // Subscribed long enough ago that "quiet since then" is meaningful.
-          .where(({ exists, selectFrom }) =>
-            exists(
-              selectFrom('campaign_subscriptions')
-                .select('campaign_subscriptions.id')
-                .where('campaign_subscriptions.tenant_id', '=', tenantId)
-                .where('campaign_subscriptions.status', '=', 'subscribed')
-                .where('campaign_subscriptions.consent_at', '<', cutoff)
-                .whereRef('campaign_subscriptions.person_id', '=', 'persons.id'),
-            ),
-          )
-          // No engagement inside the window — rollups first, then any un-pruned raw events.
-          .where(({ not, exists, selectFrom }) =>
-            not(
-              exists(
-                selectFrom('person_newsletter_engagements')
-                  .select('person_newsletter_engagements.email')
-                  .where('person_newsletter_engagements.tenant_id', '=', tenantId)
-                  .whereRef('person_newsletter_engagements.email', '=', 'persons.email')
-                  .where((inner) =>
-                    inner.or([
-                      inner('person_newsletter_engagements.last_opened_at', '>', cutoff),
-                      inner('person_newsletter_engagements.last_clicked_at', '>', cutoff),
-                    ]),
-                  ),
-              ),
-            ),
-          )
-          .where(({ not, exists, selectFrom }) =>
-            not(
-              exists(
-                selectFrom('newsletter_events')
-                  .select('newsletter_events.id')
-                  .where('newsletter_events.tenant_id', '=', tenantId)
-                  .whereRef('newsletter_events.email', '=', 'persons.email')
-                  .where('newsletter_events.event_type', 'in', ['open', 'click'])
-                  .where('newsletter_events.timestamp', '>', cutoff),
-              ),
-            ),
-          )
-          // Not enrolled in this workflow within the last two windows (any status).
-          .where(({ not, exists, selectFrom }) =>
-            not(
-              exists(
-                selectFrom('workflow_enrollments')
-                  .select('workflow_enrollments.id')
-                  .where('workflow_enrollments.tenant_id', '=', tenantId)
-                  .where('workflow_enrollments.workflow_id', '=', workflowId)
-                  .whereRef('workflow_enrollments.person_id', '=', 'persons.id')
-                  .where('workflow_enrollments.created_at', '>', dedupeCutoff),
-              ),
-            ),
-          )
-          .limit(MAX_LAPSED_ENROLLMENTS_PER_RUN)
-          .execute();
-
-        for (const candidate of candidates) {
-          // The trigger path evaluates the workflow's "ONLY ENROLL IF" conditions; passing the
-          // workflow's own trigger_event_id keeps differently-windowed workflows separate.
-          await controller.triggerWorkflow(tenantId, String(candidate.id), 'supporter_lapsed', wf.trigger_event_id);
-        }
-        if (candidates.length > 0) {
-          logger.info(
-            { workflowId, tenantId, enrolled: candidates.length, days },
-            '[supporter-lapsed] Enrolled quiet supporters',
-          );
-        }
-      } catch (err) {
-        logger.error({ err, workflowId }, '[supporter-lapsed] Failed to scan workflow');
-      }
-    }
-  }
-
-  await scheduleNextRun(db, 'detect_lapsed_supporters', CRON_JOBS.detect_lapsed_supporters);
-}
-
-/** Self-rescheduling hourly scan behind the `task_sla_breach` trigger ("Task breaches SLA"). */
-export async function handleDetectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
-  await detectTaskSlaBreaches(db);
-
-  await scheduleNextRun(db, 'detect_task_sla_breaches', CRON_JOBS.detect_task_sla_breaches);
-}
-
-const TASK_SLA_SCAN_CHUNK_SIZE = 500;
-
-/**
- * Hourly scan behind the `task_sla_breach` trigger (spec §4 → §16). For every open task not
- * yet marked breached, compute its working-hours age against the tenant's SLA target
- * (`sla.tasks_hours` + working days/hours — the same math as the sidebar badge's
- * countSlaBreaches). The first time a task crosses the target it is stamped
- * `sla_breached_at` (the once-only marker — later ticks skip stamped tasks), then the
- * task's linked person is enrolled through the normal trigger path (conditions respected).
- * Tasks with no linked person are stamped but skip enrollment: automations enroll persons.
- *
- * Keyset-paginated by task id (ascending `WHERE id > cursor`, not OFFSET) in chunks of
- * TASK_SLA_SCAN_CHUNK_SIZE, looping until a chunk comes back short — an unbounded, un-stamped
- * open-task backlog across every tenant must never be loaded into memory in one query. Each
- * chunk is grouped by tenant and scanned inside its own try/catch (same as before pagination),
- * so one tenant's failure only drops that slice of that chunk — it never kills the rest of the
- * chunk, later chunks, or other tenants' scans.
- */
-export async function detectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
-  const now = new Date();
-  const { WorkflowsController } = await import('../../../modules/workflows/controller');
-  const controller = new WorkflowsController();
-  const slaConfigByTenant = new Map<string, Awaited<ReturnType<typeof loadTaskSlaConfig>>>();
-
-  let cursor: string | null = null;
-  for (;;) {
-    let chunkQuery = db
-      .selectFrom('tasks')
-      .select(['id', 'tenant_id', 'created_at', 'person_id'])
-      .where('status', 'not in', ['done', 'archived'])
-      .where('sla_breached_at', 'is', null)
-      .orderBy('id', 'asc')
-      .limit(TASK_SLA_SCAN_CHUNK_SIZE);
-    if (cursor !== null) {
-      chunkQuery = chunkQuery.where('id', '>', cursor);
-    }
-    const chunk = await chunkQuery.execute();
-    if (chunk.length === 0) break;
-    const lastTask = chunk[chunk.length - 1];
-    // Unreachable: the length check above guarantees an element; satisfies noUncheckedIndexedAccess.
-    if (!lastTask) break;
-    cursor = String(lastTask.id);
-
-    const byTenant = new Map<string, typeof chunk>();
-    for (const task of chunk) {
-      const tenantId = String(task.tenant_id);
-      const list = byTenant.get(tenantId) ?? [];
-      list.push(task);
-      byTenant.set(tenantId, list);
-    }
-
-    for (const [tenantId, tasks] of byTenant.entries()) {
-      try {
-        let config = slaConfigByTenant.get(tenantId);
-        if (!config) {
-          config = await loadTaskSlaConfig(db, tenantId);
-          slaConfigByTenant.set(tenantId, config);
-        }
-        const slaMs = config.taskSlaHours * HOUR_MS;
-
-        for (const task of tasks) {
-          const workingMs = calculateWorkingTimeMs(
-            new Date(task.created_at),
-            now,
-            config.workingDays,
-            config.workingHoursStart,
-            config.workingHoursEnd,
-          );
-          if (workingMs <= slaMs) continue;
-
-          // Stamp before enrolling: even if enrollment fails, the trigger fires at most once
-          // per task. The `is null` guard makes concurrent ticks race-safe — only the tick
-          // that flips the marker proceeds to enroll.
-          const stamped = await db
-            .updateTable('tasks')
-            .set({ sla_breached_at: now })
-            .where('tenant_id', '=', tenantId)
-            .where('id', '=', String(task.id))
-            .where('sla_breached_at', 'is', null)
-            .returning('id')
-            .executeTakeFirst();
-          if (!stamped) continue;
-
-          if (!task.person_id) {
-            logger.info(
-              { tenantId, taskId: String(task.id) },
-              '[task-sla] Task breached SLA but has no linked person — skipping automation enrollment',
-            );
-            continue;
-          }
-
-          try {
-            await controller.triggerWorkflow(tenantId, String(task.person_id), 'task_sla_breach', null);
-          } catch (err) {
-            logger.error(
-              { err, tenantId, taskId: String(task.id) },
-              '[task-sla] Failed to fire task_sla_breach trigger',
-            );
-          }
-        }
-      } catch (err) {
-        logger.error({ err, tenantId }, '[task-sla] Failed to scan tenant for task SLA breaches');
-      }
-    }
-
-    if (chunk.length < TASK_SLA_SCAN_CHUNK_SIZE) break;
-  }
-}
-
-/** The tenant's working-hours SLA settings, with the same fallbacks used tenant-wide. */
-async function loadTaskSlaConfig(
-  db: Kysely<Models>,
-  tenantId: string,
-): Promise<{
-  taskSlaHours: number;
-  workingDays: number[];
-  workingHoursStart: string;
-  workingHoursEnd: string;
-}> {
-  const rows = await db
-    .selectFrom('settings')
-    .select(['key', 'value'])
-    .where('tenant_id', '=', tenantId)
-    .where('key', 'in', ['sla.tasks_hours', 'sla.working_days', 'sla.working_hours_start', 'sla.working_hours_end'])
-    .execute();
-  const settingsMap = rows.reduce<Record<string, unknown>>((acc, row) => {
-    acc[row.key] = row.value;
-    return acc;
-  }, {});
-
-  const workingDaysStr = String(settingsMap['sla.working_days'] ?? '1,2,3,4,5');
-  return {
-    taskSlaHours: Number(settingsMap['sla.tasks_hours'] ?? 24),
-    workingDays: workingDaysStr
-      .split(',')
-      .map((s) => Number(s.trim()))
-      .filter((n) => !isNaN(n)),
-    workingHoursStart: String(settingsMap['sla.working_hours_start'] ?? '09:00'),
-    workingHoursEnd: String(settingsMap['sla.working_hours_end'] ?? '17:00'),
-  };
-}
-
-async function completeEnrollment(trx: Transaction<Models>, enrollmentId: string): Promise<void> {
-  await trx
-    .updateTable('workflow_enrollments')
-    .set({ status: 'completed', next_run_at: null, updated_at: new Date() })
-    .where('id', '=', enrollmentId)
-    .execute();
-}
-
-interface RunRecord {
-  tenantId: string;
-  workflowId: string;
-  enrollmentId: string;
-  personId: string;
-  stepNumber: number | null;
-  stepKind: string;
-  status: 'success' | 'failed' | 'skipped';
-  error: string | null;
-}
-
-async function recordRun(trx: Transaction<Models>, run: RunRecord): Promise<void> {
-  await trx
-    .insertInto('workflow_runs')
-    .values({
-      tenant_id: run.tenantId,
-      workflow_id: run.workflowId,
-      enrollment_id: run.enrollmentId,
-      person_id: run.personId,
-      step_number: run.stepNumber,
-      step_kind: run.stepKind,
-      status: run.status,
-      error: run.error,
-    })
-    .execute();
-}
-
-interface StepPerson {
-  id: string;
-  email: string | null;
-  first_name: string | null;
-  last_name: string | null;
-}
-
-export interface ActionContext {
-  tenantId: string;
-  workflowId: string;
-  enrollmentId: string;
-  actorId: string | null;
-  person: StepPerson | null;
-  step: Selectable<Models['workflow_steps']>;
-}
-
-interface ActionOutcome {
-  /** True when the step already wrote its own workflow_runs row (send_email does, so the
-   * delivery job can carry the run id). */
-  runRecorded: boolean;
-}
-
-function readConfig(config: unknown): Record<string, unknown> {
-  if (config == null) return {};
-  if (typeof config === 'string') {
-    try {
-      const parsed: unknown = JSON.parse(config);
-      return parsed != null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-    } catch {
-      return {};
-    }
-  }
-  return typeof config === 'object' ? (config as Record<string, unknown>) : {};
-}
-
-function str(value: unknown): string | null {
-  return value == null ? null : String(value);
-}
-
-/** Enqueued-but-unsent automation deliveries for the tenant. Quota is metered on actual
- * delivery, so these are invisible to `remainingSendAllowance` — the enqueue-time check
- * subtracts them to stay honest about what is already committed to go out. */
-async function pendingAutomationSendCount(trx: Transaction<Models>, tenantId: string): Promise<number> {
-  const row = await trx
-    .selectFrom('background_jobs')
-    .select((eb) => eb.fn.countAll<number>().as('total'))
-    .where('tenant_id', '=', tenantId)
-    .where('status', 'in', ['pending', 'processing'])
-    .where(sql`payload->>'type'`, '=', 'send-automation-email')
-    .executeTakeFirst();
-  return Number(row?.total ?? 0);
-}
-
-// Executes a single action step. Throws with a human-readable message on failure so the caller
-// records a failed run whose `error` narrates what went wrong (surfaced on the list + editor).
-// Exported for unit tests (the drip handler is the only production caller).
-export async function executeActionStep(trx: Transaction<Models>, ctx: ActionContext): Promise<ActionOutcome> {
-  const { step, person } = ctx;
-  const config = readConfig(step.config);
-
-  switch (step.kind) {
-    case 'send_email': {
-      if (!person?.email) throw new Error('Contact has no email address to send to');
-      // An empty step must fail loudly, not fall back to a canned "this is an automated
-      // message" body — a placeholder email to a real supporter damages trust.
-      // Same merge-token syntax as the newsletter composer; substituted here because the
-      // delivery path sends content verbatim.
-      const substitute = (content: string): string =>
-        content
-          .replaceAll('{{first_name}}', person.first_name || 'there')
-          .replaceAll('{{last_name}}', person.last_name || '');
-      const text = step.plain_text_content ? substitute(step.plain_text_content) : null;
-      const html = step.html_content ? substitute(step.html_content) : null;
-      if (!text && !html) throw new Error('This email step has no content — edit the step and add a message');
-
-      // Engagement gate first — the sequence author said not to send in this case, so it
-      // outranks even consent checks (delay-then-check drip: pair with a preceding wait step).
-      const sendCondition = parseSendCondition(config['send_condition']);
-      if (sendCondition) {
-        const previous = await trx
-          .selectFrom('workflow_runs')
-          .select(['opened_at', 'clicked_at'])
-          .where('tenant_id', '=', ctx.tenantId)
-          .where('enrollment_id', '=', ctx.enrollmentId)
-          .where('step_kind', '=', 'send_email')
-          .where('status', '=', 'success')
-          .where('step_number', '<', step.step_number)
-          .orderBy('step_number', 'desc')
-          .limit(1)
-          .executeTakeFirst();
-        const verdict = evaluateSendCondition(sendCondition, previous ?? null);
-        if (!verdict.send) throw new SkipStepError(verdict.reason);
-      }
-
-      // Consent (unsubscribed/suppressed/DNC) → skip this recipient, honestly narrated.
-      const consent = await resolveAutomationSendConsent(trx, ctx.tenantId, { id: person.id, email: person.email });
-      if (!consent.ok) throw new SkipStepError(consent.reason);
-
-      // Automation emails obey the same tenant sending gates and caps as newsletters — an
-      // automation must not be a side-channel around pauses, holds, or the plan meter.
-      const tenant = await loadSendingTenant(trx, ctx.tenantId);
-      try {
-        assertTenantSendingNotBlocked(tenant);
-      } catch (err) {
-        throw new RetryLaterError(err instanceof Error ? err.message : String(err));
-      }
-
-      // Same identity gates as newsletters, in the newsletter path's order: a verified sending
-      // domain (automation emails send from the tenant's own domain via SendGrid, never a
-      // platform address), and on Free a verified mobile number. Both need the user to act, so
-      // the run fails with the fix named rather than deferring forever.
-      if (!(await hasVerifiedSendingDomain(trx, ctx.tenantId))) {
-        throw new Error(
-          'Verify a sending domain and choose a From address (Settings) so automation emails can send. This email was not sent.',
-        );
-      }
-      if (needsPhoneVerification(tenant)) {
-        throw new Error(AUTOMATION_PHONE_UNVERIFIED_MESSAGE);
-      }
-
-      // Caps: quota is metered on actual delivery (the send-automation-email handler writes
-      // newsletter_send_log), so enqueued-but-unsent jobs are invisible to the meter — count
-      // them against the allowance here so a burst of due enrollments can't enqueue past it.
-      const pendingSends = await pendingAutomationSendCount(trx, ctx.tenantId);
-      if ((await remainingSendAllowance(trx, tenant, new Date())) - pendingSends < 1) {
-        throw new RetryLaterError('Sending allowance exhausted for now');
-      }
-
-      const unsubscribeUrl = `${env.apiUrl}/api/unsubscribe/${encodeUnsubscribeToken({
-        tenantId: ctx.tenantId,
-        personId: person.id,
-        email: person.email,
-      })}`;
-
-      // Record the run BEFORE enqueueing the delivery job — the job carries the run id as a
-      // SendGrid custom arg, and the event webhook stamps opens/clicks back onto this row.
-      // Same transaction, so a rollback takes both the run and the job (no ghosts either way).
-      const run = await trx
-        .insertInto('workflow_runs')
-        .values({
-          tenant_id: ctx.tenantId,
-          workflow_id: ctx.workflowId,
-          enrollment_id: ctx.enrollmentId,
-          person_id: person.id,
-          step_number: step.step_number,
-          step_kind: step.kind,
-          status: 'success',
-          error: null,
-        })
-        .returning('id')
-        .executeTakeFirstOrThrow();
-
-      await trx
-        .insertInto('background_jobs')
-        .values({
-          tenant_id: ctx.tenantId,
-          queue: 'default',
-          status: 'pending',
-          payload: JSON.stringify({
-            type: 'send-automation-email',
-            tenantId: ctx.tenantId,
-            workflowRunId: String(run.id),
-            to: person.email,
-            subject: step.subject ? substitute(step.subject) : 'Automated message',
-            text: text ?? '',
-            html: html ?? '',
-            unsubscribeUrl,
-            // Quota is metered by the delivery handler after SendGrid accepts the send — a job
-            // that exhausts its retries must not consume allowance. The flag marks payloads
-            // enqueued under that scheme; legacy jobs without it were already metered here at
-            // enqueue time and must not be counted twice.
-            meterOnSend: true,
-          }),
-          run_at: new Date(),
-          max_attempts: 5,
-        })
-        .execute();
-      return { runRecorded: true };
-    }
-
-    case 'add_tag': {
-      if (!person) throw new Error('No contact to tag');
-      const tagId = str(config['tag_id']);
-      if (!tagId) throw new Error('No tag configured for this step');
-      if (!ctx.actorId) throw new Error('Automation has no owner to attribute the tag to');
-      const exists = await trx
-        .selectFrom('map_peoples_tags')
-        .select('person_id')
-        .where('tenant_id', '=', ctx.tenantId)
-        .where('person_id', '=', person.id)
-        .where('tag_id', '=', tagId)
-        .executeTakeFirst();
-      if (!exists) {
-        await trx
-          .insertInto('map_peoples_tags')
-          .values({
-            tenant_id: ctx.tenantId,
-            person_id: person.id,
-            tag_id: tagId,
-            createdby_id: ctx.actorId,
-            updatedby_id: ctx.actorId,
-          })
-          .execute();
-      }
-      return { runRecorded: false };
-    }
-
-    case 'create_task': {
-      if (!ctx.actorId) throw new Error('Automation has no owner to assign the task to');
-      const title = str(config['task_title']) || 'Follow up';
-      const contactName = person ? `${person.first_name || ''} ${person.last_name || ''}`.trim() : '';
-      await trx
-        .insertInto('tasks')
-        .values({
-          tenant_id: ctx.tenantId,
-          name: title,
-          details: contactName ? `Automation task for ${contactName}` : undefined,
-          status: 'todo',
-          priority: 'medium',
-          position: 0,
-          // Link the task to the enrolled contact so a later SLA breach can enroll them
-          // in a task_sla_breach automation (spec §4 → §16).
-          person_id: person ? String(person.id) : null,
-          createdby_id: ctx.actorId,
-          updatedby_id: ctx.actorId,
-        })
-        .execute();
-      return { runRecorded: false };
-    }
-
-    case 'notify_team': {
-      const targetUserId = str(config['notify_user_id']) || ctx.actorId;
-      if (!targetUserId) throw new Error('No team member configured to notify');
-      const contactName = person ? `${person.first_name || ''} ${person.last_name || ''}`.trim() : 'a contact';
-      const message = str(config['notify_message']) || `Automation update for ${contactName}`;
-      await trx
-        .insertInto('notifications')
-        .values({
-          tenant_id: ctx.tenantId,
-          user_id: targetUserId,
-          title: 'Automation notification',
-          message,
-          type: 'info',
-          read: false,
-        })
-        .execute();
-      return { runRecorded: false };
-    }
-
-    case 'wait':
-      // Handled by the caller before reaching here.
-      return { runRecorded: false };
-
-    default: {
-      const _exhaustive: never = step.kind;
-      throw new Error(`Unknown step kind: ${String(_exhaustive)}`);
-    }
-  }
-}
-
-/* ── Engagement-reactive primitives ──────────────────────────────────────────── */
-
-export interface SendConditionInput {
-  opened_at: Date | string | null;
-  clicked_at: Date | string | null;
-}
-
-export type SendConditionVerdict = { send: true } | { send: false; reason: string };
-
-function parseSendCondition(value: unknown): WorkflowSendCondition | null {
-  return typeof value === 'string' && (WORKFLOW_SEND_CONDITIONS as readonly string[]).includes(value)
-    ? (value as WorkflowSendCondition)
-    : null;
-}
-
-/**
- * Gate a send_email step on what the recipient did with the PREVIOUS email in this sequence.
- * `previous` is the most recent successfully-sent email run for the enrollment, or null when
- * this is the first email — in which case "did engage" conditions can never hold (skip) and
- * "did not engage" conditions trivially hold (send). Pure, for unit tests.
- */
-export function evaluateSendCondition(
-  condition: WorkflowSendCondition,
-  previous: SendConditionInput | null,
-): SendConditionVerdict {
-  const opened = previous?.opened_at != null;
-  const clicked = previous?.clicked_at != null;
-  switch (condition) {
-    case 'previous_not_opened':
-      return opened
-        ? { send: false, reason: 'They opened the previous email, so this follow-up was skipped' }
-        : { send: true };
-    case 'previous_not_clicked':
-      return clicked
-        ? { send: false, reason: 'They clicked the previous email, so this follow-up was skipped' }
-        : { send: true };
-    case 'previous_opened':
-      if (!previous)
-        return { send: false, reason: 'No earlier email in this sequence to check, so this step was skipped' };
-      return opened
-        ? { send: true }
-        : { send: false, reason: 'The previous email was not opened, so this step was skipped' };
-    case 'previous_clicked':
-      if (!previous)
-        return { send: false, reason: 'No earlier email in this sequence to check, so this step was skipped' };
-      return clicked
-        ? { send: true }
-        : { send: false, reason: 'The previous email was not clicked, so this step was skipped' };
-    default: {
-      const _exhaustive: never = condition;
-      throw new Error(`Unknown send condition: ${String(_exhaustive)}`);
-    }
-  }
-}
-
-function parseExitConditions(value: unknown): WorkflowExitCondition[] {
-  let parsed: unknown = value;
-  if (typeof parsed === 'string') {
-    try {
-      parsed = JSON.parse(parsed);
-    } catch {
-      return [];
-    }
-  }
-  if (!Array.isArray(parsed)) return [];
-  return parsed.filter((v): v is WorkflowExitCondition =>
-    (WORKFLOW_EXIT_CONDITIONS as readonly string[]).includes(String(v)),
-  );
-}
-
-interface ExitContext {
-  tenantId: string;
-  enrollmentId: string;
-  personId: string;
-  enrolledAt: Date;
-  exitConditions: unknown;
-}
-
-/**
- * The first met sequence goal, as a human-readable narration, or null when none is met.
- * 'donated' looks for a standing (non-refunded) gift recorded after enrollment; the engagement
- * goals read the opens/clicks the event webhook stamped onto this enrollment's email runs.
- */
-async function findMetExitCondition(trx: Transaction<Models>, ctx: ExitContext): Promise<string | null> {
-  const conditions = parseExitConditions(ctx.exitConditions);
-  if (conditions.length === 0) return null;
-
-  if (conditions.includes('donated')) {
-    const gift = await trx
-      .selectFrom('donations')
-      .select('id')
-      .where('tenant_id', '=', ctx.tenantId)
-      .where('person_id', '=', ctx.personId)
-      .where('created_at', '>', ctx.enrolledAt)
-      .where('refunded_at', 'is', null)
-      .limit(1)
-      .executeTakeFirst();
-    if (gift) return 'Goal met: they donated. The rest of the sequence was skipped.';
-  }
-
-  if (conditions.includes('clicked_any_email')) {
-    const clicked = await trx
-      .selectFrom('workflow_runs')
-      .select('id')
-      .where('tenant_id', '=', ctx.tenantId)
-      .where('enrollment_id', '=', ctx.enrollmentId)
-      .where('clicked_at', 'is not', null)
-      .limit(1)
-      .executeTakeFirst();
-    if (clicked) return 'Goal met: they clicked an email in this sequence. The rest was skipped.';
-  }
-
-  if (conditions.includes('opened_any_email')) {
-    const opened = await trx
-      .selectFrom('workflow_runs')
-      .select('id')
-      .where('tenant_id', '=', ctx.tenantId)
-      .where('enrollment_id', '=', ctx.enrollmentId)
-      .where('opened_at', 'is not', null)
-      .limit(1)
-      .executeTakeFirst();
-    if (opened) return 'Goal met: they opened an email in this sequence. The rest was skipped.';
-  }
-
-  return null;
-}
-````
-
-## File: apps/backend/src/app/lib/jobs/reschedule.ts
-````typescript
-import type { Kysely } from 'kysely';
-import { sql } from 'kysely';
-import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
-import { logger } from '../../logger';
-// Type-only import: cron-registry imports the interval constants from this module, so a value
-// import here would close a runtime cycle (and TDZ-crash whichever module loads second).
-import type { CronJobType } from './cron-registry';
-import type { JobType } from './job-payloads';
-
-const MINUTE_MS = 60 * 1000;
-export const FIVE_MINUTES_MS = 5 * MINUTE_MS;
-export const TEN_MINUTES_MS = 10 * MINUTE_MS;
-export const HOUR_MS = 60 * MINUTE_MS;
-export const DAY_MS = 24 * 60 * MINUTE_MS;
-
-const DEFAULT_MAX_ATTEMPTS = 3;
-
-/**
- * Re-queues a parameterless periodic job to run again after `delayMs`.
- * Used by the self-rescheduling cron-style jobs (cleanup, dedupe, sync scheduling, …).
- *
- * Dedup guard: a self-rescheduling handler calls this at the end of its own run, and if it
- * crashes after this insert but before the worker marks it 'completed', the stale-recovery
- * requeues it and it re-runs — inserting a second next-run each time, so the cron would
- * multiply without bound. Only enqueue when no PENDING run of this type already exists (the
- * currently-'processing' job — this one — is intentionally NOT counted, or it would block its
- * own chain).
- *
- * A plain `SELECT ... FOR UPDATE` can't serialize this: when there is no pending row yet, it locks
- * nothing, so two concurrent schedulers of the same type both see "none" and both insert, forking
- * the chain. We take a transaction-scoped advisory lock keyed by the job type first — that
- * serializes on the type itself (not on a row), so the second scheduler blocks until the first
- * commits and then correctly sees the row it inserted.
- */
-export async function scheduleNextRun(db: Kysely<Models>, type: JobType, delayMs: number): Promise<void> {
-  await db.transaction().execute(async (trx) => {
-    await sql`SELECT pg_advisory_xact_lock(hashtext(${type}))`.execute(trx);
-
-    const existing = await trx
-      .selectFrom('background_jobs')
-      .select('id')
-      .where('status', '=', 'pending')
-      .where(sql`payload->>'type'`, '=', type)
-      .executeTakeFirst();
-    if (existing) return; // a future run of this cron job is already queued — don't stack another
-
-    await trx
-      .insertInto('background_jobs')
-      .values({
-        tenant_id: null,
-        queue: 'default',
-        status: 'pending',
-        payload: JSON.stringify({ type }),
-        run_at: new Date(Date.now() + delayMs),
-        max_attempts: DEFAULT_MAX_ATTEMPTS,
-      })
-      .execute();
-  });
-}
-
-/**
- * Seeds the first run of one cron-style job at boot, so a freshly-provisioned (or wiped) queue
- * starts every recurring chain without anyone hand-maintaining a list of them.
- *
- * Same advisory-lock idiom, and for the same reason, as `scheduleNextRun`: every replica calls this
- * on startup, and a plain check-then-insert (even with `FOR UPDATE`) locks nothing when there is no
- * row yet, so N replicas booting together would each insert a seed and fork the chain N ways.
- *
- * Unlike `scheduleNextRun`, this also treats a 'processing' row as "already seeded": the chain is
- * alive and its handler will enqueue the next run when it finishes. (`scheduleNextRun` deliberately
- * excludes 'processing' because the job calling it *is* that processing row, and counting it would
- * block the chain from ever continuing.)
- */
-export async function seedCronJob(db: Kysely<Models>, type: CronJobType): Promise<void> {
-  await db.transaction().execute(async (trx) => {
-    await sql`SELECT pg_advisory_xact_lock(hashtext(${type}))`.execute(trx);
-
-    const existing = await trx
-      .selectFrom('background_jobs')
-      .select('id')
-      .where('status', 'in', ['pending', 'processing'])
-      .where(sql`payload->>'type'`, '=', type)
-      .executeTakeFirst();
-    if (existing) return;
-
-    logger.info({ type }, 'Seeding recurring background job');
-    await trx
-      .insertInto('background_jobs')
-      .values({
-        tenant_id: null,
-        queue: 'default',
-        status: 'pending',
-        payload: JSON.stringify({ type }),
-        run_at: new Date(),
-        max_attempts: DEFAULT_MAX_ATTEMPTS,
-      })
-      .execute();
-  });
 }
 ````
 
@@ -49675,978 +48277,6 @@ const volunteerEventsPublicRoute: FastifyPluginCallback = (fastify, _, done) => 
 export default volunteerEventsPublicRoute;
 ````
 
-## File: apps/backend/src/app/modules/volunteer-events/controller.ts
-````typescript
-import { BaseController } from '../../lib/base.controller';
-import { VolunteerEventsRepo } from './repositories/volunteer-events.repo';
-import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
-import type { AddVolunteerShiftType, UpdateVolunteerShiftType } from '../../../../../../libs/common/src';
-import type { OperationDataType, Models } from '../../../../../../libs/common/src/lib/kysely.models';
-import type { Transaction, UpdateObject } from 'kysely';
-import { sql } from 'kysely';
-import { TRPCError } from '@trpc/server';
-import { publicOrgName } from '../../lib/public-tenant';
-import { WorkflowsController } from '../workflows/controller';
-import { logger } from '../../logger';
-
-const DEFAULT_FIELDS = ['first_name', 'last_name', 'email', 'mobile', 'notes'];
-
-const ipSignupTimestamps = new Map<string, number[]>();
-const SIGNUP_RATE_LIMIT_MAX = 5;
-const SIGNUP_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
-
-export class VolunteerEventsController extends BaseController<'volunteer_events', VolunteerEventsRepo> {
-  constructor() {
-    super(new VolunteerEventsRepo());
-  }
-
-  public async getAllEvents(auth: IAuthKeyPayload, options?: any) {
-    return this.getRepo().getAllEventsWithCount({
-      tenant_id: auth.tenant_id,
-      options,
-    });
-  }
-
-  // payload is the pre-coercion wire shape (start_time/end_time arrive as ISO
-  // strings from the tRPC boundary, not Date); typing it to the parsed DTO would
-  // reject those. Left loose at this coercion boundary — see events/controller.
-  public async addEvent(payload: any, auth: IAuthKeyPayload) {
-    const existing = await this.getRepo()
-      .db.selectFrom('volunteer_events')
-      .select('id')
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('slug', '=', payload.slug)
-      .executeTakeFirst();
-    if (existing) {
-      throw new TRPCError({
-        code: 'BAD_REQUEST',
-        message: 'This URL slug is already in use. Please choose a different one.',
-      });
-    }
-
-    if (payload.start_time && payload.end_time && new Date(payload.end_time) <= new Date(payload.start_time)) {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'End date & time must be after the start date & time.' });
-    }
-
-    const row = {
-      tenant_id: auth.tenant_id,
-      createdby_id: auth.user_id,
-      updatedby_id: auth.user_id,
-      name: payload.name,
-      description: payload.description ?? null,
-      location_address: payload.location_address ?? null,
-      start_time: payload.start_time,
-      end_time: payload.end_time,
-      capacity: payload.capacity ?? null,
-      contact_email: payload.contact_email ?? null,
-      contact_phone: payload.contact_phone ?? null,
-      is_private: payload.is_private ?? false,
-      send_reminder: payload.send_reminder ?? true,
-      send_signup_confirmation: payload.send_signup_confirmation ?? true,
-      send_volunteer_alert: payload.send_volunteer_alert ?? true,
-      slug: payload.slug,
-      // `fields` is a jsonb column but the generated Kysely model types it as `string[]`.
-      // node-postgres serializes a raw JS array parameter as a Postgres ARRAY literal
-      // (e.g. `{a,b,c}`), which Postgres then rejects as invalid JSON for a jsonb column.
-      // Stringifying it first makes node-postgres send plain text, which Postgres casts
-      // to jsonb correctly.
-      fields: JSON.stringify(payload.fields ?? DEFAULT_FIELDS) as unknown as string[],
-    } as OperationDataType<'volunteer_events', 'insert'>;
-    return this.add(row);
-  }
-
-  public async checkSlugUnique(slug: string, excludeId: string | null, _auth: IAuthKeyPayload) {
-    if (!slug) return { unique: true };
-    let query = this.getRepo()
-      .db.selectFrom('volunteer_events')
-      .select('id')
-      .where('tenant_id', '=', _auth.tenant_id)
-      .where('slug', '=', slug);
-    if (excludeId) {
-      query = query.where('id', '!=', excludeId);
-    }
-    const existing = await query.executeTakeFirst();
-    return { unique: !existing };
-  }
-
-  // Loose at the coercion boundary, same as addEvent above.
-  public async updateEvent(id: string, payload: any, auth: IAuthKeyPayload) {
-    if (payload.slug) {
-      const existing = await this.getRepo()
-        .db.selectFrom('volunteer_events')
-        .select('id')
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('slug', '=', payload.slug)
-        .where('id', '!=', id)
-        .executeTakeFirst();
-      if (existing) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: 'This URL slug is already in use. Please choose a different one.',
-        });
-      }
-    }
-
-    if (payload.start_time && payload.end_time && new Date(payload.end_time) <= new Date(payload.start_time)) {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'End date & time must be after the start date & time.' });
-    }
-
-    // `fields` is a jsonb column but modeled as `string[]`; pull it out of the raw payload
-    // spread and stringify it so node-postgres sends valid JSON text instead of a Postgres
-    // ARRAY literal (see addEvent() above for the full explanation).
-    const { fields, ...restPayload } = payload;
-    const row = {
-      ...restPayload,
-      ...(fields !== undefined ? { fields: JSON.stringify(fields) as unknown as string[] } : {}),
-      updatedby_id: auth.user_id,
-    } as OperationDataType<'volunteer_events', 'update'>;
-    const result = await this.update({
-      tenant_id: auth.tenant_id,
-      id,
-      row,
-    });
-
-    if (payload.send_reminder === false) {
-      try {
-        await this.getRepo()
-          .db.deleteFrom('background_jobs')
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('status', '=', 'pending')
-          .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
-          .where(sql`payload->>'eventId'`, '=', String(id))
-          .execute();
-      } catch (err) {
-        logger.error({ err }, 'Failed to clean up pending reminders for disabled event reminders');
-      }
-    } else if (payload.send_reminder === true) {
-      try {
-        // Fetch all signed up shifts for this event
-        const shifts = await this.getRepo()
-          .db.selectFrom('volunteer_shifts')
-          .select(['id', 'person_id'])
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('event_id', '=', id)
-          .where('status', '=', 'signed_up')
-          .execute();
-
-        // Fetch event start time
-        const event = await this.getRepo()
-          .db.selectFrom('volunteer_events')
-          .select(['start_time'])
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('id', '=', id)
-          .executeTakeFirst();
-
-        if (event) {
-          const startMs = new Date(event.start_time).getTime();
-          const nowMs = Date.now();
-          if (startMs > nowMs) {
-            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
-            for (const shift of shifts) {
-              // Delete existing pending reminder for safety
-              await this.getRepo()
-                .db.deleteFrom('background_jobs')
-                .where('tenant_id', '=', auth.tenant_id)
-                .where('status', '=', 'pending')
-                .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
-                .where(sql`payload->>'shiftId'`, '=', String(shift.id))
-                .execute();
-
-              // Queue new reminder
-              await this.getRepo()
-                .db.insertInto('background_jobs')
-                .values({
-                  tenant_id: auth.tenant_id,
-                  queue: 'default',
-                  status: 'pending',
-                  payload: JSON.stringify({
-                    type: 'send-shift-reminder',
-                    shiftId: String(shift.id),
-                    eventId: String(id),
-                    personId: String(shift.person_id),
-                    tenantId: auth.tenant_id,
-                  }),
-                  run_at: runAt,
-                })
-                .execute();
-            }
-          }
-        }
-      } catch (err) {
-        logger.error({ err }, 'Failed to re-schedule shift reminders for event');
-      }
-    }
-
-    return result;
-  }
-
-  public async getShiftsForEvent(event_id: string, auth: IAuthKeyPayload) {
-    return this.getRepo().getShiftsForEvent({
-      tenant_id: auth.tenant_id,
-      event_id,
-    });
-  }
-
-  public async signupVolunteer(payload: AddVolunteerShiftType, auth: IAuthKeyPayload) {
-    const result = await this.getRepo().signupVolunteer({
-      tenant_id: auth.tenant_id,
-      event_id: payload.event_id,
-      person_id: payload.person_id,
-      status: payload.status,
-      hours_worked: payload.hours_worked,
-      notes: payload.notes,
-      user_id: auth.user_id,
-    });
-
-    if (result && result.status === 'signed_up') {
-      try {
-        const event = await this.getRepo()
-          .db.selectFrom('volunteer_events')
-          .select(['start_time', 'send_reminder'])
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('id', '=', payload.event_id)
-          .executeTakeFirst();
-
-        if (event && event.send_reminder !== false) {
-          const startMs = new Date(event.start_time).getTime();
-          const nowMs = Date.now();
-          if (startMs > nowMs) {
-            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
-            await this.getRepo()
-              .db.insertInto('background_jobs')
-              .values({
-                tenant_id: auth.tenant_id,
-                queue: 'default',
-                status: 'pending',
-                payload: JSON.stringify({
-                  type: 'send-shift-reminder',
-                  shiftId: String(result.id),
-                  eventId: String(payload.event_id),
-                  personId: String(payload.person_id),
-                  tenantId: auth.tenant_id,
-                }),
-                run_at: runAt,
-              })
-              .execute();
-          }
-        }
-      } catch (err) {
-        logger.error({ err }, 'Failed to schedule shift reminder for volunteer');
-      }
-
-      // Trigger volunteer signup workflows
-      try {
-        const workflowsController = new WorkflowsController();
-        await this.getRepo()
-          .transaction()
-          .execute(async (trx) => {
-            await workflowsController.triggerVolunteerSignup(
-              auth.tenant_id,
-              String(payload.person_id),
-              String(payload.event_id),
-              trx,
-            );
-          });
-      } catch (err) {
-        logger.error({ err }, 'Failed to trigger volunteer signup workflows');
-      }
-    }
-
-    if (result && result.status) {
-      try {
-        const workflowsController = new WorkflowsController();
-        await this.getRepo()
-          .transaction()
-          .execute(async (trx) => {
-            await workflowsController.triggerWorkflow(
-              auth.tenant_id,
-              String(payload.person_id),
-              'volunteer_shift_status',
-              result.status,
-              trx,
-            );
-          });
-      } catch (err) {
-        logger.error({ err }, 'Failed to trigger volunteer_shift_status workflow in signupVolunteer');
-      }
-    }
-
-    try {
-      await this.userActivity.log({
-        tenant_id: auth.tenant_id,
-        user_id: auth.user_id,
-        activity: 'assign',
-        entity: 'volunteer_shifts',
-        entity_id: result?.id ? String(result.id) : null,
-        quantity: 1,
-        metadata: { id: result?.id, event_id: payload.event_id, person_id: payload.person_id },
-      });
-    } catch (e) {
-      logger.error({ err: e }, 'Failed to log shift signup activity');
-    }
-
-    return result;
-  }
-
-  public async updateShift(id: string, payload: UpdateVolunteerShiftType, auth: IAuthKeyPayload) {
-    const result = await this.getRepo().updateShift({
-      tenant_id: auth.tenant_id,
-      id,
-      row: payload,
-      user_id: auth.user_id,
-    });
-
-    if (result) {
-      // Trigger volunteer shift status workflows
-      if (payload.status) {
-        try {
-          const workflowsController = new WorkflowsController();
-          await this.getRepo()
-            .transaction()
-            .execute(async (trx) => {
-              await workflowsController.triggerWorkflow(
-                auth.tenant_id,
-                String(result.person_id),
-                'volunteer_shift_status',
-                payload.status,
-                trx,
-              );
-            });
-        } catch (err) {
-          logger.error({ err }, 'Failed to trigger volunteer_shift_status workflows');
-        }
-      }
-
-      try {
-        if (payload.status && payload.status !== 'signed_up') {
-          // Cancel/remove pending reminder
-          await this.getRepo()
-            .db.deleteFrom('background_jobs')
-            .where('tenant_id', '=', auth.tenant_id)
-            .where('status', '=', 'pending')
-            .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
-            .where(sql`payload->>'shiftId'`, '=', String(id))
-            .execute();
-        } else if (payload.status === 'signed_up') {
-          // Remove existing pending reminders first
-          await this.getRepo()
-            .db.deleteFrom('background_jobs')
-            .where('tenant_id', '=', auth.tenant_id)
-            .where('status', '=', 'pending')
-            .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
-            .where(sql`payload->>'shiftId'`, '=', String(id))
-            .execute();
-
-          // Fetch event to check if we should schedule a new reminder
-          const event = await this.getRepo()
-            .db.selectFrom('volunteer_events')
-            .select(['start_time', 'send_reminder'])
-            .where('tenant_id', '=', auth.tenant_id)
-            .where('id', '=', result.event_id)
-            .executeTakeFirst();
-
-          if (event && event.send_reminder !== false) {
-            const startMs = new Date(event.start_time).getTime();
-            const nowMs = Date.now();
-            if (startMs > nowMs) {
-              const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
-              await this.getRepo()
-                .db.insertInto('background_jobs')
-                .values({
-                  tenant_id: auth.tenant_id,
-                  queue: 'default',
-                  status: 'pending',
-                  payload: JSON.stringify({
-                    type: 'send-shift-reminder',
-                    shiftId: String(id),
-                    eventId: String(result.event_id),
-                    personId: String(result.person_id),
-                    tenantId: auth.tenant_id,
-                  }),
-                  run_at: runAt,
-                })
-                .execute();
-            }
-          }
-        }
-      } catch (err) {
-        logger.error({ err }, 'Failed to update shift reminder job status');
-      }
-    }
-
-    try {
-      await this.userActivity.log({
-        tenant_id: auth.tenant_id,
-        user_id: auth.user_id,
-        activity: 'update',
-        entity: 'volunteer_shifts',
-        entity_id: id,
-        quantity: 1,
-        metadata: { id, status: payload.status },
-      });
-    } catch (e) {
-      logger.error({ err: e }, 'Failed to log shift update activity');
-    }
-
-    return result;
-  }
-
-  public async deleteShift(id: string, auth: IAuthKeyPayload) {
-    const result = await this.getRepo().deleteShift({
-      tenant_id: auth.tenant_id,
-      id,
-    });
-
-    if (result) {
-      try {
-        await this.getRepo()
-          .db.deleteFrom('background_jobs')
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('status', '=', 'pending')
-          .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
-          .where(sql`payload->>'shiftId'`, '=', String(id))
-          .execute();
-      } catch (err) {
-        logger.error({ err }, 'Failed to delete pending shift reminder job');
-      }
-    }
-
-    try {
-      await this.userActivity.log({
-        tenant_id: auth.tenant_id,
-        user_id: auth.user_id,
-        activity: 'delete',
-        entity: 'volunteer_shifts',
-        entity_id: id,
-        quantity: 1,
-        metadata: { id },
-      });
-    } catch (e) {
-      logger.error({ err: e }, 'Failed to log shift delete activity');
-    }
-
-    return result;
-  }
-
-  public async getHistoryForPerson(person_id: string, auth: IAuthKeyPayload) {
-    return this.getRepo().getHistoryForPerson({
-      tenant_id: auth.tenant_id,
-      person_id,
-    });
-  }
-
-  public async getVolunteerStats(person_id: string, auth: IAuthKeyPayload) {
-    return this.getRepo().getVolunteerStats({
-      tenant_id: auth.tenant_id,
-      person_id,
-    });
-  }
-
-  public async getTenantPublic(tenantId: string) {
-    return this.getRepo().db.selectFrom('tenants').select(['name']).where('id', '=', tenantId).executeTakeFirst();
-  }
-
-  public async getUpcomingEventsPublic(tenantId: string) {
-    return this.getRepo()
-      .db.selectFrom('volunteer_events')
-      .select([
-        'volunteer_events.id',
-        'volunteer_events.tenant_id',
-        'volunteer_events.name',
-        'volunteer_events.description',
-        'volunteer_events.location_address',
-        'volunteer_events.start_time',
-        'volunteer_events.end_time',
-        'volunteer_events.capacity',
-        'volunteer_events.contact_email',
-        'volunteer_events.contact_phone',
-        'volunteer_events.is_private',
-        'volunteer_events.send_reminder',
-        'volunteer_events.slug',
-      ])
-      .select((eb) => [
-        eb
-          .selectFrom('volunteer_shifts')
-          .whereRef('volunteer_shifts.event_id', '=', 'volunteer_events.id')
-          .select(({ fn }) => [fn.count<number>('volunteer_shifts.id').as('volunteers_count')])
-          .as('volunteers_count'),
-      ])
-      .where('volunteer_events.tenant_id', '=', tenantId)
-      .where('volunteer_events.end_time', '>=', new Date())
-      .where('volunteer_events.is_private', '=', false)
-      .orderBy('volunteer_events.start_time', 'asc')
-      .execute();
-  }
-
-  /**
-   * Public signup-page lookup. Tenant-scoped by slug: volunteer-event slugs are unique per tenant,
-   * and the tenant is resolved from the subdomain (lib/public-tenant) before any event query runs.
-   */
-  public async getEventPublic(tenantId: string, slug: string) {
-    return this.getRepo()
-      .db.selectFrom('volunteer_events')
-      .select([
-        'volunteer_events.id',
-        'volunteer_events.tenant_id',
-        'volunteer_events.name',
-        'volunteer_events.description',
-        'volunteer_events.location_address',
-        'volunteer_events.start_time',
-        'volunteer_events.end_time',
-        'volunteer_events.capacity',
-        'volunteer_events.contact_email',
-        'volunteer_events.contact_phone',
-        'volunteer_events.is_private',
-        'volunteer_events.send_reminder',
-        'volunteer_events.slug',
-        'volunteer_events.fields',
-      ])
-      .select((eb) => [
-        eb
-          .selectFrom('volunteer_shifts')
-          .whereRef('volunteer_shifts.event_id', '=', 'volunteer_events.id')
-          .select(({ fn }) => [fn.count<number>('volunteer_shifts.id').as('volunteers_count')])
-          .as('volunteers_count'),
-      ])
-      .where('volunteer_events.tenant_id', '=', tenantId)
-      .where('volunteer_events.slug', '=', slug)
-      .executeTakeFirst();
-  }
-
-  /**
-   * Everything the public /v/:slug SPA page renders in one payload: the event, live signup count,
-   * and the org name. Unknown slugs throw NOT_FOUND.
-   */
-  public async getPublicEventConfig(tenantId: string, slug: string) {
-    const event = await this.getEventPublic(tenantId, slug);
-    if (!event) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: 'Event not found.' });
-    }
-
-    const orgName = await publicOrgName(tenantId);
-    const volunteersCount = Number(event.volunteers_count || 0);
-    const isPast = new Date(event.end_time) < new Date();
-    const isFull = event.capacity !== null && volunteersCount >= event.capacity;
-    const remaining = event.capacity !== null ? Math.max(0, event.capacity - volunteersCount) : null;
-
-    const fields: string[] = Array.isArray(event.fields)
-      ? event.fields
-      : typeof event.fields === 'string'
-        ? JSON.parse(event.fields)
-        : ['first_name', 'last_name', 'email', 'mobile', 'notes'];
-
-    return {
-      orgName,
-      event: {
-        name: String(event.name),
-        description: event.description ?? null,
-        location_address: event.location_address ?? null,
-        start_time: event.start_time,
-        end_time: event.end_time,
-        capacity: event.capacity ?? null,
-        contact_email: event.contact_email ?? null,
-        contact_phone: event.contact_phone ?? null,
-        is_private: !!event.is_private,
-        fields,
-      },
-      volunteersCount,
-      isPast,
-      isFull,
-      remaining,
-    };
-  }
-
-  /** Upcoming public volunteer events for the tenant's /volunteer listing page. */
-  public async getPublicEventListing(tenantId: string) {
-    const [orgName, events] = await Promise.all([publicOrgName(tenantId), this.getUpcomingEventsPublic(tenantId)]);
-    return {
-      orgName,
-      events: events.map((ev) => {
-        const volunteersCount = Number(ev.volunteers_count || 0);
-        const remaining = ev.capacity !== null ? Math.max(0, ev.capacity - volunteersCount) : null;
-        return {
-          slug: String(ev.slug),
-          name: String(ev.name),
-          description: ev.description ?? null,
-          location_address: ev.location_address ?? null,
-          start_time: ev.start_time,
-          end_time: ev.end_time,
-          capacity: ev.capacity ?? null,
-          isFull: ev.capacity !== null && volunteersCount >= ev.capacity,
-          remaining,
-        };
-      }),
-    };
-  }
-
-  public async signupVolunteerPublic(
-    tenantId: string,
-    slug: string,
-    payload: Record<string, string>,
-    clientIp: string,
-    opts?: { skipIpRateLimit?: boolean },
-  ) {
-    // 1. Rate limiting check. Keyed (workspace-API-key) submissions skip the per-IP window —
-    // they come from one integration server and are rate-limited per tenant by the route.
-    if (!opts?.skipIpRateLimit) {
-      const now = Date.now();
-      let timestamps = ipSignupTimestamps.get(clientIp) || [];
-      timestamps = timestamps.filter((t) => now - t < SIGNUP_RATE_LIMIT_WINDOW_MS);
-      if (timestamps.length >= SIGNUP_RATE_LIMIT_MAX) {
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Rate limit exceeded. Please try again in a minute.',
-        });
-      }
-      timestamps.push(now);
-      // Prune the key if empty to prevent unbounded Map growth across long-lived processes
-      if (timestamps.length > 0) {
-        ipSignupTimestamps.set(clientIp, timestamps);
-      } else {
-        ipSignupTimestamps.delete(clientIp);
-      }
-    }
-
-    // 2. Fetch the event — tenant-scoped by slug
-    const event = await this.getEventPublic(tenantId, slug);
-    if (!event) {
-      throw new TRPCError({
-        code: 'NOT_FOUND',
-        message: 'Event not found.',
-      });
-    }
-
-    // 3. Honeypot check
-    if (payload['_hp'] && payload['_hp'].trim().length > 0) {
-      logger.warn(`Spam bot detected from IP ${clientIp} for volunteer event ${slug}`);
-      return { success: true }; // Silent mock success
-    }
-
-    // 4. Validate email
-    const email = payload['email']?.trim();
-    if (!email) {
-      throw new TRPCError({
-        code: 'BAD_REQUEST',
-        message: 'Email address is required.',
-      });
-    }
-
-    // 5. Check capacity limit
-    const currentCount = Number(event.volunteers_count || 0);
-    if (event.capacity !== null && currentCount >= event.capacity) {
-      throw new TRPCError({
-        code: 'BAD_REQUEST',
-        message: 'This event is already at full capacity.',
-      });
-    }
-
-    const firstName = payload['first_name'] || payload['firstName'] || null;
-    const lastName = payload['last_name'] || payload['lastName'] || null;
-    const mobile = payload['mobile'] || payload['phone'] || null;
-    const notes = payload['notes'] || payload['message'] || null;
-
-    // 6. Transaction to find/create person, tags, and shift
-    await this.getRepo()
-      .transaction()
-      .execute(async (trx: Transaction<Models>) => {
-        const tenantRow = await trx
-          .selectFrom('tenants')
-          .select(['placeholder_household_id', 'admin_id'])
-          .where('id', '=', tenantId)
-          .executeTakeFirst();
-
-        const householdId = tenantRow?.placeholder_household_id;
-        const creatorId = tenantRow?.admin_id;
-
-        if (!householdId) {
-          throw new Error('Tenant placeholder household is not configured.');
-        }
-        if (!creatorId) {
-          throw new Error('Tenant admin_id is not configured.');
-        }
-
-        const campaignId = await this.getCampaignId(tenantId, trx);
-
-        // Check if email already exists
-        const existing = await trx
-          .selectFrom('persons')
-          .select(['id', 'first_name', 'last_name', 'mobile', 'notes'])
-          .where('tenant_id', '=', tenantId)
-          .where(sql`lower(email)`, '=', email.toLowerCase())
-          .executeTakeFirst();
-
-        let personId: string;
-
-        if (existing) {
-          personId = String(existing.id);
-          const updateRow: UpdateObject<Models, 'persons'> = {
-            updatedby_id: creatorId,
-            updated_at: sql`now()`,
-          };
-          if (!existing.first_name && firstName) updateRow.first_name = firstName;
-          if (!existing.last_name && lastName) updateRow.last_name = lastName;
-          if (!existing.mobile && mobile) updateRow.mobile = mobile;
-          if (!existing.notes && notes) {
-            updateRow.notes = notes;
-          } else if (existing.notes && notes) {
-            updateRow.notes = `${existing.notes}\n\nVolunteer Signup notes: ${notes}`;
-          }
-
-          if (Object.keys(updateRow).length > 2) {
-            await trx
-              .updateTable('persons')
-              .set(updateRow)
-              .where('tenant_id', '=', tenantId)
-              .where('id', '=', existing.id)
-              .execute();
-          }
-        } else {
-          const insertRow = {
-            tenant_id: tenantId,
-            campaign_id: campaignId,
-            household_id: householdId,
-            createdby_id: creatorId,
-            updatedby_id: creatorId,
-            first_name: firstName,
-            last_name: lastName,
-            email: email,
-            mobile: mobile,
-            notes: notes,
-          };
-          const insertRes = await trx.insertInto('persons').values(insertRow).returning('id').executeTakeFirstOrThrow();
-          personId = String(insertRes.id);
-
-          // Trigger contact created workflow
-          try {
-            const workflowsController = new WorkflowsController();
-            await workflowsController.triggerWorkflow(tenantId, personId, 'contact_created', null, trx);
-          } catch (err) {
-            logger.error({ err }, 'Failed to trigger contact_created workflow in signupVolunteerPublic');
-          }
-        }
-
-        // Check if shift already exists
-        const existingShift = await trx
-          .selectFrom('volunteer_shifts')
-          .select('id')
-          .where('tenant_id', '=', tenantId)
-          .where('event_id', '=', event.id)
-          .where('person_id', '=', personId)
-          .executeTakeFirst();
-
-        if (existingShift) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'You are already signed up for this event.',
-          });
-        }
-
-        const workflowsController = new WorkflowsController();
-
-        // Add tag "volunteer" and "event: <event name>"
-        const allTagsToApply = ['volunteer', `event: ${event.name}`];
-        for (const tagName of allTagsToApply) {
-          const normalizedTagName = tagName.trim().toLowerCase();
-          if (!normalizedTagName) continue;
-
-          let tag = await trx
-            .selectFrom('tags')
-            .select('id')
-            .where('tenant_id', '=', tenantId)
-            .where('name', '=', normalizedTagName)
-            .where('type', '=', 'tag')
-            .executeTakeFirst();
-
-          if (!tag) {
-            try {
-              const insertTagRes = await trx
-                .insertInto('tags')
-                .values({
-                  tenant_id: tenantId,
-                  name: normalizedTagName,
-                  type: 'tag',
-                  deletable: true,
-                  createdby_id: creatorId,
-                  updatedby_id: creatorId,
-                })
-                .returning('id')
-                .executeTakeFirst();
-              if (insertTagRes) {
-                tag = { id: insertTagRes.id };
-              }
-            } catch (insertErr) {
-              // Concurrent insert fallback: fetch the tag that was just inserted
-              tag = await trx
-                .selectFrom('tags')
-                .select('id')
-                .where('tenant_id', '=', tenantId)
-                .where('name', '=', normalizedTagName)
-                .where('type', '=', 'tag')
-                .executeTakeFirst();
-              if (!tag) throw insertErr;
-            }
-          }
-
-          if (tag) {
-            const mapExists = await trx
-              .selectFrom('map_peoples_tags')
-              .select('person_id')
-              .where('tenant_id', '=', tenantId)
-              .where('person_id', '=', personId)
-              .where('tag_id', '=', tag.id)
-              .executeTakeFirst();
-
-            if (!mapExists) {
-              await trx
-                .insertInto('map_peoples_tags')
-                .values({
-                  tenant_id: tenantId,
-                  person_id: personId,
-                  tag_id: tag.id,
-                  createdby_id: creatorId,
-                  updatedby_id: creatorId,
-                })
-                .onConflict((oc) => oc.columns(['tenant_id', 'person_id', 'tag_id']).doNothing())
-                .execute();
-
-              // Trigger tag_added and specialized subscriber workflows
-              try {
-                await workflowsController.triggerTagAdded(tenantId, personId, String(tag.id), normalizedTagName, trx);
-              } catch (err) {
-                logger.error({ err }, 'Failed to trigger tag_added workflow in signupVolunteerPublic');
-              }
-            }
-          }
-        }
-
-        // Insert Shift
-        const shiftResult = await trx
-          .insertInto('volunteer_shifts')
-          .values({
-            tenant_id: tenantId,
-            event_id: event.id,
-            person_id: personId,
-            status: 'signed_up',
-            notes: notes,
-            createdby_id: creatorId,
-            updatedby_id: creatorId,
-          })
-          .returning('id')
-          .executeTakeFirstOrThrow();
-
-        const shiftId = shiftResult.id;
-
-        // Log user activity
-        await trx
-          .insertInto('user_activity')
-          .values({
-            tenant_id: tenantId,
-            user_id: creatorId,
-            activity: 'signup',
-            entity: 'volunteer_events',
-            entity_id: String(event.id),
-            quantity: 1,
-            metadata: JSON.stringify({ person_id: personId, email }),
-            createdby_id: creatorId,
-            updatedby_id: creatorId,
-          })
-          .execute();
-
-        // Queue email notification job in background
-        await trx
-          .insertInto('background_jobs')
-          .values({
-            tenant_id: tenantId,
-            queue: 'default',
-            status: 'pending',
-            payload: JSON.stringify({
-              type: 'send-form-notifications',
-              eventId: String(event.id),
-              tenantId,
-              email,
-              firstName,
-              lastName,
-              mobile,
-              notes,
-            }),
-            run_at: new Date(),
-          })
-          .execute();
-
-        // Queue shift reminder email if enabled
-        if (event.send_reminder !== false) {
-          const startMs = new Date(event.start_time).getTime();
-          const nowMs = Date.now();
-          if (startMs > nowMs) {
-            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
-            await trx
-              .insertInto('background_jobs')
-              .values({
-                tenant_id: tenantId,
-                queue: 'default',
-                status: 'pending',
-                payload: JSON.stringify({
-                  type: 'send-shift-reminder',
-                  shiftId: String(shiftId),
-                  eventId: String(event.id),
-                  personId: String(personId),
-                  tenantId,
-                }),
-                run_at: runAt,
-              })
-              .execute();
-          }
-        }
-
-        // Trigger volunteer signup workflows
-        try {
-          const workflowsController = new WorkflowsController();
-          await workflowsController.triggerVolunteerSignup(tenantId, personId, String(event.id), trx);
-        } catch (err) {
-          logger.error({ err }, 'Failed to trigger volunteer signup workflows in public form');
-        }
-      });
-
-    return { success: true };
-  }
-
-  private async getCampaignId(tenantId: string, trx: Transaction<Models>): Promise<string> {
-    const row = await trx
-      .selectFrom('settings')
-      .select('value')
-      .where('tenant_id', '=', tenantId)
-      .where('key', '=', 'current_campaign')
-      .executeTakeFirst();
-
-    if (row) {
-      const value = row.value;
-      if (typeof value === 'number' || typeof value === 'string') {
-        return String(value);
-      }
-      if (value && typeof value === 'object' && 'id' in (value as Record<string, unknown>)) {
-        const id = (value as Record<string, unknown>)['id'];
-        if (typeof id === 'number' || typeof id === 'string') {
-          return String(id);
-        }
-      }
-    }
-
-    const campaignRow = await trx
-      .selectFrom('campaigns')
-      .select('id')
-      .where('tenant_id', '=', tenantId)
-      .limit(1)
-      .executeTakeFirst();
-
-    if (campaignRow) {
-      return String(campaignRow.id);
-    }
-
-    throw new Error('No campaign found for this tenant.');
-  }
-}
-````
-
 ## File: apps/backend/src/app/modules/workflows/automation-consent.ts
 ````typescript
 import type { Kysely, Transaction } from 'kysely';
@@ -51222,6 +48852,108 @@ export const adminOrOwnerProcedure = authProcedure.use(async (opts) => {
   }
   return opts.next({ ctx });
 });
+````
+
+## File: apps/backend/project.json
+````json
+{
+  "name": "backend",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/backend/src",
+  "projectType": "application",
+  "tags": [],
+  "targets": {
+    "generate-context": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx repomix --output apps/backend/STRUCTURE.md --include \"apps/backend/src/**/*\" --ignore \"apps/frontend/**,apps/libs/**,libs/**,**/STRUCTURE.md,**/_migrations/schema.sql,**/*.spec.ts\""
+      }
+    },
+    "build": {
+      "executor": "@nx/esbuild:esbuild",
+      "dependsOn": ["generate-context"],
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "production",
+      "options": {
+        "platform": "node",
+        "outputPath": "dist/apps/backend",
+        "format": ["esm"],
+        "main": "apps/backend/src/main.ts",
+        "tsConfig": "apps/backend/tsconfig.app.json",
+        "assets": ["apps/backend/src/assets"],
+        "generatePackageJson": false,
+        "esbuildOptions": {
+          "packages": "external",
+          "external": ["aws-sdk", "nock", "mock-aws-s3"],
+          "loader": {
+            ".html": "text"
+          },
+          "sourcemap": "inline",
+          "outExtension": {
+            ".js": ".js"
+          }
+        }
+      },
+      "configurations": {
+        "development": {
+          "bundle": true
+        },
+        "production": {
+          "bundle": true,
+          "esbuildOptions": {
+            "sourcemap": false,
+            "packages": "external",
+            "external": ["aws-sdk", "nock", "mock-aws-s3"],
+            "loader": {
+              ".html": "text"
+            },
+            "outExtension": {
+              ".js": ".js"
+            }
+          }
+        }
+      }
+    },
+    "serve": {
+      "executor": "@nx/js:node",
+      "defaultConfiguration": "development",
+      "options": {
+        "buildTarget": "backend:build"
+      },
+      "configurations": {
+        "development": {
+          "buildTarget": "backend:build:development",
+          "runtimeArgs": [
+            "--inspect=9229",
+            "--enable-source-maps",
+            "--env-file=.env.development",
+            "--disable-warning=DEP0205"
+          ]
+        },
+        "production": {
+          "buildTarget": "backend:build:production",
+          "runtimeArgs": ["--enable-source-maps", "--env-file=.env.production", "--disable-warning=DEP0205"]
+        }
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "outputs": ["{workspaceRoot}/coverage/apps/backend"],
+      "options": {
+        "cwd": "apps/backend",
+        "command": "vitest run"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["apps/backend/**/*.ts"]
+      }
+    }
+  }
+}
 ````
 
 ## File: apps/website/src/app/pricing/pricing-page.html
@@ -51952,234 +49684,6 @@ export function buildAutomationFooter(
 }
 ````
 
-## File: apps/backend/src/app/lib/jobs/handlers/deletions.handlers.ts
-````typescript
-import type { Kysely, Transaction } from 'kysely';
-import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { logger } from '../../../logger';
-import { tombstoneAuthUser } from '../../tombstone-user';
-import { TransactionalEmailService } from '../../mail/transactional-mail.service';
-import { CRON_JOBS } from '../cron-registry';
-import { scheduleNextRun } from '../reschedule';
-
-const mailService = new TransactionalEmailService();
-
-/**
- * Every tenant-scoped table, ordered children-before-parents, that a full tenant wipe must clear.
- * A table left out of this list holds NO-ACTION foreign keys into rows the wipe deletes later, which
- * aborts the whole delete transaction with a 23503 — that is exactly how the pre-2026-07-24 handler
- * silently stopped deleting any tenant that had ever used donations, canvassing, deliveries or
- * newsletter templates. The order is a topological sort of the schema's FK graph (only NO ACTION /
- * RESTRICT edges constrain the order; CASCADE / SET NULL edges do not).
- *
- * `deletions.handlers.spec.ts` asserts this list stays in sync with every live `tenant_id` table —
- * those in schema.sql AND those created by dated migrations (minus tables a later migration drops,
- * and the identity tables handled explicitly below) — so a new table can never silently reintroduce
- * the bug. Do NOT reorder casually — keep children before their parents.
- *
- * Deliberately excluded (handled explicitly in the identity block after this loop): `authusers`,
- * `profiles`, `sessions`, `passkeys` (identity), and `tenants` itself (the final delete).
- */
-export const TENANT_SCOPED_TABLES = [
-  'background_jobs',
-  'bug_reports',
-  'campaign_person_facts',
-  'campaign_subscriptions',
-  'companies',
-  'companion_ops',
-  'companion_sessions',
-  'companion_volunteers',
-  'data_exports',
-  'data_imports',
-  'delivery_requests',
-  'delivery_route_stops',
-  'delivery_routes',
-  'dismissed_duplicate_groups',
-  'donation_periods',
-  'donation_pledges',
-  'donations',
-  'email_attachments',
-  'email_bodies',
-  'email_comments',
-  'email_drafts',
-  'email_headers',
-  'email_read_states',
-  'email_recipients',
-  'email_suppressions',
-  'email_trash',
-  'emails',
-  'event_registrations',
-  'event_ticket_types',
-  'events',
-  'files',
-  'form_submissions',
-  'google_oauth_tokens',
-  'lists',
-  'map_campaigns_users',
-  'map_households_tags',
-  'map_lists_households',
-  'map_lists_persons',
-  'map_newsletters_lists',
-  'map_peoples_tags',
-  'map_teams_lists',
-  'map_teams_persons',
-  'map_web_forms_lists',
-  'ms_oauth_tokens',
-  'newsletter_content_checks',
-  'newsletter_events',
-  'newsletter_send_log',
-  'newsletter_templates',
-  'newsletters',
-  'notifications',
-  'person_connections',
-  'person_newsletter_engagements',
-  'persons',
-  'potential_duplicates',
-  'settings',
-  'tags',
-  'task_attachments',
-  'task_comments',
-  'task_subtasks',
-  'tasks',
-  'teams',
-  'turf_assignments',
-  'turf_households',
-  'turf_knocks',
-  'turfs',
-  'user_activity',
-  'volunteer_events',
-  'volunteer_shifts',
-  'web_forms',
-  'webhook_events',
-  'workflow_enrollments',
-  'workflow_runs',
-  'workflow_steps',
-  'workflows',
-  'workspace_api_keys',
-  'zapier_subscriptions',
-  'households',
-  'campaigns',
-] as const;
-
-/** Identity tables wiped explicitly, in this order, after every content table for the tenant is gone. */
-async function wipeTenant(trx: Transaction<Models>, tenantId: string): Promise<void> {
-  for (const table of TENANT_SCOPED_TABLES) {
-    await trx.deleteFrom(table).where('tenant_id', '=', tenantId).execute();
-  }
-
-  // Null out BOTH authusers FKs on tenants before deleting authusers (admin_id AND createdby_id —
-  // missing either aborts the whole wipe with a 23503).
-  await trx.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
-  await trx.deleteFrom('passkeys').where('tenant_id', '=', tenantId).execute();
-  await trx.deleteFrom('sessions').where('tenant_id', '=', tenantId).execute();
-  await trx.deleteFrom('profiles').where('tenant_id', '=', tenantId).execute();
-  await trx.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
-  await trx.deleteFrom('tenants').where('id', '=', tenantId).execute();
-}
-
-export async function handlePerformScheduledDeletions(db: Kysely<Models>): Promise<void> {
-  // The reschedule lives in the finally: even if the framing queries below throw, the cron chain
-  // must never die — the worker's rescheduleCronJobOnFailure is only a backstop, not the plan.
-  try {
-    await performScheduledDeletions(db);
-  } finally {
-    await scheduleNextRun(db, 'perform_scheduled_deletions', CRON_JOBS.perform_scheduled_deletions);
-  }
-}
-
-/** Exported for tests; production entry is handlePerformScheduledDeletions (adds the reschedule). */
-export async function performScheduledDeletions(db: Kysely<Models>): Promise<void> {
-  const now = new Date();
-
-  // Each user/tenant is deleted in its own transaction wrapped in its own try/catch so one failure
-  // (an FK we missed, a locked row, a transient DB error) rolls back only that record and the loop
-  // continues — a single bad row must never abort the cron and freeze every other pending deletion.
-  const failures: string[] = [];
-
-  const expiredUsers = await db
-    .selectFrom('authusers')
-    .select(['id', 'tenant_id'])
-    .where('deletion_scheduled_at', '<=', now)
-    .where('deleted_at', 'is', null)
-    .execute();
-
-  for (const user of expiredUsers) {
-    const userId = String(user.id);
-    try {
-      // Tombstone, not hard delete: ~61 NO ACTION FKs (createdby_id etc.) reference authusers, so
-      // a DELETE 23503s for anyone who ever acted in the app — which used to make this loop re-fail
-      // the same users silently every day, forever. The identity is scrubbed in place and the row
-      // stays; authored content remains with the tenant, attributed to "Deleted user".
-      await db.transaction().execute(async (trx) => {
-        await tombstoneAuthUser(trx, { tenantId: String(user.tenant_id), userId, updatedbyId: userId });
-      });
-    } catch (err) {
-      failures.push(`user ${userId}`);
-      logger.error({ err, userId }, 'Failed to tombstone scheduled user; continuing with remaining deletions');
-    }
-  }
-
-  const expiredTenants = await db
-    .selectFrom('tenants')
-    .select('id')
-    .where('deletion_scheduled_at', '<=', now)
-    .execute();
-
-  for (const tenant of expiredTenants) {
-    const tenantId = String(tenant.id);
-
-    // Capture owner emails before deletion — the whole tenant (background_jobs included) is wiped
-    // inside the transaction, so read this first.
-    let ownerUsers: { email: string | null; first_name: string | null }[] = [];
-    try {
-      ownerUsers = await db
-        .selectFrom('authusers')
-        .select(['email', 'first_name'])
-        .where('tenant_id', '=', tenantId)
-        .where('role', '=', 'owner')
-        .execute();
-
-      logger.info(`Hard-deleting tenant ${tenantId} (deletion_scheduled_at <= now)…`);
-      await db.transaction().execute((trx) => wipeTenant(trx, tenantId));
-      logger.info(`Tenant ${tenantId} fully hard-deleted.`);
-    } catch (err) {
-      failures.push(`tenant ${tenantId}`);
-      logger.error({ err, tenantId }, 'Failed to hard-delete scheduled tenant; continuing with remaining deletions');
-      continue;
-    }
-
-    // Send confirmation emails after the transaction commits (outside the wiped tenant scope).
-    for (const owner of ownerUsers) {
-      if (owner.email) {
-        try {
-          await mailService.sendMail({
-            to: owner.email,
-            subject: 'Your account data has been permanently deleted',
-            text: `Hi ${owner.first_name},\n\nAll data associated with your pplCRM account has been permanently and securely deleted as requested. You will not be billed going forward.\n\nThank you for using pplCRM.`,
-            html: `<h2>Account data deleted</h2>
-<p>Hi ${owner.first_name},</p>
-<p>All data associated with your pplCRM account has been permanently and securely deleted as requested. You will not be billed going forward.</p>
-<p>Thank you for using pplCRM. If you ever wish to return, you are always welcome to create a new account.</p>`,
-          });
-        } catch (err) {
-          // The tenant is already gone; a failed confirmation email must not fail the run.
-          logger.error({ err, tenantId }, 'Failed to send tenant-deletion confirmation email');
-        }
-      }
-    }
-  }
-
-  if (failures.length > 0) {
-    logger.error({ failures }, `Scheduled deletions completed with ${failures.length} failure(s)`);
-    // Rethrow so the worker retries and then marks the job 'failed' — the ops digest only reports
-    // failed jobs, and a swallowed failure here is invisible forever (the pre-2026-07-24 user-branch
-    // bug). The next daily run is already scheduled by handlePerformScheduledDeletions' finally, and
-    // re-running is idempotent: succeeded deletions no longer match the framing queries.
-    throw new Error(`Scheduled deletions failed for: ${failures.join(', ')}`);
-  }
-}
-````
-
 ## File: apps/backend/src/app/lib/jobs/handlers/import.handlers.ts
 ````typescript
 import type { Kysely } from 'kysely';
@@ -52414,557 +49918,1372 @@ ${verificationHtml(verification)}
 }
 ````
 
-## File: apps/backend/src/app/lib/jobs/handlers/notifications.handlers.ts
+## File: apps/backend/src/app/lib/jobs/handlers/ops.handlers.ts
 ````typescript
+import { sql } from 'kysely';
 import type { Kysely } from 'kysely';
-import { env } from '../../../../env';
+import { z } from 'zod';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { env } from '../../../../env';
 import { logger } from '../../../logger';
-import { NotificationsRepo } from '../../../modules/notifications/repositories/notifications.repo';
-import { notificationEnabled } from '../../profile-preferences';
+import type { MailAttachment } from '../../mail/transactional-mail.service';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
-import { SmsService } from '../../sms/sms.service';
+import { StorageService } from '../../storage.service';
 import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
 import { scheduleNextRun } from '../reschedule';
 
 const mailService = new TransactionalEmailService();
-const smsService = new SmsService();
 
-// Chunk size for the keyset-paginated due-tasks scan below — bounds each page instead of
-// joining every tenant's overdue tasks into memory in one unbounded query.
-const CHECK_DUE_TASKS_PAGE_SIZE = 500;
+const HEARTBEAT_NAME = 'ops_watchdog';
+// First run (or lost details) looks back this far for failures.
+const DEFAULT_LOOKBACK_MS = 15 * 60 * 1000;
+// Oldest eligible pending job older than this = the queue is jammed/backlogged.
+const BACKLOG_ALERT_MS = 15 * 60 * 1000;
+// Identical digests within this window are suppressed (mainly repeats of a persistent backlog).
+const ALERT_SUPPRESSION_MS = 6 * 60 * 60 * 1000;
 
-export async function handleSendFormNotifications(
-  payload: JobPayloadOf<'send-form-notifications'>,
+// details is untyped jsonb; parse defensively and fall back to {} on any historical shape.
+const heartbeatDetailsSchema = z
+  .object({
+    last_checked_at: z.string().optional(),
+    last_alert_fingerprint: z.string().optional(),
+    last_alerted_at: z.string().optional(),
+  })
+  .catch({});
+
+interface FailureGroup {
+  key: string;
+  count: number;
+  sample_error: string;
+}
+
+/**
+ * Ops watchdog — the "who tells the operator" half of observability (the Azure availability
+ * probes are the "is it up" half; see infra/azure/main.bicep).
+ *
+ * Every cycle it:
+ *   1. digests NEW failures since the last cycle (failed background_jobs / webhook_events, a
+ *      backlogged queue, newly sending-paused tenants) and emails them to OPS_ALERT_EMAIL;
+ *   2. updates the `ops_heartbeats` row that `GET /healthz/worker` reads — the dead-man beat.
+ *      The beat happens ONLY when a full claim→execute→complete cycle works, which is exactly
+ *      what makes the external probe catch a wedged worker while the API stays healthy.
+ *
+ * All queries here are cross-tenant by design (this is a platform-level operator digest, not a
+ * tenant surface) — lib/jobs/handlers is outside the local/no-unscoped-db-query rule's scope.
+ */
+export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
+  const now = new Date();
+
+  const row = await db
+    .selectFrom('ops_heartbeats')
+    .select('details')
+    .where('name', '=', HEARTBEAT_NAME)
+    .executeTakeFirst();
+  const details = heartbeatDetailsSchema.parse(row?.details ?? {});
+  const watermark = details.last_checked_at
+    ? new Date(details.last_checked_at)
+    : new Date(now.getTime() - DEFAULT_LOOKBACK_MS);
+
+  // Newly dead-lettered background jobs since the last cycle, grouped by job type.
+  const failedJobs: FailureGroup[] = await db
+    .selectFrom('background_jobs')
+    .select([
+      sql<string>`coalesce(payload->>'type', 'unknown')`.as('key'),
+      sql<number>`count(*)::int`.as('count'),
+      sql<string>`max(left(coalesce(error, ''), 300))`.as('sample_error'),
+    ])
+    .where('status', '=', 'failed')
+    .where('updated_at', '>', watermark)
+    .groupBy(sql`coalesce(payload->>'type', 'unknown')`)
+    .execute();
+
+  // Newly failed Stripe webhook events (drained by webhook-worker.ts).
+  const failedWebhooks: FailureGroup[] = await db
+    .selectFrom('webhook_events')
+    .select([
+      'type as key',
+      sql<number>`count(*)::int`.as('count'),
+      sql<string>`max(left(coalesce(error, ''), 300))`.as('sample_error'),
+    ])
+    .where('status', '=', 'failed')
+    .where('updated_at', '>', watermark)
+    .groupBy('type')
+    .execute();
+
+  // Queue health: oldest job that is eligible to run but still pending.
+  const backlog = await db
+    .selectFrom('background_jobs')
+    .select(sql<Date | null>`min(run_at)`.as('oldest_run_at'))
+    .where('status', '=', 'pending')
+    .where('run_at', '<=', now)
+    .executeTakeFirst();
+  const backlogAgeMs = backlog?.oldest_run_at ? now.getTime() - new Date(backlog.oldest_run_at).getTime() : 0;
+  const backlogged = backlogAgeMs > BACKLOG_ALERT_MS;
+
+  // Tenants tripped into sending-pause since the last cycle (see pplcrm-sending-guards).
+  const newlyPausedTenants = await db
+    .selectFrom('tenants')
+    .select(['id', 'name', 'sending_paused_at'])
+    .where('sending_paused_at', '>', watermark)
+    .execute();
+
+  const sections: string[] = [];
+  if (failedJobs.length > 0) {
+    sections.push(formatFailureSection('Failed background jobs', failedJobs));
+  }
+  if (failedWebhooks.length > 0) {
+    sections.push(formatFailureSection('Failed webhook events', failedWebhooks));
+  }
+  if (backlogged) {
+    sections.push(
+      `Queue backlog: the oldest runnable pending job has been waiting ${Math.round(backlogAgeMs / 60000)} minutes.`,
+    );
+  }
+  if (newlyPausedTenants.length > 0) {
+    const lines = newlyPausedTenants.map((t) => `  - ${t.name} (tenant ${t.id})`);
+    sections.push(`Tenants newly paused from sending:\n${lines.join('\n')}`);
+  }
+
+  let alertFingerprint = details.last_alert_fingerprint;
+  let alertedAt = details.last_alerted_at;
+  if (sections.length > 0) {
+    // Fingerprint on the *categories* of trouble, not raw counts — a persistent backlog
+    // shouldn't re-alert every 5 minutes, but a new failure category (or one escalating by an
+    // order of magnitude, e.g. 9 -> 10 failures) should alert immediately. failedJobs/failedWebhooks
+    // rows come from a GROUP BY on `status = 'failed'` rows, so count is always >= 1 and
+    // Math.log10(count) is always defined.
+    const fingerprint = [
+      ...failedJobs.map((g) => `job:${g.key}:m${Math.floor(Math.log10(g.count))}`),
+      ...failedWebhooks.map((g) => `webhook:${g.key}:m${Math.floor(Math.log10(g.count))}`),
+      backlogged ? 'backlog' : '',
+      ...newlyPausedTenants.map((t) => `paused:${t.id}`),
+    ]
+      .filter(Boolean)
+      .sort()
+      .join('|');
+    const suppressed =
+      fingerprint === details.last_alert_fingerprint &&
+      details.last_alerted_at != null &&
+      now.getTime() - new Date(details.last_alerted_at).getTime() < ALERT_SUPPRESSION_MS;
+
+    if (suppressed) {
+      logger.info({ fingerprint }, 'Ops watchdog: findings unchanged, alert suppressed');
+    } else if (env.opsAlertEmail == null) {
+      logger.warn({ sections }, 'Ops watchdog found problems but OPS_ALERT_EMAIL is not set — no email sent');
+    } else {
+      const body = sections.join('\n\n');
+      logger.warn({ sections }, 'Ops watchdog: sending problem digest');
+      // Send directly (not via the mail queue): if the queue is the sick component, the alert
+      // would sit behind the very backlog it is reporting.
+      await mailService.sendMail({
+        to: env.opsAlertEmail,
+        subject: `pplCRM ops: ${summarize(failedJobs, failedWebhooks, backlogged, newlyPausedTenants.length)}`,
+        text: body,
+        html: `<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(body)}</pre>`,
+      });
+      alertFingerprint = fingerprint;
+      alertedAt = now.toISOString();
+    }
+  }
+
+  // The dead-man beat — reached only when the whole cycle above succeeded. Upsert so a missing
+  // row (fresh DB) heals itself rather than failing the cron forever.
+  const newDetails = JSON.stringify({
+    last_checked_at: now.toISOString(),
+    last_alert_fingerprint: alertFingerprint,
+    last_alerted_at: alertedAt,
+  });
+  await db
+    .insertInto('ops_heartbeats')
+    .values({ name: HEARTBEAT_NAME, beat_at: now, details: newDetails })
+    .onConflict((oc) => oc.column('name').doUpdateSet({ beat_at: now, details: newDetails }))
+    .execute();
+
+  await scheduleNextRun(db, 'ops_watchdog', CRON_JOBS.ops_watchdog);
+}
+
+// Postmark's total-message cap is 10 MB; leave headroom for the body + inline logo.
+const MAX_SCREENSHOT_ATTACH_BYTES = 7 * 1024 * 1024;
+
+/**
+ * Email a user-submitted bug report to the operator (see modules/bug-reports). Sent to
+ * OPS_ALERT_EMAIL with the Postmark from-address as the fallback — a bug report must not be
+ * silently dropped just because the ops alert address isn't configured. The screenshot is
+ * attached to the email itself: the blob is private and the operator has no tenant session,
+ * so an attachment is the only zero-auth way for them to see it.
+ */
+export async function handleSendBugReportEmail(
+  payload: JobPayloadOf<'send-bug-report-email'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  // tenantId is required on this payload (server-generated), so scope unconditionally.
-  const event = await db
-    .selectFrom('volunteer_events')
-    .select([
-      'name',
-      'start_time',
-      'end_time',
-      'location_address',
-      'contact_email',
-      'contact_phone',
-      'send_signup_confirmation',
-      'send_volunteer_alert',
-    ])
-    .where('id', '=', payload.eventId)
-    .where('tenant_id', '=', payload.tenantId)
+  const report = await db
+    .selectFrom('bug_reports')
+    .selectAll()
+    .where('tenant_id', '=', payload.tenant_id)
+    .where('id', '=', payload.bugReportId)
     .executeTakeFirst();
-
-  if (!event) {
-    logger.info(`Skipping volunteer signup notifications: event ${payload.eventId} not found.`);
+  if (!report) {
+    logger.warn({ bugReportId: payload.bugReportId }, 'Bug report email: report row not found, skipping');
     return;
   }
 
-  const startFormatted = new Date(event.start_time).toLocaleString();
-  const endFormatted = new Date(event.end_time).toLocaleString();
+  const reporter = await db
+    .selectFrom('authusers')
+    .select(['email', 'first_name', 'last_name', 'role', 'campaign_id'])
+    .where('tenant_id', '=', payload.tenant_id)
+    .where('id', '=', report.created_by)
+    .executeTakeFirst();
+  const tenant = await db.selectFrom('tenants').select(['name']).where('id', '=', payload.tenant_id).executeTakeFirst();
 
-  // 1. Send Confirmation Email to the Constituent (if enabled)
-  if (event.send_signup_confirmation !== false) {
-    const coordEmailLine = event.contact_email ? `Email: ${event.contact_email}` : '';
-    const coordPhoneLine = event.contact_phone ? `Phone: ${event.contact_phone}` : '';
-    const coordinatorDetails = [coordEmailLine, coordPhoneLine].filter(Boolean).join('\n');
-
-    const coordEmailHtml = event.contact_email
-      ? `Email: <a href="mailto:${event.contact_email}">${event.contact_email}</a>`
-      : '';
-    const coordPhoneHtml = event.contact_phone ? `Phone: ${event.contact_phone}` : '';
-    const coordinatorDetailsHtml = [coordEmailHtml, coordPhoneHtml].filter(Boolean).join('<br>');
-
-    await mailService.sendMail({
-      to: payload.email,
-      subject: `You're signed up to volunteer: ${event.name}`,
-      text: `Hi ${payload.firstName || 'there'},\n\nThank you for signing up to volunteer for "${event.name}"!\n\nDetails:\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}\n\nEvent coordinator:\n${coordinatorDetails || 'N/A'}\n\nWe look forward to seeing you there!`,
-      html: `<h2>You're signed up to volunteer</h2>
-<p>Hi ${payload.firstName || 'there'},</p>
-<p>Thank you for signing up to volunteer for <strong>"${event.name}"</strong>!</p>
-<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p><p><strong>Event coordinator:</strong><br>${coordinatorDetailsHtml || 'N/A'}</p></div>
-<p>We look forward to seeing you there!</p>`,
-    });
+  const attachments: MailAttachment[] = [];
+  let screenshotNote = 'none';
+  if (report.screenshot_file_id) {
+    const file = await db
+      .selectFrom('files')
+      .select(['filename', 'mime_type', 'size_bytes', 'storage_key'])
+      .where('tenant_id', '=', payload.tenant_id)
+      .where('id', '=', report.screenshot_file_id)
+      .executeTakeFirst();
+    if (!file) {
+      screenshotNote = 'referenced upload no longer exists';
+    } else if (Number(file.size_bytes ?? 0) > MAX_SCREENSHOT_ATTACH_BYTES) {
+      screenshotNote = `too large to attach (${file.filename}, ${file.size_bytes} bytes, storage key ${file.storage_key})`;
+    } else {
+      try {
+        const data = await new StorageService().download(file.storage_key);
+        attachments.push({
+          name: file.filename || 'screenshot.png',
+          contentBase64: data.toString('base64'),
+          contentType: file.mime_type ?? 'application/octet-stream',
+        });
+        screenshotNote = `attached (${file.filename})`;
+      } catch (err) {
+        logger.error({ err, bugReportId: payload.bugReportId }, 'Bug report email: screenshot download failed');
+        screenshotNote = `download failed (storage key ${file.storage_key})`;
+      }
+    }
   }
 
-  // 2. Send Alert Email to the Event Coordinator / Tenant Admin (if enabled)
-  if (event.send_volunteer_alert !== false) {
-    let alertRecipient = event.contact_email || null;
+  const reporterName = [reporter?.first_name, reporter?.last_name].filter(Boolean).join(' ') || 'unknown';
+  const body = [
+    `Reference: BR-${report.id}`,
+    `Tenant: ${tenant?.name ?? 'unknown'} (${payload.tenant_id})`,
+    `Reporter: ${reporterName} <${reporter?.email ?? 'unknown'}> — role ${reporter?.role ?? 'unknown'}, campaign ${reporter?.campaign_id ?? 'none'}`,
+    `Submitted: ${new Date(report.created_at).toISOString()}`,
+    `Page: ${report.page_url ?? 'not captured'}`,
+    `Browser: ${report.user_agent ?? 'not captured'}`,
+    `Viewport: ${report.viewport ?? 'not captured'}`,
+    `Screenshot: ${screenshotNote}`,
+    '',
+    'Description:',
+    report.description,
+  ].join('\n');
 
-    if (!alertRecipient) {
-      const admin = await db
-        .selectFrom('authusers')
-        .select('email')
-        .where('tenant_id', '=', payload.tenantId)
-        .limit(1)
-        .executeTakeFirst();
-      if (admin && admin.email) {
-        alertRecipient = admin.email;
+  await mailService.sendMail({
+    to: env.opsAlertEmail ?? env.postmarkFromEmail,
+    subject: `pplCRM bug report BR-${report.id} (tenant ${payload.tenant_id})`,
+    text: body,
+    html: `<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(body)}</pre>`,
+    attachments,
+  });
+}
+
+function formatFailureSection(title: string, groups: FailureGroup[]): string {
+  const lines = groups.map(
+    (g) => `  - ${g.key}: ${g.count} failed. Last error: ${g.sample_error || '(none recorded)'}`,
+  );
+  return `${title}:\n${lines.join('\n')}`;
+}
+
+function summarize(
+  failedJobs: FailureGroup[],
+  failedWebhooks: FailureGroup[],
+  backlogged: boolean,
+  pausedCount: number,
+): string {
+  const parts: string[] = [];
+  const jobCount = failedJobs.reduce((sum, g) => sum + g.count, 0);
+  const webhookCount = failedWebhooks.reduce((sum, g) => sum + g.count, 0);
+  if (jobCount > 0) parts.push(`${jobCount} failed job${jobCount === 1 ? '' : 's'}`);
+  if (webhookCount > 0) parts.push(`${webhookCount} failed webhook${webhookCount === 1 ? '' : 's'}`);
+  if (backlogged) parts.push('queue backlog');
+  if (pausedCount > 0) parts.push(`${pausedCount} tenant${pausedCount === 1 ? '' : 's'} paused`);
+  return parts.join(', ');
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/handlers/workflows.handlers.ts
+````typescript
+import type { Kysely, Selectable, Transaction } from 'kysely';
+import { sql } from 'kysely';
+import { WORKFLOW_EXIT_CONDITIONS, WORKFLOW_SEND_CONDITIONS, calculateWorkingTimeMs, planAllowsFeature } from '@common';
+import type { WorkflowExitCondition, WorkflowSendCondition } from '@common';
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { env } from '../../../../env';
+import { logger } from '../../../logger';
+import {
+  AUTOMATION_PHONE_UNVERIFIED_MESSAGE,
+  assertTenantSendingNotBlocked,
+  hasVerifiedSendingDomain,
+  loadSendingTenant,
+  needsPhoneVerification,
+  remainingSendAllowance,
+} from '../../../modules/newsletters/send-guards';
+import { encodeUnsubscribeToken } from '../../../modules/newsletters/unsubscribe-token';
+import { resolveAutomationSendConsent } from '../../../modules/workflows/automation-consent';
+import { CRON_JOBS } from '../cron-registry';
+import { DAY_MS, HOUR_MS, scheduleNextRun, TEN_MINUTES_MS } from '../reschedule';
+
+const ENROLLMENT_BATCH_SIZE = 500;
+
+/** The recipient must not be emailed (unsubscribed/suppressed/DNC). Recorded as a 'skipped'
+ * run — not a failure — and the sequence advances past the step. */
+class SkipStepError extends Error {}
+
+/** The tenant temporarily can't send (paused/suspended/payment hold/allowance exhausted).
+ * The enrollment is deferred an hour WITHOUT advancing — the email is delayed, never lost. */
+class RetryLaterError extends Error {}
+// Guard against a malformed sequence (e.g. an accidental cycle of zero-delay steps) monopolising
+// a worker tick. A real sequence pauses at each `wait`, so this only ever bites pathological data.
+const MAX_ACTIONS_PER_TICK = 50;
+
+// Spec §16 execution: process active enrollments whose next_run_at is due. A step's `kind`
+// decides what happens — `wait` reschedules and pauses the sequence; every action kind executes
+// immediately (chaining through consecutive actions in one tick) and writes a workflow_runs row
+// so the list's RUNS 30D / LAST RUN and the editor's RECENT RUNS reflect reality. Paused
+// automations are skipped: "Pausing stops new runs immediately — nothing queues while paused."
+export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<void> {
+  const now = new Date();
+  const pendingEnrollments = await db
+    .selectFrom('workflow_enrollments')
+    .selectAll()
+    .where('status', '=', 'active')
+    .where('next_run_at', '<=', now)
+    .limit(ENROLLMENT_BATCH_SIZE)
+    .execute();
+
+  // Plan gate, checked at processing time (once per tenant per tick): a tenant downgraded
+  // below the 'automations' feature's minimum plan must not keep running the automations it
+  // built while entitled. Ungated enrollments behave exactly like a paused workflow — nothing
+  // sends, nothing advances, nothing is deleted — and resume cleanly on re-upgrade.
+  const automationsAllowedByTenant = new Map<string, boolean>();
+
+  for (const enrollment of pendingEnrollments) {
+    try {
+      const tenantId = String(enrollment.tenant_id);
+      let automationsAllowed = automationsAllowedByTenant.get(tenantId);
+      if (automationsAllowed === undefined) {
+        const tenantRow = await db
+          .selectFrom('tenants')
+          .select('subscription_plan')
+          .where('id', '=', tenantId)
+          .executeTakeFirst();
+        automationsAllowed = planAllowsFeature(tenantRow?.subscription_plan, 'automations');
+        automationsAllowedByTenant.set(tenantId, automationsAllowed);
+        if (!automationsAllowed) {
+          logger.info(
+            { tenantId, plan: tenantRow?.subscription_plan ?? null },
+            '[plan-gate] Tenant plan does not include automations — drip enrollments deferred, not run',
+          );
+        }
+      }
+      if (!automationsAllowed) {
+        await db
+          .updateTable('workflow_enrollments')
+          .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
+          .where('id', '=', enrollment.id)
+          .execute();
+        continue;
+      }
+
+      await db.transaction().execute(async (trx) => {
+        const lockedEnrollment = await trx
+          .selectFrom('workflow_enrollments')
+          .selectAll()
+          .where('id', '=', enrollment.id)
+          .where('status', '=', 'active')
+          .where('next_run_at', '<=', now)
+          .forUpdate()
+          .skipLocked()
+          .executeTakeFirst();
+
+        if (!lockedEnrollment) return;
+
+        const workflow = await trx
+          .selectFrom('workflows')
+          .select(['id', 'name', 'status', 'createdby_id', 'exit_conditions'])
+          .where('id', '=', lockedEnrollment.workflow_id)
+          .executeTakeFirst();
+
+        // Workflow gone, or paused → do not run. Push the enrollment forward so a paused
+        // automation doesn't hot-loop the batch; it resumes cleanly when un-paused.
+        if (!workflow) {
+          await completeEnrollment(trx, lockedEnrollment.id);
+          return;
+        }
+        if (workflow.status === 'paused') {
+          await trx
+            .updateTable('workflow_enrollments')
+            .set({ next_run_at: new Date(Date.now() + TEN_MINUTES_MS), updated_at: new Date() })
+            .where('id', '=', lockedEnrollment.id)
+            .execute();
+          return;
+        }
+
+        const person = await trx
+          .selectFrom('persons')
+          .select(['id', 'email', 'first_name', 'last_name'])
+          .where('id', '=', lockedEnrollment.person_id)
+          .executeTakeFirst();
+
+        // Sequence-level goals: the moment one is met the enrollment ends — a supporter who
+        // already donated must not get the rest of the ask sequence.
+        const exitReason = await findMetExitCondition(trx, {
+          tenantId: lockedEnrollment.tenant_id,
+          enrollmentId: lockedEnrollment.id,
+          personId: lockedEnrollment.person_id,
+          enrolledAt: new Date(lockedEnrollment.enrolled_at),
+          exitConditions: workflow.exit_conditions,
+        });
+        if (exitReason) {
+          await recordRun(trx, {
+            tenantId: lockedEnrollment.tenant_id,
+            workflowId: lockedEnrollment.workflow_id,
+            enrollmentId: lockedEnrollment.id,
+            personId: lockedEnrollment.person_id,
+            stepNumber: null,
+            stepKind: 'exit',
+            status: 'success',
+            error: exitReason,
+          });
+          await trx
+            .updateTable('workflow_enrollments')
+            .set({ status: 'exited', next_run_at: null, updated_at: new Date() })
+            .where('id', '=', lockedEnrollment.id)
+            .execute();
+          return;
+        }
+
+        const actorId = workflow.createdby_id ? String(workflow.createdby_id) : null;
+        let currentStepNumber = lockedEnrollment.current_step_number;
+
+        for (let i = 0; i < MAX_ACTIONS_PER_TICK; i++) {
+          const step = await trx
+            .selectFrom('workflow_steps')
+            .selectAll()
+            .where('workflow_id', '=', lockedEnrollment.workflow_id)
+            .where('step_number', '=', currentStepNumber)
+            .executeTakeFirst();
+
+          if (!step) {
+            await completeEnrollment(trx, lockedEnrollment.id);
+            return;
+          }
+
+          const nextStep = await trx
+            .selectFrom('workflow_steps')
+            .select(['step_number'])
+            .where('workflow_id', '=', lockedEnrollment.workflow_id)
+            .where('step_number', '>', currentStepNumber)
+            .orderBy('step_number', 'asc')
+            .limit(1)
+            .executeTakeFirst();
+
+          // `wait`: schedule the delay, advance past the wait, and stop for this tick.
+          if (step.kind === 'wait') {
+            const delayMs =
+              step.delay_unit === 'hours' ? step.delay_days * 60 * 60 * 1000 : step.delay_days * 24 * 60 * 60 * 1000;
+            if (nextStep) {
+              await trx
+                .updateTable('workflow_enrollments')
+                .set({
+                  current_step_number: nextStep.step_number,
+                  next_run_at: new Date(Date.now() + delayMs),
+                  updated_at: new Date(),
+                })
+                .where('id', '=', lockedEnrollment.id)
+                .execute();
+            } else {
+              await completeEnrollment(trx, lockedEnrollment.id);
+            }
+            return;
+          }
+
+          // Action step: execute, record the run (success, skipped, or failed), then advance.
+          // send_email records its own run first (the delivery job carries the run id for
+          // engagement stamping); every other kind is recorded here after executing.
+          try {
+            const outcome = await executeActionStep(trx, {
+              tenantId: lockedEnrollment.tenant_id,
+              workflowId: lockedEnrollment.workflow_id,
+              enrollmentId: lockedEnrollment.id,
+              actorId,
+              person: person ?? null,
+              step,
+            });
+            if (!outcome.runRecorded) {
+              await recordRun(trx, {
+                tenantId: lockedEnrollment.tenant_id,
+                workflowId: lockedEnrollment.workflow_id,
+                enrollmentId: lockedEnrollment.id,
+                personId: lockedEnrollment.person_id,
+                stepNumber: step.step_number,
+                stepKind: step.kind,
+                status: 'success',
+                error: null,
+              });
+            }
+          } catch (err) {
+            // Tenant-level sending block: defer the whole enrollment an hour without advancing
+            // or recording a run — a welcome email during a payment hold is late, not lost.
+            if (err instanceof RetryLaterError) {
+              await trx
+                .updateTable('workflow_enrollments')
+                .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
+                .where('id', '=', lockedEnrollment.id)
+                .execute();
+              logger.info(
+                { workflowId: lockedEnrollment.workflow_id, reason: err.message },
+                'Automation send deferred — tenant sending blocked or allowance exhausted',
+              );
+              return;
+            }
+            const message = err instanceof Error ? err.message : String(err);
+            await recordRun(trx, {
+              tenantId: lockedEnrollment.tenant_id,
+              workflowId: lockedEnrollment.workflow_id,
+              enrollmentId: lockedEnrollment.id,
+              personId: lockedEnrollment.person_id,
+              stepNumber: step.step_number,
+              stepKind: step.kind,
+              status: err instanceof SkipStepError ? 'skipped' : 'failed',
+              error: message,
+            });
+            if (!(err instanceof SkipStepError)) {
+              logger.error({ err }, `Workflow ${lockedEnrollment.workflow_id} step ${step.step_number} failed`);
+            }
+            // Narrate-and-continue: the failing/skipped step is recorded; the sequence advances
+            // so one bad step doesn't wedge the enrollment forever (spec §16).
+          }
+
+          if (!nextStep) {
+            await completeEnrollment(trx, lockedEnrollment.id);
+            return;
+          }
+          currentStepNumber = nextStep.step_number;
+          await trx
+            .updateTable('workflow_enrollments')
+            .set({ current_step_number: currentStepNumber, next_run_at: new Date(), updated_at: new Date() })
+            .where('id', '=', lockedEnrollment.id)
+            .execute();
+        }
+      });
+    } catch (err) {
+      logger.error({ err }, `Failed to process workflow enrollment ${enrollment.id}`);
+    }
+  }
+
+  // A full batch means there is likely more work waiting — requeue immediately.
+  const delayMs = pendingEnrollments.length === ENROLLMENT_BATCH_SIZE ? 0 : CRON_JOBS.process_drip_workflows;
+  await scheduleNextRun(db, 'process_drip_workflows', delayMs);
+}
+
+const LAPSED_DEFAULT_DAYS = 90;
+const LAPSED_MIN_DAYS = 7;
+const MAX_LAPSED_ENROLLMENTS_PER_RUN = 500;
+
+/**
+ * Daily scan behind the `supporter_lapsed` trigger ("Supporter goes quiet"). For each active
+ * workflow on that trigger, find subscribed people whose consent predates the workflow's
+ * inactivity window (trigger_event_id, days; default 90) and who have no opens/clicks inside
+ * it, then enroll them through the normal trigger path (conditions respected).
+ *
+ * Re-enrollment hygiene: `enrollPerson` only blocks people with an ACTIVE enrollment, so a
+ * completed win-back sequence would otherwise re-enroll the same person every day. Anyone
+ * enrolled in this workflow within the last 2×N days is excluded — a person gets at most one
+ * win-back per two windows. First activation on a big stale list is capped at 500 enrollments
+ * per workflow per day (the sends are additionally metered by the tenant's caps).
+ */
+export async function handleDetectLapsedSupporters(db: Kysely<Models>): Promise<void> {
+  const now = new Date();
+  const lapsedWorkflows = await db
+    .selectFrom('workflows')
+    .select(['id', 'tenant_id', 'trigger_event_id'])
+    .where('trigger_type', '=', 'supporter_lapsed')
+    .where('status', '=', 'active')
+    .execute();
+
+  if (lapsedWorkflows.length > 0) {
+    const { WorkflowsController } = await import('../../../modules/workflows/controller');
+    const controller = new WorkflowsController();
+
+    for (const wf of lapsedWorkflows) {
+      const tenantId = String(wf.tenant_id);
+      const workflowId = String(wf.id);
+      const days = Math.max(LAPSED_MIN_DAYS, parseInt(wf.trigger_event_id ?? '', 10) || LAPSED_DEFAULT_DAYS);
+      const cutoff = new Date(now.getTime() - days * DAY_MS);
+      const dedupeCutoff = new Date(now.getTime() - 2 * days * DAY_MS);
+
+      try {
+        const candidates = await db
+          .selectFrom('persons')
+          .select(['persons.id'])
+          .where('persons.tenant_id', '=', tenantId)
+          .where('persons.email', 'is not', null)
+          .where('persons.email', '!=', '')
+          // Subscribed long enough ago that "quiet since then" is meaningful.
+          .where(({ exists, selectFrom }) =>
+            exists(
+              selectFrom('campaign_subscriptions')
+                .select('campaign_subscriptions.id')
+                .where('campaign_subscriptions.tenant_id', '=', tenantId)
+                .where('campaign_subscriptions.status', '=', 'subscribed')
+                .where('campaign_subscriptions.consent_at', '<', cutoff)
+                .whereRef('campaign_subscriptions.person_id', '=', 'persons.id'),
+            ),
+          )
+          // No engagement inside the window — rollups first, then any un-pruned raw events.
+          .where(({ not, exists, selectFrom }) =>
+            not(
+              exists(
+                selectFrom('person_newsletter_engagements')
+                  .select('person_newsletter_engagements.email')
+                  .where('person_newsletter_engagements.tenant_id', '=', tenantId)
+                  .whereRef('person_newsletter_engagements.email', '=', 'persons.email')
+                  .where((inner) =>
+                    inner.or([
+                      inner('person_newsletter_engagements.last_opened_at', '>', cutoff),
+                      inner('person_newsletter_engagements.last_clicked_at', '>', cutoff),
+                    ]),
+                  ),
+              ),
+            ),
+          )
+          .where(({ not, exists, selectFrom }) =>
+            not(
+              exists(
+                selectFrom('newsletter_events')
+                  .select('newsletter_events.id')
+                  .where('newsletter_events.tenant_id', '=', tenantId)
+                  .whereRef('newsletter_events.email', '=', 'persons.email')
+                  .where('newsletter_events.event_type', 'in', ['open', 'click'])
+                  .where('newsletter_events.timestamp', '>', cutoff),
+              ),
+            ),
+          )
+          // Not enrolled in this workflow within the last two windows (any status).
+          .where(({ not, exists, selectFrom }) =>
+            not(
+              exists(
+                selectFrom('workflow_enrollments')
+                  .select('workflow_enrollments.id')
+                  .where('workflow_enrollments.tenant_id', '=', tenantId)
+                  .where('workflow_enrollments.workflow_id', '=', workflowId)
+                  .whereRef('workflow_enrollments.person_id', '=', 'persons.id')
+                  .where('workflow_enrollments.created_at', '>', dedupeCutoff),
+              ),
+            ),
+          )
+          .limit(MAX_LAPSED_ENROLLMENTS_PER_RUN)
+          .execute();
+
+        for (const candidate of candidates) {
+          // The trigger path evaluates the workflow's "ONLY ENROLL IF" conditions; passing the
+          // workflow's own trigger_event_id keeps differently-windowed workflows separate.
+          await controller.triggerWorkflow(tenantId, String(candidate.id), 'supporter_lapsed', wf.trigger_event_id);
+        }
+        if (candidates.length > 0) {
+          logger.info(
+            { workflowId, tenantId, enrolled: candidates.length, days },
+            '[supporter-lapsed] Enrolled quiet supporters',
+          );
+        }
+      } catch (err) {
+        logger.error({ err, workflowId }, '[supporter-lapsed] Failed to scan workflow');
+      }
+    }
+  }
+
+  await scheduleNextRun(db, 'detect_lapsed_supporters', CRON_JOBS.detect_lapsed_supporters);
+}
+
+/** Self-rescheduling hourly scan behind the `task_sla_breach` trigger ("Task breaches SLA"). */
+export async function handleDetectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
+  await detectTaskSlaBreaches(db);
+
+  await scheduleNextRun(db, 'detect_task_sla_breaches', CRON_JOBS.detect_task_sla_breaches);
+}
+
+const TASK_SLA_SCAN_CHUNK_SIZE = 500;
+
+/**
+ * Hourly scan behind the `task_sla_breach` trigger (spec §4 → §16). For every open task not
+ * yet marked breached, compute its working-hours age against the tenant's SLA target
+ * (`sla.tasks_hours` + working days/hours — the same math as the sidebar badge's
+ * countSlaBreaches). The first time a task crosses the target it is stamped
+ * `sla_breached_at` (the once-only marker — later ticks skip stamped tasks), then the
+ * task's linked person is enrolled through the normal trigger path (conditions respected).
+ * Tasks with no linked person are stamped but skip enrollment: automations enroll persons.
+ *
+ * Keyset-paginated by task id (ascending `WHERE id > cursor`, not OFFSET) in chunks of
+ * TASK_SLA_SCAN_CHUNK_SIZE, looping until a chunk comes back short — an unbounded, un-stamped
+ * open-task backlog across every tenant must never be loaded into memory in one query. Each
+ * chunk is grouped by tenant and scanned inside its own try/catch (same as before pagination),
+ * so one tenant's failure only drops that slice of that chunk — it never kills the rest of the
+ * chunk, later chunks, or other tenants' scans.
+ */
+export async function detectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
+  const now = new Date();
+  const { WorkflowsController } = await import('../../../modules/workflows/controller');
+  const controller = new WorkflowsController();
+  const slaConfigByTenant = new Map<string, Awaited<ReturnType<typeof loadTaskSlaConfig>>>();
+
+  let cursor: string | null = null;
+  for (;;) {
+    let chunkQuery = db
+      .selectFrom('tasks')
+      .select(['id', 'tenant_id', 'created_at', 'person_id'])
+      .where('status', 'not in', ['done', 'archived'])
+      .where('sla_breached_at', 'is', null)
+      .orderBy('id', 'asc')
+      .limit(TASK_SLA_SCAN_CHUNK_SIZE);
+    if (cursor !== null) {
+      chunkQuery = chunkQuery.where('id', '>', cursor);
+    }
+    const chunk = await chunkQuery.execute();
+    if (chunk.length === 0) break;
+    const lastTask = chunk[chunk.length - 1];
+    // Unreachable: the length check above guarantees an element; satisfies noUncheckedIndexedAccess.
+    if (!lastTask) break;
+    cursor = String(lastTask.id);
+
+    const byTenant = new Map<string, typeof chunk>();
+    for (const task of chunk) {
+      const tenantId = String(task.tenant_id);
+      const list = byTenant.get(tenantId) ?? [];
+      list.push(task);
+      byTenant.set(tenantId, list);
+    }
+
+    for (const [tenantId, tasks] of byTenant.entries()) {
+      try {
+        let config = slaConfigByTenant.get(tenantId);
+        if (!config) {
+          config = await loadTaskSlaConfig(db, tenantId);
+          slaConfigByTenant.set(tenantId, config);
+        }
+        const slaMs = config.taskSlaHours * HOUR_MS;
+
+        for (const task of tasks) {
+          const workingMs = calculateWorkingTimeMs(
+            new Date(task.created_at),
+            now,
+            config.workingDays,
+            config.workingHoursStart,
+            config.workingHoursEnd,
+          );
+          if (workingMs <= slaMs) continue;
+
+          // Stamp before enrolling: even if enrollment fails, the trigger fires at most once
+          // per task. The `is null` guard makes concurrent ticks race-safe — only the tick
+          // that flips the marker proceeds to enroll.
+          const stamped = await db
+            .updateTable('tasks')
+            .set({ sla_breached_at: now })
+            .where('tenant_id', '=', tenantId)
+            .where('id', '=', String(task.id))
+            .where('sla_breached_at', 'is', null)
+            .returning('id')
+            .executeTakeFirst();
+          if (!stamped) continue;
+
+          if (!task.person_id) {
+            logger.info(
+              { tenantId, taskId: String(task.id) },
+              '[task-sla] Task breached SLA but has no linked person — skipping automation enrollment',
+            );
+            continue;
+          }
+
+          try {
+            await controller.triggerWorkflow(tenantId, String(task.person_id), 'task_sla_breach', null);
+          } catch (err) {
+            logger.error(
+              { err, tenantId, taskId: String(task.id) },
+              '[task-sla] Failed to fire task_sla_breach trigger',
+            );
+          }
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '[task-sla] Failed to scan tenant for task SLA breaches');
       }
     }
 
-    if (alertRecipient) {
-      await mailService.sendMail({
-        to: alertRecipient,
-        subject: `New volunteer signup: ${event.name}`,
-        text: `Hi,\n\nA new constituent has signed up to volunteer for "${event.name}".\n\nName: ${payload.firstName || ''} ${payload.lastName || ''}\nEmail: ${payload.email}\nPhone: ${payload.mobile || 'N/A'}\nNotes: ${payload.notes || 'None'}`,
-        html: `<h2>New volunteer signup</h2>
-<p>Hi,</p>
-<p>A new constituent has signed up to volunteer for <strong>"${event.name}"</strong>.</p>
-<div class="panel"><p><strong>Name:</strong> ${payload.firstName || ''} ${payload.lastName || ''}</p><p><strong>Email:</strong> ${payload.email}</p><p><strong>Phone:</strong> ${payload.mobile || 'N/A'}</p><p><strong>Notes:</strong> ${payload.notes || 'None'}</p></div>`,
-      });
+    if (chunk.length < TASK_SLA_SCAN_CHUNK_SIZE) break;
+  }
+}
+
+/** The tenant's working-hours SLA settings, with the same fallbacks used tenant-wide. */
+async function loadTaskSlaConfig(
+  db: Kysely<Models>,
+  tenantId: string,
+): Promise<{
+  taskSlaHours: number;
+  workingDays: number[];
+  workingHoursStart: string;
+  workingHoursEnd: string;
+}> {
+  const rows = await db
+    .selectFrom('settings')
+    .select(['key', 'value'])
+    .where('tenant_id', '=', tenantId)
+    .where('key', 'in', ['sla.tasks_hours', 'sla.working_days', 'sla.working_hours_start', 'sla.working_hours_end'])
+    .execute();
+  const settingsMap = rows.reduce<Record<string, unknown>>((acc, row) => {
+    acc[row.key] = row.value;
+    return acc;
+  }, {});
+
+  const workingDaysStr = String(settingsMap['sla.working_days'] ?? '1,2,3,4,5');
+  return {
+    taskSlaHours: Number(settingsMap['sla.tasks_hours'] ?? 24),
+    workingDays: workingDaysStr
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !isNaN(n)),
+    workingHoursStart: String(settingsMap['sla.working_hours_start'] ?? '09:00'),
+    workingHoursEnd: String(settingsMap['sla.working_hours_end'] ?? '17:00'),
+  };
+}
+
+async function completeEnrollment(trx: Transaction<Models>, enrollmentId: string): Promise<void> {
+  await trx
+    .updateTable('workflow_enrollments')
+    .set({ status: 'completed', next_run_at: null, updated_at: new Date() })
+    .where('id', '=', enrollmentId)
+    .execute();
+}
+
+interface RunRecord {
+  tenantId: string;
+  workflowId: string;
+  enrollmentId: string;
+  personId: string;
+  stepNumber: number | null;
+  stepKind: string;
+  status: 'success' | 'failed' | 'skipped';
+  error: string | null;
+}
+
+async function recordRun(trx: Transaction<Models>, run: RunRecord): Promise<void> {
+  await trx
+    .insertInto('workflow_runs')
+    .values({
+      tenant_id: run.tenantId,
+      workflow_id: run.workflowId,
+      enrollment_id: run.enrollmentId,
+      person_id: run.personId,
+      step_number: run.stepNumber,
+      step_kind: run.stepKind,
+      status: run.status,
+      error: run.error,
+    })
+    .execute();
+}
+
+interface StepPerson {
+  id: string;
+  email: string | null;
+  first_name: string | null;
+  last_name: string | null;
+}
+
+export interface ActionContext {
+  tenantId: string;
+  workflowId: string;
+  enrollmentId: string;
+  actorId: string | null;
+  person: StepPerson | null;
+  step: Selectable<Models['workflow_steps']>;
+}
+
+interface ActionOutcome {
+  /** True when the step already wrote its own workflow_runs row (send_email does, so the
+   * delivery job can carry the run id). */
+  runRecorded: boolean;
+}
+
+function readConfig(config: unknown): Record<string, unknown> {
+  if (config == null) return {};
+  if (typeof config === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(config);
+      return parsed != null && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
     }
   }
+  return typeof config === 'object' ? (config as Record<string, unknown>) : {};
 }
 
-export async function handleSendShiftReminder(
-  payload: JobPayloadOf<'send-shift-reminder'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  let shiftQuery = db
-    .selectFrom('volunteer_shifts')
-    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id'])
-    .where('id', '=', payload.shiftId);
-  if (payload.tenantId != null) {
-    shiftQuery = shiftQuery.where('tenant_id', '=', payload.tenantId);
-  }
-  const shift = await shiftQuery.executeTakeFirst();
+function str(value: unknown): string | null {
+  return value == null ? null : String(value);
+}
 
-  if (!shift) {
-    logger.info(`Skipping shift reminder: shift ${payload.shiftId} not found.`);
-    return;
-  }
-
-  // Covers cancelled and no-show shifts as well.
-  if (shift.status !== 'signed_up') {
-    logger.info(`Skipping shift reminder: shift ${payload.shiftId} status is ${shift.status} instead of signed_up.`);
-    return;
-  }
-
-  // Scoped by the shift's own tenant_id — stronger than trusting the payload.
-  const event = await db
-    .selectFrom('volunteer_events')
-    .selectAll()
-    .where('id', '=', shift.event_id)
-    .where('tenant_id', '=', shift.tenant_id)
+/** Enqueued-but-unsent automation deliveries for the tenant. Quota is metered on actual
+ * delivery, so these are invisible to `remainingSendAllowance` — the enqueue-time check
+ * subtracts them to stay honest about what is already committed to go out. */
+async function pendingAutomationSendCount(trx: Transaction<Models>, tenantId: string): Promise<number> {
+  const row = await trx
+    .selectFrom('background_jobs')
+    .select((eb) => eb.fn.countAll<number>().as('total'))
+    .where('tenant_id', '=', tenantId)
+    .where('status', 'in', ['pending', 'processing'])
+    .where(sql`payload->>'type'`, '=', 'send-automation-email')
     .executeTakeFirst();
-
-  if (!event) {
-    logger.info(`Skipping shift reminder: event ${shift.event_id} not found.`);
-    return;
-  }
-
-  if (event.send_reminder === false) {
-    logger.info(`Skipping shift reminder: reminders disabled for event ${event.id}.`);
-    return;
-  }
-
-  // Scoped by the shift's own tenant_id — stronger than trusting the payload.
-  const person = await db
-    .selectFrom('persons')
-    .selectAll()
-    .where('id', '=', shift.person_id)
-    .where('tenant_id', '=', shift.tenant_id)
-    .executeTakeFirst();
-
-  if (!person) {
-    logger.info(`Skipping shift reminder: person ${shift.person_id} not found.`);
-    return;
-  }
-
-  if (!person.email) {
-    logger.info(`Skipping shift reminder: person ${shift.person_id} has no email address.`);
-    return;
-  }
-
-  const startFormatted = new Date(event.start_time).toLocaleString();
-  const endFormatted = new Date(event.end_time).toLocaleString();
-
-  const mapsUrl = event.location_address
-    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location_address)}`
-    : null;
-
-  const mapsLinkText = mapsUrl ? `\nDirections & Maps: View on Google Maps (${mapsUrl})` : '';
-
-  const subject = `Volunteer shift reminder: ${event.name}`;
-  const text = `Hi ${person.first_name || 'there'},\n\nThis is a reminder that you have an upcoming volunteer shift for "${event.name}".\n\nDetails:\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${mapsLinkText}\n\nThank you for volunteering, and we look forward to seeing you there!`;
-
-  const html = `<h2>Volunteer shift reminder</h2>
-<p>Hi ${person.first_name || 'there'},</p>
-<p>This is a reminder that you have an upcoming volunteer shift for <strong>"${event.name}"</strong>.</p>
-<div class="panel">
-  <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
-  <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
-  ${mapsUrl ? `<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}
-</div>
-<p>Thank you for volunteering, and we look forward to seeing you there!</p>`;
-
-  await mailService.sendMail({
-    to: person.email,
-    subject,
-    text,
-    html,
-  });
-
-  logger.info(`Successfully sent shift reminder email to ${person.email} for shift ${shift.id}`);
+  return Number(row?.total ?? 0);
 }
 
-export async function handleSendWebformNotifications(
-  payload: JobPayloadOf<'send-webform-notifications'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  let formQuery = db
-    .selectFrom('web_forms')
-    .select(['name', 'send_confirmation', 'send_alert', 'tenant_id'])
-    .where('id', '=', payload.formId);
-  if (payload.tenantId != null) {
-    formQuery = formQuery.where('tenant_id', '=', payload.tenantId);
-  }
-  const form = await formQuery.executeTakeFirst();
+// Executes a single action step. Throws with a human-readable message on failure so the caller
+// records a failed run whose `error` narrates what went wrong (surfaced on the list + editor).
+// Exported for unit tests (the drip handler is the only production caller).
+export async function executeActionStep(trx: Transaction<Models>, ctx: ActionContext): Promise<ActionOutcome> {
+  const { step, person } = ctx;
+  const config = readConfig(step.config);
 
-  if (!form) {
-    logger.info(`Skipping web form notifications: form ${payload.formId} not found.`);
-    return;
-  }
+  switch (step.kind) {
+    case 'send_email': {
+      if (!person?.email) throw new Error('Contact has no email address to send to');
+      // An empty step must fail loudly, not fall back to a canned "this is an automated
+      // message" body — a placeholder email to a real supporter damages trust.
+      // Same merge-token syntax as the newsletter composer; substituted here because the
+      // delivery path sends content verbatim.
+      const substitute = (content: string): string =>
+        content
+          .replaceAll('{{first_name}}', person.first_name || 'there')
+          .replaceAll('{{last_name}}', person.last_name || '');
+      const text = step.plain_text_content ? substitute(step.plain_text_content) : null;
+      const html = step.html_content ? substitute(step.html_content) : null;
+      if (!text && !html) throw new Error('This email step has no content — edit the step and add a message');
 
-  // 1. Send Confirmation Email to the Constituent (if enabled)
-  if (form.send_confirmation !== false) {
-    await mailService.sendMail({
-      to: payload.email,
-      subject: `Thank you for your submission to ${form.name}`,
-      text: `Hi ${payload.firstName || 'there'},\n\nThank you for submitting our form "${form.name}". We have received your request and our team will follow up with you soon.`,
-      html: `<h2>Thank you for your submission</h2>
-<p>Hi ${payload.firstName || 'there'},</p>
-<p>Thank you for submitting our form <strong>"${form.name}"</strong>. We have received your request and our team will follow up with you soon.</p>`,
-    });
-  }
+      // Engagement gate first — the sequence author said not to send in this case, so it
+      // outranks even consent checks (delay-then-check drip: pair with a preceding wait step).
+      const sendCondition = parseSendCondition(config['send_condition']);
+      if (sendCondition) {
+        const previous = await trx
+          .selectFrom('workflow_runs')
+          .select(['opened_at', 'clicked_at'])
+          .where('tenant_id', '=', ctx.tenantId)
+          .where('enrollment_id', '=', ctx.enrollmentId)
+          .where('step_kind', '=', 'send_email')
+          .where('status', '=', 'success')
+          .where('step_number', '<', step.step_number)
+          .orderBy('step_number', 'desc')
+          .limit(1)
+          .executeTakeFirst();
+        const verdict = evaluateSendCondition(sendCondition, previous ?? null);
+        if (!verdict.send) throw new SkipStepError(verdict.reason);
+      }
 
-  // 2. Send Alert Email to the Tenant Admin (if enabled)
-  if (form.send_alert !== false) {
-    const admin = await db
-      .selectFrom('authusers')
-      .select(['email', 'first_name'])
-      .where('tenant_id', '=', form.tenant_id)
-      .limit(1)
-      .executeTakeFirst();
+      // Consent (unsubscribed/suppressed/DNC) → skip this recipient, honestly narrated.
+      const consent = await resolveAutomationSendConsent(trx, ctx.tenantId, { id: person.id, email: person.email });
+      if (!consent.ok) throw new SkipStepError(consent.reason);
 
-    if (admin && admin.email) {
-      await mailService.sendMail({
-        to: admin.email,
-        subject: `New submission on ${form.name}`,
-        text: `Hi ${admin.first_name || 'there'},\n\nYou have received a new submission on form "${form.name}" from ${payload.firstName || ''} ${payload.lastName || ''} (${payload.email}).\n\nNotes:\n${payload.notes || 'None'}`,
-        html: `<h2>New form submission</h2>
-<p>Hi ${admin.first_name || 'there'},</p>
-<p>You have received a new submission on form <strong>"${form.name}"</strong> from <strong>${payload.firstName || ''} ${payload.lastName || ''}</strong> (${payload.email}).</p>
-<div class="panel"><p><strong>Notes:</strong><br>${payload.notes || 'None'}</p></div>`,
-      });
-    }
-  }
-}
+      // Automation emails obey the same tenant sending gates and caps as newsletters — an
+      // automation must not be a side-channel around pauses, holds, or the plan meter.
+      const tenant = await loadSendingTenant(trx, ctx.tenantId);
+      try {
+        assertTenantSendingNotBlocked(tenant);
+      } catch (err) {
+        throw new RetryLaterError(err instanceof Error ? err.message : String(err));
+      }
 
-export async function handleSendEventRegistrationConfirmation(
-  payload: JobPayloadOf<'send-event-registration-confirmation'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  let registrationQuery = db
-    .selectFrom('event_registrations')
-    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id', 'ticket_type_id'])
-    .where('id', '=', payload.registrationId);
-  if (payload.tenantId != null) {
-    registrationQuery = registrationQuery.where('tenant_id', '=', payload.tenantId);
-  }
-  const registration = await registrationQuery.executeTakeFirst();
-
-  if (!registration || registration.status === 'cancelled') {
-    logger.info(`Skipping event confirmation: registration ${payload.registrationId} not found or cancelled.`);
-    return;
-  }
-
-  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
-  const event = await db
-    .selectFrom('events')
-    .select([
-      'name',
-      'start_time',
-      'end_time',
-      'location_address',
-      'contact_email',
-      'contact_phone',
-      'send_registration_confirmation',
-    ])
-    .where('id', '=', registration.event_id)
-    .where('tenant_id', '=', registration.tenant_id)
-    .executeTakeFirst();
-
-  if (!event || event.send_registration_confirmation === false) {
-    logger.info(`Skipping event confirmation: event ${registration.event_id} not found or confirmations disabled.`);
-    return;
-  }
-
-  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
-  const person = await db
-    .selectFrom('persons')
-    .select(['first_name', 'email'])
-    .where('id', '=', registration.person_id)
-    .where('tenant_id', '=', registration.tenant_id)
-    .executeTakeFirst();
-
-  if (!person || !person.email) {
-    logger.info(`Skipping event confirmation: person ${registration.person_id} has no email.`);
-    return;
-  }
-
-  const startFormatted = new Date(event.start_time).toLocaleString();
-  const endFormatted = new Date(event.end_time).toLocaleString();
-  const coordLine = [
-    event.contact_email ? `Email: ${event.contact_email}` : '',
-    event.contact_phone ? `Phone: ${event.contact_phone}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
-  const coordHtml = [
-    event.contact_email ? `Email: <a href="mailto:${event.contact_email}">${event.contact_email}</a>` : '',
-    event.contact_phone ? `Phone: ${event.contact_phone}` : '',
-  ]
-    .filter(Boolean)
-    .join('<br>');
-
-  await mailService.sendMail({
-    to: person.email,
-    subject: `Registration confirmed: ${event.name}`,
-    text: `Hi ${person.first_name || 'there'},\n\nYou're registered for "${event.name}"!\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${coordLine ? `\n\nContact:\n${coordLine}` : ''}\n\nWe look forward to seeing you there!`,
-    html: `<h2>Registration confirmed</h2>
-<p>Hi ${person.first_name || 'there'},</p>
-<p>You're registered for <strong>"${event.name}"</strong>!</p>
-<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>${coordHtml ? `<p><strong>Contact:</strong><br>${coordHtml}</p>` : ''}</div>
-<p>We look forward to seeing you there!</p>`,
-  });
-
-  logger.info(`Sent registration confirmation to ${person.email} for event ${registration.event_id}`);
-}
-
-export async function handleSendEventReminder(
-  payload: JobPayloadOf<'send-event-reminder'>,
-  db: Kysely<Models>,
-): Promise<void> {
-  let registrationQuery = db
-    .selectFrom('event_registrations')
-    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id'])
-    .where('id', '=', payload.registrationId);
-  if (payload.tenantId != null) {
-    registrationQuery = registrationQuery.where('tenant_id', '=', payload.tenantId);
-  }
-  const registration = await registrationQuery.executeTakeFirst();
-
-  if (!registration || registration.status !== 'registered') {
-    logger.info(
-      `Skipping event reminder: registration ${payload.registrationId} not found or not in registered status.`,
-    );
-    return;
-  }
-
-  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
-  const event = await db
-    .selectFrom('events')
-    .selectAll()
-    .where('id', '=', registration.event_id)
-    .where('tenant_id', '=', registration.tenant_id)
-    .executeTakeFirst();
-
-  if (!event || event.send_reminder === false) {
-    logger.info(`Skipping event reminder: event ${registration.event_id} not found or reminders disabled.`);
-    return;
-  }
-
-  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
-  const person = await db
-    .selectFrom('persons')
-    .select(['first_name', 'email'])
-    .where('id', '=', registration.person_id)
-    .where('tenant_id', '=', registration.tenant_id)
-    .executeTakeFirst();
-
-  if (!person || !person.email) {
-    logger.info(`Skipping event reminder: person ${registration.person_id} has no email.`);
-    return;
-  }
-
-  const startFormatted = new Date(event.start_time).toLocaleString();
-  const endFormatted = new Date(event.end_time).toLocaleString();
-  const mapsUrl = event.location_address
-    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location_address)}`
-    : null;
-
-  await mailService.sendMail({
-    to: person.email,
-    subject: `Reminder: ${event.name} is tomorrow`,
-    text: `Hi ${person.first_name || 'there'},\n\nThis is a reminder that you're registered for "${event.name}" tomorrow.\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${mapsUrl ? `\nDirections: ${mapsUrl}` : ''}\n\nWe look forward to seeing you there!`,
-    html: `<h2>Event reminder</h2>
-<p>Hi ${person.first_name || 'there'},</p>
-<p>This is a reminder that you're registered for <strong>"${event.name}"</strong> tomorrow.</p>
-<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>${mapsUrl ? `<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}</div>
-<p>We look forward to seeing you there!</p>`,
-  });
-
-  logger.info(`Sent event reminder to ${person.email} for event ${registration.event_id}`);
-}
-
-export async function handleSendTransactionalEmail(payload: JobPayloadOf<'send-transactional-email'>): Promise<void> {
-  await mailService.sendMail({
-    to: payload.to,
-    subject: payload.subject ?? '',
-    text: payload.text ?? '',
-    html: payload.html ?? '',
-    tenant_id: payload.tenant_id ?? null,
-    notificationSettingsLink: payload.notificationSettingsLink ?? undefined,
-  });
-}
-
-export async function handleSendSms(payload: JobPayloadOf<'send-sms'>): Promise<void> {
-  await smsService.sendSms({ to: payload.to, body: payload.body });
-}
-
-export async function handleSendSubscriptionConfirmation(
-  payload: JobPayloadOf<'send-subscription-confirmation'>,
-): Promise<void> {
-  await mailService.sendMail({
-    to: payload.email,
-    subject: 'Please confirm your subscription',
-    text: `Hi ${payload.firstName || 'there'},\n\nPlease confirm your subscription by visiting the link below:\n\n${payload.confirmUrl}\n\nIf you did not request this, you can safely ignore this email.`,
-    html: `<h2>Confirm your subscription</h2>
-<p>Hi ${payload.firstName || 'there'},</p>
-<p>Please confirm your subscription by clicking the button below:</p>
-<div class="btn-container">
-  <a href="${payload.confirmUrl}" class="btn">Confirm subscription</a>
-</div>
-<p class="warning">If you did not request this, you can safely ignore this email.</p>`,
-  });
-}
-
-export async function handleCheckDueTasks(db: Kysely<Models>): Promise<void> {
-  await checkDueTasks(db);
-
-  await scheduleNextRun(db, 'check_due_tasks', CRON_JOBS.check_due_tasks);
-}
-
-/** Not executed — only used to derive the row type each keyset page returns. */
-function dueTasksBaseQuery(db: Kysely<Models>, now: Date) {
-  return db
-    .selectFrom('tasks')
-    .innerJoin('authusers', 'authusers.id', 'tasks.assigned_to')
-    .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
-    .select([
-      'tasks.id as task_id',
-      'tasks.tenant_id as tenant_id',
-      'tasks.name as task_name',
-      'tasks.due_at',
-      'tasks.details',
-      'authusers.id as user_id',
-      'authusers.email as user_email',
-      'authusers.first_name',
-      'profiles.preferences as profile_preferences',
-    ])
-    .where('tasks.status', 'not in', ['done', 'archived'])
-    .where('tasks.due_at', '<=', now);
-}
-
-type DueTaskRow = Awaited<ReturnType<ReturnType<typeof dueTasksBaseQuery>['execute']>>[number];
-type DueTasksCursor = { dueAt: Date; taskId: string };
-
-export async function checkDueTasks(db: Kysely<Models>): Promise<void> {
-  const now = new Date();
-  try {
-    const userTasksMap = new Map<string, DueTaskRow[]>();
-    let cursor: DueTasksCursor | null = null;
-
-    // Keyset-paginated (due_at, id) instead of one unbounded cross-tenant query: this join
-    // spans every tenant's overdue tasks, and OFFSET-style pagination would re-scan skipped
-    // rows on every page. (due_at, id) breaks ties safely since due_at alone isn't unique.
-    for (;;) {
-      let pageQuery = dueTasksBaseQuery(db, now)
-        .orderBy('tasks.due_at', 'asc')
-        .orderBy('tasks.id', 'asc')
-        .limit(CHECK_DUE_TASKS_PAGE_SIZE);
-
-      if (cursor) {
-        const { dueAt, taskId } = cursor;
-        pageQuery = pageQuery.where((eb) =>
-          eb.or([
-            eb('tasks.due_at', '>', dueAt),
-            eb.and([eb('tasks.due_at', '=', dueAt), eb('tasks.id', '>', taskId)]),
-          ]),
+      // Same identity gates as newsletters, in the newsletter path's order: a verified sending
+      // domain (automation emails send from the tenant's own domain via SendGrid, never a
+      // platform address), and on Free a verified mobile number. Both need the user to act, so
+      // the run fails with the fix named rather than deferring forever.
+      if (!(await hasVerifiedSendingDomain(trx, ctx.tenantId))) {
+        throw new Error(
+          'Verify a sending domain and choose a From address (Settings) so automation emails can send. This email was not sent.',
         );
       }
-
-      const page: DueTaskRow[] = await pageQuery.execute();
-      if (page.length === 0) break;
-
-      for (const row of page) {
-        const userId = String(row.user_id);
-        let userTasks = userTasksMap.get(userId);
-        if (!userTasks) {
-          userTasks = [];
-          userTasksMap.set(userId, userTasks);
-        }
-        userTasks.push(row);
+      if (needsPhoneVerification(tenant)) {
+        throw new Error(AUTOMATION_PHONE_UNVERIFIED_MESSAGE);
       }
 
-      const lastRow = page[page.length - 1];
-      // `due_at <= now` in the WHERE clause already excludes null due_at rows.
-      if (lastRow && lastRow.due_at != null) {
-        cursor = { dueAt: new Date(lastRow.due_at), taskId: String(lastRow.task_id) };
+      // Caps: quota is metered on actual delivery (the send-automation-email handler writes
+      // newsletter_send_log), so enqueued-but-unsent jobs are invisible to the meter — count
+      // them against the allowance here so a burst of due enrollments can't enqueue past it.
+      const pendingSends = await pendingAutomationSendCount(trx, ctx.tenantId);
+      if ((await remainingSendAllowance(trx, tenant, new Date())) - pendingSends < 1) {
+        throw new RetryLaterError('Sending allowance exhausted for now');
       }
 
-      if (page.length < CHECK_DUE_TASKS_PAGE_SIZE) break;
+      const unsubscribeUrl = `${env.apiUrl}/api/unsubscribe/${encodeUnsubscribeToken({
+        tenantId: ctx.tenantId,
+        personId: person.id,
+        email: person.email,
+      })}`;
+
+      // Record the run BEFORE enqueueing the delivery job — the job carries the run id as a
+      // SendGrid custom arg, and the event webhook stamps opens/clicks back onto this row.
+      // Same transaction, so a rollback takes both the run and the job (no ghosts either way).
+      const run = await trx
+        .insertInto('workflow_runs')
+        .values({
+          tenant_id: ctx.tenantId,
+          workflow_id: ctx.workflowId,
+          enrollment_id: ctx.enrollmentId,
+          person_id: person.id,
+          step_number: step.step_number,
+          step_kind: step.kind,
+          status: 'success',
+          error: null,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+
+      await trx
+        .insertInto('background_jobs')
+        .values({
+          tenant_id: ctx.tenantId,
+          queue: 'default',
+          status: 'pending',
+          payload: JSON.stringify({
+            type: 'send-automation-email',
+            tenantId: ctx.tenantId,
+            workflowRunId: String(run.id),
+            to: person.email,
+            subject: step.subject ? substitute(step.subject) : 'Automated message',
+            text: text ?? '',
+            html: html ?? '',
+            unsubscribeUrl,
+            // Quota is metered by the delivery handler after SendGrid accepts the send — a job
+            // that exhausts its retries must not consume allowance. The flag marks payloads
+            // enqueued under that scheme; legacy jobs without it were already metered here at
+            // enqueue time and must not be counted twice.
+            meterOnSend: true,
+          }),
+          run_at: new Date(),
+          max_attempts: 5,
+        })
+        .execute();
+      return { runRecorded: true };
     }
 
-    if (userTasksMap.size === 0) return;
-
-    const notificationsRepo = new NotificationsRepo();
-    for (const [userId, tasks] of userTasksMap.entries()) {
-      const firstRow = tasks[0];
-      if (!firstRow) continue;
-      const userEmail = firstRow.user_email;
-      const firstName = firstRow.first_name;
-      const optedIn = notificationEnabled(firstRow.profile_preferences, 'task_due');
-      const inAppOptedIn = notificationEnabled(firstRow.profile_preferences, 'task_due_in_app');
-
-      if (inAppOptedIn) {
-        await notificationsRepo.pushNotification({
-          tenant_id: String(firstRow.tenant_id),
-          user_id: userId,
-          title: 'Tasks Due',
-          message: `You have ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} due or overdue.`,
-          type: 'task',
-          link: '/tasks',
-        });
+    case 'add_tag': {
+      if (!person) throw new Error('No contact to tag');
+      const tagId = str(config['tag_id']);
+      if (!tagId) throw new Error('No tag configured for this step');
+      if (!ctx.actorId) throw new Error('Automation has no owner to attribute the tag to');
+      const exists = await trx
+        .selectFrom('map_peoples_tags')
+        .select('person_id')
+        .where('tenant_id', '=', ctx.tenantId)
+        .where('person_id', '=', person.id)
+        .where('tag_id', '=', tagId)
+        .executeTakeFirst();
+      if (!exists) {
+        await trx
+          .insertInto('map_peoples_tags')
+          .values({
+            tenant_id: ctx.tenantId,
+            person_id: person.id,
+            tag_id: tagId,
+            createdby_id: ctx.actorId,
+            updatedby_id: ctx.actorId,
+          })
+          .execute();
       }
-
-      if (optedIn && userEmail) {
-        let textContent = `Hi ${firstName || 'there'},\n\nHere are your active tasks needing attention today:\n\n`;
-        let htmlContent = `<h2>Tasks due today</h2><p>Hi ${firstName || 'there'},</p><p>Here are your active tasks needing attention today:</p><div class="panel"><ul>`;
-
-        for (const t of tasks) {
-          const dueDateStr = t.due_at ? new Date(t.due_at).toLocaleDateString() : 'No due date';
-          textContent += `- ${t.task_name} (due: ${dueDateStr})\n  Link: ${env.appUrl}/tasks/${t.task_id}\n\n`;
-          htmlContent += `<li><strong>${t.task_name}</strong> (due: ${dueDateStr}): <a href="${env.appUrl}/tasks/${t.task_id}">View task</a></li>`;
-        }
-
-        htmlContent += `</ul></div>`;
-
-        await mailService.sendMail({
-          to: userEmail,
-          subject: `You have ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} due or overdue`,
-          text: textContent,
-          html: htmlContent,
-          notificationSettingsLink: true,
-        });
-      }
+      return { runRecorded: false };
     }
-  } catch (err) {
-    logger.error({ err }, 'Failed to check and notify due tasks');
+
+    case 'create_task': {
+      if (!ctx.actorId) throw new Error('Automation has no owner to assign the task to');
+      const title = str(config['task_title']) || 'Follow up';
+      const contactName = person ? `${person.first_name || ''} ${person.last_name || ''}`.trim() : '';
+      await trx
+        .insertInto('tasks')
+        .values({
+          tenant_id: ctx.tenantId,
+          name: title,
+          details: contactName ? `Automation task for ${contactName}` : undefined,
+          status: 'todo',
+          priority: 'medium',
+          position: 0,
+          // Link the task to the enrolled contact so a later SLA breach can enroll them
+          // in a task_sla_breach automation (spec §4 → §16).
+          person_id: person ? String(person.id) : null,
+          createdby_id: ctx.actorId,
+          updatedby_id: ctx.actorId,
+        })
+        .execute();
+      return { runRecorded: false };
+    }
+
+    case 'notify_team': {
+      const targetUserId = str(config['notify_user_id']) || ctx.actorId;
+      if (!targetUserId) throw new Error('No team member configured to notify');
+      const contactName = person ? `${person.first_name || ''} ${person.last_name || ''}`.trim() : 'a contact';
+      const message = str(config['notify_message']) || `Automation update for ${contactName}`;
+      await trx
+        .insertInto('notifications')
+        .values({
+          tenant_id: ctx.tenantId,
+          user_id: targetUserId,
+          title: 'Automation notification',
+          message,
+          type: 'info',
+          read: false,
+        })
+        .execute();
+      return { runRecorded: false };
+    }
+
+    case 'wait':
+      // Handled by the caller before reaching here.
+      return { runRecorded: false };
+
+    default: {
+      const _exhaustive: never = step.kind;
+      throw new Error(`Unknown step kind: ${String(_exhaustive)}`);
+    }
   }
+}
+
+/* ── Engagement-reactive primitives ──────────────────────────────────────────── */
+
+export interface SendConditionInput {
+  opened_at: Date | string | null;
+  clicked_at: Date | string | null;
+}
+
+export type SendConditionVerdict = { send: true } | { send: false; reason: string };
+
+function parseSendCondition(value: unknown): WorkflowSendCondition | null {
+  return typeof value === 'string' && (WORKFLOW_SEND_CONDITIONS as readonly string[]).includes(value)
+    ? (value as WorkflowSendCondition)
+    : null;
+}
+
+/**
+ * Gate a send_email step on what the recipient did with the PREVIOUS email in this sequence.
+ * `previous` is the most recent successfully-sent email run for the enrollment, or null when
+ * this is the first email — in which case "did engage" conditions can never hold (skip) and
+ * "did not engage" conditions trivially hold (send). Pure, for unit tests.
+ */
+export function evaluateSendCondition(
+  condition: WorkflowSendCondition,
+  previous: SendConditionInput | null,
+): SendConditionVerdict {
+  const opened = previous?.opened_at != null;
+  const clicked = previous?.clicked_at != null;
+  switch (condition) {
+    case 'previous_not_opened':
+      return opened
+        ? { send: false, reason: 'They opened the previous email, so this follow-up was skipped' }
+        : { send: true };
+    case 'previous_not_clicked':
+      return clicked
+        ? { send: false, reason: 'They clicked the previous email, so this follow-up was skipped' }
+        : { send: true };
+    case 'previous_opened':
+      if (!previous)
+        return { send: false, reason: 'No earlier email in this sequence to check, so this step was skipped' };
+      return opened
+        ? { send: true }
+        : { send: false, reason: 'The previous email was not opened, so this step was skipped' };
+    case 'previous_clicked':
+      if (!previous)
+        return { send: false, reason: 'No earlier email in this sequence to check, so this step was skipped' };
+      return clicked
+        ? { send: true }
+        : { send: false, reason: 'The previous email was not clicked, so this step was skipped' };
+    default: {
+      const _exhaustive: never = condition;
+      throw new Error(`Unknown send condition: ${String(_exhaustive)}`);
+    }
+  }
+}
+
+function parseExitConditions(value: unknown): WorkflowExitCondition[] {
+  let parsed: unknown = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((v): v is WorkflowExitCondition =>
+    (WORKFLOW_EXIT_CONDITIONS as readonly string[]).includes(String(v)),
+  );
+}
+
+interface ExitContext {
+  tenantId: string;
+  enrollmentId: string;
+  personId: string;
+  enrolledAt: Date;
+  exitConditions: unknown;
+}
+
+/**
+ * The first met sequence goal, as a human-readable narration, or null when none is met.
+ * 'donated' looks for a standing (non-refunded) gift recorded after enrollment; the engagement
+ * goals read the opens/clicks the event webhook stamped onto this enrollment's email runs.
+ */
+async function findMetExitCondition(trx: Transaction<Models>, ctx: ExitContext): Promise<string | null> {
+  const conditions = parseExitConditions(ctx.exitConditions);
+  if (conditions.length === 0) return null;
+
+  if (conditions.includes('donated')) {
+    const gift = await trx
+      .selectFrom('donations')
+      .select('id')
+      .where('tenant_id', '=', ctx.tenantId)
+      .where('person_id', '=', ctx.personId)
+      .where('created_at', '>', ctx.enrolledAt)
+      .where('refunded_at', 'is', null)
+      .limit(1)
+      .executeTakeFirst();
+    if (gift) return 'Goal met: they donated. The rest of the sequence was skipped.';
+  }
+
+  if (conditions.includes('clicked_any_email')) {
+    const clicked = await trx
+      .selectFrom('workflow_runs')
+      .select('id')
+      .where('tenant_id', '=', ctx.tenantId)
+      .where('enrollment_id', '=', ctx.enrollmentId)
+      .where('clicked_at', 'is not', null)
+      .limit(1)
+      .executeTakeFirst();
+    if (clicked) return 'Goal met: they clicked an email in this sequence. The rest was skipped.';
+  }
+
+  if (conditions.includes('opened_any_email')) {
+    const opened = await trx
+      .selectFrom('workflow_runs')
+      .select('id')
+      .where('tenant_id', '=', ctx.tenantId)
+      .where('enrollment_id', '=', ctx.enrollmentId)
+      .where('opened_at', 'is not', null)
+      .limit(1)
+      .executeTakeFirst();
+    if (opened) return 'Goal met: they opened an email in this sequence. The rest was skipped.';
+  }
+
+  return null;
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/reschedule.ts
+````typescript
+import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
+import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
+import { logger } from '../../logger';
+// Type-only import: cron-registry imports the interval constants from this module, so a value
+// import here would close a runtime cycle (and TDZ-crash whichever module loads second).
+import type { CronJobType } from './cron-registry';
+import type { JobType } from './job-payloads';
+
+const MINUTE_MS = 60 * 1000;
+export const FIVE_MINUTES_MS = 5 * MINUTE_MS;
+export const TEN_MINUTES_MS = 10 * MINUTE_MS;
+export const HOUR_MS = 60 * MINUTE_MS;
+export const DAY_MS = 24 * 60 * MINUTE_MS;
+
+const DEFAULT_MAX_ATTEMPTS = 3;
+
+/**
+ * Re-queues a parameterless periodic job to run again after `delayMs`.
+ * Used by the self-rescheduling cron-style jobs (cleanup, dedupe, sync scheduling, …).
+ *
+ * Dedup guard: a self-rescheduling handler calls this at the end of its own run, and if it
+ * crashes after this insert but before the worker marks it 'completed', the stale-recovery
+ * requeues it and it re-runs — inserting a second next-run each time, so the cron would
+ * multiply without bound. Only enqueue when no PENDING run of this type already exists (the
+ * currently-'processing' job — this one — is intentionally NOT counted, or it would block its
+ * own chain).
+ *
+ * A plain `SELECT ... FOR UPDATE` can't serialize this: when there is no pending row yet, it locks
+ * nothing, so two concurrent schedulers of the same type both see "none" and both insert, forking
+ * the chain. We take a transaction-scoped advisory lock keyed by the job type first — that
+ * serializes on the type itself (not on a row), so the second scheduler blocks until the first
+ * commits and then correctly sees the row it inserted.
+ */
+export async function scheduleNextRun(db: Kysely<Models>, type: JobType, delayMs: number): Promise<void> {
+  await db.transaction().execute(async (trx) => {
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${type}))`.execute(trx);
+
+    const existing = await trx
+      .selectFrom('background_jobs')
+      .select('id')
+      .where('status', '=', 'pending')
+      .where(sql`payload->>'type'`, '=', type)
+      .executeTakeFirst();
+    if (existing) return; // a future run of this cron job is already queued — don't stack another
+
+    await trx
+      .insertInto('background_jobs')
+      .values({
+        tenant_id: null,
+        queue: 'default',
+        status: 'pending',
+        payload: JSON.stringify({ type }),
+        run_at: new Date(Date.now() + delayMs),
+        max_attempts: DEFAULT_MAX_ATTEMPTS,
+      })
+      .execute();
+  });
+}
+
+/**
+ * Seeds the first run of one cron-style job at boot, so a freshly-provisioned (or wiped) queue
+ * starts every recurring chain without anyone hand-maintaining a list of them.
+ *
+ * Same advisory-lock idiom, and for the same reason, as `scheduleNextRun`: every replica calls this
+ * on startup, and a plain check-then-insert (even with `FOR UPDATE`) locks nothing when there is no
+ * row yet, so N replicas booting together would each insert a seed and fork the chain N ways.
+ *
+ * Unlike `scheduleNextRun`, this also treats a 'processing' row as "already seeded": the chain is
+ * alive and its handler will enqueue the next run when it finishes. (`scheduleNextRun` deliberately
+ * excludes 'processing' because the job calling it *is* that processing row, and counting it would
+ * block the chain from ever continuing.)
+ */
+export async function seedCronJob(db: Kysely<Models>, type: CronJobType): Promise<void> {
+  await db.transaction().execute(async (trx) => {
+    await sql`SELECT pg_advisory_xact_lock(hashtext(${type}))`.execute(trx);
+
+    const existing = await trx
+      .selectFrom('background_jobs')
+      .select('id')
+      .where('status', 'in', ['pending', 'processing'])
+      .where(sql`payload->>'type'`, '=', type)
+      .executeTakeFirst();
+    if (existing) return;
+
+    logger.info({ type }, 'Seeding recurring background job');
+    await trx
+      .insertInto('background_jobs')
+      .values({
+        tenant_id: null,
+        queue: 'default',
+        status: 'pending',
+        payload: JSON.stringify({ type }),
+        run_at: new Date(),
+        max_attempts: DEFAULT_MAX_ATTEMPTS,
+      })
+      .execute();
+  });
 }
 ````
 
@@ -53704,848 +52023,6 @@ export class CompanionAccessController {
       email: row.email,
       sms: normalizeE164(row.mobile),
     };
-  }
-}
-````
-
-## File: apps/backend/src/app/modules/events/controller.ts
-````typescript
-import { TRPCError } from '@trpc/server';
-import type { Transaction } from 'kysely';
-import { sql } from 'kysely';
-import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
-import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
-import { BaseController } from '../../lib/base.controller';
-import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
-import { publicOrgName } from '../../lib/public-tenant';
-import { logger } from '../../logger';
-import { WorkflowsController } from '../workflows/controller';
-import { EventsRepo } from './repositories/events.repo';
-
-const DEFAULT_FIELDS = ['first_name', 'last_name', 'email', 'mobile', 'notes'];
-
-const ipRsvpTimestamps = new Map<string, number[]>();
-const RSVP_RATE_LIMIT_MAX = 5;
-const RSVP_RATE_LIMIT_WINDOW_MS = 60 * 1000;
-
-export class EventsController extends BaseController<'events', EventsRepo> {
-  private readonly campaignsRepo = new CampaignsRepo();
-  constructor() {
-    super(new EventsRepo());
-  }
-
-  public async getAllEvents(auth: IAuthKeyPayload, options?: any) {
-    return this.getRepo().getAllEventsWithCount({ tenant_id: auth.tenant_id, options });
-  }
-
-  public async addEvent(payload: any, auth: IAuthKeyPayload) {
-    const existing = await this.getRepo()
-      .db.selectFrom('events')
-      .select('id')
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('slug', '=', payload.slug)
-      .executeTakeFirst();
-
-    if (existing) {
-      throw new TRPCError({
-        code: 'BAD_REQUEST',
-        message: 'This URL slug is already in use. Please choose a different one.',
-      });
-    }
-
-    const row = {
-      tenant_id: auth.tenant_id,
-      // The context this event belongs to (§15); defaults to the office.
-      campaign_id: await this.campaignsRepo.resolveForWrite({
-        tenant_id: auth.tenant_id,
-        campaign_id: payload.campaign_id,
-      }),
-      createdby_id: auth.user_id,
-      updatedby_id: auth.user_id,
-      name: payload.name,
-      description: payload.description ?? null,
-      location_address: payload.location_address ?? null,
-      start_time: payload.start_time,
-      end_time: payload.end_time,
-      capacity: payload.capacity ?? null,
-      contact_email: payload.contact_email ?? null,
-      contact_phone: payload.contact_phone ?? null,
-      slug: payload.slug,
-      is_published: payload.is_published ?? false,
-      send_reminder: payload.send_reminder ?? true,
-      send_registration_confirmation: payload.send_registration_confirmation ?? true,
-      // `fields` is a jsonb column but the generated Kysely model types it as `string[]`.
-      // node-postgres serializes a raw JS array parameter as a Postgres ARRAY literal
-      // (e.g. `{a,b,c}`), which Postgres then rejects as invalid JSON for a jsonb column.
-      // Stringifying it first makes node-postgres send plain text, which Postgres casts
-      // to jsonb correctly.
-      fields: JSON.stringify(payload.fields ?? DEFAULT_FIELDS) as unknown as string[],
-    } as OperationDataType<'events', 'insert'>;
-
-    try {
-      return await this.add(row);
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('events_end_after_start_check')) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'End date & time must be after the start date & time.' });
-      }
-      throw err;
-    }
-  }
-
-  /**
-   * Public registration-page lookup. Tenant-scoped: event slugs are only unique per tenant, and the
-   * tenant is resolved from the subdomain (lib/public-tenant) before any event query runs.
-   */
-  public async getEventBySlug(tenantId: string, slug: string) {
-    return this.getRepo()
-      .db.selectFrom('events')
-      .selectAll()
-      .where('tenant_id', '=', tenantId)
-      .where('slug', '=', slug)
-      .where('is_published', '=', true)
-      .executeTakeFirst();
-  }
-
-  /**
-   * Everything the public /e/:slug SPA page renders, in one payload: the event, its ticket types,
-   * live capacity, and the org name. Unpublished/unknown slugs throw NOT_FOUND.
-   */
-  public async getPublicEventConfig(tenantId: string, slug: string) {
-    const event = await this.getEventBySlug(tenantId, slug);
-    if (!event) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: 'Event not found.' });
-    }
-
-    const eventId = String(event.id);
-    const [orgName, tickets, regCount] = await Promise.all([
-      publicOrgName(tenantId),
-      this.getTicketTypesByEventId(eventId, tenantId),
-      this.getRegistrationCountForEvent(eventId, tenantId),
-    ]);
-
-    const now = new Date();
-    const isPast = new Date(event.end_time) < now;
-    const isFull = event.capacity !== null && regCount >= event.capacity;
-    const remaining = event.capacity !== null ? Math.max(0, event.capacity - regCount) : null;
-
-    const fields: string[] = Array.isArray(event.fields)
-      ? event.fields
-      : typeof event.fields === 'string'
-        ? JSON.parse(event.fields)
-        : ['first_name', 'last_name', 'email', 'mobile', 'notes'];
-
-    return {
-      orgName,
-      event: {
-        name: String(event.name),
-        description: event.description ?? null,
-        location_address: event.location_address ?? null,
-        start_time: event.start_time,
-        end_time: event.end_time,
-        capacity: event.capacity ?? null,
-        contact_email: event.contact_email ?? null,
-        contact_phone: event.contact_phone ?? null,
-        fields,
-      },
-      tickets: tickets.map((t) => ({
-        name: String(t.name),
-        description: t.description ?? null,
-        price_cents: t.price_cents ?? null,
-        capacity: t.capacity ?? null,
-      })),
-      isPast,
-      isFull,
-      remaining,
-    };
-  }
-
-  public async getRegistrationCountForEvent(eventId: string, tenantId: string): Promise<number> {
-    const row = await this.getRepo()
-      .db.selectFrom('event_registrations')
-      .select(({ fn }) => [fn.count('id').as('cnt')])
-      .where('tenant_id', '=', tenantId)
-      .where('event_id', '=', eventId)
-      .where('status', '!=', 'cancelled')
-      .executeTakeFirst();
-    return Number(row?.cnt ?? 0);
-  }
-
-  public async getTicketTypesByEventId(eventId: string, tenantId: string) {
-    return this.getRepo()
-      .db.selectFrom('event_ticket_types')
-      .selectAll()
-      .where('event_id', '=', eventId)
-      .where('tenant_id', '=', tenantId)
-      .orderBy('sort_order', 'asc')
-      .execute();
-  }
-
-  public async checkSlugUnique(slug: string, excludeId: string | null, auth: IAuthKeyPayload) {
-    if (!slug) return { unique: true };
-    let query = this.getRepo()
-      .db.selectFrom('events')
-      .select('id')
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('slug', '=', slug);
-    if (excludeId) {
-      query = query.where('id', '!=', excludeId);
-    }
-    const existing = await query.executeTakeFirst();
-    return { unique: !existing };
-  }
-
-  public async updateEvent(id: string, payload: any, auth: IAuthKeyPayload) {
-    if (payload.slug) {
-      const existing = await this.getRepo()
-        .db.selectFrom('events')
-        .select('id')
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('slug', '=', payload.slug)
-        .where('id', '!=', id)
-        .executeTakeFirst();
-
-      if (existing) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: 'This URL slug is already in use. Please choose a different one.',
-        });
-      }
-    }
-
-    const row = {
-      ...payload,
-      // See addEvent() above: `fields` is jsonb but modeled as `string[]`; stringify so
-      // node-postgres sends valid JSON text instead of a Postgres ARRAY literal.
-      ...(payload.fields !== undefined ? { fields: JSON.stringify(payload.fields) as unknown as string[] } : {}),
-      updatedby_id: auth.user_id,
-    } as OperationDataType<'events', 'update'>;
-    let result;
-    try {
-      result = await this.update({ tenant_id: auth.tenant_id, id, row });
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('events_end_after_start_check')) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'End date & time must be after the start date & time.' });
-      }
-      throw err;
-    }
-
-    // Manage pending reminder jobs when the toggle changes
-    if (payload.send_reminder === false) {
-      try {
-        await this.getRepo()
-          .db.deleteFrom('background_jobs')
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('status', '=', 'pending')
-          .where(sql`payload->>'type'`, '=', 'send-event-reminder')
-          .where(sql`payload->>'eventId'`, '=', String(id))
-          .execute();
-      } catch (err) {
-        logger.error({ err }, 'Failed to clean up pending event reminders');
-      }
-    } else if (payload.send_reminder === true) {
-      try {
-        const event = await this.getRepo()
-          .db.selectFrom('events')
-          .select(['start_time'])
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('id', '=', id)
-          .executeTakeFirst();
-
-        if (event) {
-          const startMs = new Date(event.start_time).getTime();
-          const nowMs = Date.now();
-          if (startMs > nowMs) {
-            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
-            const registrations = await this.getRepo()
-              .db.selectFrom('event_registrations')
-              .select(['id', 'person_id'])
-              .where('tenant_id', '=', auth.tenant_id)
-              .where('event_id', '=', id)
-              .where('status', '=', 'registered')
-              .execute();
-
-            for (const reg of registrations) {
-              await this.getRepo()
-                .db.deleteFrom('background_jobs')
-                .where('tenant_id', '=', auth.tenant_id)
-                .where('status', '=', 'pending')
-                .where(sql`payload->>'type'`, '=', 'send-event-reminder')
-                .where(sql`payload->>'registrationId'`, '=', String(reg.id))
-                .execute();
-
-              await this.getRepo()
-                .db.insertInto('background_jobs')
-                .values({
-                  tenant_id: auth.tenant_id,
-                  queue: 'default',
-                  status: 'pending',
-                  payload: JSON.stringify({
-                    type: 'send-event-reminder',
-                    registrationId: String(reg.id),
-                    eventId: String(id),
-                    personId: String(reg.person_id),
-                    tenantId: auth.tenant_id,
-                  }),
-                  run_at: runAt,
-                })
-                .execute();
-            }
-          }
-        }
-      } catch (err) {
-        logger.error({ err }, 'Failed to re-schedule event reminders');
-      }
-    }
-
-    return result;
-  }
-
-  // Ticket types
-
-  public async getTicketTypesForEvent(event_id: string, auth: IAuthKeyPayload) {
-    return this.getRepo().getTicketTypesForEvent({ tenant_id: auth.tenant_id, event_id });
-  }
-
-  public async addTicketType(payload: any, auth: IAuthKeyPayload) {
-    return this.getRepo().addTicketType({
-      tenant_id: auth.tenant_id,
-      event_id: payload.event_id,
-      name: payload.name,
-      description: payload.description ?? null,
-      price_cents: payload.price_cents ?? 0,
-      capacity: payload.capacity ?? null,
-      sort_order: payload.sort_order ?? 0,
-      user_id: auth.user_id,
-    });
-  }
-
-  public async updateTicketType(id: string, payload: any, auth: IAuthKeyPayload) {
-    return this.getRepo().updateTicketType({ tenant_id: auth.tenant_id, id, row: payload, user_id: auth.user_id });
-  }
-
-  public async deleteTicketType(id: string, auth: IAuthKeyPayload) {
-    return this.getRepo().deleteTicketType({ tenant_id: auth.tenant_id, id });
-  }
-
-  /**
-   * Persist the drag-to-reorder of an event's ticket types. `ordered_ids` must be exactly the set of
-   * this event's ticket type ids (any foreign or missing id is rejected); each id's sort_order is
-   * written to its index so the public /e/:slug page shows tickets in the same order as the form.
-   */
-  public async reorderTicketTypes(payload: { event_id: string; ordered_ids: string[] }, auth: IAuthKeyPayload) {
-    const existing = await this.getRepo().getTicketTypesForEvent({
-      tenant_id: auth.tenant_id,
-      event_id: payload.event_id,
-    });
-    const existingIds = new Set(existing.map((t) => String(t.id)));
-    const requested = payload.ordered_ids;
-    const sameMembers =
-      requested.length === existingIds.size &&
-      new Set(requested).size === requested.length &&
-      requested.every((id) => existingIds.has(id));
-    if (!sameMembers) {
-      throw new TRPCError({
-        code: 'BAD_REQUEST',
-        message: 'The new order must list exactly this event’s ticket types.',
-      });
-    }
-    await this.getRepo().reorderTicketTypes({
-      tenant_id: auth.tenant_id,
-      event_id: payload.event_id,
-      ordered_ids: requested,
-      user_id: auth.user_id,
-    });
-    return { reordered: requested.length };
-  }
-
-  // Registrations
-
-  public async getRegistrationsForEvent(event_id: string, auth: IAuthKeyPayload) {
-    return this.getRepo().getRegistrationsForEvent({ tenant_id: auth.tenant_id, event_id });
-  }
-
-  public async addRegistration(payload: any, auth: IAuthKeyPayload) {
-    // Capacity check across the whole event
-    const event = await this.getRepo()
-      .db.selectFrom('events')
-      .select(['capacity', 'send_reminder', 'send_registration_confirmation', 'start_time', 'name'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', payload.event_id)
-      .executeTakeFirst();
-
-    if (!event) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: 'Event not found.' });
-    }
-
-    if (event.capacity !== null) {
-      const countRow = await this.getRepo()
-        .db.selectFrom('event_registrations')
-        .select(({ fn }) => [fn.count<number>('id').as('cnt')])
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('event_id', '=', payload.event_id)
-        .where('status', '!=', 'cancelled')
-        .executeTakeFirst();
-      if (Number(countRow?.cnt || 0) >= event.capacity) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'This event is at full capacity.' });
-      }
-    }
-
-    // Per-ticket-type capacity check
-    if (payload.ticket_type_id) {
-      const ticketType = await this.getRepo()
-        .db.selectFrom('event_ticket_types')
-        .select(['capacity'])
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('id', '=', payload.ticket_type_id)
-        .executeTakeFirst();
-
-      if (ticketType && ticketType.capacity !== null) {
-        const ticketCountRow = await this.getRepo()
-          .db.selectFrom('event_registrations')
-          .select(({ fn }) => [fn.count<number>('id').as('cnt')])
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('ticket_type_id', '=', payload.ticket_type_id)
-          .where('status', '!=', 'cancelled')
-          .executeTakeFirst();
-        if (Number(ticketCountRow?.cnt || 0) >= ticketType.capacity) {
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'This ticket type is sold out.' });
-        }
-      }
-    }
-
-    const result = await this.getRepo().addRegistration({
-      tenant_id: auth.tenant_id,
-      event_id: payload.event_id,
-      person_id: payload.person_id,
-      ticket_type_id: payload.ticket_type_id ?? null,
-      status: payload.status ?? 'registered',
-      notes: payload.notes ?? null,
-      user_id: auth.user_id,
-    });
-
-    if (result) {
-      // Queue registration confirmation email
-      if (event.send_registration_confirmation !== false) {
-        try {
-          await this.getRepo()
-            .db.insertInto('background_jobs')
-            .values({
-              tenant_id: auth.tenant_id,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({
-                type: 'send-event-registration-confirmation',
-                registrationId: String(result.id),
-                eventId: String(payload.event_id),
-                personId: String(payload.person_id),
-                tenantId: auth.tenant_id,
-              }),
-              run_at: new Date(),
-            })
-            .execute();
-        } catch (err) {
-          logger.error({ err }, 'Failed to queue registration confirmation');
-        }
-      }
-
-      // Queue 24h reminder
-      if (event.send_reminder !== false) {
-        try {
-          const startMs = new Date(event.start_time).getTime();
-          const nowMs = Date.now();
-          if (startMs > nowMs) {
-            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
-            await this.getRepo()
-              .db.insertInto('background_jobs')
-              .values({
-                tenant_id: auth.tenant_id,
-                queue: 'default',
-                status: 'pending',
-                payload: JSON.stringify({
-                  type: 'send-event-reminder',
-                  registrationId: String(result.id),
-                  eventId: String(payload.event_id),
-                  personId: String(payload.person_id),
-                  tenantId: auth.tenant_id,
-                }),
-                run_at: runAt,
-              })
-              .execute();
-          }
-        } catch (err) {
-          logger.error({ err }, 'Failed to queue event reminder');
-        }
-      }
-
-      try {
-        await this.userActivity.log({
-          tenant_id: auth.tenant_id,
-          user_id: auth.user_id,
-          activity: 'assign',
-          entity: 'event_registrations',
-          entity_id: String(result.id),
-          quantity: 1,
-          metadata: { id: result.id, event_id: payload.event_id, person_id: payload.person_id },
-        });
-      } catch (e) {
-        logger.error({ err: e }, 'Failed to log registration activity');
-      }
-    }
-
-    return result;
-  }
-
-  public async checkIn(id: string, auth: IAuthKeyPayload) {
-    const result = await this.getRepo().updateRegistration({
-      tenant_id: auth.tenant_id,
-      id,
-      row: { status: 'attended', checked_in_at: new Date() },
-      user_id: auth.user_id,
-    });
-
-    // Cancel pending reminder — they've already arrived
-    try {
-      await this.getRepo()
-        .db.deleteFrom('background_jobs')
-        .where('tenant_id', '=', auth.tenant_id)
-        .where('status', '=', 'pending')
-        .where(sql`payload->>'type'`, '=', 'send-event-reminder')
-        .where(sql`payload->>'registrationId'`, '=', String(id))
-        .execute();
-    } catch (err) {
-      logger.error({ err }, 'Failed to cancel event reminder on check-in');
-    }
-
-    try {
-      await this.userActivity.log({
-        tenant_id: auth.tenant_id,
-        user_id: auth.user_id,
-        activity: 'update',
-        entity: 'event_registrations',
-        entity_id: id,
-        quantity: 1,
-        metadata: { id, status: 'attended', checked_in_at: new Date().toISOString() },
-      });
-    } catch (e) {
-      logger.error({ err: e }, 'Failed to log check-in activity');
-    }
-
-    return result;
-  }
-
-  public async updateRegistration(id: string, payload: any, auth: IAuthKeyPayload) {
-    const result = await this.getRepo().updateRegistration({
-      tenant_id: auth.tenant_id,
-      id,
-      row: payload,
-      user_id: auth.user_id,
-    });
-
-    // Cancel reminder if status moves away from 'registered'
-    if (payload.status && payload.status !== 'registered') {
-      try {
-        await this.getRepo()
-          .db.deleteFrom('background_jobs')
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('status', '=', 'pending')
-          .where(sql`payload->>'type'`, '=', 'send-event-reminder')
-          .where(sql`payload->>'registrationId'`, '=', String(id))
-          .execute();
-      } catch (err) {
-        logger.error({ err }, 'Failed to cancel event reminder on status change');
-      }
-    }
-
-    try {
-      await this.userActivity.log({
-        tenant_id: auth.tenant_id,
-        user_id: auth.user_id,
-        activity: 'update',
-        entity: 'event_registrations',
-        entity_id: id,
-        quantity: 1,
-        metadata: { id, status: payload.status },
-      });
-    } catch (e) {
-      logger.error({ err: e }, 'Failed to log registration update activity');
-    }
-
-    return result;
-  }
-
-  public async deleteRegistration(id: string, auth: IAuthKeyPayload) {
-    const result = await this.getRepo().deleteRegistration({ tenant_id: auth.tenant_id, id });
-
-    if (result) {
-      try {
-        await this.getRepo()
-          .db.deleteFrom('background_jobs')
-          .where('tenant_id', '=', auth.tenant_id)
-          .where('status', '=', 'pending')
-          .where(sql`payload->>'type'`, '=', 'send-event-reminder')
-          .where(sql`payload->>'registrationId'`, '=', String(id))
-          .execute();
-      } catch (err) {
-        logger.error({ err }, 'Failed to cancel event reminder on registration delete');
-      }
-
-      try {
-        await this.userActivity.log({
-          tenant_id: auth.tenant_id,
-          user_id: auth.user_id,
-          activity: 'delete',
-          entity: 'event_registrations',
-          entity_id: id,
-          quantity: 1,
-          metadata: { id },
-        });
-      } catch (e) {
-        logger.error({ err: e }, 'Failed to log registration delete activity');
-      }
-    }
-
-    return result;
-  }
-
-  public async getHistoryForPerson(person_id: string, auth: IAuthKeyPayload) {
-    return this.getRepo().getHistoryForPerson({ tenant_id: auth.tenant_id, person_id });
-  }
-
-  public async getEventStats(person_id: string, auth: IAuthKeyPayload) {
-    return this.getRepo().getEventStats({ tenant_id: auth.tenant_id, person_id });
-  }
-
-  public async rsvpPublic(
-    tenantId: string,
-    slug: string,
-    payload: Record<string, string>,
-    clientIp: string,
-    opts?: { skipIpRateLimit?: boolean },
-  ) {
-    // Rate limiting. Keyed (workspace-API-key) submissions skip the per-IP window — they come
-    // from one integration server and are rate-limited per tenant by the route.
-    if (!opts?.skipIpRateLimit) {
-      const now = Date.now();
-      let timestamps = ipRsvpTimestamps.get(clientIp) || [];
-      timestamps = timestamps.filter((t) => now - t < RSVP_RATE_LIMIT_WINDOW_MS);
-      if (timestamps.length >= RSVP_RATE_LIMIT_MAX) {
-        throw new TRPCError({
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Rate limit exceeded. Please try again in a minute.',
-        });
-      }
-      timestamps.push(now);
-      ipRsvpTimestamps.set(clientIp, timestamps);
-    }
-
-    const event = await this.getEventBySlug(tenantId, slug);
-    if (!event) {
-      throw new TRPCError({ code: 'NOT_FOUND', message: 'Event not found.' });
-    }
-
-    // Honeypot
-    if (payload['_hp'] && payload['_hp'].trim().length > 0) {
-      return { success: true };
-    }
-
-    const email = payload['email']?.trim();
-    if (!email) {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'Email address is required.' });
-    }
-
-    if (new Date(event.end_time) < new Date()) {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'This event has ended and registration is closed.' });
-    }
-
-    const firstName = payload['first_name']?.trim() || null;
-    const lastName = payload['last_name']?.trim() || null;
-    const mobile = payload['mobile']?.trim() || null;
-    const notes = payload['notes']?.trim() || null;
-
-    await this.getRepo()
-      .transaction()
-      .execute(async (trx: Transaction<Models>) => {
-        const tenantRow = await trx
-          .selectFrom('tenants')
-          .select(['placeholder_household_id', 'admin_id'])
-          .where('id', '=', tenantId)
-          .executeTakeFirst();
-
-        const householdId = tenantRow?.placeholder_household_id;
-        const creatorId = tenantRow?.admin_id;
-
-        if (!householdId || !creatorId) {
-          throw new Error('Tenant configuration is incomplete.');
-        }
-
-        // Check overall capacity
-        if (event.capacity !== null) {
-          const countRow = await trx
-            .selectFrom('event_registrations')
-            .select(({ fn }) => [fn.count<number>('id').as('cnt')])
-            .where('tenant_id', '=', tenantId)
-            .where('event_id', '=', String(event.id))
-            .where('status', '!=', 'cancelled')
-            .executeTakeFirst();
-          if (Number(countRow?.cnt || 0) >= event.capacity) {
-            throw new TRPCError({ code: 'BAD_REQUEST', message: 'This event is at full capacity.' });
-          }
-        }
-
-        // Find or create person
-        const existing = await trx
-          .selectFrom('persons')
-          .select(['id', 'first_name', 'last_name', 'mobile', 'notes'])
-          .where('tenant_id', '=', tenantId)
-          .where(sql`lower(email)`, '=', email.toLowerCase())
-          .executeTakeFirst();
-
-        let personId: string;
-
-        if (existing) {
-          personId = String(existing.id);
-          const updateRow: any = { updatedby_id: creatorId, updated_at: sql`now()` };
-          if (!existing.first_name && firstName) updateRow.first_name = firstName;
-          if (!existing.last_name && lastName) updateRow.last_name = lastName;
-          if (!existing.mobile && mobile) updateRow.mobile = mobile;
-          if (notes) {
-            updateRow.notes = existing.notes ? `${existing.notes}\n\nEvent RSVP notes: ${notes}` : notes;
-          }
-          if (Object.keys(updateRow).length > 2) {
-            await trx
-              .updateTable('persons')
-              .set(updateRow)
-              .where('tenant_id', '=', tenantId)
-              .where('id', '=', existing.id)
-              .execute();
-          }
-        } else {
-          // `persons.campaign_id` is NOT NULL, so a campaign must be resolved before insert
-          // (there is no "campaign-less" person). `persons` also has no address columns
-          // (street1/city/state/zip/country live on `households`, not `persons`), so those
-          // RSVP fields are intentionally not persisted here.
-          const campaignRow = await trx
-            .selectFrom('campaigns')
-            .select('id')
-            .where('tenant_id', '=', tenantId)
-            .orderBy('created_at', 'asc')
-            .limit(1)
-            .executeTakeFirst();
-
-          if (!campaignRow) {
-            throw new Error('Tenant configuration is incomplete.');
-          }
-          const campaignId = String(campaignRow.id);
-
-          const insertRow = {
-            tenant_id: tenantId,
-            campaign_id: campaignId,
-            household_id: householdId,
-            createdby_id: creatorId,
-            updatedby_id: creatorId,
-            first_name: firstName,
-            last_name: lastName,
-            email,
-            mobile,
-            notes,
-          };
-
-          const insertRes = await trx.insertInto('persons').values(insertRow).returning('id').executeTakeFirstOrThrow();
-          personId = String(insertRes.id);
-
-          try {
-            const workflowsCtrl = new WorkflowsController();
-            await workflowsCtrl.triggerWorkflow(tenantId, personId, 'contact_created', null, trx);
-          } catch (err) {
-            logger.error({ err }, 'Failed to trigger contact_created workflow in rsvpPublic');
-          }
-        }
-
-        // Check duplicate registration
-        const existingReg = await trx
-          .selectFrom('event_registrations')
-          .select('id')
-          .where('tenant_id', '=', tenantId)
-          .where('event_id', '=', String(event.id))
-          .where('person_id', '=', personId)
-          .where('status', '!=', 'cancelled')
-          .executeTakeFirst();
-
-        if (existingReg) {
-          throw new TRPCError({ code: 'BAD_REQUEST', message: 'You are already registered for this event.' });
-        }
-
-        // Insert registration
-        const reg = await trx
-          .insertInto('event_registrations')
-          .values({
-            tenant_id: tenantId,
-            event_id: String(event.id),
-            person_id: personId,
-            ticket_type_id: null,
-            status: 'registered',
-            notes: notes ?? null,
-            createdby_id: creatorId,
-            updatedby_id: creatorId,
-          })
-          .returning('id')
-          .executeTakeFirstOrThrow();
-
-        // Queue confirmation email
-        if (event.send_registration_confirmation !== false) {
-          try {
-            await trx
-              .insertInto('background_jobs')
-              .values({
-                tenant_id: tenantId,
-                queue: 'default',
-                status: 'pending',
-                payload: JSON.stringify({
-                  type: 'send-event-registration-confirmation',
-                  registrationId: String(reg.id),
-                  eventId: String(event.id),
-                  personId,
-                  tenantId,
-                }),
-                run_at: new Date(),
-              })
-              .execute();
-          } catch (err) {
-            logger.error({ err }, 'Failed to queue RSVP confirmation');
-          }
-        }
-
-        // Queue 24h reminder
-        if (event.send_reminder !== false) {
-          try {
-            const startMs = new Date(event.start_time).getTime();
-            const nowMs = Date.now();
-            if (startMs > nowMs) {
-              const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
-              await trx
-                .insertInto('background_jobs')
-                .values({
-                  tenant_id: tenantId,
-                  queue: 'default',
-                  status: 'pending',
-                  payload: JSON.stringify({
-                    type: 'send-event-reminder',
-                    registrationId: String(reg.id),
-                    eventId: String(event.id),
-                    personId,
-                    tenantId,
-                  }),
-                  run_at: runAt,
-                })
-                .execute();
-            }
-          } catch (err) {
-            logger.error({ err }, 'Failed to queue event reminder in rsvpPublic');
-          }
-        }
-      });
-
-    return { success: true };
   }
 }
 ````
@@ -57423,6 +54900,978 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
 }
 ````
 
+## File: apps/backend/src/app/modules/volunteer-events/controller.ts
+````typescript
+import { BaseController } from '../../lib/base.controller';
+import { VolunteerEventsRepo } from './repositories/volunteer-events.repo';
+import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
+import type { AddVolunteerShiftType, UpdateVolunteerShiftType } from '../../../../../../libs/common/src';
+import type { OperationDataType, Models } from '../../../../../../libs/common/src/lib/kysely.models';
+import type { Transaction, UpdateObject } from 'kysely';
+import { sql } from 'kysely';
+import { TRPCError } from '@trpc/server';
+import { publicOrgName } from '../../lib/public-tenant';
+import { WorkflowsController } from '../workflows/controller';
+import { logger } from '../../logger';
+
+const DEFAULT_FIELDS = ['first_name', 'last_name', 'email', 'mobile', 'notes'];
+
+const ipSignupTimestamps = new Map<string, number[]>();
+const SIGNUP_RATE_LIMIT_MAX = 5;
+const SIGNUP_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+
+export class VolunteerEventsController extends BaseController<'volunteer_events', VolunteerEventsRepo> {
+  constructor() {
+    super(new VolunteerEventsRepo());
+  }
+
+  public async getAllEvents(auth: IAuthKeyPayload, options?: any) {
+    return this.getRepo().getAllEventsWithCount({
+      tenant_id: auth.tenant_id,
+      options,
+    });
+  }
+
+  // payload is the pre-coercion wire shape (start_time/end_time arrive as ISO
+  // strings from the tRPC boundary, not Date); typing it to the parsed DTO would
+  // reject those. Left loose at this coercion boundary — see events/controller.
+  public async addEvent(payload: any, auth: IAuthKeyPayload) {
+    const existing = await this.getRepo()
+      .db.selectFrom('volunteer_events')
+      .select('id')
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('slug', '=', payload.slug)
+      .executeTakeFirst();
+    if (existing) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'This URL slug is already in use. Please choose a different one.',
+      });
+    }
+
+    if (payload.start_time && payload.end_time && new Date(payload.end_time) <= new Date(payload.start_time)) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: 'End date & time must be after the start date & time.' });
+    }
+
+    const row = {
+      tenant_id: auth.tenant_id,
+      createdby_id: auth.user_id,
+      updatedby_id: auth.user_id,
+      name: payload.name,
+      description: payload.description ?? null,
+      location_address: payload.location_address ?? null,
+      start_time: payload.start_time,
+      end_time: payload.end_time,
+      capacity: payload.capacity ?? null,
+      contact_email: payload.contact_email ?? null,
+      contact_phone: payload.contact_phone ?? null,
+      is_private: payload.is_private ?? false,
+      send_reminder: payload.send_reminder ?? true,
+      send_signup_confirmation: payload.send_signup_confirmation ?? true,
+      send_volunteer_alert: payload.send_volunteer_alert ?? true,
+      slug: payload.slug,
+      // `fields` is a jsonb column but the generated Kysely model types it as `string[]`.
+      // node-postgres serializes a raw JS array parameter as a Postgres ARRAY literal
+      // (e.g. `{a,b,c}`), which Postgres then rejects as invalid JSON for a jsonb column.
+      // Stringifying it first makes node-postgres send plain text, which Postgres casts
+      // to jsonb correctly.
+      fields: JSON.stringify(payload.fields ?? DEFAULT_FIELDS) as unknown as string[],
+    } as OperationDataType<'volunteer_events', 'insert'>;
+    return this.add(row);
+  }
+
+  public async checkSlugUnique(slug: string, excludeId: string | null, _auth: IAuthKeyPayload) {
+    if (!slug) return { unique: true };
+    let query = this.getRepo()
+      .db.selectFrom('volunteer_events')
+      .select('id')
+      .where('tenant_id', '=', _auth.tenant_id)
+      .where('slug', '=', slug);
+    if (excludeId) {
+      query = query.where('id', '!=', excludeId);
+    }
+    const existing = await query.executeTakeFirst();
+    return { unique: !existing };
+  }
+
+  // Loose at the coercion boundary, same as addEvent above.
+  public async updateEvent(id: string, payload: any, auth: IAuthKeyPayload) {
+    if (payload.slug) {
+      const existing = await this.getRepo()
+        .db.selectFrom('volunteer_events')
+        .select('id')
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('slug', '=', payload.slug)
+        .where('id', '!=', id)
+        .executeTakeFirst();
+      if (existing) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This URL slug is already in use. Please choose a different one.',
+        });
+      }
+    }
+
+    if (payload.start_time && payload.end_time && new Date(payload.end_time) <= new Date(payload.start_time)) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: 'End date & time must be after the start date & time.' });
+    }
+
+    // `fields` is a jsonb column but modeled as `string[]`; pull it out of the raw payload
+    // spread and stringify it so node-postgres sends valid JSON text instead of a Postgres
+    // ARRAY literal (see addEvent() above for the full explanation).
+    const { fields, ...restPayload } = payload;
+    const row = {
+      ...restPayload,
+      ...(fields !== undefined ? { fields: JSON.stringify(fields) as unknown as string[] } : {}),
+      updatedby_id: auth.user_id,
+    } as OperationDataType<'volunteer_events', 'update'>;
+    const result = await this.update({
+      tenant_id: auth.tenant_id,
+      id,
+      row,
+    });
+
+    if (payload.send_reminder === false) {
+      try {
+        await this.getRepo()
+          .db.deleteFrom('background_jobs')
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('status', '=', 'pending')
+          .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
+          .where(sql`payload->>'eventId'`, '=', String(id))
+          .execute();
+      } catch (err) {
+        logger.error({ err }, 'Failed to clean up pending reminders for disabled event reminders');
+      }
+    } else if (payload.send_reminder === true) {
+      try {
+        // Fetch all signed up shifts for this event
+        const shifts = await this.getRepo()
+          .db.selectFrom('volunteer_shifts')
+          .select(['id', 'person_id'])
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('event_id', '=', id)
+          .where('status', '=', 'signed_up')
+          .execute();
+
+        // Fetch event start time
+        const event = await this.getRepo()
+          .db.selectFrom('volunteer_events')
+          .select(['start_time'])
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('id', '=', id)
+          .executeTakeFirst();
+
+        if (event) {
+          const startMs = new Date(event.start_time).getTime();
+          const nowMs = Date.now();
+          if (startMs > nowMs) {
+            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
+            for (const shift of shifts) {
+              // Delete existing pending reminder for safety
+              await this.getRepo()
+                .db.deleteFrom('background_jobs')
+                .where('tenant_id', '=', auth.tenant_id)
+                .where('status', '=', 'pending')
+                .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
+                .where(sql`payload->>'shiftId'`, '=', String(shift.id))
+                .execute();
+
+              // Queue new reminder
+              await this.getRepo()
+                .db.insertInto('background_jobs')
+                .values({
+                  tenant_id: auth.tenant_id,
+                  queue: 'default',
+                  status: 'pending',
+                  payload: JSON.stringify({
+                    type: 'send-shift-reminder',
+                    shiftId: String(shift.id),
+                    eventId: String(id),
+                    personId: String(shift.person_id),
+                    tenantId: auth.tenant_id,
+                  }),
+                  run_at: runAt,
+                })
+                .execute();
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to re-schedule shift reminders for event');
+      }
+    }
+
+    return result;
+  }
+
+  public async getShiftsForEvent(event_id: string, auth: IAuthKeyPayload) {
+    return this.getRepo().getShiftsForEvent({
+      tenant_id: auth.tenant_id,
+      event_id,
+    });
+  }
+
+  public async signupVolunteer(payload: AddVolunteerShiftType, auth: IAuthKeyPayload) {
+    const result = await this.getRepo().signupVolunteer({
+      tenant_id: auth.tenant_id,
+      event_id: payload.event_id,
+      person_id: payload.person_id,
+      status: payload.status,
+      hours_worked: payload.hours_worked,
+      notes: payload.notes,
+      user_id: auth.user_id,
+    });
+
+    if (result && result.status === 'signed_up') {
+      try {
+        const event = await this.getRepo()
+          .db.selectFrom('volunteer_events')
+          .select(['start_time', 'send_reminder'])
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('id', '=', payload.event_id)
+          .executeTakeFirst();
+
+        if (event && event.send_reminder !== false) {
+          const startMs = new Date(event.start_time).getTime();
+          const nowMs = Date.now();
+          if (startMs > nowMs) {
+            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
+            await this.getRepo()
+              .db.insertInto('background_jobs')
+              .values({
+                tenant_id: auth.tenant_id,
+                queue: 'default',
+                status: 'pending',
+                payload: JSON.stringify({
+                  type: 'send-shift-reminder',
+                  shiftId: String(result.id),
+                  eventId: String(payload.event_id),
+                  personId: String(payload.person_id),
+                  tenantId: auth.tenant_id,
+                }),
+                run_at: runAt,
+              })
+              .execute();
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to schedule shift reminder for volunteer');
+      }
+
+      // Trigger volunteer signup workflows
+      try {
+        const workflowsController = new WorkflowsController();
+        await this.getRepo()
+          .transaction()
+          .execute(async (trx) => {
+            await workflowsController.triggerVolunteerSignup(
+              auth.tenant_id,
+              String(payload.person_id),
+              String(payload.event_id),
+              trx,
+            );
+          });
+      } catch (err) {
+        logger.error({ err }, 'Failed to trigger volunteer signup workflows');
+      }
+    }
+
+    if (result && result.status) {
+      try {
+        const workflowsController = new WorkflowsController();
+        await this.getRepo()
+          .transaction()
+          .execute(async (trx) => {
+            await workflowsController.triggerWorkflow(
+              auth.tenant_id,
+              String(payload.person_id),
+              'volunteer_shift_status',
+              result.status,
+              trx,
+            );
+          });
+      } catch (err) {
+        logger.error({ err }, 'Failed to trigger volunteer_shift_status workflow in signupVolunteer');
+      }
+    }
+
+    try {
+      await this.userActivity.log({
+        tenant_id: auth.tenant_id,
+        user_id: auth.user_id,
+        activity: 'assign',
+        entity: 'volunteer_shifts',
+        entity_id: result?.id ? String(result.id) : null,
+        quantity: 1,
+        metadata: { id: result?.id, event_id: payload.event_id, person_id: payload.person_id },
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'Failed to log shift signup activity');
+    }
+
+    return result;
+  }
+
+  public async updateShift(id: string, payload: UpdateVolunteerShiftType, auth: IAuthKeyPayload) {
+    const result = await this.getRepo().updateShift({
+      tenant_id: auth.tenant_id,
+      id,
+      row: payload,
+      user_id: auth.user_id,
+    });
+
+    if (result) {
+      // Trigger volunteer shift status workflows
+      if (payload.status) {
+        try {
+          const workflowsController = new WorkflowsController();
+          await this.getRepo()
+            .transaction()
+            .execute(async (trx) => {
+              await workflowsController.triggerWorkflow(
+                auth.tenant_id,
+                String(result.person_id),
+                'volunteer_shift_status',
+                payload.status,
+                trx,
+              );
+            });
+        } catch (err) {
+          logger.error({ err }, 'Failed to trigger volunteer_shift_status workflows');
+        }
+      }
+
+      try {
+        if (payload.status && payload.status !== 'signed_up') {
+          // Cancel/remove pending reminder
+          await this.getRepo()
+            .db.deleteFrom('background_jobs')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('status', '=', 'pending')
+            .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
+            .where(sql`payload->>'shiftId'`, '=', String(id))
+            .execute();
+        } else if (payload.status === 'signed_up') {
+          // Remove existing pending reminders first
+          await this.getRepo()
+            .db.deleteFrom('background_jobs')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('status', '=', 'pending')
+            .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
+            .where(sql`payload->>'shiftId'`, '=', String(id))
+            .execute();
+
+          // Fetch event to check if we should schedule a new reminder
+          const event = await this.getRepo()
+            .db.selectFrom('volunteer_events')
+            .select(['start_time', 'send_reminder'])
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('id', '=', result.event_id)
+            .executeTakeFirst();
+
+          if (event && event.send_reminder !== false) {
+            const startMs = new Date(event.start_time).getTime();
+            const nowMs = Date.now();
+            if (startMs > nowMs) {
+              const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
+              await this.getRepo()
+                .db.insertInto('background_jobs')
+                .values({
+                  tenant_id: auth.tenant_id,
+                  queue: 'default',
+                  status: 'pending',
+                  payload: JSON.stringify({
+                    type: 'send-shift-reminder',
+                    shiftId: String(id),
+                    eventId: String(result.event_id),
+                    personId: String(result.person_id),
+                    tenantId: auth.tenant_id,
+                  }),
+                  run_at: runAt,
+                })
+                .execute();
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to update shift reminder job status');
+      }
+    }
+
+    try {
+      await this.userActivity.log({
+        tenant_id: auth.tenant_id,
+        user_id: auth.user_id,
+        activity: 'update',
+        entity: 'volunteer_shifts',
+        entity_id: id,
+        quantity: 1,
+        metadata: { id, status: payload.status },
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'Failed to log shift update activity');
+    }
+
+    return result;
+  }
+
+  public async deleteShift(id: string, auth: IAuthKeyPayload) {
+    const result = await this.getRepo().deleteShift({
+      tenant_id: auth.tenant_id,
+      id,
+    });
+
+    if (result) {
+      try {
+        await this.getRepo()
+          .db.deleteFrom('background_jobs')
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('status', '=', 'pending')
+          .where(sql`payload->>'type'`, '=', 'send-shift-reminder')
+          .where(sql`payload->>'shiftId'`, '=', String(id))
+          .execute();
+      } catch (err) {
+        logger.error({ err }, 'Failed to delete pending shift reminder job');
+      }
+    }
+
+    try {
+      await this.userActivity.log({
+        tenant_id: auth.tenant_id,
+        user_id: auth.user_id,
+        activity: 'delete',
+        entity: 'volunteer_shifts',
+        entity_id: id,
+        quantity: 1,
+        metadata: { id },
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'Failed to log shift delete activity');
+    }
+
+    return result;
+  }
+
+  public async getHistoryForPerson(person_id: string, auth: IAuthKeyPayload) {
+    return this.getRepo().getHistoryForPerson({
+      tenant_id: auth.tenant_id,
+      person_id,
+    });
+  }
+
+  public async getVolunteerStats(person_id: string, auth: IAuthKeyPayload) {
+    return this.getRepo().getVolunteerStats({
+      tenant_id: auth.tenant_id,
+      person_id,
+    });
+  }
+
+  public async getTenantPublic(tenantId: string) {
+    return this.getRepo().db.selectFrom('tenants').select(['name']).where('id', '=', tenantId).executeTakeFirst();
+  }
+
+  public async getUpcomingEventsPublic(tenantId: string) {
+    return this.getRepo()
+      .db.selectFrom('volunteer_events')
+      .select([
+        'volunteer_events.id',
+        'volunteer_events.tenant_id',
+        'volunteer_events.name',
+        'volunteer_events.description',
+        'volunteer_events.location_address',
+        'volunteer_events.start_time',
+        'volunteer_events.end_time',
+        'volunteer_events.capacity',
+        'volunteer_events.contact_email',
+        'volunteer_events.contact_phone',
+        'volunteer_events.is_private',
+        'volunteer_events.send_reminder',
+        'volunteer_events.slug',
+      ])
+      .select((eb) => [
+        eb
+          .selectFrom('volunteer_shifts')
+          .whereRef('volunteer_shifts.event_id', '=', 'volunteer_events.id')
+          .select(({ fn }) => [fn.count<number>('volunteer_shifts.id').as('volunteers_count')])
+          .as('volunteers_count'),
+      ])
+      .where('volunteer_events.tenant_id', '=', tenantId)
+      .where('volunteer_events.end_time', '>=', new Date())
+      .where('volunteer_events.is_private', '=', false)
+      .orderBy('volunteer_events.start_time', 'asc')
+      .execute();
+  }
+
+  /**
+   * Public signup-page lookup. Tenant-scoped by slug: volunteer-event slugs are unique per tenant,
+   * and the tenant is resolved from the subdomain (lib/public-tenant) before any event query runs.
+   */
+  public async getEventPublic(tenantId: string, slug: string) {
+    return this.getRepo()
+      .db.selectFrom('volunteer_events')
+      .select([
+        'volunteer_events.id',
+        'volunteer_events.tenant_id',
+        'volunteer_events.name',
+        'volunteer_events.description',
+        'volunteer_events.location_address',
+        'volunteer_events.start_time',
+        'volunteer_events.end_time',
+        'volunteer_events.capacity',
+        'volunteer_events.contact_email',
+        'volunteer_events.contact_phone',
+        'volunteer_events.is_private',
+        'volunteer_events.send_reminder',
+        'volunteer_events.slug',
+        'volunteer_events.fields',
+      ])
+      .select((eb) => [
+        eb
+          .selectFrom('volunteer_shifts')
+          .whereRef('volunteer_shifts.event_id', '=', 'volunteer_events.id')
+          .select(({ fn }) => [fn.count<number>('volunteer_shifts.id').as('volunteers_count')])
+          .as('volunteers_count'),
+      ])
+      .where('volunteer_events.tenant_id', '=', tenantId)
+      .where('volunteer_events.slug', '=', slug)
+      .executeTakeFirst();
+  }
+
+  /**
+   * Everything the public /v/:slug SPA page renders in one payload: the event, live signup count,
+   * and the org name. Unknown slugs throw NOT_FOUND.
+   */
+  public async getPublicEventConfig(tenantId: string, slug: string) {
+    const event = await this.getEventPublic(tenantId, slug);
+    if (!event) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Event not found.' });
+    }
+
+    const orgName = await publicOrgName(tenantId);
+    const volunteersCount = Number(event.volunteers_count || 0);
+    const isPast = new Date(event.end_time) < new Date();
+    const isFull = event.capacity !== null && volunteersCount >= event.capacity;
+    const remaining = event.capacity !== null ? Math.max(0, event.capacity - volunteersCount) : null;
+
+    const fields: string[] = Array.isArray(event.fields)
+      ? event.fields
+      : typeof event.fields === 'string'
+        ? JSON.parse(event.fields)
+        : ['first_name', 'last_name', 'email', 'mobile', 'notes'];
+
+    return {
+      orgName,
+      event: {
+        name: String(event.name),
+        description: event.description ?? null,
+        location_address: event.location_address ?? null,
+        start_time: event.start_time,
+        end_time: event.end_time,
+        capacity: event.capacity ?? null,
+        contact_email: event.contact_email ?? null,
+        contact_phone: event.contact_phone ?? null,
+        is_private: !!event.is_private,
+        fields,
+      },
+      volunteersCount,
+      isPast,
+      isFull,
+      remaining,
+    };
+  }
+
+  /** Upcoming public volunteer events for the tenant's /volunteer listing page. */
+  public async getPublicEventListing(tenantId: string) {
+    const [orgName, events] = await Promise.all([publicOrgName(tenantId), this.getUpcomingEventsPublic(tenantId)]);
+    return {
+      orgName,
+      events: events.map((ev) => {
+        const volunteersCount = Number(ev.volunteers_count || 0);
+        const remaining = ev.capacity !== null ? Math.max(0, ev.capacity - volunteersCount) : null;
+        return {
+          slug: String(ev.slug),
+          name: String(ev.name),
+          description: ev.description ?? null,
+          location_address: ev.location_address ?? null,
+          start_time: ev.start_time,
+          end_time: ev.end_time,
+          capacity: ev.capacity ?? null,
+          isFull: ev.capacity !== null && volunteersCount >= ev.capacity,
+          remaining,
+        };
+      }),
+    };
+  }
+
+  public async signupVolunteerPublic(
+    tenantId: string,
+    slug: string,
+    payload: Record<string, string>,
+    clientIp: string,
+    opts?: { skipIpRateLimit?: boolean },
+  ) {
+    // 1. Rate limiting check. Keyed (workspace-API-key) submissions skip the per-IP window —
+    // they come from one integration server and are rate-limited per tenant by the route.
+    if (!opts?.skipIpRateLimit) {
+      const now = Date.now();
+      let timestamps = ipSignupTimestamps.get(clientIp) || [];
+      timestamps = timestamps.filter((t) => now - t < SIGNUP_RATE_LIMIT_WINDOW_MS);
+      if (timestamps.length >= SIGNUP_RATE_LIMIT_MAX) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Rate limit exceeded. Please try again in a minute.',
+        });
+      }
+      timestamps.push(now);
+      // Prune the key if empty to prevent unbounded Map growth across long-lived processes
+      if (timestamps.length > 0) {
+        ipSignupTimestamps.set(clientIp, timestamps);
+      } else {
+        ipSignupTimestamps.delete(clientIp);
+      }
+    }
+
+    // 2. Fetch the event — tenant-scoped by slug
+    const event = await this.getEventPublic(tenantId, slug);
+    if (!event) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: 'Event not found.',
+      });
+    }
+
+    // 3. Honeypot check
+    if (payload['_hp'] && payload['_hp'].trim().length > 0) {
+      logger.warn(`Spam bot detected from IP ${clientIp} for volunteer event ${slug}`);
+      return { success: true }; // Silent mock success
+    }
+
+    // 4. Validate email
+    const email = payload['email']?.trim();
+    if (!email) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'Email address is required.',
+      });
+    }
+
+    // 5. Check capacity limit
+    const currentCount = Number(event.volunteers_count || 0);
+    if (event.capacity !== null && currentCount >= event.capacity) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'This event is already at full capacity.',
+      });
+    }
+
+    const firstName = payload['first_name'] || payload['firstName'] || null;
+    const lastName = payload['last_name'] || payload['lastName'] || null;
+    const mobile = payload['mobile'] || payload['phone'] || null;
+    const notes = payload['notes'] || payload['message'] || null;
+
+    // 6. Transaction to find/create person, tags, and shift
+    await this.getRepo()
+      .transaction()
+      .execute(async (trx: Transaction<Models>) => {
+        const tenantRow = await trx
+          .selectFrom('tenants')
+          .select(['placeholder_household_id', 'admin_id'])
+          .where('id', '=', tenantId)
+          .executeTakeFirst();
+
+        const householdId = tenantRow?.placeholder_household_id;
+        const creatorId = tenantRow?.admin_id;
+
+        if (!householdId) {
+          throw new Error('Tenant placeholder household is not configured.');
+        }
+        if (!creatorId) {
+          throw new Error('Tenant admin_id is not configured.');
+        }
+
+        const campaignId = await this.getCampaignId(tenantId, trx);
+
+        // Check if email already exists
+        const existing = await trx
+          .selectFrom('persons')
+          .select(['id', 'first_name', 'last_name', 'mobile', 'notes'])
+          .where('tenant_id', '=', tenantId)
+          .where(sql`lower(email)`, '=', email.toLowerCase())
+          .executeTakeFirst();
+
+        let personId: string;
+
+        if (existing) {
+          personId = String(existing.id);
+          const updateRow: UpdateObject<Models, 'persons'> = {
+            updatedby_id: creatorId,
+            updated_at: sql`now()`,
+          };
+          if (!existing.first_name && firstName) updateRow.first_name = firstName;
+          if (!existing.last_name && lastName) updateRow.last_name = lastName;
+          if (!existing.mobile && mobile) updateRow.mobile = mobile;
+          if (!existing.notes && notes) {
+            updateRow.notes = notes;
+          } else if (existing.notes && notes) {
+            updateRow.notes = `${existing.notes}\n\nVolunteer Signup notes: ${notes}`;
+          }
+
+          if (Object.keys(updateRow).length > 2) {
+            await trx
+              .updateTable('persons')
+              .set(updateRow)
+              .where('tenant_id', '=', tenantId)
+              .where('id', '=', existing.id)
+              .execute();
+          }
+        } else {
+          const insertRow = {
+            tenant_id: tenantId,
+            campaign_id: campaignId,
+            household_id: householdId,
+            createdby_id: creatorId,
+            updatedby_id: creatorId,
+            first_name: firstName,
+            last_name: lastName,
+            email: email,
+            mobile: mobile,
+            notes: notes,
+          };
+          const insertRes = await trx.insertInto('persons').values(insertRow).returning('id').executeTakeFirstOrThrow();
+          personId = String(insertRes.id);
+
+          // Trigger contact created workflow
+          try {
+            const workflowsController = new WorkflowsController();
+            await workflowsController.triggerWorkflow(tenantId, personId, 'contact_created', null, trx);
+          } catch (err) {
+            logger.error({ err }, 'Failed to trigger contact_created workflow in signupVolunteerPublic');
+          }
+        }
+
+        // Check if shift already exists
+        const existingShift = await trx
+          .selectFrom('volunteer_shifts')
+          .select('id')
+          .where('tenant_id', '=', tenantId)
+          .where('event_id', '=', event.id)
+          .where('person_id', '=', personId)
+          .executeTakeFirst();
+
+        if (existingShift) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'You are already signed up for this event.',
+          });
+        }
+
+        const workflowsController = new WorkflowsController();
+
+        // Add tag "volunteer" and "event: <event name>"
+        const allTagsToApply = ['volunteer', `event: ${event.name}`];
+        for (const tagName of allTagsToApply) {
+          const normalizedTagName = tagName.trim().toLowerCase();
+          if (!normalizedTagName) continue;
+
+          let tag = await trx
+            .selectFrom('tags')
+            .select('id')
+            .where('tenant_id', '=', tenantId)
+            .where('name', '=', normalizedTagName)
+            .where('type', '=', 'tag')
+            .executeTakeFirst();
+
+          if (!tag) {
+            try {
+              const insertTagRes = await trx
+                .insertInto('tags')
+                .values({
+                  tenant_id: tenantId,
+                  name: normalizedTagName,
+                  type: 'tag',
+                  deletable: true,
+                  createdby_id: creatorId,
+                  updatedby_id: creatorId,
+                })
+                .returning('id')
+                .executeTakeFirst();
+              if (insertTagRes) {
+                tag = { id: insertTagRes.id };
+              }
+            } catch (insertErr) {
+              // Concurrent insert fallback: fetch the tag that was just inserted
+              tag = await trx
+                .selectFrom('tags')
+                .select('id')
+                .where('tenant_id', '=', tenantId)
+                .where('name', '=', normalizedTagName)
+                .where('type', '=', 'tag')
+                .executeTakeFirst();
+              if (!tag) throw insertErr;
+            }
+          }
+
+          if (tag) {
+            const mapExists = await trx
+              .selectFrom('map_peoples_tags')
+              .select('person_id')
+              .where('tenant_id', '=', tenantId)
+              .where('person_id', '=', personId)
+              .where('tag_id', '=', tag.id)
+              .executeTakeFirst();
+
+            if (!mapExists) {
+              await trx
+                .insertInto('map_peoples_tags')
+                .values({
+                  tenant_id: tenantId,
+                  person_id: personId,
+                  tag_id: tag.id,
+                  createdby_id: creatorId,
+                  updatedby_id: creatorId,
+                })
+                .onConflict((oc) => oc.columns(['tenant_id', 'person_id', 'tag_id']).doNothing())
+                .execute();
+
+              // Trigger tag_added and specialized subscriber workflows
+              try {
+                await workflowsController.triggerTagAdded(tenantId, personId, String(tag.id), normalizedTagName, trx);
+              } catch (err) {
+                logger.error({ err }, 'Failed to trigger tag_added workflow in signupVolunteerPublic');
+              }
+            }
+          }
+        }
+
+        // Insert Shift
+        const shiftResult = await trx
+          .insertInto('volunteer_shifts')
+          .values({
+            tenant_id: tenantId,
+            event_id: event.id,
+            person_id: personId,
+            status: 'signed_up',
+            notes: notes,
+            createdby_id: creatorId,
+            updatedby_id: creatorId,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+
+        const shiftId = shiftResult.id;
+
+        // Log user activity
+        await trx
+          .insertInto('user_activity')
+          .values({
+            tenant_id: tenantId,
+            user_id: creatorId,
+            activity: 'signup',
+            entity: 'volunteer_events',
+            entity_id: String(event.id),
+            quantity: 1,
+            metadata: JSON.stringify({ person_id: personId, email }),
+            createdby_id: creatorId,
+            updatedby_id: creatorId,
+          })
+          .execute();
+
+        // Queue email notification job in background
+        await trx
+          .insertInto('background_jobs')
+          .values({
+            tenant_id: tenantId,
+            queue: 'default',
+            status: 'pending',
+            payload: JSON.stringify({
+              type: 'send-form-notifications',
+              eventId: String(event.id),
+              tenantId,
+              email,
+              firstName,
+              lastName,
+              mobile,
+              notes,
+            }),
+            run_at: new Date(),
+          })
+          .execute();
+
+        // Queue shift reminder email if enabled
+        if (event.send_reminder !== false) {
+          const startMs = new Date(event.start_time).getTime();
+          const nowMs = Date.now();
+          if (startMs > nowMs) {
+            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
+            await trx
+              .insertInto('background_jobs')
+              .values({
+                tenant_id: tenantId,
+                queue: 'default',
+                status: 'pending',
+                payload: JSON.stringify({
+                  type: 'send-shift-reminder',
+                  shiftId: String(shiftId),
+                  eventId: String(event.id),
+                  personId: String(personId),
+                  tenantId,
+                }),
+                run_at: runAt,
+              })
+              .execute();
+          }
+        }
+
+        // Trigger volunteer signup workflows
+        try {
+          const workflowsController = new WorkflowsController();
+          await workflowsController.triggerVolunteerSignup(tenantId, personId, String(event.id), trx);
+        } catch (err) {
+          logger.error({ err }, 'Failed to trigger volunteer signup workflows in public form');
+        }
+      });
+
+    return { success: true };
+  }
+
+  private async getCampaignId(tenantId: string, trx: Transaction<Models>): Promise<string> {
+    const row = await trx
+      .selectFrom('settings')
+      .select('value')
+      .where('tenant_id', '=', tenantId)
+      .where('key', '=', 'current_campaign')
+      .executeTakeFirst();
+
+    if (row) {
+      const value = row.value;
+      if (typeof value === 'number' || typeof value === 'string') {
+        return String(value);
+      }
+      if (value && typeof value === 'object' && 'id' in (value as Record<string, unknown>)) {
+        const id = (value as Record<string, unknown>)['id'];
+        if (typeof id === 'number' || typeof id === 'string') {
+          return String(id);
+        }
+      }
+    }
+
+    const campaignRow = await trx
+      .selectFrom('campaigns')
+      .select('id')
+      .where('tenant_id', '=', tenantId)
+      .limit(1)
+      .executeTakeFirst();
+
+    if (campaignRow) {
+      return String(campaignRow.id);
+    }
+
+    throw new Error('No campaign found for this tenant.');
+  }
+}
+````
+
 ## File: apps/backend/src/app/modules/web-forms/controller.ts
 ````typescript
 import type {
@@ -58760,6 +57209,788 @@ export class PricingPage {
   /** One matrix cell: true = included, false = not included, string = text value. */
   protected matrixValue(row: FeatureMatrixRow, plan: PlanDef): boolean | string {
     return isMatrixPlanKey(plan.key) ? row.values[plan.key] : false;
+  }
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/handlers/deletions.handlers.ts
+````typescript
+import type { Kysely, Transaction } from 'kysely';
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { logger } from '../../../logger';
+import { tombstoneAuthUser } from '../../tombstone-user';
+import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { CRON_JOBS } from '../cron-registry';
+import { scheduleNextRun } from '../reschedule';
+
+const mailService = new TransactionalEmailService();
+
+/**
+ * Every tenant-scoped table, ordered children-before-parents, that a full tenant wipe must clear.
+ * A table left out of this list holds NO-ACTION foreign keys into rows the wipe deletes later, which
+ * aborts the whole delete transaction with a 23503 — that is exactly how the pre-2026-07-24 handler
+ * silently stopped deleting any tenant that had ever used donations, canvassing, deliveries or
+ * newsletter templates. The order is a topological sort of the schema's FK graph (only NO ACTION /
+ * RESTRICT edges constrain the order; CASCADE / SET NULL edges do not).
+ *
+ * `deletions.handlers.spec.ts` asserts this list stays in sync with every live `tenant_id` table —
+ * those in schema.sql AND those created by dated migrations (minus tables a later migration drops,
+ * and the identity tables handled explicitly below) — so a new table can never silently reintroduce
+ * the bug. Do NOT reorder casually — keep children before their parents.
+ *
+ * Deliberately excluded (handled explicitly in the identity block after this loop): `authusers`,
+ * `profiles`, `sessions`, `passkeys` (identity), and `tenants` itself (the final delete).
+ */
+export const TENANT_SCOPED_TABLES = [
+  'background_jobs',
+  'bug_reports',
+  'campaign_person_facts',
+  'campaign_subscriptions',
+  'companies',
+  'companion_ops',
+  'companion_sessions',
+  'companion_volunteers',
+  'data_exports',
+  'data_imports',
+  'delivery_requests',
+  'delivery_route_stops',
+  'delivery_routes',
+  'dismissed_duplicate_groups',
+  'donation_periods',
+  'donation_pledges',
+  'donations',
+  'email_attachments',
+  'email_bodies',
+  'email_comments',
+  'email_drafts',
+  'email_headers',
+  'email_read_states',
+  'email_recipients',
+  'email_suppressions',
+  'email_trash',
+  'emails',
+  'event_registrations',
+  'event_ticket_types',
+  'events',
+  'files',
+  'form_submissions',
+  'google_oauth_tokens',
+  'lists',
+  'map_campaigns_users',
+  'map_households_tags',
+  'map_lists_households',
+  'map_lists_persons',
+  'map_newsletters_lists',
+  'map_peoples_tags',
+  'map_teams_lists',
+  'map_teams_persons',
+  'map_web_forms_lists',
+  'ms_oauth_tokens',
+  'newsletter_content_checks',
+  'newsletter_events',
+  'newsletter_send_log',
+  'newsletter_templates',
+  'newsletters',
+  'notifications',
+  'person_connections',
+  'person_newsletter_engagements',
+  'persons',
+  'potential_duplicates',
+  'settings',
+  'tags',
+  'task_attachments',
+  'task_comments',
+  'task_subtasks',
+  'tasks',
+  'teams',
+  'turf_assignments',
+  'turf_households',
+  'turf_knocks',
+  'turfs',
+  'user_activity',
+  'volunteer_events',
+  'volunteer_shifts',
+  'web_forms',
+  'webhook_events',
+  'workflow_enrollments',
+  'workflow_runs',
+  'workflow_steps',
+  'workflows',
+  'workspace_api_keys',
+  'zapier_subscriptions',
+  'households',
+  'campaigns',
+] as const;
+
+/** Identity tables wiped explicitly, in this order, after every content table for the tenant is gone. */
+async function wipeTenant(trx: Transaction<Models>, tenantId: string): Promise<void> {
+  for (const table of TENANT_SCOPED_TABLES) {
+    await trx.deleteFrom(table).where('tenant_id', '=', tenantId).execute();
+  }
+
+  // Null out BOTH authusers FKs on tenants before deleting authusers (admin_id AND createdby_id —
+  // missing either aborts the whole wipe with a 23503).
+  await trx.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
+  await trx.deleteFrom('passkeys').where('tenant_id', '=', tenantId).execute();
+  await trx.deleteFrom('sessions').where('tenant_id', '=', tenantId).execute();
+  await trx.deleteFrom('profiles').where('tenant_id', '=', tenantId).execute();
+  await trx.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
+  await trx.deleteFrom('tenants').where('id', '=', tenantId).execute();
+}
+
+export async function handlePerformScheduledDeletions(db: Kysely<Models>): Promise<void> {
+  // The reschedule lives in the finally: even if the framing queries below throw, the cron chain
+  // must never die — the worker's rescheduleCronJobOnFailure is only a backstop, not the plan.
+  try {
+    await performScheduledDeletions(db);
+  } finally {
+    await scheduleNextRun(db, 'perform_scheduled_deletions', CRON_JOBS.perform_scheduled_deletions);
+  }
+}
+
+/** Exported for tests; production entry is handlePerformScheduledDeletions (adds the reschedule). */
+export async function performScheduledDeletions(db: Kysely<Models>): Promise<void> {
+  const now = new Date();
+
+  // Each user/tenant is deleted in its own transaction wrapped in its own try/catch so one failure
+  // (an FK we missed, a locked row, a transient DB error) rolls back only that record and the loop
+  // continues — a single bad row must never abort the cron and freeze every other pending deletion.
+  const failures: string[] = [];
+
+  const expiredUsers = await db
+    .selectFrom('authusers')
+    .select(['id', 'tenant_id'])
+    .where('deletion_scheduled_at', '<=', now)
+    .where('deleted_at', 'is', null)
+    .execute();
+
+  for (const user of expiredUsers) {
+    const userId = String(user.id);
+    try {
+      // Tombstone, not hard delete: ~61 NO ACTION FKs (createdby_id etc.) reference authusers, so
+      // a DELETE 23503s for anyone who ever acted in the app — which used to make this loop re-fail
+      // the same users silently every day, forever. The identity is scrubbed in place and the row
+      // stays; authored content remains with the tenant, attributed to "Deleted user".
+      await db.transaction().execute(async (trx) => {
+        await tombstoneAuthUser(trx, { tenantId: String(user.tenant_id), userId, updatedbyId: userId });
+      });
+    } catch (err) {
+      failures.push(`user ${userId}`);
+      logger.error({ err, userId }, 'Failed to tombstone scheduled user; continuing with remaining deletions');
+    }
+  }
+
+  const expiredTenants = await db
+    .selectFrom('tenants')
+    .select('id')
+    .where('deletion_scheduled_at', '<=', now)
+    .execute();
+
+  for (const tenant of expiredTenants) {
+    const tenantId = String(tenant.id);
+
+    // Capture owner emails before deletion — the whole tenant (background_jobs included) is wiped
+    // inside the transaction, so read this first.
+    let ownerUsers: { email: string | null; first_name: string | null }[] = [];
+    try {
+      ownerUsers = await db
+        .selectFrom('authusers')
+        .select(['email', 'first_name'])
+        .where('tenant_id', '=', tenantId)
+        .where('role', '=', 'owner')
+        .execute();
+
+      logger.info(`Hard-deleting tenant ${tenantId} (deletion_scheduled_at <= now)…`);
+      await db.transaction().execute((trx) => wipeTenant(trx, tenantId));
+      logger.info(`Tenant ${tenantId} fully hard-deleted.`);
+    } catch (err) {
+      failures.push(`tenant ${tenantId}`);
+      logger.error({ err, tenantId }, 'Failed to hard-delete scheduled tenant; continuing with remaining deletions');
+      continue;
+    }
+
+    // Send confirmation emails after the transaction commits (outside the wiped tenant scope).
+    for (const owner of ownerUsers) {
+      if (owner.email) {
+        try {
+          await mailService.sendMail({
+            to: owner.email,
+            subject: 'Your account data has been permanently deleted',
+            text: `Hi ${owner.first_name},\n\nAll data associated with your pplCRM account has been permanently and securely deleted as requested. You will not be billed going forward.\n\nThank you for using pplCRM.`,
+            html: `<h2>Account data deleted</h2>
+<p>Hi ${owner.first_name},</p>
+<p>All data associated with your pplCRM account has been permanently and securely deleted as requested. You will not be billed going forward.</p>
+<p>Thank you for using pplCRM. If you ever wish to return, you are always welcome to create a new account.</p>`,
+          });
+        } catch (err) {
+          // The tenant is already gone; a failed confirmation email must not fail the run.
+          logger.error({ err, tenantId }, 'Failed to send tenant-deletion confirmation email');
+        }
+      }
+    }
+  }
+
+  if (failures.length > 0) {
+    logger.error({ failures }, `Scheduled deletions completed with ${failures.length} failure(s)`);
+    // Rethrow so the worker retries and then marks the job 'failed' — the ops digest only reports
+    // failed jobs, and a swallowed failure here is invisible forever (the pre-2026-07-24 user-branch
+    // bug). The next daily run is already scheduled by handlePerformScheduledDeletions' finally, and
+    // re-running is idempotent: succeeded deletions no longer match the framing queries.
+    throw new Error(`Scheduled deletions failed for: ${failures.join(', ')}`);
+  }
+}
+````
+
+## File: apps/backend/src/app/lib/jobs/handlers/notifications.handlers.ts
+````typescript
+import type { Kysely } from 'kysely';
+import { env } from '../../../../env';
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { logger } from '../../../logger';
+import { NotificationsRepo } from '../../../modules/notifications/repositories/notifications.repo';
+import { notificationEnabled } from '../../profile-preferences';
+import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { SmsService } from '../../sms/sms.service';
+import { CRON_JOBS } from '../cron-registry';
+import type { JobPayloadOf } from '../job-payloads';
+import { scheduleNextRun } from '../reschedule';
+
+const mailService = new TransactionalEmailService();
+const smsService = new SmsService();
+
+// Chunk size for the keyset-paginated due-tasks scan below — bounds each page instead of
+// joining every tenant's overdue tasks into memory in one unbounded query.
+const CHECK_DUE_TASKS_PAGE_SIZE = 500;
+
+export async function handleSendFormNotifications(
+  payload: JobPayloadOf<'send-form-notifications'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  // tenantId is required on this payload (server-generated), so scope unconditionally.
+  const event = await db
+    .selectFrom('volunteer_events')
+    .select([
+      'name',
+      'start_time',
+      'end_time',
+      'location_address',
+      'contact_email',
+      'contact_phone',
+      'send_signup_confirmation',
+      'send_volunteer_alert',
+    ])
+    .where('id', '=', payload.eventId)
+    .where('tenant_id', '=', payload.tenantId)
+    .executeTakeFirst();
+
+  if (!event) {
+    logger.info(`Skipping volunteer signup notifications: event ${payload.eventId} not found.`);
+    return;
+  }
+
+  const startFormatted = new Date(event.start_time).toLocaleString();
+  const endFormatted = new Date(event.end_time).toLocaleString();
+
+  // 1. Send Confirmation Email to the Constituent (if enabled)
+  if (event.send_signup_confirmation !== false) {
+    const coordEmailLine = event.contact_email ? `Email: ${event.contact_email}` : '';
+    const coordPhoneLine = event.contact_phone ? `Phone: ${event.contact_phone}` : '';
+    const coordinatorDetails = [coordEmailLine, coordPhoneLine].filter(Boolean).join('\n');
+
+    const coordEmailHtml = event.contact_email
+      ? `Email: <a href="mailto:${event.contact_email}">${event.contact_email}</a>`
+      : '';
+    const coordPhoneHtml = event.contact_phone ? `Phone: ${event.contact_phone}` : '';
+    const coordinatorDetailsHtml = [coordEmailHtml, coordPhoneHtml].filter(Boolean).join('<br>');
+
+    await mailService.sendMail({
+      to: payload.email,
+      subject: `You're signed up to volunteer: ${event.name}`,
+      text: `Hi ${payload.firstName || 'there'},\n\nThank you for signing up to volunteer for "${event.name}"!\n\nDetails:\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}\n\nEvent coordinator:\n${coordinatorDetails || 'N/A'}\n\nWe look forward to seeing you there!`,
+      html: `<h2>You're signed up to volunteer</h2>
+<p>Hi ${payload.firstName || 'there'},</p>
+<p>Thank you for signing up to volunteer for <strong>"${event.name}"</strong>!</p>
+<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p><p><strong>Event coordinator:</strong><br>${coordinatorDetailsHtml || 'N/A'}</p></div>
+<p>We look forward to seeing you there!</p>`,
+    });
+  }
+
+  // 2. Send Alert Email to the Event Coordinator / Tenant Admin (if enabled)
+  if (event.send_volunteer_alert !== false) {
+    let alertRecipient = event.contact_email || null;
+
+    if (!alertRecipient) {
+      const admin = await db
+        .selectFrom('authusers')
+        .select('email')
+        .where('tenant_id', '=', payload.tenantId)
+        .limit(1)
+        .executeTakeFirst();
+      if (admin && admin.email) {
+        alertRecipient = admin.email;
+      }
+    }
+
+    if (alertRecipient) {
+      await mailService.sendMail({
+        to: alertRecipient,
+        subject: `New volunteer signup: ${event.name}`,
+        text: `Hi,\n\nA new constituent has signed up to volunteer for "${event.name}".\n\nName: ${payload.firstName || ''} ${payload.lastName || ''}\nEmail: ${payload.email}\nPhone: ${payload.mobile || 'N/A'}\nNotes: ${payload.notes || 'None'}`,
+        html: `<h2>New volunteer signup</h2>
+<p>Hi,</p>
+<p>A new constituent has signed up to volunteer for <strong>"${event.name}"</strong>.</p>
+<div class="panel"><p><strong>Name:</strong> ${payload.firstName || ''} ${payload.lastName || ''}</p><p><strong>Email:</strong> ${payload.email}</p><p><strong>Phone:</strong> ${payload.mobile || 'N/A'}</p><p><strong>Notes:</strong> ${payload.notes || 'None'}</p></div>`,
+      });
+    }
+  }
+}
+
+export async function handleSendShiftReminder(
+  payload: JobPayloadOf<'send-shift-reminder'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  let shiftQuery = db
+    .selectFrom('volunteer_shifts')
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id'])
+    .where('id', '=', payload.shiftId);
+  if (payload.tenantId != null) {
+    shiftQuery = shiftQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const shift = await shiftQuery.executeTakeFirst();
+
+  if (!shift) {
+    logger.info(`Skipping shift reminder: shift ${payload.shiftId} not found.`);
+    return;
+  }
+
+  // Covers cancelled and no-show shifts as well.
+  if (shift.status !== 'signed_up') {
+    logger.info(`Skipping shift reminder: shift ${payload.shiftId} status is ${shift.status} instead of signed_up.`);
+    return;
+  }
+
+  // Scoped by the shift's own tenant_id — stronger than trusting the payload.
+  const event = await db
+    .selectFrom('volunteer_events')
+    .selectAll()
+    .where('id', '=', shift.event_id)
+    .where('tenant_id', '=', shift.tenant_id)
+    .executeTakeFirst();
+
+  if (!event) {
+    logger.info(`Skipping shift reminder: event ${shift.event_id} not found.`);
+    return;
+  }
+
+  if (event.send_reminder === false) {
+    logger.info(`Skipping shift reminder: reminders disabled for event ${event.id}.`);
+    return;
+  }
+
+  // Scoped by the shift's own tenant_id — stronger than trusting the payload.
+  const person = await db
+    .selectFrom('persons')
+    .selectAll()
+    .where('id', '=', shift.person_id)
+    .where('tenant_id', '=', shift.tenant_id)
+    .executeTakeFirst();
+
+  if (!person) {
+    logger.info(`Skipping shift reminder: person ${shift.person_id} not found.`);
+    return;
+  }
+
+  if (!person.email) {
+    logger.info(`Skipping shift reminder: person ${shift.person_id} has no email address.`);
+    return;
+  }
+
+  const startFormatted = new Date(event.start_time).toLocaleString();
+  const endFormatted = new Date(event.end_time).toLocaleString();
+
+  const mapsUrl = event.location_address
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location_address)}`
+    : null;
+
+  const mapsLinkText = mapsUrl ? `\nDirections & Maps: View on Google Maps (${mapsUrl})` : '';
+
+  const subject = `Volunteer shift reminder: ${event.name}`;
+  const text = `Hi ${person.first_name || 'there'},\n\nThis is a reminder that you have an upcoming volunteer shift for "${event.name}".\n\nDetails:\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${mapsLinkText}\n\nThank you for volunteering, and we look forward to seeing you there!`;
+
+  const html = `<h2>Volunteer shift reminder</h2>
+<p>Hi ${person.first_name || 'there'},</p>
+<p>This is a reminder that you have an upcoming volunteer shift for <strong>"${event.name}"</strong>.</p>
+<div class="panel">
+  <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
+  <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
+  ${mapsUrl ? `<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}
+</div>
+<p>Thank you for volunteering, and we look forward to seeing you there!</p>`;
+
+  await mailService.sendMail({
+    to: person.email,
+    subject,
+    text,
+    html,
+  });
+
+  logger.info(`Successfully sent shift reminder email to ${person.email} for shift ${shift.id}`);
+}
+
+export async function handleSendWebformNotifications(
+  payload: JobPayloadOf<'send-webform-notifications'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  let formQuery = db
+    .selectFrom('web_forms')
+    .select(['name', 'send_confirmation', 'send_alert', 'tenant_id'])
+    .where('id', '=', payload.formId);
+  if (payload.tenantId != null) {
+    formQuery = formQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const form = await formQuery.executeTakeFirst();
+
+  if (!form) {
+    logger.info(`Skipping web form notifications: form ${payload.formId} not found.`);
+    return;
+  }
+
+  // 1. Send Confirmation Email to the Constituent (if enabled)
+  if (form.send_confirmation !== false) {
+    await mailService.sendMail({
+      to: payload.email,
+      subject: `Thank you for your submission to ${form.name}`,
+      text: `Hi ${payload.firstName || 'there'},\n\nThank you for submitting our form "${form.name}". We have received your request and our team will follow up with you soon.`,
+      html: `<h2>Thank you for your submission</h2>
+<p>Hi ${payload.firstName || 'there'},</p>
+<p>Thank you for submitting our form <strong>"${form.name}"</strong>. We have received your request and our team will follow up with you soon.</p>`,
+    });
+  }
+
+  // 2. Send Alert Email to the Tenant Admin (if enabled)
+  if (form.send_alert !== false) {
+    const admin = await db
+      .selectFrom('authusers')
+      .select(['email', 'first_name'])
+      .where('tenant_id', '=', form.tenant_id)
+      .limit(1)
+      .executeTakeFirst();
+
+    if (admin && admin.email) {
+      await mailService.sendMail({
+        to: admin.email,
+        subject: `New submission on ${form.name}`,
+        text: `Hi ${admin.first_name || 'there'},\n\nYou have received a new submission on form "${form.name}" from ${payload.firstName || ''} ${payload.lastName || ''} (${payload.email}).\n\nNotes:\n${payload.notes || 'None'}`,
+        html: `<h2>New form submission</h2>
+<p>Hi ${admin.first_name || 'there'},</p>
+<p>You have received a new submission on form <strong>"${form.name}"</strong> from <strong>${payload.firstName || ''} ${payload.lastName || ''}</strong> (${payload.email}).</p>
+<div class="panel"><p><strong>Notes:</strong><br>${payload.notes || 'None'}</p></div>`,
+      });
+    }
+  }
+}
+
+export async function handleSendEventRegistrationConfirmation(
+  payload: JobPayloadOf<'send-event-registration-confirmation'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  let registrationQuery = db
+    .selectFrom('event_registrations')
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id', 'ticket_type_id'])
+    .where('id', '=', payload.registrationId);
+  if (payload.tenantId != null) {
+    registrationQuery = registrationQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const registration = await registrationQuery.executeTakeFirst();
+
+  if (!registration || registration.status === 'cancelled') {
+    logger.info(`Skipping event confirmation: registration ${payload.registrationId} not found or cancelled.`);
+    return;
+  }
+
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
+  const event = await db
+    .selectFrom('events')
+    .select([
+      'name',
+      'start_time',
+      'end_time',
+      'location_address',
+      'contact_email',
+      'contact_phone',
+      'send_registration_confirmation',
+    ])
+    .where('id', '=', registration.event_id)
+    .where('tenant_id', '=', registration.tenant_id)
+    .executeTakeFirst();
+
+  if (!event || event.send_registration_confirmation === false) {
+    logger.info(`Skipping event confirmation: event ${registration.event_id} not found or confirmations disabled.`);
+    return;
+  }
+
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
+  const person = await db
+    .selectFrom('persons')
+    .select(['first_name', 'email'])
+    .where('id', '=', registration.person_id)
+    .where('tenant_id', '=', registration.tenant_id)
+    .executeTakeFirst();
+
+  if (!person || !person.email) {
+    logger.info(`Skipping event confirmation: person ${registration.person_id} has no email.`);
+    return;
+  }
+
+  const startFormatted = new Date(event.start_time).toLocaleString();
+  const endFormatted = new Date(event.end_time).toLocaleString();
+  const coordLine = [
+    event.contact_email ? `Email: ${event.contact_email}` : '',
+    event.contact_phone ? `Phone: ${event.contact_phone}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const coordHtml = [
+    event.contact_email ? `Email: <a href="mailto:${event.contact_email}">${event.contact_email}</a>` : '',
+    event.contact_phone ? `Phone: ${event.contact_phone}` : '',
+  ]
+    .filter(Boolean)
+    .join('<br>');
+
+  await mailService.sendMail({
+    to: person.email,
+    subject: `Registration confirmed: ${event.name}`,
+    text: `Hi ${person.first_name || 'there'},\n\nYou're registered for "${event.name}"!\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${coordLine ? `\n\nContact:\n${coordLine}` : ''}\n\nWe look forward to seeing you there!`,
+    html: `<h2>Registration confirmed</h2>
+<p>Hi ${person.first_name || 'there'},</p>
+<p>You're registered for <strong>"${event.name}"</strong>!</p>
+<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>${coordHtml ? `<p><strong>Contact:</strong><br>${coordHtml}</p>` : ''}</div>
+<p>We look forward to seeing you there!</p>`,
+  });
+
+  logger.info(`Sent registration confirmation to ${person.email} for event ${registration.event_id}`);
+}
+
+export async function handleSendEventReminder(
+  payload: JobPayloadOf<'send-event-reminder'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  let registrationQuery = db
+    .selectFrom('event_registrations')
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id'])
+    .where('id', '=', payload.registrationId);
+  if (payload.tenantId != null) {
+    registrationQuery = registrationQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const registration = await registrationQuery.executeTakeFirst();
+
+  if (!registration || registration.status !== 'registered') {
+    logger.info(
+      `Skipping event reminder: registration ${payload.registrationId} not found or not in registered status.`,
+    );
+    return;
+  }
+
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
+  const event = await db
+    .selectFrom('events')
+    .selectAll()
+    .where('id', '=', registration.event_id)
+    .where('tenant_id', '=', registration.tenant_id)
+    .executeTakeFirst();
+
+  if (!event || event.send_reminder === false) {
+    logger.info(`Skipping event reminder: event ${registration.event_id} not found or reminders disabled.`);
+    return;
+  }
+
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
+  const person = await db
+    .selectFrom('persons')
+    .select(['first_name', 'email'])
+    .where('id', '=', registration.person_id)
+    .where('tenant_id', '=', registration.tenant_id)
+    .executeTakeFirst();
+
+  if (!person || !person.email) {
+    logger.info(`Skipping event reminder: person ${registration.person_id} has no email.`);
+    return;
+  }
+
+  const startFormatted = new Date(event.start_time).toLocaleString();
+  const endFormatted = new Date(event.end_time).toLocaleString();
+  const mapsUrl = event.location_address
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location_address)}`
+    : null;
+
+  await mailService.sendMail({
+    to: person.email,
+    subject: `Reminder: ${event.name} is tomorrow`,
+    text: `Hi ${person.first_name || 'there'},\n\nThis is a reminder that you're registered for "${event.name}" tomorrow.\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${mapsUrl ? `\nDirections: ${mapsUrl}` : ''}\n\nWe look forward to seeing you there!`,
+    html: `<h2>Event reminder</h2>
+<p>Hi ${person.first_name || 'there'},</p>
+<p>This is a reminder that you're registered for <strong>"${event.name}"</strong> tomorrow.</p>
+<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>${mapsUrl ? `<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}</div>
+<p>We look forward to seeing you there!</p>`,
+  });
+
+  logger.info(`Sent event reminder to ${person.email} for event ${registration.event_id}`);
+}
+
+export async function handleSendTransactionalEmail(payload: JobPayloadOf<'send-transactional-email'>): Promise<void> {
+  await mailService.sendMail({
+    to: payload.to,
+    subject: payload.subject ?? '',
+    text: payload.text ?? '',
+    html: payload.html ?? '',
+    tenant_id: payload.tenant_id ?? null,
+    notificationSettingsLink: payload.notificationSettingsLink ?? undefined,
+  });
+}
+
+export async function handleSendSms(payload: JobPayloadOf<'send-sms'>): Promise<void> {
+  await smsService.sendSms({ to: payload.to, body: payload.body });
+}
+
+export async function handleSendSubscriptionConfirmation(
+  payload: JobPayloadOf<'send-subscription-confirmation'>,
+): Promise<void> {
+  await mailService.sendMail({
+    to: payload.email,
+    subject: 'Please confirm your subscription',
+    text: `Hi ${payload.firstName || 'there'},\n\nPlease confirm your subscription by visiting the link below:\n\n${payload.confirmUrl}\n\nIf you did not request this, you can safely ignore this email.`,
+    html: `<h2>Confirm your subscription</h2>
+<p>Hi ${payload.firstName || 'there'},</p>
+<p>Please confirm your subscription by clicking the button below:</p>
+<div class="btn-container">
+  <a href="${payload.confirmUrl}" class="btn">Confirm subscription</a>
+</div>
+<p class="warning">If you did not request this, you can safely ignore this email.</p>`,
+  });
+}
+
+export async function handleCheckDueTasks(db: Kysely<Models>): Promise<void> {
+  await checkDueTasks(db);
+
+  await scheduleNextRun(db, 'check_due_tasks', CRON_JOBS.check_due_tasks);
+}
+
+/** Not executed — only used to derive the row type each keyset page returns. */
+function dueTasksBaseQuery(db: Kysely<Models>, now: Date) {
+  return db
+    .selectFrom('tasks')
+    .innerJoin('authusers', 'authusers.id', 'tasks.assigned_to')
+    .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
+    .select([
+      'tasks.id as task_id',
+      'tasks.tenant_id as tenant_id',
+      'tasks.name as task_name',
+      'tasks.due_at',
+      'tasks.details',
+      'authusers.id as user_id',
+      'authusers.email as user_email',
+      'authusers.first_name',
+      'profiles.preferences as profile_preferences',
+    ])
+    .where('tasks.status', 'not in', ['done', 'archived'])
+    .where('tasks.due_at', '<=', now);
+}
+
+type DueTaskRow = Awaited<ReturnType<ReturnType<typeof dueTasksBaseQuery>['execute']>>[number];
+type DueTasksCursor = { dueAt: Date; taskId: string };
+
+export async function checkDueTasks(db: Kysely<Models>): Promise<void> {
+  const now = new Date();
+  try {
+    const userTasksMap = new Map<string, DueTaskRow[]>();
+    let cursor: DueTasksCursor | null = null;
+
+    // Keyset-paginated (due_at, id) instead of one unbounded cross-tenant query: this join
+    // spans every tenant's overdue tasks, and OFFSET-style pagination would re-scan skipped
+    // rows on every page. (due_at, id) breaks ties safely since due_at alone isn't unique.
+    for (;;) {
+      let pageQuery = dueTasksBaseQuery(db, now)
+        .orderBy('tasks.due_at', 'asc')
+        .orderBy('tasks.id', 'asc')
+        .limit(CHECK_DUE_TASKS_PAGE_SIZE);
+
+      if (cursor) {
+        const { dueAt, taskId } = cursor;
+        pageQuery = pageQuery.where((eb) =>
+          eb.or([
+            eb('tasks.due_at', '>', dueAt),
+            eb.and([eb('tasks.due_at', '=', dueAt), eb('tasks.id', '>', taskId)]),
+          ]),
+        );
+      }
+
+      const page: DueTaskRow[] = await pageQuery.execute();
+      if (page.length === 0) break;
+
+      for (const row of page) {
+        const userId = String(row.user_id);
+        let userTasks = userTasksMap.get(userId);
+        if (!userTasks) {
+          userTasks = [];
+          userTasksMap.set(userId, userTasks);
+        }
+        userTasks.push(row);
+      }
+
+      const lastRow = page[page.length - 1];
+      // `due_at <= now` in the WHERE clause already excludes null due_at rows.
+      if (lastRow && lastRow.due_at != null) {
+        cursor = { dueAt: new Date(lastRow.due_at), taskId: String(lastRow.task_id) };
+      }
+
+      if (page.length < CHECK_DUE_TASKS_PAGE_SIZE) break;
+    }
+
+    if (userTasksMap.size === 0) return;
+
+    const notificationsRepo = new NotificationsRepo();
+    for (const [userId, tasks] of userTasksMap.entries()) {
+      const firstRow = tasks[0];
+      if (!firstRow) continue;
+      const userEmail = firstRow.user_email;
+      const firstName = firstRow.first_name;
+      const optedIn = notificationEnabled(firstRow.profile_preferences, 'task_due');
+      const inAppOptedIn = notificationEnabled(firstRow.profile_preferences, 'task_due_in_app');
+
+      if (inAppOptedIn) {
+        await notificationsRepo.pushNotification({
+          tenant_id: String(firstRow.tenant_id),
+          user_id: userId,
+          title: 'Tasks Due',
+          message: `You have ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} due or overdue.`,
+          type: 'task',
+          link: '/tasks',
+        });
+      }
+
+      if (optedIn && userEmail) {
+        let textContent = `Hi ${firstName || 'there'},\n\nHere are your active tasks needing attention today:\n\n`;
+        let htmlContent = `<h2>Tasks due today</h2><p>Hi ${firstName || 'there'},</p><p>Here are your active tasks needing attention today:</p><div class="panel"><ul>`;
+
+        for (const t of tasks) {
+          const dueDateStr = t.due_at ? new Date(t.due_at).toLocaleDateString() : 'No due date';
+          textContent += `- ${t.task_name} (due: ${dueDateStr})\n  Link: ${env.appUrl}/tasks/${t.task_id}\n\n`;
+          htmlContent += `<li><strong>${t.task_name}</strong> (due: ${dueDateStr}): <a href="${env.appUrl}/tasks/${t.task_id}">View task</a></li>`;
+        }
+
+        htmlContent += `</ul></div>`;
+
+        await mailService.sendMail({
+          to: userEmail,
+          subject: `You have ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} due or overdue`,
+          text: textContent,
+          html: htmlContent,
+          notificationSettingsLink: true,
+        });
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to check and notify due tasks');
   }
 }
 ````
@@ -60596,6 +59827,848 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
 }
 ````
 
+## File: apps/backend/src/app/modules/events/controller.ts
+````typescript
+import { TRPCError } from '@trpc/server';
+import type { Transaction } from 'kysely';
+import { sql } from 'kysely';
+import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
+import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
+import { BaseController } from '../../lib/base.controller';
+import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
+import { publicOrgName } from '../../lib/public-tenant';
+import { logger } from '../../logger';
+import { WorkflowsController } from '../workflows/controller';
+import { EventsRepo } from './repositories/events.repo';
+
+const DEFAULT_FIELDS = ['first_name', 'last_name', 'email', 'mobile', 'notes'];
+
+const ipRsvpTimestamps = new Map<string, number[]>();
+const RSVP_RATE_LIMIT_MAX = 5;
+const RSVP_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+
+export class EventsController extends BaseController<'events', EventsRepo> {
+  private readonly campaignsRepo = new CampaignsRepo();
+  constructor() {
+    super(new EventsRepo());
+  }
+
+  public async getAllEvents(auth: IAuthKeyPayload, options?: any) {
+    return this.getRepo().getAllEventsWithCount({ tenant_id: auth.tenant_id, options });
+  }
+
+  public async addEvent(payload: any, auth: IAuthKeyPayload) {
+    const existing = await this.getRepo()
+      .db.selectFrom('events')
+      .select('id')
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('slug', '=', payload.slug)
+      .executeTakeFirst();
+
+    if (existing) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'This URL slug is already in use. Please choose a different one.',
+      });
+    }
+
+    const row = {
+      tenant_id: auth.tenant_id,
+      // The context this event belongs to (§15); defaults to the office.
+      campaign_id: await this.campaignsRepo.resolveForWrite({
+        tenant_id: auth.tenant_id,
+        campaign_id: payload.campaign_id,
+      }),
+      createdby_id: auth.user_id,
+      updatedby_id: auth.user_id,
+      name: payload.name,
+      description: payload.description ?? null,
+      location_address: payload.location_address ?? null,
+      start_time: payload.start_time,
+      end_time: payload.end_time,
+      capacity: payload.capacity ?? null,
+      contact_email: payload.contact_email ?? null,
+      contact_phone: payload.contact_phone ?? null,
+      slug: payload.slug,
+      is_published: payload.is_published ?? false,
+      send_reminder: payload.send_reminder ?? true,
+      send_registration_confirmation: payload.send_registration_confirmation ?? true,
+      // `fields` is a jsonb column but the generated Kysely model types it as `string[]`.
+      // node-postgres serializes a raw JS array parameter as a Postgres ARRAY literal
+      // (e.g. `{a,b,c}`), which Postgres then rejects as invalid JSON for a jsonb column.
+      // Stringifying it first makes node-postgres send plain text, which Postgres casts
+      // to jsonb correctly.
+      fields: JSON.stringify(payload.fields ?? DEFAULT_FIELDS) as unknown as string[],
+    } as OperationDataType<'events', 'insert'>;
+
+    try {
+      return await this.add(row);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('events_end_after_start_check')) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'End date & time must be after the start date & time.' });
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Public registration-page lookup. Tenant-scoped: event slugs are only unique per tenant, and the
+   * tenant is resolved from the subdomain (lib/public-tenant) before any event query runs.
+   */
+  public async getEventBySlug(tenantId: string, slug: string) {
+    return this.getRepo()
+      .db.selectFrom('events')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('slug', '=', slug)
+      .where('is_published', '=', true)
+      .executeTakeFirst();
+  }
+
+  /**
+   * Everything the public /e/:slug SPA page renders, in one payload: the event, its ticket types,
+   * live capacity, and the org name. Unpublished/unknown slugs throw NOT_FOUND.
+   */
+  public async getPublicEventConfig(tenantId: string, slug: string) {
+    const event = await this.getEventBySlug(tenantId, slug);
+    if (!event) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Event not found.' });
+    }
+
+    const eventId = String(event.id);
+    const [orgName, tickets, regCount] = await Promise.all([
+      publicOrgName(tenantId),
+      this.getTicketTypesByEventId(eventId, tenantId),
+      this.getRegistrationCountForEvent(eventId, tenantId),
+    ]);
+
+    const now = new Date();
+    const isPast = new Date(event.end_time) < now;
+    const isFull = event.capacity !== null && regCount >= event.capacity;
+    const remaining = event.capacity !== null ? Math.max(0, event.capacity - regCount) : null;
+
+    const fields: string[] = Array.isArray(event.fields)
+      ? event.fields
+      : typeof event.fields === 'string'
+        ? JSON.parse(event.fields)
+        : ['first_name', 'last_name', 'email', 'mobile', 'notes'];
+
+    return {
+      orgName,
+      event: {
+        name: String(event.name),
+        description: event.description ?? null,
+        location_address: event.location_address ?? null,
+        start_time: event.start_time,
+        end_time: event.end_time,
+        capacity: event.capacity ?? null,
+        contact_email: event.contact_email ?? null,
+        contact_phone: event.contact_phone ?? null,
+        fields,
+      },
+      tickets: tickets.map((t) => ({
+        name: String(t.name),
+        description: t.description ?? null,
+        price_cents: t.price_cents ?? null,
+        capacity: t.capacity ?? null,
+      })),
+      isPast,
+      isFull,
+      remaining,
+    };
+  }
+
+  public async getRegistrationCountForEvent(eventId: string, tenantId: string): Promise<number> {
+    const row = await this.getRepo()
+      .db.selectFrom('event_registrations')
+      .select(({ fn }) => [fn.count('id').as('cnt')])
+      .where('tenant_id', '=', tenantId)
+      .where('event_id', '=', eventId)
+      .where('status', '!=', 'cancelled')
+      .executeTakeFirst();
+    return Number(row?.cnt ?? 0);
+  }
+
+  public async getTicketTypesByEventId(eventId: string, tenantId: string) {
+    return this.getRepo()
+      .db.selectFrom('event_ticket_types')
+      .selectAll()
+      .where('event_id', '=', eventId)
+      .where('tenant_id', '=', tenantId)
+      .orderBy('sort_order', 'asc')
+      .execute();
+  }
+
+  public async checkSlugUnique(slug: string, excludeId: string | null, auth: IAuthKeyPayload) {
+    if (!slug) return { unique: true };
+    let query = this.getRepo()
+      .db.selectFrom('events')
+      .select('id')
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('slug', '=', slug);
+    if (excludeId) {
+      query = query.where('id', '!=', excludeId);
+    }
+    const existing = await query.executeTakeFirst();
+    return { unique: !existing };
+  }
+
+  public async updateEvent(id: string, payload: any, auth: IAuthKeyPayload) {
+    if (payload.slug) {
+      const existing = await this.getRepo()
+        .db.selectFrom('events')
+        .select('id')
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('slug', '=', payload.slug)
+        .where('id', '!=', id)
+        .executeTakeFirst();
+
+      if (existing) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'This URL slug is already in use. Please choose a different one.',
+        });
+      }
+    }
+
+    const row = {
+      ...payload,
+      // See addEvent() above: `fields` is jsonb but modeled as `string[]`; stringify so
+      // node-postgres sends valid JSON text instead of a Postgres ARRAY literal.
+      ...(payload.fields !== undefined ? { fields: JSON.stringify(payload.fields) as unknown as string[] } : {}),
+      updatedby_id: auth.user_id,
+    } as OperationDataType<'events', 'update'>;
+    let result;
+    try {
+      result = await this.update({ tenant_id: auth.tenant_id, id, row });
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('events_end_after_start_check')) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'End date & time must be after the start date & time.' });
+      }
+      throw err;
+    }
+
+    // Manage pending reminder jobs when the toggle changes
+    if (payload.send_reminder === false) {
+      try {
+        await this.getRepo()
+          .db.deleteFrom('background_jobs')
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('status', '=', 'pending')
+          .where(sql`payload->>'type'`, '=', 'send-event-reminder')
+          .where(sql`payload->>'eventId'`, '=', String(id))
+          .execute();
+      } catch (err) {
+        logger.error({ err }, 'Failed to clean up pending event reminders');
+      }
+    } else if (payload.send_reminder === true) {
+      try {
+        const event = await this.getRepo()
+          .db.selectFrom('events')
+          .select(['start_time'])
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('id', '=', id)
+          .executeTakeFirst();
+
+        if (event) {
+          const startMs = new Date(event.start_time).getTime();
+          const nowMs = Date.now();
+          if (startMs > nowMs) {
+            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
+            const registrations = await this.getRepo()
+              .db.selectFrom('event_registrations')
+              .select(['id', 'person_id'])
+              .where('tenant_id', '=', auth.tenant_id)
+              .where('event_id', '=', id)
+              .where('status', '=', 'registered')
+              .execute();
+
+            for (const reg of registrations) {
+              await this.getRepo()
+                .db.deleteFrom('background_jobs')
+                .where('tenant_id', '=', auth.tenant_id)
+                .where('status', '=', 'pending')
+                .where(sql`payload->>'type'`, '=', 'send-event-reminder')
+                .where(sql`payload->>'registrationId'`, '=', String(reg.id))
+                .execute();
+
+              await this.getRepo()
+                .db.insertInto('background_jobs')
+                .values({
+                  tenant_id: auth.tenant_id,
+                  queue: 'default',
+                  status: 'pending',
+                  payload: JSON.stringify({
+                    type: 'send-event-reminder',
+                    registrationId: String(reg.id),
+                    eventId: String(id),
+                    personId: String(reg.person_id),
+                    tenantId: auth.tenant_id,
+                  }),
+                  run_at: runAt,
+                })
+                .execute();
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to re-schedule event reminders');
+      }
+    }
+
+    return result;
+  }
+
+  // Ticket types
+
+  public async getTicketTypesForEvent(event_id: string, auth: IAuthKeyPayload) {
+    return this.getRepo().getTicketTypesForEvent({ tenant_id: auth.tenant_id, event_id });
+  }
+
+  public async addTicketType(payload: any, auth: IAuthKeyPayload) {
+    return this.getRepo().addTicketType({
+      tenant_id: auth.tenant_id,
+      event_id: payload.event_id,
+      name: payload.name,
+      description: payload.description ?? null,
+      price_cents: payload.price_cents ?? 0,
+      capacity: payload.capacity ?? null,
+      sort_order: payload.sort_order ?? 0,
+      user_id: auth.user_id,
+    });
+  }
+
+  public async updateTicketType(id: string, payload: any, auth: IAuthKeyPayload) {
+    return this.getRepo().updateTicketType({ tenant_id: auth.tenant_id, id, row: payload, user_id: auth.user_id });
+  }
+
+  public async deleteTicketType(id: string, auth: IAuthKeyPayload) {
+    return this.getRepo().deleteTicketType({ tenant_id: auth.tenant_id, id });
+  }
+
+  /**
+   * Persist the drag-to-reorder of an event's ticket types. `ordered_ids` must be exactly the set of
+   * this event's ticket type ids (any foreign or missing id is rejected); each id's sort_order is
+   * written to its index so the public /e/:slug page shows tickets in the same order as the form.
+   */
+  public async reorderTicketTypes(payload: { event_id: string; ordered_ids: string[] }, auth: IAuthKeyPayload) {
+    const existing = await this.getRepo().getTicketTypesForEvent({
+      tenant_id: auth.tenant_id,
+      event_id: payload.event_id,
+    });
+    const existingIds = new Set(existing.map((t) => String(t.id)));
+    const requested = payload.ordered_ids;
+    const sameMembers =
+      requested.length === existingIds.size &&
+      new Set(requested).size === requested.length &&
+      requested.every((id) => existingIds.has(id));
+    if (!sameMembers) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'The new order must list exactly this event’s ticket types.',
+      });
+    }
+    await this.getRepo().reorderTicketTypes({
+      tenant_id: auth.tenant_id,
+      event_id: payload.event_id,
+      ordered_ids: requested,
+      user_id: auth.user_id,
+    });
+    return { reordered: requested.length };
+  }
+
+  // Registrations
+
+  public async getRegistrationsForEvent(event_id: string, auth: IAuthKeyPayload) {
+    return this.getRepo().getRegistrationsForEvent({ tenant_id: auth.tenant_id, event_id });
+  }
+
+  public async addRegistration(payload: any, auth: IAuthKeyPayload) {
+    // Capacity check across the whole event
+    const event = await this.getRepo()
+      .db.selectFrom('events')
+      .select(['capacity', 'send_reminder', 'send_registration_confirmation', 'start_time', 'name'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('id', '=', payload.event_id)
+      .executeTakeFirst();
+
+    if (!event) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Event not found.' });
+    }
+
+    if (event.capacity !== null) {
+      const countRow = await this.getRepo()
+        .db.selectFrom('event_registrations')
+        .select(({ fn }) => [fn.count<number>('id').as('cnt')])
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('event_id', '=', payload.event_id)
+        .where('status', '!=', 'cancelled')
+        .executeTakeFirst();
+      if (Number(countRow?.cnt || 0) >= event.capacity) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'This event is at full capacity.' });
+      }
+    }
+
+    // Per-ticket-type capacity check
+    if (payload.ticket_type_id) {
+      const ticketType = await this.getRepo()
+        .db.selectFrom('event_ticket_types')
+        .select(['capacity'])
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('id', '=', payload.ticket_type_id)
+        .executeTakeFirst();
+
+      if (ticketType && ticketType.capacity !== null) {
+        const ticketCountRow = await this.getRepo()
+          .db.selectFrom('event_registrations')
+          .select(({ fn }) => [fn.count<number>('id').as('cnt')])
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('ticket_type_id', '=', payload.ticket_type_id)
+          .where('status', '!=', 'cancelled')
+          .executeTakeFirst();
+        if (Number(ticketCountRow?.cnt || 0) >= ticketType.capacity) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'This ticket type is sold out.' });
+        }
+      }
+    }
+
+    const result = await this.getRepo().addRegistration({
+      tenant_id: auth.tenant_id,
+      event_id: payload.event_id,
+      person_id: payload.person_id,
+      ticket_type_id: payload.ticket_type_id ?? null,
+      status: payload.status ?? 'registered',
+      notes: payload.notes ?? null,
+      user_id: auth.user_id,
+    });
+
+    if (result) {
+      // Queue registration confirmation email
+      if (event.send_registration_confirmation !== false) {
+        try {
+          await this.getRepo()
+            .db.insertInto('background_jobs')
+            .values({
+              tenant_id: auth.tenant_id,
+              queue: 'default',
+              status: 'pending',
+              payload: JSON.stringify({
+                type: 'send-event-registration-confirmation',
+                registrationId: String(result.id),
+                eventId: String(payload.event_id),
+                personId: String(payload.person_id),
+                tenantId: auth.tenant_id,
+              }),
+              run_at: new Date(),
+            })
+            .execute();
+        } catch (err) {
+          logger.error({ err }, 'Failed to queue registration confirmation');
+        }
+      }
+
+      // Queue 24h reminder
+      if (event.send_reminder !== false) {
+        try {
+          const startMs = new Date(event.start_time).getTime();
+          const nowMs = Date.now();
+          if (startMs > nowMs) {
+            const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
+            await this.getRepo()
+              .db.insertInto('background_jobs')
+              .values({
+                tenant_id: auth.tenant_id,
+                queue: 'default',
+                status: 'pending',
+                payload: JSON.stringify({
+                  type: 'send-event-reminder',
+                  registrationId: String(result.id),
+                  eventId: String(payload.event_id),
+                  personId: String(payload.person_id),
+                  tenantId: auth.tenant_id,
+                }),
+                run_at: runAt,
+              })
+              .execute();
+          }
+        } catch (err) {
+          logger.error({ err }, 'Failed to queue event reminder');
+        }
+      }
+
+      try {
+        await this.userActivity.log({
+          tenant_id: auth.tenant_id,
+          user_id: auth.user_id,
+          activity: 'assign',
+          entity: 'event_registrations',
+          entity_id: String(result.id),
+          quantity: 1,
+          metadata: { id: result.id, event_id: payload.event_id, person_id: payload.person_id },
+        });
+      } catch (e) {
+        logger.error({ err: e }, 'Failed to log registration activity');
+      }
+    }
+
+    return result;
+  }
+
+  public async checkIn(id: string, auth: IAuthKeyPayload) {
+    const result = await this.getRepo().updateRegistration({
+      tenant_id: auth.tenant_id,
+      id,
+      row: { status: 'attended', checked_in_at: new Date() },
+      user_id: auth.user_id,
+    });
+
+    // Cancel pending reminder — they've already arrived
+    try {
+      await this.getRepo()
+        .db.deleteFrom('background_jobs')
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('status', '=', 'pending')
+        .where(sql`payload->>'type'`, '=', 'send-event-reminder')
+        .where(sql`payload->>'registrationId'`, '=', String(id))
+        .execute();
+    } catch (err) {
+      logger.error({ err }, 'Failed to cancel event reminder on check-in');
+    }
+
+    try {
+      await this.userActivity.log({
+        tenant_id: auth.tenant_id,
+        user_id: auth.user_id,
+        activity: 'update',
+        entity: 'event_registrations',
+        entity_id: id,
+        quantity: 1,
+        metadata: { id, status: 'attended', checked_in_at: new Date().toISOString() },
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'Failed to log check-in activity');
+    }
+
+    return result;
+  }
+
+  public async updateRegistration(id: string, payload: any, auth: IAuthKeyPayload) {
+    const result = await this.getRepo().updateRegistration({
+      tenant_id: auth.tenant_id,
+      id,
+      row: payload,
+      user_id: auth.user_id,
+    });
+
+    // Cancel reminder if status moves away from 'registered'
+    if (payload.status && payload.status !== 'registered') {
+      try {
+        await this.getRepo()
+          .db.deleteFrom('background_jobs')
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('status', '=', 'pending')
+          .where(sql`payload->>'type'`, '=', 'send-event-reminder')
+          .where(sql`payload->>'registrationId'`, '=', String(id))
+          .execute();
+      } catch (err) {
+        logger.error({ err }, 'Failed to cancel event reminder on status change');
+      }
+    }
+
+    try {
+      await this.userActivity.log({
+        tenant_id: auth.tenant_id,
+        user_id: auth.user_id,
+        activity: 'update',
+        entity: 'event_registrations',
+        entity_id: id,
+        quantity: 1,
+        metadata: { id, status: payload.status },
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'Failed to log registration update activity');
+    }
+
+    return result;
+  }
+
+  public async deleteRegistration(id: string, auth: IAuthKeyPayload) {
+    const result = await this.getRepo().deleteRegistration({ tenant_id: auth.tenant_id, id });
+
+    if (result) {
+      try {
+        await this.getRepo()
+          .db.deleteFrom('background_jobs')
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('status', '=', 'pending')
+          .where(sql`payload->>'type'`, '=', 'send-event-reminder')
+          .where(sql`payload->>'registrationId'`, '=', String(id))
+          .execute();
+      } catch (err) {
+        logger.error({ err }, 'Failed to cancel event reminder on registration delete');
+      }
+
+      try {
+        await this.userActivity.log({
+          tenant_id: auth.tenant_id,
+          user_id: auth.user_id,
+          activity: 'delete',
+          entity: 'event_registrations',
+          entity_id: id,
+          quantity: 1,
+          metadata: { id },
+        });
+      } catch (e) {
+        logger.error({ err: e }, 'Failed to log registration delete activity');
+      }
+    }
+
+    return result;
+  }
+
+  public async getHistoryForPerson(person_id: string, auth: IAuthKeyPayload) {
+    return this.getRepo().getHistoryForPerson({ tenant_id: auth.tenant_id, person_id });
+  }
+
+  public async getEventStats(person_id: string, auth: IAuthKeyPayload) {
+    return this.getRepo().getEventStats({ tenant_id: auth.tenant_id, person_id });
+  }
+
+  public async rsvpPublic(
+    tenantId: string,
+    slug: string,
+    payload: Record<string, string>,
+    clientIp: string,
+    opts?: { skipIpRateLimit?: boolean },
+  ) {
+    // Rate limiting. Keyed (workspace-API-key) submissions skip the per-IP window — they come
+    // from one integration server and are rate-limited per tenant by the route.
+    if (!opts?.skipIpRateLimit) {
+      const now = Date.now();
+      let timestamps = ipRsvpTimestamps.get(clientIp) || [];
+      timestamps = timestamps.filter((t) => now - t < RSVP_RATE_LIMIT_WINDOW_MS);
+      if (timestamps.length >= RSVP_RATE_LIMIT_MAX) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Rate limit exceeded. Please try again in a minute.',
+        });
+      }
+      timestamps.push(now);
+      ipRsvpTimestamps.set(clientIp, timestamps);
+    }
+
+    const event = await this.getEventBySlug(tenantId, slug);
+    if (!event) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Event not found.' });
+    }
+
+    // Honeypot
+    if (payload['_hp'] && payload['_hp'].trim().length > 0) {
+      return { success: true };
+    }
+
+    const email = payload['email']?.trim();
+    if (!email) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: 'Email address is required.' });
+    }
+
+    if (new Date(event.end_time) < new Date()) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: 'This event has ended and registration is closed.' });
+    }
+
+    const firstName = payload['first_name']?.trim() || null;
+    const lastName = payload['last_name']?.trim() || null;
+    const mobile = payload['mobile']?.trim() || null;
+    const notes = payload['notes']?.trim() || null;
+
+    await this.getRepo()
+      .transaction()
+      .execute(async (trx: Transaction<Models>) => {
+        const tenantRow = await trx
+          .selectFrom('tenants')
+          .select(['placeholder_household_id', 'admin_id'])
+          .where('id', '=', tenantId)
+          .executeTakeFirst();
+
+        const householdId = tenantRow?.placeholder_household_id;
+        const creatorId = tenantRow?.admin_id;
+
+        if (!householdId || !creatorId) {
+          throw new Error('Tenant configuration is incomplete.');
+        }
+
+        // Check overall capacity
+        if (event.capacity !== null) {
+          const countRow = await trx
+            .selectFrom('event_registrations')
+            .select(({ fn }) => [fn.count<number>('id').as('cnt')])
+            .where('tenant_id', '=', tenantId)
+            .where('event_id', '=', String(event.id))
+            .where('status', '!=', 'cancelled')
+            .executeTakeFirst();
+          if (Number(countRow?.cnt || 0) >= event.capacity) {
+            throw new TRPCError({ code: 'BAD_REQUEST', message: 'This event is at full capacity.' });
+          }
+        }
+
+        // Find or create person
+        const existing = await trx
+          .selectFrom('persons')
+          .select(['id', 'first_name', 'last_name', 'mobile', 'notes'])
+          .where('tenant_id', '=', tenantId)
+          .where(sql`lower(email)`, '=', email.toLowerCase())
+          .executeTakeFirst();
+
+        let personId: string;
+
+        if (existing) {
+          personId = String(existing.id);
+          const updateRow: any = { updatedby_id: creatorId, updated_at: sql`now()` };
+          if (!existing.first_name && firstName) updateRow.first_name = firstName;
+          if (!existing.last_name && lastName) updateRow.last_name = lastName;
+          if (!existing.mobile && mobile) updateRow.mobile = mobile;
+          if (notes) {
+            updateRow.notes = existing.notes ? `${existing.notes}\n\nEvent RSVP notes: ${notes}` : notes;
+          }
+          if (Object.keys(updateRow).length > 2) {
+            await trx
+              .updateTable('persons')
+              .set(updateRow)
+              .where('tenant_id', '=', tenantId)
+              .where('id', '=', existing.id)
+              .execute();
+          }
+        } else {
+          // `persons.campaign_id` is NOT NULL, so a campaign must be resolved before insert
+          // (there is no "campaign-less" person). `persons` also has no address columns
+          // (street1/city/state/zip/country live on `households`, not `persons`), so those
+          // RSVP fields are intentionally not persisted here.
+          const campaignRow = await trx
+            .selectFrom('campaigns')
+            .select('id')
+            .where('tenant_id', '=', tenantId)
+            .orderBy('created_at', 'asc')
+            .limit(1)
+            .executeTakeFirst();
+
+          if (!campaignRow) {
+            throw new Error('Tenant configuration is incomplete.');
+          }
+          const campaignId = String(campaignRow.id);
+
+          const insertRow = {
+            tenant_id: tenantId,
+            campaign_id: campaignId,
+            household_id: householdId,
+            createdby_id: creatorId,
+            updatedby_id: creatorId,
+            first_name: firstName,
+            last_name: lastName,
+            email,
+            mobile,
+            notes,
+          };
+
+          const insertRes = await trx.insertInto('persons').values(insertRow).returning('id').executeTakeFirstOrThrow();
+          personId = String(insertRes.id);
+
+          try {
+            const workflowsCtrl = new WorkflowsController();
+            await workflowsCtrl.triggerWorkflow(tenantId, personId, 'contact_created', null, trx);
+          } catch (err) {
+            logger.error({ err }, 'Failed to trigger contact_created workflow in rsvpPublic');
+          }
+        }
+
+        // Check duplicate registration
+        const existingReg = await trx
+          .selectFrom('event_registrations')
+          .select('id')
+          .where('tenant_id', '=', tenantId)
+          .where('event_id', '=', String(event.id))
+          .where('person_id', '=', personId)
+          .where('status', '!=', 'cancelled')
+          .executeTakeFirst();
+
+        if (existingReg) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'You are already registered for this event.' });
+        }
+
+        // Insert registration
+        const reg = await trx
+          .insertInto('event_registrations')
+          .values({
+            tenant_id: tenantId,
+            event_id: String(event.id),
+            person_id: personId,
+            ticket_type_id: null,
+            status: 'registered',
+            notes: notes ?? null,
+            createdby_id: creatorId,
+            updatedby_id: creatorId,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+
+        // Queue confirmation email
+        if (event.send_registration_confirmation !== false) {
+          try {
+            await trx
+              .insertInto('background_jobs')
+              .values({
+                tenant_id: tenantId,
+                queue: 'default',
+                status: 'pending',
+                payload: JSON.stringify({
+                  type: 'send-event-registration-confirmation',
+                  registrationId: String(reg.id),
+                  eventId: String(event.id),
+                  personId,
+                  tenantId,
+                }),
+                run_at: new Date(),
+              })
+              .execute();
+          } catch (err) {
+            logger.error({ err }, 'Failed to queue RSVP confirmation');
+          }
+        }
+
+        // Queue 24h reminder
+        if (event.send_reminder !== false) {
+          try {
+            const startMs = new Date(event.start_time).getTime();
+            const nowMs = Date.now();
+            if (startMs > nowMs) {
+              const runAt = new Date(Math.max(nowMs, startMs - 24 * 60 * 60 * 1000));
+              await trx
+                .insertInto('background_jobs')
+                .values({
+                  tenant_id: tenantId,
+                  queue: 'default',
+                  status: 'pending',
+                  payload: JSON.stringify({
+                    type: 'send-event-reminder',
+                    registrationId: String(reg.id),
+                    eventId: String(event.id),
+                    personId,
+                    tenantId,
+                  }),
+                  run_at: runAt,
+                })
+                .execute();
+            }
+          } catch (err) {
+            logger.error({ err }, 'Failed to queue event reminder in rsvpPublic');
+          }
+        }
+      });
+
+    return { success: true };
+  }
+}
+````
+
 ## File: apps/backend/src/app/modules/newsletters/trpc.router.ts
 ````typescript
 import {
@@ -62288,796 +62361,6 @@ const renderFormHtml = (
 </html>
 `;
 };
-````
-
-## File: apps/backend/src/app/lib/jobs/job-payloads.ts
-````typescript
-import { z } from 'zod';
-import type { ZapierEventType } from '../../modules/zapier/zapier.service';
-
-/**
- * IDs are strings in the database, but historical job payloads may carry them
- * as numbers (JSON round-trip of bigint columns). Normalize to string.
- */
-const idSchema = z.union([z.string(), z.number()]).transform(String);
-
-/** Must stay in sync with ZapierEventType in modules/zapier/zapier.service.ts (enforced by `satisfies`). */
-const ZAPIER_EVENT_TYPES = [
-  'person_created',
-  'person_updated',
-  'person_deleted',
-  'person_tag_added',
-  'person_tag_removed',
-] as const satisfies readonly ZapierEventType[];
-
-const exportSortSchema = z.object({
-  colId: z.string().nullish(),
-  sort: z.string().nullish(),
-});
-
-const exportOptionsSchema = z.object({
-  userId: idSchema.nullish(),
-  entity: z.string().nullish(),
-  activity: z.string().nullish(),
-  searchStr: z.string().nullish(),
-  sortModel: z.array(exportSortSchema).nullish(),
-});
-
-export const jobPayloadSchema = z.discriminatedUnion('type', [
-  // ── Lists / companies / maintenance ─────────────────────────────────────
-  z.object({
-    type: z.literal('refresh_list'),
-    tenant_id: idSchema,
-    list_id: idSchema,
-    user_id: idSchema,
-  }),
-  z.object({
-    type: z.literal('enrich_company_google'),
-    company_id: idSchema,
-    tenant_id: idSchema,
-    // A user-triggered "Re-check Google" re-runs the lookup even when the
-    // company was already enriched; the auto-queue on first load does not.
-    force: z.boolean().optional(),
-  }),
-  z.object({
-    type: z.literal('refresh_companies_google'),
-    tenant_id: idSchema.nullish(),
-  }),
-  z.object({ type: z.literal('cleanup_activities') }),
-  z.object({ type: z.literal('prune_retention') }),
-  z.object({ type: z.literal('recompute_all_duplicates') }),
-  z.object({
-    type: z.literal('recompute_address_fingerprints'),
-    tenant_id: idSchema.nullish(),
-  }),
-  z.object({
-    type: z.literal('geocode_household'),
-    household_id: idSchema,
-    tenant_id: idSchema,
-  }),
-
-  // ── External account sync ───────────────────────────────────────────────
-  z.object({ type: z.literal('schedule_sync_jobs') }),
-  z.object({
-    type: z.literal('google_sync'),
-    tenantId: idSchema,
-    campaignId: idSchema,
-    requestedBy: z.string().default('system'),
-  }),
-  z.object({
-    type: z.literal('ms_sync'),
-    tenantId: idSchema,
-    campaignId: idSchema,
-    requestedBy: z.string().default('system'),
-  }),
-
-  // ── Notifications & transactional email ─────────────────────────────────
-  z.object({
-    type: z.literal('send-form-notifications'),
-    eventId: idSchema,
-    tenantId: idSchema,
-    email: z.string(),
-    firstName: z.string().nullish(),
-    lastName: z.string().nullish(),
-    mobile: z.string().nullish(),
-    notes: z.string().nullish(),
-  }),
-  z.object({
-    type: z.literal('send-shift-reminder'),
-    shiftId: idSchema,
-    // Optional (not required): already-enqueued rows in the live DB predate this field and
-    // would fail a required check at claim time. Tighten once old rows have drained.
-    tenantId: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal('send-webform-notifications'),
-    formId: idSchema,
-    email: z.string(),
-    firstName: z.string().nullish(),
-    lastName: z.string().nullish(),
-    notes: z.string().nullish(),
-    // Optional (not required): already-enqueued rows in the live DB predate this field and
-    // would fail a required check at claim time. Tighten once old rows have drained.
-    tenantId: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal('send-event-registration-confirmation'),
-    registrationId: idSchema,
-    // Optional (not required): already-enqueued rows in the live DB predate this field and
-    // would fail a required check at claim time. Tighten once old rows have drained.
-    tenantId: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal('send-event-reminder'),
-    registrationId: idSchema,
-    // Optional (not required): already-enqueued rows in the live DB predate this field and
-    // would fail a required check at claim time. Tighten once old rows have drained.
-    tenantId: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal('send-transactional-email'),
-    to: z.string(),
-    subject: z.string().nullish(),
-    text: z.string().nullish(),
-    html: z.string().nullish(),
-    tenant_id: idSchema.nullish(),
-    notificationSettingsLink: z.boolean().nullish(),
-  }),
-  z.object({
-    type: z.literal('send-sms'),
-    to: z.string(),
-    body: z.string(),
-  }),
-  z.object({
-    type: z.literal('send-subscription-confirmation'),
-    email: z.string(),
-    firstName: z.string().nullish(),
-    confirmUrl: z.string(),
-  }),
-  z.object({ type: z.literal('check_due_tasks') }),
-  // Ops watchdog: cron that digests failed jobs/webhooks + queue backlog to the ops email and
-  // writes the dead-man heartbeat behind GET /healthz/worker.
-  z.object({ type: z.literal('ops_watchdog') }),
-  // User-submitted bug report → ops email. Carries only the report id; the handler composes
-  // the message and pulls the screenshot from storage (never the image in the payload).
-  z.object({
-    type: z.literal('send-bug-report-email'),
-    bugReportId: idSchema,
-    tenant_id: idSchema,
-  }),
-
-  // ── Newsletters ──────────────────────────────────────────────────────────
-  z.object({
-    type: z.literal('send-newsletter'),
-    tenantId: idSchema,
-    newsletterId: idSchema,
-    userId: idSchema,
-    offset: z.number().nullish(),
-    deliveredCount: z.number().nullish(),
-    // Keyset cursor (last email sent). Present on resume/continuation jobs; absent on a fresh send.
-    cursor: z.string().nullish(),
-  }),
-  z.object({ type: z.literal('prune_newsletter_events') }),
-  z.object({ type: z.literal('process_scheduled_newsletters') }),
-
-  // ── Workflows & deletions ────────────────────────────────────────────────
-  z.object({ type: z.literal('process_drip_workflows') }),
-  // Automation send_email delivery. Goes through SendGrid (the user-triggered mail path —
-  // Postmark is reserved for pplCRM-to-user mail) with the workflow_run_id as a custom arg so
-  // the event webhook can stamp opens/clicks back onto the run for step/exit conditions.
-  z.object({
-    type: z.literal('send-automation-email'),
-    tenantId: idSchema,
-    workflowRunId: idSchema,
-    to: z.string(),
-    subject: z.string(),
-    html: z.string(),
-    text: z.string(),
-    unsubscribeUrl: z.string(),
-    // Present on jobs enqueued since quota moved to delivery-time metering: the handler logs
-    // the send into newsletter_send_log only when this is set (and the send succeeded). Absent
-    // on legacy jobs, which were already metered at enqueue time.
-    meterOnSend: z.boolean().optional(),
-  }),
-  z.object({ type: z.literal('detect_lapsed_supporters') }),
-  z.object({ type: z.literal('detect_task_sla_breaches') }),
-  z.object({ type: z.literal('perform_scheduled_deletions') }),
-
-  // ── Billing & integrations ───────────────────────────────────────────────
-  z.object({
-    type: z.literal('zapier_trigger'),
-    tenant_id: idSchema,
-    event_type: z.enum(ZAPIER_EVENT_TYPES),
-    data: z.record(z.string(), z.unknown()).default({}),
-  }),
-  z.object({
-    type: z.literal('check_usage_limits'),
-    tenant_id: idSchema,
-  }),
-  z.object({ type: z.literal('check_all_usage_limits') }),
-
-  // ── Exports ──────────────────────────────────────────────────────────────
-  z.object({
-    type: z.literal('export_csv'),
-    export_id: idSchema,
-    tenant_id: idSchema,
-    table: z.string().nullish(),
-    entity: z.string().nullish(),
-    options: exportOptionsSchema.default({}),
-    columns: z.array(z.string()).nullish(),
-    user_id: idSchema.nullish(),
-    file_name: z.string().nullish(),
-  }),
-]);
-
-export type JobPayload = z.infer<typeof jobPayloadSchema>;
-export type JobType = JobPayload['type'];
-export type JobPayloadOf<K extends JobType> = Extract<JobPayload, { type: K }>;
-
-/**
- * CSV imports are queued without a `type` discriminator (legacy shape) and are
- * matched by the presence of `import_id` + `storage_key` instead.
- */
-export const legacyImportJobSchema = z.object({
-  import_id: idSchema,
-  storage_key: z.string(),
-  tenant_id: idSchema,
-  user_id: idSchema,
-  source: z.string().nullish(),
-  skipped: z.union([z.string(), z.number()]).nullish(),
-  campaign_id: idSchema.nullish(),
-  tags: z.array(z.string()).nullish(),
-  file_name: z.string().nullish(),
-  // §17 CSV import wizard — see PersonsService.importRows/processImportRows.
-  duplicate_decision: z.enum(['merge', 'skip', 'import_new']).nullish(),
-  list_name: z.string().nullish(),
-  client_skip_reasons: z
-    .array(z.object({ row: z.number(), email: z.string().optional(), reason: z.string() }))
-    .nullish(),
-});
-
-export type LegacyImportJobPayload = z.infer<typeof legacyImportJobSchema>;
-````
-
-## File: apps/backend/src/app/lib/jobs/worker.ts
-````typescript
-import * as Sentry from '@sentry/node';
-import { sql } from 'kysely';
-import { Client } from 'pg';
-
-import { env } from '../../../env';
-import { logger } from '../../logger';
-import { ImportsRepo } from '../../modules/imports/repositories/imports.repo';
-import { CRON_JOBS, isCronJobType, jobTimeoutMs } from './cron-registry';
-import { claimNextPendingJob } from './job-claim';
-import { executeJob } from './job-handlers';
-import { scheduleNextRun, seedCronJob } from './reschedule';
-
-// Backoff before polling again once the queue drained empty.
-const IDLE_POLL_MS = 30000;
-
-// Worker-pool slots kept out of any single tenant's reach, so one tenant's large batch can never
-// occupy the whole pool and starve others (per-tenant in-flight fairness; see claimNextPendingJob).
-const RESERVED_SLOTS = 1;
-
-// A 'processing' job whose lock is older than this is treated as abandoned (its worker died) and
-// recovered. While a job runs we refresh its lock every JOB_HEARTBEAT_MS so a legitimately long
-// job (large import/sync/newsletter) is never mistaken for stale and double-run; the heartbeat
-// interval sits well under the threshold so several heartbeats land within one stale window.
-const STALE_JOB_THRESHOLD_MS = 30 * 60 * 1000;
-const JOB_HEARTBEAT_MS = 5 * 60 * 1000;
-
-/**
- * Thrown when a handler outlives its wall-clock cap (see jobTimeoutMs). Distinct class because the
- * failure path treats it differently from an ordinary error: the timed-out promise keeps running.
- */
-class JobExecutionTimeoutError extends Error {
-  constructor(type: string, timeoutMs: number) {
-    super(`Job '${type}' exceeded its ${Math.round(timeoutMs / 1000)}s execution timeout`);
-    this.name = 'JobExecutionTimeoutError';
-  }
-}
-
-export class BackgroundJobWorker {
-  private readonly importsRepo = new ImportsRepo();
-  private readonly db = this.importsRepo.db; // Kysely DB instance
-
-  // Number of jobs currently in flight (real concurrency), capped at maxConcurrency.
-  private activeJobsCount = 0;
-  private readonly maxConcurrency = env.workerConcurrency;
-  private isRunning = false;
-  // Epoch ms the next drain is scheduled for, so overlapping schedule requests coalesce to the
-  // soonest one instead of stacking timers.
-  private nextDrainAt = Number.POSITIVE_INFINITY;
-  private pgClient: Client | null = null;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private recoveryInterval: NodeJS.Timeout | null = null;
-  private shutdownResolver: (() => void) | null = null;
-  private timer: NodeJS.Timeout | null = null;
-
-  public start() {
-    if (this.isRunning) return;
-    this.isRunning = true;
-    logger.info('Background Job Worker started.');
-
-    // Seed the first run of every recurring job straight from the registry, so the set can't drift
-    // from CRON_JOBS. Seeds are independent and non-blocking: one failure (lock wait, transient DB
-    // error) must not stop the other seeds or the rest of start(). The .filter(isCronJobType) is
-    // only there to narrow Object.keys' string[] to CronJobType[].
-    for (const type of Object.keys(CRON_JOBS).filter(isCronJobType)) {
-      seedCronJob(this.db, type).catch((err) => logger.error({ err, type }, 'Failed to seed recurring job'));
-    }
-
-    // Run stale job recovery on startup and then every 5 minutes
-    this.recoverStaleJobs().catch((err) => logger.error({ err }, 'Failed to recover stale jobs on startup'));
-    this.recoveryInterval = setInterval(
-      () => {
-        this.recoverStaleJobs().catch((err) => logger.error({ err }, 'Failed to recover stale jobs'));
-      },
-      5 * 60 * 1000,
-    );
-
-    void this.setupListener();
-    this.drain();
-  }
-
-  public async stop(): Promise<void> {
-    this.isRunning = false;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-      this.nextDrainAt = Number.POSITIVE_INFINITY;
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.recoveryInterval) {
-      clearInterval(this.recoveryInterval);
-      this.recoveryInterval = null;
-    }
-    if (this.pgClient) {
-      try {
-        await this.pgClient.end();
-      } catch (err) {
-        logger.error({ err }, 'Error closing Postgres listener client on shutdown');
-      }
-      this.pgClient = null;
-    }
-
-    if (this.activeJobsCount > 0) {
-      logger.info(
-        `Background Job Worker: Waiting for ${this.activeJobsCount} active jobs to complete before shutting down...`,
-      );
-      await new Promise<void>((resolve) => {
-        this.shutdownResolver = resolve;
-      });
-    }
-    logger.info('Background Job Worker stopped.');
-  }
-
-  /**
-   * Fill every free slot in the worker pool with a claimer. Each claimer runs one job (or finds the
-   * queue empty) and, on completion, schedules the next drain — so the pool stays topped up to
-   * `maxConcurrency` while there is work, and backs off when there isn't. Slot bookkeeping
-   * (`activeJobsCount++`) happens synchronously here so we never launch past the cap.
-   */
-  private drain(): void {
-    if (!this.isRunning) return;
-    while (this.activeJobsCount < this.maxConcurrency) {
-      this.activeJobsCount++;
-      void this.processSlot();
-    }
-  }
-
-  private async processSlot(): Promise<void> {
-    let processedAJob = false;
-    try {
-      processedAJob = await this.processNextJob();
-    } catch (err) {
-      logger.error({ err }, 'Error in background job worker poll cycle');
-    } finally {
-      this.activeJobsCount--;
-
-      // If shutdown was requested and no active jobs remain, resolve the stop() promise.
-      if (!this.isRunning && this.activeJobsCount === 0 && this.shutdownResolver) {
-        this.shutdownResolver();
-      } else {
-        // Look for more work immediately if we just processed a job (keep the pool full to drain the
-        // queue), or back off if the queue was empty.
-        this.scheduleDrain(processedAJob ? 0 : IDLE_POLL_MS);
-      }
-    }
-  }
-
-  /**
-   * Schedule a drain in `ms`, coalescing with any already-pending drain: the soonest requested time
-   * wins, so a just-finished slot's immediate re-poll supersedes an idle slot's long backoff.
-   */
-  private scheduleDrain(ms: number) {
-    if (!this.isRunning) return;
-    const fireAt = Date.now() + ms;
-    if (this.timer && this.nextDrainAt <= fireAt) return; // a sooner (or equal) drain is already queued
-    if (this.timer) clearTimeout(this.timer);
-    this.nextDrainAt = fireAt;
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      this.nextDrainAt = Number.POSITIVE_INFINITY;
-      this.drain();
-    }, ms);
-  }
-
-  private async processNextJob(): Promise<boolean> {
-    const workerId = `worker-${process.pid}-${Math.random().toString(36).slice(2, 9)}`;
-
-    // Per-tenant in-flight fairness: a tenant may hold at most (pool − RESERVED_SLOTS) jobs in flight,
-    // so one tenant's big batch can never take the whole pool. See claimNextPendingJob.
-    const inFlightCap = Math.max(1, this.maxConcurrency - RESERVED_SLOTS);
-    const job = await claimNextPendingJob(this.db, workerId, inFlightCap);
-
-    if (!job) return false;
-
-    logger.info({ jobId: job.id, queue: job.queue }, 'Processing job');
-
-    const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
-
-    // Keep this job's lock fresh while it runs so recoverStaleJobs never reclaims a healthy
-    // long-running job out from under us. Scoped to (this job, still processing, still ours) so it
-    // can't revive a job another worker legitimately took over. Unref'd so it never holds the
-    // process open during shutdown.
-    const heartbeat = setInterval(() => {
-      void this.db
-        .updateTable('background_jobs')
-        .set({ locked_at: new Date(), updated_at: new Date() })
-        .where('id', '=', job.id)
-        .where('status', '=', 'processing')
-        .where('locked_by', '=', workerId)
-        .execute()
-        .catch((err) => logger.error({ err, jobId: job.id }, 'Job heartbeat failed'));
-    }, JOB_HEARTBEAT_MS);
-    if (typeof heartbeat.unref === 'function') heartbeat.unref();
-
-    // Wall-clock cap. The heartbeat above keeps `locked_at` fresh, so a live-but-wedged handler
-    // (a hung HTTP call, a lock wait) would never look stale to recoverStaleJobs and would hold its
-    // pool slot forever. Racing the handler against a timer is what makes that recoverable.
-    const payloadType = typeof payload.type === 'string' ? payload.type : undefined;
-    const timeoutMs = jobTimeoutMs(payloadType);
-    let timeoutHandle: NodeJS.Timeout | undefined;
-
-    try {
-      await Promise.race([
-        executeJob(payload, this.db, job.id),
-        new Promise<never>((_resolve, reject) => {
-          timeoutHandle = setTimeout(
-            () => reject(new JobExecutionTimeoutError(payloadType ?? 'unknown', timeoutMs)),
-            timeoutMs,
-          );
-          if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
-        }),
-      ]);
-
-      // Mark job as completed
-      await this.db
-        .updateTable('background_jobs')
-        .set({
-          status: 'completed',
-          locked_at: null,
-          locked_by: null,
-          updated_at: new Date(),
-        })
-        .where('id', '=', job.id)
-        .execute();
-
-      logger.info({ jobId: job.id }, 'Job completed successfully');
-    } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      logger.error({ err, jobId: job.id }, 'Failed to process background job');
-      // Job failures never surface through a request path, so capture them here explicitly
-      // (no-op when SENTRY_DSN is unset).
-      Sentry.captureException(err, {
-        tags: { jobType: String(payload.type ?? 'unknown') },
-        extra: { jobId: job.id, attempts: job.attempts },
-      });
-
-      try {
-        // If it was an import job, mark the import as failed and store the error message
-        if (payload.import_id) {
-          await this.importsRepo.update({
-            tenant_id: payload.tenant_id,
-            id: payload.import_id,
-            row: {
-              status: 'failed',
-              error_message: errorMsg.substring(0, 1000), // Truncate just in case
-              processed_at: new Date(),
-              updated_at: new Date(),
-            },
-          });
-        }
-      } catch (dbErr) {
-        logger.error({ err: dbErr }, 'Failed to mark data_imports as failed');
-      }
-
-      const attempts = Number(job.attempts || 0);
-      const maxAttempts = Number(job.max_attempts || 3);
-
-      if (attempts < maxAttempts) {
-        // Retry with backoff (exponential backoff for mail, linear for others)
-        const isMail =
-          payload.type === 'send-transactional-email' ||
-          payload.type === 'send-form-notifications' ||
-          payload.type === 'send-webform-notifications' ||
-          payload.type === 'send-shift-reminder' ||
-          payload.type === 'send-newsletter' ||
-          payload.type === 'send-bug-report-email';
-        const delaySeconds = isMail ? Math.pow(2, attempts) * 30 : attempts * 30;
-        // A timed-out handler's promise cannot be cancelled and may still be writing. Defer the
-        // retry past the stale-recovery window instead of the usual seconds-scale backoff: by then
-        // the zombie has either finished or died, so the retry can't run concurrently with it.
-        const retryDelayMs = err instanceof JobExecutionTimeoutError ? STALE_JOB_THRESHOLD_MS : delaySeconds * 1000;
-        const runAt = new Date(Date.now() + retryDelayMs);
-        logger.info({ jobId: job.id, runAt: runAt.toISOString(), attempt: attempts, maxAttempts }, 'Rescheduling job');
-
-        await this.db
-          .updateTable('background_jobs')
-          .set({
-            status: 'pending',
-            locked_at: null,
-            locked_by: null,
-            error: errorMsg,
-            run_at: runAt,
-            updated_at: new Date(),
-          })
-          .where('id', '=', job.id)
-          .execute();
-      } else {
-        logger.error({ jobId: job.id, maxAttempts }, 'Job exceeded maximum attempts, marking as failed');
-        await this.db
-          .updateTable('background_jobs')
-          .set({
-            status: 'failed',
-            locked_at: null,
-            locked_by: null,
-            error: errorMsg,
-            updated_at: new Date(),
-          })
-          .where('id', '=', job.id)
-          .execute();
-
-        if (payload.export_id) {
-          try {
-            const { ExportsRepo } = await import('../../modules/exports/repositories/exports.repo');
-            const exportsRepo = new ExportsRepo();
-            await exportsRepo.updateStatus(String(payload.export_id), String(payload.tenant_id), 'failed', {
-              error: `Export failed after all retries. Last error: ${errorMsg.substring(0, 400)}`,
-            });
-          } catch (exportErr) {
-            logger.error({ err: exportErr }, 'Failed to update export status on job permanent failure');
-          }
-        }
-
-        if (payload.type === 'ms_sync' && payload.tenantId && payload.campaignId) {
-          const correlationId = Math.random().toString(36).slice(2, 10).toUpperCase();
-          logger.error(
-            { err, correlationId, tenantId: payload.tenantId, campaignId: payload.campaignId },
-            'MS sync permanently failed',
-          );
-          try {
-            const { MsOAuthService } = await import('../../modules/ms-sync/ms-oauth.service');
-            const { env } = await import('../../../env');
-            const oauthSvc = new MsOAuthService(this.db, {
-              clientId: env.msClientId ?? '',
-              clientSecret: env.msClientSecret ?? '',
-              tenantId: env.msTenantId ?? 'common',
-              redirectUri: env.msRedirectUri ?? `${env.apiUrl}/auth/ms/callback`,
-            });
-            await oauthSvc.recordSyncError(
-              String(payload.tenantId),
-              String(payload.campaignId),
-              `Sync failed — support code: ${correlationId}`,
-            );
-          } catch (recordErr) {
-            logger.error({ err: recordErr }, 'Failed to record MS sync error on token');
-          }
-        }
-
-        if (payload.type === 'google_sync' && payload.tenantId && payload.campaignId) {
-          const correlationId = Math.random().toString(36).slice(2, 10).toUpperCase();
-          logger.error(
-            { err, correlationId, tenantId: payload.tenantId, campaignId: payload.campaignId },
-            'Google sync permanently failed',
-          );
-          try {
-            const { GoogleOAuthService } = await import('../../modules/google-sync/google-oauth.service');
-            const { env } = await import('../../../env');
-            const oauthSvc = new GoogleOAuthService(this.db, {
-              clientId: env.googleClientId ?? '',
-              clientSecret: env.googleClientSecret ?? '',
-              redirectUri: env.googleRedirectUri ?? `${env.apiUrl}/auth/google/callback`,
-            });
-            await oauthSvc.recordSyncError(
-              String(payload.tenantId),
-              String(payload.campaignId),
-              `Sync failed — support code: ${correlationId}`,
-            );
-          } catch (recordErr) {
-            logger.error({ err: recordErr }, 'Failed to record Google sync error on token');
-          }
-        }
-
-        if (payload.type === 'send-newsletter' && payload.newsletterId && payload.tenantId) {
-          // The send job is dead-lettered, but the newsletter is still flagged queuing/sending —
-          // which blocks both re-sending and editing, stranding it forever. Move it to 'paused' so
-          // the owner can resume from the resume UI; the persisted send_offset/send_cursor make the
-          // resume continue from where it stopped rather than re-emailing everyone.
-          try {
-            await this.db
-              .updateTable('newsletters')
-              .set({ status: 'paused', updated_at: new Date() })
-              .where('tenant_id', '=', String(payload.tenantId))
-              .where('id', '=', String(payload.newsletterId))
-              .where('status', 'in', ['queuing', 'sending'])
-              .execute();
-            logger.warn(
-              { tenantId: payload.tenantId, newsletterId: payload.newsletterId },
-              'Newsletter send permanently failed — moved to paused for supervised resume',
-            );
-          } catch (nlErr) {
-            logger.error({ err: nlErr }, 'Failed to reset newsletter status after permanent send failure');
-          }
-        }
-
-        // If a recurrent cron-like job fails permanently, schedule the next iteration
-        await this.rescheduleCronJobOnFailure(payload.type);
-      }
-    } finally {
-      // Reached on success, on handler failure, and on timeout — so neither the heartbeat interval
-      // nor the timeout timer can outlive the job.
-      clearInterval(heartbeat);
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-    }
-
-    return true;
-  }
-
-  private reconnectListener() {
-    if (this.pgClient) {
-      void this.pgClient.end().catch(() => {
-        /* noop */
-      });
-      this.pgClient = null;
-    }
-    if (!this.isRunning) return;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = setTimeout(() => {
-      void this.setupListener();
-    }, 5000);
-  }
-
-  private async recoverStaleJobs(): Promise<void> {
-    try {
-      const staleTime = new Date(Date.now() - STALE_JOB_THRESHOLD_MS);
-
-      // A job that crashes the worker process (OOM, native fault, an escaping rejection) stops
-      // heartbeating and never reaches the catch that enforces max_attempts, so it goes stale.
-      // Dead-letter such a job once it has been claimed max_attempts times instead of requeuing it
-      // forever — otherwise a poison job re-crashes the worker every stale window indefinitely.
-      // `attempts` is incremented at claim time, so it reflects real tries.
-      await this.db
-        .updateTable('background_jobs')
-        .set({
-          status: 'failed',
-          locked_at: null,
-          locked_by: null,
-          updated_at: new Date(),
-          error: 'Job processing timed out after maximum attempts',
-        })
-        .where('status', '=', 'processing')
-        .where('locked_at', '<', staleTime)
-        .where(sql<boolean>`attempts >= coalesce(max_attempts, 3)`)
-        .execute();
-
-      // Requeue stale jobs that still have retries left.
-      await this.db
-        .updateTable('background_jobs')
-        .set({
-          status: 'pending',
-          locked_at: null,
-          locked_by: null,
-          updated_at: new Date(),
-          error: 'Job processing timed out',
-        })
-        .where('status', '=', 'processing')
-        .where('locked_at', '<', staleTime)
-        .where(sql<boolean>`attempts < coalesce(max_attempts, 3)`)
-        .execute();
-
-      // Clean up/timeout data exports stuck in pending/processing for more than 1 hour
-      const staleExportTime = new Date(Date.now() - 60 * 60 * 1000); // 1 hour
-      const staleExports = await this.db
-        .selectFrom('data_exports')
-        .select(['id', 'tenant_id'])
-        .where('status', 'in', ['pending', 'processing'])
-        .where('created_at', '<', staleExportTime)
-        .execute();
-
-      if (staleExports.length > 0) {
-        const ids = staleExports.map((e) => e.id);
-        await this.db
-          .updateTable('data_exports')
-          .set({
-            status: 'failed',
-            error: 'Export processing timed out',
-            updated_at: new Date(),
-          })
-          .where('id', 'in', ids)
-          .execute();
-
-        for (const exp of staleExports) {
-          await this.db
-            .deleteFrom('background_jobs')
-            .where('tenant_id', '=', exp.tenant_id)
-            .where(sql`payload->>'type'`, '=', 'export_csv')
-            .where(sql`payload->>'export_id'`, '=', String(exp.id))
-            .execute();
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, 'Failed to recover stale background jobs');
-    }
-  }
-
-  /**
-   * A dead-lettered cron job must still get its next run queued, or the chain stops until the next
-   * deploy — silent breakage, since nothing else re-seeds it while the process lives. (For
-   * ops_watchdog it's worse than silent: no run means no heartbeat, so /healthz/worker goes stale
-   * and alerts until it recovers.) Intervals come from CRON_JOBS so no cron can be forgotten here.
-   */
-  private async rescheduleCronJobOnFailure(type: string): Promise<void> {
-    if (!isCronJobType(type)) return;
-
-    try {
-      await scheduleNextRun(this.db, type, CRON_JOBS[type]);
-    } catch (schedErr) {
-      logger.error({ err: schedErr, type }, 'Failed to reschedule failed cron job');
-    }
-  }
-
-  private async setupListener() {
-    if (!this.isRunning) return;
-    try {
-      this.pgClient = new Client(env.db);
-      await this.pgClient.connect();
-
-      this.pgClient.on('notification', (msg) => {
-        if (msg.channel === 'background_jobs_channel') {
-          logger.debug('Background Job Worker received notify, waking up...');
-          this.wakeUp();
-        }
-      });
-
-      this.pgClient.on('error', (err) => {
-        logger.error({ err }, 'Postgres listener client error');
-        this.reconnectListener();
-      });
-
-      this.pgClient.on('end', () => {
-        logger.warn('Postgres listener connection closed');
-        this.reconnectListener();
-      });
-
-      await this.pgClient.query('LISTEN background_jobs_channel');
-      logger.info('Listening for background_jobs notifications');
-    } catch (err) {
-      logger.error({ err }, 'Failed to setup Postgres listener');
-      this.reconnectListener();
-    }
-  }
-
-  private wakeUp() {
-    // A NOTIFY means work may be waiting — drain the pool right away, superseding any idle backoff.
-    this.scheduleDrain(0);
-  }
-}
 ````
 
 ## File: apps/backend/src/app/modules/billing/usage-limits.ts
@@ -65005,6 +64288,796 @@ export const PRIVACY_DOC: LegalDoc = {
     },
   ],
 };
+````
+
+## File: apps/backend/src/app/lib/jobs/job-payloads.ts
+````typescript
+import { z } from 'zod';
+import type { ZapierEventType } from '../../modules/zapier/zapier.service';
+
+/**
+ * IDs are strings in the database, but historical job payloads may carry them
+ * as numbers (JSON round-trip of bigint columns). Normalize to string.
+ */
+const idSchema = z.union([z.string(), z.number()]).transform(String);
+
+/** Must stay in sync with ZapierEventType in modules/zapier/zapier.service.ts (enforced by `satisfies`). */
+const ZAPIER_EVENT_TYPES = [
+  'person_created',
+  'person_updated',
+  'person_deleted',
+  'person_tag_added',
+  'person_tag_removed',
+] as const satisfies readonly ZapierEventType[];
+
+const exportSortSchema = z.object({
+  colId: z.string().nullish(),
+  sort: z.string().nullish(),
+});
+
+const exportOptionsSchema = z.object({
+  userId: idSchema.nullish(),
+  entity: z.string().nullish(),
+  activity: z.string().nullish(),
+  searchStr: z.string().nullish(),
+  sortModel: z.array(exportSortSchema).nullish(),
+});
+
+export const jobPayloadSchema = z.discriminatedUnion('type', [
+  // ── Lists / companies / maintenance ─────────────────────────────────────
+  z.object({
+    type: z.literal('refresh_list'),
+    tenant_id: idSchema,
+    list_id: idSchema,
+    user_id: idSchema,
+  }),
+  z.object({
+    type: z.literal('enrich_company_google'),
+    company_id: idSchema,
+    tenant_id: idSchema,
+    // A user-triggered "Re-check Google" re-runs the lookup even when the
+    // company was already enriched; the auto-queue on first load does not.
+    force: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal('refresh_companies_google'),
+    tenant_id: idSchema.nullish(),
+  }),
+  z.object({ type: z.literal('cleanup_activities') }),
+  z.object({ type: z.literal('prune_retention') }),
+  z.object({ type: z.literal('recompute_all_duplicates') }),
+  z.object({
+    type: z.literal('recompute_address_fingerprints'),
+    tenant_id: idSchema.nullish(),
+  }),
+  z.object({
+    type: z.literal('geocode_household'),
+    household_id: idSchema,
+    tenant_id: idSchema,
+  }),
+
+  // ── External account sync ───────────────────────────────────────────────
+  z.object({ type: z.literal('schedule_sync_jobs') }),
+  z.object({
+    type: z.literal('google_sync'),
+    tenantId: idSchema,
+    campaignId: idSchema,
+    requestedBy: z.string().default('system'),
+  }),
+  z.object({
+    type: z.literal('ms_sync'),
+    tenantId: idSchema,
+    campaignId: idSchema,
+    requestedBy: z.string().default('system'),
+  }),
+
+  // ── Notifications & transactional email ─────────────────────────────────
+  z.object({
+    type: z.literal('send-form-notifications'),
+    eventId: idSchema,
+    tenantId: idSchema,
+    email: z.string(),
+    firstName: z.string().nullish(),
+    lastName: z.string().nullish(),
+    mobile: z.string().nullish(),
+    notes: z.string().nullish(),
+  }),
+  z.object({
+    type: z.literal('send-shift-reminder'),
+    shiftId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('send-webform-notifications'),
+    formId: idSchema,
+    email: z.string(),
+    firstName: z.string().nullish(),
+    lastName: z.string().nullish(),
+    notes: z.string().nullish(),
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('send-event-registration-confirmation'),
+    registrationId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('send-event-reminder'),
+    registrationId: idSchema,
+    // Optional (not required): already-enqueued rows in the live DB predate this field and
+    // would fail a required check at claim time. Tighten once old rows have drained.
+    tenantId: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal('send-transactional-email'),
+    to: z.string(),
+    subject: z.string().nullish(),
+    text: z.string().nullish(),
+    html: z.string().nullish(),
+    tenant_id: idSchema.nullish(),
+    notificationSettingsLink: z.boolean().nullish(),
+  }),
+  z.object({
+    type: z.literal('send-sms'),
+    to: z.string(),
+    body: z.string(),
+  }),
+  z.object({
+    type: z.literal('send-subscription-confirmation'),
+    email: z.string(),
+    firstName: z.string().nullish(),
+    confirmUrl: z.string(),
+  }),
+  z.object({ type: z.literal('check_due_tasks') }),
+  // Ops watchdog: cron that digests failed jobs/webhooks + queue backlog to the ops email and
+  // writes the dead-man heartbeat behind GET /healthz/worker.
+  z.object({ type: z.literal('ops_watchdog') }),
+  // User-submitted bug report → ops email. Carries only the report id; the handler composes
+  // the message and pulls the screenshot from storage (never the image in the payload).
+  z.object({
+    type: z.literal('send-bug-report-email'),
+    bugReportId: idSchema,
+    tenant_id: idSchema,
+  }),
+
+  // ── Newsletters ──────────────────────────────────────────────────────────
+  z.object({
+    type: z.literal('send-newsletter'),
+    tenantId: idSchema,
+    newsletterId: idSchema,
+    userId: idSchema,
+    offset: z.number().nullish(),
+    deliveredCount: z.number().nullish(),
+    // Keyset cursor (last email sent). Present on resume/continuation jobs; absent on a fresh send.
+    cursor: z.string().nullish(),
+  }),
+  z.object({ type: z.literal('prune_newsletter_events') }),
+  z.object({ type: z.literal('process_scheduled_newsletters') }),
+
+  // ── Workflows & deletions ────────────────────────────────────────────────
+  z.object({ type: z.literal('process_drip_workflows') }),
+  // Automation send_email delivery. Goes through SendGrid (the user-triggered mail path —
+  // Postmark is reserved for pplCRM-to-user mail) with the workflow_run_id as a custom arg so
+  // the event webhook can stamp opens/clicks back onto the run for step/exit conditions.
+  z.object({
+    type: z.literal('send-automation-email'),
+    tenantId: idSchema,
+    workflowRunId: idSchema,
+    to: z.string(),
+    subject: z.string(),
+    html: z.string(),
+    text: z.string(),
+    unsubscribeUrl: z.string(),
+    // Present on jobs enqueued since quota moved to delivery-time metering: the handler logs
+    // the send into newsletter_send_log only when this is set (and the send succeeded). Absent
+    // on legacy jobs, which were already metered at enqueue time.
+    meterOnSend: z.boolean().optional(),
+  }),
+  z.object({ type: z.literal('detect_lapsed_supporters') }),
+  z.object({ type: z.literal('detect_task_sla_breaches') }),
+  z.object({ type: z.literal('perform_scheduled_deletions') }),
+
+  // ── Billing & integrations ───────────────────────────────────────────────
+  z.object({
+    type: z.literal('zapier_trigger'),
+    tenant_id: idSchema,
+    event_type: z.enum(ZAPIER_EVENT_TYPES),
+    data: z.record(z.string(), z.unknown()).default({}),
+  }),
+  z.object({
+    type: z.literal('check_usage_limits'),
+    tenant_id: idSchema,
+  }),
+  z.object({ type: z.literal('check_all_usage_limits') }),
+
+  // ── Exports ──────────────────────────────────────────────────────────────
+  z.object({
+    type: z.literal('export_csv'),
+    export_id: idSchema,
+    tenant_id: idSchema,
+    table: z.string().nullish(),
+    entity: z.string().nullish(),
+    options: exportOptionsSchema.default({}),
+    columns: z.array(z.string()).nullish(),
+    user_id: idSchema.nullish(),
+    file_name: z.string().nullish(),
+  }),
+]);
+
+export type JobPayload = z.infer<typeof jobPayloadSchema>;
+export type JobType = JobPayload['type'];
+export type JobPayloadOf<K extends JobType> = Extract<JobPayload, { type: K }>;
+
+/**
+ * CSV imports are queued without a `type` discriminator (legacy shape) and are
+ * matched by the presence of `import_id` + `storage_key` instead.
+ */
+export const legacyImportJobSchema = z.object({
+  import_id: idSchema,
+  storage_key: z.string(),
+  tenant_id: idSchema,
+  user_id: idSchema,
+  source: z.string().nullish(),
+  skipped: z.union([z.string(), z.number()]).nullish(),
+  campaign_id: idSchema.nullish(),
+  tags: z.array(z.string()).nullish(),
+  file_name: z.string().nullish(),
+  // §17 CSV import wizard — see PersonsService.importRows/processImportRows.
+  duplicate_decision: z.enum(['merge', 'skip', 'import_new']).nullish(),
+  list_name: z.string().nullish(),
+  client_skip_reasons: z
+    .array(z.object({ row: z.number(), email: z.string().optional(), reason: z.string() }))
+    .nullish(),
+});
+
+export type LegacyImportJobPayload = z.infer<typeof legacyImportJobSchema>;
+````
+
+## File: apps/backend/src/app/lib/jobs/worker.ts
+````typescript
+import * as Sentry from '@sentry/node';
+import { sql } from 'kysely';
+import { Client } from 'pg';
+
+import { env } from '../../../env';
+import { logger } from '../../logger';
+import { ImportsRepo } from '../../modules/imports/repositories/imports.repo';
+import { CRON_JOBS, isCronJobType, jobTimeoutMs } from './cron-registry';
+import { claimNextPendingJob } from './job-claim';
+import { executeJob } from './job-handlers';
+import { scheduleNextRun, seedCronJob } from './reschedule';
+
+// Backoff before polling again once the queue drained empty.
+const IDLE_POLL_MS = 30000;
+
+// Worker-pool slots kept out of any single tenant's reach, so one tenant's large batch can never
+// occupy the whole pool and starve others (per-tenant in-flight fairness; see claimNextPendingJob).
+const RESERVED_SLOTS = 1;
+
+// A 'processing' job whose lock is older than this is treated as abandoned (its worker died) and
+// recovered. While a job runs we refresh its lock every JOB_HEARTBEAT_MS so a legitimately long
+// job (large import/sync/newsletter) is never mistaken for stale and double-run; the heartbeat
+// interval sits well under the threshold so several heartbeats land within one stale window.
+const STALE_JOB_THRESHOLD_MS = 30 * 60 * 1000;
+const JOB_HEARTBEAT_MS = 5 * 60 * 1000;
+
+/**
+ * Thrown when a handler outlives its wall-clock cap (see jobTimeoutMs). Distinct class because the
+ * failure path treats it differently from an ordinary error: the timed-out promise keeps running.
+ */
+class JobExecutionTimeoutError extends Error {
+  constructor(type: string, timeoutMs: number) {
+    super(`Job '${type}' exceeded its ${Math.round(timeoutMs / 1000)}s execution timeout`);
+    this.name = 'JobExecutionTimeoutError';
+  }
+}
+
+export class BackgroundJobWorker {
+  private readonly importsRepo = new ImportsRepo();
+  private readonly db = this.importsRepo.db; // Kysely DB instance
+
+  // Number of jobs currently in flight (real concurrency), capped at maxConcurrency.
+  private activeJobsCount = 0;
+  private readonly maxConcurrency = env.workerConcurrency;
+  private isRunning = false;
+  // Epoch ms the next drain is scheduled for, so overlapping schedule requests coalesce to the
+  // soonest one instead of stacking timers.
+  private nextDrainAt = Number.POSITIVE_INFINITY;
+  private pgClient: Client | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private recoveryInterval: NodeJS.Timeout | null = null;
+  private shutdownResolver: (() => void) | null = null;
+  private timer: NodeJS.Timeout | null = null;
+
+  public start() {
+    if (this.isRunning) return;
+    this.isRunning = true;
+    logger.info('Background Job Worker started.');
+
+    // Seed the first run of every recurring job straight from the registry, so the set can't drift
+    // from CRON_JOBS. Seeds are independent and non-blocking: one failure (lock wait, transient DB
+    // error) must not stop the other seeds or the rest of start(). The .filter(isCronJobType) is
+    // only there to narrow Object.keys' string[] to CronJobType[].
+    for (const type of Object.keys(CRON_JOBS).filter(isCronJobType)) {
+      seedCronJob(this.db, type).catch((err) => logger.error({ err, type }, 'Failed to seed recurring job'));
+    }
+
+    // Run stale job recovery on startup and then every 5 minutes
+    this.recoverStaleJobs().catch((err) => logger.error({ err }, 'Failed to recover stale jobs on startup'));
+    this.recoveryInterval = setInterval(
+      () => {
+        this.recoverStaleJobs().catch((err) => logger.error({ err }, 'Failed to recover stale jobs'));
+      },
+      5 * 60 * 1000,
+    );
+
+    void this.setupListener();
+    this.drain();
+  }
+
+  public async stop(): Promise<void> {
+    this.isRunning = false;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+      this.nextDrainAt = Number.POSITIVE_INFINITY;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.recoveryInterval) {
+      clearInterval(this.recoveryInterval);
+      this.recoveryInterval = null;
+    }
+    if (this.pgClient) {
+      try {
+        await this.pgClient.end();
+      } catch (err) {
+        logger.error({ err }, 'Error closing Postgres listener client on shutdown');
+      }
+      this.pgClient = null;
+    }
+
+    if (this.activeJobsCount > 0) {
+      logger.info(
+        `Background Job Worker: Waiting for ${this.activeJobsCount} active jobs to complete before shutting down...`,
+      );
+      await new Promise<void>((resolve) => {
+        this.shutdownResolver = resolve;
+      });
+    }
+    logger.info('Background Job Worker stopped.');
+  }
+
+  /**
+   * Fill every free slot in the worker pool with a claimer. Each claimer runs one job (or finds the
+   * queue empty) and, on completion, schedules the next drain — so the pool stays topped up to
+   * `maxConcurrency` while there is work, and backs off when there isn't. Slot bookkeeping
+   * (`activeJobsCount++`) happens synchronously here so we never launch past the cap.
+   */
+  private drain(): void {
+    if (!this.isRunning) return;
+    while (this.activeJobsCount < this.maxConcurrency) {
+      this.activeJobsCount++;
+      void this.processSlot();
+    }
+  }
+
+  private async processSlot(): Promise<void> {
+    let processedAJob = false;
+    try {
+      processedAJob = await this.processNextJob();
+    } catch (err) {
+      logger.error({ err }, 'Error in background job worker poll cycle');
+    } finally {
+      this.activeJobsCount--;
+
+      // If shutdown was requested and no active jobs remain, resolve the stop() promise.
+      if (!this.isRunning && this.activeJobsCount === 0 && this.shutdownResolver) {
+        this.shutdownResolver();
+      } else {
+        // Look for more work immediately if we just processed a job (keep the pool full to drain the
+        // queue), or back off if the queue was empty.
+        this.scheduleDrain(processedAJob ? 0 : IDLE_POLL_MS);
+      }
+    }
+  }
+
+  /**
+   * Schedule a drain in `ms`, coalescing with any already-pending drain: the soonest requested time
+   * wins, so a just-finished slot's immediate re-poll supersedes an idle slot's long backoff.
+   */
+  private scheduleDrain(ms: number) {
+    if (!this.isRunning) return;
+    const fireAt = Date.now() + ms;
+    if (this.timer && this.nextDrainAt <= fireAt) return; // a sooner (or equal) drain is already queued
+    if (this.timer) clearTimeout(this.timer);
+    this.nextDrainAt = fireAt;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.nextDrainAt = Number.POSITIVE_INFINITY;
+      this.drain();
+    }, ms);
+  }
+
+  private async processNextJob(): Promise<boolean> {
+    const workerId = `worker-${process.pid}-${Math.random().toString(36).slice(2, 9)}`;
+
+    // Per-tenant in-flight fairness: a tenant may hold at most (pool − RESERVED_SLOTS) jobs in flight,
+    // so one tenant's big batch can never take the whole pool. See claimNextPendingJob.
+    const inFlightCap = Math.max(1, this.maxConcurrency - RESERVED_SLOTS);
+    const job = await claimNextPendingJob(this.db, workerId, inFlightCap);
+
+    if (!job) return false;
+
+    logger.info({ jobId: job.id, queue: job.queue }, 'Processing job');
+
+    const payload = typeof job.payload === 'string' ? JSON.parse(job.payload) : job.payload;
+
+    // Keep this job's lock fresh while it runs so recoverStaleJobs never reclaims a healthy
+    // long-running job out from under us. Scoped to (this job, still processing, still ours) so it
+    // can't revive a job another worker legitimately took over. Unref'd so it never holds the
+    // process open during shutdown.
+    const heartbeat = setInterval(() => {
+      void this.db
+        .updateTable('background_jobs')
+        .set({ locked_at: new Date(), updated_at: new Date() })
+        .where('id', '=', job.id)
+        .where('status', '=', 'processing')
+        .where('locked_by', '=', workerId)
+        .execute()
+        .catch((err) => logger.error({ err, jobId: job.id }, 'Job heartbeat failed'));
+    }, JOB_HEARTBEAT_MS);
+    if (typeof heartbeat.unref === 'function') heartbeat.unref();
+
+    // Wall-clock cap. The heartbeat above keeps `locked_at` fresh, so a live-but-wedged handler
+    // (a hung HTTP call, a lock wait) would never look stale to recoverStaleJobs and would hold its
+    // pool slot forever. Racing the handler against a timer is what makes that recoverable.
+    const payloadType = typeof payload.type === 'string' ? payload.type : undefined;
+    const timeoutMs = jobTimeoutMs(payloadType);
+    let timeoutHandle: NodeJS.Timeout | undefined;
+
+    try {
+      await Promise.race([
+        executeJob(payload, this.db, job.id),
+        new Promise<never>((_resolve, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new JobExecutionTimeoutError(payloadType ?? 'unknown', timeoutMs)),
+            timeoutMs,
+          );
+          if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
+        }),
+      ]);
+
+      // Mark job as completed
+      await this.db
+        .updateTable('background_jobs')
+        .set({
+          status: 'completed',
+          locked_at: null,
+          locked_by: null,
+          updated_at: new Date(),
+        })
+        .where('id', '=', job.id)
+        .execute();
+
+      logger.info({ jobId: job.id }, 'Job completed successfully');
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      logger.error({ err, jobId: job.id }, 'Failed to process background job');
+      // Job failures never surface through a request path, so capture them here explicitly
+      // (no-op when SENTRY_DSN is unset).
+      Sentry.captureException(err, {
+        tags: { jobType: String(payload.type ?? 'unknown') },
+        extra: { jobId: job.id, attempts: job.attempts },
+      });
+
+      try {
+        // If it was an import job, mark the import as failed and store the error message
+        if (payload.import_id) {
+          await this.importsRepo.update({
+            tenant_id: payload.tenant_id,
+            id: payload.import_id,
+            row: {
+              status: 'failed',
+              error_message: errorMsg.substring(0, 1000), // Truncate just in case
+              processed_at: new Date(),
+              updated_at: new Date(),
+            },
+          });
+        }
+      } catch (dbErr) {
+        logger.error({ err: dbErr }, 'Failed to mark data_imports as failed');
+      }
+
+      const attempts = Number(job.attempts || 0);
+      const maxAttempts = Number(job.max_attempts || 3);
+
+      if (attempts < maxAttempts) {
+        // Retry with backoff (exponential backoff for mail, linear for others)
+        const isMail =
+          payload.type === 'send-transactional-email' ||
+          payload.type === 'send-form-notifications' ||
+          payload.type === 'send-webform-notifications' ||
+          payload.type === 'send-shift-reminder' ||
+          payload.type === 'send-newsletter' ||
+          payload.type === 'send-bug-report-email';
+        const delaySeconds = isMail ? Math.pow(2, attempts) * 30 : attempts * 30;
+        // A timed-out handler's promise cannot be cancelled and may still be writing. Defer the
+        // retry past the stale-recovery window instead of the usual seconds-scale backoff: by then
+        // the zombie has either finished or died, so the retry can't run concurrently with it.
+        const retryDelayMs = err instanceof JobExecutionTimeoutError ? STALE_JOB_THRESHOLD_MS : delaySeconds * 1000;
+        const runAt = new Date(Date.now() + retryDelayMs);
+        logger.info({ jobId: job.id, runAt: runAt.toISOString(), attempt: attempts, maxAttempts }, 'Rescheduling job');
+
+        await this.db
+          .updateTable('background_jobs')
+          .set({
+            status: 'pending',
+            locked_at: null,
+            locked_by: null,
+            error: errorMsg,
+            run_at: runAt,
+            updated_at: new Date(),
+          })
+          .where('id', '=', job.id)
+          .execute();
+      } else {
+        logger.error({ jobId: job.id, maxAttempts }, 'Job exceeded maximum attempts, marking as failed');
+        await this.db
+          .updateTable('background_jobs')
+          .set({
+            status: 'failed',
+            locked_at: null,
+            locked_by: null,
+            error: errorMsg,
+            updated_at: new Date(),
+          })
+          .where('id', '=', job.id)
+          .execute();
+
+        if (payload.export_id) {
+          try {
+            const { ExportsRepo } = await import('../../modules/exports/repositories/exports.repo');
+            const exportsRepo = new ExportsRepo();
+            await exportsRepo.updateStatus(String(payload.export_id), String(payload.tenant_id), 'failed', {
+              error: `Export failed after all retries. Last error: ${errorMsg.substring(0, 400)}`,
+            });
+          } catch (exportErr) {
+            logger.error({ err: exportErr }, 'Failed to update export status on job permanent failure');
+          }
+        }
+
+        if (payload.type === 'ms_sync' && payload.tenantId && payload.campaignId) {
+          const correlationId = Math.random().toString(36).slice(2, 10).toUpperCase();
+          logger.error(
+            { err, correlationId, tenantId: payload.tenantId, campaignId: payload.campaignId },
+            'MS sync permanently failed',
+          );
+          try {
+            const { MsOAuthService } = await import('../../modules/ms-sync/ms-oauth.service');
+            const { env } = await import('../../../env');
+            const oauthSvc = new MsOAuthService(this.db, {
+              clientId: env.msClientId ?? '',
+              clientSecret: env.msClientSecret ?? '',
+              tenantId: env.msTenantId ?? 'common',
+              redirectUri: env.msRedirectUri ?? `${env.apiUrl}/auth/ms/callback`,
+            });
+            await oauthSvc.recordSyncError(
+              String(payload.tenantId),
+              String(payload.campaignId),
+              `Sync failed — support code: ${correlationId}`,
+            );
+          } catch (recordErr) {
+            logger.error({ err: recordErr }, 'Failed to record MS sync error on token');
+          }
+        }
+
+        if (payload.type === 'google_sync' && payload.tenantId && payload.campaignId) {
+          const correlationId = Math.random().toString(36).slice(2, 10).toUpperCase();
+          logger.error(
+            { err, correlationId, tenantId: payload.tenantId, campaignId: payload.campaignId },
+            'Google sync permanently failed',
+          );
+          try {
+            const { GoogleOAuthService } = await import('../../modules/google-sync/google-oauth.service');
+            const { env } = await import('../../../env');
+            const oauthSvc = new GoogleOAuthService(this.db, {
+              clientId: env.googleClientId ?? '',
+              clientSecret: env.googleClientSecret ?? '',
+              redirectUri: env.googleRedirectUri ?? `${env.apiUrl}/auth/google/callback`,
+            });
+            await oauthSvc.recordSyncError(
+              String(payload.tenantId),
+              String(payload.campaignId),
+              `Sync failed — support code: ${correlationId}`,
+            );
+          } catch (recordErr) {
+            logger.error({ err: recordErr }, 'Failed to record Google sync error on token');
+          }
+        }
+
+        if (payload.type === 'send-newsletter' && payload.newsletterId && payload.tenantId) {
+          // The send job is dead-lettered, but the newsletter is still flagged queuing/sending —
+          // which blocks both re-sending and editing, stranding it forever. Move it to 'paused' so
+          // the owner can resume from the resume UI; the persisted send_offset/send_cursor make the
+          // resume continue from where it stopped rather than re-emailing everyone.
+          try {
+            await this.db
+              .updateTable('newsletters')
+              .set({ status: 'paused', updated_at: new Date() })
+              .where('tenant_id', '=', String(payload.tenantId))
+              .where('id', '=', String(payload.newsletterId))
+              .where('status', 'in', ['queuing', 'sending'])
+              .execute();
+            logger.warn(
+              { tenantId: payload.tenantId, newsletterId: payload.newsletterId },
+              'Newsletter send permanently failed — moved to paused for supervised resume',
+            );
+          } catch (nlErr) {
+            logger.error({ err: nlErr }, 'Failed to reset newsletter status after permanent send failure');
+          }
+        }
+
+        // If a recurrent cron-like job fails permanently, schedule the next iteration
+        await this.rescheduleCronJobOnFailure(payload.type);
+      }
+    } finally {
+      // Reached on success, on handler failure, and on timeout — so neither the heartbeat interval
+      // nor the timeout timer can outlive the job.
+      clearInterval(heartbeat);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+
+    return true;
+  }
+
+  private reconnectListener() {
+    if (this.pgClient) {
+      void this.pgClient.end().catch(() => {
+        /* noop */
+      });
+      this.pgClient = null;
+    }
+    if (!this.isRunning) return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      void this.setupListener();
+    }, 5000);
+  }
+
+  private async recoverStaleJobs(): Promise<void> {
+    try {
+      const staleTime = new Date(Date.now() - STALE_JOB_THRESHOLD_MS);
+
+      // A job that crashes the worker process (OOM, native fault, an escaping rejection) stops
+      // heartbeating and never reaches the catch that enforces max_attempts, so it goes stale.
+      // Dead-letter such a job once it has been claimed max_attempts times instead of requeuing it
+      // forever — otherwise a poison job re-crashes the worker every stale window indefinitely.
+      // `attempts` is incremented at claim time, so it reflects real tries.
+      await this.db
+        .updateTable('background_jobs')
+        .set({
+          status: 'failed',
+          locked_at: null,
+          locked_by: null,
+          updated_at: new Date(),
+          error: 'Job processing timed out after maximum attempts',
+        })
+        .where('status', '=', 'processing')
+        .where('locked_at', '<', staleTime)
+        .where(sql<boolean>`attempts >= coalesce(max_attempts, 3)`)
+        .execute();
+
+      // Requeue stale jobs that still have retries left.
+      await this.db
+        .updateTable('background_jobs')
+        .set({
+          status: 'pending',
+          locked_at: null,
+          locked_by: null,
+          updated_at: new Date(),
+          error: 'Job processing timed out',
+        })
+        .where('status', '=', 'processing')
+        .where('locked_at', '<', staleTime)
+        .where(sql<boolean>`attempts < coalesce(max_attempts, 3)`)
+        .execute();
+
+      // Clean up/timeout data exports stuck in pending/processing for more than 1 hour
+      const staleExportTime = new Date(Date.now() - 60 * 60 * 1000); // 1 hour
+      const staleExports = await this.db
+        .selectFrom('data_exports')
+        .select(['id', 'tenant_id'])
+        .where('status', 'in', ['pending', 'processing'])
+        .where('created_at', '<', staleExportTime)
+        .execute();
+
+      if (staleExports.length > 0) {
+        const ids = staleExports.map((e) => e.id);
+        await this.db
+          .updateTable('data_exports')
+          .set({
+            status: 'failed',
+            error: 'Export processing timed out',
+            updated_at: new Date(),
+          })
+          .where('id', 'in', ids)
+          .execute();
+
+        for (const exp of staleExports) {
+          await this.db
+            .deleteFrom('background_jobs')
+            .where('tenant_id', '=', exp.tenant_id)
+            .where(sql`payload->>'type'`, '=', 'export_csv')
+            .where(sql`payload->>'export_id'`, '=', String(exp.id))
+            .execute();
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'Failed to recover stale background jobs');
+    }
+  }
+
+  /**
+   * A dead-lettered cron job must still get its next run queued, or the chain stops until the next
+   * deploy — silent breakage, since nothing else re-seeds it while the process lives. (For
+   * ops_watchdog it's worse than silent: no run means no heartbeat, so /healthz/worker goes stale
+   * and alerts until it recovers.) Intervals come from CRON_JOBS so no cron can be forgotten here.
+   */
+  private async rescheduleCronJobOnFailure(type: string): Promise<void> {
+    if (!isCronJobType(type)) return;
+
+    try {
+      await scheduleNextRun(this.db, type, CRON_JOBS[type]);
+    } catch (schedErr) {
+      logger.error({ err: schedErr, type }, 'Failed to reschedule failed cron job');
+    }
+  }
+
+  private async setupListener() {
+    if (!this.isRunning) return;
+    try {
+      this.pgClient = new Client(env.db);
+      await this.pgClient.connect();
+
+      this.pgClient.on('notification', (msg) => {
+        if (msg.channel === 'background_jobs_channel') {
+          logger.debug('Background Job Worker received notify, waking up...');
+          this.wakeUp();
+        }
+      });
+
+      this.pgClient.on('error', (err) => {
+        logger.error({ err }, 'Postgres listener client error');
+        this.reconnectListener();
+      });
+
+      this.pgClient.on('end', () => {
+        logger.warn('Postgres listener connection closed');
+        this.reconnectListener();
+      });
+
+      await this.pgClient.query('LISTEN background_jobs_channel');
+      logger.info('Listening for background_jobs notifications');
+    } catch (err) {
+      logger.error({ err }, 'Failed to setup Postgres listener');
+      this.reconnectListener();
+    }
+  }
+
+  private wakeUp() {
+    // A NOTIFY means work may be waiting — drain the pool right away, superseding any idle backoff.
+    this.scheduleDrain(0);
+  }
+}
 ````
 
 ## File: apps/backend/src/app/lib/mail/transactional-mail.service.ts

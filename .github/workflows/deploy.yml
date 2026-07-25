@@ -39,7 +39,14 @@ env:
   NX_NO_CLOUD: 'true'
 
 jobs:
+  # Quality gate — lint, tests (against a real Postgres), builds, e2e smoke. Every downstream job
+  # hangs off this, so a red test can no longer reach production. Before this existed the pipeline
+  # ran `npm ci` straight into a build-and-deploy with no verification at all.
+  verify:
+    uses: ./.github/workflows/verify.yml
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
