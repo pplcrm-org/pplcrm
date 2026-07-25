@@ -167,13 +167,16 @@ jobs:
       - run: npm ci
       - name: Install Playwright chromium
         run: npx playwright install --with-deps chromium
-      # `@smoke` only, deliberately. The suite also contains specs written against a pre-two-step
-      # -signin UI that have been failing unnoticed precisely because nothing ran them; gating on
-      # the whole suite today would mean gating on red. Tests earn the tag once they are verified
-      # green and cover a journey worth blocking a deploy for. Untagged specs still live in the
-      # repo and can be run locally with `npx nx e2e frontend-e2e`.
-      - name: E2E smoke
-        run: npx nx e2e frontend-e2e --grep @smoke
+      # The WHOLE suite, not a tagged subset: the four specs written against the pre-two-step-signin
+      # UI were deleted rather than repaired (they asserted nothing — see the prune commit), so
+      # everything that remains is green and worth blocking a deploy for. Running it all costs
+      # nothing extra, since the webServer startup dominates the runtime.
+      #
+      # The `@smoke` tags that remain in the specs mark the highest-value journeys, reserved for a
+      # future post-deploy check against the real production domains. They are NOT what scopes this
+      # step — if you add a spec here, it runs.
+      - name: E2E
+        run: npx nx e2e frontend-e2e
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4

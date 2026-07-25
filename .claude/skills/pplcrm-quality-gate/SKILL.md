@@ -45,7 +45,7 @@ Heads-up on **pre-existing failures** — check whether the flagged lines/tests 
 
 ## CI runs this gate now (2026-07-25)
 
-`.github/workflows/verify.yml` runs **lint / test / build / e2e-smoke** on every PR, and `deploy.yml`
+`.github/workflows/verify.yml` runs **lint / test / build / e2e** on every PR, and `deploy.yml`
 declares `needs: verify`, so a red gate blocks the production deploy. Before this, `deploy.yml` went
 from `npm ci` straight to a rollout with no verification at all — which is exactly how the
 `frontend-e2e` suite reached **45/55 failing** without anyone noticing.
@@ -63,10 +63,19 @@ Things worth knowing about that workflow:
   so it follows automatically if the role model changes. It also sets `ALLOW_MOCK_PAYMENTS` and
   `ALLOW_MOCK_DOMAIN_VERIFICATION` — both fail closed, and `settings/controller.spec.ts` asserts
   against the latter.
-- **The `e2e` job gates on `@smoke`-tagged tests only.** Only `signin.spec.ts` is repaired and
-  tagged; `persons-grid`, `email-client`, `volunteer-events` and `web-forms` are still written
-  against pre-two-step-signin UI (**33 failing**) and stay out of the gate until repaired. Tag a test
-  `@smoke` once it's verified green and covers a journey worth blocking a deploy for.
+- **The `e2e` job runs the whole suite**, which is currently `signin.spec.ts` alone (12 tests). The
+  other four specs (`persons-grid`, `email-client`, `volunteer-events`, `web-forms`) were **deleted**
+  2026-07-25, not repaired: all 33 failures were stale against the two-step-signin rework, and the
+  5 that "passed" asserted nothing — three were wrapped in `if (await x.isVisible())` so the body
+  was skipped entirely, and the two web-forms ones mocked the whole HTML response and then asserted
+  against the markup the test itself had written. They would have passed with the backend deleted.
+  The `@smoke` tags still in `signin.spec.ts` mark the highest-value journeys for a future
+  post-deploy production check; they do **not** scope the CI step.
+
+  The lesson worth keeping: a vacuously-passing e2e test is worse than a missing one, because it
+  reads as coverage. When adding specs here, assert against something the app actually produces —
+  if you mock the response you're asserting on, you're testing your own fixture.
+
 - **`prettier --check .` is deliberately NOT a CI gate.** `deploy/GO-LIVE-CHECKLIST.md` is
   non-idempotent under prettier (it oscillates between two indent levels on a deeply-nested code
   fence), so the check can never go green. The hook formats changed files, which is enough.
