@@ -185,6 +185,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                     shiftId: String(shift.id),
                     eventId: String(id),
                     personId: String(shift.person_id),
+                    tenantId: auth.tenant_id,
                   }),
                   run_at: runAt,
                 })
@@ -243,6 +244,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                   shiftId: String(result.id),
                   eventId: String(payload.event_id),
                   personId: String(payload.person_id),
+                  tenantId: auth.tenant_id,
                 }),
                 run_at: runAt,
               })
@@ -380,6 +382,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                     shiftId: String(id),
                     eventId: String(result.event_id),
                     personId: String(result.person_id),
+                    tenantId: auth.tenant_id,
                   }),
                   run_at: runAt,
                 })
@@ -908,6 +911,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                   shiftId: String(shiftId),
                   eventId: String(event.id),
                   personId: String(personId),
+                  tenantId,
                 }),
                 run_at: runAt,
               })

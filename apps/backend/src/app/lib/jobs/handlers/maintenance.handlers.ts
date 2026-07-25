@@ -7,8 +7,9 @@ import { logger } from '../../../logger';
 import { ActivityController } from '../../../modules/activity/controller';
 import { ListsController } from '../../../modules/lists/controller';
 import { DuplicateMaintenanceService } from '../../../modules/persons/services/duplicate-maintenance.service';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { DAY_MS, scheduleNextRun } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 export async function handleRefreshList(payload: JobPayloadOf<'refresh_list'>): Promise<void> {
   const listsController = new ListsController();
@@ -36,7 +37,7 @@ export async function handleRefreshCompaniesGoogle(
 
   // Only the global (cron-style) run reschedules itself.
   if (!payload.tenant_id) {
-    await scheduleNextRun(db, 'refresh_companies_google', DAY_MS);
+    await scheduleNextRun(db, 'refresh_companies_google', CRON_JOBS.refresh_companies_google);
   }
 }
 
@@ -44,7 +45,7 @@ export async function handleCleanupActivities(db: Kysely<Models>): Promise<void>
   const activityController = new ActivityController();
   await activityController.deleteOldActivities();
 
-  await scheduleNextRun(db, 'cleanup_activities', DAY_MS);
+  await scheduleNextRun(db, 'cleanup_activities', CRON_JOBS.cleanup_activities);
 }
 
 // P-3 (schema review 2026-07-06, §5): retention for the append-mostly tables
@@ -53,9 +54,14 @@ export async function handleCleanupActivities(db: Kysely<Models>): Promise<void>
 // covers the remaining three. Deletes run in bounded batches so a large backlog
 // never takes a long lock or a huge WAL spike.
 const RETENTION_BATCH = 5000;
-const COMPLETED_JOBS_RETENTION_DAYS = 30;
+const COMPLETED_JOBS_RETENTION_DAYS = 7;
+// Failed jobs are the only dead-letter record of what went wrong — kept far longer than
+// completed jobs so there's still something to diagnose against days (or weeks) after the fact.
+const FAILED_JOBS_RETENTION_DAYS = 30;
 const WEBHOOK_EVENTS_RETENTION_DAYS = 90;
 const EXPIRED_SESSION_GRACE_DAYS = 30;
+// Chunk size for the keyset-paginated address-fingerprint recompute below.
+const ADDRESS_FINGERPRINT_PAGE_SIZE = 1000;
 
 async function deleteInBatches(runOnce: () => Promise<bigint>): Promise<bigint> {
   let total = 0n;
@@ -68,28 +74,47 @@ async function deleteInBatches(runOnce: () => Promise<bigint>): Promise<bigint> 
 }
 
 export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
-  // Completed/failed background jobs older than the retention window. The
-  // currently-'processing' retention job itself is never matched.
-  const prunedJobs = await deleteInBatches(async () => {
+  // Completed background jobs older than the retention window — this is the sole owner of
+  // routine background_jobs pruning (the scheduled-deletions handler used to also prune
+  // completed jobs on its own overlapping schedule; that's been removed in favor of this job).
+  const prunedCompletedJobs = await deleteInBatches(async () => {
     const res = await sql`
       DELETE FROM background_jobs
       WHERE ctid IN (
         SELECT ctid FROM background_jobs
-        WHERE status IN ('completed', 'failed')
+        WHERE status = 'completed'
           AND updated_at < now() - make_interval(days => ${COMPLETED_JOBS_RETENTION_DAYS})
         LIMIT ${RETENTION_BATCH})
     `.execute(db);
     return res.numAffectedRows ?? 0n;
   });
 
-  // Processed Stripe/webhook events past their retention window.
+  // Failed jobs are the only dead-letter record of what went wrong, so they get a much longer
+  // window than completed jobs. The currently-'processing' retention job itself is never matched.
+  const prunedFailedJobs = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM background_jobs
+      WHERE ctid IN (
+        SELECT ctid FROM background_jobs
+        WHERE status = 'failed'
+          AND updated_at < now() - make_interval(days => ${FAILED_JOBS_RETENTION_DAYS})
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
+  // Processed Stripe/webhook events past their retention window, plus failed ones — failed rows
+  // may have a NULL processed_at (they never reached 'processed'), so fall back to updated_at,
+  // which trg_webhook_events_updated_at bumps on every status change.
   const prunedWebhooks = await deleteInBatches(async () => {
     const res = await sql`
       DELETE FROM webhook_events
       WHERE ctid IN (
         SELECT ctid FROM webhook_events
-        WHERE status = 'processed'
-          AND processed_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS})
+        WHERE (status = 'processed'
+                AND processed_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS}))
+           OR (status = 'failed'
+                AND updated_at < now() - make_interval(days => ${WEBHOOK_EVENTS_RETENTION_DAYS}))
         LIMIT ${RETENTION_BATCH})
     `.execute(db);
     return res.numAffectedRows ?? 0n;
@@ -111,14 +136,15 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
 
   logger.info(
     {
-      prunedJobs: prunedJobs.toString(),
+      prunedCompletedJobs: prunedCompletedJobs.toString(),
+      prunedFailedJobs: prunedFailedJobs.toString(),
       prunedWebhooks: prunedWebhooks.toString(),
       prunedSessions: prunedSessions.toString(),
     },
     'Retention prune complete',
   );
 
-  await scheduleNextRun(db, 'prune_retention', DAY_MS);
+  await scheduleNextRun(db, 'prune_retention', CRON_JOBS.prune_retention);
 }
 
 export async function handleRecomputeAllDuplicates(db: Kysely<Models>): Promise<void> {
@@ -135,49 +161,38 @@ export async function handleRecomputeAllDuplicates(db: Kysely<Models>): Promise<
   const maintenanceSvc = new DuplicateMaintenanceService();
   const lastRunTime = lastJob?.updated_at ? new Date(lastJob.updated_at) : null;
 
+  // Collapse the old "did anything change" probe — 3 queries × every tenant — into 3 queries
+  // total, run once, each returning the distinct tenants with a row changed since the last run.
+  // `null` means "no prior run", i.e. recompute unconditionally for every tenant (original
+  // behavior when lastRunTime was falsy).
+  let tenantsToRecompute: Set<string> | null = null;
+  if (lastRunTime) {
+    tenantsToRecompute = new Set<string>();
+    for (const table of ['persons', 'households', 'companies'] as const) {
+      const changedTenants = await db
+        .selectFrom(table)
+        .select('tenant_id')
+        .where('updated_at', '>', lastRunTime)
+        .groupBy('tenant_id')
+        .execute();
+      for (const row of changedTenants) {
+        tenantsToRecompute.add(String(row.tenant_id));
+      }
+    }
+  }
+
   for (const tenant of tenants) {
+    const tenantId = String(tenant.id);
+    if (tenantsToRecompute && !tenantsToRecompute.has(tenantId)) continue;
+
     try {
-      let shouldRecompute = true;
-
-      if (lastRunTime) {
-        const personChanged = await db
-          .selectFrom('persons')
-          .select('id')
-          .where('tenant_id', '=', String(tenant.id))
-          .where('updated_at', '>', lastRunTime)
-          .limit(1)
-          .executeTakeFirst();
-
-        const householdChanged = await db
-          .selectFrom('households')
-          .select('id')
-          .where('tenant_id', '=', String(tenant.id))
-          .where('updated_at', '>', lastRunTime)
-          .limit(1)
-          .executeTakeFirst();
-
-        const companyChanged = await db
-          .selectFrom('companies')
-          .select('id')
-          .where('tenant_id', '=', String(tenant.id))
-          .where('updated_at', '>', lastRunTime)
-          .limit(1)
-          .executeTakeFirst();
-
-        if (!personChanged && !householdChanged && !companyChanged) {
-          shouldRecompute = false;
-        }
-      }
-
-      if (shouldRecompute) {
-        await maintenanceSvc.recomputeAllDuplicates(String(tenant.id));
-      }
+      await maintenanceSvc.recomputeAllDuplicates(tenantId);
     } catch (tenantErr) {
       logger.error({ err: tenantErr }, `Failed to recompute duplicates for tenant ${tenant.id}`);
     }
   }
 
-  await scheduleNextRun(db, 'recompute_all_duplicates', DAY_MS);
+  await scheduleNextRun(db, 'recompute_all_duplicates', CRON_JOBS.recompute_all_duplicates);
 }
 
 export async function handleRecomputeAddressFingerprints(
@@ -202,9 +217,9 @@ export async function handleRecomputeAddressFingerprints(
     }
   }
 
-  // Schedule next run 24 hours later if periodic/cron-like (no tenant_id)
+  // Schedule next run if periodic/cron-like (no tenant_id)
   if (!payload.tenant_id) {
-    await scheduleNextRun(db, 'recompute_address_fingerprints', DAY_MS);
+    await scheduleNextRun(db, 'recompute_address_fingerprints', CRON_JOBS.recompute_address_fingerprints);
   }
 }
 
@@ -215,38 +230,87 @@ export async function handleGeocodeHousehold(
   await geocodeAndMapHousehold(payload.household_id, payload.tenant_id, db);
 }
 
+/** One page of households, keyset-paginated by id, carrying only the columns the fingerprint
+ *  helpers need (the previous version loaded every column of every household into memory).
+ *  Return type is inferred: the row shape follows the Kysely model's column types exactly. */
+async function fetchHouseholdFingerprintPage(db: Kysely<Models>, tenantId: string, cursorId: string | null) {
+  let query = db
+    .selectFrom('households')
+    .select([
+      'id',
+      'street_num',
+      'street1',
+      'street2',
+      'apt',
+      'city',
+      'state',
+      'zip',
+      'country',
+      'address_fp_street',
+      'address_fp_full',
+    ])
+    .where('tenant_id', '=', tenantId)
+    .orderBy('id', 'asc')
+    .limit(ADDRESS_FINGERPRINT_PAGE_SIZE);
+
+  if (cursorId !== null) {
+    query = query.where('id', '>', cursorId);
+  }
+
+  return query.execute();
+}
+
 async function recomputeTenantAddressFingerprints(tenantId: string, db: Kysely<Models>): Promise<void> {
-  const households = await db.selectFrom('households').selectAll().where('tenant_id', '=', tenantId).execute();
+  let cursorId: string | null = null;
 
-  for (const hh of households) {
-    const fp_street = fingerprintStreet({
-      street_num: hh.street_num,
-      street1: hh.street1,
-      street2: hh.street2,
-    });
-    const fp_full = fingerprintFull({
-      apt: hh.apt,
-      street_num: hh.street_num,
-      street1: hh.street1,
-      street2: hh.street2,
-      city: hh.city,
-      state: hh.state,
-      zip: hh.zip,
-      country: hh.country,
-    });
+  for (;;) {
+    const households = await fetchHouseholdFingerprintPage(db, tenantId, cursorId);
+    if (households.length === 0) break;
 
-    if (hh.address_fp_street !== fp_street || hh.address_fp_full !== fp_full) {
-      await db
-        .updateTable('households')
-        .set({
-          address_fp_street: fp_street,
-          address_fp_full: fp_full,
-          updated_at: new Date(),
-        })
-        .where('id', '=', hh.id)
-        .where('tenant_id', '=', tenantId)
-        .execute();
+    const changed: { id: string; fpStreet: string | null; fpFull: string | null }[] = [];
+    for (const hh of households) {
+      const fp_street = fingerprintStreet({
+        street_num: hh.street_num,
+        street1: hh.street1,
+        street2: hh.street2,
+      });
+      const fp_full = fingerprintFull({
+        apt: hh.apt,
+        street_num: hh.street_num,
+        street1: hh.street1,
+        street2: hh.street2,
+        city: hh.city,
+        state: hh.state,
+        zip: hh.zip,
+        country: hh.country,
+      });
+
+      if (hh.address_fp_street !== fp_street || hh.address_fp_full !== fp_full) {
+        changed.push({ id: hh.id, fpStreet: fp_street, fpFull: fp_full });
+      }
     }
+
+    // One round trip per chunk (not per row): batch every changed row in this page into a
+    // single UPDATE ... FROM (VALUES ...) statement.
+    if (changed.length > 0) {
+      const values = sql.join(changed.map((c) => sql`(${c.id}::bigint, ${c.fpStreet}::text, ${c.fpFull}::text)`));
+
+      await sql`
+        UPDATE households AS h
+        SET address_fp_street = v.fp_street,
+            address_fp_full = v.fp_full,
+            updated_at = now()
+        FROM (VALUES ${values}) AS v(id, fp_street, fp_full)
+        WHERE h.id = v.id AND h.tenant_id = ${tenantId}
+      `.execute(db);
+    }
+
+    const lastRow = households[households.length - 1];
+    // Unreachable: the `households.length === 0` check above guarantees an element exists here;
+    // this guard exists only to satisfy noUncheckedIndexedAccess.
+    if (!lastRow) break;
+    cursorId = lastRow.id;
+    if (households.length < ADDRESS_FINGERPRINT_PAGE_SIZE) break;
   }
 
   const maintenanceSvc = new DuplicateMaintenanceService();

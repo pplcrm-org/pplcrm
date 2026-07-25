@@ -7,13 +7,14 @@ import { GoogleOAuthService } from '../../../modules/google-sync/google-oauth.se
 import { GoogleSyncService } from '../../../modules/google-sync/google-sync.service';
 import { MsOAuthService } from '../../../modules/ms-sync/ms-oauth.service';
 import { MsSyncService } from '../../../modules/ms-sync/ms-sync.service';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { scheduleNextRun, TEN_MINUTES_MS } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 export async function handleScheduleSyncJobs(db: Kysely<Models>): Promise<void> {
   await queueUserSyncJobs(db);
 
-  await scheduleNextRun(db, 'schedule_sync_jobs', TEN_MINUTES_MS);
+  await scheduleNextRun(db, 'schedule_sync_jobs', CRON_JOBS.schedule_sync_jobs);
 }
 
 export async function handleGoogleSync(payload: JobPayloadOf<'google_sync'>, db: Kysely<Models>): Promise<void> {

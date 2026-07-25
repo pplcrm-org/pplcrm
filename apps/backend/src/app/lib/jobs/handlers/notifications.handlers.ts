@@ -6,16 +6,22 @@ import { NotificationsRepo } from '../../../modules/notifications/repositories/n
 import { notificationEnabled } from '../../profile-preferences';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { SmsService } from '../../sms/sms.service';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { DAY_MS, scheduleNextRun } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 const mailService = new TransactionalEmailService();
 const smsService = new SmsService();
+
+// Chunk size for the keyset-paginated due-tasks scan below — bounds each page instead of
+// joining every tenant's overdue tasks into memory in one unbounded query.
+const CHECK_DUE_TASKS_PAGE_SIZE = 500;
 
 export async function handleSendFormNotifications(
   payload: JobPayloadOf<'send-form-notifications'>,
   db: Kysely<Models>,
 ): Promise<void> {
+  // tenantId is required on this payload (server-generated), so scope unconditionally.
   const event = await db
     .selectFrom('volunteer_events')
     .select([
@@ -29,6 +35,7 @@ export async function handleSendFormNotifications(
       'send_volunteer_alert',
     ])
     .where('id', '=', payload.eventId)
+    .where('tenant_id', '=', payload.tenantId)
     .executeTakeFirst();
 
   if (!event) {
@@ -97,11 +104,14 @@ export async function handleSendShiftReminder(
   payload: JobPayloadOf<'send-shift-reminder'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  const shift = await db
+  let shiftQuery = db
     .selectFrom('volunteer_shifts')
-    .select(['id', 'status', 'event_id', 'person_id'])
-    .where('id', '=', payload.shiftId)
-    .executeTakeFirst();
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id'])
+    .where('id', '=', payload.shiftId);
+  if (payload.tenantId != null) {
+    shiftQuery = shiftQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const shift = await shiftQuery.executeTakeFirst();
 
   if (!shift) {
     logger.info(`Skipping shift reminder: shift ${payload.shiftId} not found.`);
@@ -114,7 +124,13 @@ export async function handleSendShiftReminder(
     return;
   }
 
-  const event = await db.selectFrom('volunteer_events').selectAll().where('id', '=', shift.event_id).executeTakeFirst();
+  // Scoped by the shift's own tenant_id — stronger than trusting the payload.
+  const event = await db
+    .selectFrom('volunteer_events')
+    .selectAll()
+    .where('id', '=', shift.event_id)
+    .where('tenant_id', '=', shift.tenant_id)
+    .executeTakeFirst();
 
   if (!event) {
     logger.info(`Skipping shift reminder: event ${shift.event_id} not found.`);
@@ -126,7 +142,13 @@ export async function handleSendShiftReminder(
     return;
   }
 
-  const person = await db.selectFrom('persons').selectAll().where('id', '=', shift.person_id).executeTakeFirst();
+  // Scoped by the shift's own tenant_id — stronger than trusting the payload.
+  const person = await db
+    .selectFrom('persons')
+    .selectAll()
+    .where('id', '=', shift.person_id)
+    .where('tenant_id', '=', shift.tenant_id)
+    .executeTakeFirst();
 
   if (!person) {
     logger.info(`Skipping shift reminder: person ${shift.person_id} not found.`);
@@ -174,11 +196,14 @@ export async function handleSendWebformNotifications(
   payload: JobPayloadOf<'send-webform-notifications'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  const form = await db
+  let formQuery = db
     .selectFrom('web_forms')
     .select(['name', 'send_confirmation', 'send_alert', 'tenant_id'])
-    .where('id', '=', payload.formId)
-    .executeTakeFirst();
+    .where('id', '=', payload.formId);
+  if (payload.tenantId != null) {
+    formQuery = formQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const form = await formQuery.executeTakeFirst();
 
   if (!form) {
     logger.info(`Skipping web form notifications: form ${payload.formId} not found.`);
@@ -224,17 +249,21 @@ export async function handleSendEventRegistrationConfirmation(
   payload: JobPayloadOf<'send-event-registration-confirmation'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  const registration = await db
+  let registrationQuery = db
     .selectFrom('event_registrations')
-    .select(['id', 'status', 'event_id', 'person_id', 'ticket_type_id'])
-    .where('id', '=', payload.registrationId)
-    .executeTakeFirst();
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id', 'ticket_type_id'])
+    .where('id', '=', payload.registrationId);
+  if (payload.tenantId != null) {
+    registrationQuery = registrationQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const registration = await registrationQuery.executeTakeFirst();
 
   if (!registration || registration.status === 'cancelled') {
     logger.info(`Skipping event confirmation: registration ${payload.registrationId} not found or cancelled.`);
     return;
   }
 
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
   const event = await db
     .selectFrom('events')
     .select([
@@ -247,6 +276,7 @@ export async function handleSendEventRegistrationConfirmation(
       'send_registration_confirmation',
     ])
     .where('id', '=', registration.event_id)
+    .where('tenant_id', '=', registration.tenant_id)
     .executeTakeFirst();
 
   if (!event || event.send_registration_confirmation === false) {
@@ -254,10 +284,12 @@ export async function handleSendEventRegistrationConfirmation(
     return;
   }
 
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
   const person = await db
     .selectFrom('persons')
     .select(['first_name', 'email'])
     .where('id', '=', registration.person_id)
+    .where('tenant_id', '=', registration.tenant_id)
     .executeTakeFirst();
 
   if (!person || !person.email) {
@@ -298,11 +330,14 @@ export async function handleSendEventReminder(
   payload: JobPayloadOf<'send-event-reminder'>,
   db: Kysely<Models>,
 ): Promise<void> {
-  const registration = await db
+  let registrationQuery = db
     .selectFrom('event_registrations')
-    .select(['id', 'status', 'event_id', 'person_id'])
-    .where('id', '=', payload.registrationId)
-    .executeTakeFirst();
+    .select(['id', 'tenant_id', 'status', 'event_id', 'person_id'])
+    .where('id', '=', payload.registrationId);
+  if (payload.tenantId != null) {
+    registrationQuery = registrationQuery.where('tenant_id', '=', payload.tenantId);
+  }
+  const registration = await registrationQuery.executeTakeFirst();
 
   if (!registration || registration.status !== 'registered') {
     logger.info(
@@ -311,17 +346,25 @@ export async function handleSendEventReminder(
     return;
   }
 
-  const event = await db.selectFrom('events').selectAll().where('id', '=', registration.event_id).executeTakeFirst();
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
+  const event = await db
+    .selectFrom('events')
+    .selectAll()
+    .where('id', '=', registration.event_id)
+    .where('tenant_id', '=', registration.tenant_id)
+    .executeTakeFirst();
 
   if (!event || event.send_reminder === false) {
     logger.info(`Skipping event reminder: event ${registration.event_id} not found or reminders disabled.`);
     return;
   }
 
+  // Scoped by the registration's own tenant_id — stronger than trusting the payload.
   const person = await db
     .selectFrom('persons')
     .select(['first_name', 'email'])
     .where('id', '=', registration.person_id)
+    .where('tenant_id', '=', registration.tenant_id)
     .executeTakeFirst();
 
   if (!person || !person.email) {
@@ -384,44 +427,81 @@ export async function handleSendSubscriptionConfirmation(
 export async function handleCheckDueTasks(db: Kysely<Models>): Promise<void> {
   await checkDueTasks(db);
 
-  await scheduleNextRun(db, 'check_due_tasks', DAY_MS);
+  await scheduleNextRun(db, 'check_due_tasks', CRON_JOBS.check_due_tasks);
 }
+
+/** Not executed — only used to derive the row type each keyset page returns. */
+function dueTasksBaseQuery(db: Kysely<Models>, now: Date) {
+  return db
+    .selectFrom('tasks')
+    .innerJoin('authusers', 'authusers.id', 'tasks.assigned_to')
+    .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
+    .select([
+      'tasks.id as task_id',
+      'tasks.tenant_id as tenant_id',
+      'tasks.name as task_name',
+      'tasks.due_at',
+      'tasks.details',
+      'authusers.id as user_id',
+      'authusers.email as user_email',
+      'authusers.first_name',
+      'profiles.preferences as profile_preferences',
+    ])
+    .where('tasks.status', 'not in', ['done', 'archived'])
+    .where('tasks.due_at', '<=', now);
+}
+
+type DueTaskRow = Awaited<ReturnType<ReturnType<typeof dueTasksBaseQuery>['execute']>>[number];
+type DueTasksCursor = { dueAt: Date; taskId: string };
 
 export async function checkDueTasks(db: Kysely<Models>): Promise<void> {
   const now = new Date();
   try {
-    const dueTasks = await db
-      .selectFrom('tasks')
-      .innerJoin('authusers', 'authusers.id', 'tasks.assigned_to')
-      .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
-      .select([
-        'tasks.id as task_id',
-        'tasks.tenant_id as tenant_id',
-        'tasks.name as task_name',
-        'tasks.due_at',
-        'tasks.details',
-        'authusers.id as user_id',
-        'authusers.email as user_email',
-        'authusers.first_name',
-        'profiles.preferences as profile_preferences',
-      ])
-      .where('tasks.status', 'not in', ['done', 'archived'])
-      .where('tasks.due_at', '<=', now)
-      .orderBy('tasks.due_at', 'asc')
-      .execute();
+    const userTasksMap = new Map<string, DueTaskRow[]>();
+    let cursor: DueTasksCursor | null = null;
 
-    if (dueTasks.length === 0) return;
+    // Keyset-paginated (due_at, id) instead of one unbounded cross-tenant query: this join
+    // spans every tenant's overdue tasks, and OFFSET-style pagination would re-scan skipped
+    // rows on every page. (due_at, id) breaks ties safely since due_at alone isn't unique.
+    for (;;) {
+      let pageQuery = dueTasksBaseQuery(db, now)
+        .orderBy('tasks.due_at', 'asc')
+        .orderBy('tasks.id', 'asc')
+        .limit(CHECK_DUE_TASKS_PAGE_SIZE);
 
-    const userTasksMap = new Map<string, typeof dueTasks>();
-    for (const row of dueTasks) {
-      const userId = String(row.user_id);
-      let userTasks = userTasksMap.get(userId);
-      if (!userTasks) {
-        userTasks = [];
-        userTasksMap.set(userId, userTasks);
+      if (cursor) {
+        const { dueAt, taskId } = cursor;
+        pageQuery = pageQuery.where((eb) =>
+          eb.or([
+            eb('tasks.due_at', '>', dueAt),
+            eb.and([eb('tasks.due_at', '=', dueAt), eb('tasks.id', '>', taskId)]),
+          ]),
+        );
       }
-      userTasks.push(row);
+
+      const page: DueTaskRow[] = await pageQuery.execute();
+      if (page.length === 0) break;
+
+      for (const row of page) {
+        const userId = String(row.user_id);
+        let userTasks = userTasksMap.get(userId);
+        if (!userTasks) {
+          userTasks = [];
+          userTasksMap.set(userId, userTasks);
+        }
+        userTasks.push(row);
+      }
+
+      const lastRow = page[page.length - 1];
+      // `due_at <= now` in the WHERE clause already excludes null due_at rows.
+      if (lastRow && lastRow.due_at != null) {
+        cursor = { dueAt: new Date(lastRow.due_at), taskId: String(lastRow.task_id) };
+      }
+
+      if (page.length < CHECK_DUE_TASKS_PAGE_SIZE) break;
     }
+
+    if (userTasksMap.size === 0) return;
 
     const notificationsRepo = new NotificationsRepo();
     for (const [userId, tasks] of userTasksMap.entries()) {

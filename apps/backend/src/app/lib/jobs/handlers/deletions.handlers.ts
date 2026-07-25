@@ -3,11 +3,10 @@ import type { Models } from '../../../../../../../libs/common/src/lib/kysely.mod
 import { logger } from '../../../logger';
 import { tombstoneAuthUser } from '../../tombstone-user';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
-import { DAY_MS, scheduleNextRun } from '../reschedule';
+import { CRON_JOBS } from '../cron-registry';
+import { scheduleNextRun } from '../reschedule';
 
 const mailService = new TransactionalEmailService();
-
-const COMPLETED_JOB_RETENTION_DAYS = 7;
 
 /**
  * Every tenant-scoped table, ordered children-before-parents, that a full tenant wipe must clear.
@@ -128,7 +127,7 @@ export async function handlePerformScheduledDeletions(db: Kysely<Models>): Promi
   try {
     await performScheduledDeletions(db);
   } finally {
-    await scheduleNextRun(db, 'perform_scheduled_deletions', DAY_MS);
+    await scheduleNextRun(db, 'perform_scheduled_deletions', CRON_JOBS.perform_scheduled_deletions);
   }
 }
 
@@ -213,14 +212,6 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
       }
     }
   }
-
-  // Permanently delete completed background jobs older than 7 days to prevent unbounded table growth
-  const retentionCutoff = new Date(Date.now() - COMPLETED_JOB_RETENTION_DAYS * DAY_MS);
-  await db
-    .deleteFrom('background_jobs')
-    .where('status', '=', 'completed')
-    .where('updated_at', '<=', retentionCutoff)
-    .execute();
 
   if (failures.length > 0) {
     logger.error({ failures }, `Scheduled deletions completed with ${failures.length} failure(s)`);

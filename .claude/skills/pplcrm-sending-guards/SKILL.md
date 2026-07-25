@@ -91,6 +91,13 @@ tenantId, newsletterRow)` (`modules/newsletters/preflight.service.ts`), called i
      double-sending (`sendNewsletter` handles `status === 'paused'`).
    - `remainingSendAllowance` (hourly cap per plan + warm-up cap + monthly plan allowance)
      trims each batch; at 0 it enqueues a continuation job (+15 min) and frees the worker slot.
+     The same continuation mechanism (`deferRemainderOfSend`) also fires after 10 batches in one
+     execution with `run_at = now` — pool fairness, not rate limiting.
+   - **At-most-once batches (2026-07-24 decision):** the advanced keyset cursor is claimed into
+     the job payload BEFORE the SendGrid call, so a crash mid-batch skips that batch on retry
+     rather than re-sending up to 500 duplicates (duplicates feed the spam tripwires; gaps don't).
+     Flip side: metering stays post-send, so a crashed batch goes unmetered (caps permissive by
+     ≤1 batch) and `delivered_count` is best-effort — real numbers come from the webhook events.
    - Every delivered batch inserts a `newsletter_send_log` row — that table IS the meter; it is
      pruned (30 days) inside the per-tenant loop of `pruneNewsletterEvents`.
 3. **Tripwires, in the SendGrid webhook** — `applyEngagementTripwires` runs after each aggregate

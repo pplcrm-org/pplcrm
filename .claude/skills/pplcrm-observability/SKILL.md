@@ -48,17 +48,23 @@ update` has no probe flags).
 
 ## The internal half — ops watchdog + dead-man's switch
 
-`ops_watchdog` is a self-rescheduling cron job (every `FIVE_MINUTES_MS`), same pattern as the
-other crons: payload in `job-payloads.ts`, handler `lib/jobs/handlers/ops.handlers.ts`, dispatch
-in `job-handlers.ts`, `ensureOpsWatchdogJobScheduled()` in `worker.ts` `start()` + an entry in
-`rescheduleCronJobOnFailure`. Each cycle it:
+`ops_watchdog` is a self-rescheduling cron job (every 5 min), same pattern as the other crons:
+payload in `job-payloads.ts`, handler `lib/jobs/handlers/ops.handlers.ts`, dispatch in
+`job-handlers.ts`, and — like every recurring job — an entry in `CRON_JOBS`
+(`lib/jobs/cron-registry.ts`). That registry is the single source of truth for the recurring set:
+`worker.start()` seeds every entry (advisory-locked `seedCronJob` in `reschedule.ts`),
+`rescheduleCronJobOnFailure` re-seeds any permanently-failed entry at its registry interval (so a
+cron chain can't silently die), and handlers pull their `scheduleNextRun` interval from it.
+`cron-registry.spec.ts` hard-codes the expected type list as a drift tripwire. Each cycle it:
 
 1. Digests **new** `status='failed'` rows in `background_jobs` (grouped by `payload->>'type'`) and
    `webhook_events`, queue backlog (oldest runnable pending job > 15 min), and tenants newly
    `sending_paused_at` — watermarked via `details.last_checked_at`, so nothing is reported twice.
 2. Emails the digest to `OPS_ALERT_EMAIL` **directly** through `TransactionalEmailService` — never
    via `enqueueMail`, because the queue may be the sick component. Unset env = log-only.
-   Identical digests are suppressed for 6 h (fingerprint on failure _categories_, not counts).
+   Identical digests are suppressed for 6 h. The fingerprint is per failure _category_ plus an
+   order-of-magnitude bucket of its count (`job:<type>:m<log10>`), so a steady trickle stays
+   suppressed but a category crossing a decade (9→10, 99→100) re-alerts immediately.
 3. Upserts `ops_heartbeats` (`name='ops_watchdog'`) — the dead-man beat `GET /healthz/worker`
    reads. The beat lands only after a full claim→execute→complete cycle, which is exactly why the
    external probe catches a wedged worker loop, a lost LISTEN connection, or a poison-job jam

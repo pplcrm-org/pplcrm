@@ -1,7 +1,8 @@
 import type { Kysely } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
-import { DAY_MS, scheduleNextRun } from '../reschedule';
+import { scheduleNextRun } from '../reschedule';
 
 export async function handleZapierTrigger(payload: JobPayloadOf<'zapier_trigger'>): Promise<void> {
   const { ZapierService } = await import('../../../modules/zapier/zapier.service');
@@ -20,5 +21,5 @@ export async function handleCheckUsageLimits(
 export async function handleCheckAllUsageLimits(db: Kysely<Models>): Promise<void> {
   const { checkAllUsageLimits } = await import('../../../modules/billing/usage-limits');
   await checkAllUsageLimits(db);
-  await scheduleNextRun(db, 'check_all_usage_limits', DAY_MS);
+  await scheduleNextRun(db, 'check_all_usage_limits', CRON_JOBS.check_all_usage_limits);
 }

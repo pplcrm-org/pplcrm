@@ -5,7 +5,12 @@ vi.mock('../../../../env', () => ({
 }));
 // The drip handler self-reschedules through the real background_jobs table; pin it shut so the
 // fake-db tests below never need to model that transaction.
-vi.mock('../reschedule', () => ({ TEN_MINUTES_MS: 10 * 60 * 1000, scheduleNextRun: vi.fn() }));
+// Partial mock: cron-registry.ts imports the interval constants from this module, so only the
+// scheduling side effect is stubbed — the real constants flow through.
+vi.mock('../reschedule', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../reschedule')>();
+  return { ...actual, scheduleNextRun: vi.fn() };
+});
 // The SLA-breach scan dynamically imports the controller to enroll through the normal
 // trigger path; stub it so the fake-db tests can assert the enrollment call.
 const triggerWorkflowSpy = vi.hoisted(() => vi.fn());
