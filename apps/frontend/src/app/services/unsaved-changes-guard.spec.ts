@@ -23,6 +23,7 @@ describe('unsavedChangesGuard', () => {
 });
 
 describe('injectUnsavedChanges', () => {
+  let chooseMock: ReturnType<typeof vi.fn>;
   let confirmMock: ReturnType<typeof vi.fn>;
   // Signal-backed like the real per-field dirty() — the guard's computed() only
   // recomputes when a tracked signal changes, so a plain Set would go stale.
@@ -47,8 +48,9 @@ describe('injectUnsavedChanges', () => {
   beforeEach(() => {
     dirtySig = signal<ReadonlySet<string>>(new Set());
     confirmMock = vi.fn().mockResolvedValue(false);
+    chooseMock = vi.fn().mockResolvedValue(null);
     TestBed.configureTestingModule({
-      providers: [{ provide: ConfirmDialogService, useValue: { confirm: confirmMock } }],
+      providers: [{ provide: ConfirmDialogService, useValue: { confirm: confirmMock, choose: chooseMock } }],
     });
     handle = buildHandle({ firstName: 'A', last_name: 'B', zipCode: '90210' });
   });
@@ -128,6 +130,65 @@ describe('injectUnsavedChanges', () => {
       confirmMock.mockResolvedValue(true);
 
       await expect(handle.confirmDiscardIfDirty('this record')).resolves.toBe(true);
+    });
+  });
+
+  describe('confirmDiscardIfDirty with a save handler', () => {
+    it('saves nothing and asks nothing when the form is clean', async () => {
+      const save = vi.fn().mockResolvedValue(true);
+
+      await expect(handle.confirmDiscardIfDirty('this person', save)).resolves.toBe(true);
+
+      expect(chooseMock).not.toHaveBeenCalled();
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it('offers Save changes, Discard changes and Keep editing', async () => {
+      markDirty('firstName', 'zipCode');
+
+      // choose() resolving null is "Keep editing" (cancel or backdrop) — stay put.
+      await expect(handle.confirmDiscardIfDirty('this person', vi.fn())).resolves.toBe(false);
+
+      expect(confirmMock).not.toHaveBeenCalled();
+      expect(chooseMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Leave without saving?',
+          message: 'Your changes to this person (first name and zip code) are not saved yet.',
+          cancelText: 'Keep editing',
+          choices: [
+            { label: 'Save changes', value: 'save', variant: 'info' },
+            { label: 'Discard changes', value: 'discard', variant: 'warning' },
+          ],
+        }),
+      );
+    });
+
+    it('saves and then leaves when the user picks Save changes', async () => {
+      markDirty('firstName');
+      chooseMock.mockResolvedValue('save');
+      const save = vi.fn().mockResolvedValue(true);
+
+      await expect(handle.confirmDiscardIfDirty('this person', save)).resolves.toBe(true);
+
+      expect(save).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the user on the form when the save fails', async () => {
+      markDirty('firstName');
+      chooseMock.mockResolvedValue('save');
+      const save = vi.fn().mockResolvedValue(false);
+
+      await expect(handle.confirmDiscardIfDirty('this person', save)).resolves.toBe(false);
+    });
+
+    it('leaves without saving when the user picks Discard changes', async () => {
+      markDirty('firstName');
+      chooseMock.mockResolvedValue('discard');
+      const save = vi.fn();
+
+      await expect(handle.confirmDiscardIfDirty('this person', save)).resolves.toBe(true);
+
+      expect(save).not.toHaveBeenCalled();
     });
   });
 });

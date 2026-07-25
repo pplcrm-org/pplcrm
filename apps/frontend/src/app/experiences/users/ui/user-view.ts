@@ -301,15 +301,16 @@ export class UserViewComponent {
 
   /** Route-level unsaved-changes guard (the edit form lives on this page now). */
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.displayName() || 'this user');
+    // save() never navigates on this page, so the guard can call it as-is.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.displayName() || 'this user', () => this.save());
   }
 
-  protected async save(event?: Event) {
+  protected async save(event?: Event): Promise<boolean> {
     event?.preventDefault();
 
     this.form().markAsTouched();
     if (this.form().invalid() || !this.id()) {
-      return;
+      return false;
     }
 
     this.saving.set(true);
@@ -319,10 +320,12 @@ export class UserViewComponent {
       this.alerts.showSuccess('User updated');
       this.users.triggerRefresh();
       await this.load();
+      return true;
     } catch (err) {
       const message = getUserErrorMessage(err, 'Unable to update user');
       this.error.set(message);
       this.alerts.showError(message);
+      return false;
     } finally {
       this.saving.set(false);
     }

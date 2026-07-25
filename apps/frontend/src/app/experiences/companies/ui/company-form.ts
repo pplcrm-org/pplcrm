@@ -248,81 +248,54 @@ export class CompanyForm implements OnInit {
   }
 
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.company()?.name || 'this company');
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.company()?.name || 'this company', () =>
+      this.save(undefined, true),
+    );
   }
 
-  protected save(done?: (() => void) | Event) {
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
     if (done instanceof Event) {
       done.preventDefault();
     }
-    if (this.saving()) return;
+    if (this.saving()) return false;
     const raw = this.payload();
-    if (this.id()) {
-      this.saving.set(true);
-      const end = this._loading.begin();
-      this.companiesSvc
-        .update(this.id()!, raw)
-        .then(() => {
-          this.companiesSvc.triggerRefresh();
-          this.alertSvc.showSuccess('Company updated successfully');
-          // Mark the form pristine so the deactivate guard doesn't prompt
-          // "Leave without saving?" on the post-save navigation.
-          this.form().reset();
-          if (typeof done === 'function') {
-            done();
-          } else {
-            void this.router.navigate(['/companies', this.id()]);
-          }
-        })
-        .catch((err: any) => {
-          const message =
-            err instanceof Error && err.message
-              ? err.message
-              : isRecord(err) &&
-                  isRecord(err['data']) &&
-                  typeof err['data']['message'] === 'string' &&
-                  err['data']['message']
-                ? err['data']['message']
-                : 'Unable to save company';
-          this.alertSvc.showError(message);
-        })
-        .finally(() => {
-          end();
-          this.saving.set(false);
-        });
-    } else {
-      this.saving.set(true);
-      const end = this._loading.begin();
-      this.companiesSvc
-        .add(raw)
-        .then(() => {
-          this.companiesSvc.triggerRefresh();
-          this.alertSvc.showSuccess('Company added successfully');
-          // Mark the form pristine so the deactivate guard doesn't prompt
-          // "Leave without saving?" on the post-save navigation.
-          this.form().reset();
-          if (typeof done === 'function') {
-            done();
-          } else {
-            void this.router.navigate(['/companies']);
-          }
-        })
-        .catch((err: any) => {
-          const message =
-            err instanceof Error && err.message
-              ? err.message
-              : isRecord(err) &&
-                  isRecord(err['data']) &&
-                  typeof err['data']['message'] === 'string' &&
-                  err['data']['message']
-                ? err['data']['message']
-                : 'Unable to save company';
-          this.alertSvc.showError(message);
-        })
-        .finally(() => {
-          end();
-          this.saving.set(false);
-        });
+    const editing = this.id();
+
+    this.saving.set(true);
+    const end = this._loading.begin();
+    try {
+      if (editing) {
+        await this.companiesSvc.update(editing, raw);
+      } else {
+        await this.companiesSvc.add(raw);
+      }
+      this.companiesSvc.triggerRefresh();
+      this.alertSvc.showSuccess(editing ? 'Company updated successfully' : 'Company added successfully');
+      // Mark the form pristine so the deactivate guard doesn't prompt
+      // "Leave without saving?" on the post-save navigation.
+      this.form().reset();
+      if (typeof done === 'function') {
+        done();
+      } else if (!stayPut) {
+        await this.router.navigate(editing ? ['/companies', editing] : ['/companies']);
+      }
+      return true;
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : 'Unable to save company';
+      this.alertSvc.showError(message);
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
     }
   }
 }

@@ -346,11 +346,14 @@ export class PersonForm implements OnInit {
   }
 
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.formName() || 'this person');
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.formName() || 'this person', () =>
+      this.save(undefined, true),
+    );
   }
 
-  public save(done?: () => void) {
-    if (this.saving()) return;
+  public async save(done?: () => void, stayPut = false): Promise<boolean> {
+    if (this.saving()) return false;
     this.form().markAsTouched();
     if (this.form().invalid()) {
       // §4: Save never disables — instead of blocking, surface the errors and
@@ -359,7 +362,7 @@ export class PersonForm implements OnInit {
         const el = this.host.nativeElement.querySelector<HTMLElement>('.input-error input, [aria-invalid="true"]');
         el?.focus();
       });
-      return;
+      return false;
     }
     const raw = this.payload();
     const data = {
@@ -368,13 +371,13 @@ export class PersonForm implements OnInit {
       assigned_to: raw.assigned_to || null,
       preferred_contact: raw.preferred_contact || null,
     } as UpdatePersonsType;
-    return this.id() ? this.update(data, done) : this.add(data, done);
+    return this.id() ? this.update(data, done) : this.add(data, done, stayPut);
   }
 
   protected async applyEdit(input: { key: string; value: string; changed: boolean }) {
     if (input.changed) {
       const row = { [input.key]: input.value };
-      this.update(row);
+      await this.update(row);
     }
   }
 
@@ -560,7 +563,7 @@ export class PersonForm implements OnInit {
     }
   }
 
-  private add(data: UpdatePersonsType, done?: () => void) {
+  private async add(data: UpdatePersonsType, done?: () => void, stayPut = false): Promise<boolean> {
     // Include any household selected via the drawer before saving
     const pendingHousehold = this.pendingHouseholdId();
     if (pendingHousehold) {
@@ -592,37 +595,38 @@ export class PersonForm implements OnInit {
     this.emailError.set(null);
     this.saving.set(true);
     const end = this._loading.begin();
-    this.personsSvc
-      .add(data, { context: { skipErrorHandler: true } })
-      .then((created: unknown) => {
-        this.alertSvc.showSuccess(`Added ${this.formName() || 'person'}.`);
-        this.personsSvc.triggerRefresh();
-        void this.applyStanding(created, standing);
-        if (done) {
-          done();
-          this.pendingHouseholdId.set(null);
-          this.tags.set([]);
-          this.issues.set([]);
-          this.draftSupport.set('');
-          this.draftVoting.set('');
-          this.draftSubscribe.set(false);
-          this.draftDnc.set(false);
-          this.draftVolunteer.set('');
-          this.draftStaff.set('');
-          this.form().reset();
-        }
-      })
-      .catch((err: unknown) => {
-        if (this.isDuplicateEmailError(err)) {
-          this.emailError.set('This email address is already used by another person.');
-        } else {
-          this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
-        }
-      })
-      .finally(() => {
-        end();
-        this.saving.set(false);
-      });
+    try {
+      const created: unknown = await this.personsSvc.add(data, { context: { skipErrorHandler: true } });
+      this.alertSvc.showSuccess(`Added ${this.formName() || 'person'}.`);
+      this.personsSvc.triggerRefresh();
+      void this.applyStanding(created, standing);
+      // `stayPut` is the leave guard saving on its way out: the person is stored, so clear the
+      // drafts exactly as the Save button does — it just doesn't hand control back to a done().
+      if (done || stayPut) {
+        done?.();
+        this.pendingHouseholdId.set(null);
+        this.tags.set([]);
+        this.issues.set([]);
+        this.draftSupport.set('');
+        this.draftVoting.set('');
+        this.draftSubscribe.set(false);
+        this.draftDnc.set(false);
+        this.draftVolunteer.set('');
+        this.draftStaff.set('');
+        this.form().reset();
+      }
+      return true;
+    } catch (err: unknown) {
+      if (this.isDuplicateEmailError(err)) {
+        this.emailError.set('This email address is already used by another person.');
+      } else {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
+      }
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
+    }
   }
 
   /**
@@ -791,9 +795,9 @@ export class PersonForm implements OnInit {
     return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
   }
 
-  private update(data: Partial<UpdatePersonsType>, done?: () => void) {
+  private async update(data: Partial<UpdatePersonsType>, done?: () => void): Promise<boolean> {
     const id = this.id();
-    if (!id) return;
+    if (!id) return false;
 
     const changed = this.changedFieldLabels();
     const savedName = this.formName() || 'person';
@@ -801,29 +805,26 @@ export class PersonForm implements OnInit {
     this.emailError.set(null);
     this.saving.set(true);
     const end = this._loading.begin();
-    this.personsSvc
-      .update(id, data, { context: { skipErrorHandler: true } })
-      .then(() => {
-        // Name the fields that changed (§4), e.g. "Saved Amira Hassan — email and mobile phone updated".
-        const detail = changed.length ? `: ${this.joinWithAnd(changed)} updated` : '';
-        this.alertSvc.showSuccess(`Saved ${savedName}${detail}.`);
-        this.form().reset();
-        this.personsSvc.triggerRefresh();
-        if (done) {
-          done();
-        }
-      })
-      .catch((err: unknown) => {
-        if (this.isDuplicateEmailError(err)) {
-          this.emailError.set('This email address is already used by another person.');
-        } else {
-          this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
-        }
-      })
-      .finally(() => {
-        end();
-        this.saving.set(false);
-      });
+    try {
+      await this.personsSvc.update(id, data, { context: { skipErrorHandler: true } });
+      // Name the fields that changed (§4), e.g. "Saved Amira Hassan — email and mobile phone updated".
+      const detail = changed.length ? `: ${this.joinWithAnd(changed)} updated` : '';
+      this.alertSvc.showSuccess(`Saved ${savedName}${detail}.`);
+      this.form().reset();
+      this.personsSvc.triggerRefresh();
+      done?.();
+      return true;
+    } catch (err: unknown) {
+      if (this.isDuplicateEmailError(err)) {
+        this.emailError.set('This email address is already used by another person.');
+      } else {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the person. Please try again.'));
+      }
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
+    }
   }
 
   private async updateTags() {

@@ -190,7 +190,7 @@ export class HouseholdForm implements OnInit {
   protected async applyEdit(input: { key: string; value: string; changed: boolean }) {
     if (input.changed) {
       const row = { [input.key]: input.value };
-      this.update(row);
+      await this.update(row);
     }
   }
 
@@ -257,11 +257,14 @@ export class HouseholdForm implements OnInit {
   }
 
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.addressString() || 'this household');
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.addressString() || 'this household', () =>
+      this.save(undefined, true),
+    );
   }
 
-  protected save(done?: () => void) {
-    if (this.saving()) return;
+  protected async save(done?: () => void, stayPut = false): Promise<boolean> {
+    if (this.saving()) return false;
     const raw = this.payload();
     const data: UpdateHouseholdsType = {
       home_phone: raw.home_phone,
@@ -282,24 +285,24 @@ export class HouseholdForm implements OnInit {
     if (!this.id()) {
       this.saving.set(true);
       const end = this._loading.begin();
-      return this.householdsSvc
-        .add(data)
-        .then(async (result) => {
-          this.alertSvc.showSuccess('Household added successfully.');
-          this.householdsSvc.triggerRefresh();
-          // Mark the form pristine so the deactivate guard doesn't prompt
-          // "Leave without saving?" on the post-save navigation.
-          this.form().reset();
-          done?.();
-          await this.router.navigate(['/households', result.id]);
-        })
-        .catch((err: unknown) => {
-          this.alertSvc.showError(getUserErrorMessage(err, 'Could not add the household. Please try again.'));
-        })
-        .finally(() => {
-          end();
-          this.saving.set(false);
-        });
+      try {
+        const result = await this.householdsSvc.add(data);
+        this.alertSvc.showSuccess('Household added successfully.');
+        this.householdsSvc.triggerRefresh();
+        // Mark the form pristine so the deactivate guard doesn't prompt
+        // "Leave without saving?" on the post-save navigation.
+        this.form().reset();
+        done?.();
+        // stayPut: the leave guard saved on the way out — the router is already navigating.
+        if (!stayPut) await this.router.navigate(['/households', result.id]);
+        return true;
+      } catch (err: unknown) {
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not add the household. Please try again.'));
+        return false;
+      } finally {
+        end();
+        this.saving.set(false);
+      }
     }
     return this.update(data, done);
   }
@@ -400,31 +403,28 @@ export class HouseholdForm implements OnInit {
     this.form().reset();
   }
 
-  private update(data: Partial<UpdateHouseholdsType>, done?: () => void) {
+  private async update(data: Partial<UpdateHouseholdsType>, done?: () => void): Promise<boolean> {
     const id = this.id();
     if (!id) {
-      return;
+      return false;
     }
 
     this.saving.set(true);
     const end = this._loading.begin();
-    void this.householdsSvc
-      .update(id, data)
-      .then(() => {
-        this.alertSvc.showSuccess('Household updated successfully.');
-        this.form().reset();
-        this.householdsSvc.triggerRefresh();
-        if (done) {
-          done();
-        }
-      })
-      .catch((err: unknown) => {
-        this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the household. Please try again.'));
-      })
-      .finally(() => {
-        end();
-        this.saving.set(false);
-      });
+    try {
+      await this.householdsSvc.update(id, data);
+      this.alertSvc.showSuccess('Household updated successfully.');
+      this.form().reset();
+      this.householdsSvc.triggerRefresh();
+      done?.();
+      return true;
+    } catch (err: unknown) {
+      this.alertSvc.showError(getUserErrorMessage(err, 'Could not save the household. Please try again.'));
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
+    }
   }
 }
 

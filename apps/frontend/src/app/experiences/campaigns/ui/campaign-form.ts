@@ -75,14 +75,17 @@ export class CampaignFormComponent implements OnInit {
   }
 
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detailName() || 'this campaign');
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.detailName() || 'this campaign', () =>
+      this.save(undefined, true),
+    );
   }
 
-  protected async save(done?: (() => void) | Event) {
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
     if (done instanceof Event) done.preventDefault();
 
     this.form().markAsTouched();
-    if (this.form().invalid()) return;
+    if (this.form().invalid()) return false;
 
     const raw = this.payload();
     this.saving.set(true);
@@ -105,7 +108,7 @@ export class CampaignFormComponent implements OnInit {
         this.form().reset();
         this.alerts.showSuccess('Campaign created');
         if (typeof done === 'function') done();
-        else await this.router.navigate(['/workspace/campaigns']);
+        else if (!stayPut) await this.router.navigate(['/workspace/campaigns']);
       } else {
         const payload: UpdateCampaignType = {
           name: raw.name.trim() || undefined,
@@ -122,12 +125,14 @@ export class CampaignFormComponent implements OnInit {
         this.form().reset();
         this.alerts.showSuccess('Campaign updated');
         if (typeof done === 'function') done();
-        else await this.router.navigate(['/campaigns', this.id()]);
+        else if (!stayPut) await this.router.navigate(['/campaigns', this.id()]);
       }
+      return true;
     } catch (err) {
       const message = getUserErrorMessage(err, 'Unable to save the campaign');
       this.error.set(message);
       this.alerts.showError(message);
+      return false;
     } finally {
       this.saving.set(false);
     }

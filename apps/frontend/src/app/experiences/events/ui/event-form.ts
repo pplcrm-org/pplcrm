@@ -293,22 +293,25 @@ export class EventFormComponent implements OnInit {
   }
 
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this event');
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this event', () =>
+      this.save(undefined, true),
+    );
   }
 
-  protected async save(done?: (() => void) | Event) {
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
     if (done instanceof Event) done.preventDefault();
     this.form().markAsTouched();
-    if (this.form().invalid()) return;
+    if (this.form().invalid()) return false;
 
     if (this.endBeforeStartError()) {
       this.alerts.showError('The event cannot end before it starts, please check the dates and times again.');
-      return;
+      return false;
     }
 
     if (this.slugUnique() === false) {
       this.alerts.showError('This URL slug is already in use. Please choose a different one.');
-      return;
+      return false;
     }
 
     this.saving.set(true);
@@ -336,20 +339,25 @@ export class EventFormComponent implements OnInit {
         const res = await this.eventsFrontendSvc.add(data as AddEventType);
         this.eventsFrontendSvc.triggerRefresh();
         this.alerts.showSuccess('Event created successfully');
-        await this.router.navigate(['/events/pages', (res as any).id]);
+        this.form().reset();
+        if (!stayPut) await this.router.navigate(['/events/pages', (res as any).id]);
       } else {
         await this.eventsFrontendSvc.update(this.id()!, data as UpdateEventType);
         this.eventsFrontendSvc.triggerRefresh();
         this.alerts.showSuccess('Event updated successfully');
+        // Pristine again, so the post-save navigation doesn't hit the leave guard.
+        this.form().reset();
         if (typeof done === 'function') {
           done();
-        } else {
+        } else if (!stayPut) {
           await this.router.navigate(['/events/pages', this.id()]);
         }
       }
+      return true;
     } catch (err) {
       this.error.set(err instanceof Error && err.message ? err.message : 'Failed to save event');
       this.alerts.showError(this.error()!);
+      return false;
     } finally {
       this.saving.set(false);
     }

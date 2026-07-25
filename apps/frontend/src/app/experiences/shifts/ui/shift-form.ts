@@ -359,24 +359,27 @@ export class ShiftFormComponent implements OnInit {
   }
 
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this volunteer event');
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this volunteer event', () =>
+      this.save(undefined, true),
+    );
   }
 
-  protected async save(done?: (() => void) | Event) {
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
     if (done instanceof Event) {
       done.preventDefault();
     }
     this.form().markAsTouched();
-    if (this.form().invalid()) return;
+    if (this.form().invalid()) return false;
 
     if (this.endBeforeStartError()) {
       this.alerts.showError('The event cannot end before it starts, please check the dates and times again.');
-      return;
+      return false;
     }
 
     if (this.slugUnique() === false) {
       this.alerts.showError('This URL slug is already in use. Please choose a different one.');
-      return;
+      return false;
     }
 
     this.saving.set(true);
@@ -405,20 +408,25 @@ export class ShiftFormComponent implements OnInit {
         const res = await this.volunteerEventsSvc.add(data as AddVolunteerEventType);
         this.volunteerEventsSvc.triggerRefresh();
         this.alerts.showSuccess('Event created successfully');
-        await this.router.navigate(['/events/shifts', res.id]);
+        this.form().reset();
+        if (!stayPut) await this.router.navigate(['/events/shifts', res.id]);
       } else {
         await this.volunteerEventsSvc.update(this.id()!, data as UpdateVolunteerEventType);
         this.volunteerEventsSvc.triggerRefresh();
         this.alerts.showSuccess('Event updated successfully');
+        // Pristine again, so the post-save navigation doesn't hit the leave guard.
+        this.form().reset();
         if (typeof done === 'function') {
           done();
-        } else {
+        } else if (!stayPut) {
           await this.router.navigate(['/events/shifts', this.id()]);
         }
       }
+      return true;
     } catch (err) {
       this.error.set(err instanceof Error && err.message ? err.message : 'Failed to save event');
       this.alerts.showError(this.error()!);
+      return false;
     } finally {
       this.saving.set(false);
     }
