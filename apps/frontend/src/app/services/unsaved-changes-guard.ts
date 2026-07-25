@@ -4,11 +4,20 @@ import type { CanDeactivateFn } from '@angular/router';
 import type { FieldTree } from '@angular/forms/signals';
 import { ConfirmDialogService } from './shared-dialog.service';
 
+/**
+ * Writes the form's pending edits and resolves true only if the write landed. It must NOT navigate:
+ * the router is already mid-navigation when the leave prompt runs (forms pass `stayPut`/no `done`).
+ */
+export type SaveOnLeave = () => Promise<boolean>;
+
 export interface UnsavedChangesHandle {
   dirtyCount: Signal<number>;
   headerLine: Signal<string | null>;
-  confirmDiscardIfDirty(recordName: string): Promise<boolean>;
+  confirmDiscardIfDirty(recordName: string, save?: SaveOnLeave): Promise<boolean>;
 }
+
+/** The two ways out of the leave prompt; cancelling it (Keep editing) resolves to null instead. */
+type LeaveChoice = 'save' | 'discard';
 
 interface Deactivatable {
   canDeactivate?(): boolean | Promise<boolean>;
@@ -42,17 +51,37 @@ export function injectUnsavedChanges<TModel extends Record<string, unknown>>(
   return {
     dirtyCount,
     headerLine,
-    confirmDiscardIfDirty(recordName: string): Promise<boolean> {
-      if (dirtyCount() === 0) return Promise.resolve(true);
+    async confirmDiscardIfDirty(recordName: string, save?: SaveOnLeave): Promise<boolean> {
+      if (dirtyCount() === 0) return true;
       const fieldList = joinWithAnd(dirtyKeys().map(humanizeFieldKey));
-      return dialogs.confirm({
+
+      // Without a save handler the page can only offer the two lossy ways out.
+      if (!save) {
+        return dialogs.confirm({
+          title: 'Leave without saving?',
+          message: `Your changes to ${recordName} (${fieldList}) will be lost.`,
+          variant: 'warning',
+          confirmText: 'Discard changes',
+          cancelText: 'Keep editing',
+          emphasizeCancel: true,
+        });
+      }
+
+      // Offer the way out of the trap, not just the two ways to lose it: saving is the
+      // emphasized default, discarding is the de-emphasized escape.
+      const choice = await dialogs.choose<LeaveChoice>({
         title: 'Leave without saving?',
-        message: `Your changes to ${recordName} (${fieldList}) will be lost.`,
+        message: `Your changes to ${recordName} (${fieldList}) are not saved yet.`,
         variant: 'warning',
-        confirmText: 'Discard changes',
+        choices: [
+          { label: 'Save changes', value: 'save', variant: 'info' },
+          { label: 'Discard changes', value: 'discard', variant: 'warning' },
+        ],
         cancelText: 'Keep editing',
-        emphasizeCancel: true,
       });
+      // A failed save keeps the user on the form with their edits intact (the toast says why).
+      if (choice === 'save') return save();
+      return choice === 'discard';
     },
   };
 }

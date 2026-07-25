@@ -232,17 +232,20 @@ export class TeamFormComponent implements OnInit {
   }
 
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this team');
+    // stayPut: the router is already navigating away, so the guard-time save must not navigate.
+    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this team', () =>
+      this.save(undefined, true),
+    );
   }
 
-  protected async save(done?: (() => void) | Event) {
+  protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
     if (done instanceof Event) {
       done.preventDefault();
     }
 
     this.form().markAsTouched();
     if (this.form().invalid()) {
-      return;
+      return false;
     }
 
     const raw = this.payload();
@@ -265,7 +268,7 @@ export class TeamFormComponent implements OnInit {
         this.teams.triggerRefresh();
         if (typeof done === 'function') {
           done();
-        } else {
+        } else if (!stayPut) {
           await this.router.navigate(['/teams']);
         }
       } else if (this.id()) {
@@ -285,10 +288,10 @@ export class TeamFormComponent implements OnInit {
         this.alerts.showSuccess('Team updated');
         if (typeof done === 'function') {
           done();
-        } else {
+        } else if (!stayPut) {
           await this.router.navigate(['/teams', this.id()]);
         }
-        return;
+        return true;
       } else {
         throw new Error('Missing team identifier');
       }
@@ -296,6 +299,7 @@ export class TeamFormComponent implements OnInit {
       this.setForm(result);
       this.form().reset();
       this.alerts.showSuccess(this.isNew() ? 'Team created' : 'Team updated');
+      return true;
     } catch (err) {
       const message =
         err instanceof Error && err.message
@@ -308,6 +312,7 @@ export class TeamFormComponent implements OnInit {
             : 'Unable to save team';
       this.error.set(message);
       this.alerts.showError(message);
+      return false;
     } finally {
       this.saving.set(false);
     }
