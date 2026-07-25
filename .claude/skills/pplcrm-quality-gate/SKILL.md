@@ -39,8 +39,37 @@ If that exits 0, the pre-commit hook's `*.{ts,html}` step will pass. This is the
 Heads-up on **pre-existing failures** — check whether the flagged lines/tests are yours before burning time:
 
 - ~~`nx lint backend` fails on 2 `donation_pledges` `no-unscoped-db-query` errors~~ — fixed; `nx lint backend` passes clean as of 2026-07-21.
-- ~~`nx test backend` has 18 pre-existing failing tests (web-forms/events/volunteer-events public-submission specs)~~ — fixed; those all pass as of 2026-07-24. `job-claim.spec.ts` can still fail in the full parallel run but passes in isolation (test-parallelism flake). Deploy CI has **no test step**, which is how broken specs land on main.
-- `nx test frontend` has **2 pre-existing failing tests** (verified failing at HEAD `42aac912` on 2026-07-24, files untouched since): `services/api/user-message.spec.ts` ("shows a TRPCClientError message as-is" — a directly-constructed `TRPCClientError` has `data == null`, so `isServerUnreachable` classifies it as an outage and returns the unreachable message; spec predates the outage-message commit `303d096f`) and `layout/sidebar/sidebar.spec.ts` ("should honor collapse state…" — stale since the mobile-nav rework `fa816a4e`).
+- ~~`nx test backend` has 18 pre-existing failing tests (web-forms/events/volunteer-events public-submission specs)~~ — fixed; those all pass as of 2026-07-24. `job-claim.spec.ts` can still fail in the full parallel run but passes in isolation (test-parallelism flake).
+- ~~`nx test frontend` has **2 pre-existing failing tests** (`services/api/user-message.spec.ts`, `layout/sidebar/sidebar.spec.ts`)~~ — both pass as of 2026-07-25; `nx run-many -t test -p frontend backend common uxcommon` is fully green (1188 tests).
+- ~~Deploy CI has **no test step**, which is how broken specs land on main.~~ — fixed 2026-07-25, see below.
+
+## CI runs this gate now (2026-07-25)
+
+`.github/workflows/verify.yml` runs **lint / test / build / e2e-smoke** on every PR, and `deploy.yml`
+declares `needs: verify`, so a red gate blocks the production deploy. Before this, `deploy.yml` went
+from `npm ci` straight to a rollout with no verification at all — which is exactly how the
+`frontend-e2e` suite reached **45/55 failing** without anyone noticing.
+
+Things worth knowing about that workflow:
+
+- **The `lint` job runs both lint paths**, for the disjoint-rule-set reason this whole skill is
+  about. The root-config step is scoped to **changed files** (same as the hook) because the repo has
+  13 pre-existing root-config errors in 6 files — `@angular-eslint/no-input-rename` in
+  `sticky-pin.directive.ts`, `no-output-native` in the two datagrid filters + `side-drawer` +
+  `tagitem`, and `no-undef` in `apps/website/tools/social/render.mjs`. Clearing those means renaming
+  public component inputs/outputs and updating every template that binds them. Once they're fixed,
+  that step can go repo-wide.
+- **The `test` job provisions a real Postgres** and reuses `apps/backend/scripts/setup-test-db.sh`,
+  so it follows automatically if the role model changes. It also sets `ALLOW_MOCK_PAYMENTS` and
+  `ALLOW_MOCK_DOMAIN_VERIFICATION` — both fail closed, and `settings/controller.spec.ts` asserts
+  against the latter.
+- **The `e2e` job gates on `@smoke`-tagged tests only.** Only `signin.spec.ts` is repaired and
+  tagged; `persons-grid`, `email-client`, `volunteer-events` and `web-forms` are still written
+  against pre-two-step-signin UI (**33 failing**) and stay out of the gate until repaired. Tag a test
+  `@smoke` once it's verified green and covers a journey worth blocking a deploy for.
+- **`prettier --check .` is deliberately NOT a CI gate.** `deploy/GO-LIVE-CHECKLIST.md` is
+  non-idempotent under prettier (it oscillates between two indent levels on a deeply-nested code
+  fence), so the check can never go green. The hook formats changed files, which is enough.
 - Stray `vitest` worker processes from an interrupted run can hold test-DB connections and make subsequent backend runs hang until timeout — `pkill -f vitest` before rerunning.
 
 The other hook step is formatting only:

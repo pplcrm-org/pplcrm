@@ -59,6 +59,33 @@ The lint rule still matters: RLS is a backstop, not a license to drop `.where('t
 scoping in app code (clearer intent, better plans, and it's the _only_ protection on the REST/worker
 paths). The rest of this doc is about that lint rule.
 
+## The third layer: the API-level IDOR probe
+
+`apps/backend/src/app/lib/tenant-isolation-api.spec.ts` (added 2026-07-25) is the test that covers
+what neither the lint rule nor the RLS spec does — **the surface an attacker actually reaches.** It
+builds a fully authenticated tRPC caller for tenant A (real `authusers` row + real active `sessions`
+row keyed by `hashToken(plaintext)`) and calls real procedures with tenant B's record IDs, so it
+exercises `isAuthed` → router → controller `.where('tenant_id', …)` → RLS in one path.
+
+Know the difference before adding to either file:
+
+| File                           | Proves                                                             |
+| ------------------------------ | ------------------------------------------------------------------ |
+| `rls-tenant-isolation.spec.ts` | the RLS **mechanism** works when bound via `runWithTenant`         |
+| `tenant-isolation-api.spec.ts` | the **API** refuses cross-tenant reads, writes and session replays |
+
+Two conventions to preserve if you extend it:
+
+- **Keep the control test.** It asserts tenant A _can_ read its own person. Without it, every denial
+  below could pass simply because the caller is broken — a probe that denies everything proves
+  nothing.
+- **Assert on data, not error codes.** Returning `undefined` and throwing `NOT_FOUND` are both
+  secure; returning B's row is the breach. Pinning a `TRPCError` code makes the spec brittle against
+  a legitimate refactor without making it a stronger security test.
+
+If you change tenant scoping anywhere, the honest check is whether this probe would still go red —
+it was mutation-tested (simulating a leak makes it fail), so a green run here is worth something.
+
 ## Where it lives and where it actually runs
 
 - Rule source: `tools/eslint-rules/rules/no-unscoped-db-query.cjs`
