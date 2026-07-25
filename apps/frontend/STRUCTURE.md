@@ -2487,6 +2487,42 @@ export class AppComponent {
 }
 ```
 
+## File: apps/companion/src/environments/environment.prod.ts
+```typescript
+export const environment = {
+  production: true,
+  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
+};
+```
+
+## File: apps/companion/src/environments/environment.ts
+```typescript
+export const environment = {
+  production: false,
+  /**
+   * The companion app always calls the backend with relative `/api` paths:
+   * the dev server proxies them to :3000 (proxy.conf.json), and production
+   * serves the app path-routed on the same domain as the API.
+   */
+  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
+};
+```
+
+## File: apps/companion/src/import-meta.d.ts
+```typescript
+interface ImportMetaEnv {
+  // Named so it can be accessed with dot notation (import.meta.env.VITE_GOOGLE_MAPS_API_KEY) — the
+  // production build replaces that exact expression via esbuild `define` (project.json), and dot
+  // access is what `define` matches. The index signature below still covers any other VITE_* key.
+  readonly VITE_GOOGLE_MAPS_API_KEY: string;
+  readonly [key: string]: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+```
+
 ## File: apps/companion/src/index.html
 ```html
 <!doctype html>
@@ -2621,6 +2657,116 @@ module.exports = [
 module.exports = {
   plugins: [require('@tailwindcss/postcss')],
 };
+```
+
+## File: apps/companion/project.json
+```json
+{
+  "name": "companion",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "prefix": "pc",
+  "sourceRoot": "apps/companion/src",
+  "tags": [],
+  "targets": {
+    "build": {
+      "executor": "@angular/build:application",
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "production",
+      "options": {
+        "outputPath": "dist/apps/companion",
+        "index": "apps/companion/src/index.html",
+        "browser": "apps/companion/src/main.ts",
+        "tsConfig": "apps/companion/tsconfig.app.json",
+        "assets": [
+          "apps/companion/src/favicon.ico",
+          {
+            "glob": "**/*",
+            "input": "apps/frontend/src/assets/icons",
+            "output": "assets/icons"
+          }
+        ],
+        "styles": ["apps/companion/src/styles.css"],
+        "scripts": [],
+        "polyfills": ["@angular/localize/init"],
+        "define": {
+          "import.meta.env.VITE_GOOGLE_MAPS_API_KEY": "\"__PPLCRM_MAPS_KEY__\""
+        }
+      },
+      "configurations": {
+        "production": {
+          "optimization": {
+            "scripts": true,
+            "styles": {
+              "minify": true,
+              "inlineCritical": false
+            },
+            "fonts": {
+              "inline": false
+            }
+          },
+          "budgets": [
+            {
+              "type": "initial",
+              "maximumWarning": "1.5mb",
+              "maximumError": "2.5mb"
+            },
+            {
+              "type": "anyComponentStyle",
+              "maximumWarning": "2kb",
+              "maximumError": "4kb"
+            }
+          ],
+          "outputHashing": "all",
+          "fileReplacements": [
+            {
+              "replace": "apps/companion/src/environments/environment.ts",
+              "with": "apps/companion/src/environments/environment.prod.ts"
+            }
+          ]
+        },
+        "development": {
+          "optimization": false,
+          "extractLicenses": false,
+          "sourceMap": true
+        }
+      }
+    },
+    "serve": {
+      "executor": "@angular/build:dev-server",
+      "defaultConfiguration": "development",
+      "options": {
+        "buildTarget": "companion:build",
+        "port": 4300,
+        "proxyConfig": "apps/companion/proxy.conf.json"
+      },
+      "configurations": {
+        "production": {
+          "buildTarget": "companion:build:production"
+        },
+        "development": {
+          "buildTarget": "companion:build:development"
+        }
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "outputs": ["{workspaceRoot}/coverage/apps/companion"],
+      "options": {
+        "cwd": "apps/companion",
+        "command": "vitest run"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["apps/companion/**/*.ts", "apps/companion/**/*.html"]
+      }
+    }
+  }
+}
 ```
 
 ## File: apps/companion/proxy.conf.json
@@ -9102,6 +9248,251 @@ export class MergeSummaryComponent {
   sourceName = input<string>('');
   mergeDescription = input.required<string>();
   merge = output<void>();
+}
+```
+
+## File: apps/frontend/src/app/experiences/emails/services/store/email-actions.store.ts
+```typescript
+import { inject, signal, Service } from '@angular/core';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { getUserErrorMessage } from '@frontend/services/api/user-message';
+
+import { ComposePayload, DraftPayload } from '../../ui/email-compose/email-compose';
+import { EmailsService } from '../emails-service';
+import { EmailCacheStore } from './email-cache.store';
+import { EmailFoldersStore } from './email-folders.store';
+import { type EmailId, EmailStateStore } from './email-state.store';
+import { ALL_FOLDERS, EmailStatus } from '../../../../../../../../libs/common/src/lib/emails';
+import type { EmailDraftType, EmailType } from '../../../../../../../../libs/common/src/lib/models';
+
+@Service()
+export class EmailActionsStore {
+  public readonly sendingCount = signal(0);
+  private readonly alerts = inject(AlertService);
+  private readonly cache = inject(EmailCacheStore);
+  private readonly folders = inject(EmailFoldersStore);
+  private readonly state = inject(EmailStateStore);
+  private readonly svc = inject(EmailsService);
+
+  public async addComment(emailId: EmailId, authorId: string, commentText: string): Promise<any> {
+    const created = await this.svc.addComment(String(emailId), authorId, commentText);
+    this.cache.appendCommentToHeader(emailId, created);
+    return created;
+  }
+
+  public async assignEmailToUser(emailId: EmailId, userId: string | null, assigneeName?: string | null): Promise<void> {
+    const key = String(emailId);
+    await this.updateProperty(
+      key,
+      { assigned_to: userId ?? undefined },
+      () => this.svc.assign(key, userId, assigneeName),
+      {
+        // Do NOT force a folder reload: in a filtered virtual folder (Mine/Unassigned)
+        // the just-assigned email would drop out of the list, and email-list's
+        // auto-select effect would then yank the selection away — the user perceives
+        // the assignment "reverting to Noone". The optimistic patch already reflects
+        // the new owner; counts refresh so the sidebar updates. Folder membership
+        // reconciles naturally on the next visit to the folder.
+        refreshFolder: false,
+        refreshCounts: true,
+      },
+    );
+  }
+
+  public async deleteComment(emailId: EmailId, commentId: string | number): Promise<void> {
+    const key = String(emailId);
+    const prevHeader = this.cache.getEmailHeaderById(key)(); // snapshot before change
+
+    // Optimistic: remove from cache now
+    this.cache.removeCommentFromHeader(key, commentId);
+
+    try {
+      await this.svc.deleteComment(key, String(commentId));
+      // success: nothing else to do, UI is already updated
+    } catch (e) {
+      console.error('deleteComment failed; rolling back', e);
+      if (typeof prevHeader !== 'undefined') {
+        this.cache.replaceHeader(key, prevHeader);
+      } else {
+        // If we somehow had no header snapshot, refetch to get back to server truth
+        await this.svc
+          .getEmailWithHeaders(key)
+          .then((res: any) => {
+            this.cache.replaceHeader(key, res?.header ?? null);
+          })
+          .catch(() => {
+            /* ignore */
+          });
+      }
+      throw e;
+    }
+  }
+
+  public async deleteDraft(id: string): Promise<void> {
+    await this.svc.deleteDraft(id);
+    await this.folders.refreshFolderCounts();
+    if (this.folders.currentSelectedFolderId() === ALL_FOLDERS.DRAFTS) {
+      await this.folders.loadEmailsForFolder(ALL_FOLDERS.DRAFTS);
+    }
+  }
+
+  public async deleteEmail(emailId: EmailId): Promise<void> {
+    const key = String(emailId);
+    try {
+      await this.svc.delete(key);
+      this.state.removeEmail(key);
+
+      const currentFolderId = this.folders.currentSelectedFolderId();
+      if (currentFolderId) {
+        await this.folders.loadEmailsForFolder(currentFolderId);
+      }
+      await this.folders.refreshFolderCounts();
+    } catch (e) {
+      this.alerts.showError(getUserErrorMessage(e, 'Could not delete the email. Please try again.'));
+      throw e;
+    }
+  }
+
+  public getDraft(id: string): Promise<EmailDraftType> {
+    return this.svc.getDraft(id);
+  }
+
+  public async restoreFromTrash(emailId: EmailId): Promise<void> {
+    const key = String(emailId);
+    try {
+      await this.svc.restoreFromTrash([key]);
+      this.state.removeEmail(key); // Remove from current state as it's no longer in Trash
+      const currentFolderId = this.folders.currentSelectedFolderId();
+      if (currentFolderId) {
+        await this.folders.loadEmailsForFolder(currentFolderId);
+      }
+      await this.folders.refreshFolderCounts();
+    } catch (e) {
+      this.alerts.showError(getUserErrorMessage(e, 'Could not restore the email. Please try again.'));
+      throw e;
+    }
+  }
+
+  public async saveDraft(input: DraftPayload): Promise<{ id: string }> {
+    const saved = await this.svc.saveDraft(input);
+    const currentFolderId = this.folders.currentSelectedFolderId();
+    if (currentFolderId === ALL_FOLDERS.DRAFTS) {
+      await this.folders.loadEmailsForFolder(ALL_FOLDERS.DRAFTS);
+    } else {
+      await this.folders.refreshFolderCounts();
+    }
+    return saved as { id: string };
+  }
+
+  public async sendEmail(input: ComposePayload): Promise<EmailType> {
+    this.sendingCount.update((c) => c + 1);
+    try {
+      const created = await this.svc.sendEmail(input);
+
+      // Reload the current folder to show the new email in Outbox/Sent immediately.
+      const currentFolderId = this.folders.currentSelectedFolderId();
+      if (currentFolderId) {
+        await this.folders.loadEmailsForFolder(currentFolderId);
+      }
+      await this.folders.refreshFolderCounts();
+
+      // Trigger automatic background sync shortly after sending to give the dispatch time to process.
+      setTimeout(() => {
+        this.svc
+          .syncEmails()
+          .then(async () => {
+            const fid = this.folders.currentSelectedFolderId();
+            if (fid) {
+              await this.folders.loadEmailsForFolder(fid);
+            }
+            await this.folders.refreshFolderCounts();
+          })
+          .catch((err) => {
+            console.warn('Auto-sync after send failed:', err);
+          });
+      }, 4000);
+
+      // Optional: warm header cache (if your API returns header)
+      // this.cache.replaceHeader(String(created.id), created.header ?? null);
+
+      return created;
+    } catch (e) {
+      this.alerts.showError(getUserErrorMessage(e, 'Could not send the email. Please try again.'));
+      throw e;
+    } finally {
+      this.sendingCount.update((c) => c - 1);
+    }
+  }
+
+  public async toggleEmailFavoriteStatus(emailId: EmailId, isFavorite: boolean): Promise<void> {
+    const key = String(emailId);
+    const currentFolderId = this.folders.currentSelectedFolderId();
+    await this.updateProperty(key, { is_favourite: isFavorite }, () => this.svc.setFavourite(key, isFavorite), {
+      refreshFolder: currentFolderId === ALL_FOLDERS.FAVOURITES,
+      refreshCounts: true,
+    });
+  }
+
+  public async updateEmailStatus(emailId: EmailId, status: EmailStatus): Promise<void> {
+    const key = String(emailId);
+    await this.updateProperty(key, { status }, () => this.svc.setStatus(key, status), {
+      refreshFolder: true,
+      refreshCounts: true,
+    });
+  }
+
+  public async toggleEmailReadStatus(emailId: EmailId, isRead: boolean): Promise<void> {
+    const key = String(emailId);
+    await this.updateProperty(key, { is_read: isRead }, () => this.svc.setEmailReadStatus(key, isRead), {
+      refreshFolder: false,
+      refreshCounts: true,
+    });
+  }
+
+  public async moveToFolder(emailId: EmailId, folderId: string): Promise<void> {
+    const key = String(emailId);
+    try {
+      await this.svc.moveToFolder(key, folderId);
+      this.state.removeEmail(key);
+
+      const currentFolderId = this.folders.currentSelectedFolderId();
+      if (currentFolderId) {
+        await this.folders.loadEmailsForFolder(currentFolderId);
+      }
+      await this.folders.refreshFolderCounts();
+    } catch (e) {
+      this.alerts.showError(getUserErrorMessage(e, 'Could not move the email. Please try again.'));
+      throw e;
+    }
+  }
+
+  private async updateProperty(
+    emailKey: string,
+    patch: Partial<EmailType>,
+    serverCall: () => Promise<unknown>,
+    opts?: { refreshFolder?: boolean; refreshCounts?: boolean },
+  ): Promise<void> {
+    const prev = this.state.patchEmail(emailKey, patch);
+    if (!prev) {
+      console.warn(`Email ${emailKey} not found in store`);
+      return;
+    }
+
+    try {
+      await serverCall();
+
+      const currentFolderId = this.folders.currentSelectedFolderId();
+      if (opts?.refreshFolder && currentFolderId) {
+        await this.folders.loadEmailsForFolder(currentFolderId);
+      }
+      if (opts?.refreshCounts) {
+        await this.folders.refreshFolderCounts();
+      }
+    } catch (e) {
+      this.state.replaceEmail(emailKey, prev);
+      throw e;
+    }
+  }
 }
 ```
 
@@ -27682,6 +28073,282 @@ export class KeyboardShortcutsHelp {
 }
 ```
 
+## File: apps/frontend/src/app/layout/sidebar/sidebar-service.ts
+```typescript
+import { signal, Service } from '@angular/core';
+import { ISidebarItem, SidebarItems } from './sidebar-items';
+
+@Service()
+export class SidebarService {
+  private readonly collapsedSections = new Set<string>();
+  private readonly initializedSections = new Set<string>();
+
+  private readonly drawerStateSubject = signal<DrawerStates>(this.getState());
+  private readonly isMobileOpenSubject = signal<boolean>(false);
+  private favourites = new Set<string>();
+  /** Route of the item just pinned, so its clone plays the `up` entry once. */
+  private pendingAnimateRoute?: string;
+  private readonly itemsSignal = signal<ISidebarItem[]>(SidebarItems);
+  private get items() {
+    return this.itemsSignal();
+  }
+  private set items(value: ISidebarItem[]) {
+    this.itemsSignal.set(value);
+  }
+
+  constructor() {
+    this.initializeCollapsedDefaults(this.items);
+    this.loadFavourites();
+  }
+
+  public closeMobile() {
+    this.isMobileOpenSubject.set(false);
+  }
+
+  public findItemForUrl(url: string): ISidebarItem | undefined {
+    const normalizedUrl = this.normalizeRoute(url);
+    const flatItems = this.flattenItems(this.items).filter((item) => !!item.route);
+
+    return flatItems
+      .sort((a, b) => this.normalizeRoute(b.route!).length - this.normalizeRoute(a.route!).length)
+      .find((item) => this.matchesRoute(normalizedUrl, item.route!));
+  }
+
+  public getItems() {
+    return this.itemsSignal;
+  }
+
+  public getRoute(destination: string): string | undefined {
+    const allItems = this.flattenItems(this.items);
+    const target = allItems.find((item) => item.route?.split('/').pop()?.toLowerCase() === destination.toLowerCase());
+    return target?.route;
+  }
+
+  public isFull() {
+    return this.drawerStateSubject() === 'full';
+  }
+
+  public isHalf() {
+    return this.drawerStateSubject() === 'half';
+  }
+
+  public isMobileOpen() {
+    return this.isMobileOpenSubject();
+  }
+
+  public isCollapsed(name: string) {
+    return this.collapsedSections.has(name);
+  }
+
+  public isFavourite(route?: string) {
+    if (!route) return false;
+    return this.favourites.has(this.normalizeRoute(route));
+  }
+
+  public setFavourite(route: string, favourite: boolean) {
+    const normalizedRoute = this.normalizeRoute(route);
+
+    if (!normalizedRoute) return favourite;
+
+    if (favourite) {
+      this.favourites.add(normalizedRoute);
+      this.pendingAnimateRoute = normalizedRoute;
+    } else {
+      this.favourites.delete(normalizedRoute);
+    }
+
+    this.updateItemFavourite(normalizedRoute, favourite);
+    this.persistFavourites();
+    this.rebuildFavouritesSection();
+
+    return favourite;
+  }
+
+  public setItems(items: ISidebarItem[]) {
+    this.items = items;
+    this.initializeCollapsedDefaults(items);
+    this.applyFavouritesToItems(items);
+  }
+
+  public toggleCollapsed(name: string) {
+    if (this.collapsedSections.has(name)) {
+      this.collapsedSections.delete(name);
+      return;
+    }
+    this.collapsedSections.add(name);
+  }
+
+  public toggleDrawer() {
+    const next = this.drawerStateSubject() === 'full' ? 'half' : 'full';
+    return this.setState(next);
+  }
+
+  public toggleFavourite(route: string) {
+    const next = !this.isFavourite(route);
+    this.setFavourite(route, next);
+    return next;
+  }
+
+  public toggleMobile() {
+    this.isMobileOpenSubject.update((v) => !v);
+  }
+
+  private applyFavouritesToItems(items: ISidebarItem[]) {
+    this.walkItems(items, (item) => {
+      if (item.type === 'bookmark' || item.parent?.type === 'bookmark') {
+        return;
+      }
+
+      if (!item.route) {
+        item.favourite = false;
+        return;
+      }
+
+      const isFavourited = this.favourites.has(this.normalizeRoute(item.route));
+      item.favourite = isFavourited;
+      item.hiddenByFavourite = isFavourited; // Safely hide original items
+    });
+
+    this.rebuildFavouritesSection();
+  }
+
+  private cloneForFavourite(item: ISidebarItem, parent: ISidebarItem): ISidebarItem {
+    const { children: _children, parent: _originalParent, ...rest } = item;
+
+    return {
+      ...rest,
+      parent,
+      children: undefined,
+      hidden: false,
+      hiddenByFavourite: false, // Ensure the bookmark copy is visible
+      type: 'item',
+      favourite: true,
+    };
+  }
+
+  private flattenItems(items: ISidebarItem[]): ISidebarItem[] {
+    return items.flatMap((item) => (item.children ? [item, ...this.flattenItems(item.children)] : [item]));
+  }
+
+  private getState(): DrawerStates {
+    const state = localStorage.getItem(DRAWER_STATE_KEY);
+    // Absent/corrupt storage means first use — start expanded so labels are visible.
+    return state === 'half' ? 'half' : 'full';
+  }
+
+  private initializeCollapsedDefaults(items: ISidebarItem[]) {
+    this.walkItems(items, (item) => {
+      if (this.initializedSections.has(item.name)) return;
+
+      this.initializedSections.add(item.name);
+
+      if (item.collapsed) {
+        this.collapsedSections.add(item.name);
+      }
+    });
+  }
+
+  private loadFavourites() {
+    const raw = localStorage.getItem(SIDEBAR_FAVOURITES_KEY);
+
+    if (raw) {
+      try {
+        const stored = JSON.parse(raw) as string[];
+        this.favourites = new Set(stored.map((route) => this.normalizeRoute(route)).filter(Boolean));
+      } catch {
+        this.favourites.clear();
+      }
+    }
+
+    this.applyFavouritesToItems(this.items);
+  }
+
+  private matchesRoute(url: string, route: string) {
+    const normalizedRoute = this.normalizeRoute(route);
+
+    if (normalizedRoute === '/') return url === '/';
+
+    return url === normalizedRoute || url.startsWith(`${normalizedRoute}/`);
+  }
+
+  private normalizeRoute(route: string) {
+    if (!route) return '';
+
+    const [pathWithHash = ''] = route.split('?');
+    const path = pathWithHash.split('#')[0]!;
+    const trimmed = path.endsWith('/') && path !== '/' ? path.slice(0, -1) : path;
+    return trimmed || '/';
+  }
+
+  private persistFavourites() {
+    localStorage.setItem(SIDEBAR_FAVOURITES_KEY, JSON.stringify([...this.favourites]));
+  }
+
+  private rebuildFavouritesSection() {
+    const currentItems = this.itemsSignal();
+    const favouritesSectionIndex = currentItems.findIndex((item) => item.type === 'bookmark');
+
+    if (favouritesSectionIndex === -1) return;
+
+    const favouritesSection = currentItems[favouritesSectionIndex]!;
+    const favouriteRoutes = new Set(this.favourites);
+
+    const favouriteItems = this.flattenItems(currentItems)
+      .filter((item) => item.type !== 'bookmark' && item.parent?.type !== 'bookmark')
+      .filter((item) => !!item.route && favouriteRoutes.has(this.normalizeRoute(item.route!)))
+      .map((item) => {
+        const clone = this.cloneForFavourite(item, favouritesSection);
+        clone.justPinned =
+          !!this.pendingAnimateRoute && !!item.route && this.normalizeRoute(item.route) === this.pendingAnimateRoute;
+        return clone;
+      });
+
+    const updatedSection: ISidebarItem = {
+      ...favouritesSection,
+      children: favouriteItems,
+      hidden: favouriteItems.length === 0,
+    };
+
+    const updatedItems = [...currentItems];
+    updatedItems[favouritesSectionIndex] = updatedSection;
+    this.itemsSignal.set(updatedItems);
+    // Entry animation is a one-shot; clear so subsequent rebuilds don't replay it.
+    this.pendingAnimateRoute = undefined;
+  }
+
+  private setState(state: DrawerStates) {
+    this.drawerStateSubject.set(state);
+    localStorage.setItem(DRAWER_STATE_KEY, state);
+    return state;
+  }
+
+  private updateItemFavourite(route: string, favourite: boolean) {
+    this.walkItems(this.items, (item) => {
+      if (item.type !== 'bookmark' && item.parent?.type !== 'bookmark') {
+        if (item.route && this.normalizeRoute(item.route) === route) {
+          item.favourite = favourite;
+          item.hiddenByFavourite = favourite;
+        }
+      }
+    });
+  }
+
+  private walkItems(items: ISidebarItem[], cb: (item: ISidebarItem) => void) {
+    items.forEach((item) => {
+      cb(item);
+      if (item.children?.length) {
+        this.walkItems(item.children, cb);
+      }
+    });
+  }
+}
+
+type DrawerStates = 'full' | 'half';
+
+const DRAWER_STATE_KEY = 'pc-drawerState';
+const SIDEBAR_FAVOURITES_KEY = 'pc-sidebar-favourites';
+```
+
 ## File: apps/frontend/src/app/layout/theme/theme-service.ts
 ```typescript
 import { signal, Service, inject, effect } from '@angular/core';
@@ -28280,6 +28947,173 @@ export class TokenService {
 }
 
 const PERSISTENCE_KEY = 'pc-persistence';
+```
+
+## File: apps/frontend/src/app/services/api/trpc-service.ts
+```typescript
+import { inject, Service } from '@angular/core';
+import { Router } from '@angular/router';
+import { GENERIC_SIGNIN_ERROR, getAllOptionsType } from '../../../../../../libs/common/src';
+import { ErrorService } from '../error.service';
+import {
+  TRPCClient,
+  TRPCClientError,
+  TRPCLink,
+  createTRPCClient,
+  httpLink as trpcHttpLink,
+  loggerLink,
+} from '@trpc/client';
+import { observable } from '@trpc/server/observable';
+import superjson from 'superjson';
+
+import { get, set } from 'idb-keyval';
+
+import { TRPCRouter } from '../../../../../backend/src/app/modules/trpc';
+import { environment } from '../../../environments/environment';
+import { TokenService } from './token-service';
+import { refreshLink } from './trpc-refreshlink';
+import { ApiError } from './api-error';
+
+@Service()
+export class TRPCService<T> {
+  protected readonly errorSvc = inject(ErrorService);
+
+  protected readonly router = inject(Router);
+
+  protected readonly tokenService = inject(TokenService);
+
+  protected ac = new AbortController();
+
+  public readonly api: TRPCClient<TRPCRouter>;
+
+  constructor() {
+    this.api = createTRPCClient<TRPCRouter>({
+      links: [
+        // Dev-only: logs every tRPC op to the console. Disabled in production builds.
+        loggerLink({ enabled: () => !environment.production }),
+        // errorLink must sit OUTSIDE refreshLink: refreshLink transparently refreshes and retries
+        // an UNAUTHORIZED call once (e.g. after another tab rotated the session), and errorLink
+        // must only see the error — and redirect to /signin — when that retry has already failed.
+        errorLink(this.errorSvc),
+        refreshLink(this.tokenService, this.router),
+        httpUnbatchedLink(this.tokenService, () => this.ac.signal),
+      ],
+    });
+  }
+
+  public abort() {
+    this.ac.abort();
+    this.ac = new AbortController(); // create a fresh controller so future calls are not auto-aborted
+  }
+
+  protected async runCachedCall(
+    apiCall: Promise<Partial<T>[]>,
+    apiName: string,
+    options: getAllOptionsType,
+    refresh: boolean,
+  ) {
+    // Use the full serialized (apiName + options) as the IndexedDB key. IDB string
+    // keys can be arbitrarily long, so there's no need to fold it into a 32-bit hash
+    // — that hash collided, letting one query serve another query's cached rows.
+    const cacheKey = `trpc:${JSON.stringify({ apiName, ...options })}`;
+    const payload = await get(cacheKey);
+    let data = payload?.expires > Date.now() ? payload.data : null;
+
+    if (refresh || !data || data.length === 0) {
+      data = await apiCall;
+      await set(cacheKey, { expires: this.addDays(1), data });
+    }
+
+    return data;
+  }
+
+  private addDays(days: number) {
+    const date = new Date(Date.now());
+    date.setDate(date.getDate() + days);
+    return date;
+  }
+}
+
+function errorLink(errorSvc: ErrorService): TRPCLink<TRPCRouter> {
+  const GENERIC_INPUT_MSG = 'Please check your input and try again';
+
+  return () =>
+    ({ next, op }) =>
+      observable((observer) => {
+        const unsubscribe = next(op).subscribe({
+          next: (value) => observer.next(value),
+          error: (err) => {
+            const meta = op.context as { skipErrorHandler?: boolean } | undefined;
+            const path = op.path ?? '';
+            const isSignIn = path === 'auth.signIn' || path.endsWith('.signIn') || path === 'signIn';
+            let finalErr: any = err;
+            let code: string | undefined;
+
+            if (err instanceof TRPCClientError) {
+              code = err.data?.code as string | undefined;
+
+              let msg = err.message;
+              if (isSignIn && (code === 'BAD_REQUEST' || code === 'UNAUTHORIZED' || code === 'NOT_FOUND')) {
+                // Server formatter should already do this; this is just a client fallback
+                msg = GENERIC_SIGNIN_ERROR;
+              } else if (code === 'BAD_REQUEST') {
+                const isValidationError = (err.data as { isZodError?: boolean })?.isZodError;
+                if (isValidationError) {
+                  msg = GENERIC_INPUT_MSG;
+                }
+              }
+              finalErr = new ApiError(msg, err);
+            }
+
+            // Aborted requests (component teardown, superseded loads) are not
+            // user-facing failures — never toast or redirect them.
+            if (!isAbortError(err)) {
+              if (code === 'UNAUTHORIZED' && !isSignIn) {
+                // A dead session must sign the user out even when the caller passed skipErrorHandler:
+                // that flag suppresses the error toast, not the sign-out. redirectToSignIn() no-ops on
+                // public pages and de-dupes, so probes and public routes stay put.
+                errorSvc.redirectToSignIn();
+              } else if (!meta?.skipErrorHandler) {
+                errorSvc.handle(finalErr);
+              }
+            }
+
+            observer.error(finalErr);
+          },
+          complete: () => observer.complete(),
+        });
+        return unsubscribe;
+      });
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === 'AbortError') return true;
+  if (err instanceof TRPCClientError) {
+    const cause: unknown = err.cause;
+    return cause instanceof DOMException && cause.name === 'AbortError';
+  }
+  return false;
+}
+
+function httpUnbatchedLink(tokenSvc: TokenService, getAbortSignal: () => AbortSignal) {
+  return trpcHttpLink({
+    url: environment.apiUrl,
+    transformer: superjson,
+    // Combine the per-request signal tRPC provides with the service-level
+    // controller so TRPCService.abort() actually cancels in-flight requests.
+    // `credentials: 'include'` is required so the browser honors Set-Cookie on the
+    // sign-in/out responses and attaches the HttpOnly refresh cookie (SECURITY-REVIEW 2.1).
+    fetch(input, init) {
+      const signals: AbortSignal[] = [getAbortSignal()];
+      if (init?.signal) signals.push(init.signal);
+      return globalThis.fetch(input, { ...init, credentials: 'include', signal: AbortSignal.any(signals) });
+    },
+    headers() {
+      const authToken = tokenSvc.getAuthToken();
+      return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+    },
+  });
+}
 ```
 
 ## File: apps/frontend/src/app/services/api/trpc-types.ts
@@ -32431,6 +33265,56 @@ export class AppComponent {
 
 ```
 
+## File: apps/frontend/src/environments/environment.prod.ts
+```typescript
+export const environment = {
+  production: true,
+  // The backend has its own origin because tRPC is mounted at the root path '/' and can't share a
+  // host with the CRM's static SPA. The CRM SPA (app.pplcrm.com) reaches this cross-origin; CORS is
+  // locked to APP_URL and the refresh cookie is same-site (both under pplcrm.com).
+  apiUrl: 'https://api.pplcrm.com',
+  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
+  // The public submission surface (forms, events, volunteer signups, donations) lives on a dedicated
+  // domain at '<org>.pplforms.com'; this is the base the tenant subdomain hangs off of.
+  publicBaseDomain: 'pplforms.com',
+  // The volunteer companion apps (canvass /t/:token, deliveries /r/:token) are served on their own
+  // subdomain in production — they're a separate root-based SPA that can't share app.pplcrm.com's
+  // root with the CRM. companionUrl() builds shareable volunteer links against this origin.
+  companionOrigin: 'https://go.pplcrm.com',
+};
+```
+
+## File: apps/frontend/src/environments/environment.ts
+```typescript
+export const environment = {
+  production: false,
+  apiUrl: 'http://localhost:3000',
+  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
+  // Base domain tenant subdomains hang off of, for building public page URLs (`<slug>.<baseDomain>`):
+  // forms, event RSVPs, volunteer signups, donations.
+  publicBaseDomain: 'localhost',
+  // The volunteer companion apps (canvass /t/:token, deliveries /r/:token) run on their own dev
+  // server (port 4300). In production they are path-routed on the CRM's own domain, so this is ''
+  // there and copied links use window.location.origin instead. See shared/public-pages.companionUrl.
+  companionOrigin: 'http://localhost:4300',
+};
+```
+
+## File: apps/frontend/src/import-meta.d.ts
+```typescript
+interface ImportMetaEnv {
+  // Named so it can be accessed with dot notation (import.meta.env.VITE_GOOGLE_MAPS_API_KEY) — the
+  // production build replaces that exact expression via esbuild `define` (project.json), and dot
+  // access is what `define` matches. The index signature below still covers any other VITE_* key.
+  readonly VITE_GOOGLE_MAPS_API_KEY: string;
+  readonly [key: string]: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+```
+
 ## File: apps/frontend/src/main.ts
 ```typescript
 import { bootstrapApplication } from '@angular/platform-browser';
@@ -32499,6 +33383,121 @@ module.exports = [
 module.exports = {
   plugins: [require('@tailwindcss/postcss')],
 };
+```
+
+## File: apps/frontend/project.json
+```json
+{
+  "name": "frontend",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "prefix": "pplcrm",
+  "sourceRoot": "apps/frontend/src",
+  "tags": [],
+  "targets": {
+    "generate-context": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx repomix --output apps/frontend/STRUCTURE.md --include \"apps/frontend/src/**/*\" --ignore \"apps/backend/**,apps/libs/**,libs/**,**/STRUCTURE.md,**/*.spec.ts\" --style markdown"
+      }
+    },
+    "build": {
+      "executor": "@angular/build:application",
+      "dependsOn": ["generate-context"],
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "production",
+      "options": {
+        "outputPath": "dist/apps/frontend",
+        "index": "apps/frontend/src/index.html",
+        "browser": "apps/frontend/src/main.ts",
+        "tsConfig": "apps/frontend/tsconfig.app.json",
+        "assets": ["apps/frontend/src/favicon.ico", "apps/frontend/src/assets"],
+        "styles": ["apps/frontend/src/styles.css"],
+        "scripts": [],
+        "polyfills": ["@angular/localize/init"],
+        "define": {
+          "import.meta.env.VITE_GOOGLE_MAPS_API_KEY": "\"__PPLCRM_MAPS_KEY__\""
+        }
+      },
+      "configurations": {
+        "production": {
+          "optimization": {
+            "scripts": true,
+            "styles": {
+              "minify": true,
+              "inlineCritical": false
+            },
+            "fonts": {
+              "inline": false
+            }
+          },
+          "budgets": [
+            {
+              "type": "initial",
+              "maximumWarning": "3mb",
+              "maximumError": "4mb"
+            },
+            {
+              "type": "anyComponentStyle",
+              "maximumWarning": "2kb",
+              "maximumError": "4kb"
+            }
+          ],
+          "outputHashing": "all",
+          "fileReplacements": [
+            {
+              "replace": "apps/frontend/src/environments/environment.ts",
+              "with": "apps/frontend/src/environments/environment.prod.ts"
+            }
+          ]
+        },
+        "development": {
+          "optimization": false,
+          "extractLicenses": false,
+          "sourceMap": true
+        }
+      }
+    },
+    "serve": {
+      "executor": "@angular/build:dev-server",
+      "defaultConfiguration": "development",
+      "options": {
+        "buildTarget": "frontend:build",
+        "port": 4200
+      },
+      "configurations": {
+        "production": {
+          "buildTarget": "frontend:build:production"
+        },
+        "development": {
+          "buildTarget": "frontend:build:development"
+        }
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "outputs": ["{workspaceRoot}/coverage/apps/frontend"],
+      "options": {
+        "cwd": "apps/frontend",
+        "command": "vitest run"
+      }
+    },
+    "extract-i18n": {
+      "executor": "@angular/build:extract-i18n",
+      "options": {
+        "buildTarget": "frontend:build"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": ["apps/frontend/**/*.ts", "apps/frontend/**/*.html"]
+      }
+    }
+  }
+}
 ```
 
 ## File: apps/frontend/tsconfig.app.json
@@ -32605,44 +33604,6 @@ module.exports = {
   ],
   "files": ["src/test-setup.ts"]
 }
-```
-
-## File: apps/frontend-e2e/playwright.config.ts
-```typescript
-import { defineConfig, devices } from '@playwright/test';
-
-const isCI = !!process.env.CI;
-
-export default defineConfig({
-  testDir: './src',
-  fullyParallel: true,
-  forbidOnly: isCI,
-  // CI gates deploys on this suite (.github/workflows/verify.yml), so a single infrastructure
-  // hiccup shouldn't block a release — but retries stay off locally, where a flake is a signal
-  // worth seeing rather than papering over.
-  retries: isCI ? 2 : 0,
-  reporter: isCI ? [['list'], ['html', { open: 'never' }]] : 'list',
-  use: {
-    baseURL: 'http://localhost:4200',
-    // Only kept for a retried (i.e. already-suspect) test — traces are large and the happy path
-    // doesn't need them.
-    trace: 'on-first-retry',
-    screenshot: 'only-on-failure',
-  },
-  webServer: {
-    command: 'npx nx serve frontend',
-    url: 'http://localhost:4200',
-    reuseExistingServer: !isCI,
-    // A cold CI runner compiling the Angular app blows straight past Playwright's 60s default.
-    timeout: isCI ? 300_000 : 120_000,
-  },
-  projects: [
-    {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
-    },
-  ],
-});
 ```
 
 ## File: apps/frontend-e2e/project.json
@@ -36742,152 +37703,6 @@ export class CompanionGate implements OnInit {
 }
 ```
 
-## File: apps/companion/src/environments/environment.prod.ts
-```typescript
-export const environment = {
-  production: true,
-  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
-};
-```
-
-## File: apps/companion/src/environments/environment.ts
-```typescript
-export const environment = {
-  production: false,
-  /**
-   * The companion app always calls the backend with relative `/api` paths:
-   * the dev server proxies them to :3000 (proxy.conf.json), and production
-   * serves the app path-routed on the same domain as the API.
-   */
-  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
-};
-```
-
-## File: apps/companion/src/import-meta.d.ts
-```typescript
-interface ImportMetaEnv {
-  // Named so it can be accessed with dot notation (import.meta.env.VITE_GOOGLE_MAPS_API_KEY) — the
-  // production build replaces that exact expression via esbuild `define` (project.json), and dot
-  // access is what `define` matches. The index signature below still covers any other VITE_* key.
-  readonly VITE_GOOGLE_MAPS_API_KEY: string;
-  readonly [key: string]: string;
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
-```
-
-## File: apps/companion/project.json
-```json
-{
-  "name": "companion",
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "projectType": "application",
-  "prefix": "pc",
-  "sourceRoot": "apps/companion/src",
-  "tags": [],
-  "targets": {
-    "build": {
-      "executor": "@angular/build:application",
-      "outputs": ["{options.outputPath}"],
-      "defaultConfiguration": "production",
-      "options": {
-        "outputPath": "dist/apps/companion",
-        "index": "apps/companion/src/index.html",
-        "browser": "apps/companion/src/main.ts",
-        "tsConfig": "apps/companion/tsconfig.app.json",
-        "assets": [
-          "apps/companion/src/favicon.ico",
-          {
-            "glob": "**/*",
-            "input": "apps/frontend/src/assets/icons",
-            "output": "assets/icons"
-          }
-        ],
-        "styles": ["apps/companion/src/styles.css"],
-        "scripts": [],
-        "polyfills": ["@angular/localize/init"],
-        "define": {
-          "import.meta.env.VITE_GOOGLE_MAPS_API_KEY": "\"__PPLCRM_MAPS_KEY__\""
-        }
-      },
-      "configurations": {
-        "production": {
-          "optimization": {
-            "scripts": true,
-            "styles": {
-              "minify": true,
-              "inlineCritical": false
-            },
-            "fonts": {
-              "inline": false
-            }
-          },
-          "budgets": [
-            {
-              "type": "initial",
-              "maximumWarning": "1.5mb",
-              "maximumError": "2.5mb"
-            },
-            {
-              "type": "anyComponentStyle",
-              "maximumWarning": "2kb",
-              "maximumError": "4kb"
-            }
-          ],
-          "outputHashing": "all",
-          "fileReplacements": [
-            {
-              "replace": "apps/companion/src/environments/environment.ts",
-              "with": "apps/companion/src/environments/environment.prod.ts"
-            }
-          ]
-        },
-        "development": {
-          "optimization": false,
-          "extractLicenses": false,
-          "sourceMap": true
-        }
-      }
-    },
-    "serve": {
-      "executor": "@angular/build:dev-server",
-      "defaultConfiguration": "development",
-      "options": {
-        "buildTarget": "companion:build",
-        "port": 4300,
-        "proxyConfig": "apps/companion/proxy.conf.json"
-      },
-      "configurations": {
-        "production": {
-          "buildTarget": "companion:build:production"
-        },
-        "development": {
-          "buildTarget": "companion:build:development"
-        }
-      }
-    },
-    "test": {
-      "executor": "nx:run-commands",
-      "cache": true,
-      "outputs": ["{workspaceRoot}/coverage/apps/companion"],
-      "options": {
-        "cwd": "apps/companion",
-        "command": "vitest run"
-      }
-    },
-    "lint": {
-      "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
-      "options": {
-        "lintFilePatterns": ["apps/companion/**/*.ts", "apps/companion/**/*.html"]
-      }
-    }
-  }
-}
-```
-
 ## File: apps/frontend/archive/old-tailwind.config.ts
 ```typescript
 import { join, dirname } from 'path';
@@ -39089,251 +39904,6 @@ export class DuplicateSelectionComponent implements OnInit {
       // In case of error, we default to 0 (already set), but you could also show an error badge state
     } finally {
       end();
-    }
-  }
-}
-```
-
-## File: apps/frontend/src/app/experiences/emails/services/store/email-actions.store.ts
-```typescript
-import { inject, signal, Service } from '@angular/core';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { getUserErrorMessage } from '@frontend/services/api/user-message';
-
-import { ComposePayload, DraftPayload } from '../../ui/email-compose/email-compose';
-import { EmailsService } from '../emails-service';
-import { EmailCacheStore } from './email-cache.store';
-import { EmailFoldersStore } from './email-folders.store';
-import { type EmailId, EmailStateStore } from './email-state.store';
-import { ALL_FOLDERS, EmailStatus } from '../../../../../../../../libs/common/src/lib/emails';
-import type { EmailDraftType, EmailType } from '../../../../../../../../libs/common/src/lib/models';
-
-@Service()
-export class EmailActionsStore {
-  public readonly sendingCount = signal(0);
-  private readonly alerts = inject(AlertService);
-  private readonly cache = inject(EmailCacheStore);
-  private readonly folders = inject(EmailFoldersStore);
-  private readonly state = inject(EmailStateStore);
-  private readonly svc = inject(EmailsService);
-
-  public async addComment(emailId: EmailId, authorId: string, commentText: string): Promise<any> {
-    const created = await this.svc.addComment(String(emailId), authorId, commentText);
-    this.cache.appendCommentToHeader(emailId, created);
-    return created;
-  }
-
-  public async assignEmailToUser(emailId: EmailId, userId: string | null, assigneeName?: string | null): Promise<void> {
-    const key = String(emailId);
-    await this.updateProperty(
-      key,
-      { assigned_to: userId ?? undefined },
-      () => this.svc.assign(key, userId, assigneeName),
-      {
-        // Do NOT force a folder reload: in a filtered virtual folder (Mine/Unassigned)
-        // the just-assigned email would drop out of the list, and email-list's
-        // auto-select effect would then yank the selection away — the user perceives
-        // the assignment "reverting to Noone". The optimistic patch already reflects
-        // the new owner; counts refresh so the sidebar updates. Folder membership
-        // reconciles naturally on the next visit to the folder.
-        refreshFolder: false,
-        refreshCounts: true,
-      },
-    );
-  }
-
-  public async deleteComment(emailId: EmailId, commentId: string | number): Promise<void> {
-    const key = String(emailId);
-    const prevHeader = this.cache.getEmailHeaderById(key)(); // snapshot before change
-
-    // Optimistic: remove from cache now
-    this.cache.removeCommentFromHeader(key, commentId);
-
-    try {
-      await this.svc.deleteComment(key, String(commentId));
-      // success: nothing else to do, UI is already updated
-    } catch (e) {
-      console.error('deleteComment failed; rolling back', e);
-      if (typeof prevHeader !== 'undefined') {
-        this.cache.replaceHeader(key, prevHeader);
-      } else {
-        // If we somehow had no header snapshot, refetch to get back to server truth
-        await this.svc
-          .getEmailWithHeaders(key)
-          .then((res: any) => {
-            this.cache.replaceHeader(key, res?.header ?? null);
-          })
-          .catch(() => {
-            /* ignore */
-          });
-      }
-      throw e;
-    }
-  }
-
-  public async deleteDraft(id: string): Promise<void> {
-    await this.svc.deleteDraft(id);
-    await this.folders.refreshFolderCounts();
-    if (this.folders.currentSelectedFolderId() === ALL_FOLDERS.DRAFTS) {
-      await this.folders.loadEmailsForFolder(ALL_FOLDERS.DRAFTS);
-    }
-  }
-
-  public async deleteEmail(emailId: EmailId): Promise<void> {
-    const key = String(emailId);
-    try {
-      await this.svc.delete(key);
-      this.state.removeEmail(key);
-
-      const currentFolderId = this.folders.currentSelectedFolderId();
-      if (currentFolderId) {
-        await this.folders.loadEmailsForFolder(currentFolderId);
-      }
-      await this.folders.refreshFolderCounts();
-    } catch (e) {
-      this.alerts.showError(getUserErrorMessage(e, 'Could not delete the email. Please try again.'));
-      throw e;
-    }
-  }
-
-  public getDraft(id: string): Promise<EmailDraftType> {
-    return this.svc.getDraft(id);
-  }
-
-  public async restoreFromTrash(emailId: EmailId): Promise<void> {
-    const key = String(emailId);
-    try {
-      await this.svc.restoreFromTrash([key]);
-      this.state.removeEmail(key); // Remove from current state as it's no longer in Trash
-      const currentFolderId = this.folders.currentSelectedFolderId();
-      if (currentFolderId) {
-        await this.folders.loadEmailsForFolder(currentFolderId);
-      }
-      await this.folders.refreshFolderCounts();
-    } catch (e) {
-      this.alerts.showError(getUserErrorMessage(e, 'Could not restore the email. Please try again.'));
-      throw e;
-    }
-  }
-
-  public async saveDraft(input: DraftPayload): Promise<{ id: string }> {
-    const saved = await this.svc.saveDraft(input);
-    const currentFolderId = this.folders.currentSelectedFolderId();
-    if (currentFolderId === ALL_FOLDERS.DRAFTS) {
-      await this.folders.loadEmailsForFolder(ALL_FOLDERS.DRAFTS);
-    } else {
-      await this.folders.refreshFolderCounts();
-    }
-    return saved as { id: string };
-  }
-
-  public async sendEmail(input: ComposePayload): Promise<EmailType> {
-    this.sendingCount.update((c) => c + 1);
-    try {
-      const created = await this.svc.sendEmail(input);
-
-      // Reload the current folder to show the new email in Outbox/Sent immediately.
-      const currentFolderId = this.folders.currentSelectedFolderId();
-      if (currentFolderId) {
-        await this.folders.loadEmailsForFolder(currentFolderId);
-      }
-      await this.folders.refreshFolderCounts();
-
-      // Trigger automatic background sync shortly after sending to give the dispatch time to process.
-      setTimeout(() => {
-        this.svc
-          .syncEmails()
-          .then(async () => {
-            const fid = this.folders.currentSelectedFolderId();
-            if (fid) {
-              await this.folders.loadEmailsForFolder(fid);
-            }
-            await this.folders.refreshFolderCounts();
-          })
-          .catch((err) => {
-            console.warn('Auto-sync after send failed:', err);
-          });
-      }, 4000);
-
-      // Optional: warm header cache (if your API returns header)
-      // this.cache.replaceHeader(String(created.id), created.header ?? null);
-
-      return created;
-    } catch (e) {
-      this.alerts.showError(getUserErrorMessage(e, 'Could not send the email. Please try again.'));
-      throw e;
-    } finally {
-      this.sendingCount.update((c) => c - 1);
-    }
-  }
-
-  public async toggleEmailFavoriteStatus(emailId: EmailId, isFavorite: boolean): Promise<void> {
-    const key = String(emailId);
-    const currentFolderId = this.folders.currentSelectedFolderId();
-    await this.updateProperty(key, { is_favourite: isFavorite }, () => this.svc.setFavourite(key, isFavorite), {
-      refreshFolder: currentFolderId === ALL_FOLDERS.FAVOURITES,
-      refreshCounts: true,
-    });
-  }
-
-  public async updateEmailStatus(emailId: EmailId, status: EmailStatus): Promise<void> {
-    const key = String(emailId);
-    await this.updateProperty(key, { status }, () => this.svc.setStatus(key, status), {
-      refreshFolder: true,
-      refreshCounts: true,
-    });
-  }
-
-  public async toggleEmailReadStatus(emailId: EmailId, isRead: boolean): Promise<void> {
-    const key = String(emailId);
-    await this.updateProperty(key, { is_read: isRead }, () => this.svc.setEmailReadStatus(key, isRead), {
-      refreshFolder: false,
-      refreshCounts: true,
-    });
-  }
-
-  public async moveToFolder(emailId: EmailId, folderId: string): Promise<void> {
-    const key = String(emailId);
-    try {
-      await this.svc.moveToFolder(key, folderId);
-      this.state.removeEmail(key);
-
-      const currentFolderId = this.folders.currentSelectedFolderId();
-      if (currentFolderId) {
-        await this.folders.loadEmailsForFolder(currentFolderId);
-      }
-      await this.folders.refreshFolderCounts();
-    } catch (e) {
-      this.alerts.showError(getUserErrorMessage(e, 'Could not move the email. Please try again.'));
-      throw e;
-    }
-  }
-
-  private async updateProperty(
-    emailKey: string,
-    patch: Partial<EmailType>,
-    serverCall: () => Promise<unknown>,
-    opts?: { refreshFolder?: boolean; refreshCounts?: boolean },
-  ): Promise<void> {
-    const prev = this.state.patchEmail(emailKey, patch);
-    if (!prev) {
-      console.warn(`Email ${emailKey} not found in store`);
-      return;
-    }
-
-    try {
-      await serverCall();
-
-      const currentFolderId = this.folders.currentSelectedFolderId();
-      if (opts?.refreshFolder && currentFolderId) {
-        await this.folders.loadEmailsForFolder(currentFolderId);
-      }
-      if (opts?.refreshCounts) {
-        await this.folders.refreshFolderCounts();
-      }
-    } catch (e) {
-      this.state.replaceEmail(emailKey, prev);
-      throw e;
     }
   }
 }
@@ -54761,282 +55331,6 @@ export class ReportBugDialog {
 }
 ```
 
-## File: apps/frontend/src/app/layout/sidebar/sidebar-service.ts
-```typescript
-import { signal, Service } from '@angular/core';
-import { ISidebarItem, SidebarItems } from './sidebar-items';
-
-@Service()
-export class SidebarService {
-  private readonly collapsedSections = new Set<string>();
-  private readonly initializedSections = new Set<string>();
-
-  private readonly drawerStateSubject = signal<DrawerStates>(this.getState());
-  private readonly isMobileOpenSubject = signal<boolean>(false);
-  private favourites = new Set<string>();
-  /** Route of the item just pinned, so its clone plays the `up` entry once. */
-  private pendingAnimateRoute?: string;
-  private readonly itemsSignal = signal<ISidebarItem[]>(SidebarItems);
-  private get items() {
-    return this.itemsSignal();
-  }
-  private set items(value: ISidebarItem[]) {
-    this.itemsSignal.set(value);
-  }
-
-  constructor() {
-    this.initializeCollapsedDefaults(this.items);
-    this.loadFavourites();
-  }
-
-  public closeMobile() {
-    this.isMobileOpenSubject.set(false);
-  }
-
-  public findItemForUrl(url: string): ISidebarItem | undefined {
-    const normalizedUrl = this.normalizeRoute(url);
-    const flatItems = this.flattenItems(this.items).filter((item) => !!item.route);
-
-    return flatItems
-      .sort((a, b) => this.normalizeRoute(b.route!).length - this.normalizeRoute(a.route!).length)
-      .find((item) => this.matchesRoute(normalizedUrl, item.route!));
-  }
-
-  public getItems() {
-    return this.itemsSignal;
-  }
-
-  public getRoute(destination: string): string | undefined {
-    const allItems = this.flattenItems(this.items);
-    const target = allItems.find((item) => item.route?.split('/').pop()?.toLowerCase() === destination.toLowerCase());
-    return target?.route;
-  }
-
-  public isFull() {
-    return this.drawerStateSubject() === 'full';
-  }
-
-  public isHalf() {
-    return this.drawerStateSubject() === 'half';
-  }
-
-  public isMobileOpen() {
-    return this.isMobileOpenSubject();
-  }
-
-  public isCollapsed(name: string) {
-    return this.collapsedSections.has(name);
-  }
-
-  public isFavourite(route?: string) {
-    if (!route) return false;
-    return this.favourites.has(this.normalizeRoute(route));
-  }
-
-  public setFavourite(route: string, favourite: boolean) {
-    const normalizedRoute = this.normalizeRoute(route);
-
-    if (!normalizedRoute) return favourite;
-
-    if (favourite) {
-      this.favourites.add(normalizedRoute);
-      this.pendingAnimateRoute = normalizedRoute;
-    } else {
-      this.favourites.delete(normalizedRoute);
-    }
-
-    this.updateItemFavourite(normalizedRoute, favourite);
-    this.persistFavourites();
-    this.rebuildFavouritesSection();
-
-    return favourite;
-  }
-
-  public setItems(items: ISidebarItem[]) {
-    this.items = items;
-    this.initializeCollapsedDefaults(items);
-    this.applyFavouritesToItems(items);
-  }
-
-  public toggleCollapsed(name: string) {
-    if (this.collapsedSections.has(name)) {
-      this.collapsedSections.delete(name);
-      return;
-    }
-    this.collapsedSections.add(name);
-  }
-
-  public toggleDrawer() {
-    const next = this.drawerStateSubject() === 'full' ? 'half' : 'full';
-    return this.setState(next);
-  }
-
-  public toggleFavourite(route: string) {
-    const next = !this.isFavourite(route);
-    this.setFavourite(route, next);
-    return next;
-  }
-
-  public toggleMobile() {
-    this.isMobileOpenSubject.update((v) => !v);
-  }
-
-  private applyFavouritesToItems(items: ISidebarItem[]) {
-    this.walkItems(items, (item) => {
-      if (item.type === 'bookmark' || item.parent?.type === 'bookmark') {
-        return;
-      }
-
-      if (!item.route) {
-        item.favourite = false;
-        return;
-      }
-
-      const isFavourited = this.favourites.has(this.normalizeRoute(item.route));
-      item.favourite = isFavourited;
-      item.hiddenByFavourite = isFavourited; // Safely hide original items
-    });
-
-    this.rebuildFavouritesSection();
-  }
-
-  private cloneForFavourite(item: ISidebarItem, parent: ISidebarItem): ISidebarItem {
-    const { children: _children, parent: _originalParent, ...rest } = item;
-
-    return {
-      ...rest,
-      parent,
-      children: undefined,
-      hidden: false,
-      hiddenByFavourite: false, // Ensure the bookmark copy is visible
-      type: 'item',
-      favourite: true,
-    };
-  }
-
-  private flattenItems(items: ISidebarItem[]): ISidebarItem[] {
-    return items.flatMap((item) => (item.children ? [item, ...this.flattenItems(item.children)] : [item]));
-  }
-
-  private getState(): DrawerStates {
-    const state = localStorage.getItem(DRAWER_STATE_KEY);
-    // Absent/corrupt storage means first use — start expanded so labels are visible.
-    return state === 'half' ? 'half' : 'full';
-  }
-
-  private initializeCollapsedDefaults(items: ISidebarItem[]) {
-    this.walkItems(items, (item) => {
-      if (this.initializedSections.has(item.name)) return;
-
-      this.initializedSections.add(item.name);
-
-      if (item.collapsed) {
-        this.collapsedSections.add(item.name);
-      }
-    });
-  }
-
-  private loadFavourites() {
-    const raw = localStorage.getItem(SIDEBAR_FAVOURITES_KEY);
-
-    if (raw) {
-      try {
-        const stored = JSON.parse(raw) as string[];
-        this.favourites = new Set(stored.map((route) => this.normalizeRoute(route)).filter(Boolean));
-      } catch {
-        this.favourites.clear();
-      }
-    }
-
-    this.applyFavouritesToItems(this.items);
-  }
-
-  private matchesRoute(url: string, route: string) {
-    const normalizedRoute = this.normalizeRoute(route);
-
-    if (normalizedRoute === '/') return url === '/';
-
-    return url === normalizedRoute || url.startsWith(`${normalizedRoute}/`);
-  }
-
-  private normalizeRoute(route: string) {
-    if (!route) return '';
-
-    const [pathWithHash = ''] = route.split('?');
-    const path = pathWithHash.split('#')[0]!;
-    const trimmed = path.endsWith('/') && path !== '/' ? path.slice(0, -1) : path;
-    return trimmed || '/';
-  }
-
-  private persistFavourites() {
-    localStorage.setItem(SIDEBAR_FAVOURITES_KEY, JSON.stringify([...this.favourites]));
-  }
-
-  private rebuildFavouritesSection() {
-    const currentItems = this.itemsSignal();
-    const favouritesSectionIndex = currentItems.findIndex((item) => item.type === 'bookmark');
-
-    if (favouritesSectionIndex === -1) return;
-
-    const favouritesSection = currentItems[favouritesSectionIndex]!;
-    const favouriteRoutes = new Set(this.favourites);
-
-    const favouriteItems = this.flattenItems(currentItems)
-      .filter((item) => item.type !== 'bookmark' && item.parent?.type !== 'bookmark')
-      .filter((item) => !!item.route && favouriteRoutes.has(this.normalizeRoute(item.route!)))
-      .map((item) => {
-        const clone = this.cloneForFavourite(item, favouritesSection);
-        clone.justPinned =
-          !!this.pendingAnimateRoute && !!item.route && this.normalizeRoute(item.route) === this.pendingAnimateRoute;
-        return clone;
-      });
-
-    const updatedSection: ISidebarItem = {
-      ...favouritesSection,
-      children: favouriteItems,
-      hidden: favouriteItems.length === 0,
-    };
-
-    const updatedItems = [...currentItems];
-    updatedItems[favouritesSectionIndex] = updatedSection;
-    this.itemsSignal.set(updatedItems);
-    // Entry animation is a one-shot; clear so subsequent rebuilds don't replay it.
-    this.pendingAnimateRoute = undefined;
-  }
-
-  private setState(state: DrawerStates) {
-    this.drawerStateSubject.set(state);
-    localStorage.setItem(DRAWER_STATE_KEY, state);
-    return state;
-  }
-
-  private updateItemFavourite(route: string, favourite: boolean) {
-    this.walkItems(this.items, (item) => {
-      if (item.type !== 'bookmark' && item.parent?.type !== 'bookmark') {
-        if (item.route && this.normalizeRoute(item.route) === route) {
-          item.favourite = favourite;
-          item.hiddenByFavourite = favourite;
-        }
-      }
-    });
-  }
-
-  private walkItems(items: ISidebarItem[], cb: (item: ISidebarItem) => void) {
-    items.forEach((item) => {
-      cb(item);
-      if (item.children?.length) {
-        this.walkItems(item.children, cb);
-      }
-    });
-  }
-}
-
-type DrawerStates = 'full' | 'half';
-
-const DRAWER_STATE_KEY = 'pc-drawerState';
-const SIDEBAR_FAVOURITES_KEY = 'pc-sidebar-favourites';
-```
-
 ## File: apps/frontend/src/app/routing/route-reuse-strategy.ts
 ```typescript
 import { Injectable, inject, Injector } from '@angular/core';
@@ -55444,173 +55738,6 @@ const trpcRetryClient = createTRPCClient<TRPCRouter>({
     }),
   ],
 });
-```
-
-## File: apps/frontend/src/app/services/api/trpc-service.ts
-```typescript
-import { inject, Service } from '@angular/core';
-import { Router } from '@angular/router';
-import { GENERIC_SIGNIN_ERROR, getAllOptionsType } from '../../../../../../libs/common/src';
-import { ErrorService } from '../error.service';
-import {
-  TRPCClient,
-  TRPCClientError,
-  TRPCLink,
-  createTRPCClient,
-  httpLink as trpcHttpLink,
-  loggerLink,
-} from '@trpc/client';
-import { observable } from '@trpc/server/observable';
-import superjson from 'superjson';
-
-import { get, set } from 'idb-keyval';
-
-import { TRPCRouter } from '../../../../../backend/src/app/modules/trpc';
-import { environment } from '../../../environments/environment';
-import { TokenService } from './token-service';
-import { refreshLink } from './trpc-refreshlink';
-import { ApiError } from './api-error';
-
-@Service()
-export class TRPCService<T> {
-  protected readonly errorSvc = inject(ErrorService);
-
-  protected readonly router = inject(Router);
-
-  protected readonly tokenService = inject(TokenService);
-
-  protected ac = new AbortController();
-
-  public readonly api: TRPCClient<TRPCRouter>;
-
-  constructor() {
-    this.api = createTRPCClient<TRPCRouter>({
-      links: [
-        // Dev-only: logs every tRPC op to the console. Disabled in production builds.
-        loggerLink({ enabled: () => !environment.production }),
-        // errorLink must sit OUTSIDE refreshLink: refreshLink transparently refreshes and retries
-        // an UNAUTHORIZED call once (e.g. after another tab rotated the session), and errorLink
-        // must only see the error — and redirect to /signin — when that retry has already failed.
-        errorLink(this.errorSvc),
-        refreshLink(this.tokenService, this.router),
-        httpUnbatchedLink(this.tokenService, () => this.ac.signal),
-      ],
-    });
-  }
-
-  public abort() {
-    this.ac.abort();
-    this.ac = new AbortController(); // create a fresh controller so future calls are not auto-aborted
-  }
-
-  protected async runCachedCall(
-    apiCall: Promise<Partial<T>[]>,
-    apiName: string,
-    options: getAllOptionsType,
-    refresh: boolean,
-  ) {
-    // Use the full serialized (apiName + options) as the IndexedDB key. IDB string
-    // keys can be arbitrarily long, so there's no need to fold it into a 32-bit hash
-    // — that hash collided, letting one query serve another query's cached rows.
-    const cacheKey = `trpc:${JSON.stringify({ apiName, ...options })}`;
-    const payload = await get(cacheKey);
-    let data = payload?.expires > Date.now() ? payload.data : null;
-
-    if (refresh || !data || data.length === 0) {
-      data = await apiCall;
-      await set(cacheKey, { expires: this.addDays(1), data });
-    }
-
-    return data;
-  }
-
-  private addDays(days: number) {
-    const date = new Date(Date.now());
-    date.setDate(date.getDate() + days);
-    return date;
-  }
-}
-
-function errorLink(errorSvc: ErrorService): TRPCLink<TRPCRouter> {
-  const GENERIC_INPUT_MSG = 'Please check your input and try again';
-
-  return () =>
-    ({ next, op }) =>
-      observable((observer) => {
-        const unsubscribe = next(op).subscribe({
-          next: (value) => observer.next(value),
-          error: (err) => {
-            const meta = op.context as { skipErrorHandler?: boolean } | undefined;
-            const path = op.path ?? '';
-            const isSignIn = path === 'auth.signIn' || path.endsWith('.signIn') || path === 'signIn';
-            let finalErr: any = err;
-            let code: string | undefined;
-
-            if (err instanceof TRPCClientError) {
-              code = err.data?.code as string | undefined;
-
-              let msg = err.message;
-              if (isSignIn && (code === 'BAD_REQUEST' || code === 'UNAUTHORIZED' || code === 'NOT_FOUND')) {
-                // Server formatter should already do this; this is just a client fallback
-                msg = GENERIC_SIGNIN_ERROR;
-              } else if (code === 'BAD_REQUEST') {
-                const isValidationError = (err.data as { isZodError?: boolean })?.isZodError;
-                if (isValidationError) {
-                  msg = GENERIC_INPUT_MSG;
-                }
-              }
-              finalErr = new ApiError(msg, err);
-            }
-
-            // Aborted requests (component teardown, superseded loads) are not
-            // user-facing failures — never toast or redirect them.
-            if (!isAbortError(err)) {
-              if (code === 'UNAUTHORIZED' && !isSignIn) {
-                // A dead session must sign the user out even when the caller passed skipErrorHandler:
-                // that flag suppresses the error toast, not the sign-out. redirectToSignIn() no-ops on
-                // public pages and de-dupes, so probes and public routes stay put.
-                errorSvc.redirectToSignIn();
-              } else if (!meta?.skipErrorHandler) {
-                errorSvc.handle(finalErr);
-              }
-            }
-
-            observer.error(finalErr);
-          },
-          complete: () => observer.complete(),
-        });
-        return unsubscribe;
-      });
-}
-
-function isAbortError(err: unknown): boolean {
-  if (err instanceof DOMException && err.name === 'AbortError') return true;
-  if (err instanceof TRPCClientError) {
-    const cause: unknown = err.cause;
-    return cause instanceof DOMException && cause.name === 'AbortError';
-  }
-  return false;
-}
-
-function httpUnbatchedLink(tokenSvc: TokenService, getAbortSignal: () => AbortSignal) {
-  return trpcHttpLink({
-    url: environment.apiUrl,
-    transformer: superjson,
-    // Combine the per-request signal tRPC provides with the service-level
-    // controller so TRPCService.abort() actually cancels in-flight requests.
-    // `credentials: 'include'` is required so the browser honors Set-Cookie on the
-    // sign-in/out responses and attaches the HttpOnly refresh cookie (SECURITY-REVIEW 2.1).
-    fetch(input, init) {
-      const signals: AbortSignal[] = [getAbortSignal()];
-      if (init?.signal) signals.push(init.signal);
-      return globalThis.fetch(input, { ...init, credentials: 'include', signal: AbortSignal.any(signals) });
-    },
-    headers() {
-      const authToken = tokenSvc.getAuthToken();
-      return authToken ? { Authorization: `Bearer ${authToken}` } : {};
-    },
-  });
-}
 ```
 
 ## File: apps/frontend/src/app/services/api/volunteer-service.ts
@@ -56911,56 +57038,6 @@ import { environment } from '../environments/environment';
 export const ENVIRONMENT = new InjectionToken<typeof environment>('ENVIRONMENT', { factory: () => environment });
 ```
 
-## File: apps/frontend/src/environments/environment.prod.ts
-```typescript
-export const environment = {
-  production: true,
-  // The backend has its own origin because tRPC is mounted at the root path '/' and can't share a
-  // host with the CRM's static SPA. The CRM SPA (app.pplcrm.com) reaches this cross-origin; CORS is
-  // locked to APP_URL and the refresh cookie is same-site (both under pplcrm.com).
-  apiUrl: 'https://api.pplcrm.com',
-  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
-  // The public submission surface (forms, events, volunteer signups, donations) lives on a dedicated
-  // domain at '<org>.pplforms.com'; this is the base the tenant subdomain hangs off of.
-  publicBaseDomain: 'pplforms.com',
-  // The volunteer companion apps (canvass /t/:token, deliveries /r/:token) are served on their own
-  // subdomain in production — they're a separate root-based SPA that can't share app.pplcrm.com's
-  // root with the CRM. companionUrl() builds shareable volunteer links against this origin.
-  companionOrigin: 'https://go.pplcrm.com',
-};
-```
-
-## File: apps/frontend/src/environments/environment.ts
-```typescript
-export const environment = {
-  production: false,
-  apiUrl: 'http://localhost:3000',
-  googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '',
-  // Base domain tenant subdomains hang off of, for building public page URLs (`<slug>.<baseDomain>`):
-  // forms, event RSVPs, volunteer signups, donations.
-  publicBaseDomain: 'localhost',
-  // The volunteer companion apps (canvass /t/:token, deliveries /r/:token) run on their own dev
-  // server (port 4300). In production they are path-routed on the CRM's own domain, so this is ''
-  // there and copied links use window.location.origin instead. See shared/public-pages.companionUrl.
-  companionOrigin: 'http://localhost:4300',
-};
-```
-
-## File: apps/frontend/src/import-meta.d.ts
-```typescript
-interface ImportMetaEnv {
-  // Named so it can be accessed with dot notation (import.meta.env.VITE_GOOGLE_MAPS_API_KEY) — the
-  // production build replaces that exact expression via esbuild `define` (project.json), and dot
-  // access is what `define` matches. The index signature below still covers any other VITE_* key.
-  readonly VITE_GOOGLE_MAPS_API_KEY: string;
-  readonly [key: string]: string;
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
-```
-
 ## File: apps/frontend/src/index.html
 ```html
 <!doctype html>
@@ -57153,121 +57230,6 @@ const config: Config = {
 export default config;
 ```
 
-## File: apps/frontend/project.json
-```json
-{
-  "name": "frontend",
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "projectType": "application",
-  "prefix": "pplcrm",
-  "sourceRoot": "apps/frontend/src",
-  "tags": [],
-  "targets": {
-    "generate-context": {
-      "executor": "nx:run-commands",
-      "options": {
-        "command": "npx repomix --output apps/frontend/STRUCTURE.md --include \"apps/frontend/src/**/*\" --ignore \"apps/backend/**,apps/libs/**,libs/**,**/STRUCTURE.md,**/*.spec.ts\" --style markdown"
-      }
-    },
-    "build": {
-      "executor": "@angular/build:application",
-      "dependsOn": ["generate-context"],
-      "outputs": ["{options.outputPath}"],
-      "defaultConfiguration": "production",
-      "options": {
-        "outputPath": "dist/apps/frontend",
-        "index": "apps/frontend/src/index.html",
-        "browser": "apps/frontend/src/main.ts",
-        "tsConfig": "apps/frontend/tsconfig.app.json",
-        "assets": ["apps/frontend/src/favicon.ico", "apps/frontend/src/assets"],
-        "styles": ["apps/frontend/src/styles.css"],
-        "scripts": [],
-        "polyfills": ["@angular/localize/init"],
-        "define": {
-          "import.meta.env.VITE_GOOGLE_MAPS_API_KEY": "\"__PPLCRM_MAPS_KEY__\""
-        }
-      },
-      "configurations": {
-        "production": {
-          "optimization": {
-            "scripts": true,
-            "styles": {
-              "minify": true,
-              "inlineCritical": false
-            },
-            "fonts": {
-              "inline": false
-            }
-          },
-          "budgets": [
-            {
-              "type": "initial",
-              "maximumWarning": "3mb",
-              "maximumError": "4mb"
-            },
-            {
-              "type": "anyComponentStyle",
-              "maximumWarning": "2kb",
-              "maximumError": "4kb"
-            }
-          ],
-          "outputHashing": "all",
-          "fileReplacements": [
-            {
-              "replace": "apps/frontend/src/environments/environment.ts",
-              "with": "apps/frontend/src/environments/environment.prod.ts"
-            }
-          ]
-        },
-        "development": {
-          "optimization": false,
-          "extractLicenses": false,
-          "sourceMap": true
-        }
-      }
-    },
-    "serve": {
-      "executor": "@angular/build:dev-server",
-      "defaultConfiguration": "development",
-      "options": {
-        "buildTarget": "frontend:build",
-        "port": 4200
-      },
-      "configurations": {
-        "production": {
-          "buildTarget": "frontend:build:production"
-        },
-        "development": {
-          "buildTarget": "frontend:build:development"
-        }
-      }
-    },
-    "test": {
-      "executor": "nx:run-commands",
-      "cache": true,
-      "outputs": ["{workspaceRoot}/coverage/apps/frontend"],
-      "options": {
-        "cwd": "apps/frontend",
-        "command": "vitest run"
-      }
-    },
-    "extract-i18n": {
-      "executor": "@angular/build:extract-i18n",
-      "options": {
-        "buildTarget": "frontend:build"
-      }
-    },
-    "lint": {
-      "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
-      "options": {
-        "lintFilePatterns": ["apps/frontend/**/*.ts", "apps/frontend/**/*.html"]
-      }
-    }
-  }
-}
-```
-
 ## File: apps/frontend/vite.config.ts
 ```typescript
 /// <reference types='vitest' />
@@ -57325,6 +57287,44 @@ export default defineConfig(() => ({
     },
   },
 }));
+```
+
+## File: apps/frontend-e2e/playwright.config.ts
+```typescript
+import { defineConfig, devices } from '@playwright/test';
+
+const isCI = !!process.env.CI;
+
+export default defineConfig({
+  testDir: './src',
+  fullyParallel: true,
+  forbidOnly: isCI,
+  // CI gates deploys on this suite (.github/workflows/verify.yml), so a single infrastructure
+  // hiccup shouldn't block a release — but retries stay off locally, where a flake is a signal
+  // worth seeing rather than papering over.
+  retries: isCI ? 2 : 0,
+  reporter: isCI ? [['list'], ['html', { open: 'never' }]] : 'list',
+  use: {
+    baseURL: 'http://localhost:4200',
+    // Only kept for a retried (i.e. already-suspect) test — traces are large and the happy path
+    // doesn't need them.
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+  },
+  webServer: {
+    command: 'npx nx serve frontend',
+    url: 'http://localhost:4200',
+    reuseExistingServer: !isCI,
+    // A cold CI runner compiling the Angular app blows straight past Playwright's 60s default.
+    timeout: isCI ? 300_000 : 120_000,
+  },
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+    },
+  ],
+});
 ```
 
 ## File: apps/website/src/app/company/about-page.html
@@ -70910,6 +70910,7 @@ export function tryImportHtmlToBlocks(html: string): EmailBlock[] | null {
           <label class="label text-xs font-semibold py-1">Text Content</label>
           @if (block.type === 'heading') {
           <input
+            #contentField
             type="text"
             class="input input-bordered w-full input-sm"
             [value]="block.content ?? ''"
@@ -70917,6 +70918,7 @@ export function tryImportHtmlToBlocks(html: string): EmailBlock[] | null {
           />
           } @else {
           <textarea
+            #contentField
             class="textarea textarea-bordered w-full textarea-sm min-h-24"
             [value]="block.content ?? ''"
             (input)="setBlockText(block, 'content', $event)"
@@ -70930,54 +70932,17 @@ export function tryImportHtmlToBlocks(html: string): EmailBlock[] | null {
               <span class="text-[9px] text-base-content/50">Tip: Use &#123;FirstName|Friend&#125; for fallbacks</span>
             </div>
             <div class="flex flex-wrap gap-1">
+              @for (variable of textVariables; track variable.name) {
               <button
                 type="button"
                 class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'FirstName')"
-                title="Click to insert First Name placeholder"
+                (mousedown)="$event.preventDefault()"
+                (click)="insertVariable(block, variable.name)"
+                [title]="'Insert ' + variable.label + ' at the cursor'"
               >
-                + First Name
+                + {{ variable.label }}
               </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'LastName')"
-                title="Click to insert Last Name placeholder"
-              >
-                + Last Name
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'Email')"
-                title="Click to insert Email placeholder"
-              >
-                + Email
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'Company')"
-                title="Click to insert Company placeholder"
-              >
-                + Company
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'JobTitle')"
-                title="Click to insert Job Title placeholder"
-              >
-                + Job Title
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'Phone')"
-                title="Click to insert Phone placeholder"
-              >
-                + Phone
-              </button>
+              }
             </div>
           </div>
         </div>
@@ -71104,6 +71069,7 @@ export function tryImportHtmlToBlocks(html: string): EmailBlock[] | null {
         <div class="form-control">
           <label class="label text-xs font-semibold py-1">Button Text</label>
           <input
+            #contentField
             type="text"
             class="input input-bordered w-full input-sm"
             [value]="block.content ?? ''"
@@ -71117,30 +71083,17 @@ export function tryImportHtmlToBlocks(html: string): EmailBlock[] | null {
               <span class="text-[9px] text-base-content/50">Tip: Use &#123;FirstName|Friend&#125; for fallbacks</span>
             </div>
             <div class="flex flex-wrap gap-1">
+              @for (variable of buttonVariables; track variable.name) {
               <button
                 type="button"
                 class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'FirstName')"
-                title="Click to insert First Name placeholder"
+                (mousedown)="$event.preventDefault()"
+                (click)="insertVariable(block, variable.name)"
+                [title]="'Insert ' + variable.label + ' at the cursor'"
               >
-                + First Name
+                + {{ variable.label }}
               </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'LastName')"
-                title="Click to insert Last Name placeholder"
-              >
-                + Last Name
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
-                (click)="insertVariable(block, 'Email')"
-                title="Click to insert Email placeholder"
-              >
-                + Email
-              </button>
+              }
             </div>
           </div>
         </div>
@@ -71340,7 +71293,18 @@ export function tryImportHtmlToBlocks(html: string): EmailBlock[] | null {
 ```typescript
 import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, type CdkDragDrop } from '@angular/cdk/drag-drop';
 import { CdkScrollable } from '@angular/cdk/scrolling';
-import { Component, OnInit, computed, inject, model, signal } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  Injector,
+  OnInit,
+  afterNextRender,
+  computed,
+  inject,
+  model,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { Icon } from '@icons/icon';
 import type { PcIconNameType } from '@icons/icons.index';
 import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
@@ -71363,6 +71327,12 @@ import {
   compileBlocksToHtml,
   compileBlocksToPlainText,
 } from './newsletter-templates';
+
+/** One merge field in the quick-insert panel; clicking the chip drops `{name}` at the caret. */
+interface MergeVariable {
+  name: string;
+  label: string;
+}
 
 /** One palette entry: the tile in the Blocks tab and the "+" insert menu both render from this. */
 interface PaletteEntry {
@@ -71453,9 +71423,50 @@ export class VisualNewsletterEditorComponent implements OnInit {
     });
   }
 
+  /** Merge fields offered for heading/paragraph copy. */
+  protected readonly textVariables: readonly MergeVariable[] = [
+    { name: 'FirstName', label: 'First Name' },
+    { name: 'LastName', label: 'Last Name' },
+    { name: 'Email', label: 'Email' },
+    { name: 'Company', label: 'Company' },
+    { name: 'JobTitle', label: 'Job Title' },
+    { name: 'Phone', label: 'Phone' },
+  ];
+
+  /** A CTA label only ever personalises on identity, so buttons get the first three. */
+  protected readonly buttonVariables: readonly MergeVariable[] = this.textVariables.slice(0, 3);
+
+  /** The content input/textarea of the selected block — only one is rendered at a time. */
+  private readonly contentField = viewChild<ElementRef<HTMLInputElement | HTMLTextAreaElement>>('contentField');
+
+  private readonly injector = inject(Injector);
+
+  /**
+   * Drops `{Variable}` at the caret (replacing any selection) and leaves the caret just after it.
+   * The chips suppress mousedown so the field keeps focus; when it doesn't have focus — the user
+   * never clicked into it — we append instead of silently writing at position 0.
+   */
   protected insertVariable(block: EmailBlock, variableName: string): void {
-    block.content = (block.content || '') + `{${variableName}}`;
+    const token = `{${variableName}}`;
+    const current = block.content ?? '';
+    const field = this.contentField()?.nativeElement;
+    const focused = field != null && field.ownerDocument.activeElement === field;
+    const start = focused ? (field.selectionStart ?? current.length) : current.length;
+    const end = focused ? (field.selectionEnd ?? start) : current.length;
+
+    block.content = current.slice(0, start) + token + current.slice(end);
     this.updateBlocks();
+
+    if (!field) return;
+    const caret = start + token.length;
+    // Angular rewrites [value] on the next render, which would push the caret to the end.
+    afterNextRender(
+      () => {
+        field.focus();
+        field.setSelectionRange(caret, caret);
+      },
+      { injector: this.injector },
+    );
   }
 
   private readonly settingsSvc = inject(SettingsService);
@@ -79769,20 +79780,23 @@ export const PRIVACY_DOC: LegalDoc = {
       {{ isEditing ? editName() || 'Untitled newsletter' : 'New newsletter' }}
     </h1>
 
-    <!-- Pill steps: current = solid, completed = tint & clickable, future = muted & locked (narrates why) -->
+    <!-- Pill steps: current = solid, already-reached = tint & clickable, not-yet-reached = muted & locked
+         (narrates why). Reachability is the high-water mark, not the current step, so stepping Back
+         doesn't re-lock a step you already completed. -->
     <ol class="mt-4 hidden flex-wrap gap-2 sm:flex">
       @for (label of steps; track label; let idx = $index) { @let stepNo = idx + 1; @let isCurrent = currentStep() ===
-      stepNo; @let isDone = currentStep() > stepNo; @let isLocked = stepNo > currentStep();
+      stepNo; @let isDone = currentStep() > stepNo; @let isLocked = !canReachStep(stepNo); @let isUnlocked = !isCurrent
+      && !isLocked;
       <li>
         <button
           type="button"
           class="flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors"
           [class.bg-primary]="isCurrent"
           [class.text-primary-content]="isCurrent"
-          [class.bg-primary/10]="isDone"
-          [class.text-primary]="isDone"
-          [class.cursor-pointer]="isDone"
-          [class.hover:bg-primary/20]="isDone"
+          [class.bg-primary/10]="isUnlocked"
+          [class.text-primary]="isUnlocked"
+          [class.cursor-pointer]="isUnlocked"
+          [class.hover:bg-primary/20]="isUnlocked"
           [class.bg-base-200]="isLocked"
           [class.text-base-content/50]="isLocked"
           [class.cursor-not-allowed]="isLocked"
@@ -79795,7 +79809,7 @@ export const PRIVACY_DOC: LegalDoc = {
           <span
             class="flex h-5 w-5 items-center justify-center rounded-full text-xs font-semibold"
             [class.bg-primary-content/25]="isCurrent"
-            [class.bg-primary/15]="isDone"
+            [class.bg-primary/15]="isUnlocked"
             [class.bg-base-300]="isLocked"
           >
             @if (isDone) { <pc-icon name="check-circle" [size]="3"></pc-icon> } @else { {{ stepNo }} }
@@ -82103,6 +82117,11 @@ export class NewsletterAddComponent implements OnInit {
   protected readonly availableLists = signal<Array<{ id: string; name: string; size: number }>>([]);
   protected readonly availableTags = signal<Array<{ id: string; name: string; usage: number }>>([]);
   protected readonly currentStep = signal<StepIndex>(1);
+  /**
+   * High-water mark: the furthest step the wizard has ever reached. Stepping back must not re-lock
+   * a step you already completed — otherwise "Back" silently throws away progress you can see.
+   */
+  protected readonly furthestStep = signal<StepIndex>(1);
   protected readonly excludeListIds = computed(() => this.regularPayload().excludeLists);
   protected readonly excludeTagsList = computed(() => this.regularPayload().excludeTags);
   protected readonly includeListIds = computed(() => this.regularPayload().includeLists);
@@ -82232,30 +82251,39 @@ export class NewsletterAddComponent implements OnInit {
     }
   }
 
-  /** Route-level leave guard (wired via unsavedChangesGuard in dashboard.routes.ts). */
-  public canDeactivate(): Promise<boolean> {
-    if (!this.dirty()) return Promise.resolve(true);
-    return this.confirmDlg.confirm({
+  /**
+   * Route-level leave guard (wired via unsavedChangesGuard in dashboard.routes.ts).
+   * Offers the way out of the trap, not just the two ways to lose: saving the draft
+   * is the emphasized default, discarding is the de-emphasized escape.
+   */
+  public async canDeactivate(): Promise<boolean> {
+    if (!this.dirty()) return true;
+    const choice = await this.confirmDlg.choose<LeaveChoice>({
       title: 'Leave without saving?',
       message:
-        'Your changes to your draft newsletter (template, audience and copy) will be lost. Save it as a draft to keep working on it later.',
+        'Your changes to your draft newsletter (template, audience and copy) are not saved yet. Save it as a draft to keep working on it later.',
       variant: 'warning',
-      confirmText: 'Discard draft',
+      choices: [
+        { label: 'Save draft', value: 'save', variant: 'info' },
+        { label: 'Discard draft', value: 'discard', variant: 'warning' },
+      ],
       cancelText: 'Keep editing',
-      emphasizeCancel: true,
     });
+    // A failed save keeps the user on the wizard with their work intact (the toast says why).
+    if (choice === 'save') return this.persistDraft();
+    return choice === 'discard';
   }
 
   // --- Step navigation ------------------------------------------------------
 
   protected canReachStep(step: number): boolean {
-    return step <= this.currentStep();
+    return step <= this.furthestStep();
   }
 
   protected goToStep(targetStep: number): void {
-    // Completed or current steps are clickable; future steps stay locked (they narrate why via tooltip).
+    // Anything already reached is clickable; steps beyond it stay locked (they narrate why via tooltip).
     if (this.canReachStep(targetStep)) {
-      this.currentStep.set(targetStep as StepIndex);
+      this.setStep(targetStep as StepIndex);
     }
   }
 
@@ -82264,7 +82292,7 @@ export class NewsletterAddComponent implements OnInit {
     if (step === 1) {
       this.close();
     } else {
-      this.currentStep.set((step - 1) as StepIndex);
+      this.setStep((step - 1) as StepIndex);
     }
   }
 
@@ -82275,13 +82303,19 @@ export class NewsletterAddComponent implements OnInit {
 
     if (step >= this.stepIds.length) return;
     this.showFieldErrors.set(false);
-    this.currentStep.set((step + 1) as StepIndex);
+    this.setStep((step + 1) as StepIndex);
   }
 
   /** Jump to a step by meaning, not number. */
   private goToStepId(id: WizardStepId): void {
     const index = this.stepIds.indexOf(id);
-    if (index >= 0) this.currentStep.set((index + 1) as StepIndex);
+    if (index >= 0) this.setStep((index + 1) as StepIndex);
+  }
+
+  /** The single writer for step state, so the high-water mark can never drift from where we've been. */
+  private setStep(step: StepIndex): void {
+    this.currentStep.set(step);
+    if (step > this.furthestStep()) this.furthestStep.set(step);
   }
 
   // --- Template -------------------------------------------------------------
@@ -82679,9 +82713,18 @@ export class NewsletterAddComponent implements OnInit {
   // --- Save draft -----------------------------------------------------------
 
   protected async saveDraft(): Promise<void> {
-    if (this.saving()) return;
+    if (await this.persistDraft()) this.close();
+  }
+
+  /**
+   * Writes the wizard's current state as a draft and reports whether it landed. Kept separate from
+   * saveDraft() so the leave guard can save without navigating itself (the router is already
+   * navigating), and can keep the user here when the save fails.
+   */
+  private async persistDraft(): Promise<boolean> {
+    if (this.saving()) return false;
     // Edit mode: never write an empty payload over the draft before hydration lands.
-    if (this.isEditing && !this.editLoaded()) return;
+    if (this.isEditing && !this.editLoaded()) return false;
     const raw = this.regularPayload();
     const subject = raw.subject || 'Untitled draft';
     this.saving.set(true);
@@ -82696,9 +82739,10 @@ export class NewsletterAddComponent implements OnInit {
       this.alertSvc.showSuccess(
         this.editId ? `Saved draft "${subject}"` : `Saved draft "${subject}". Find it in Newsletters`,
       );
-      this.close();
+      return true;
     } catch (err) {
       this.alertSvc.showError(this.errorMessage(err, 'We could not save your draft. Try again.'));
+      return false;
     } finally {
       this.saving.set(false);
     }
@@ -82828,7 +82872,10 @@ export class NewsletterAddComponent implements OnInit {
       }));
       this.editName.set(name);
       // The template step is moot for an existing draft; its saved content is the design.
-      this.currentStep.set(2);
+      this.setStep(2);
+      // A saved draft already carries content, audience and details, so nothing is "not yet reached" —
+      // reopening one must not re-lock the steps the user had already worked through.
+      this.furthestStep.set(this.stepIds.length as StepIndex);
       this.editLoaded.set(true);
       this.dirty.set(false);
     } catch (err) {
@@ -83133,6 +83180,9 @@ type TemplatePreset = 'welcome' | 'product' | 'newsletter' | 'empty';
 type TemplateSelection = { kind: 'preset'; id: TemplatePreset } | { kind: 'saved'; id: string };
 
 type TimingMode = 'now' | 'schedule';
+
+/** The two ways out of the leave guard; cancelling it (Keep editing) resolves to null instead. */
+type LeaveChoice = 'save' | 'discard';
 
 interface RegularNewsletterPayload {
   subject: string;

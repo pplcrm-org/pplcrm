@@ -1,6 +1,17 @@
 import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, type CdkDragDrop } from '@angular/cdk/drag-drop';
 import { CdkScrollable } from '@angular/cdk/scrolling';
-import { Component, OnInit, computed, inject, model, signal } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  Injector,
+  OnInit,
+  afterNextRender,
+  computed,
+  inject,
+  model,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { Icon } from '@icons/icon';
 import type { PcIconNameType } from '@icons/icons.index';
 import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
@@ -23,6 +34,12 @@ import {
   compileBlocksToHtml,
   compileBlocksToPlainText,
 } from './newsletter-templates';
+
+/** One merge field in the quick-insert panel; clicking the chip drops `{name}` at the caret. */
+interface MergeVariable {
+  name: string;
+  label: string;
+}
 
 /** One palette entry: the tile in the Blocks tab and the "+" insert menu both render from this. */
 interface PaletteEntry {
@@ -113,9 +130,50 @@ export class VisualNewsletterEditorComponent implements OnInit {
     });
   }
 
+  /** Merge fields offered for heading/paragraph copy. */
+  protected readonly textVariables: readonly MergeVariable[] = [
+    { name: 'FirstName', label: 'First Name' },
+    { name: 'LastName', label: 'Last Name' },
+    { name: 'Email', label: 'Email' },
+    { name: 'Company', label: 'Company' },
+    { name: 'JobTitle', label: 'Job Title' },
+    { name: 'Phone', label: 'Phone' },
+  ];
+
+  /** A CTA label only ever personalises on identity, so buttons get the first three. */
+  protected readonly buttonVariables: readonly MergeVariable[] = this.textVariables.slice(0, 3);
+
+  /** The content input/textarea of the selected block — only one is rendered at a time. */
+  private readonly contentField = viewChild<ElementRef<HTMLInputElement | HTMLTextAreaElement>>('contentField');
+
+  private readonly injector = inject(Injector);
+
+  /**
+   * Drops `{Variable}` at the caret (replacing any selection) and leaves the caret just after it.
+   * The chips suppress mousedown so the field keeps focus; when it doesn't have focus — the user
+   * never clicked into it — we append instead of silently writing at position 0.
+   */
   protected insertVariable(block: EmailBlock, variableName: string): void {
-    block.content = (block.content || '') + `{${variableName}}`;
+    const token = `{${variableName}}`;
+    const current = block.content ?? '';
+    const field = this.contentField()?.nativeElement;
+    const focused = field != null && field.ownerDocument.activeElement === field;
+    const start = focused ? (field.selectionStart ?? current.length) : current.length;
+    const end = focused ? (field.selectionEnd ?? start) : current.length;
+
+    block.content = current.slice(0, start) + token + current.slice(end);
     this.updateBlocks();
+
+    if (!field) return;
+    const caret = start + token.length;
+    // Angular rewrites [value] on the next render, which would push the caret to the end.
+    afterNextRender(
+      () => {
+        field.focus();
+        field.setSelectionRange(caret, caret);
+      },
+      { injector: this.injector },
+    );
   }
 
   private readonly settingsSvc = inject(SettingsService);

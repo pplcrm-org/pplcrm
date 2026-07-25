@@ -330,6 +330,47 @@ describe('VisualNewsletterEditorComponent', () => {
       expect(updated?.content ?? '').toContain('{FirstName}');
     });
 
+    /** Selects a paragraph block, renders its editor, and hands back the block + its textarea. */
+    function selectTextBlock(text: string): { block: EmailBlock; field: HTMLTextAreaElement } {
+      const block = component['blocks']().find((b) => b.type === 'text');
+      if (!block) throw new Error('Expected the welcome template to seed a text block');
+      block.content = text;
+      component['selectBlock'](block.id);
+      fixture.detectChanges();
+
+      const field = fixture.nativeElement.querySelector('textarea');
+      if (!(field instanceof HTMLTextAreaElement)) throw new Error('Expected the text block editor to render');
+      return { block, field };
+    }
+
+    it('should insert the placeholder at the caret when the content field has focus', () => {
+      const { block, field } = selectTextBlock('Hello there');
+      field.focus();
+      field.setSelectionRange(6, 6); // right before "there"
+
+      component['insertVariable'](block, 'FirstName');
+
+      expect(component['blocks']().find((b) => b.id === block.id)?.content).toBe('Hello {FirstName}there');
+    });
+
+    it('should replace the selected text when the caret spans a range', () => {
+      const { block, field } = selectTextBlock('Hello there');
+      field.focus();
+      field.setSelectionRange(6, 11); // "there"
+
+      component['insertVariable'](block, 'FirstName');
+
+      expect(component['blocks']().find((b) => b.id === block.id)?.content).toBe('Hello {FirstName}');
+    });
+
+    it('should append the placeholder when the content field never had focus', () => {
+      const { block } = selectTextBlock('Hello there');
+
+      component['insertVariable'](block, 'FirstName');
+
+      expect(component['blocks']().find((b) => b.id === block.id)?.content).toBe('Hello there{FirstName}');
+    });
+
     it('should resolve a known variable to its mock value in preview text', () => {
       const resolved = component['resolveVariablesForPreview']('Hello {FirstName}!');
       expect(resolved).toContain('John');

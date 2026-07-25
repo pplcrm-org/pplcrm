@@ -19,6 +19,7 @@ describe('NewsletterAddComponent', () => {
   let mockTagsSvc: { getAll: ReturnType<typeof vi.fn> };
   let mockNewslettersSvc: {
     add: ReturnType<typeof vi.fn>;
+    getById: ReturnType<typeof vi.fn>;
     send: ReturnType<typeof vi.fn>;
     sendTest: ReturnType<typeof vi.fn>;
     getTemplates: ReturnType<typeof vi.fn>;
@@ -28,7 +29,7 @@ describe('NewsletterAddComponent', () => {
   let mockRouter: { navigate: ReturnType<typeof vi.fn>; navigateByUrl: ReturnType<typeof vi.fn> };
   let mockActivatedRoute: unknown;
   let mockAuthSvc: { getUser: ReturnType<typeof vi.fn>; getUserSignal: () => () => unknown };
-  let mockConfirmDlg: { confirm: ReturnType<typeof vi.fn> };
+  let mockConfirmDlg: { confirm: ReturnType<typeof vi.fn>; choose: ReturnType<typeof vi.fn> };
   let mockSettingsSvc: { load: ReturnType<typeof vi.fn>; getValue: ReturnType<typeof vi.fn> };
 
   const validDetails = { subject: 'Big News', fromName: 'Jane', fromAddress: 'jane@example.com' };
@@ -70,6 +71,7 @@ describe('NewsletterAddComponent', () => {
     };
     mockNewslettersSvc = {
       add: vi.fn().mockResolvedValue({ id: 'nl-1' }),
+      getById: vi.fn().mockResolvedValue(null),
       send: vi.fn().mockResolvedValue({ success: true }),
       sendTest: vi.fn().mockResolvedValue({ to: 'me@example.com', delivered: 1 }),
       getTemplates: vi.fn().mockResolvedValue([savedTemplate]),
@@ -82,7 +84,7 @@ describe('NewsletterAddComponent', () => {
       getUser: vi.fn().mockReturnValue({ email: 'me@example.com' }),
       getUserSignal: () => () => ({ email: 'me@example.com', tenant_demo_mode_at: null }),
     };
-    mockConfirmDlg = { confirm: vi.fn().mockResolvedValue(true) };
+    mockConfirmDlg = { confirm: vi.fn().mockResolvedValue(true), choose: vi.fn().mockResolvedValue(null) };
     mockSettingsSvc = {
       load: vi.fn().mockResolvedValue({}),
       getValue: vi.fn((_key: string, fallback: unknown) => fallback),
@@ -228,14 +230,43 @@ describe('NewsletterAddComponent', () => {
     expect(component['currentStep']()).toBe(4);
   });
 
-  it('only lets you jump to completed or current steps, never a locked future step', () => {
-    component['currentStep'].set(2);
+  it('only lets you jump to steps you have reached, never one you have not', () => {
+    component['handleNext'](); // template -> content
 
-    component['goToStep'](4); // locked future step
+    component['goToStep'](4); // never reached
     expect(component['currentStep']()).toBe(2);
 
     component['goToStep'](1); // completed step
     expect(component['currentStep']()).toBe(1);
+  });
+
+  it('keeps a step reachable after stepping back off it', () => {
+    patchPayload(validDetails);
+    component['handleNext'](); // -> content
+    component['handleNext'](); // -> audience
+    component['handleBack'](); // back to content
+
+    expect(component['currentStep']()).toBe(2);
+    expect(component['canReachStep'](3)).toBe(true);
+
+    component['goToStep'](3);
+    expect(component['currentStep']()).toBe(3);
+  });
+
+  it('unlocks every step when an existing draft is reopened for editing', async () => {
+    mockNewslettersSvc.getById.mockResolvedValueOnce({
+      id: 'nl-1',
+      name: 'Spring update',
+      status: 'draft',
+      subject: 'Spring update',
+      html_content: '<p>hi</p>',
+    });
+
+    await component['loadDraft']('nl-1');
+
+    expect(component['currentStep']()).toBe(2);
+    expect(component['canReachStep'](3)).toBe(true);
+    expect(component['canReachStep'](4)).toBe(true);
   });
 
   it('adds and removes included lists, refreshing the audience estimate', () => {
@@ -367,17 +398,55 @@ describe('NewsletterAddComponent', () => {
 
   it('lets you leave freely when nothing has changed', async () => {
     await expect(component.canDeactivate()).resolves.toBe(true);
-    expect(mockConfirmDlg.confirm).not.toHaveBeenCalled();
+    expect(mockConfirmDlg.choose).not.toHaveBeenCalled();
   });
 
-  it('guards against losing an in-progress draft on leave', async () => {
+  it('offers saving, discarding or staying when leaving with an in-progress draft', async () => {
     component['selectTemplate']('product'); // a real user edit marks the wizard dirty
 
-    await component.canDeactivate();
+    await expect(component.canDeactivate()).resolves.toBe(false); // choose() resolves null = Keep editing
 
-    expect(mockConfirmDlg.confirm).toHaveBeenCalledWith(
-      expect.objectContaining({ cancelText: 'Keep editing', emphasizeCancel: true }),
+    expect(mockConfirmDlg.choose).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cancelText: 'Keep editing',
+        choices: [
+          { label: 'Save draft', value: 'save', variant: 'info' },
+          { label: 'Discard draft', value: 'discard', variant: 'warning' },
+        ],
+      }),
     );
+  });
+
+  it('saves the draft and then leaves when you pick Save draft on the way out', async () => {
+    patchPayload(validDetails);
+    component['selectTemplate']('product');
+    mockConfirmDlg.choose.mockResolvedValueOnce('save');
+
+    await expect(component.canDeactivate()).resolves.toBe(true);
+
+    expect(mockNewslettersSvc.add).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
+    expect(component['dirty']()).toBe(false);
+  });
+
+  it('keeps you on the wizard when the leave-time draft save fails', async () => {
+    patchPayload(validDetails);
+    component['selectTemplate']('product');
+    mockConfirmDlg.choose.mockResolvedValueOnce('save');
+    mockNewslettersSvc.add.mockRejectedValueOnce(new Error('Save failed'));
+
+    await expect(component.canDeactivate()).resolves.toBe(false);
+
+    expect(mockAlertSvc.showError).toHaveBeenCalledWith('Save failed');
+    expect(component['dirty']()).toBe(true);
+  });
+
+  it('discards the draft when you pick Discard draft', async () => {
+    component['selectTemplate']('product');
+    mockConfirmDlg.choose.mockResolvedValueOnce('discard');
+
+    await expect(component.canDeactivate()).resolves.toBe(true);
+
+    expect(mockNewslettersSvc.add).not.toHaveBeenCalled();
   });
 
   it('navigates to the parent route on close', () => {
