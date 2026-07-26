@@ -86,6 +86,12 @@ export const UpsertCampaignPersonFactObj = z.object({
 export const SUBSCRIPTION_STATUSES = ['subscribed', 'pending', 'unsubscribed'] as const;
 export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
 
+export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
+  subscribed: 'Subscribed',
+  pending: 'Pending confirmation',
+  unsubscribed: 'Unsubscribed',
+};
+
 export const CONSENT_SOURCES = ['form', 'import', 'manual', 'copied'] as const;
 export type ConsentSource = (typeof CONSENT_SOURCES)[number];
 

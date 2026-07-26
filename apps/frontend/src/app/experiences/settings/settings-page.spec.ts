@@ -294,4 +294,74 @@ describe('SettingsPage', () => {
     expect(newComponent['currentMode']).toBe('workspace');
     expect(newComponent['selectedSectionId']()).toBe('billing');
   });
+
+  /**
+   * The From picker must offer exactly what the server will accept. Bulk mail needs DMARC
+   * alignment, which is a property of the DOMAIN, so a verified single address on an unverified
+   * domain is a reply-to and nothing more. Offering it as a From address would be offering a
+   * choice that saves and then fails at send time.
+   */
+  describe('sending identity', () => {
+    const withSnapshot = async (extra: Record<string, unknown>) => {
+      snapshotSignalValue.set({ ...snapshotSignalValue(), ...extra });
+      fixture.detectChanges();
+      await fixture.whenStable();
+    };
+
+    it('offers only addresses on a verified domain as From addresses', async () => {
+      await withSnapshot({
+        'communications.verified_emails': ['news@vote-jane.org', 'someone@gmail.com'],
+        'communications.verified_domains': [{ domain: 'vote-jane.org', status: 'verified' }],
+      });
+
+      expect(component['sendableFromAddresses']()).toEqual(['news@vote-jane.org']);
+      // ...and names the one it left out, rather than silently dropping it.
+      expect(component['unusableFromAddresses']()).toEqual(['someone@gmail.com']);
+    });
+
+    it('treats a pending domain as not verified', async () => {
+      await withSnapshot({
+        'communications.verified_emails': ['news@vote-jane.org'],
+        'communications.verified_domains': [{ domain: 'vote-jane.org', status: 'pending' }],
+      });
+
+      expect(component['sendableFromAddresses']()).toEqual([]);
+    });
+
+    it('surfaces the platform address when the server supplies one', async () => {
+      await withSnapshot({ 'communications.platform_from_email': 'riverside@send.pplcrm.com' });
+
+      expect(component['platformFromEmail']()).toBe('riverside@send.pplcrm.com');
+
+      const comms = component['sectionStates'].find((s: any) => s.config.id === 'communications');
+      const fromField = comms.config.fields.find((f: any) => f.key === 'communications.default_from_email');
+      expect(fromField.options.some((o: any) => o.value === 'riverside@send.pplcrm.com')).toBe(true);
+    });
+
+    it('offers no platform address when the feature is off', async () => {
+      await withSnapshot({ 'communications.platform_from_email': null });
+      expect(component['platformFromEmail']()).toBeNull();
+    });
+
+    // The send guard refuses this combination; the page has to say so at the point of choice.
+    it('flags a missing reply-to only while the platform address is selected', async () => {
+      await withSnapshot({ 'communications.platform_from_email': 'riverside@send.pplcrm.com' });
+      const comms = component['sectionStates'].find((s: any) => s.config.id === 'communications');
+
+      comms.payload.set({ 'communications.default_from_email': 'riverside@send.pplcrm.com' });
+      expect(component['usingPlatformFrom']()).toBe(true);
+      expect(component['platformFromNeedsReplyTo']()).toBe(true);
+
+      comms.payload.set({
+        'communications.default_from_email': 'riverside@send.pplcrm.com',
+        'communications.reply_to': 'office@riverside.example',
+      });
+      expect(component['platformFromNeedsReplyTo']()).toBe(false);
+
+      // Sending from your own domain carries its own identity, so no reply-to is required.
+      comms.payload.set({ 'communications.default_from_email': 'news@vote-jane.org' });
+      expect(component['usingPlatformFrom']()).toBe(false);
+      expect(component['platformFromNeedsReplyTo']()).toBe(false);
+    });
+  });
 });

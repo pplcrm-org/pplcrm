@@ -21,6 +21,7 @@ import { FilesRepo } from '../../../modules/files/repositories/files.repo';
 import { StorageService } from '../../storage.service';
 import { getPlanDef } from '@common';
 import { getPlanLimits } from '../../../modules/billing/usage-limits';
+import { encodeUnsubscribeToken } from '../../../modules/newsletters/unsubscribe-token';
 import {
   hasPaymentHold,
   loadSendingTenant,
@@ -135,6 +136,10 @@ export async function handleSendNewsletter(
     );
     return;
   }
+
+  // Scope for the per-recipient one-click unsubscribe below: a newsletter belongs to exactly one
+  // campaign, and the header must stop only that campaign so it agrees with the footer link.
+  const campaignId = newsletter.campaign_id ? String(newsletter.campaign_id) : null;
 
   // 2. Build the recipient query using NewslettersController
   const { NewslettersController } = await import('../../../modules/newsletters/controller');
@@ -321,7 +326,14 @@ export async function handleSendNewsletter(
     // the person fields the merge tokens need.
     const batchLimit = Math.min(NEWSLETTER_BATCH_SIZE, allowance);
     let chunkQuery = baseQuery
-      .select(['persons.email', 'persons.first_name', 'persons.last_name', 'persons.mobile', 'persons.home_phone'])
+      .select([
+        'persons.id',
+        'persons.email',
+        'persons.first_name',
+        'persons.last_name',
+        'persons.mobile',
+        'persons.home_phone',
+      ])
       .distinctOn('persons.email')
       .orderBy('persons.email', 'asc')
       .limit(batchLimit);
@@ -345,6 +357,18 @@ export async function handleSendNewsletter(
               lastName: r.last_name,
               phone: r.mobile || r.home_phone,
             })
+          : undefined,
+        // RFC 8058 one-click, required by Gmail/Yahoo for bulk senders. Scoped to this
+        // newsletter's campaign so the header and the footer's <% unsubscribe %> link produce the
+        // same outcome. Omitted for a campaign-less newsletter rather than silently widening to
+        // "every campaign", which would opt the person out of more than they asked.
+        listUnsubscribeUrl: campaignId
+          ? `${env.apiUrl}/api/unsubscribe/${encodeUnsubscribeToken({
+              tenantId,
+              personId: String(r.id),
+              email,
+              campaignId,
+            })}`
           : undefined,
       });
     }

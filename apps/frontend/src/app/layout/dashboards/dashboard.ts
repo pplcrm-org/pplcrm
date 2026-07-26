@@ -1,4 +1,4 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, OnInit, computed, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import {
   NavigationCancel,
@@ -19,21 +19,24 @@ import { SidebarService } from 'apps/frontend/src/app/layout/sidebar/sidebar-ser
 import { CommandPalette } from '../command-palette/command-palette';
 import { KeyboardShortcutsHelp } from '../keyboard-shortcuts/keyboard-shortcuts-help';
 import { ReportBugDialog } from '../report-bug/report-bug-dialog';
+import { Tour } from '../tour/tour';
+import { TourService } from '../tour/tour.service';
 import { KeyboardShortcutsService } from '../../services/keyboard-shortcuts.service';
 import { BreadcrumbDefaultsService } from '../../services/breadcrumb-defaults.service';
 
 @Component({
   selector: 'pc-dashboard',
-  imports: [Navbar, Sidebar, RouterModule, Alerts, Icon, KeyboardShortcutsHelp, CommandPalette, ReportBugDialog],
+  imports: [Navbar, Sidebar, RouterModule, Alerts, Icon, KeyboardShortcutsHelp, CommandPalette, ReportBugDialog, Tour],
   templateUrl: './dashboard.html',
   host: {
     '(window:keydown)': 'onKeydown($event)',
   },
 })
-export class Dashboard {
+export class Dashboard implements OnInit {
   private readonly sidebarSvc = inject(SidebarService);
   private readonly auth = inject(AuthService);
   private readonly shortcuts = inject(KeyboardShortcutsService);
+  private readonly tour = inject(TourService);
   private readonly router = inject(Router);
 
   protected readonly userSignal = this.auth.getUserSignal();
@@ -63,6 +66,12 @@ export class Dashboard {
         this._endNav = undefined;
       }
     });
+  }
+
+  /** Offer the tour once, on the first shell load of a demo workspace. The service owns the
+   * "never twice" rule; this is just the trigger point. */
+  public ngOnInit(): void {
+    void this.tour.maybeAutoStart();
   }
 
   protected isMobileOpen() {

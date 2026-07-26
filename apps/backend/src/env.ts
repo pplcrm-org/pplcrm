@@ -69,6 +69,17 @@ const envSchema = z.object({
   // is used and the tenant has no whitelabel subuser of its own. Isolates free-tier sending
   // reputation (IP pool) from paying customers'.
   SENDGRID_FREE_TIER_SUBUSER: z.string().optional(),
+  // Platform sending domain a tenant can send from instead of authenticating its own (the
+  // Gmail-user answer: you cannot DKIM-sign as gmail.com, so a From address there can never pass
+  // DMARC). Tenants send as `<tenant slug>@<this domain>` with their own address as Reply-To.
+  //
+  // MUST NOT be the domain POSTMARK_FROM_EMAIL sends from. Reputation at Gmail/Yahoo is tracked
+  // on the From domain and the DKIM d= domain regardless of which ESP carried the mail, so
+  // pointing this at pplcrm.com would let a tenant's spam complaints degrade delivery of password
+  // resets and email verification. It needs its own SendGrid domain authentication (its own DKIM
+  // keys, d=send.pplcrm.com) and its own DMARC record. Unset = the shared-domain option is off
+  // and every tenant must authenticate a domain of its own.
+  SENDGRID_SHARED_SENDING_DOMAIN: z.string().optional(),
   // Shared secret Postmark is configured to send in the X-Postmark-Webhook-Token header of
   // bounce/complaint webhooks. The webhook rejects requests without it.
   POSTMARK_WEBHOOK_TOKEN: z.string().optional(),
@@ -207,6 +218,7 @@ export const env = {
   sendgridApiKey: parsedEnv.SENDGRID_API_KEY,
   sendgridWebhookVerificationKey: parsedEnv.SENDGRID_WEBHOOK_VERIFICATION_KEY,
   sendgridFreeTierSubuser: parsedEnv.SENDGRID_FREE_TIER_SUBUSER,
+  sendgridSharedSendingDomain: parsedEnv.SENDGRID_SHARED_SENDING_DOMAIN,
   postmarkWebhookToken: parsedEnv.POSTMARK_WEBHOOK_TOKEN,
   opsAlertEmail: parsedEnv.OPS_ALERT_EMAIL,
   sentryDsn: parsedEnv.SENTRY_DSN,

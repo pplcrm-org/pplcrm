@@ -10,9 +10,52 @@ import type { DemoSeedManifest } from './demo-seed';
  * the demo_seed_manifest settings row), keep everything else — the six starter
  * forms, the system tags, and anything the user created while exploring.
  */
+export interface DemoSummaryItem {
+  label: string;
+  count: number;
+}
+
+/**
+ * Turn a seed manifest into the deleted-items list the exit confirm shows. Pure, so the
+ * "the numbers are real" property is testable without a database — and so it stays honest:
+ * anything not in the manifest is not deleted, and therefore cannot appear here. Categories at
+ * zero are dropped rather than rendered as "0 companies".
+ *
+ * Ordered by what a user would miss most, not by table name.
+ */
+export function summarizeManifest(manifest: DemoSeedManifest): DemoSummaryItem[] {
+  const counts: [string, number][] = [
+    ['people', manifest.persons.length],
+    ['households', manifest.households.length],
+    ['companies', manifest.companies.length],
+    ['tasks', manifest.tasks.length],
+    ['sample lists', manifest.lists.length],
+    ['teams', manifest.teams.length],
+    ['volunteer events', manifest.volunteer_events.length],
+    ['newsletters and their reports', manifest.newsletters.length],
+    ['inbox emails', manifest.emails.length],
+    ['canvassing turfs', manifest.turfs.length],
+    ['delivery requests', manifest.delivery_requests.length],
+    ['recorded donations', manifest.donations.length],
+    ['demo teammates', manifest.users.length],
+  ];
+  return counts.filter(([, count]) => count > 0).map(([label, count]) => ({ label, count }));
+}
+
 export class DemoController extends BaseController<'settings', SettingsRepo> {
   constructor() {
     super(new SettingsRepo());
+  }
+
+  /**
+   * What exiting would actually delete, counted from the manifest rather than described in prose.
+   *
+   * The confirm dialog has to be specific enough to earn the interruption, and hard-coded counts
+   * drift the moment the seeder changes. Returns zeros-free entries only, so the caller renders
+   * exactly what exists.
+   */
+  public async getDemoSummary(auth: IAuthKeyPayload): Promise<{ items: DemoSummaryItem[] }> {
+    return { items: summarizeManifest(await this.loadManifest(auth.tenant_id)) };
   }
 
   public async exitDemoMode(auth: IAuthKeyPayload) {

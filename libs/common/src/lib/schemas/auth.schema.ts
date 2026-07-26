@@ -28,15 +28,30 @@ export const NotificationPreferencesObj = z.object({
 });
 
 /**
+ * Product-tour progress. Per USER rather than per tenant, and stored on the profile rather than
+ * in localStorage, because a person learns the app once — not once per browser. (Workspace setup
+ * is the mirror image: one workspace, configured once, so it lives in tenant settings.)
+ */
+export const TourStateObj = z.object({
+  /** Index of the last stop reached, so a resumed tour picks up where it left off. */
+  lastStep: z.number().int().min(0).default(0),
+  startedAt: z.string().nullable().default(null),
+  completedAt: z.string().nullable().default(null),
+  /** Set when the user skips. Distinct from completedAt: both stop the auto-start, but only one
+   * of them means they saw the whole thing. */
+  dismissedAt: z.string().nullable().default(null),
+});
+
+/**
  * Shape of the profiles.preferences jsonb column (formerly the untyped
- * profiles.json grab-bag). Only `notifications` is written today; unknown
- * keys from older rows are preserved rather than rejected.
+ * profiles.json grab-bag). Unknown keys from older rows are preserved rather than rejected.
  */
 export const ProfilePreferencesObj = z
   .object({
     notifications: NotificationPreferencesObj.partial().optional(),
     /** Campaigns §15 — the context (campaign id) this user is working in; per-user, cross-device. */
     active_campaign_id: z.string().optional(),
+    tour: TourStateObj.partial().optional(),
   })
   .catchall(z.unknown());
 

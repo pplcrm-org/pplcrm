@@ -242,6 +242,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         street2: { col: 'households.street2' },
         street_num: { col: 'households.street_num::text', isCast: true },
         zip: { col: 'households.zip' },
+        country: { col: 'households.country' },
         home_phone: { col: 'households.home_phone' },
         tag: { col: 'tags.name' },
         tags: { col: 'tags.name' },

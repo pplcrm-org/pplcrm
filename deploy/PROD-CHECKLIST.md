@@ -129,10 +129,56 @@ Set the backend env on `pplcrm-api` (from `.env.production.example`). Required f
 - [ ] Integration keys (mock silently if unset): Stripe (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
       `STRIPE_PLAN_GRASSROOTS_PRICE_ID`, `STRIPE_PLAN_MOVEMENT_PRICE_ID`), Postmark
       (`POSTMARK_SERVER_TOKEN`, `POSTMARK_FROM_EMAIL`, `POSTMARK_WEBHOOK_TOKEN`), SendGrid
-      (`SENDGRID_API_KEY`, `SENDGRID_WEBHOOK_VERIFICATION_KEY`, `SENDGRID_FREE_TIER_SUBUSER`), Twilio
+      (`SENDGRID_API_KEY`, `SENDGRID_WEBHOOK_VERIFICATION_KEY`, `SENDGRID_FREE_TIER_SUBUSER`,
+      `SENDGRID_SHARED_SENDING_DOMAIN` — see "Platform sending domain" below), Twilio
       (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`), Google (`GOOGLE_MAPS_API_KEY`,
       `GOOGLE_CLIENT_ID/SECRET`, `GOOGLE_REDIRECT_URI=https://api.pplcrm.com/auth/google/callback`),
       Microsoft (`MS_CLIENT_ID/SECRET`, `MS_TENANT_ID`, `MS_REDIRECT_URI=https://api.pplcrm.com/auth/ms/callback`).
+
+### Platform sending domain (`send.pplcrm.com`)
+
+What a tenant sends from when it has no domain of its own to authenticate. Without it, anyone
+whose only address is a Gmail or Outlook account cannot send at all: you cannot DKIM-sign as
+`gmail.com`, so DMARC alignment fails and mailbox providers filter or reject the mail.
+
+**It must be a domain of its own, never `pplcrm.com`.** Reputation at Gmail and Yahoo attaches to
+the From domain and the DKIM `d=` domain regardless of which ESP's IPs carried the message, so
+sharing a domain with Postmark's transactional mail would let one tenant's spam complaints degrade
+delivery of password resets and email verification. The backend refuses to enable the feature (and
+logs an error) if `SENDGRID_SHARED_SENDING_DOMAIN` matches the domain in `POSTMARK_FROM_EMAIL`.
+
+- [ ] In SendGrid → Sender Authentication, **authenticate `send.pplcrm.com` as a new domain**
+      (automated security on). This is separate from the existing `pplcrm.com` authentication —
+      which appears in the list under its generated return-path subdomain (`em####.pplcrm.com`) and
+      must be left alone for transactional mail. The new one appears the same way
+      (`em####.send.pplcrm.com`); the DKIM signing domain is `send.pplcrm.com`.
+- [ ] Add the three generated CNAMEs to Cloudflare DNS, **Proxy status: DNS only**. Proxying breaks
+      them. Then verify in SendGrid.
+- [ ] **Associate the domain authentication with `SENDGRID_FREE_TIER_SUBUSER`.** Parent-level
+      authentication does NOT sign mail sent `on-behalf-of` a subuser (see the comment on
+      `resolveWhitelabelCredentials` — "subuser sends stay unsigned"), and free-plan newsletters go
+      out through that subuser. Skipping this breaks DKIM alignment for exactly the tenants the
+      shared domain exists to serve, while paid tenants on the parent key look fine.
+      API: `POST /v3/whitelabel/domains/{id}/subuser`.
+- [ ] Add a DMARC TXT record at `_dmarc.send.pplcrm.com`. Start at `p=none` with a `rua=` address,
+      then tighten to `p=quarantine`/`p=reject` once reports are clean. This is a second DMARC
+      record alongside `_dmarc.pplcrm.com`, which is correct: they are different names, and the
+      explicit subdomain record is what lets the two domains carry independent policies. (Two
+      records at the SAME name is the broken case — receivers discard the policy entirely.)
+- [ ] If `rua=` points at a mailbox on a different domain than the record's own (e.g.
+      `_dmarc.send.pplcrm.com` reporting to `hello@pplcrm.com`), publish the external-destination
+      authorization so stricter receivers still send reports:
+      `send.pplcrm.com._report._dmarc.pplcrm.com  TXT  "v=DMARC1"`.
+- [ ] Set `SENDGRID_SHARED_SENDING_DOMAIN=send.pplcrm.com` on `pplcrm-api`.
+- [ ] Send one real newsletter **from a FREE-plan tenant** (the subuser path — a paid tenant will
+      not exercise it) and confirm `d=send.pplcrm.com` in the received headers, plus the
+      `List-Unsubscribe` check in `docs/deliverability-w1-list-unsubscribe.md`.
+- [ ] **Update the website copy in the same change as the env var.** While the feature is off the
+      site's "sent from your own verified domain" wording is still true; switching it on is what
+      makes that wording wrong. The pages are listed in the `pplcrm-website-claims` skill under
+      "Platform sending domain" (EULA §8, security page, privacy subprocessors, the FAQ's "Why do
+      I verify a domain before sending?"), and the legal documents need their `updated:` dates
+      bumped.
 
 GitHub Actions (for the CI pipeline in `.github/workflows/deploy.yml`):
 

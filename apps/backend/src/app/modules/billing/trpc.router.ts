@@ -22,6 +22,12 @@ export const BillingRouter = router({
 
   createPortal: adminOrOwnerProcedure.mutation(({ ctx }) => controller.createPortalSession(ctx.auth)),
 
+  /** Choose the Free plan outright. Free is not purchasable, so it has no checkout path — this is
+   * the only way a tenant records an active status on it (which is what lets them leave demo
+   * mode). Refuses while a paid Stripe subscription is live; that downgrade goes through the
+   * portal. */
+  selectFree: adminOrOwnerProcedure.mutation(({ ctx }) => controller.selectFreePlan(ctx.auth)),
+
   /** Webhook-independent reconciliation: pull the live subscription from Stripe and mirror it
    * onto the tenant. Called on return from Checkout/Portal so plan changes apply immediately. */
   syncSubscription: adminOrOwnerProcedure.mutation(({ ctx }) => controller.syncSubscriptionFromStripe(ctx.auth)),

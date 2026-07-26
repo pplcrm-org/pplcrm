@@ -7,4 +7,9 @@ export class DemoService extends TRPCService<any> {
   public exitDemo() {
     return this.api.demo.exit.mutate();
   }
+
+  /** Real counts of what exiting would delete, read from the seed manifest. */
+  public getSummary() {
+    return this.api.demo.summary.query();
+  }
 }

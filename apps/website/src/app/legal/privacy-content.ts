@@ -11,7 +11,7 @@ export const PRIVACY_DOC: LegalDoc = {
   title: 'Privacy policy',
   intro:
     'What we collect, why, where it lives, and the things we will never do with it. Written to be read, not skimmed past.',
-  updated: 'July 24, 2026',
+  updated: 'July 25, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -57,7 +57,7 @@ export const PRIVACY_DOC: LegalDoc = {
         '**Identity and sign-in.** Your name, email address and password. Passwords are stored only as an argon2id hash; nobody at pplCRM can see them. If you enable passkeys or two-factor codes, we store the public credential or a hashed one-time code, never a usable secret.',
         '**Session security data.** The IP address and browser signature of your active sessions. We keep these so we can show you where you are signed in and challenge sign-ins from a new device or location.',
         '**Billing.** Paid plans are billed through Stripe. Stripe collects your card details and billing address directly; card numbers never touch our servers. We keep your plan, invoices and billing contact.',
-        '**Phone number.** Only if you provide one, for example to verify sending on the free plan. Verification codes are sent by SMS and stored hashed.',
+        '**Phone number.** Only if you provide one, for example to verify sending. Every workspace verifies a mobile number once before its first newsletter. Verification codes are sent by SMS and stored hashed.',
         '**Support.** Emails you send to hello@pplcrm.com, so we can answer them and improve the product.',
       ],
     },
@@ -134,7 +134,7 @@ export const PRIVACY_DOC: LegalDoc = {
         '**Stripe.** Subscription billing, tax calculation, and card donation processing. Stripe stores payment and donor data in the United States.',
         '**Postmark.** Delivers transactional email such as verification links, security codes and account notices.',
         '**SendGrid.** Delivers newsletters and automation emails from your organization’s own verified domain and reports delivery and engagement events.',
-        '**Twilio.** Sends SMS one-time codes for volunteer verification and free-plan sending verification.',
+        '**Twilio.** Sends SMS one-time codes for volunteer verification and sending verification.',
         '**Anthropic.** Powers the newsletter deliverability check’s AI content review. It receives only the draft being checked (subject, body text and link list) when a check runs — never your contact lists — and under our agreement the content is not used to train models.',
         '**Sentry.** Collects error reports from our backend servers when something breaks, so we can fix it. Reports contain the technical failure details (the error, where in our code it happened, which background job or request type failed) with sign-in cookies, credentials and request bodies stripped before sending — never your contact lists or workspace records. Sentry stores these reports in the United States. Nothing from Sentry runs in your browser.',
         '**Google Maps.** Geocodes household addresses and renders maps.',

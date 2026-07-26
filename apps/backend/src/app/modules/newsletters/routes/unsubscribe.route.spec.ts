@@ -191,3 +191,160 @@ describe('unsubscribe route (automation emails)', () => {
     expect(row?.status).toBe('subscribed');
   });
 });
+
+/**
+ * Newsletters carry the same one-click header, but a newsletter belongs to ONE campaign — so its
+ * token carries a campaignId and the opt-out must stop only that campaign. That has to match what
+ * the body's footer link does (SendGrid's unsubscribe event flips just the newsletter's campaign),
+ * because both controls appear in the same email.
+ */
+describe('unsubscribe route (newsletter one-click, campaign-scoped)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only access to the private db handle
+  const db = (BaseRepository as any)._db;
+  let app: FastifyInstance;
+  let tenantId: string;
+  let userId: string;
+  let personId: string;
+  let campaignA: string;
+  let campaignB: string;
+  let subA: string;
+  let subB: string;
+
+  const statusOf = async (id: string): Promise<string | undefined> =>
+    (await db.selectFrom('campaign_subscriptions').select('status').where('id', '=', id).executeTakeFirst())?.status;
+
+  beforeEach(async () => {
+    app = await buildApp();
+    tenantId = rand();
+    userId = rand();
+    personId = rand();
+    campaignA = rand();
+    campaignB = rand();
+    subA = rand();
+    subB = rand();
+    const householdId = rand();
+
+    await db.insertInto('tenants').values({ id: tenantId, name: 'Scoped Unsub Tenant' }).execute();
+    await db
+      .insertInto('authusers')
+      .values({
+        id: userId,
+        tenant_id: tenantId,
+        email: `test-${userId}@example.com`,
+        password: 'password',
+        first_name: 'Test',
+        last_name: 'User',
+        verified: true,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    for (const [id, name] of [
+      [campaignA, 'Campaign A'],
+      [campaignB, 'Campaign B'],
+    ]) {
+      await db
+        .insertInto('campaigns')
+        .values({
+          id,
+          tenant_id: tenantId,
+          admin_id: userId,
+          name,
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+    }
+    await db
+      .insertInto('households')
+      .values({
+        id: householdId,
+        tenant_id: tenantId,
+        campaign_id: campaignA,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    await db
+      .insertInto('persons')
+      .values({
+        id: personId,
+        tenant_id: tenantId,
+        campaign_id: campaignA,
+        household_id: householdId,
+        first_name: 'Dual',
+        last_name: 'Subscriber',
+        email: 'dual@example.com',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    // The same person subscribed to both campaigns — the case scoping has to get right.
+    for (const [id, campaign_id] of [
+      [subA, campaignA],
+      [subB, campaignB],
+    ]) {
+      await db
+        .insertInto('campaign_subscriptions')
+        .values({
+          id,
+          tenant_id: tenantId,
+          campaign_id,
+          person_id: personId,
+          email: 'dual@example.com',
+          status: 'subscribed',
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+    }
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await db.deleteFrom('campaign_subscriptions').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
+  });
+
+  it('stops only the token’s campaign, leaving the person subscribed elsewhere', async () => {
+    const token = encodeUnsubscribeToken({
+      tenantId,
+      personId,
+      email: 'dual@example.com',
+      campaignId: campaignA,
+    });
+
+    const res = await app.inject({ method: 'POST', url: `/api/unsubscribe/${token}` });
+
+    expect(res.statusCode).toBe(200);
+    expect(await statusOf(subA)).toBe('unsubscribed');
+    expect(await statusOf(subB)).toBe('subscribed');
+  });
+
+  it('still stops every campaign when the token carries no campaign (automation, and old links)', async () => {
+    const token = encodeUnsubscribeToken({ tenantId, personId, email: 'dual@example.com' });
+
+    await app.inject({ method: 'POST', url: `/api/unsubscribe/${token}` });
+
+    expect(await statusOf(subA)).toBe('unsubscribed');
+    expect(await statusOf(subB)).toBe('unsubscribed');
+  });
+
+  it('round-trips the campaign scope through the signed token', async () => {
+    const token = encodeUnsubscribeToken({
+      tenantId,
+      personId,
+      email: 'dual@example.com',
+      campaignId: campaignA,
+    });
+    const res = await app.inject({ method: 'GET', url: `/api/unsubscribe/${token}` });
+
+    // GET still only confirms — scoping must not have made it mutate.
+    expect(res.statusCode).toBe(200);
+    expect(await statusOf(subA)).toBe('subscribed');
+  });
+});

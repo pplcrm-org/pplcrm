@@ -1,28 +1,14 @@
 import type { QueryBuilderGroupNode, QueryBuilderNode } from '../../../../../../../libs/common/src';
+import { RULE_FIELD_CHOICES, ruleFieldLabel, ruleValueLabel } from './list-rule-fields';
 
 /**
  * Render a list's stored rule `definition` as the human "DEFINITION" sentence
- * shown in the Lists table (§8) — e.g. "Tags is 'donor' and City contains
- * 'Ottawa'". Static lists with a hand-picked membership (no rules) read as
- * "Hand-picked members"; an empty rule set reads as "Everyone".
+ * shown in the Lists table (§8) — e.g. "Volunteer status is 'Active' and City
+ * contains 'Ottawa'". Field and value labels come from list-rule-fields, the
+ * same source the rule builder's pickers use. Static lists with a hand-picked
+ * membership (no rules) read as "Hand-picked members"; an empty rule set reads
+ * as "Everyone".
  */
-
-const FIELD_LABELS: Record<string, string> = {
-  tags: 'Tags',
-  issues: 'Issues',
-  first_name: 'First name',
-  last_name: 'Last name',
-  email: 'Email',
-  mobile: 'Mobile',
-  company_name: 'Company',
-  city: 'City',
-  state: 'State/Province',
-  street1: 'Street 1',
-  street2: 'Street 2',
-  street_num: 'Street number',
-  zip: 'Zip code',
-  home_phone: 'Home phone',
-};
 
 const OP_LABELS: Record<string, string> = {
   eq: 'is',
@@ -39,26 +25,37 @@ const OP_LABELS: Record<string, string> = {
   notempty: 'is not empty',
 };
 
+/**
+ * On a status field the picker offers "is set" / "is not set" rather than "is
+ * empty" — a volunteer status that is absent means "not a volunteer", not "an
+ * empty string". The sentence has to use the same words.
+ */
+const CHOICE_OP_LABELS: Record<string, string> = {
+  isEmpty: 'is not set',
+  empty: 'is not set',
+  isNotEmpty: 'is set',
+  notempty: 'is set',
+};
+
 const VALUELESS_OPS = new Set(['isEmpty', 'isNotEmpty', 'empty', 'notempty']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function fieldLabel(field: string): string {
-  return FIELD_LABELS[field] ?? field.replace(/_/g, ' ');
-}
-
-function opLabel(op: string): string {
+function opLabel(field: string, op: string): string {
+  if (RULE_FIELD_CHOICES[field] && CHOICE_OP_LABELS[op]) return CHOICE_OP_LABELS[op];
   return OP_LABELS[op] ?? op;
 }
 
 function describeNode(node: QueryBuilderNode): string {
   if (node.kind === 'rule') {
-    const label = fieldLabel(node.field);
-    const op = opLabel(node.op);
+    const label = ruleFieldLabel(node.field);
+    const op = opLabel(node.field, node.op);
     if (VALUELESS_OPS.has(node.op)) return `${label} ${op}`;
-    const value = node.value == null || String(node.value).trim() === '' ? '…' : String(node.value);
+    // Enum values are shown the way the picker showed them, not raw
+    // ('leaning_against' → 'Leaning against').
+    const value = node.value == null || String(node.value).trim() === '' ? '…' : ruleValueLabel(node.field, node.value);
     return `${label} ${op} '${value}'`;
   }
   return describeGroup(node);

@@ -7,7 +7,10 @@
         <pc-icon name="queue-list" class="text-primary" [size]="5"></pc-icon>
         <div>
           <h1 class="text-xl font-bold">Edit {{ payload().name || 'List' }}</h1>
-          <p class="text-sm text-base-content/60 mt-0.5">Modify the name and description of this list.</p>
+          <p class="text-sm text-base-content/60 mt-0.5">
+            @if (isSystem()) { This is a built-in list. Its name and rules are fixed — you can edit the description. }
+            @else { Modify the name and description of this list. }
+          </p>
         </div>
       </div>
       <pc-form-actions
@@ -15,7 +18,7 @@
         [signalForm]="form"
         (btn1Clicked)="save($event)"
         [btn1Text]="'Save List'"
-        [showDelete]="true"
+        [showDelete]="!isSystem()"
         [deleteText]="'Delete List'"
         (deleteClicked)="deleteList()"
         buttonsToShow="two"
@@ -25,13 +28,22 @@
     <section class="grid gap-6 rounded border border-base-300 bg-base-100 p-6 shadow-sm">
       <div class="space-y-2">
         <label class="text-sm font-medium text-base-content/80" for="list-name">List Name</label>
+        <!-- Built-in lists (§8) are found by name; renaming one would break that
+             recognition, so the field explains itself instead of erroring on save. -->
         <input
           id="list-name"
           type="text"
           class="input input-bordered w-full"
           [formField]="form.name"
+          [readOnly]="isSystem()"
+          [class.bg-base-200]="isSystem()"
+          [class.cursor-not-allowed]="isSystem()"
+          [class.opacity-70]="isSystem()"
           placeholder="List Name"
         />
+        @if (isSystem()) {
+        <p class="text-xs text-base-content/60">Built-in lists keep their name.</p>
+        }
       </div>
 
       <div class="space-y-2">
@@ -190,7 +202,7 @@
     @if (step() === 3) {
     <div class="grid gap-4">
       <div class="grid gap-3">
-        <div class="label-text mb-1">Build Tag Rules</div>
+        <div class="label-text mb-1">Build the rules</div>
         <pc-query-builder
           [group]="rulesRoot()"
           [fields]="listFields()"
@@ -200,7 +212,10 @@
           [summaryError]="rulesError()"
           (changed)="onRulesChanged()"
         ></pc-query-builder>
-        <div class="text-xs text-base-content/70">Use AND/OR and nested groups to combine Tag is / is not rules.</div>
+        <div class="text-xs text-base-content/70">
+          Match on tags and issues, on standing (volunteer, subscriber, staff, support, voting), or on any contact or
+          address field. Use AND/OR and nested groups to combine them.
+        </div>
       </div>
       <!-- Matches are shown in the summary line above -->
       <div class="flex items-center justify-between mt-2">

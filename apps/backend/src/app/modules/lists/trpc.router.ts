@@ -1,4 +1,4 @@
-import { AddListObj, UpdateListObj, idSchema } from '../../../../../../libs/common/src';
+import { AddListObj, UpdateListObj, getAllOptions, idSchema } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 
 import { authProcedure as baseAuthProcedure, router } from '../../../trpc';
@@ -16,7 +16,13 @@ const crud = createCrudRouter(lists, AddListObj, UpdateListObj, authProcedure);
 export const ListsRouter = router({
   ...crud,
 
-  getAll: authProcedure.query(({ ctx }) => lists.getAll(ctx.auth.tenant_id)),
+  // Both read paths go through getAllForContext so the built-in lists (§8) are
+  // materialized for the context being read before the page renders.
+  getAll: authProcedure.input(getAllOptions).query(({ input, ctx }) => lists.getAllForContext(ctx.auth, input)),
+
+  getAllWithCounts: authProcedure
+    .input(getAllOptions)
+    .query(({ input, ctx }) => lists.getAllForContext(ctx.auth, input)),
 
   add: authProcedure.input(AddListObj).mutation(({ input, ctx }) => lists.addList(input, ctx.auth)),
 

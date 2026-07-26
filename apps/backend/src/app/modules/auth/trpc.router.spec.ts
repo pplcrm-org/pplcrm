@@ -1,5 +1,7 @@
+import { sql } from 'kysely';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BaseRepository } from '../../lib/base.repo';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import { generateToken, hashToken } from '../../lib/token-hash';
 import { AuthController } from './controller';
 import { AuthRouter } from './trpc.router';
@@ -7,6 +9,11 @@ import { AuthRouter } from './trpc.router';
 vi.mock('../../lib/hibp', () => ({
   getPwnedCount: vi.fn().mockResolvedValue(0),
 }));
+
+// Signup commits `pending` background_jobs rows (welcome email + the built-in
+// lists' first refresh), which are claimable by any spec that reads the queue
+// globally — take the queue lock so those specs take turns with this one.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -409,10 +416,15 @@ describe('AuthController Integration', () => {
     // if a dev backend is running, its worker may pick the job up (and move it
     // to processing/completed) before we read it, so assert the job exists
     // with the right payload rather than the transient 'pending' status.
+    //
+    // Signup enqueues more than one job (the welcome email, plus the built-in
+    // lists' first refresh — §8), so select the one this test is about rather
+    // than whichever row comes back first.
     const signupJob = await db
       .selectFrom('background_jobs')
       .selectAll()
       .where('tenant_id', '=', user.tenant_id)
+      .where(sql`payload->>'type'`, '=', 'send-transactional-email')
       .executeTakeFirst();
 
     expect(signupJob).toBeDefined();

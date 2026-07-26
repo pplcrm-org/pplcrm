@@ -121,7 +121,7 @@ export async function handleSendAutomationEmail(
     fromName,
     fromEmail,
     replyTo,
-    recipients: [{ email: payload.to }],
+    recipients: [{ email: payload.to, listUnsubscribeUrl: payload.unsubscribeUrl }],
     subject: payload.subject,
     html: payload.html + footer.html,
     text: payload.text + footer.text,
@@ -131,9 +131,10 @@ export async function handleSendAutomationEmail(
     customArgs: { workflow_run_id: payload.workflowRunId },
     // The footer carries the app's own HMAC unsubscribe link (flips every campaign
     // subscription), so SendGrid's subscription tracking stays off — which also means
-    // SendGrid won't add List-Unsubscribe headers; provide the RFC 8058 pair ourselves.
+    // SendGrid won't add List-Unsubscribe headers; the RFC 8058 pair rides on the recipient
+    // above. The token has no campaignId, so the route stops every campaign, matching the
+    // footer link in this same email.
     subscriptionTracking: false,
-    listUnsubscribeUrl: payload.unsubscribeUrl,
   });
 
   // Meter the send only after SendGrid accepted it — a job that fails (and exhausts its

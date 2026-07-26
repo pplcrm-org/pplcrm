@@ -16,6 +16,7 @@ import { ApiKeysSettingsComponent } from './api-keys/api-keys-settings';
 import { BillingSettingsComponent } from './billing/billing-settings';
 import { CampaignsSettingsComponent } from './campaigns/campaigns-settings';
 import { DomainSettingsComponent } from './domains/domains-settings';
+import { PhoneVerification } from './phone/phone-verification';
 import { DonationsSettingsComponent } from './donations/donations-settings';
 import { GoogleSyncSettings } from './google-sync/google-sync-settings';
 import { MsSyncSettings } from './ms-sync/ms-sync-settings';
@@ -34,15 +35,6 @@ import { StorageSettingsComponent } from './storage/storage-settings';
 interface SectionFieldState {
   config: SettingsFieldConfig;
   controlName: string;
-}
-
-/** Mirror of settings.getPhoneVerificationStatus — phones arrive masked from the backend. */
-interface PhoneVerificationStatus {
-  verified: boolean;
-  verifiedAt: Date | string | null;
-  phone: string | null;
-  pendingPhone: string | null;
-  required: boolean;
 }
 
 interface SectionState {
@@ -161,6 +153,7 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
     ApiKeysSettingsComponent,
     PasskeySettingsComponent,
     StorageSettingsComponent,
+    PhoneVerification,
     DatePipe,
     EmptyState,
   ],
@@ -210,12 +203,6 @@ export class SettingsPage implements OnInit {
     return this.visibleSections.find((s) => s.config.id === id) ?? null;
   });
   protected readonly senderEmailInput = signal('');
-  // Sending-phone verification (anti-abuse gate for Free-plan newsletter sends).
-  protected readonly phoneStatus = signal<PhoneVerificationStatus | null>(null);
-  protected readonly phoneInput = signal('');
-  protected readonly phoneCodeInput = signal('');
-  protected readonly phoneBusy = signal(false);
-  protected readonly phoneCodeSentTo = signal<string | null>(null);
   protected readonly settingsSvc = inject(SettingsService);
   private readonly snapshotSignal = this.settingsSvc.snapshotSignal;
   protected readonly verifiedEmailsList = computed<string[]>(() => {
@@ -303,20 +290,90 @@ export class SettingsPage implements OnInit {
         const fromEmailField = commsSection.fields.find((f) => f.key === 'communications.default_from_email');
         const replyToField = commsSection.fields.find((f) => f.key === 'communications.reply_to');
 
-        const options = [
+        // Reply-to only has to be an address the tenant proved it controls — nothing is sent from
+        // it — so every verified address qualifies. A Gmail address is a perfectly good reply-to.
+        const replyToOptions = [
           { label: 'Select a verified email', value: '' },
           ...verifiedEmails.map((email) => ({ label: email, value: email })),
         ];
 
+        // The From list is narrower, and deliberately mirrors what the server will accept:
+        // bulk mail needs DMARC alignment, which is a property of the DOMAIN. Offering a verified
+        // Gmail here would be offering a choice that saves and then fails at send time.
+        const fromOptions = [
+          { label: 'Select a sending address', value: '' },
+          ...this.sendableFromAddresses().map((email) => ({ label: email, value: email })),
+        ];
+        const platform = this.platformFromEmail();
+        if (platform) {
+          fromOptions.push({ label: `${platform} (your pplCRM address)`, value: platform });
+        }
+
         if (fromEmailField) {
-          fromEmailField.options = options;
+          fromEmailField.options = fromOptions;
         }
         if (replyToField) {
-          replyToField.options = options;
+          replyToField.options = replyToOptions;
         }
       }
     });
   }
+
+  /** This workspace's address on pplCRM's own sending domain; null when the option is off. */
+  protected readonly platformFromEmail = computed<string | null>(() => {
+    const value = this.snapshotSignal()['communications.platform_from_email'];
+    return typeof value === 'string' && value ? value : null;
+  });
+
+  /**
+   * Verified addresses that can actually carry bulk mail: the ones whose domain is DKIM-verified.
+   * Single-address verification proves ownership but not deliverability, because DMARC aligns on
+   * the domain.
+   */
+  protected readonly sendableFromAddresses = computed<string[]>(() => {
+    const snapshot = this.snapshotSignal();
+    const emails = (snapshot['communications.verified_emails'] as string[]) || [];
+    const domains = (snapshot['communications.verified_domains'] as { domain?: string; status?: string }[]) || [];
+    const verified = new Set(
+      domains.filter((d) => d.status === 'verified' && d.domain).map((d) => String(d.domain).toLowerCase()),
+    );
+    return emails.filter((email) => verified.has(email.toLowerCase().split('@')[1] ?? ''));
+  });
+
+  /** Live value of the From field (the edited payload, not the saved snapshot) so the explainer
+   * below reacts as the user changes the picker rather than only after a save. */
+  protected readonly currentFromEmail = computed<string>(() => {
+    const comms = this.sectionStates.find((s) => s.config.id === 'communications');
+    const value = comms?.payload()['communications.default_from_email'];
+    return typeof value === 'string' ? value : '';
+  });
+
+  /** Live value of Reply-to, for the same reason. */
+  protected readonly currentReplyTo = computed<string>(() => {
+    const comms = this.sectionStates.find((s) => s.config.id === 'communications');
+    const value = comms?.payload()['communications.reply_to'];
+    return typeof value === 'string' ? value : '';
+  });
+
+  /** True when the chosen From address is the pplCRM one, which makes Reply-to load-bearing. */
+  protected readonly usingPlatformFrom = computed<boolean>(() => {
+    const platform = this.platformFromEmail();
+    return !!platform && this.currentFromEmail() === platform;
+  });
+
+  /** The send guard refuses this combination, so say so at the point of choice rather than
+   * letting the user discover it when a finished newsletter refuses to go out. */
+  protected readonly platformFromNeedsReplyTo = computed<boolean>(
+    () => this.usingPlatformFrom() && !this.currentReplyTo().trim(),
+  );
+
+  /** Verified addresses the tenant could not use as a From address, with the reason. Shown so a
+   * missing option is explained rather than silently absent (disclosure over suppression). */
+  protected readonly unusableFromAddresses = computed<string[]>(() => {
+    const sendable = new Set(this.sendableFromAddresses());
+    const emails = (this.snapshotSignal()['communications.verified_emails'] as string[]) || [];
+    return emails.filter((email) => !sendable.has(email));
+  });
 
   protected get visibleSections(): SectionState[] {
     if (this.currentMode === 'settings') {
@@ -338,51 +395,6 @@ export class SettingsPage implements OnInit {
     this.applySnapshot(this.settingsSvc.snapshot(), true);
     await this.loadUserPrefs();
     await this.loadLastFingerprintRecomputeTime();
-    if (this.currentMode === 'workspace') {
-      await this.loadPhoneStatus();
-    }
-  }
-
-  private async loadPhoneStatus(): Promise<void> {
-    try {
-      this.phoneStatus.set(await this.settingsSvc.getPhoneVerificationStatus());
-    } catch {
-      // Non-blocking: the communications section still renders without the phone card state.
-    }
-  }
-
-  protected async requestPhoneCode(): Promise<void> {
-    const phone = this.phoneInput().trim();
-    if (!phone) return;
-    this.phoneBusy.set(true);
-    try {
-      const result = await this.settingsSvc.requestPhoneVerification(phone);
-      this.phoneCodeSentTo.set(result.phone);
-      this.phoneCodeInput.set('');
-      this.alerts.showSuccess(`We texted a verification code to ${result.phone}.`);
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not send the code.');
-    } finally {
-      this.phoneBusy.set(false);
-    }
-  }
-
-  protected async confirmPhoneCode(): Promise<void> {
-    const code = this.phoneCodeInput().trim();
-    if (!code) return;
-    this.phoneBusy.set(true);
-    try {
-      const result = await this.settingsSvc.confirmPhoneVerification(code);
-      this.alerts.showSuccess(`Phone ${result.phone} is verified — you're clear to send newsletters.`);
-      this.phoneCodeSentTo.set(null);
-      this.phoneInput.set('');
-      this.phoneCodeInput.set('');
-      await this.loadPhoneStatus();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not verify the code.');
-    } finally {
-      this.phoneBusy.set(false);
-    }
   }
 
   // Working-days chips, rendered Mon→Sun; stored canonically in this order as a comma-joined string.

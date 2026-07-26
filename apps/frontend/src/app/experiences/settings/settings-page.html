@@ -210,6 +210,51 @@
 
           <!-- Custom extensions for specific sections -->
           @if (section.config.id === 'communications') {
+
+          <!-- Sending-identity explainer. Bulk mail needs DMARC alignment, which is a property of
+               the DOMAIN, so the From picker offers fewer addresses than the verified list. An
+               option that is silently absent reads as a bug; name the reason instead (§2). -->
+          @if (usingPlatformFrom()) {
+          <div
+            class="mt-4 flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5"
+            [class]="platformFromNeedsReplyTo() ? 'border-warning/40 bg-warning/10' : 'border-info/30 bg-info/10'"
+          >
+            <pc-icon
+              [name]="platformFromNeedsReplyTo() ? 'exclamation-triangle' : 'information-circle'"
+              [size]="5"
+              class="mt-0.5 shrink-0"
+              [class]="platformFromNeedsReplyTo() ? 'text-warning' : 'text-info'"
+            ></pc-icon>
+            <div class="min-w-0 space-y-1">
+              <p class="text-xs leading-relaxed text-base-content/80">
+                You're sending from your pplCRM address, so no DNS setup is needed. Recipients see your from name with a
+                small "via pplcrm.com" next to it.
+              </p>
+              @if (platformFromNeedsReplyTo()) {
+              <p class="text-xs leading-relaxed font-semibold text-base-content/90">
+                Set a reply-to address below, or replies will come to us instead of you. Newsletters won't send until
+                you do.
+              </p>
+              } @else {
+              <p class="text-xs leading-relaxed text-base-content/60">
+                Replies go to {{ currentReplyTo() }}. To drop the "via" line, verify a domain of your own under
+                <button type="button" class="link text-primary" (click)="selectSection('domains')">Domains</button>.
+              </p>
+              }
+            </div>
+          </div>
+          } @else if (unusableFromAddresses().length) {
+          <div class="mt-4 flex items-start gap-2.5 rounded-lg border border-base-200 bg-base-200/40 px-3.5 py-2.5">
+            <pc-icon name="information-circle" [size]="5" class="mt-0.5 shrink-0 text-base-content/40"></pc-icon>
+            <p class="text-xs leading-relaxed text-base-content/70">
+              {{ unusableFromAddresses().join(', ') }} can be used as a reply-to address, but not as a from address:
+              mailbox providers reject bulk email unless the sending domain is verified. Verify that domain under
+              <button type="button" class="link text-primary" (click)="selectSection('domains')">Domains</button>@if
+              (platformFromEmail()) {, or send from {{ platformFromEmail() }} instead}.
+            </p>
+          </div>
+          }
+
           <div class="border-t border-base-200 pt-6 mt-6 space-y-6">
             @if (isDemo()) {
             <!-- Demo guard (§2/§3): verification is blocked server-side; explain it and prevent the dead end -->
@@ -301,72 +346,9 @@
                 }
               </div>
 
-              <!-- Sending phone verification (anti-abuse gate for Free-plan sends) -->
+              <!-- Sending phone verification (anti-abuse gate before a first send) -->
               <div class="space-y-3 border-t border-base-200 pt-6">
-                <div class="space-y-1">
-                  <h3 class="text-xs font-semibold text-base-content/90">Sending phone verification</h3>
-                  <p class="text-xs text-base-content/50">
-                    Free-plan workspaces verify a mobile number once before their first newsletter send. It keeps
-                    spammers off the shared sending pool your newsletters depend on.
-                  </p>
-                </div>
-
-                @if (phoneStatus()?.verified) {
-                <span class="badge badge-success gap-1.5 py-3.5 px-3 font-medium text-xs">
-                  <pc-icon name="check-circle" [size]="4"></pc-icon>
-                  {{ phoneStatus()?.phone }} verified
-                </span>
-                } @else {
-                <div class="flex flex-col sm:flex-row gap-3 max-w-lg">
-                  <div class="flex-1">
-                    <input
-                      type="tel"
-                      placeholder="+1 555 123 4567"
-                      class="input input-bordered focus:input-primary w-full bg-base-200/30 text-xs"
-                      [value]="phoneInput()"
-                      (input)="phoneInput.set($any($event.target).value)"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    class="btn btn-primary"
-                    (click)="requestPhoneCode()"
-                    [disabled]="phoneBusy() || !phoneInput().trim()"
-                  >
-                    @if (phoneBusy() && !phoneCodeSentTo()) {
-                    <span class="loading loading-spinner loading-xs"></span>
-                    } @else { Send code }
-                  </button>
-                </div>
-
-                @if (phoneCodeSentTo()) {
-                <div class="flex flex-col sm:flex-row gap-3 max-w-lg">
-                  <div class="flex-1">
-                    <input
-                      type="text"
-                      inputmode="numeric"
-                      maxlength="6"
-                      placeholder="6-digit code"
-                      class="input input-bordered focus:input-primary w-full bg-base-200/30 text-xs"
-                      [value]="phoneCodeInput()"
-                      (input)="phoneCodeInput.set($any($event.target).value)"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    class="btn btn-primary"
-                    (click)="confirmPhoneCode()"
-                    [disabled]="phoneBusy() || phoneCodeInput().trim().length < 6"
-                  >
-                    @if (phoneBusy()) {
-                    <span class="loading loading-spinner loading-xs"></span>
-                    } @else { Verify }
-                  </button>
-                </div>
-                <p class="text-xs text-base-content/50">
-                  We texted a code to <strong>{{ phoneCodeSentTo() }}</strong>. It expires in 10 minutes.
-                </p>
-                } }
+                <pc-phone-verification></pc-phone-verification>
               </div>
             </fieldset>
           </div>

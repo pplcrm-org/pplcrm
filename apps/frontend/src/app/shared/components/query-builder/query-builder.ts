@@ -134,11 +134,14 @@ export class QueryBuilderComponent {
     if (this.isRule(node)) {
       const fieldDef = this.getFieldDef(node.field);
       const fieldLabel = fieldDef?.label || node.field;
-      const opLabel = node.op;
+      // Read the summary back in the words the pickers used ("is 'Active'"),
+      // not the wire values ("eq 'active'") — it is the same sentence the Lists
+      // table shows under DEFINITION.
+      const opLabel = fieldDef?.operators.find((o) => o.value === node.op)?.label ?? node.op;
       if (['empty', 'notempty', 'isEmpty', 'isNotEmpty'].includes(node.op)) {
         return `(${fieldLabel} ${opLabel})`;
       }
-      const val = node.value || '…';
+      const val = fieldDef?.choices?.find((c) => c.value === node.value)?.label ?? node.value ?? '…';
       return `(${fieldLabel} ${opLabel} '${val}')`;
     }
     return this.summarizeGroup(node as QueryBuilderGroupNode);

@@ -14,14 +14,18 @@ async function createTestSeed(db: any) {
   const campaignId = rand();
   const householdId = rand();
 
-  // 1. Tenant — on a paid plan so the anti-abuse send guards (free-tier phone verification and
-  // warm-up cap) don't apply; the domain-verification gate is satisfied by the settings below.
+  // 1. Tenant — on a paid plan so the warm-up cap doesn't apply, and with a verified sending
+  // phone because that gate covers every plan now (a shared platform sending domain means one
+  // abusive workspace hurts all of them, so paying is not the barrier; the SMS check is).
+  // The domain-verification gate is satisfied by the settings below.
   await db
     .insertInto('tenants')
     .values({
       id: tenantId,
       name: 'Test Tenant',
       subscription_plan: 'movement',
+      sending_phone: '+15550000000',
+      sending_phone_verified_at: new Date(),
     })
     .execute();
 
@@ -1075,5 +1079,82 @@ describe('NewslettersController scheduling validation', () => {
     await controller.update({ tenant_id: '1', id: '7', row: { name: 'renamed' } as any });
     expect(baseUpdate).toHaveBeenCalledTimes(1);
     expect(lookup).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * sendTest is authenticated but otherwise wide open by nature: it takes a recipient, a From
+ * address and arbitrary HTML. Without these two checks it is a spoofing channel — mail any
+ * content to any stranger, from any address (including the pplcrm.com preview fallback).
+ */
+describe('NewslettersController sendTestEmail sender/recipient hardening', () => {
+  const controller = new NewslettersController();
+  const db = (BaseRepository as any)._db;
+  let tenantId: string;
+  let userId: string;
+  let callerEmail: string;
+  let sendSpy: ReturnType<typeof vi.spyOn>;
+
+  const auth = () => ({ tenant_id: tenantId, user_id: userId, session_id: 'test-session' });
+  const draft = (over: Record<string, unknown> = {}) => ({
+    subject: 'Preview',
+    html: '<p>Hello</p>',
+    to: callerEmail,
+    ...over,
+  });
+
+  beforeEach(async () => {
+    const seed = await createTestSeed(db);
+    tenantId = seed.tenantId;
+    userId = seed.userId;
+    callerEmail = `test-${userId}@example.com`;
+
+    // news@test-tenant.org is the seeded default From; mark it verified so the happy path passes.
+    await db
+      .insertInto('settings')
+      .values({
+        tenant_id: tenantId,
+        key: 'communications.verified_emails',
+        value: JSON.stringify(['news@test-tenant.org']),
+      })
+      .execute();
+
+    sendSpy = vi.spyOn(NewsletterEmailService.prototype, 'sendNewsletter').mockResolvedValue(1 as any);
+  });
+
+  afterEach(async () => {
+    await cleanTenant(db, tenantId);
+    vi.restoreAllMocks();
+  });
+
+  it('refuses a recipient that is not the caller’s own account address', async () => {
+    await expect(controller.sendTestEmail(auth() as any, draft({ to: 'victim@example.com' }))).rejects.toThrow(
+      /your own address/i,
+    );
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a From address the tenant has not verified', async () => {
+    await expect(
+      controller.sendTestEmail(auth() as any, draft({ fromEmail: 'security@some-bank.example' })),
+    ).rejects.toThrow(/not a verified sending address/i);
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts a verified From address sent to the caller', async () => {
+    await controller.sendTestEmail(auth() as any, draft({ fromEmail: 'news@test-tenant.org' }));
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect((sendSpy.mock.calls[0][0] as any).fromEmail).toBe('news@test-tenant.org');
+  });
+
+  it('falls back to the configured default From when none is supplied', async () => {
+    await controller.sendTestEmail(auth() as any, draft());
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    expect((sendSpy.mock.calls[0][0] as any).fromEmail).toBe('news@test-tenant.org');
+  });
+
+  it('compares the recipient case-insensitively', async () => {
+    await controller.sendTestEmail(auth() as any, draft({ to: callerEmail.toUpperCase() }));
+    expect(sendSpy).toHaveBeenCalledTimes(1);
   });
 });

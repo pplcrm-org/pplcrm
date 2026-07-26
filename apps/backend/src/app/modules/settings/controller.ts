@@ -30,6 +30,12 @@ import { checkRateLimit } from '../../lib/rate-limiter';
 import { maskPhone, normalizeE164 } from '../../lib/sms/phone';
 import { SmsService } from '../../lib/sms/sms.service';
 import { hashToken } from '../../lib/token-hash';
+import {
+  isOwnSharedSendingAddress,
+  isSharedSendingAddress,
+  sharedSendingAddressFor,
+} from '../../lib/mail/shared-sending-domain';
+import { phoneVerificationRequired } from '../newsletters/send-guards';
 import { getPlanDef } from '@common';
 import { assertNotDemoMode } from '../demo/demo-guard';
 import { DEMO_MANIFEST_SETTINGS_KEY } from '../demo/demo-seed';
@@ -39,8 +45,12 @@ import { STRIPE_ACCOUNT_ID_KEY, STRIPE_ACCOUNT_STATUS_KEY } from '../donations/s
  * verified sender/domain lists back the newsletter send guards, the Stripe Connect account
  * id/status back the donations fail-closed gate, and the demo manifest drives demo-data
  * deletion. A direct write to any of them is a guard bypass or data corruption. */
+/** Read-only key the snapshot derives (tenant slug + platform domain); never a stored row. */
+export const PLATFORM_FROM_EMAIL_KEY = 'communications.platform_from_email';
+
 const SERVER_MANAGED_SETTINGS_MESSAGES: Record<string, string> = {
   'communications.verified_emails': 'Verified emails list cannot be modified directly.',
+  [PLATFORM_FROM_EMAIL_KEY]: 'Your pplCRM sending address is assigned automatically.',
   'communications.verified_domains': 'Verified domains list cannot be modified directly.',
   [STRIPE_ACCOUNT_ID_KEY]: 'Stripe connection settings cannot be modified directly.',
   [STRIPE_ACCOUNT_STATUS_KEY]: 'Stripe connection settings cannot be modified directly.',
@@ -99,10 +109,23 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
   public async getSnapshot(auth: IAuthKeyPayload) {
     const rows = await this.getRepo().getAllForTenant(auth.tenant_id);
 
-    return rows.reduce<Record<string, unknown>>((acc, row) => {
+    const snapshot = rows.reduce<Record<string, unknown>>((acc, row) => {
       acc[row.key] = row.value;
       return acc;
     }, {});
+
+    // Derived, not stored: this tenant's address on the platform sending domain. It comes from the
+    // tenant slug plus server config, neither of which the client can see, and it has to appear
+    // alongside the verified addresses so the From picker can offer exactly what the save
+    // validation and the send guard will accept. Null when the feature is off.
+    const tenant = await this.getRepo()
+      .db.selectFrom('tenants')
+      .select('slug')
+      .where('id', '=', auth.tenant_id)
+      .executeTakeFirst();
+    snapshot[PLATFORM_FROM_EMAIL_KEY] = sharedSendingAddressFor(tenant?.slug ?? null);
+
+    return snapshot;
   }
 
   public async upsert(auth: IAuthKeyPayload, entries: SettingsEntryType[]) {
@@ -129,10 +152,18 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
 
       if (defaultFromEntry && typeof defaultFromEntry.value === 'string') {
         const val = defaultFromEntry.value.toLowerCase().trim();
-        if (val && !verifiedEmails.includes(val)) {
+        // Mirror the send guard (hasVerifiedSendingDomain) exactly, rather than the weaker
+        // "is it in verified_emails" test this used to apply. Single-sender verification proves
+        // the address is yours; it does NOT make bulk mail from it deliverable, because DMARC
+        // aligns on the DOMAIN. Accepting a verified Gmail here produced the worst possible
+        // shape: configured, verified, and then refused at the moment of sending. Refuse it at
+        // the point of choice instead, and name both real ways forward.
+        if (val && !(await this.isSendableFromAddress(auth.tenant_id, val, snapshot))) {
           throw new TRPCError({
             code: 'BAD_REQUEST',
-            message: 'Email address must be verified before it can be configured as a Default From Email.',
+            message: isSharedSendingAddress(val)
+              ? 'That pplCRM sending address belongs to another workspace.'
+              : `Bulk email can only be sent from a domain you have verified, or from your own pplCRM sending address. Verify ${val.split('@')[1] ?? 'that domain'} under Domains, or choose your pplCRM address and set this one as your Reply-to.`,
           });
         }
       }
@@ -161,6 +192,41 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
   }
 
   /**
+   * Whether `email` is this tenant's own address on the platform sending domain. Compared against
+   * the tenant's slug rather than just the domain: the domain is shared, so a domain-only check
+   * would let any tenant send as any other.
+   */
+  private async isOwnPlatformAddress(tenant_id: string, email: string): Promise<boolean> {
+    if (!isSharedSendingAddress(email)) return false;
+    const tenant = await this.getRepo()
+      .db.selectFrom('tenants')
+      .select('slug')
+      .where('id', '=', tenant_id)
+      .executeTakeFirst();
+    return isOwnSharedSendingAddress(email, tenant?.slug ?? null);
+  }
+
+  /**
+   * The same test the pre-send gate applies: an address is usable as the default From only if its
+   * domain is DKIM-verified for this tenant, or it is this tenant's own platform address. Keeping
+   * the two in sync is the point — a From address that saves but cannot send is a trap.
+   */
+  private async isSendableFromAddress(
+    tenant_id: string,
+    email: string,
+    snapshot: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (await this.isOwnPlatformAddress(tenant_id, email)) return true;
+
+    const domain = email.split('@')[1];
+    if (!domain) return false;
+
+    const raw = snapshot['communications.verified_domains'];
+    const domains = Array.isArray(raw) ? (raw as { domain?: string; status?: string }[]) : [];
+    return domains.some((d) => d.domain?.toLowerCase().trim() === domain && d.status === 'verified');
+  }
+
+  /**
    * Sending-phone verification (anti-abuse): Free-plan tenants must verify a mobile number by
    * SMS before their first newsletter send (send-guards enforces it). One number per tenant;
    * the 6-digit code is stored hashed on the tenant row — never in settings, whose snapshot is
@@ -177,8 +243,9 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
       verifiedAt: tenant?.sending_phone_verified_at ?? null,
       phone: tenant?.sending_phone ? maskPhone(tenant.sending_phone) : null,
       pendingPhone: tenant?.pending_phone ? maskPhone(tenant.pending_phone) : null,
-      // Whether a send is currently gated on it (Free plan; unknown/legacy values resolve to free).
-      required: (getPlanDef(tenant?.subscription_plan)?.key ?? 'free') === 'free',
+      // Whether a send is gated on it. Shares the send guard's predicate rather than restating
+      // the rule, so the settings page can never disagree with what sending actually enforces.
+      required: phoneVerificationRequired(),
     };
   }
 

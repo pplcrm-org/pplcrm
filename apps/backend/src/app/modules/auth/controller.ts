@@ -38,6 +38,7 @@ import type { QueryParams } from '../../lib/base.repo';
 import { COMMON_PASSWORDS } from '../../lib/common-passwords';
 import { getPwnedCount } from '../../lib/hibp';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
+import { TourStateObj, type TourStateType } from '../../../../../../libs/common/src';
 import { getPlanLimits } from '../billing/usage-limits';
 import { isDisposableEmail } from '../../lib/mail/disposable-email-domains';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
@@ -50,6 +51,7 @@ import { EmailRepo } from '../emails/repositories/email.repo';
 import { PersonsRepo } from '../persons/repositories/persons.repo';
 import { UserProfiles } from '../userprofiles/repositories/userprofiles.repo';
 import { seedStarterForms, seedStarterTags } from './onboarding-seed';
+import { ensureSystemLists, queueSystemListRefreshes } from '../lists/system-lists';
 import { DEMO_MODE_INVITES_BLOCKED_MESSAGE, assertNotDemoMode } from '../demo/demo-guard';
 import { seedDemoData } from '../demo/demo-seed';
 import { AuthUsersRepo } from './repositories/authusers.repo';
@@ -518,6 +520,40 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     } catch (err) {
       throw new InternalError('Something went wrong, please try again', undefined, { cause: err });
     }
+  }
+
+  /**
+   * Product-tour progress for the signed-in user.
+   *
+   * Per user and on the profile, not in localStorage: a person learns the app once, not once per
+   * browser. (The go-live wizard is the mirror image — per tenant, because a workspace is
+   * configured once by whoever gets there first.)
+   */
+  public async getTourState(auth: IAuthKeyPayload): Promise<TourStateType> {
+    const profile = await this.profiles.getOneByAuthId(auth.user_id);
+    const prefs = parseProfilePreferences(profile?.preferences);
+    return TourStateObj.parse(prefs?.tour ?? {});
+  }
+
+  /** Merge a patch into the stored tour state, leaving every other preference untouched. */
+  public async setTourState(auth: IAuthKeyPayload, patch: Partial<TourStateType>): Promise<TourStateType> {
+    const profile = await this.profiles.getOneByAuthId(auth.user_id);
+    if (!profile) {
+      // No profile row yet (a user who has never saved one). Tour progress is a convenience, not
+      // a reason to create a profile as a side effect, so report the merged value without storing.
+      return TourStateObj.parse(patch);
+    }
+
+    const existing = (parseProfilePreferences(profile.preferences) as Record<string, unknown> | null) ?? {};
+    const next = TourStateObj.parse({ ...TourStateObj.parse(existing['tour'] ?? {}), ...patch });
+
+    await this.profiles.update({
+      tenant_id: auth.tenant_id,
+      id: String(profile.id),
+      row: { preferences: JSON.stringify({ ...existing, tour: next }) } as OperationDataType<'profiles', 'update'>,
+    });
+
+    return next;
   }
 
   public async deleteAvatar(auth: IAuthKeyPayload) {
@@ -1472,6 +1508,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         // not — see modules/demo. Tags first: the demo seeder attaches to them by name.
         await seedStarterTags({ tenant_id, user_id: userId }, trx);
         const starterForms = await seedStarterForms({ tenant_id, user_id: userId, campaign_id: campaign.id }, trx);
+        // Built-in lists (§8) — product-owned, so they are seeded here rather
+        // than with the demo data and survive exiting demo mode.
+        await ensureSystemLists({ tenant_id, user_id: userId, campaign_id: String(campaign.id) }, trx);
         await seedDemoData(
           {
             tenant_id,
@@ -1482,6 +1521,10 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
           },
           trx,
         );
+        // Queue the built-ins' first membership refresh AFTER the demo people
+        // exist (and in the same transaction — transactional outbox), so the
+        // Lists page shows real counts on first visit instead of two zeroes.
+        await queueSystemListRefreshes({ tenant_id, user_id: userId, campaign_id: String(campaign.id) }, trx);
 
         const codeObj = await this.getRepo().addPasswordResetCode(user.id, trx);
         const verificationCode = codeObj?.password_reset_code;

@@ -13,7 +13,7 @@ export const SECURITY_DOC: LegalDoc = {
   title: 'Security',
   intro:
     'Boring, deliberate security: what we actually do to protect your list, described specifically enough to be checked. No badges we have not earned.',
-  updated: 'July 24, 2026',
+  updated: 'July 25, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -104,7 +104,7 @@ export const SECURITY_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'Outbound email is guarded because deliverability and trust are shared resources. Newsletters only leave from a domain you have verified with SPF and DKIM. New senders warm up under caps. Every newsletter also passes a deliverability check before it sends — a 0–100 score over content best practices plus an AI review that catches phishing-shaped and scam-like content; drafts scoring below 50 cannot send until fixed. The AI review runs on every send, on every plan — it exists to stop a compromised account from blasting phishing before a single message leaves, not just to police new signups. Each plan’s monthly email allowance (2× your subscriber cap on Free, 8× on Grassroots, 12× on Movement) is enforced in the send path, and emails sent by automations count toward the same allowance — send volume is tied to the audience size a workspace actually pays for, so a small plan cannot be used to blast a huge imported list. Sending pauses automatically when hard bounces exceed 5% and is suspended when spam complaints exceed 1%. Imported contact lists are checked on import — each address’s domain is verified and disposable addresses flagged — and undeliverable addresses are suppressed automatically; an import with an extreme rate of them pauses sending pending review. Suppression is enforced in the send path itself, for newsletters and automation emails alike: unsubscribed, bounced and do-not-contact addresses are excluded from every future send, and nobody in your workspace can override that.',
+      text: 'Outbound email is guarded because deliverability and trust are shared resources. Newsletters only leave from a domain you have verified with SPF and DKIM, and every workspace verifies a mobile number by SMS before its first send. New senders warm up under caps. Every newsletter also passes a deliverability check before it sends — a 0–100 score over content best practices plus an AI review that catches phishing-shaped and scam-like content; drafts scoring below 50 cannot send until fixed. The AI review runs on every send, on every plan — it exists to stop a compromised account from blasting phishing before a single message leaves, not just to police new signups. Each plan’s monthly email allowance (2× your subscriber cap on Free, 8× on Grassroots, 12× on Movement) is enforced in the send path, and emails sent by automations count toward the same allowance — send volume is tied to the audience size a workspace actually pays for, so a small plan cannot be used to blast a huge imported list. Sending pauses automatically when hard bounces exceed 5% and is suspended when spam complaints exceed 1%. Imported contact lists are checked on import — each address’s domain is verified and disposable addresses flagged — and undeliverable addresses are suppressed automatically; an import with an extreme rate of them pauses sending pending review. Suppression is enforced in the send path itself, for newsletters and automation emails alike: unsubscribed, bounced and do-not-contact addresses are excluded from every future send, and nobody in your workspace can override that.',
     },
     {
       kind: 'h2',

@@ -24,7 +24,7 @@ const sendTestSchema = z.object({
   text: z.string().optional(),
   to: z.email(),
   fromName: z.string().optional(),
-  fromEmail: z.string().optional(),
+  fromEmail: z.email().optional(),
 });
 
 export const NewslettersRouter = router({
@@ -52,7 +52,7 @@ export const NewslettersRouter = router({
 
   sendTest: authProcedure
     .input(sendTestSchema)
-    .mutation(async ({ input, ctx }) => newsletters.sendTestEmail(ctx.auth.tenant_id, input)),
+    .mutation(async ({ input, ctx }) => newsletters.sendTestEmail(ctx.auth, input)),
 
   runPreflight: authProcedure
     .input(RunPreflightObj)
