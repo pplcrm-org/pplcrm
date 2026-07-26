@@ -282,7 +282,21 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
     title: 'The shared inbox',
     summary:
       'Read and answer your organization’s email inside pplCRM, with every conversation attached to the right person.',
-    keywords: ['inbox', 'email', 'reply', 'conversation', 'response time', 'sla email', 'correspondence', 'gmail keys'],
+    keywords: [
+      'inbox',
+      'email',
+      'reply',
+      'conversation',
+      'response time',
+      'sla email',
+      'correspondence',
+      'gmail keys',
+      'sync',
+      'attachments',
+      'spam',
+      'old emails',
+      'history',
+    ],
     related: ['dashboard', 'person-profile', 'shortcuts', 'settings'],
     blocks: [
       {
@@ -318,6 +332,29 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
         tone: 'info',
         title: 'Where the response target comes from',
         text: 'Administrators set the email SLA in working hours (plus the working days and business hours that count) under **Workspace → SLA Configuration**. See [The dashboard and SLA health](/help/dashboard).',
+      },
+      { kind: 'h2', id: 'what-syncs', text: 'What syncs, and what doesn’t' },
+      {
+        kind: 'p',
+        text: 'Connecting a mailbox pulls **the last 48 hours** of Inbox, Sent, Trash and Spam, and everything after that arrives as it lands. It deliberately does not import your archive: mail from months ago has already been dealt with, and importing it would drop thousands of already-handled messages into your open queue on day one. Connecting takes seconds rather than hours as a result. Your old mail stays where it is, in your mail client.',
+      },
+      {
+        kind: 'callout',
+        tone: 'tip',
+        title: 'Attachments download when you open them',
+        text: 'Small files come across during the sync so messages render complete. Anything larger is listed with its name, type and size, and is fetched the first time someone opens it — then kept, so the second open is instant and the file survives the original message being deleted. If the mailbox has since been disconnected, or the message deleted upstream, an unopened attachment can no longer be retrieved and the inbox says so.',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'Spam is visible but never opened',
+        text: 'Messages your mail provider flagged as spam still sync, so a wrongly-flagged supporter is not invisible to you — you see the sender, subject, body and what was attached. Their images and attachments are never downloaded, because pulling junk-mail payloads onto our servers would mean storing and serving whatever is in them. If a spam message is genuine, move it out of spam in your mail client; it returns here on the next sync with everything available.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Re-syncing',
+        text: '**Re-sync recent mail**, under the mailbox settings, resets the sync position and pulls the last 48 hours again. It is for when a sync failed or looks incomplete. Older mail already in your inbox is untouched.',
       },
     ],
   },

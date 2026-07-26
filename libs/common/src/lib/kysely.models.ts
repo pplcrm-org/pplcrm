@@ -937,7 +937,15 @@ interface EmailComments extends RecordType {
 
 interface EmailBodies extends RecordType {
   email_id: string;
-  body_html: string;
+  /**
+   * Inline HTML. Null when the body was offloaded to blob storage (`storage_key`) — only
+   * small bodies stay inline. Read through `EmailBodiesRepo.getBodyHtml`, never directly.
+   */
+  body_html: string | null;
+  /** Blob storage key for the full HTML, when it was too large to keep inline. */
+  storage_key: string | null;
+  /** Plain-text extract of the body: what stays in Postgres, and what search indexes. */
+  body_text: string | null;
 }
 
 interface EmailHeaders extends RecordType {
@@ -963,7 +971,10 @@ interface EmailAttachments extends RecordType {
   cid: string | null;
   is_inline: boolean;
   pos: number;
+  /** Null until the payload is materialized — the row describes the attachment either way. */
   file_id: string | null;
+  /** Provider attachment identifier, used to fetch the payload on first download. */
+  remote_ref: string | null;
 }
 
 interface EmailDrafts extends RecordType {

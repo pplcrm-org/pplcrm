@@ -10,6 +10,30 @@ import { logger } from '../../logger';
 
 const MAX_MESSAGES_PER_SYNC = 50;
 
+/**
+ * How far back a first sync reaches. See the matching constant in the Gmail adapter — connecting a
+ * mailbox used to enumerate and ingest its entire history, which no real account survives inside a
+ * job timeout. Everything after the initial window arrives incrementally via the delta link.
+ */
+const INITIAL_SYNC_WINDOW_HOURS = 48;
+
+const MESSAGE_SELECT =
+  '$select=id,subject,from,toRecipients,ccRecipients,bccRecipients,body,receivedDateTime,hasAttachments,parentFolderId,internetMessageId';
+
+/**
+ * Build the starting delta URL for a folder, bounded to the initial window.
+ *
+ * `$filter` support on the message delta endpoint is limited to `receivedDateTime` comparisons, so
+ * this is the one filter available. The page loop also re-checks `receivedDateTime` per message,
+ * which keeps the bound correct even if Graph declines to apply the filter — enumeration may still
+ * be full in that case, but the expensive part (per-message ingest, body storage, attachment
+ * fetches) is skipped, and that is where the cost actually lives.
+ */
+function initialDeltaUrl(wellKnownName: string, windowStart: Date): string {
+  const filter = `&$filter=receivedDateTime ge ${windowStart.toISOString()}`;
+  return `/me/mailFolders/${wellKnownName}/messages/delta?$top=${MAX_MESSAGES_PER_SYNC}&${MESSAGE_SELECT}${filter}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -58,6 +82,24 @@ async function graphCallWithRetry<T>(callFn: () => Promise<T>, maxRetries = 3): 
   }
 }
 
+/**
+ * Fetch one attachment's payload from Graph.
+ *
+ * Reading a single attachment by id returns it with `contentBytes` populated, which is why the
+ * listing call deliberately omits that field — the bytes come from here, only for attachments
+ * somebody actually wants. Exported so the on-demand download route stores payloads exactly the
+ * way the sync path does.
+ */
+export async function fetchGraphAttachmentContent(client: Client, messageId: string, attachmentId: string) {
+  const att: any = await graphCallWithRetry(() =>
+    client.api(`/me/messages/${messageId}/attachments/${attachmentId}`).get(),
+  );
+  if (!att?.contentBytes) {
+    throw new Error(`MS Graph attachment ${attachmentId} returned no content`);
+  }
+  return Buffer.from(att.contentBytes, 'base64');
+}
+
 export class MsSyncService {
   private readonly ingester: EmailIngesterService;
 
@@ -100,13 +142,12 @@ export class MsSyncService {
 
     let inserted = 0;
     const nextDeltaMap: Record<string, string> = { ...deltaMap };
+    const windowStart = new Date(Date.now() - INITIAL_SYNC_WINDOW_HOURS * 60 * 60 * 1000);
 
     for (const folder of syncFolders) {
       const folderDeltaLink = deltaMap[folder.wellKnownName] || null;
 
-      let pageUrl: string | null =
-        folderDeltaLink ??
-        `/me/mailFolders/${folder.wellKnownName}/messages/delta?$top=${MAX_MESSAGES_PER_SYNC}&$select=id,subject,from,toRecipients,ccRecipients,bccRecipients,body,receivedDateTime,hasAttachments,parentFolderId,internetMessageId`;
+      let pageUrl: string | null = folderDeltaLink ?? initialDeltaUrl(folder.wellKnownName, windowStart);
 
       const allMessages: any[] = [];
       let isInitialSync = folderDeltaLink === null;
@@ -136,7 +177,9 @@ export class MsSyncService {
             delete nextDeltaMap[folder.wellKnownName];
             isInitialSync = true;
             allMessages.length = 0; // clear any partially loaded pages before restarting
-            pageUrl = `/me/mailFolders/${folder.wellKnownName}/messages/delta?$top=${MAX_MESSAGES_PER_SYNC}&$select=id,subject,from,toRecipients,ccRecipients,bccRecipients,body,receivedDateTime,hasAttachments,parentFolderId,internetMessageId`;
+            // Restart bounded, exactly like a first sync — an expired delta link must not become a
+            // back door to re-enumerating the whole mailbox.
+            pageUrl = initialDeltaUrl(folder.wellKnownName, windowStart);
           } else {
             throw err;
           }
@@ -153,6 +196,13 @@ export class MsSyncService {
           continue;
         }
 
+        // Belt-and-braces on the initial window: if Graph ignored the $filter, skip anything older
+        // rather than ingesting it. Cheap here, and it keeps the bound honest either way.
+        if (isInitialSync && msg.receivedDateTime) {
+          const received = new Date(msg.receivedDateTime);
+          if (!isNaN(received.getTime()) && received < windowStart) continue;
+        }
+
         try {
           const wasSaved = await this.saveMessage(client, msg, tenantId, campaignId, requestedBy, folder.pplcrmId);
           if (wasSaved) inserted++;
@@ -161,18 +211,25 @@ export class MsSyncService {
         }
       }
 
-      // If it was an initial/full sync (meaning we started with no delta link, or it expired and we retried),
-      // we have retrieved the entire list of active server messages.
-      // Therefore, any local email that has an MS preview key but is NOT in the server's list must have been deleted or moved.
+      // Reconcile deletions on an initial/restarted sync: anything local with an `ms:` key that the
+      // server did not return has been deleted or moved.
+      //
+      // The candidate set MUST be scoped to the window we fetched. `allMessages` only covers mail
+      // since `windowStart`, so comparing against every local row would read the whole older archive
+      // as deleted — and since an expired delta link forces this path, that would silently wipe a
+      // long-established mailbox.
       if (isInitialSync) {
         const serverMsIds = new Set(allMessages.filter((m) => !m['@removed']).map((m) => String(m.id)));
         const localEmails = await this.db
           .selectFrom('emails')
-          .select(['id', 'preview'])
-          .where('tenant_id', '=', tenantId)
-          .where('campaign_id', '=', campaignId)
-          .where('folder_id', '=', folder.pplcrmId)
-          .where('preview', 'like', 'ms:%')
+          .innerJoin('email_headers', 'email_headers.email_id', 'emails.id')
+          .select(['emails.id as id', 'emails.preview as preview'])
+          .where('emails.tenant_id', '=', tenantId)
+          .where('emails.campaign_id', '=', campaignId)
+          .where('emails.folder_id', '=', folder.pplcrmId)
+          .where('emails.preview', 'like', 'ms:%')
+          .where('email_headers.tenant_id', '=', tenantId)
+          .where('email_headers.date_sent', '>=', windowStart)
           .execute();
 
         for (const localEmail of localEmails) {
@@ -183,10 +240,10 @@ export class MsSyncService {
           }
         }
       }
-    }
 
-    // Save updated delta map back to database
-    await this.oauthSvc.saveDeltaLink(tenantId, campaignId, JSON.stringify(nextDeltaMap));
+      // Checkpoint per folder, so a later folder failing does not discard earlier progress.
+      await this.oauthSvc.saveDeltaLink(tenantId, campaignId, JSON.stringify(nextDeltaMap));
+    }
 
     return { inserted };
   }
@@ -215,21 +272,31 @@ export class MsSyncService {
     }
     const bodyHtml = msg.body?.content ?? '';
 
-    // Fetch Graph attachments if any
+    // List Graph attachments as METADATA ONLY.
+    //
+    // `/attachments` without a $select returns `contentBytes` for every attachment, i.e. it
+    // downloads the entire payload set just to find out what is there. Selecting the metadata
+    // fields keeps the listing cheap; the ingester then decides which payloads are worth fetching,
+    // and `fetchContent` pulls an individual one via /$value only when asked.
     let graphAttachments: any[] = [];
     const hasCid = bodyHtml && bodyHtml.includes('cid:');
     if (msg.hasAttachments || hasCid) {
       try {
-        const attRes = await graphCallWithRetry(() => client.api(`/me/messages/${msId}/attachments`).get());
+        const attRes = await graphCallWithRetry(() =>
+          client.api(`/me/messages/${msId}/attachments?$select=id,name,contentType,size,isInline,contentId`).get(),
+        );
         graphAttachments = attRes.value ?? [];
       } catch (err) {
-        logger.error({ err }, `Failed to fetch attachments for message ${msId}`);
+        logger.error({ err }, `Failed to list attachments for message ${msId}`);
       }
     }
 
-    const fileAttachments = graphAttachments.filter(
-      (att: any) => att['@odata.type'] === '#microsoft.graph.fileAttachment' && att.contentBytes,
-    );
+    // A $select response may omit `@odata.type`, so only exclude an attachment when we positively
+    // know it is not a file (an item or reference attachment has no payload to store).
+    const fileAttachments = graphAttachments.filter((att: any) => {
+      const odataType = att['@odata.type'];
+      return !odataType || odataType === '#microsoft.graph.fileAttachment';
+    });
 
     // Map MS Graph attachments to IngestableEmail attachments
     const attachments = fileAttachments.map((att: any) => ({
@@ -238,7 +305,8 @@ export class MsSyncService {
       size: att.size,
       contentId: att.contentId ?? null,
       isInline: att.isInline ?? false,
-      fetchContent: async () => Buffer.from(att.contentBytes, 'base64'),
+      remoteRef: att.id ?? null,
+      fetchContent: async () => fetchGraphAttachmentContent(client, msId, String(att.id)),
     }));
 
     // Map recipients

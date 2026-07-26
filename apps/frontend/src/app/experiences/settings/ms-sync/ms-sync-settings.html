@@ -42,7 +42,7 @@
 
     <button type="button" class="btn btn-ghost" [disabled]="isSyncing()" (click)="forceFullResync()">
       <pc-icon name="arrow-path" [size]="4" class="mr-2"></pc-icon>
-      Force Full Re-sync
+      Re-sync recent mail
     </button>
 
     <button
@@ -73,6 +73,10 @@
   <div class="rounded-xl border border-base-200 bg-base-50 px-5 py-4">
     <p class="text-xs text-base-content/70">
       Connect your Office 365 account to automatically sync incoming emails into your pplcrm inbox.
+    </p>
+    <p class="text-xs text-base-content/60 mt-2">
+      Syncing starts with the last 48 hours, so your inbox here stays a working queue rather than a copy of your mail
+      archive. Everything after that arrives as it lands. Attachments download when you open them.
     </p>
   </div>
 
