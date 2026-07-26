@@ -16,35 +16,6 @@ apps/
       app/
         _migrations/
           0001_baseline.ts
-          2026-07-12-companion-apps.ts
-          2026-07-12-donation-refund-tracking.ts
-          2026-07-12-volunteer-staff-status.ts
-          2026-07-14-subscription-quantity.ts
-          2026-07-14-z-anti-abuse-sending-controls.ts
-          2026-07-16-drop-tenant-stripe-secrets.ts
-          2026-07-16-remove-helcim-settings.ts
-          2026-07-17-newsletter-content-checks.ts
-          2026-07-18-subscription-interval.ts
-          2026-07-19-geocoding-skipped-status.ts
-          2026-07-20-automation-send-compliance.ts
-          2026-07-20-b-newsletter-schedules.ts
-          2026-07-20-c-engagement-reactive-automation.ts
-          2026-07-20-d-remove-newsletter-schedules.ts
-          2026-07-20-e-newsletter-templates.ts
-          2026-07-20-f-automation-engagement-tripwires.ts
-          2026-07-20-g-drop-tenant-billing-columns.ts
-          2026-07-20-h-task-sla-breach.ts
-          2026-07-20-i-workspace-api-keys.ts
-          2026-07-21-a-ops-heartbeats.ts
-          2026-07-23-user-campaign-assignment.ts
-          2026-07-24-a-zapier-subscription-unique-constraint.ts
-          2026-07-24-b-delivery-request-open-household-unique.ts
-          2026-07-24-c-bug-reports.ts
-          2026-07-24-d-newsletter-send-cursor.ts
-          2026-07-24-e-authusers-deleted-at.ts
-          2026-07-24-f-import-email-verification.ts
-          2026-07-25-system-lists.ts
-          2026-07-26-email-payload-storage.ts
           schema.sql
         config/
           email-folders.config.ts

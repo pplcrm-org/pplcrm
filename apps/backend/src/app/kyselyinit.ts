@@ -1,5 +1,5 @@
 import { promises as fs } from 'fs';
-import { FileMigrationProvider, Kysely, Migrator, PostgresDialect, sql } from 'kysely';
+import { FileMigrationProvider, Kysely, Migrator, PostgresDialect } from 'kysely';
 import path from 'path';
 import { Pool } from 'pg';
 
@@ -33,27 +33,8 @@ async function withMigrator<T>(run: (db: Kysely<Models>, migrator: Migrator) => 
   }
 }
 
-async function ensureMigrationTableUpdated(db: Kysely<Models>): Promise<void> {
-  try {
-    await sql`
-      UPDATE kysely_migration
-      SET name = '2026-07-01-a-schema-improvements'
-      WHERE name IN ('2026-06-31-schema-improvements', '2026-07-01-schema-improvements')
-    `.execute(db);
-
-    await sql`
-      UPDATE kysely_migration
-      SET name = '2026-07-01-b-security-ops-improvements'
-      WHERE name IN ('2026-06-31-security-ops-improvements', '2026-07-01-security-ops-improvements')
-    `.execute(db);
-  } catch (_err) {
-    // Ignore if table doesn't exist or update fails
-  }
-}
-
 export async function migrateDown(): Promise<void> {
-  await withMigrator(async (db, migrator) => {
-    await ensureMigrationTableUpdated(db);
+  await withMigrator(async (_db, migrator) => {
     const { error, results } = await migrator.migrateDown();
 
     results?.forEach((it) => {
@@ -74,8 +55,7 @@ export async function migrateDown(): Promise<void> {
 export async function migrateToLatest(): Promise<void> {
   logger.info('Migration starting');
 
-  await withMigrator(async (db, migrator) => {
-    await ensureMigrationTableUpdated(db);
+  await withMigrator(async (_db, migrator) => {
     const { error, results } = await migrator.migrateToLatest();
 
     results?.forEach((it) => {

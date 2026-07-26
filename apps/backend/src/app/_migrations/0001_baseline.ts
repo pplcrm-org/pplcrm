@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export async function up(db: Kysely<any>): Promise<void> {
-  // Read the schema_dump.sql file from the same directory
+  // Read the schema.sql baseline dump from the same directory
   const schemaPath = path.join(__dirname, 'schema.sql');
   const rawSql = fs.readFileSync(schemaPath, 'utf8');
 
@@ -62,6 +62,25 @@ export async function up(db: Kysely<any>): Promise<void> {
     .join('\n');
 
   await sql.raw(schemaSql).execute(db);
+
+  await seedRows(db);
+}
+
+/**
+ * Rows the baseline must create that a `pg_dump --schema-only` cannot carry.
+ *
+ * Everything else in this repo seeds at runtime (system lists via
+ * `ensureSystemLists()`, demo data via the demo-mode job), so this stays tiny —
+ * add here ONLY when a fresh database is broken without the row. When a
+ * re-squash folds a dated migration that seeded data, its INSERT moves here.
+ */
+async function seedRows(db: Kysely<any>): Promise<void> {
+  // The ops_watchdog dead-man's-switch row (observability). Seeded at bootstrap
+  // deliberately: if the background worker never completes a watchdog cycle
+  // after deploy, this row is already stale and `GET /healthz/worker` reports
+  // 503 — the correct failure direction. Without it the endpoint has no row to
+  // judge and a wedged worker looks healthy.
+  await sql`INSERT INTO public.ops_heartbeats (name) VALUES ('ops_watchdog') ON CONFLICT (name) DO NOTHING`.execute(db);
 }
 
 export async function down(_db: Kysely<any>): Promise<void> {

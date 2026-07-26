@@ -15,6 +15,10 @@ import { performScheduledDeletions, TENANT_SCOPED_TABLES } from './deletions.han
  * plus every dated migration's up() in filename (= run) order, honoring DROP TABLE. Parsing only
  * schema.sql is exactly how `newsletter_templates` (created by a dated migration) slipped through
  * and kept aborting tenant wipes.
+ *
+ * The 2026-07-26 pre-ship re-squash folded every dated migration into schema.sql, so the chain is
+ * currently baseline-only and the loop below is a no-op. Keep it: the next dated migration that
+ * adds a tenant_id table must be picked up, and that is the exact case this guard exists for.
  */
 describe('tenant deletion completeness', () => {
   // Identity tables handled explicitly in the identity block of wipeTenant, plus `tenants` itself.
@@ -62,10 +66,21 @@ describe('tenant deletion completeness', () => {
   it('derives a sane inventory (sanity check that the parser is not silently broken)', () => {
     // A parser regression that stops matching CREATE TABLE would empty the inventory and turn the
     // completeness assertion into a vacuous pass — pin a few tables that can never leave.
-    expect(live.has('persons')).toBe(true); // baseline table
-    expect(live.has('bug_reports')).toBe(true); // migration-created table
+    expect(live.has('persons')).toBe(true); // long-standing baseline table
+    expect(live.has('bug_reports')).toBe(true); // added by a dated migration, now folded into the baseline
     expect(live.has('newsletter_templates')).toBe(true); // the table the old parser missed
-    expect(live.has('newsletter_schedules')).toBe(false); // created then dropped by migrations
+    expect(live.has('newsletter_schedules')).toBe(false); // created then dropped pre-squash — must not reappear
+  });
+
+  it('honors DROP TABLE when walking dated migrations on top of the baseline', () => {
+    // The re-squash left no dated migrations, so the create-then-drop path above no longer
+    // exercises anything. Pin the parser behaviour directly instead — a table a future migration
+    // drops must leave the inventory, or a stale entry fails the TENANT_SCOPED_TABLES check.
+    const tables = new Set<string>();
+    applySource('CREATE TABLE public.temp_thing (\n  tenant_id bigint NOT NULL\n)', tables);
+    expect(tables.has('temp_thing')).toBe(true);
+    applySource('DROP TABLE IF EXISTS public.temp_thing', tables);
+    expect(tables.has('temp_thing')).toBe(false);
   });
 
   it('covers every live tenant_id table (minus the explicitly-handled identity tables)', () => {

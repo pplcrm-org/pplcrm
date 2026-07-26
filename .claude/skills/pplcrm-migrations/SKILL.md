@@ -9,9 +9,9 @@ Migrations are plain Kysely SQL files run by Kysely's `Migrator` + `FileMigratio
 
 ## The non-obvious rules first
 
-1. **The baseline file is `schema.sql`, NOT `schema_dump.sql`.** The real file is `apps/backend/src/app/_migrations/schema.sql`, read by `0001_baseline.ts`. A stale `schema_dump.sql` mention survives in a code comment in `0001_baseline.ts` — trust the filename on disk, not the comment.
+1. **The baseline file is `schema.sql`, NOT `schema_dump.sql`.** The real file is `apps/backend/src/app/_migrations/schema.sql`, read by `0001_baseline.ts`. (Stale `schema_dump.sql` mentions may still lurk in older docs — trust the filename on disk.)
 
-2. **Never edit or rename a migration that has already run.** Kysely records each applied migration by name in the `kysely_migration` table. An already-recorded migration is never re-run, so editing its `up()` silently changes nothing on any DB that already ran it. Renaming or deleting one is worse: Kysely finds a recorded name with no matching file and aborts with a **corrupt migrations** error. Proof this bites in practice: `ensureMigrationTableUpdated` in `kyselyinit.ts` exists solely to `UPDATE kysely_migration SET name = ...` after some migrations were renamed. Don't create that mess — add a new file instead. (The one sanctioned exception is a deliberate pre-ship **re-squash**, which deletes the dated files _and_ resets `kysely_migration` in the same operation — see "Re-squashing" below.)
+2. **Never edit or rename a migration that has already run.** Kysely records each applied migration by name in the `kysely_migration` table. An already-recorded migration is never re-run, so editing its `up()` silently changes nothing on any DB that already ran it. Renaming or deleting one is worse: Kysely finds a recorded name with no matching file and aborts with a **corrupt migrations** error. This has bitten before: `kyselyinit.ts` carried an `ensureMigrationTableUpdated` shim for years that `UPDATE kysely_migration SET name = ...` to paper over a rename (removed in the 2026-07-26 squash, once the migrations it renamed no longer existed). Don't create that mess — add a new file instead. (The one sanctioned exception is a deliberate pre-ship **re-squash**, which deletes the dated files _and_ resets `kysely_migration` in the same operation — see "Re-squashing" below.)
 
 3. **`tools/ai-migrations/` is unrelated.** It contains only Nx package-upgrade notes and is referenced nowhere in the codebase. It is NOT a migration tool. Ignore it.
 
@@ -19,7 +19,7 @@ Migrations are plain Kysely SQL files run by Kysely's `Migrator` + `FileMigratio
 
 Files live in `apps/backend/src/app/_migrations/`. Kysely runs them in **lexicographic filename order**, so the name is load-bearing:
 
-- Regular migrations: `YYYY-MM-DD-short-description.ts` — e.g. `2026-08-14-add-campaign-budget.ts`. (After the 2026-07-10 re-squash there are no dated files in the tree to crib from — for a worked add-column + backfill + per-tenant-unique-index example see `2026-07-07-record-slugs.ts` in git history.)
+- Regular migrations: `YYYY-MM-DD-short-description.ts` — e.g. `2026-08-14-add-campaign-budget.ts`. (After the 2026-07-26 re-squash there are no dated files in the tree to crib from — for worked examples see git history before that squash, e.g. `2026-07-25-system-lists.ts` for add-column + check-constraint + partial-unique-index, or `2026-07-07-record-slugs.ts` for an add-column + backfill.)
 - The baseline is `0001_baseline.ts` — the `0001_` numeric prefix sorts before every dated file so it always runs first.
 - **Same-day tie-break:** when two migrations share a date, disambiguate order with a letter segment: `2026-07-01-a-schema-improvements`, `2026-07-01-b-security-ops-improvements`. Use this if you add a second migration on a day that already has one.
 
@@ -30,7 +30,7 @@ Every file must export `up(db: Kysely<any>)` and `down(db: Kysely<any>)`.
 - Registered via `BaseRepository.migrator` — `Migrator` + `FileMigrationProvider` pointed at `apps/backend/src/app/_migrations`, resolved from `process.cwd()` (`apps/backend/src/app/lib/base.repo.ts`).
 - **Dev:** applied automatically on backend startup — `apps/backend/src/main.ts` calls `migrateToLatest()` from `kyselyinit.ts` when `MIGRATE_ON_BOOT` is true (the default). Starting the backend brings the DB to latest.
 - **Prod:** `MIGRATE_ON_BOOT=false` — startup does NOT migrate. The `migrate` job in `.github/workflows/deploy.yml` runs `kyselyinit.ts` (as the owner role, via the `PROD_DB_*` secrets) before the backend rolls to the new image; a migration failure blocks the deploy. Added after the 2026-07-23 outage, where code reading `authusers.campaign_id` deployed without its migration and every authenticated request 500'd while health probes stayed green. Manual fallback command: `deploy/GO-LIVE-CHECKLIST.md` §9.
-- State is tracked in the Kysely-managed tables `kysely_migration` and `kysely_migration_lock`. Never write to these by hand except through the existing rename shim.
+- State is tracked in the Kysely-managed tables `kysely_migration` and `kysely_migration_lock`. Never write to these by hand — the sole exception is the reset step of a deliberate re-squash (see below).
 
 ### Data backfills on FORCE-RLS tables just work — but always test a fresh bootstrap
 
@@ -75,7 +75,9 @@ There is **no `kysely-codegen`**. The `Models` interface is maintained manually 
 
 `0001_baseline.ts` bootstraps a database by executing `schema.sql` (a `pg_dump --schema-only`). It does not re-run on a database that already recorded it.
 
-**As of the 2026-07-10 re-squash, the baseline IS the current, complete schema and there are no dated migrations.** The 2026-07-07 squash collapsed the ~34 dated remediation migrations; on 2026-07-10 the 17 dated files that had accumulated since (record slugs → authusers-deactivated-at, plus `tenants.demo_mode_at`) were folded in the same way — fresh `pg_dump` taken with the PG18 client (`/opt/homebrew/opt/postgresql@18/bin/pg_dump`; the PATH default is a 17.6 client that refuses an 18 server), dated files deleted, dev and test DBs dropped and re-bootstrapped (see "Re-squashing"). So on a fresh DB Kysely runs `0001_baseline` and nothing else, and — unlike before — `schema.sql` **does** reflect the current shape. (`libs/common/src/lib/kysely.models.ts` and a live `psql \d` are still the authoritative Kysely-side view.)
+**As of the 2026-07-26 re-squash, the baseline IS the current, complete schema and there are no dated migrations.** The 2026-07-07 squash collapsed the ~34 dated remediation migrations; 2026-07-10 folded the 17 that followed; 2026-07-26 folded the 29 after that (companion apps → email payload storage). Each time: fresh `pg_dump` taken with the PG18 client (`/opt/homebrew/opt/postgresql@18/bin/pg_dump`; the PATH default is a 17.6 client that refuses an 18 server), dated files deleted, `kysely_migration` reset on every existing DB (see "Re-squashing"). So on a fresh DB Kysely runs `0001_baseline` and nothing else, and `schema.sql` **does** reflect the current shape. (`libs/common/src/lib/kysely.models.ts` and a live `psql \d` are still the authoritative Kysely-side view.)
+
+**The baseline also seeds rows** (`seedRows()` in `0001_baseline.ts`) — currently just the `ops_watchdog` row in `ops_heartbeats`, which the dead-man's-switch health probe needs and which a `--schema-only` dump cannot carry. When a re-squash folds a dated migration that INSERTed data, its seed moves into that function or a fresh DB comes up subtly broken.
 
 ### Fresh-database prerequisites — provisioning, run BEFORE the app first boots
 
@@ -92,12 +94,16 @@ New schema changes are new dated `YYYY-MM-DD-*.ts` files on top of the baseline,
 
 ### Re-squashing (optional, pre-ship only)
 
-When the dated-migration list grows unwieldy and there is no production data to preserve, collapse again:
+When the dated-migration list grows unwieldy and there is no production data to preserve, collapse again. Order matters — step 4 before step 5, always:
 
-1. `pg_dump --schema-only` a fully-migrated DB → overwrite `schema.sql` (schema only, no `COPY`/`INSERT`).
-2. Delete the dated `*.ts` files (keep `0001_baseline.ts`).
-3. Reset tracking so Kysely doesn't abort on the missing files: `DELETE FROM kysely_migration WHERE name <> '0001_baseline'` on **every** existing DB (dev _and_ test), or drop/recreate them.
-4. **Verify a from-scratch build** — provision a throwaway DB with `setup-db-roles.sql`, boot the backend against it, and confirm `migration up:"0001_baseline" successful`. This is the step that catches the ownership/version gaps above; don't skip it.
+0. **Confirm every DB is exactly at the tree** before dumping: `SELECT name FROM kysely_migration ORDER BY name` on dev, test, and prod, diffed against the `*.ts` filenames. If a DB is behind, bring it up first (`set -a; . ./.env.<env>; set +a; NODE_ENV=<env> npx tsx apps/backend/src/app/kyselyinit.ts` — env.ts requires the full env, so sourcing the file is not optional). Squashing while prod is behind bakes a schema into the baseline that prod does not have, and no future migration will ever repair the gap.
+1. `pg_dump --schema-only` a fully-migrated DB → overwrite `schema.sql`. Plain `--schema-only`; do **not** add `--no-privileges`, the loader relies on the `OWNER TO`/`GRANT` lines.
+2. **Rescue any seeded rows.** `grep "INSERT INTO" apps/backend/src/app/_migrations/2026-*.ts` before deleting anything — a `--schema-only` dump drops them silently. Move each into `seedRows()` in `0001_baseline.ts`.
+3. Delete the dated `*.ts` files (keep `0001_baseline.ts`).
+4. **Verify a from-scratch build** — provision a throwaway DB (`TEST_DB_NAME=pplcrm_squash_test apps/backend/scripts/setup-test-db.sh`), migrate it, and confirm `migration up:"0001_baseline" successful` is the only line. Then diff its `pg_dump --schema-only` against the fully-migrated dev DB's: they must be **identical**. That diff, not the successful boot, is what proves the squash lossless.
+5. Reset tracking so Kysely doesn't abort on the missing files: `DELETE FROM kysely_migration WHERE name <> '0001_baseline'` on **every** existing DB — dev, test, _and prod_ (`.env.production` carries the `pplcrm_owner` credentials; Azure Postgres needs `PGSSLMODE=require`).
+
+**The prod window (the part that can break deploys):** prod runs `MIGRATE_ON_BOOT=false` and migrates only via the `migrate` job in `deploy.yml`, which aborts on _corrupt migrations_ when `kysely_migration` names a file that no longer exists. So the prod DELETE must land **after** the files leave the tree and **before** the squashed tree deploys. Between the DELETE and the push, a deploy of the _old_ tree would try to re-run every dated migration against a database that already has those objects and fail on `relation already exists`. Do the reset and the push back to back, and don't deploy in between.
 
 Note the loader strips at run time: psql `\` meta-commands (`\restrict`/`\unrestrict`), the `search_path` `set_config` line, the PG17-only `transaction_timeout` SET, and any `kysely_migration`/`kysely_migration_lock` DDL — so a dump taken with a newer `pg_dump` client against an older server still loads.
 
