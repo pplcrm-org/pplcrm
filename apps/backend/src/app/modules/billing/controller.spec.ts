@@ -615,3 +615,99 @@ describe('BillingController.processWebhookEvent — receipt email tax line', () 
     expect(msg.html).not.toContain('<strong>Tax</strong>');
   });
 });
+
+/**
+ * Free is not purchasable, so it never arrives from Stripe. Without an explicit path a tenant
+ * sits at subscription_status = NULL forever, which is what strands them in demo mode.
+ */
+describe('BillingController.selectFreePlan', () => {
+  const db = (BaseRepository as any)._db;
+  let controller: BillingController;
+  let tenantId: string;
+
+  const tenantRow = () => db.selectFrom('tenants').selectAll().where('id', '=', tenantId).executeTakeFirst();
+
+  beforeEach(() => {
+    controller = new BillingController();
+  });
+
+  afterEach(async () => {
+    await cleanBillingTenant(db, tenantId);
+  });
+
+  it('records an active status on free for a tenant that never subscribed', async () => {
+    ({ tenantId } = await seedBillingTenant(db, {
+      subscription_plan: 'free',
+      subscription_status: null,
+      stripe_customer_id: null,
+      stripe_subscription_id: null,
+    }));
+
+    const res = await controller.selectFreePlan({ tenant_id: tenantId });
+
+    expect(res).toEqual({ success: true, plan: 'free' });
+    const tenant = await tenantRow();
+    expect(tenant.subscription_plan).toBe('free');
+    // The exact value demo.exit gates on — the whole point of this path.
+    expect(tenant.subscription_status).toBe('active');
+    expect(tenant.subscription_ends_at).toBeNull();
+    expect(tenant.subscription_quantity).toBe(1);
+  });
+
+  it('creates no Stripe customer, so a later sync cannot clobber the status', async () => {
+    ({ tenantId } = await seedBillingTenant(db, {
+      subscription_plan: 'free',
+      subscription_status: null,
+      stripe_customer_id: null,
+      stripe_subscription_id: null,
+    }));
+
+    await controller.selectFreePlan({ tenant_id: tenantId });
+
+    const tenant = await tenantRow();
+    expect(tenant.stripe_customer_id).toBeNull();
+    expect(tenant.stripe_subscription_id).toBeNull();
+    // syncSubscriptionFromStripe returns early without a customer id, leaving free/active intact.
+    await expect(controller.syncSubscriptionFromStripe({ tenant_id: tenantId })).resolves.toEqual({
+      synced: false,
+      plan: 'free',
+    });
+    expect((await tenantRow()).subscription_status).toBe('active');
+  });
+
+  it('refuses while a paid subscription is live — that downgrade belongs in the Stripe portal', async () => {
+    ({ tenantId } = await seedBillingTenant(db)); // grassroots + active + sub id
+
+    await expect(controller.selectFreePlan({ tenant_id: tenantId })).rejects.toThrow(/Cancel it under Manage/i);
+
+    const tenant = await tenantRow();
+    expect(tenant.subscription_plan).toBe('grassroots');
+    expect(tenant.subscription_status).toBe('active');
+  });
+
+  it('allows free after a paid subscription was canceled', async () => {
+    ({ tenantId } = await seedBillingTenant(db, {
+      subscription_plan: 'free',
+      subscription_status: 'canceled',
+      subscription_ends_at: new Date().toISOString(),
+    }));
+
+    await controller.selectFreePlan({ tenant_id: tenantId });
+
+    const tenant = await tenantRow();
+    expect(tenant.subscription_status).toBe('active');
+    expect(tenant.subscription_ends_at).toBeNull();
+  });
+
+  it('is idempotent once free is already settled', async () => {
+    ({ tenantId } = await seedBillingTenant(db, {
+      subscription_plan: 'free',
+      subscription_status: 'active',
+      stripe_customer_id: null,
+      stripe_subscription_id: null,
+    }));
+
+    await expect(controller.selectFreePlan({ tenant_id: tenantId })).resolves.toEqual({ success: true, plan: 'free' });
+    expect((await tenantRow()).subscription_status).toBe('active');
+  });
+});

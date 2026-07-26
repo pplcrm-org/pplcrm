@@ -12,7 +12,7 @@ import {
   type PurchasablePlanKey,
 } from '@common';
 import { env } from '../../../env';
-import { BadRequestError, NotFoundError } from '../../errors/app-errors';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../../errors/app-errors';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { logger } from '../../logger';
 import { TenantsRepo } from '../auth/repositories/tenants.repo';
@@ -103,6 +103,7 @@ interface TenantBillingRow {
   id: string;
   admin_id: string | null;
   subscription_plan: string | null;
+  subscription_status: string | null;
   subscription_quantity: number | null;
   subscription_interval: BillingInterval;
   stripe_customer_id: string | null;
@@ -117,6 +118,7 @@ function asTenantBillingRow(row: unknown): TenantBillingRow | undefined {
     id: r['id'],
     admin_id: typeof r['admin_id'] === 'string' ? r['admin_id'] : null,
     subscription_plan: typeof r['subscription_plan'] === 'string' ? r['subscription_plan'] : null,
+    subscription_status: typeof r['subscription_status'] === 'string' ? r['subscription_status'] : null,
     subscription_quantity: typeof r['subscription_quantity'] === 'number' ? r['subscription_quantity'] : null,
     subscription_interval: asBillingInterval(r['subscription_interval']),
     stripe_customer_id: typeof r['stripe_customer_id'] === 'string' ? r['stripe_customer_id'] : null,
@@ -722,6 +724,58 @@ export class BillingController {
         break;
       }
     }
+  }
+
+  /**
+   * Deliberately choose the Free plan — the third option beside the two purchasable tiers.
+   *
+   * Free is not purchasable, so it can never come back from Stripe: `createCheckout` rejects it
+   * at the Zod boundary and every other write of `subscription_status` in this file mirrors a
+   * live Stripe subscription. Without this path a free tenant sits at
+   * `subscription_status = NULL` forever, which is what strands them in demo mode (the exit gate
+   * requires an active or trialing status). Choosing Free is a real decision, so it records one.
+   *
+   * It writes no Stripe fields and never creates a customer, so `syncSubscriptionFromStripe`
+   * (which returns early without a `stripe_customer_id`) can't later clobber the status.
+   */
+  public async selectFreePlan(auth: { tenant_id: string }): Promise<{ success: boolean; plan: PlanKey }> {
+    const tenant = asTenantBillingRow(
+      await tenantsRepo.getOneBy('id', { tenant_id: auth.tenant_id, value: auth.tenant_id }),
+    );
+    if (!tenant) {
+      throw new NotFoundError('Tenant not found');
+    }
+
+    // Downgrading away from a paid tier is a billing operation, not a preference: it has to go
+    // through Stripe so the subscription is actually canceled and proration is handled. Flipping
+    // the columns here would leave the tenant paying for a plan the app says they don't have.
+    const hasLiveSubscription =
+      !!tenant.stripe_subscription_id && ['active', 'trialing', 'past_due'].includes(tenant.subscription_status ?? '');
+    if (hasLiveSubscription) {
+      throw new ForbiddenError(
+        'You have a paid subscription. Cancel it under Manage subscription first, then you will move to the Free plan.',
+      );
+    }
+
+    if (tenant.subscription_plan === 'free' && tenant.subscription_status === 'active') {
+      return { success: true, plan: 'free' };
+    }
+
+    await tenantsRepo.update({
+      tenant_id: auth.tenant_id,
+      id: auth.tenant_id,
+      row: {
+        subscription_plan: 'free',
+        subscription_status: 'active',
+        subscription_quantity: 1,
+        subscription_interval: 'month',
+        // Free never lapses, so there is no renewal or end date to show.
+        subscription_ends_at: null,
+      },
+    });
+    logger.info(`[selectFreePlan] Tenant ${auth.tenant_id} chose the Free plan`);
+
+    return { success: true, plan: 'free' };
   }
 
   public async activateMockPlan(

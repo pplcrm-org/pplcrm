@@ -77,6 +77,20 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   protected readonly plans: readonly PlanDef[] = PLANS.filter((p) => p.purchasable);
   protected readonly enterpriseMailto = 'mailto:hello@pplcrm.com?subject=Enterprise%20Inquiry';
 
+  /** Free is not an "upgrade option", so it gets its own quiet panel below the paid cards rather
+   * than a third card in the grid. */
+  protected readonly freePlan = PLANS.find((p) => p.key === 'free') ?? null;
+
+  /** Free is settled (chosen, not merely defaulted-into). Everyone starts on plan 'free' with a
+   * null status, which is not the same thing. */
+  protected readonly onFreePlan = computed(
+    () => this.details()?.plan === 'free' && !!this.details()?.hasActiveSubscription,
+  );
+
+  /** Moving to Free is only self-serve while no paid subscription is live; otherwise it is a
+   * cancellation and belongs in the Stripe portal. */
+  protected readonly canChooseFree = computed(() => !this.details()?.stripeSubscriptionId);
+
   /** Billing interval for the upgrade cards. Monthly is the deliberate default — electoral
    * campaigns often end mid-year and shouldn't be nudged into annual prepay. */
   protected readonly billingInterval = signal<BillingInterval>('month');
@@ -229,6 +243,23 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
       }
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Checkout failed. Please try again.');
+      this.actionPending.set(false);
+    }
+  }
+
+  /** Commit to the Free plan. Not a checkout: Free isn't purchasable, so this records the choice
+   * directly. It is what unblocks leaving demo mode, which needs a settled plan decision. */
+  protected async continueOnFree() {
+    this.actionPending.set(true);
+    try {
+      await this.api.billing.selectFree.mutate();
+      this.alerts.showSuccess('You’re on the Free plan. You can upgrade whenever you need to.');
+      await this.loadBilling();
+    } catch (err) {
+      this.alerts.showError(
+        err instanceof Error && err.message ? err.message : 'Could not switch to the Free plan. Please try again.',
+      );
+    } finally {
       this.actionPending.set(false);
     }
   }

@@ -32,8 +32,11 @@
           <span class="pc-eyebrow">Current Plan</span>
           @if (details()?.hasActiveSubscription) {
           <pc-status-badge type="success"> <pc-icon name="check-circle" /> Active </pc-status-badge>
-          } @else {
+          } @else if (details()?.endsAt) {
           <pc-status-badge type="error">Inactive</pc-status-badge>
+          } @else {
+          <!-- Never subscribed is not a failure state, so it doesn't wear the error colour. -->
+          <pc-status-badge type="neutral">No plan chosen</pc-status-badge>
           }
         </div>
 
@@ -47,9 +50,13 @@
           <p class="text-xs text-error/80 mt-1 font-medium">
             Your plan has expired or was canceled. Access ends on {{ details()?.endsAt | date:'mediumDate' }}.
           </p>
+          } @else if (onFreePlan()) {
+          <p class="text-xs text-base-content/60 mt-1">
+            The Free plan does not expire. Upgrade below whenever you outgrow it.
+          </p>
           } @else {
           <p class="text-xs text-base-content/60 mt-1">
-            You are currently on the free trial version of pplCRM. Upgrade below to unlock all capabilities.
+            You have not chosen a plan yet. Pick one below, or continue on Free.
           </p>
           } @if (usageSummary()) {
           <p class="text-xs text-base-content/70 mt-2 font-medium">{{ usageSummary() }}</p>
@@ -98,7 +105,7 @@
           <span class="text-base-content/50 block text-xs">Linked Card</span>
           <span class="flex items-center gap-1.5 font-medium text-base-content/80 mt-0.5">
             <pc-icon name="credit-card" [size]="4" class="text-base-content/40" />
-            •••• •••• •••• {{ details()?.hasActiveSubscription ? '4242' : 'N/A' }}
+            {{ details()?.stripeCustomerId ? '•••• •••• •••• 4242' : 'No card on file' }}
           </span>
         </div>
       </div>
@@ -231,6 +238,35 @@
       </div>
       }
     </div>
+
+    <!-- Free plan: not an upgrade, so it sits below the grid as a quiet, deliberate choice rather
+         than a third card competing with the paid tiers. -->
+    @if (freePlan; as free) { @if (canChooseFree()) {
+    <div class="pc-panel p-5 flex flex-wrap items-center justify-between gap-4">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <h4 class="text-sm font-bold text-base-content">{{ free.name }}</h4>
+          @if (onFreePlan()) {
+          <pc-status-badge type="success">Current plan</pc-status-badge>
+          }
+        </div>
+        <p class="text-xs text-base-content/60 mt-1">{{ free.blurb }}</p>
+      </div>
+
+      @if (onFreePlan()) {
+      <p class="text-xs text-base-content/60">Upgrade above whenever you need more.</p>
+      } @else {
+      <button
+        type="button"
+        class="btn btn-outline btn-secondary btn-sm"
+        [disabled]="actionPending()"
+        (click)="continueOnFree()"
+      >
+        Continue on Free
+      </button>
+      }
+    </div>
+    } }
 
     <!-- Enterprise footnote -->
     <p class="text-xs text-base-content/60 text-center">
