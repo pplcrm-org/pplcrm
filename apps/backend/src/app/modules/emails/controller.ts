@@ -345,15 +345,44 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
 
     let numDeleted: number | boolean = false;
     if (idsInTrash.length > 0) {
-      // Capture the attachment file references BEFORE the cascade removes the
-      // email_attachments rows, so we can clean up storage afterwards.
+      // Capture the attachment file and body blob references BEFORE the cascade removes the
+      // email_attachments / email_bodies rows, so we can clean up storage afterwards.
       const fileIds = await this.getAttachmentFileIds(tenant_id as string, idsInTrash);
+      const bodyKeys = await this.getBodyStorageKeys(tenant_id as string, idsInTrash);
       numDeleted = await super.deleteMany(tenant_id, idsInTrash);
-      // Hard delete is permanent — purge orphaned attachment blobs + file rows.
+      // Hard delete is permanent — purge orphaned attachment blobs + file rows, and the bodies.
       await this.purgeOrphanedFiles(tenant_id as string, fileIds);
+      await this.purgeBodyBlobs(bodyKeys);
     }
 
     return numTrashed !== 0 || numDeleted;
+  }
+
+  /** Blob keys for the given emails' bodies, captured before the rows are deleted. */
+  private async getBodyStorageKeys(tenant_id: string, emailIds: string[]): Promise<string[]> {
+    if (emailIds.length === 0) return [];
+    const rows = await this.bodiesRepo.db
+      .selectFrom('email_bodies')
+      .select('storage_key')
+      .where('tenant_id', '=', tenant_id)
+      .where('email_id', 'in', emailIds)
+      .where('storage_key', 'is not', null)
+      .execute();
+    return rows.map((r) => String(r.storage_key)).filter((k) => k !== 'null');
+  }
+
+  /**
+   * Delete body blobs. Unlike attachment files these are not deduped — one blob belongs to exactly
+   * one email — so deletion is unconditional. Best-effort, as with attachment blobs.
+   */
+  private async purgeBodyBlobs(storageKeys: string[]): Promise<void> {
+    for (const key of storageKeys) {
+      try {
+        await this.storageService.delete(key);
+      } catch (err) {
+        logger.error({ err }, `Failed to delete email body blob ${key}`);
+      }
+    }
   }
 
   /** Distinct, non-null file_ids referenced by the given emails' attachments. */
@@ -463,9 +492,11 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
         | Selectable<Models['email_bodies']>
         | undefined;
       if (email) {
+        // The HTML may live in blob storage rather than on the row; getBodyHtml resolves either.
+        const html = await this.bodiesRepo.getBodyHtml(tenant_id, value);
         return {
           ...email,
-          body_html: sanitizeHtml(email.body_html),
+          body_html: sanitizeHtml(html),
         };
       }
 

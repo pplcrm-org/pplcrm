@@ -211,6 +211,61 @@ describe('EmailsController attachment delete cleanup (integration)', () => {
     expect(storageDeleteSpy).toHaveBeenCalledWith(sharedKey);
   });
 
+  it('deletes the body blob on permanent delete', async () => {
+    // Bodies live in blob storage once they exceed the inline threshold, and unlike attachment
+    // files they are not deduped — one blob belongs to exactly one email — so a hard delete must
+    // remove it unconditionally or it is orphaned forever.
+    const bodyKey = `emails/bodies/${rand()}.html`;
+    const { emailId } = await seedTrashedEmailWithAttachment(`emails/attachments/${rand()}_doc.pdf`, rand() + rand());
+
+    await db
+      .insertInto('email_bodies')
+      .values({
+        tenant_id: tenantId,
+        email_id: emailId,
+        body_html: null,
+        storage_key: bodyKey,
+        body_text: 'the searchable part',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    await controller.deleteMany(tenantId as any, [emailId]);
+
+    expect(storageDeleteSpy).toHaveBeenCalledWith(bodyKey);
+  });
+
+  it('leaves the body blob alone on a soft delete', async () => {
+    const bodyKey = `emails/bodies/${rand()}.html`;
+    const { emailId } = await seedTrashedEmailWithAttachment(`emails/attachments/${rand()}_doc.pdf`, rand() + rand());
+
+    await db
+      .insertInto('email_bodies')
+      .values({
+        tenant_id: tenantId,
+        email_id: emailId,
+        body_html: null,
+        storage_key: bodyKey,
+        body_text: 'still needed',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    // Back to Inbox, so deleting only moves it to Trash and the body must remain readable.
+    await db
+      .updateTable('emails')
+      .set({ folder_id: '11', deleted_at: null })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', emailId)
+      .execute();
+
+    await controller.deleteMany(tenantId as any, [emailId]);
+
+    expect(storageDeleteSpy).not.toHaveBeenCalled();
+  });
+
   it('moves to trash (no hard delete) when the email is not already in trash', async () => {
     const storageKey = `emails/attachments/${rand()}_doc.pdf`;
     const { emailId, fileId } = await seedTrashedEmailWithAttachment(storageKey, rand() + rand());

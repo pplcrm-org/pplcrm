@@ -88,8 +88,9 @@ export class MsSyncSettings extends TRPCService<unknown> implements OnInit {
 
   protected async forceFullResync() {
     const confirmed = await this.dialogs.confirm({
-      title: 'Force Full Re-sync',
-      message: 'This will reset the sync position and re-download all emails from scratch. Continue?',
+      title: 'Re-sync recent mail',
+      message:
+        'This resets the sync position and pulls the last 48 hours again from scratch. Older messages already in your inbox are left alone. Continue?',
       variant: 'warning',
       confirmText: 'Re-sync',
     });

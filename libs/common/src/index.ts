@@ -421,7 +421,14 @@ export {
 } from './lib/preflight-lint';
 export type { PreflightInput } from './lib/preflight-lint';
 
-export { SPECIAL_FOLDERS, EMAIL_FOLDERS } from './lib/emails';
+export {
+  SPECIAL_FOLDERS,
+  EMAIL_FOLDERS,
+  EAGER_ATTACHMENT_MAX_BYTES,
+  allowsAttachmentDownload,
+  allowsEagerAttachmentFetch,
+  allowsInlineImages,
+} from './lib/emails';
 
 export type { EmailStatus, EmailFolderConfig } from './lib/emails';
 

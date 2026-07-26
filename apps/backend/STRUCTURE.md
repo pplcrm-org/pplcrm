@@ -44,6 +44,7 @@ apps/
           2026-07-24-e-authusers-deleted-at.ts
           2026-07-24-f-import-email-verification.ts
           2026-07-25-system-lists.ts
+          2026-07-26-email-payload-storage.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -243,6 +244,8 @@ apps/
             routes/
               emails-api.route.ts
             services/
+              attachment-materializer.ts
+              email-body-text.ts
               email-ingester.service.ts
             controller.ts
             trpc.router.ts

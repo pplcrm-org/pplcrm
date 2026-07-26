@@ -175,3 +175,45 @@ export const ALL_FOLDER_IDS = EMAIL_FOLDERS.map((f) => f.id) as ReadonlyArray<Fo
 export const FOLDER_BY_ID = Object.freeze(Object.fromEntries(EMAIL_FOLDERS.map((f) => [f.id, f]))) as Readonly<
   Record<Folder['id'], Folder>
 >;
+
+// ---------- Attachment payload policy ----------
+//
+// Synced mail arrives as metadata; the bytes are fetched separately. Where that fetch is allowed
+// depends on the folder, because a mailbox's junk is not something we want sitting in our storage
+// account. Shared by the ingester, the download route and the attachment UI so all three agree.
+
+/**
+ * Attachments at or below this size are fetched during sync (logos, signatures, inline images), so
+ * a body renders complete on first open. Anything larger waits until someone asks for it.
+ */
+export const EAGER_ATTACHMENT_MAX_BYTES = 256 * 1024;
+
+/**
+ * Whether an attachment's payload may EVER be fetched and stored.
+ *
+ * Spam is a hard no: pulling junk-folder payloads would mean storing malware in our own blob
+ * container and serving it back from our own domain. The attachment row is still shown — filename,
+ * type and size — so a false positive is recognisable, but the bytes stay in the provider. To get
+ * the file, the user moves the message out of Spam in their mail client and it arrives on the next
+ * sync, in a folder where downloading is allowed.
+ */
+export function allowsAttachmentDownload(folderId: string | number | null | undefined): boolean {
+  return String(folderId ?? '') !== ALL_FOLDERS.SPAM;
+}
+
+/**
+ * Whether small attachments in this folder are fetched eagerly during sync. Only the two folders
+ * people actually work out of; Trash and Spam are metadata-only until (and unless) asked for.
+ */
+export function allowsEagerAttachmentFetch(folderId: string | number | null | undefined): boolean {
+  const id = String(folderId ?? '');
+  return id === ALL_FOLDERS.INBOX || id === ALL_FOLDERS.SENT;
+}
+
+/**
+ * Whether inline images in a body may auto-load. Blocked in Spam — loading a remote or embedded
+ * image in junk mail confirms to the sender that the address is live.
+ */
+export function allowsInlineImages(folderId: string | number | null | undefined): boolean {
+  return String(folderId ?? '') !== ALL_FOLDERS.SPAM;
+}

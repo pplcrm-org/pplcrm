@@ -15,6 +15,8 @@ import { GoogleOAuthService } from '../../google-sync/google-oauth.service';
 import { GoogleSyncService } from '../../google-sync/google-sync.service';
 import { MsOAuthService } from '../../ms-sync/ms-oauth.service';
 import { MsSyncService } from '../../ms-sync/ms-sync.service';
+import { materializeAttachment } from '../services/attachment-materializer';
+import { extractBodyText } from '../services/email-body-text';
 
 function buildRawMime(options: {
   fromName: string;
@@ -137,13 +139,17 @@ export async function saveLocalEmail(
 
     const emailId = String(createdEmail.id);
 
-    // 2. Insert html into email_bodies
+    // 2. Insert html into email_bodies.
+    //    Locally composed mail stays inline — it is small and already in hand — but it still gets a
+    //    text extract so sent mail is searchable alongside everything synced.
     await trx
       .insertInto('email_bodies')
       .values({
         tenant_id: tenantId,
         email_id: emailId,
         body_html: html,
+        storage_key: null,
+        body_text: extractBodyText(html),
         createdby_id: userId,
         updatedby_id: userId,
       })
@@ -193,6 +199,8 @@ export async function saveLocalEmail(
           is_inline: uFile.is_inline,
           pos: i + 1,
           file_id: fileId,
+          // Composed locally, so there is no provider-side attachment to fetch later.
+          remote_ref: null,
           createdby_id: userId,
           updatedby_id: userId,
         })
@@ -672,15 +680,26 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
         .where('email_id', '=', id)
         .executeTakeFirst();
 
-      if (!attachment || !attachment.file_id) {
+      if (!attachment) {
         return reply.status(404).send({ error: 'Attachment not found' });
+      }
+
+      // Synced attachments are recorded without their payload; the first download fetches it.
+      const materialized = await materializeAttachment(db, tenantId, attachment);
+      if (materialized.status === 'forbidden') {
+        return reply.status(403).send({
+          error: 'Attachments on messages marked as spam cannot be downloaded.',
+        });
+      }
+      if (materialized.status === 'unavailable') {
+        return reply.status(404).send({ error: 'This attachment is no longer available from the mailbox.' });
       }
 
       const file = await db
         .selectFrom('files')
         .selectAll()
         .where('tenant_id', '=', tenantId)
-        .where('id', '=', attachment.file_id)
+        .where('id', '=', materialized.fileId)
         .executeTakeFirst();
 
       if (!file) {
@@ -732,15 +751,23 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
         .where('is_inline', '=', true)
         .executeTakeFirst();
 
-      if (!attachment || !attachment.file_id) {
+      if (!attachment) {
         return reply.status(404).send({ error: 'Inline attachment not found' });
+      }
+
+      // Inline images are materialized on first view, same as any other attachment — which is why
+      // the ingester rewrites `cid:` to point here rather than embedding the bytes. In Spam the
+      // rewrite never happens and this path refuses anyway.
+      const materialized = await materializeAttachment(db, tenantId, attachment);
+      if (materialized.status !== 'ok') {
+        return reply.status(materialized.status === 'forbidden' ? 403 : 404).send({ error: 'Image not available' });
       }
 
       const file = await db
         .selectFrom('files')
         .selectAll()
         .where('tenant_id', '=', tenantId)
-        .where('id', '=', attachment.file_id)
+        .where('id', '=', materialized.fileId)
         .executeTakeFirst();
 
       if (!file) {

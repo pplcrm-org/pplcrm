@@ -9,6 +9,21 @@ import { logger } from '../../logger';
 
 const MAX_MESSAGES_PER_SYNC = 50;
 
+/**
+ * How far back a first sync reaches.
+ *
+ * Connecting a mailbox used to pull its entire history — every message, body and attachment, for
+ * every folder — which for a real account meant a job that could not finish inside its timeout and
+ * restarted from zero on each retry, and a triage queue full of mail the user dealt with months
+ * ago. Two days is enough that the inbox has substance immediately, and short enough that connecting
+ * completes in seconds. Everything after that arrives incrementally.
+ */
+const INITIAL_SYNC_WINDOW_HOURS = 48;
+const SECONDS_PER_HOUR = 3600;
+
+/** Overlap buffer on incremental syncs, so a message landing mid-run is not missed. */
+const INCREMENTAL_OVERLAP_SECONDS = 60;
+
 async function fetchWithRetry(url: string, init?: RequestInit, maxRetries = 3): Promise<Response> {
   let attempt = 0;
   while (true) {
@@ -90,12 +105,16 @@ export class GoogleSyncService {
       let hasMore = true;
       const allMessageIds: string[] = [];
 
-      // Query Gmail messages: `label:<LABEL>` and `after:<epoch_seconds>` (with a small 60s overlap buffer)
-      const queryParts = [`label:${folder.label}`];
-      if (folderLastSync > 0) {
-        queryParts.push(`after:${folderLastSync - 60}`);
-      }
-      const q = queryParts.join(' ');
+      // Query Gmail messages: `label:<LABEL>` bounded by `after:<epoch_seconds>`.
+      //
+      // Incremental runs resume from the stored watermark (minus an overlap buffer). A first sync —
+      // or a forced re-sync, which clears the watermark — reaches back only INITIAL_SYNC_WINDOW_HOURS.
+      // There is deliberately no unbounded branch: every query carries an `after:` clause.
+      const windowStart =
+        folderLastSync > 0
+          ? folderLastSync - INCREMENTAL_OVERLAP_SECONDS
+          : currentSyncTime - INITIAL_SYNC_WINDOW_HOURS * SECONDS_PER_HOUR;
+      const q = `label:${folder.label} after:${windowStart}`;
 
       while (hasMore) {
         const urlParams = new URLSearchParams({
@@ -146,18 +165,25 @@ export class GoogleSyncService {
 
       nextDeltaMap[folder.label] = currentSyncTime;
 
-      // Handle clean-up for deleted/moved emails
-      // If we performed a full sync (started with no previous sync time), we compare
-      // messages in Gmail with local emails having `google:` preview prefix in this folder.
+      // Reconcile deletions. Gmail has no tombstones, so the only way to notice a message that
+      // disappeared server-side is to compare against what the server just returned.
+      //
+      // The candidate set MUST be scoped to the window we actually fetched. `allMessageIds` only
+      // describes mail since `windowStart`, so comparing it against every local row would treat the
+      // entire older archive as deleted — and because a forced re-sync clears the watermark, that
+      // would wipe an established mailbox's history on the press of a button.
       if (folderLastSync === 0) {
         const serverGoogleIds = new Set(allMessageIds);
         const localEmails = await this.db
           .selectFrom('emails')
-          .select(['id', 'preview'])
-          .where('tenant_id', '=', tenantId)
-          .where('campaign_id', '=', campaignId)
-          .where('folder_id', '=', folder.pplcrmId)
-          .where('preview', 'like', 'google:%')
+          .innerJoin('email_headers', 'email_headers.email_id', 'emails.id')
+          .select(['emails.id as id', 'emails.preview as preview'])
+          .where('emails.tenant_id', '=', tenantId)
+          .where('emails.campaign_id', '=', campaignId)
+          .where('emails.folder_id', '=', folder.pplcrmId)
+          .where('emails.preview', 'like', 'google:%')
+          .where('email_headers.tenant_id', '=', tenantId)
+          .where('email_headers.date_sent', '>=', new Date(windowStart * 1000))
           .execute();
 
         for (const localEmail of localEmails) {
@@ -168,9 +194,12 @@ export class GoogleSyncService {
           }
         }
       }
+
+      // Checkpoint per folder: a failure in Spam must not discard Inbox's progress, which would
+      // otherwise send the next run back to a full re-fetch.
+      await this.oauthSvc.saveDeltaLink(tenantId, campaignId, JSON.stringify(nextDeltaMap));
     }
 
-    await this.oauthSvc.saveDeltaLink(tenantId, campaignId, JSON.stringify(nextDeltaMap));
     return { inserted };
   }
 
@@ -238,6 +267,10 @@ export class GoogleSyncService {
       size: att.size,
       contentId: att.cid,
       isInline: att.isInline,
+      // Kept so an attachment we choose not to download now can be fetched later. Gmail may
+      // reissue an attachmentId, so the download path re-reads the message to get a fresh one
+      // and treats this as a hint rather than a guarantee.
+      remoteRef: att.attachmentId ?? null,
       fetchContent: async () => {
         const attRes = await fetchWithRetry(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}/attachments/${att.attachmentId}`,
