@@ -639,3 +639,77 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* ─── Product tour ─────────────────────────────────────────────────────────────
+   The whole spotlight is two rules: a scrim, and a raised target. No cut-out
+   mask, no measured rectangle, no scroll or resize listener — TypeScript decides
+   WHICH element is spotlit, CSS does everything else.
+
+   The scrim never takes pointer events and the target sits above it, so the
+   spotlit control stays usable. A stop that says "try double-clicking a cell"
+   has to let you. */
+.pc-tour-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--color-neutral) 55%, transparent);
+  pointer-events: none;
+}
+
+.pc-tour-target {
+  position: relative;
+  z-index: 61;
+  border-radius: var(--radius-field);
+  box-shadow:
+    0 0 0 2px var(--color-primary),
+    0 8px 24px color-mix(in srgb, var(--color-neutral) 35%, transparent);
+  /* Published for the bubble to position against (see below). */
+  anchor-name: --pc-tour-anchor;
+}
+
+.pc-tour-bubble {
+  position: fixed;
+  z-index: 62;
+  width: min(20rem, calc(100vw - 2rem));
+  border-radius: var(--radius-box);
+  border: 1px solid var(--color-base-200);
+  background: var(--color-base-100);
+  padding: 0.875rem;
+  box-shadow: 0 12px 34px color-mix(in srgb, var(--color-neutral) 30%, transparent);
+  /* Default placement, and the fallback wherever anchor positioning is missing
+     (Safari and Firefox at time of writing): the bubble sits bottom-centre and
+     the ring alone marks the target. Degraded, not broken. */
+  inset: auto auto 1.5rem 50%;
+  translate: -50% 0;
+}
+
+@supports (position-anchor: --pc-tour-anchor) {
+  .pc-tour-bubble--anchored {
+    position-anchor: --pc-tour-anchor;
+    /* Preferred to the right of the target; the fallbacks handle a target near
+       an edge, which is why no JS flipping logic is needed. */
+    position-area: inline-end center;
+    position-try-fallbacks:
+      inline-start center,
+      block-end center,
+      block-start center;
+    margin: 0 0 0 0.75rem;
+    inset: auto;
+    translate: none;
+  }
+}
+
+.pc-tour-pip {
+  width: 5px;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--color-base-300);
+  transition: width 0.15s ease-in-out;
+}
+.pc-tour-pip--done {
+  background: color-mix(in srgb, var(--color-base-content) 35%, transparent);
+}
+.pc-tour-pip--on {
+  width: 14px;
+  background: var(--color-primary);
+}

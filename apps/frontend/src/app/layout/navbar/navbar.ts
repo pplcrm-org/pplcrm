@@ -7,6 +7,7 @@ import { AnimateIfDirective } from '@uxcommon/directives/animate-if.directive';
 import { Router, RouterLink } from '@angular/router';
 
 import { FavouriteToggle } from '../favourite-toggle/favourite-toggle';
+import { TourService } from '../tour/tour.service';
 import { PersonalSettingsDialog } from '../../experiences/settings/personal-settings-dialog/personal-settings-dialog';
 import { SearchService } from '../../services/api/search-service';
 import { FullScreenService } from '../../services/fullscreen.service';
@@ -40,6 +41,12 @@ export class Navbar implements OnDestroy {
   protected readonly emailActions = inject(EmailActionsStore);
   protected readonly breadcrumbs = inject(BreadcrumbsService);
   private readonly auth = inject(AuthService);
+  private readonly tourSvc = inject(TourService);
+
+  /** Re-entry point for the tour. Offered only while the demo data it walks through is still
+   * present — every stop lands on a seeded record, so the tour is meaningless once they are gone. */
+  protected readonly showTourEntry = computed(() => !!this.auth.getUserSignal()()?.tenant_demo_mode_at);
+
   private readonly userService = inject(UserService);
   private readonly fullscreen = inject(FullScreenService);
   private readonly searchSvc = inject(SearchService);
@@ -86,6 +93,10 @@ export class Navbar implements OnDestroy {
 
   protected openSettings(): void {
     this.settingsOpen.set(true);
+  }
+
+  protected startTour(): void {
+    void this.tourSvc.start(true);
   }
 
   protected openBugReport(): void {

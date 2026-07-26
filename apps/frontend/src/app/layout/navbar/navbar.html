@@ -287,6 +287,16 @@
             <ng-container i18n="Navbar|Help center menu item@@navbar.profile.menu.help">Help</ng-container>
           </a>
         </li>
+        @if (showTourEntry()) {
+        <li class="hover:text-primary">
+          <a (click)="startTour()">
+            <pc-icon name="map-pin"></pc-icon>
+            <ng-container i18n="Navbar|Restart product tour menu item@@navbar.profile.menu.tour"
+              >Take the tour</ng-container
+            >
+          </a>
+        </li>
+        }
         <li class="hover:text-primary">
           <a (click)="openBugReport()">
             <pc-icon name="bug-ant"></pc-icon>

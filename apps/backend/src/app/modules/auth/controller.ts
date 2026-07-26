@@ -38,6 +38,7 @@ import type { QueryParams } from '../../lib/base.repo';
 import { COMMON_PASSWORDS } from '../../lib/common-passwords';
 import { getPwnedCount } from '../../lib/hibp';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
+import { TourStateObj, type TourStateType } from '../../../../../../libs/common/src';
 import { getPlanLimits } from '../billing/usage-limits';
 import { isDisposableEmail } from '../../lib/mail/disposable-email-domains';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
@@ -519,6 +520,40 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     } catch (err) {
       throw new InternalError('Something went wrong, please try again', undefined, { cause: err });
     }
+  }
+
+  /**
+   * Product-tour progress for the signed-in user.
+   *
+   * Per user and on the profile, not in localStorage: a person learns the app once, not once per
+   * browser. (The go-live wizard is the mirror image — per tenant, because a workspace is
+   * configured once by whoever gets there first.)
+   */
+  public async getTourState(auth: IAuthKeyPayload): Promise<TourStateType> {
+    const profile = await this.profiles.getOneByAuthId(auth.user_id);
+    const prefs = parseProfilePreferences(profile?.preferences);
+    return TourStateObj.parse(prefs?.tour ?? {});
+  }
+
+  /** Merge a patch into the stored tour state, leaving every other preference untouched. */
+  public async setTourState(auth: IAuthKeyPayload, patch: Partial<TourStateType>): Promise<TourStateType> {
+    const profile = await this.profiles.getOneByAuthId(auth.user_id);
+    if (!profile) {
+      // No profile row yet (a user who has never saved one). Tour progress is a convenience, not
+      // a reason to create a profile as a side effect, so report the merged value without storing.
+      return TourStateObj.parse(patch);
+    }
+
+    const existing = (parseProfilePreferences(profile.preferences) as Record<string, unknown> | null) ?? {};
+    const next = TourStateObj.parse({ ...TourStateObj.parse(existing['tour'] ?? {}), ...patch });
+
+    await this.profiles.update({
+      tenant_id: auth.tenant_id,
+      id: String(profile.id),
+      row: { preferences: JSON.stringify({ ...existing, tour: next }) } as OperationDataType<'profiles', 'update'>,
+    });
+
+    return next;
   }
 
   public async deleteAvatar(auth: IAuthKeyPayload) {

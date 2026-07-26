@@ -53,6 +53,7 @@ import type {
   InviteAuthUserObj,
   ProfilePreferencesObj,
   UpdateAuthUserObj,
+  TourStateObj,
   Verify2FAObj,
   ImportListItemObj,
   AddVolunteerEventObj,
@@ -191,6 +192,7 @@ export type FieldReportRangeType = z.infer<typeof FieldReportRangeObj>;
 export type LogKnockType = z.infer<typeof LogKnockObj>;
 
 export type UpdateAuthUserType = z.infer<typeof UpdateAuthUserObj>;
+export type TourStateType = z.infer<typeof TourStateObj>;
 
 export type ProfilePreferencesType = z.infer<typeof ProfilePreferencesObj>;
 

@@ -7,6 +7,7 @@
     [class.tooltip-right]="isEffectivelyNarrow()"
     [attr.data-tip]="isEffectivelyNarrow() ? nav.name : null"
     (click)="this.closeMobile()"
+    [pcTourAnchor]="tourAnchorFor(nav)"
     [routerLink]="nav.route"
     [class.!font-semibold]="isNavActive(nav)"
     [class.!text-primary]="isNavActive(nav)"

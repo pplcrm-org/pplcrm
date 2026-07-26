@@ -11,6 +11,7 @@ import {
 import z from 'zod';
 
 import { authProcedure, adminOrOwnerProcedure, publicProcedure, router } from '../../../trpc';
+import { TourStateObj } from '../../../../../../libs/common/src';
 import { AuthController } from './controller';
 import { PasskeyController } from './passkey.controller';
 import { clearRefreshCookie, getRefreshTokenFromCookie, setRefreshCookie } from './auth-cookie';
@@ -320,6 +321,13 @@ export const AuthRouter = router({
   cancelEmailChange: cancelEmailChange(),
   getTenantAccountStatus: getTenantAccountStatus(),
   getSeatUsage: getSeatUsage(),
+
+  /** Product-tour progress. Per user (a person learns the app once, not once per browser), so it
+   * lives on the profile rather than in localStorage. */
+  getTourState: authProcedure.query(({ ctx }) => controller.getTourState(ctx.auth)),
+  setTourState: authProcedure
+    .input(TourStateObj.partial())
+    .mutation(({ ctx, input }) => controller.setTourState(ctx.auth, input)),
   scheduleTenantDeletion: scheduleTenantDeletion(),
   cancelTenantDeletion: cancelTenantDeletion(),
   cancelTenantDeletionByToken: cancelTenantDeletionByToken(),

@@ -11,6 +11,7 @@ import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
 import { DuplicatesService } from '@experiences/duplicates/services/duplicates-service';
 import { ISidebarItem, isSidebarRouteActive } from './sidebar-items';
 import { AnimateIfDirective } from '@uxcommon/directives/animate-if.directive';
+import { TourAnchor } from '../tour/tour-anchor.directive';
 import { TasksService } from '@experiences/tasks/services/tasks-service';
 import { DeliveriesRequestsService } from '@experiences/deliveries/services/deliveries-requests-service';
 import { VolunteerAccessService } from '@experiences/volunteer-access/services/volunteer-access-service';
@@ -19,7 +20,7 @@ import { EmailFoldersStore } from '@experiences/emails/services/store/email-fold
 
 @Component({
   selector: 'pc-sidebar',
-  imports: [NgTemplateOutlet, Icon, RouterLink, Swap, AnimateIfDirective],
+  imports: [NgTemplateOutlet, Icon, RouterLink, Swap, AnimateIfDirective, TourAnchor],
   templateUrl: './sidebar.html',
   styles: [
     `
@@ -30,6 +31,13 @@ import { EmailFoldersStore } from '@experiences/emails/services/store/email-fold
   ],
 })
 export class Sidebar {
+  /** Stable anchor id per nav item, so the product tour can spotlight one by route without the
+   * sidebar knowing anything about the tour's contents. `/people` → `nav-people`. */
+  protected tourAnchorFor(nav: { route?: string | null }): string {
+    const first = (nav.route ?? '').replace(/^\//, '').split('/')[0] ?? '';
+    return `nav-${first}`;
+  }
+
   private readonly sidebarSvc = inject(SidebarService);
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
