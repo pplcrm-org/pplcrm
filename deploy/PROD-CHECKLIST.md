@@ -150,14 +150,29 @@ logs an error) if `SENDGRID_SHARED_SENDING_DOMAIN` matches the domain in `POSTMA
 - [ ] In SendGrid → Sender Authentication, **authenticate `send.pplcrm.com` as a new domain**
       (automated security on). This is separate from the existing `pplcrm.com` authentication —
       which appears in the list under its generated return-path subdomain (`em####.pplcrm.com`) and
-      must be left alone for transactional mail.
-- [ ] Add the three generated CNAMEs to Cloudflare DNS for `pplcrm.com`, and verify in SendGrid.
+      must be left alone for transactional mail. The new one appears the same way
+      (`em####.send.pplcrm.com`); the DKIM signing domain is `send.pplcrm.com`.
+- [ ] Add the three generated CNAMEs to Cloudflare DNS, **Proxy status: DNS only**. Proxying breaks
+      them. Then verify in SendGrid.
+- [ ] **Associate the domain authentication with `SENDGRID_FREE_TIER_SUBUSER`.** Parent-level
+      authentication does NOT sign mail sent `on-behalf-of` a subuser (see the comment on
+      `resolveWhitelabelCredentials` — "subuser sends stay unsigned"), and free-plan newsletters go
+      out through that subuser. Skipping this breaks DKIM alignment for exactly the tenants the
+      shared domain exists to serve, while paid tenants on the parent key look fine.
+      API: `POST /v3/whitelabel/domains/{id}/subuser`.
 - [ ] Add a DMARC TXT record at `_dmarc.send.pplcrm.com`. Start at `p=none` with a `rua=` address,
-      then tighten to `p=quarantine`/`p=reject` once reports are clean.
+      then tighten to `p=quarantine`/`p=reject` once reports are clean. This is a second DMARC
+      record alongside `_dmarc.pplcrm.com`, which is correct: they are different names, and the
+      explicit subdomain record is what lets the two domains carry independent policies. (Two
+      records at the SAME name is the broken case — receivers discard the policy entirely.)
+- [ ] If `rua=` points at a mailbox on a different domain than the record's own (e.g.
+      `_dmarc.send.pplcrm.com` reporting to `hello@pplcrm.com`), publish the external-destination
+      authorization so stricter receivers still send reports:
+      `send.pplcrm.com._report._dmarc.pplcrm.com  TXT  "v=DMARC1"`.
 - [ ] Set `SENDGRID_SHARED_SENDING_DOMAIN=send.pplcrm.com` on `pplcrm-api`.
-- [ ] Send one real newsletter from a tenant on this path and confirm `d=send.pplcrm.com` in the
-      received headers, plus the `List-Unsubscribe` check in
-      `docs/deliverability-w1-list-unsubscribe.md`.
+- [ ] Send one real newsletter **from a FREE-plan tenant** (the subuser path — a paid tenant will
+      not exercise it) and confirm `d=send.pplcrm.com` in the received headers, plus the
+      `List-Unsubscribe` check in `docs/deliverability-w1-list-unsubscribe.md`.
 
 GitHub Actions (for the CI pipeline in `.github/workflows/deploy.yml`):
 
