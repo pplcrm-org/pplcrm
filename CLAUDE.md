@@ -85,11 +85,13 @@ If a change you make invalidates an existing skill (a path it names, a flow it d
 | `@icons/*`       | `libs/uxcommon/src/components/icons/*` |
 | `@experiences/*` | `apps/frontend/src/app/experiences/*`  |
 
-**Supplementary codebase maps:**
+**Supplementary codebase maps** — generated **directory listings only** (no file contents). Useful for orientation: seeing what exists and where before you know what to grep for. To read code, open the real source — these are snapshots and only the source is current.
 
 - Backend: `apps/backend/STRUCTURE.md`
 - Frontend: `apps/frontend/STRUCTURE.md`
 - Libs: `apps/libs/STRUCTURE.md`
+
+They regenerate automatically as a `build` dependency for backend/frontend; the libs map is manual. Refresh all three with `npm run context:all`. Never hand-edit them.
 
 ---
 

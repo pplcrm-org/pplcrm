@@ -9,7 +9,7 @@
     "generate-context": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "npx repomix --output apps/frontend/STRUCTURE.md --include \"apps/frontend/src/**/*\" --ignore \"apps/backend/**,apps/libs/**,libs/**,**/STRUCTURE.md,**/*.spec.ts\" --style markdown"
+        "command": "npx repomix --output apps/frontend/STRUCTURE.md --style markdown --include \"apps/frontend/src/**/*\""
       }
     },
     "build": {

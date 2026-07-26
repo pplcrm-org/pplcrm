@@ -7,9 +7,10 @@
     "filePath": "ai.md",
     "style": "markdown",
     "parsableStyle": false,
-    "fileSummary": true,
+    "headerText": "GENERATED FILE — do not edit by hand. Regenerate with `npm run context:all`.\n\nThis is a directory map only: it lists which files exist and where, and deliberately\ncontains NO file contents. To read code, open the real source with Read/Grep — it is\nalways current, where this snapshot is only correct as of its last regeneration.\n\n(Rationale: the full-source variant of this file was ~75k lines, too large for any agent\nto load, and it rewrote itself on nearly every commit. See repomix.config.json.)",
+    "fileSummary": false,
     "directoryStructure": true,
-    "files": true,
+    "files": false,
     "removeComments": false,
     "removeEmptyLines": false,
     "compress": false,
@@ -20,14 +21,13 @@
     "includeFullDirectoryStructure": false,
     "tokenCountTree": false,
     "git": {
-      "sortByChanges": true,
+      "sortByChanges": false,
       "sortByChangesMaxCommits": 100,
       "includeDiffs": false,
       "includeLogs": false,
       "includeLogsCount": 50
     }
   },
-  "include": ["libs/**/*", "apps/**/*", "scriptis/**/*"],
   "ignore": {
     "useGitignore": true,
     "useDotIgnore": true,
