@@ -9,7 +9,7 @@ Migrations are plain Kysely SQL files run by Kysely's `Migrator` + `FileMigratio
 
 ## The non-obvious rules first
 
-1. **The baseline file is `schema.sql`, NOT `schema_dump.sql`.** The real file is `apps/backend/src/app/_migrations/schema.sql`, read by `0001_baseline.ts`. Stale `schema_dump.sql` mentions survive in `apps/backend/STRUCTURE.md` and the repomix ignore-globs (root `package.json` / `apps/backend/project.json`) — trust the code, not those.
+1. **The baseline file is `schema.sql`, NOT `schema_dump.sql`.** The real file is `apps/backend/src/app/_migrations/schema.sql`, read by `0001_baseline.ts`. A stale `schema_dump.sql` mention survives in a code comment in `0001_baseline.ts` — trust the filename on disk, not the comment.
 
 2. **Never edit or rename a migration that has already run.** Kysely records each applied migration by name in the `kysely_migration` table. An already-recorded migration is never re-run, so editing its `up()` silently changes nothing on any DB that already ran it. Renaming or deleting one is worse: Kysely finds a recorded name with no matching file and aborts with a **corrupt migrations** error. Proof this bites in practice: `ensureMigrationTableUpdated` in `kyselyinit.ts` exists solely to `UPDATE kysely_migration SET name = ...` after some migrations were renamed. Don't create that mess — add a new file instead. (The one sanctioned exception is a deliberate pre-ship **re-squash**, which deletes the dated files _and_ resets `kysely_migration` in the same operation — see "Re-squashing" below.)
 

@@ -4,6 +4,12 @@
   "sourceRoot": "libs/common/src",
   "projectType": "library",
   "targets": {
+    "generate-context": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npx repomix --output apps/libs/STRUCTURE.md --style markdown --include \"libs/common/src/**/*,libs/uxcommon/src/**/*\""
+      }
+    },
     "lint": {
       "executor": "@nx/eslint:lint",
       "outputs": ["{options.outputFile}"],
