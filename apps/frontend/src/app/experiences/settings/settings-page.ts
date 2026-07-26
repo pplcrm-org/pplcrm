@@ -303,20 +303,90 @@ export class SettingsPage implements OnInit {
         const fromEmailField = commsSection.fields.find((f) => f.key === 'communications.default_from_email');
         const replyToField = commsSection.fields.find((f) => f.key === 'communications.reply_to');
 
-        const options = [
+        // Reply-to only has to be an address the tenant proved it controls — nothing is sent from
+        // it — so every verified address qualifies. A Gmail address is a perfectly good reply-to.
+        const replyToOptions = [
           { label: 'Select a verified email', value: '' },
           ...verifiedEmails.map((email) => ({ label: email, value: email })),
         ];
 
+        // The From list is narrower, and deliberately mirrors what the server will accept:
+        // bulk mail needs DMARC alignment, which is a property of the DOMAIN. Offering a verified
+        // Gmail here would be offering a choice that saves and then fails at send time.
+        const fromOptions = [
+          { label: 'Select a sending address', value: '' },
+          ...this.sendableFromAddresses().map((email) => ({ label: email, value: email })),
+        ];
+        const platform = this.platformFromEmail();
+        if (platform) {
+          fromOptions.push({ label: `${platform} (your pplCRM address)`, value: platform });
+        }
+
         if (fromEmailField) {
-          fromEmailField.options = options;
+          fromEmailField.options = fromOptions;
         }
         if (replyToField) {
-          replyToField.options = options;
+          replyToField.options = replyToOptions;
         }
       }
     });
   }
+
+  /** This workspace's address on pplCRM's own sending domain; null when the option is off. */
+  protected readonly platformFromEmail = computed<string | null>(() => {
+    const value = this.snapshotSignal()['communications.platform_from_email'];
+    return typeof value === 'string' && value ? value : null;
+  });
+
+  /**
+   * Verified addresses that can actually carry bulk mail: the ones whose domain is DKIM-verified.
+   * Single-address verification proves ownership but not deliverability, because DMARC aligns on
+   * the domain.
+   */
+  protected readonly sendableFromAddresses = computed<string[]>(() => {
+    const snapshot = this.snapshotSignal();
+    const emails = (snapshot['communications.verified_emails'] as string[]) || [];
+    const domains = (snapshot['communications.verified_domains'] as { domain?: string; status?: string }[]) || [];
+    const verified = new Set(
+      domains.filter((d) => d.status === 'verified' && d.domain).map((d) => String(d.domain).toLowerCase()),
+    );
+    return emails.filter((email) => verified.has(email.toLowerCase().split('@')[1] ?? ''));
+  });
+
+  /** Live value of the From field (the edited payload, not the saved snapshot) so the explainer
+   * below reacts as the user changes the picker rather than only after a save. */
+  protected readonly currentFromEmail = computed<string>(() => {
+    const comms = this.sectionStates.find((s) => s.config.id === 'communications');
+    const value = comms?.payload()['communications.default_from_email'];
+    return typeof value === 'string' ? value : '';
+  });
+
+  /** Live value of Reply-to, for the same reason. */
+  protected readonly currentReplyTo = computed<string>(() => {
+    const comms = this.sectionStates.find((s) => s.config.id === 'communications');
+    const value = comms?.payload()['communications.reply_to'];
+    return typeof value === 'string' ? value : '';
+  });
+
+  /** True when the chosen From address is the pplCRM one, which makes Reply-to load-bearing. */
+  protected readonly usingPlatformFrom = computed<boolean>(() => {
+    const platform = this.platformFromEmail();
+    return !!platform && this.currentFromEmail() === platform;
+  });
+
+  /** The send guard refuses this combination, so say so at the point of choice rather than
+   * letting the user discover it when a finished newsletter refuses to go out. */
+  protected readonly platformFromNeedsReplyTo = computed<boolean>(
+    () => this.usingPlatformFrom() && !this.currentReplyTo().trim(),
+  );
+
+  /** Verified addresses the tenant could not use as a From address, with the reason. Shown so a
+   * missing option is explained rather than silently absent (disclosure over suppression). */
+  protected readonly unusableFromAddresses = computed<string[]>(() => {
+    const sendable = new Set(this.sendableFromAddresses());
+    const emails = (this.snapshotSignal()['communications.verified_emails'] as string[]) || [];
+    return emails.filter((email) => !sendable.has(email));
+  });
 
   protected get visibleSections(): SectionState[] {
     if (this.currentMode === 'settings') {

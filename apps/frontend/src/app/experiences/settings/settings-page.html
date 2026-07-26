@@ -210,6 +210,51 @@
 
           <!-- Custom extensions for specific sections -->
           @if (section.config.id === 'communications') {
+
+          <!-- Sending-identity explainer. Bulk mail needs DMARC alignment, which is a property of
+               the DOMAIN, so the From picker offers fewer addresses than the verified list. An
+               option that is silently absent reads as a bug; name the reason instead (§2). -->
+          @if (usingPlatformFrom()) {
+          <div
+            class="mt-4 flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5"
+            [class]="platformFromNeedsReplyTo() ? 'border-warning/40 bg-warning/10' : 'border-info/30 bg-info/10'"
+          >
+            <pc-icon
+              [name]="platformFromNeedsReplyTo() ? 'exclamation-triangle' : 'information-circle'"
+              [size]="5"
+              class="mt-0.5 shrink-0"
+              [class]="platformFromNeedsReplyTo() ? 'text-warning' : 'text-info'"
+            ></pc-icon>
+            <div class="min-w-0 space-y-1">
+              <p class="text-xs leading-relaxed text-base-content/80">
+                You're sending from your pplCRM address, so no DNS setup is needed. Recipients see your from name with a
+                small "via pplcrm.com" next to it.
+              </p>
+              @if (platformFromNeedsReplyTo()) {
+              <p class="text-xs leading-relaxed font-semibold text-base-content/90">
+                Set a reply-to address below, or replies will come to us instead of you. Newsletters won't send until
+                you do.
+              </p>
+              } @else {
+              <p class="text-xs leading-relaxed text-base-content/60">
+                Replies go to {{ currentReplyTo() }}. To drop the "via" line, verify a domain of your own under
+                <button type="button" class="link text-primary" (click)="selectSection('domains')">Domains</button>.
+              </p>
+              }
+            </div>
+          </div>
+          } @else if (unusableFromAddresses().length) {
+          <div class="mt-4 flex items-start gap-2.5 rounded-lg border border-base-200 bg-base-200/40 px-3.5 py-2.5">
+            <pc-icon name="information-circle" [size]="5" class="mt-0.5 shrink-0 text-base-content/40"></pc-icon>
+            <p class="text-xs leading-relaxed text-base-content/70">
+              {{ unusableFromAddresses().join(', ') }} can be used as a reply-to address, but not as a from address:
+              mailbox providers reject bulk email unless the sending domain is verified. Verify that domain under
+              <button type="button" class="link text-primary" (click)="selectSection('domains')">Domains</button>@if
+              (platformFromEmail()) {, or send from {{ platformFromEmail() }} instead}.
+            </p>
+          </div>
+          }
+
           <div class="border-t border-base-200 pt-6 mt-6 space-y-6">
             @if (isDemo()) {
             <!-- Demo guard (§2/§3): verification is blocked server-side; explain it and prevent the dead end -->
