@@ -129,10 +129,35 @@ Set the backend env on `pplcrm-api` (from `.env.production.example`). Required f
 - [ ] Integration keys (mock silently if unset): Stripe (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
       `STRIPE_PLAN_GRASSROOTS_PRICE_ID`, `STRIPE_PLAN_MOVEMENT_PRICE_ID`), Postmark
       (`POSTMARK_SERVER_TOKEN`, `POSTMARK_FROM_EMAIL`, `POSTMARK_WEBHOOK_TOKEN`), SendGrid
-      (`SENDGRID_API_KEY`, `SENDGRID_WEBHOOK_VERIFICATION_KEY`, `SENDGRID_FREE_TIER_SUBUSER`), Twilio
+      (`SENDGRID_API_KEY`, `SENDGRID_WEBHOOK_VERIFICATION_KEY`, `SENDGRID_FREE_TIER_SUBUSER`,
+      `SENDGRID_SHARED_SENDING_DOMAIN` — see "Platform sending domain" below), Twilio
       (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`), Google (`GOOGLE_MAPS_API_KEY`,
       `GOOGLE_CLIENT_ID/SECRET`, `GOOGLE_REDIRECT_URI=https://api.pplcrm.com/auth/google/callback`),
       Microsoft (`MS_CLIENT_ID/SECRET`, `MS_TENANT_ID`, `MS_REDIRECT_URI=https://api.pplcrm.com/auth/ms/callback`).
+
+### Platform sending domain (`send.pplcrm.com`)
+
+What a tenant sends from when it has no domain of its own to authenticate. Without it, anyone
+whose only address is a Gmail or Outlook account cannot send at all: you cannot DKIM-sign as
+`gmail.com`, so DMARC alignment fails and mailbox providers filter or reject the mail.
+
+**It must be a domain of its own, never `pplcrm.com`.** Reputation at Gmail and Yahoo attaches to
+the From domain and the DKIM `d=` domain regardless of which ESP's IPs carried the message, so
+sharing a domain with Postmark's transactional mail would let one tenant's spam complaints degrade
+delivery of password resets and email verification. The backend refuses to enable the feature (and
+logs an error) if `SENDGRID_SHARED_SENDING_DOMAIN` matches the domain in `POSTMARK_FROM_EMAIL`.
+
+- [ ] In SendGrid → Sender Authentication, **authenticate `send.pplcrm.com` as a new domain**
+      (automated security on). This is separate from the existing `pplcrm.com` authentication —
+      which appears in the list under its generated return-path subdomain (`em####.pplcrm.com`) and
+      must be left alone for transactional mail.
+- [ ] Add the three generated CNAMEs to Cloudflare DNS for `pplcrm.com`, and verify in SendGrid.
+- [ ] Add a DMARC TXT record at `_dmarc.send.pplcrm.com`. Start at `p=none` with a `rua=` address,
+      then tighten to `p=quarantine`/`p=reject` once reports are clean.
+- [ ] Set `SENDGRID_SHARED_SENDING_DOMAIN=send.pplcrm.com` on `pplcrm-api`.
+- [ ] Send one real newsletter from a tenant on this path and confirm `d=send.pplcrm.com` in the
+      received headers, plus the `List-Unsubscribe` check in
+      `docs/deliverability-w1-list-unsubscribe.md`.
 
 GitHub Actions (for the CI pipeline in `.github/workflows/deploy.yml`):
 

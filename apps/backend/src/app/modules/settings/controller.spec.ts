@@ -117,20 +117,16 @@ describe('SettingsController Integration', () => {
     await expect(controller.addVerifiedDomain(auth, 'demo-blocked.com')).rejects.toThrow(/demo/i);
   });
 
-  it('should block unverified emails from being used as default_from_email or reply_to', async () => {
+  it('should block a From address on an unverified domain, and an unverified reply_to', async () => {
     const auth = { tenant_id: tenantId, user_id: userId } as any;
 
-    // Reject unverified default_from_email
+    // The From address is gated on the DOMAIN, matching the send guard.
     await expect(
       controller.upsert(auth, [{ key: 'communications.default_from_email', value: 'unverified@example.com' }]),
-    ).rejects.toThrow(
-      new TRPCError({
-        code: 'BAD_REQUEST',
-        message: 'Email address must be verified before it can be configured as a Default From Email.',
-      }),
-    );
+    ).rejects.toThrow(/domain you have verified/i);
 
-    // Reject unverified reply_to
+    // Reply-to is gated on single-address verification, which is unchanged: it only has to be
+    // an address the tenant proved it controls, since nothing is sent *from* it.
     await expect(
       controller.upsert(auth, [{ key: 'communications.reply_to', value: 'unverified@example.com' }]),
     ).rejects.toThrow(
@@ -141,24 +137,95 @@ describe('SettingsController Integration', () => {
     );
   });
 
-  it('should allow setting default_from_email or reply_to if email is verified', async () => {
+  /**
+   * Single-sender verification proves an address is yours; it does NOT make bulk mail from it
+   * deliverable, because DMARC aligns on the domain. Accepting a verified Gmail as the From
+   * address used to save fine and then fail at the moment of sending — the exact trap this
+   * asserts is gone.
+   */
+  it('should refuse a verified single-sender address whose domain is not verified', async () => {
     const auth = { tenant_id: tenantId, user_id: userId } as any;
-
-    // 1. Pre-verify the email by adding it directly through the repo
     await controller.getRepo().upsertMany({
       tenant_id: tenantId,
       user_id: userId,
-      entries: [{ key: 'communications.verified_emails', value: ['verified@example.com'] }],
+      entries: [{ key: 'communications.verified_emails', value: ['someone@gmail.com'] }],
     });
 
-    // 2. Perform upsert of defaults
+    await expect(
+      controller.upsert(auth, [{ key: 'communications.default_from_email', value: 'someone@gmail.com' }]),
+    ).rejects.toThrow(/domain you have verified|pplCRM sending address/i);
+
+    // ...but it is perfectly good as a Reply-to, which is the whole point of the shared-domain path.
+    const result = await controller.upsert(auth, [{ key: 'communications.reply_to', value: 'someone@gmail.com' }]);
+    expect(result['communications.reply_to']).toBe('someone@gmail.com');
+  });
+
+  it('should allow a From address on a verified domain', async () => {
+    const auth = { tenant_id: tenantId, user_id: userId } as any;
+    await controller.getRepo().upsertMany({
+      tenant_id: tenantId,
+      user_id: userId,
+      entries: [
+        { key: 'communications.verified_domains', value: [{ domain: 'vote-jane.org', status: 'verified' }] },
+        { key: 'communications.verified_emails', value: ['news@vote-jane.org'] },
+      ],
+    });
+
     const result = await controller.upsert(auth, [
-      { key: 'communications.default_from_email', value: 'verified@example.com' },
-      { key: 'communications.reply_to', value: 'verified@example.com' },
+      { key: 'communications.default_from_email', value: 'news@vote-jane.org' },
+      { key: 'communications.reply_to', value: 'news@vote-jane.org' },
     ]);
 
-    expect(result['communications.default_from_email']).toBe('verified@example.com');
-    expect(result['communications.reply_to']).toBe('verified@example.com');
+    expect(result['communications.default_from_email']).toBe('news@vote-jane.org');
+    expect(result['communications.reply_to']).toBe('news@vote-jane.org');
+  });
+
+  describe('platform sending domain', () => {
+    let savedDomain: string | undefined;
+
+    beforeEach(async () => {
+      savedDomain = env.sendgridSharedSendingDomain;
+      env.sendgridSharedSendingDomain = 'send.pplcrm.test';
+      await db
+        .updateTable('tenants')
+        .set({ slug: `t-${tenantId}` })
+        .where('id', '=', tenantId)
+        .execute();
+    });
+
+    afterEach(() => {
+      env.sendgridSharedSendingDomain = savedDomain;
+    });
+
+    it('accepts this tenant’s own platform address with nothing verified', async () => {
+      const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+      const result = await controller.upsert(auth, [
+        { key: 'communications.default_from_email', value: `t-${tenantId}@send.pplcrm.test` },
+      ]);
+
+      expect(result['communications.default_from_email']).toBe(`t-${tenantId}@send.pplcrm.test`);
+    });
+
+    // The domain is shared, so a domain-only check would let any tenant send as any other.
+    it('refuses another workspace’s platform address', async () => {
+      const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+      await expect(
+        controller.upsert(auth, [{ key: 'communications.default_from_email', value: 'someone-else@send.pplcrm.test' }]),
+      ).rejects.toThrow(/belongs to another workspace/i);
+    });
+
+    it('refuses the platform address when the feature is switched off', async () => {
+      env.sendgridSharedSendingDomain = undefined;
+      const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+      await expect(
+        controller.upsert(auth, [
+          { key: 'communications.default_from_email', value: `t-${tenantId}@send.pplcrm.test` },
+        ]),
+      ).rejects.toThrow(/domain you have verified/i);
+    });
   });
 
   it('should enqueue a verification email on requestEmailVerification', async () => {

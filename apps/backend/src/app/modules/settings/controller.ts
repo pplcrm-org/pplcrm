@@ -30,6 +30,7 @@ import { checkRateLimit } from '../../lib/rate-limiter';
 import { maskPhone, normalizeE164 } from '../../lib/sms/phone';
 import { SmsService } from '../../lib/sms/sms.service';
 import { hashToken } from '../../lib/token-hash';
+import { isOwnSharedSendingAddress, isSharedSendingAddress } from '../../lib/mail/shared-sending-domain';
 import { getPlanDef } from '@common';
 import { assertNotDemoMode } from '../demo/demo-guard';
 import { DEMO_MANIFEST_SETTINGS_KEY } from '../demo/demo-seed';
@@ -129,10 +130,18 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
 
       if (defaultFromEntry && typeof defaultFromEntry.value === 'string') {
         const val = defaultFromEntry.value.toLowerCase().trim();
-        if (val && !verifiedEmails.includes(val)) {
+        // Mirror the send guard (hasVerifiedSendingDomain) exactly, rather than the weaker
+        // "is it in verified_emails" test this used to apply. Single-sender verification proves
+        // the address is yours; it does NOT make bulk mail from it deliverable, because DMARC
+        // aligns on the DOMAIN. Accepting a verified Gmail here produced the worst possible
+        // shape: configured, verified, and then refused at the moment of sending. Refuse it at
+        // the point of choice instead, and name both real ways forward.
+        if (val && !(await this.isSendableFromAddress(auth.tenant_id, val, snapshot))) {
           throw new TRPCError({
             code: 'BAD_REQUEST',
-            message: 'Email address must be verified before it can be configured as a Default From Email.',
+            message: isSharedSendingAddress(val)
+              ? 'That pplCRM sending address belongs to another workspace.'
+              : `Bulk email can only be sent from a domain you have verified, or from your own pplCRM sending address. Verify ${val.split('@')[1] ?? 'that domain'} under Domains, or choose your pplCRM address and set this one as your Reply-to.`,
           });
         }
       }
@@ -158,6 +167,41 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     });
 
     return this.getSnapshot(auth);
+  }
+
+  /**
+   * Whether `email` is this tenant's own address on the platform sending domain. Compared against
+   * the tenant's slug rather than just the domain: the domain is shared, so a domain-only check
+   * would let any tenant send as any other.
+   */
+  private async isOwnPlatformAddress(tenant_id: string, email: string): Promise<boolean> {
+    if (!isSharedSendingAddress(email)) return false;
+    const tenant = await this.getRepo()
+      .db.selectFrom('tenants')
+      .select('slug')
+      .where('id', '=', tenant_id)
+      .executeTakeFirst();
+    return isOwnSharedSendingAddress(email, tenant?.slug ?? null);
+  }
+
+  /**
+   * The same test the pre-send gate applies: an address is usable as the default From only if its
+   * domain is DKIM-verified for this tenant, or it is this tenant's own platform address. Keeping
+   * the two in sync is the point — a From address that saves but cannot send is a trap.
+   */
+  private async isSendableFromAddress(
+    tenant_id: string,
+    email: string,
+    snapshot: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (await this.isOwnPlatformAddress(tenant_id, email)) return true;
+
+    const domain = email.split('@')[1];
+    if (!domain) return false;
+
+    const raw = snapshot['communications.verified_domains'];
+    const domains = Array.isArray(raw) ? (raw as { domain?: string; status?: string }[]) : [];
+    return domains.some((d) => d.domain?.toLowerCase().trim() === domain && d.status === 'verified');
   }
 
   /**

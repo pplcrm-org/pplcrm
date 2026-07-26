@@ -5,6 +5,7 @@ import { emailCapForQuantity, getPlanDef, PLANS_BY_KEY, type PlanKey } from '@co
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { ForbiddenError, NotFoundError, PreconditionFailedError, TooManyRequestsError } from '../../errors/app-errors';
 import { logger } from '../../logger';
+import { isOwnSharedSendingAddress, isSharedSendingAddress } from '../../lib/mail/shared-sending-domain';
 
 /**
  * Anti-abuse guards around bulk (newsletter) sending. Free accounts are the spam vector — a
@@ -62,7 +63,9 @@ export const SENDING_PAYMENT_HOLD_MESSAGE =
  * declined card would not actually stop the blast the invoice was for. */
 const PAYMENT_HOLD_STATUSES: ReadonlySet<string> = new Set(['past_due', 'unpaid']);
 export const DOMAIN_UNVERIFIED_MESSAGE =
-  'Before sending, verify the domain you send from (Settings → Domains) and choose a default From address on that domain (Settings → Communications). This protects your deliverability.';
+  'Before sending, choose a From address (Settings → Communications): either verify a domain you own (Settings → Domains), or send from your pplCRM address with replies going to you. Mailbox providers reject bulk mail from an address we cannot prove you control, which is why a personal Gmail or Outlook address will not work.';
+export const REPLY_TO_REQUIRED_MESSAGE =
+  'Before sending from your pplCRM address, set a Reply-to address (Settings → Communications) so replies reach you rather than us.';
 export const PHONE_UNVERIFIED_MESSAGE =
   'On the Free plan, verify a mobile phone number (Settings → Communications) before your first newsletter send.';
 export const AUTOMATION_PHONE_UNVERIFIED_MESSAGE =
@@ -279,7 +282,14 @@ export async function hasOrganizationAddress(db: Db, tenantId: string): Promise<
   return typeof row?.value === 'string' && row.value.trim().length > 0;
 }
 
-/** True when the tenant's default From address belongs to a DKIM-verified sending domain. */
+/**
+ * True when the tenant's default From address belongs to a DKIM-verified sending domain — either
+ * one the tenant authenticated itself, or the platform sending domain we authenticated on their
+ * behalf.
+ *
+ * The platform branch checks the tenant's OWN address (`<slug>@send.pplcrm.com`), not merely the
+ * domain: accepting any address on the shared domain would let one tenant send as another.
+ */
 export async function hasVerifiedSendingDomain(db: Db, tenantId: string): Promise<boolean> {
   const rows = await db
     .selectFrom('settings')
@@ -298,7 +308,35 @@ export async function hasVerifiedSendingDomain(db: Db, tenantId: string): Promis
   }
   const fromDomain = fromEmail.split('@')[1];
   if (!fromDomain) return false;
+
+  if (isSharedSendingAddress(fromEmail)) {
+    const tenant = await db.selectFrom('tenants').select('slug').where('id', '=', tenantId).executeTakeFirst();
+    return isOwnSharedSendingAddress(fromEmail, tenant?.slug ?? null);
+  }
+
   return domains.some((d) => d.domain === fromDomain && d.status === 'verified');
+}
+
+/**
+ * The platform domain is shared, so the From address cannot identify the organization on its own
+ * and a reply would land in our infrastructure rather than with them. Reply-To is what makes it a
+ * usable identity, so it is required rather than optional on that path.
+ */
+export async function needsReplyToForSharedDomain(db: Db, tenantId: string): Promise<boolean> {
+  const rows = await db
+    .selectFrom('settings')
+    .select(['key', 'value'])
+    .where('tenant_id', '=', tenantId)
+    .where('key', 'in', ['communications.default_from_email', 'communications.reply_to'])
+    .execute();
+  let fromEmail = '';
+  let replyTo = '';
+  for (const row of rows) {
+    if (typeof row.value !== 'string') continue;
+    if (row.key === 'communications.default_from_email') fromEmail = row.value;
+    else if (row.key === 'communications.reply_to') replyTo = row.value;
+  }
+  return isSharedSendingAddress(fromEmail) && replyTo.trim().length === 0;
 }
 
 /**
@@ -315,6 +353,9 @@ export async function assertTenantMaySendNewsletter(
 
   if (!(await hasVerifiedSendingDomain(db, tenantId))) {
     throw new PreconditionFailedError(DOMAIN_UNVERIFIED_MESSAGE);
+  }
+  if (await needsReplyToForSharedDomain(db, tenantId)) {
+    throw new PreconditionFailedError(REPLY_TO_REQUIRED_MESSAGE);
   }
   if (!(await hasOrganizationAddress(db, tenantId))) {
     throw new PreconditionFailedError(ORG_ADDRESS_MISSING_MESSAGE);
