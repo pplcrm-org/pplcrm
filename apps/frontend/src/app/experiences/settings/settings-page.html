@@ -346,72 +346,9 @@
                 }
               </div>
 
-              <!-- Sending phone verification (anti-abuse gate for Free-plan sends) -->
+              <!-- Sending phone verification (anti-abuse gate before a first send) -->
               <div class="space-y-3 border-t border-base-200 pt-6">
-                <div class="space-y-1">
-                  <h3 class="text-xs font-semibold text-base-content/90">Sending phone verification</h3>
-                  <p class="text-xs text-base-content/50">
-                    Free-plan workspaces verify a mobile number once before their first newsletter send. It keeps
-                    spammers off the shared sending pool your newsletters depend on.
-                  </p>
-                </div>
-
-                @if (phoneStatus()?.verified) {
-                <span class="badge badge-success gap-1.5 py-3.5 px-3 font-medium text-xs">
-                  <pc-icon name="check-circle" [size]="4"></pc-icon>
-                  {{ phoneStatus()?.phone }} verified
-                </span>
-                } @else {
-                <div class="flex flex-col sm:flex-row gap-3 max-w-lg">
-                  <div class="flex-1">
-                    <input
-                      type="tel"
-                      placeholder="+1 555 123 4567"
-                      class="input input-bordered focus:input-primary w-full bg-base-200/30 text-xs"
-                      [value]="phoneInput()"
-                      (input)="phoneInput.set($any($event.target).value)"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    class="btn btn-primary"
-                    (click)="requestPhoneCode()"
-                    [disabled]="phoneBusy() || !phoneInput().trim()"
-                  >
-                    @if (phoneBusy() && !phoneCodeSentTo()) {
-                    <span class="loading loading-spinner loading-xs"></span>
-                    } @else { Send code }
-                  </button>
-                </div>
-
-                @if (phoneCodeSentTo()) {
-                <div class="flex flex-col sm:flex-row gap-3 max-w-lg">
-                  <div class="flex-1">
-                    <input
-                      type="text"
-                      inputmode="numeric"
-                      maxlength="6"
-                      placeholder="6-digit code"
-                      class="input input-bordered focus:input-primary w-full bg-base-200/30 text-xs"
-                      [value]="phoneCodeInput()"
-                      (input)="phoneCodeInput.set($any($event.target).value)"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    class="btn btn-primary"
-                    (click)="confirmPhoneCode()"
-                    [disabled]="phoneBusy() || phoneCodeInput().trim().length < 6"
-                  >
-                    @if (phoneBusy()) {
-                    <span class="loading loading-spinner loading-xs"></span>
-                    } @else { Verify }
-                  </button>
-                </div>
-                <p class="text-xs text-base-content/50">
-                  We texted a code to <strong>{{ phoneCodeSentTo() }}</strong>. It expires in 10 minutes.
-                </p>
-                } }
+                <pc-phone-verification></pc-phone-verification>
               </div>
             </fieldset>
           </div>

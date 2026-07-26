@@ -35,6 +35,7 @@ import {
   isSharedSendingAddress,
   sharedSendingAddressFor,
 } from '../../lib/mail/shared-sending-domain';
+import { phoneVerificationRequired } from '../newsletters/send-guards';
 import { getPlanDef } from '@common';
 import { assertNotDemoMode } from '../demo/demo-guard';
 import { DEMO_MANIFEST_SETTINGS_KEY } from '../demo/demo-seed';
@@ -242,8 +243,9 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
       verifiedAt: tenant?.sending_phone_verified_at ?? null,
       phone: tenant?.sending_phone ? maskPhone(tenant.sending_phone) : null,
       pendingPhone: tenant?.pending_phone ? maskPhone(tenant.pending_phone) : null,
-      // Whether a send is currently gated on it (Free plan; unknown/legacy values resolve to free).
-      required: (getPlanDef(tenant?.subscription_plan)?.key ?? 'free') === 'free',
+      // Whether a send is gated on it. Shares the send guard's predicate rather than restating
+      // the rule, so the settings page can never disagree with what sending actually enforces.
+      required: phoneVerificationRequired(getPlanDef(tenant?.subscription_plan)?.key ?? 'free'),
     };
   }
 

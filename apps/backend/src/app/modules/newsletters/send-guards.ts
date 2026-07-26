@@ -222,10 +222,22 @@ export function hasPaymentHold(tenant: SendingTenant): boolean {
   return PLANS_BY_KEY[tenant.plan].purchasable && PAYMENT_HOLD_STATUSES.has(tenant.subscription_status);
 }
 
-/** Free-plan identity gate: a verified mobile number is required before any tenant-originated
- * email (newsletter or automation) leaves a Free account. Pure, shared by both send paths. */
+/**
+ * Which plans must verify a mobile number before any tenant-originated email leaves the account.
+ *
+ * The single home for this policy. It used to be written twice — here and in
+ * `getPhoneVerificationStatus`, which computed the same `plan === 'free'` test to tell the UI
+ * whether to show the card — so changing who must verify meant changing it in two places or
+ * shipping a settings page that disagreed with the send guard.
+ */
+export function phoneVerificationRequired(plan: PlanKey): boolean {
+  return plan === 'free';
+}
+
+/** Identity gate: a verified mobile number is required before any tenant-originated email
+ * (newsletter or automation) leaves the account. Pure, shared by both send paths. */
 export function needsPhoneVerification(tenant: SendingTenant): boolean {
-  return tenant.plan === 'free' && !tenant.sending_phone_verified_at;
+  return phoneVerificationRequired(tenant.plan) && !tenant.sending_phone_verified_at;
 }
 
 /** Throws when the tenant is suspended, tripwire-paused, or on a payment hold. */

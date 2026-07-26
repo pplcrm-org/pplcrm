@@ -16,6 +16,7 @@ import { ApiKeysSettingsComponent } from './api-keys/api-keys-settings';
 import { BillingSettingsComponent } from './billing/billing-settings';
 import { CampaignsSettingsComponent } from './campaigns/campaigns-settings';
 import { DomainSettingsComponent } from './domains/domains-settings';
+import { PhoneVerification } from './phone/phone-verification';
 import { DonationsSettingsComponent } from './donations/donations-settings';
 import { GoogleSyncSettings } from './google-sync/google-sync-settings';
 import { MsSyncSettings } from './ms-sync/ms-sync-settings';
@@ -34,15 +35,6 @@ import { StorageSettingsComponent } from './storage/storage-settings';
 interface SectionFieldState {
   config: SettingsFieldConfig;
   controlName: string;
-}
-
-/** Mirror of settings.getPhoneVerificationStatus — phones arrive masked from the backend. */
-interface PhoneVerificationStatus {
-  verified: boolean;
-  verifiedAt: Date | string | null;
-  phone: string | null;
-  pendingPhone: string | null;
-  required: boolean;
 }
 
 interface SectionState {
@@ -161,6 +153,7 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
     ApiKeysSettingsComponent,
     PasskeySettingsComponent,
     StorageSettingsComponent,
+    PhoneVerification,
     DatePipe,
     EmptyState,
   ],
@@ -210,12 +203,6 @@ export class SettingsPage implements OnInit {
     return this.visibleSections.find((s) => s.config.id === id) ?? null;
   });
   protected readonly senderEmailInput = signal('');
-  // Sending-phone verification (anti-abuse gate for Free-plan newsletter sends).
-  protected readonly phoneStatus = signal<PhoneVerificationStatus | null>(null);
-  protected readonly phoneInput = signal('');
-  protected readonly phoneCodeInput = signal('');
-  protected readonly phoneBusy = signal(false);
-  protected readonly phoneCodeSentTo = signal<string | null>(null);
   protected readonly settingsSvc = inject(SettingsService);
   private readonly snapshotSignal = this.settingsSvc.snapshotSignal;
   protected readonly verifiedEmailsList = computed<string[]>(() => {
@@ -408,51 +395,6 @@ export class SettingsPage implements OnInit {
     this.applySnapshot(this.settingsSvc.snapshot(), true);
     await this.loadUserPrefs();
     await this.loadLastFingerprintRecomputeTime();
-    if (this.currentMode === 'workspace') {
-      await this.loadPhoneStatus();
-    }
-  }
-
-  private async loadPhoneStatus(): Promise<void> {
-    try {
-      this.phoneStatus.set(await this.settingsSvc.getPhoneVerificationStatus());
-    } catch {
-      // Non-blocking: the communications section still renders without the phone card state.
-    }
-  }
-
-  protected async requestPhoneCode(): Promise<void> {
-    const phone = this.phoneInput().trim();
-    if (!phone) return;
-    this.phoneBusy.set(true);
-    try {
-      const result = await this.settingsSvc.requestPhoneVerification(phone);
-      this.phoneCodeSentTo.set(result.phone);
-      this.phoneCodeInput.set('');
-      this.alerts.showSuccess(`We texted a verification code to ${result.phone}.`);
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not send the code.');
-    } finally {
-      this.phoneBusy.set(false);
-    }
-  }
-
-  protected async confirmPhoneCode(): Promise<void> {
-    const code = this.phoneCodeInput().trim();
-    if (!code) return;
-    this.phoneBusy.set(true);
-    try {
-      const result = await this.settingsSvc.confirmPhoneVerification(code);
-      this.alerts.showSuccess(`Phone ${result.phone} is verified — you're clear to send newsletters.`);
-      this.phoneCodeSentTo.set(null);
-      this.phoneInput.set('');
-      this.phoneCodeInput.set('');
-      await this.loadPhoneStatus();
-    } catch (err) {
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not verify the code.');
-    } finally {
-      this.phoneBusy.set(false);
-    }
   }
 
   // Working-days chips, rendered Mon→Sun; stored canonically in this order as a comma-joined string.
