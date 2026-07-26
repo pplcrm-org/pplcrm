@@ -51,6 +51,9 @@ async function cleanTenant(db: any, tenantId: string) {
   await db.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
   await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
+  // Activity rows reference authusers, so they have to go first — any controller method under
+  // test that logs activity would otherwise break teardown for the whole file.
+  await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
 }
@@ -333,6 +336,47 @@ describe('SettingsController Integration', () => {
     expect(verifiedDomains).toBeDefined();
     expect(verifiedDomains.length).toBe(1);
     expect(verifiedDomains[0].domain).toBe('testorg.com');
+  });
+
+  it('should honour a chosen link subdomain when adding a domain', async () => {
+    const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+    const list = await controller.addVerifiedDomain(auth, 'chosen-label.com', 'links');
+    const entry = list[0];
+    expect(entry.linkSubdomain).toBe('links');
+    expect(entry.linkBrandingDns?.domain?.host).toBe('links.chosen-label.com');
+  });
+
+  it('should reject a link subdomain that is not a single DNS label', async () => {
+    const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+    // A dot would silently produce a deeper host than the checklist shows the user.
+    await expect(controller.addVerifiedDomain(auth, 'bad-label.com', 'a.b')).rejects.toThrow(/single DNS label/i);
+    await expect(controller.addVerifiedDomain(auth, 'bad-label.com', '-nope')).rejects.toThrow(/single DNS label/i);
+  });
+
+  /**
+   * The collision that makes a different label necessary usually surfaces AFTER the domain is
+   * added — you find out `email.<domain>` is taken when you go to create the record — so this has
+   * to work without discarding the rest of the setup.
+   */
+  it('should move the link subdomain without touching the domain authentication', async () => {
+    const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+    const added = await controller.addVerifiedDomain(auth, 'moveme.com');
+    const originalAuthId = added[0].domainAuthId;
+    expect(added[0].linkBrandingDns?.domain?.host).toBe('email.moveme.com');
+
+    const moved = await controller.setLinkSubdomain(auth, 'moveme.com', 'Go ');
+    const entry = moved.find((d: any) => d.domain === 'moveme.com');
+
+    expect(entry.linkSubdomain).toBe('go');
+    expect(entry.linkBrandingDns?.domain?.host).toBe('go.moveme.com');
+    // The DKIM/SPF side is untouched — re-doing it would throw away possibly-validated records.
+    expect(entry.domainAuthId).toBe(originalAuthId);
+    // The new CNAME cannot be in DNS yet, so the domain drops back to pending.
+    expect(entry.linkBranded).toBe(false);
+    expect(entry.status).toBe('pending');
   });
 
   it('should verify a domain successfully on verifyVerifiedDomain', async () => {

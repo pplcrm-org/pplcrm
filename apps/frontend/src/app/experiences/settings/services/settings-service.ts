@@ -64,10 +64,26 @@ export class SettingsService extends TRPCService<TenantSettingsSnapshot> {
     return this.api.settings.verifySenderEmail.mutate({ token });
   }
 
-  public async addVerifiedDomain(domain: string) {
+  public async addVerifiedDomain(domain: string, linkSubdomain?: string) {
     this.isPendingSignal.set(true);
     try {
-      const data = await this.api.settings.addVerifiedDomain.mutate({ domain });
+      const data = await this.api.settings.addVerifiedDomain.mutate({ domain, linkSubdomain });
+      this.snapshotSignal.update((snap) => ({
+        ...snap,
+        'communications.verified_domains': data,
+      }));
+      return data;
+    } finally {
+      this.isPendingSignal.set(false);
+    }
+  }
+
+  /** Move a domain's click-tracking CNAME to a different label — the way out of a collision at
+   * the default `email.<domain>`. */
+  public async setLinkSubdomain(domain: string, subdomain: string) {
+    this.isPendingSignal.set(true);
+    try {
+      const data = await this.api.settings.setLinkSubdomain.mutate({ domain, subdomain });
       this.snapshotSignal.update((snap) => ({
         ...snap,
         'communications.verified_domains': data,

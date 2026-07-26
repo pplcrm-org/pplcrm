@@ -1,3 +1,4 @@
+import { DEFAULT_LINK_SUBDOMAIN } from '@common';
 import { promises as dns } from 'dns';
 import { logger } from '../../logger';
 
@@ -172,17 +173,30 @@ export class SendGridWhitelabelService {
     }
   }
 
-  public async createLinkBranding(domain: string, apiKey?: string, subuser?: string): Promise<LinkBrandingData> {
+  /**
+   * Create the click-tracking (link branding) record.
+   *
+   * `subdomain` is caller-chosen because `email` is not always available: a tenant may already
+   * be using `email.<their-domain>` for a marketing site or an old mail host, and with a
+   * hardcoded label they could never verify at all — link branding is required for verified
+   * status, so the CNAME collision locked them out of sending entirely with no workaround.
+   */
+  public async createLinkBranding(
+    domain: string,
+    apiKey?: string,
+    subuser?: string,
+    subdomain: string = DEFAULT_LINK_SUBDOMAIN,
+  ): Promise<LinkBrandingData> {
     if (!this.isValidApiKey(apiKey)) {
       const mockId = Math.floor(100000 + Math.random() * 900000);
       return {
         id: mockId,
         domain,
-        subdomain: 'email',
+        subdomain,
         valid: false,
         dns: {
           domain: {
-            host: `email.${domain}`,
+            host: `${subdomain}.${domain}`,
             type: 'CNAME',
             data: 'sendgrid.net',
             valid: false,
@@ -198,7 +212,7 @@ export class SendGridWhitelabelService {
         subuser,
         body: {
           domain,
-          subdomain: 'email',
+          subdomain,
           default: false,
         },
       });
@@ -217,7 +231,7 @@ export class SendGridWhitelabelService {
         { err: err instanceof Error ? err.message : String(err) },
         '[SendGridWhitelabelService] real Link Branding API failed, falling back to mock',
       );
-      return this.createLinkBranding(domain, undefined);
+      return this.createLinkBranding(domain, undefined, undefined, subdomain);
     }
   }
 

@@ -116,7 +116,11 @@ describe('SettingsRouter', () => {
     const caller = SettingsRouter.createCaller({ auth } as any);
 
     await caller.addVerifiedDomain({ domain: 'example.com' });
-    expect(addSpy).toHaveBeenCalledWith(auth, 'example.com');
+    // The link subdomain is optional — the controller falls back to the default.
+    expect(addSpy).toHaveBeenCalledWith(auth, 'example.com', undefined);
+
+    await caller.addVerifiedDomain({ domain: 'example.com', linkSubdomain: 'links' });
+    expect(addSpy).toHaveBeenCalledWith(auth, 'example.com', 'links');
 
     await caller.verifyVerifiedDomain({ domain: 'example.com' });
     expect(verifySpy).toHaveBeenCalledWith(auth, 'example.com');
@@ -128,6 +132,18 @@ describe('SettingsRouter', () => {
   it('should reject addVerifiedDomain with an empty domain', async () => {
     const caller = SettingsRouter.createCaller({ auth } as any);
     await expect(caller.addVerifiedDomain({ domain: '' })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+
+  it('should pass a link subdomain change through to the controller', async () => {
+    const spy = vi.spyOn(SettingsController.prototype, 'setLinkSubdomain').mockResolvedValue([] as any);
+    const caller = SettingsRouter.createCaller({ auth } as any);
+
+    await caller.setLinkSubdomain({ domain: 'example.com', subdomain: 'go' });
+    expect(spy).toHaveBeenCalledWith(auth, 'example.com', 'go');
+
+    await expect(caller.setLinkSubdomain({ domain: 'example.com', subdomain: '' })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
   });
 
   it('should reject unauthenticated requests to protected procedures with UNAUTHORIZED', async () => {

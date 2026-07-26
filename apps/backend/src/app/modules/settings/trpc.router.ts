@@ -1,4 +1,4 @@
-import { UpsertSettingsInputObj } from '../../../../../../libs/common/src';
+import { MAX_DNS_LABEL_LENGTH, UpsertSettingsInputObj } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 
 import { authProcedure, adminOrOwnerProcedure, publicProcedure, router } from '../../../trpc';
@@ -27,8 +27,11 @@ export const SettingsRouter = router({
   scheduleTenantDeletion: adminOrOwnerProcedure.mutation(({ ctx }) => settings.scheduleTenantDeletion(ctx.auth)),
   cancelTenantDeletion: adminOrOwnerProcedure.mutation(({ ctx }) => settings.cancelTenantDeletion(ctx.auth)),
   addVerifiedDomain: adminOrOwnerProcedure
-    .input(z.object({ domain: z.string().min(1) }))
-    .mutation(({ ctx, input }) => settings.addVerifiedDomain(ctx.auth, input.domain)),
+    .input(z.object({ domain: z.string().min(1), linkSubdomain: z.string().max(MAX_DNS_LABEL_LENGTH).optional() }))
+    .mutation(({ ctx, input }) => settings.addVerifiedDomain(ctx.auth, input.domain, input.linkSubdomain)),
+  setLinkSubdomain: adminOrOwnerProcedure
+    .input(z.object({ domain: z.string().min(1), subdomain: z.string().min(1).max(MAX_DNS_LABEL_LENGTH) }))
+    .mutation(({ ctx, input }) => settings.setLinkSubdomain(ctx.auth, input.domain, input.subdomain)),
   verifyVerifiedDomain: adminOrOwnerProcedure
     .input(z.object({ domain: z.string().min(1) }))
     .mutation(({ ctx, input }) => settings.verifyVerifiedDomain(ctx.auth, input.domain)),

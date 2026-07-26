@@ -1,4 +1,5 @@
 import { Component, signal, computed, inject, OnInit, linkedSignal } from '@angular/core';
+import { DEFAULT_LINK_SUBDOMAIN, isValidDnsLabel, normalizeDnsLabel } from '@common';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { SettingsService } from '../services/settings-service';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -31,6 +32,9 @@ export interface VerifiedDomain {
     domain?: DNSVerificationRecord;
   };
   linkBranded?: boolean;
+  /** The label the click-tracking CNAME lives at. Absent on domains added before it was
+   * choosable — those all used the default. */
+  linkSubdomain?: string;
 }
 
 /** One row of the DNS setup checklist, in plain language for non-technical users. */
@@ -58,6 +62,18 @@ export class DomainSettingsComponent implements OnInit {
 
   protected readonly newDomain = signal('');
   protected readonly addingDomain = signal(false);
+
+  /** Click-tracking label for the domain about to be added. Disclosed on demand rather than
+   * shown by default: `email` is right for almost everyone, and a field most people should
+   * ignore is a field that invites a wrong answer. */
+  protected readonly defaultLinkSubdomain = DEFAULT_LINK_SUBDOMAIN;
+  protected readonly showLinkSubdomain = signal(false);
+  protected readonly newLinkSubdomain = signal(DEFAULT_LINK_SUBDOMAIN);
+
+  /** Which domain's link label is being edited after the fact, and to what. */
+  protected readonly editingLinkFor = signal<string | null>(null);
+  protected readonly editedLinkSubdomain = signal('');
+  protected readonly savingLinkSubdomain = signal(false);
   protected readonly verifyingDomain = signal<string | null>(null);
   protected readonly lastDomainVerificationTimes = signal<Record<string, number>>({});
   protected readonly domainCooldownSeconds = signal<Record<string, number>>({});
@@ -114,9 +130,11 @@ export class DomainSettingsComponent implements OnInit {
       },
       {
         title: 'Branded links',
-        subtitle: 'Makes the links inside your emails use your own domain instead of ours.',
+        subtitle:
+          'Makes the links inside your emails use your own domain instead of ours. If this host is ' +
+          'already in use, pick a different one below.',
         type: 'CNAME',
-        host: item.linkBrandingDns?.domain?.host || 'email.' + item.domain,
+        host: item.linkBrandingDns?.domain?.host || this.linkSubdomainOf(item) + '.' + item.domain,
         value: item.linkBrandingDns?.domain?.data || '',
         found: !!item.linkBranded,
       },
@@ -174,11 +192,21 @@ export class DomainSettingsComponent implements OnInit {
       return;
     }
 
+    const linkLabel = normalizeDnsLabel(this.newLinkSubdomain() || DEFAULT_LINK_SUBDOMAIN);
+    if (!isValidDnsLabel(linkLabel)) {
+      this.alerts.showError(
+        'The link subdomain must be a single label — lowercase letters, numbers and hyphens, no dots.',
+      );
+      return;
+    }
+
     this.addingDomain.set(true);
 
     try {
-      await this.settingsSvc.addVerifiedDomain(domainVal);
+      await this.settingsSvc.addVerifiedDomain(domainVal, linkLabel);
       this.newDomain.set('');
+      this.showLinkSubdomain.set(false);
+      this.newLinkSubdomain.set(DEFAULT_LINK_SUBDOMAIN);
       this.expandedDomain.set(domainVal); // Auto-expand to show DNS records
       this.alerts.showSuccess(`${domainVal} added. Next, add the DNS records shown below.`);
     } catch (err) {
@@ -186,6 +214,47 @@ export class DomainSettingsComponent implements OnInit {
       this.alerts.showError(errMsg);
     } finally {
       this.addingDomain.set(false);
+    }
+  }
+
+  /** The label in use for a domain's click-tracking CNAME, defaulted for older entries. */
+  protected linkSubdomainOf(item: VerifiedDomain): string {
+    return item.linkSubdomain || DEFAULT_LINK_SUBDOMAIN;
+  }
+
+  protected startEditingLink(item: VerifiedDomain) {
+    this.editedLinkSubdomain.set(this.linkSubdomainOf(item));
+    this.editingLinkFor.set(item.domain);
+  }
+
+  protected cancelEditingLink() {
+    this.editingLinkFor.set(null);
+  }
+
+  /**
+   * Move the click-tracking CNAME to a different label. The collision that makes this necessary
+   * usually surfaces after the domain is added — you find out `email.<domain>` is taken when you
+   * go to create the record — so this has to work without discarding an already-validated DKIM
+   * setup.
+   */
+  protected async saveLinkSubdomain(domainName: string) {
+    const label = normalizeDnsLabel(this.editedLinkSubdomain());
+    if (!isValidDnsLabel(label)) {
+      this.alerts.showError(
+        'The link subdomain must be a single label — lowercase letters, numbers and hyphens, no dots.',
+      );
+      return;
+    }
+
+    this.savingLinkSubdomain.set(true);
+    try {
+      await this.settingsSvc.setLinkSubdomain(domainName, label);
+      this.editingLinkFor.set(null);
+      this.alerts.showSuccess(`Branded links now use ${label}.${domainName}. Add the new CNAME, then check again.`);
+    } catch (err) {
+      this.alerts.showError(err instanceof Error ? err.message : 'Could not change the link subdomain.');
+    } finally {
+      this.savingLinkSubdomain.set(false);
     }
   }
 

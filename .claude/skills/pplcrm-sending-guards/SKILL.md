@@ -29,7 +29,15 @@ All constants (caps, rates, messages) live at the top of that file. Enforcement 
      whitelabel subuser, or `SENDGRID_FREE_TIER_SUBUSER` on Free). In platform-key mode a domain
      will not reach `status: 'verified'` until that association succeeds (retried on every verify
      click, tracked as `subuserAssociated` on the entry) — perfect DNS with a failed association
-     would still send unsigned mail. What stays paid-only is unrelated to this: custom WEB
+     would still send unsigned mail. **Link branding is also required** for verified status
+     (`isVerified = spf && dkim && linkBranded && subuserOk`), because click tracking is on
+     unconditionally (`newsletter-mail.service.ts`) — an unbranded domain ships `sendgrid.net`
+     links on a shared, blocklist-exposed click domain. Its label is caller-chosen
+     (`linkSubdomain` on the entry, `DEFAULT_LINK_SUBDOMAIN = 'email'` from `libs/common/dns-label.ts`)
+     because `email.<domain>` is often already in use; `settings.setLinkSubdomain` moves it after
+     the fact by recreating only the link branding, leaving a validated DKIM setup intact. Before
+     2026-07-26 the label was hardcoded and a collision locked that tenant out of sending with no
+     workaround. What stays paid-only is unrelated to this: custom WEB
      domains (serving pages on the org's own domain instead of `*.pplforms.com`) — not
      implemented yet, and not part of the Domains settings flow.
    - `tenants.sending_phone_verified_at` null → PRECONDITION_FAILED, on **every plan**

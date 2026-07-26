@@ -7,6 +7,10 @@ interface VerifiedDomainEntry {
   domain: string;
   domainAuthId?: string | number;
   linkBrandingId?: string | number;
+  /** The label the click-tracking CNAME lives at (`<linkSubdomain>.<domain>`). Stored because
+   * `email` is only the default — a collision forces a different one, and the DNS checklist and
+   * every later re-verify have to point at the label actually in use. */
+  linkSubdomain?: string;
   spf?: boolean;
   dkim?: boolean;
   dmarc?: boolean;
@@ -36,7 +40,7 @@ import {
   sharedSendingAddressFor,
 } from '../../lib/mail/shared-sending-domain';
 import { phoneVerificationRequired } from '../newsletters/send-guards';
-import { getPlanDef } from '@common';
+import { DEFAULT_LINK_SUBDOMAIN, getPlanDef, isValidDnsLabel, normalizeDnsLabel } from '@common';
 import { assertPlanSelected } from '../demo/demo-guard';
 import { DEMO_MANIFEST_SETTINGS_KEY } from '../demo/demo-seed';
 import { STRIPE_ACCOUNT_ID_KEY, STRIPE_ACCOUNT_STATUS_KEY } from '../donations/stripe-connect';
@@ -630,9 +634,10 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     return { apiKey: env.sendgridApiKey, subuser: undefined, associateSubuser };
   }
 
-  public async addVerifiedDomain(auth: IAuthKeyPayload, domain: string) {
+  public async addVerifiedDomain(auth: IAuthKeyPayload, domain: string, linkSubdomain?: string) {
     await assertPlanSelected(this.getRepo().db, auth.tenant_id);
     const domainVal = domain.toLowerCase().trim();
+    const linkLabel = this.assertLinkSubdomain(linkSubdomain);
 
     const row = await this.getRepo().getByKey({
       tenant_id: auth.tenant_id,
@@ -652,7 +657,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     const creds = await this.resolveWhitelabelCredentials(auth.tenant_id);
     const sendgridSvc = new SendGridWhitelabelService();
     const domainAuth = await sendgridSvc.createDomainAuthentication(domainVal, creds.apiKey, creds.subuser);
-    const linkBranding = await sendgridSvc.createLinkBranding(domainVal, creds.apiKey, creds.subuser);
+    const linkBranding = await sendgridSvc.createLinkBranding(domainVal, creds.apiKey, creds.subuser, linkLabel);
 
     // Platform-key mode: the records live at the parent level but the tenant's mail is sent
     // on-behalf-of a subuser — associate both with it. Failures are recorded and retried on
@@ -676,6 +681,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
       dmarc: false,
       domainAuthId: domainAuth.id,
       linkBrandingId: linkBranding.id,
+      linkSubdomain: linkBranding.subdomain || linkLabel,
       domainAuthDns: domainAuth.dns,
       linkBrandingDns: linkBranding.dns,
       linkBranded: false,
@@ -688,6 +694,108 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
       tenant_id: auth.tenant_id,
       user_id: auth.user_id,
       entries: [{ key: 'communications.verified_domains', value: updatedList }],
+    });
+
+    return updatedList;
+  }
+
+  /** Validates a caller-supplied click-tracking label, falling back to the default. */
+  private assertLinkSubdomain(value: string | undefined): string {
+    if (value == null || value.trim() === '') return DEFAULT_LINK_SUBDOMAIN;
+    const label = normalizeDnsLabel(value);
+    if (!isValidDnsLabel(label)) {
+      throw new BadRequestError(
+        'A link subdomain must be a single DNS label: lowercase letters, numbers and hyphens, ' +
+          'not starting or ending with a hyphen.',
+      );
+    }
+    return label;
+  }
+
+  /**
+   * Move a domain's click-tracking CNAME to a different label.
+   *
+   * The collision that makes this necessary is usually discovered *after* the domain is added —
+   * you find out `email.<domain>` is taken when you go to create the record. Without this the only
+   * way out is deleting the whole domain and starting over, which also throws away a
+   * possibly-already-validated DKIM setup.
+   *
+   * Recreates only the link branding: the old SendGrid record is deleted (an abandoned one would
+   * keep answering for a host the tenant no longer points at us) and the domain drops back to
+   * pending, since the new CNAME cannot be in DNS yet.
+   */
+  public async setLinkSubdomain(auth: IAuthKeyPayload, domain: string, subdomain: string) {
+    await assertPlanSelected(this.getRepo().db, auth.tenant_id);
+    const domainVal = domain.toLowerCase().trim();
+    const linkLabel = this.assertLinkSubdomain(subdomain);
+
+    const row = await this.getRepo().getByKey({
+      tenant_id: auth.tenant_id,
+      key: 'communications.verified_domains',
+    });
+    if (!row || !Array.isArray(row.value)) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Domain configuration not found.' });
+    }
+
+    const currentList = row.value as unknown as VerifiedDomainEntry[];
+    const domainEntry = currentList.find((d) => d.domain === domainVal);
+    if (!domainEntry) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: `Domain ${domainVal} not found in verified domains list.`,
+      });
+    }
+
+    const currentLabel = domainEntry.linkSubdomain ?? DEFAULT_LINK_SUBDOMAIN;
+    if (currentLabel === linkLabel) {
+      return currentList;
+    }
+
+    const creds = await this.resolveWhitelabelCredentials(auth.tenant_id);
+    const sendgridSvc = new SendGridWhitelabelService();
+
+    const linkBranding = await sendgridSvc.createLinkBranding(domainVal, creds.apiKey, creds.subuser, linkLabel);
+
+    // Only once the replacement exists — a failed create would otherwise leave the tenant with
+    // no link branding at all and a domain that can never verify.
+    if (domainEntry.linkBrandingId) {
+      await sendgridSvc
+        .deleteLinkBranding(Number(domainEntry.linkBrandingId), creds.apiKey, creds.subuser)
+        .catch(() => undefined);
+    }
+
+    let subuserAssociated = domainEntry.subuserAssociated ?? false;
+    if (creds.associateSubuser) {
+      const linkOk = await sendgridSvc.associateLinkWithSubuser(linkBranding.id, creds.associateSubuser, creds.apiKey);
+      subuserAssociated = subuserAssociated && linkOk;
+    }
+
+    const updatedList = currentList.map((d) =>
+      d.domain === domainVal
+        ? {
+            ...d,
+            linkBrandingId: linkBranding.id,
+            linkSubdomain: linkBranding.subdomain || linkLabel,
+            linkBrandingDns: linkBranding.dns,
+            linkBranded: false,
+            status: 'pending',
+            ...(creds.associateSubuser ? { subuserAssociated } : {}),
+          }
+        : d,
+    );
+
+    await this.getRepo().upsertMany({
+      tenant_id: auth.tenant_id,
+      user_id: auth.user_id,
+      entries: [{ key: 'communications.verified_domains', value: updatedList }],
+    });
+
+    await this.userActivity.log({
+      tenant_id: auth.tenant_id,
+      user_id: auth.user_id,
+      activity: 'update',
+      entity: 'settings',
+      metadata: { action: 'link_subdomain_changed', domain: domainVal, from: currentLabel, to: linkLabel },
     });
 
     return updatedList;
