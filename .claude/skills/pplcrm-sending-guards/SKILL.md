@@ -32,11 +32,14 @@ All constants (caps, rates, messages) live at the top of that file. Enforcement 
      would still send unsigned mail. What stays paid-only is unrelated to this: custom WEB
      domains (serving pages on the org's own domain instead of `*.pplforms.com`) — not
      implemented yet, and not part of the Domains settings flow.
-   - Free plan and `tenants.sending_phone_verified_at` null → PRECONDITION_FAILED. Phone
-     verification lives in `settings/controller.ts` (`requestPhoneVerification` /
+   - `tenants.sending_phone_verified_at` null → PRECONDITION_FAILED, on **every plan**
+     (`phoneVerificationRequired()` returns true unconditionally since 2026-07-25 — a shared
+     platform sending domain means one abusive workspace hurts all of them, so paying is not the
+     barrier). Phone verification lives in `settings/controller.ts` (`requestPhoneVerification` /
      `confirmPhoneVerification`, Twilio SMS via `lib/sms`, code hash stored on the tenant row —
-     deliberately NOT in settings, whose snapshot is client-readable). UI: Workspace →
-     Communications → "Sending phone verification".
+     deliberately NOT in settings, whose snapshot is client-readable). Requesting a code needs a
+     settled plan, not demo removal (see the demo/plan gate section below). UI: Workspace →
+     Communications → "Sending phone verification", and step 3 of the go-live wizard.
    - Free plan and tenant younger than 7 days → warm-up cap: ≤100 emails per rolling 24h
      (`warmupDailyCap`, summed from `newsletter_send_log`).
    - Monthly plan email allowance exceeded → TOO_MANY_REQUESTS with the exact numbers and reset
