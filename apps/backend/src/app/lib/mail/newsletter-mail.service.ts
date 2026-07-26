@@ -6,6 +6,14 @@ export interface NewsletterRecipient {
   email: string;
   /** Per-recipient SendGrid substitutions (token -> resolved value) for merge fields. */
   substitutions?: Record<string, string>;
+  /**
+   * RFC 8058 one-click target for this recipient. Emitted as `List-Unsubscribe` +
+   * `List-Unsubscribe-Post` on this recipient's personalization, so a 1,000-recipient batch
+   * still gives every person their own signed link. It has to live here rather than on the
+   * message: the URL is per-recipient, and a batch-wide header would hand everyone the first
+   * person's unsubscribe token.
+   */
+  listUnsubscribeUrl?: string;
 }
 
 export interface NewsletterAttachment {
@@ -35,10 +43,6 @@ export interface SendNewsletterOptions {
   /** Set false when the body carries its own unsubscribe link (automation emails use the
    * app's HMAC unsubscribe route) instead of SendGrid's `<% unsubscribe %>` substitution. */
   subscriptionTracking?: boolean;
-  /** RFC 8058 one-click target for sends that bypass SendGrid subscription tracking (the
-   * automation path). Emits `List-Unsubscribe` + `List-Unsubscribe-Post` message headers.
-   * Only meaningful for single-recipient sends — the URL is per-recipient. */
-  listUnsubscribeUrl?: string;
 }
 
 export class NewsletterEmailService {
@@ -78,6 +82,17 @@ export class NewsletterEmailService {
         // Per-recipient merge-field values. Keeps the whole batch a single request while still
         // personalizing content (SendGrid replaces the tokens in subject/html/text per recipient).
         ...(r.substitutions && Object.keys(r.substitutions).length > 0 ? { substitutions: r.substitutions } : {}),
+        // Per-personalization headers so each recipient gets their OWN one-click link. Gmail and
+        // Yahoo's bulk-sender rules require this pair; a message-level header cannot carry it
+        // because the token names a specific person.
+        ...(r.listUnsubscribeUrl
+          ? {
+              headers: {
+                'List-Unsubscribe': `<${r.listUnsubscribeUrl}>`,
+                'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+              },
+            }
+          : {}),
       }));
 
       const headers: Record<string, string> = {
@@ -123,14 +138,6 @@ export class NewsletterEmailService {
           };
           return Object.keys(customArgs).length > 0 ? { custom_args: customArgs } : {};
         })(),
-        ...(options.listUnsubscribeUrl
-          ? {
-              headers: {
-                'List-Unsubscribe': `<${options.listUnsubscribeUrl}>`,
-                'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-              },
-            }
-          : {}),
         ...(options.attachments?.length
           ? {
               attachments: options.attachments.map((a) => ({

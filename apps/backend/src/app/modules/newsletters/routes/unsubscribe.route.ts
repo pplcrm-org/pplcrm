@@ -8,12 +8,19 @@ import { decodeUnsubscribeToken } from '../unsubscribe-token';
 
 const db = new BaseRepository('campaign_subscriptions').db;
 
-// One-click unsubscribe for automation emails (the SendGrid newsletter path has its own
-// <% unsubscribe %> substitution — this route only serves the Postmark automation path).
-// The token authenticates the request: it names exactly one (tenant, person, email) and is
-// HMAC-signed, so there is no session and no enumeration surface. Unsubscribing flips every
-// campaign_subscriptions row for the person — an automation isn't campaign-scoped, so the
-// only honest reading of "unsubscribe" here is "stop all of this organization's email".
+// One-click unsubscribe (RFC 8058) for both outbound paths: automation emails, and the
+// List-Unsubscribe header on newsletters. The token authenticates the request: it names exactly
+// one (tenant, person, email) and is HMAC-signed, so there is no session and no enumeration
+// surface.
+//
+// Scope comes from the token, because the two paths honestly mean different things:
+//   - newsletter (token carries campaignId) → stop that campaign only. This has to match what the
+//     body's footer link does, since both appear in the same email: SendGrid's unsubscribe event
+//     flips only the newsletter's campaign (see newsletters-webhook.route). Two controls in one
+//     message that produce different outcomes would be a consent bug, not a UX wart.
+//   - automation (no campaignId) → stop every campaign. An automation isn't campaign-scoped, so
+//     the only honest reading is "stop all of this organization's email".
+//
 // Deliberately NOT an email_suppressions insert: suppressions record address health
 // (bounces/complaints), not consent, and a suppression would also be irreversible by the
 // person re-subscribing through a form.
@@ -112,17 +119,22 @@ const unsubscribeRoute: FastifyPluginCallback = (fastify, _opts, done) => {
         .send(resultPage('Link not valid', 'This unsubscribe link is not valid.'));
     }
 
-    await db
+    let update = db
       .updateTable('campaign_subscriptions')
       .set({ status: 'unsubscribed', unsubscribed_at: new Date() })
       .where('tenant_id', '=', payload.tenantId)
       .where('person_id', '=', payload.personId)
-      .where('status', '!=', 'unsubscribed')
-      .execute();
+      .where('status', '!=', 'unsubscribed');
+    if (payload.campaignId) {
+      update = update.where('campaign_id', '=', payload.campaignId);
+    }
+    await update.execute();
 
     logger.info(
-      { tenantId: payload.tenantId, personId: payload.personId },
-      '[unsubscribe] Automation-email unsubscribe processed',
+      { tenantId: payload.tenantId, personId: payload.personId, campaignId: payload.campaignId ?? null },
+      payload.campaignId
+        ? '[unsubscribe] Newsletter one-click unsubscribe processed (campaign-scoped)'
+        : '[unsubscribe] Automation-email unsubscribe processed (all campaigns)',
     );
 
     return reply

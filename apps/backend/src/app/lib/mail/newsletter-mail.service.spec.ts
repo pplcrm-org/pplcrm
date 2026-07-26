@@ -164,4 +164,48 @@ describe('NewsletterEmailService', () => {
     await service.sendNewsletter({ ...baseOptions, sendgridApiKey: 'SG.test' });
     expect(sentBody(1).reply_to).toBeUndefined();
   });
+
+  /**
+   * RFC 8058 one-click. Gmail/Yahoo require the header pair on bulk mail, and the URL names a
+   * specific person — so it must ride on each personalization. A message-level header would hand
+   * all 1,000 recipients in a batch the first person's unsubscribe token.
+   */
+  describe('List-Unsubscribe (per recipient)', () => {
+    it('emits the RFC 8058 header pair on the recipient that carries a URL', async () => {
+      env.sendgridApiKey = 'SG.test';
+      await service.sendNewsletter({
+        ...baseOptions,
+        recipients: [{ email: 'a@example.com', listUnsubscribeUrl: 'https://api.example.org/api/unsubscribe/tok-a' }],
+      });
+
+      const p = sentBody().personalizations[0];
+      expect(p.headers['List-Unsubscribe']).toBe('<https://api.example.org/api/unsubscribe/tok-a>');
+      expect(p.headers['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
+    });
+
+    it('gives every recipient in a batch their OWN token', async () => {
+      env.sendgridApiKey = 'SG.test';
+      await service.sendNewsletter({
+        ...baseOptions,
+        recipients: [
+          { email: 'a@example.com', listUnsubscribeUrl: 'https://api.example.org/api/unsubscribe/tok-a' },
+          { email: 'b@example.com', listUnsubscribeUrl: 'https://api.example.org/api/unsubscribe/tok-b' },
+        ],
+      });
+
+      const [first, second] = sentBody().personalizations;
+      expect(first.headers['List-Unsubscribe']).toContain('tok-a');
+      expect(second.headers['List-Unsubscribe']).toContain('tok-b');
+      // The header must never be hoisted to the message, where it would apply to everyone.
+      expect(sentBody().headers).toBeUndefined();
+    });
+
+    it('omits the headers entirely when no URL is supplied', async () => {
+      env.sendgridApiKey = 'SG.test';
+      await service.sendNewsletter({ ...baseOptions });
+
+      expect(sentBody().personalizations[0].headers).toBeUndefined();
+      expect(sentBody().headers).toBeUndefined();
+    });
+  });
 });

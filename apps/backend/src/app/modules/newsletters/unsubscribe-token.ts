@@ -12,6 +12,16 @@ export interface UnsubscribeTokenPayload {
   tenantId: string;
   personId: string;
   email: string;
+  /**
+   * Scope of the opt-out. A newsletter belongs to exactly one campaign, so its one-click
+   * unsubscribe must stop only that campaign — the same thing the footer link does (SendGrid's
+   * unsubscribe event flips just that campaign, see newsletters-webhook.route). An automation is
+   * not campaign-scoped, so it omits this and the route falls back to stopping every campaign.
+   *
+   * Optional so tokens minted before this field still decode: an old link in an inbox keeps
+   * working and keeps its original organization-wide meaning.
+   */
+  campaignId?: string;
 }
 
 function sign(data: string): string {
@@ -48,5 +58,10 @@ export function decodeUnsubscribeToken(raw: string | undefined | null): Unsubscr
   if (!parsed || typeof parsed !== 'object') return null;
   if (!parsed.tenantId || !parsed.personId || !parsed.email) return null;
 
-  return { tenantId: String(parsed.tenantId), personId: String(parsed.personId), email: String(parsed.email) };
+  return {
+    tenantId: String(parsed.tenantId),
+    personId: String(parsed.personId),
+    email: String(parsed.email),
+    ...(parsed.campaignId ? { campaignId: String(parsed.campaignId) } : {}),
+  };
 }
