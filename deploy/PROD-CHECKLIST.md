@@ -173,6 +173,12 @@ logs an error) if `SENDGRID_SHARED_SENDING_DOMAIN` matches the domain in `POSTMA
 - [ ] Send one real newsletter **from a FREE-plan tenant** (the subuser path — a paid tenant will
       not exercise it) and confirm `d=send.pplcrm.com` in the received headers, plus the
       `List-Unsubscribe` check in `docs/deliverability-w1-list-unsubscribe.md`.
+- [ ] **Update the website copy in the same change as the env var.** While the feature is off the
+      site's "sent from your own verified domain" wording is still true; switching it on is what
+      makes that wording wrong. The pages are listed in the `pplcrm-website-claims` skill under
+      "Platform sending domain" (EULA §8, security page, privacy subprocessors, the FAQ's "Why do
+      I verify a domain before sending?"), and the legal documents need their `updated:` dates
+      bumped.
 
 GitHub Actions (for the CI pipeline in `.github/workflows/deploy.yml`):
 

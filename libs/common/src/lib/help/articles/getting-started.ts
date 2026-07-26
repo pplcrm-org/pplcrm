@@ -121,19 +121,28 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
         kind: 'steps',
         items: [
           {
+            title: 'Open the [Dashboard](/dashboard)',
+            detail: 'The demo-mode card sits at the top of the page.',
+          },
+          {
+            title: 'Choose Set up my workspace',
+            detail:
+              'This opens [Go live](/go-live), which walks through everything in the order it has to happen: choosing a plan, your organization details, verifying a mobile number, sending setup, and then removing the demo data.',
+          },
+          {
             title: 'Choose a plan',
             detail:
-              'Exiting the demo requires an active subscription. Pick one on the [Billing](/workspace/billing) page.',
+              'Removing the demo data needs a settled plan, so this comes first. Free is a real plan and does not expire; paid plans are on the [Billing](/workspace/billing) page.',
           },
-          { title: 'Open the [Dashboard](/dashboard)', detail: 'The demo-mode card sits at the top of the page.' },
           {
-            title: 'Choose Exit demo mode',
-            detail: 'A confirmation explains exactly what will be removed. This cannot be undone.',
+            title: 'Remove the demo data',
+            detail:
+              'The wizard lists the exact counts of what will be deleted and what is kept. This cannot be undone.',
           },
           {
             title: 'Start fresh',
             detail:
-              'A Getting started checklist appears on the [Dashboard](/dashboard) once the demo is gone. Add your first real contact on [People](/people) or bring everything in at once with [Import data from CSV](/help/import).',
+              'Anything you did not finish stays on your [Dashboard](/dashboard) as a setup checklist until it is done. Add your first real contact on [People](/people) or bring everything in at once with [Import data from CSV](/help/import).',
           },
         ],
       },

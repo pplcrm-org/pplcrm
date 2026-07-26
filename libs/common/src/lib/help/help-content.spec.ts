@@ -16,6 +16,7 @@ import type { HelpArticle, HelpBlock } from './help-types';
 /** Routes that exist in dashboard.routes.ts and may be linked from articles. */
 const KNOWN_APP_ROUTES = new Set([
   '/dashboard',
+  '/go-live',
   '/inbox',
   '/newsletters',
   '/lists',
