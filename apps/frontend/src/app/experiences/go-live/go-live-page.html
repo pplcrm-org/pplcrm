@@ -1,0 +1,382 @@
+@if (hasLoaded()) {
+<div class="mx-auto w-full max-w-5xl px-4 py-6 md:px-8">
+  <header class="mb-5 flex flex-wrap items-start justify-between gap-4">
+    <div class="space-y-1">
+      <p class="pc-eyebrow">Set up</p>
+      <h1 class="text-xl font-bold tracking-tight">Go live</h1>
+      <p class="text-xs text-base-content/60">
+        Everything saves as you go. You can close this at any point and pick it back up from your dashboard.
+      </p>
+    </div>
+    <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="close()">Close</button>
+  </header>
+
+  <div class="flex flex-col gap-6 md:flex-row md:items-start lg:gap-8">
+    <aside class="w-full shrink-0 md:sticky md:top-8 md:w-60">
+      <nav class="pc-panel p-2" aria-label="Setup steps">
+        <pc-stepper
+          [steps]="steps()"
+          [currentId]="currentId()"
+          orientation="vertical"
+          (stepSelected)="selectStep($event)"
+        ></pc-stepper>
+      </nav>
+    </aside>
+
+    <main class="w-full min-w-0 flex-1">
+      <section class="pc-panel space-y-5 p-6">
+        @switch (currentId()) {
+
+        <!-- ─────────────────────────── Plan ─────────────────────────── -->
+        @case ('plan') {
+        <div>
+          <p class="pc-eyebrow">Step 1 of 7</p>
+          <h2 class="mt-1 text-base font-bold tracking-tight">Choose a plan</h2>
+          <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
+            Removing the demo data needs a settled plan, so this comes first. Free is a real plan, not a trial: it does
+            not expire.
+          </p>
+        </div>
+
+        @if (done()['plan']) {
+        <div class="flex items-start gap-2.5 rounded-lg border border-success/30 bg-success/10 px-3.5 py-2.5">
+          <pc-icon name="check-circle" [size]="5" class="mt-0.5 shrink-0 text-success"></pc-icon>
+          <p class="text-xs text-base-content/80">Your plan is set. You can change it any time under Billing.</p>
+        </div>
+        } @else {
+        <div class="space-y-3">
+          <div class="rounded-lg border border-base-200 p-4">
+            <p class="text-xs font-semibold text-base-content">Free</p>
+            <p class="mt-1 text-xs text-base-content/60">
+              Up to 1,000 subscribers and 2 teammates. Core CRM, newsletters, and no expiry.
+            </p>
+            <button
+              type="button"
+              class="btn btn-outline btn-secondary btn-sm mt-3"
+              [disabled]="busy()"
+              (click)="continueOnFree()"
+            >
+              Continue on Free
+            </button>
+          </div>
+          <div class="rounded-lg border border-base-200 p-4">
+            <p class="text-xs font-semibold text-base-content">Grassroots or Movement</p>
+            <p class="mt-1 text-xs text-base-content/60">
+              Forms, lists, automations, donations, and field tools. Priced by subscriber count.
+            </p>
+            <a routerLink="/workspace/billing" class="btn btn-primary btn-sm mt-3">See paid plans</a>
+          </div>
+        </div>
+        }
+
+        <div class="flex justify-end gap-2 border-t border-base-200 pt-4">
+          <button type="button" class="btn btn-primary btn-sm" [disabled]="!done()['plan']" (click)="next()">
+            Continue
+          </button>
+        </div>
+        }
+
+        <!-- ─────────────────────── Organization ─────────────────────── -->
+        @case ('organization') {
+        <div>
+          <p class="pc-eyebrow">Step 2 of 7</p>
+          <h2 class="mt-1 text-base font-bold tracking-tight">Your organization</h2>
+          <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
+            Your postal address goes in the footer of every email you send. Anti-spam law in Canada and the US requires
+            it, and we will not let a newsletter go out without one.
+          </p>
+        </div>
+
+        <div class="grid max-w-2xl gap-4 md:grid-cols-2">
+          <label class="flex flex-col gap-1">
+            <span class="text-xs font-medium text-base-content/70">Organization name</span>
+            <input
+              type="text"
+              class="input input-bordered focus:input-primary w-full bg-base-200/30 text-xs"
+              [value]="orgName()"
+              (input)="orgName.set($any($event.target).value)"
+            />
+          </label>
+          <label class="flex flex-col gap-1">
+            <span class="text-xs font-medium text-base-content/70">Contact email</span>
+            <input
+              type="email"
+              class="input input-bordered focus:input-primary w-full bg-base-200/30 text-xs"
+              [value]="orgEmail()"
+              (input)="orgEmail.set($any($event.target).value)"
+            />
+          </label>
+          <label class="flex flex-col gap-1 md:col-span-2">
+            <span class="text-xs font-medium text-base-content/70">Mailing address</span>
+            <textarea
+              rows="3"
+              placeholder="Street, city, province, postal code"
+              class="textarea textarea-bordered focus:textarea-primary w-full bg-base-200/30 text-xs"
+              [value]="orgAddress()"
+              (input)="orgAddress.set($any($event.target).value)"
+            ></textarea>
+            <span class="text-[10.5px] text-base-content/50">
+              Appears in the footer of every newsletter. A campaign office or PO box is fine.
+            </span>
+          </label>
+        </div>
+
+        <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
+          <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="back()">Back</button>
+          <button type="button" class="btn btn-primary btn-sm" [disabled]="busy()" (click)="saveOrganization()">
+            Save and continue
+          </button>
+        </div>
+        }
+
+        <!-- ────────────────────────── Phone ─────────────────────────── -->
+        @case ('phone') {
+        <div>
+          <p class="pc-eyebrow">Step 3 of 7</p>
+          <h2 class="mt-1 text-base font-bold tracking-tight">Verify your mobile number</h2>
+          <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
+            Every workspace verifies a mobile number once. It is what keeps spammers off the sending reputation you
+            share with every other pplCRM organization, and that reputation is why your email reaches inboxes at all. We
+            never use the number for anything else and never show it to anyone.
+          </p>
+        </div>
+
+        <pc-phone-verification [showHeader]="false"></pc-phone-verification>
+
+        <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
+          <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="back()">Back</button>
+          <button type="button" class="btn btn-primary btn-sm" (click)="next()">Continue</button>
+        </div>
+        }
+
+        <!-- ───────────────────────── Sending ────────────────────────── -->
+        @case ('sending') {
+        <div>
+          <p class="pc-eyebrow">Step 4 of 7</p>
+          <h2 class="mt-1 text-base font-bold tracking-tight">
+            @if (state().sendsEmail === null) { Will you send email from pplCRM? } @else { Where should your email come
+            from? }
+          </h2>
+          <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
+            @if (state().sendsEmail === null) { Newsletters and automated emails need a sending identity we can prove is
+            yours. If you are not sending yet, skip this and come back when you are. } @else { Recipients need to see
+            who the email is from, and mailbox providers need to verify it. }
+          </p>
+        </div>
+
+        @if (state().sendsEmail === null) {
+        <div class="grid max-w-2xl gap-3">
+          <button
+            type="button"
+            class="cursor-pointer rounded-lg border border-base-200 p-4 text-left hover:border-primary/40"
+            (click)="answerSendsEmail(true)"
+          >
+            <span class="block text-xs font-semibold text-base-content">Yes, set up sending now</span>
+            <span class="mt-1 block text-xs text-base-content/60">
+              Takes a minute with your pplCRM address, or a few DNS records to use your own domain.
+            </span>
+          </button>
+          <button
+            type="button"
+            class="cursor-pointer rounded-lg border border-base-200 p-4 text-left hover:border-primary/40"
+            (click)="answerSendsEmail(false)"
+          >
+            <span class="block text-xs font-semibold text-base-content">Not yet</span>
+            <span class="mt-1 block text-xs text-base-content/60">
+              Newsletters stay locked until you finish this, and it will wait for you on your dashboard.
+            </span>
+          </button>
+        </div>
+        } @else {
+        <div class="max-w-2xl space-y-3">
+          @if (platformAddress()) {
+          <div class="rounded-lg border p-4" [class]="usingPlatformAddress() ? 'border-primary' : 'border-base-200'">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-xs font-semibold text-base-content">Send from your pplCRM address</p>
+                <p class="mt-1 font-mono text-[11px] text-base-content/70">{{ platformAddress() }}</p>
+                <p class="mt-1.5 text-xs text-base-content/60">
+                  Works immediately, no DNS setup. Recipients see your from name with a small "via pplcrm.com" next to
+                  it, and replies go to the address you choose.
+                </p>
+              </div>
+              @if (usingPlatformAddress()) {
+              <pc-icon name="check-circle" [size]="5" class="shrink-0 text-success"></pc-icon>
+              } @else {
+              <button
+                type="button"
+                class="btn btn-outline btn-secondary btn-sm shrink-0"
+                [disabled]="busy()"
+                (click)="usePlatformAddress()"
+              >
+                Use this
+              </button>
+              }
+            </div>
+          </div>
+          }
+
+          <div class="rounded-lg border border-base-200 p-4">
+            <p class="text-xs font-semibold text-base-content">Send from your own domain</p>
+            <p class="mt-1.5 text-xs text-base-content/60">
+              Two DNS records at your domain host. No "via" line, and your sending reputation is yours alone. DNS can
+              take up to a day, so you can start on your pplCRM address and switch later.
+            </p>
+            <a routerLink="/workspace/domains" class="btn btn-outline btn-secondary btn-sm mt-3">Verify a domain</a>
+          </div>
+
+          @if (usingPlatformAddress() && !replyTo()) {
+          <div class="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/10 px-3.5 py-2.5">
+            <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+            <p class="text-xs leading-relaxed text-base-content/80">
+              Set a reply-to address under
+              <a routerLink="/workspace/communications" class="link text-primary">Communications</a>, or replies will
+              come to us instead of you. Newsletters won't send until you do.
+            </p>
+          </div>
+          }
+        </div>
+        }
+
+        <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
+          <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="back()">Back</button>
+          <div class="flex gap-2">
+            @if (state().sendsEmail !== null && !done()['sending']) {
+            <button type="button" class="btn btn-ghost btn-sm" (click)="deferStep('sending')">
+              I'll do this later
+            </button>
+            }
+            <button type="button" class="btn btn-primary btn-sm" (click)="next()">Continue</button>
+          </div>
+        </div>
+        }
+
+        <!-- ─────────────────────── Remove demo ──────────────────────── -->
+        @case ('demo') {
+        <div>
+          <p class="pc-eyebrow">Step 5 of 7</p>
+          <h2 class="mt-1 text-base font-bold tracking-tight">Remove the demo data</h2>
+          <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
+            This is the point of no return, and the point where the workspace becomes yours. Everything you created
+            while exploring is kept.
+          </p>
+        </div>
+
+        @if (done()['demo']) {
+        <div class="flex items-start gap-2.5 rounded-lg border border-success/30 bg-success/10 px-3.5 py-2.5">
+          <pc-icon name="check-circle" [size]="5" class="mt-0.5 shrink-0 text-success"></pc-icon>
+          <p class="text-xs text-base-content/80">The demo data is gone. This workspace holds only your data.</p>
+        </div>
+        } @else {
+        <div class="max-w-2xl space-y-3">
+          @if (demoSummary().length) {
+          <div class="rounded-lg border border-base-200 p-4">
+            <p class="pc-eyebrow mb-2 text-error">Will be deleted</p>
+            <ul class="grid gap-1 sm:grid-cols-2">
+              @for (item of demoSummary(); track item.label) {
+              <li class="text-xs text-base-content/70">
+                <span class="font-semibold tabular-nums text-base-content">{{ item.count.toLocaleString() }}</span>
+                {{ item.label }}
+              </li>
+              }
+            </ul>
+          </div>
+          }
+          <div class="rounded-lg border border-base-200 p-4">
+            <p class="pc-eyebrow mb-2 text-success">Kept</p>
+            <p class="text-xs text-base-content/70">
+              Your All Subscribers and All Volunteers lists, your starter forms, the built-in tags and issues, your
+              workspace settings, and everything you created yourself. Anyone you marked as a volunteer stays a
+              volunteer.
+            </p>
+          </div>
+          <button type="button" class="btn btn-outline btn-error btn-sm" [disabled]="busy()" (click)="removeDemoData()">
+            Remove demo data
+          </button>
+        </div>
+        }
+
+        <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
+          <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="back()">Back</button>
+          <button type="button" class="btn btn-primary btn-sm" [disabled]="!done()['demo']" (click)="next()">
+            Continue
+          </button>
+        </div>
+        }
+
+        <!-- ────────────────────────── People ────────────────────────── -->
+        @case ('people') {
+        <div>
+          <p class="pc-eyebrow">Step 6 of 7</p>
+          <h2 class="mt-1 text-base font-bold tracking-tight">Bring in your people</h2>
+          <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
+            Import a spreadsheet, or start adding contacts one at a time. You can always do both later.
+          </p>
+        </div>
+
+        @if (contactCount()) {
+        <div class="flex items-start gap-2.5 rounded-lg border border-success/30 bg-success/10 px-3.5 py-2.5">
+          <pc-icon name="check-circle" [size]="5" class="mt-0.5 shrink-0 text-success"></pc-icon>
+          <p class="text-xs text-base-content/80">
+            <span class="font-semibold tabular-nums">{{ contactCount()?.toLocaleString() }}</span> people in your
+            workspace.
+          </p>
+        </div>
+        }
+
+        <div class="flex flex-wrap gap-2">
+          <a routerLink="/imports" class="btn btn-primary btn-sm">Import from CSV</a>
+          <a routerLink="/people" class="btn btn-outline btn-secondary btn-sm">Add people manually</a>
+        </div>
+
+        <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
+          <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="back()">Back</button>
+          <button type="button" class="btn btn-primary btn-sm" (click)="next()">Continue</button>
+        </div>
+        }
+
+        <!-- ─────────────────────────── Team ─────────────────────────── -->
+        @case ('team') {
+        <div>
+          <p class="pc-eyebrow">Step 7 of 7</p>
+          <h2 class="mt-1 text-base font-bold tracking-tight">
+            @if (allEssentialsDone()) { Your workspace is live } @else { Almost there }
+          </h2>
+          <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
+            @if (allEssentialsDone()) { Everything essential is done. Invite your team whenever you're ready. } @else {
+            You can stop here. What's left will wait for you on your dashboard until it's done. }
+          </p>
+        </div>
+
+        @if (outstandingLabels().length) {
+        <div class="max-w-2xl overflow-hidden rounded-lg border border-base-200">
+          @for (item of outstandingLabels(); track item.id) {
+          <button
+            type="button"
+            class="flex w-full cursor-pointer items-center gap-2.5 border-b border-base-200 px-3.5 py-2.5 text-left last:border-b-0 hover:bg-base-200/40"
+            (click)="selectStep(item.id)"
+          >
+            <pc-icon name="exclamation-triangle" [size]="4" class="shrink-0 text-warning"></pc-icon>
+            <span class="text-xs font-medium text-base-content">{{ item.label }}</span>
+            <span class="ml-auto text-[10.5px] text-base-content/50">Still to do</span>
+          </button>
+          }
+        </div>
+        }
+
+        <div class="rounded-lg border border-base-200 p-4">
+          <p class="text-xs font-semibold text-base-content">Invite your team</p>
+          <p class="mt-1 text-xs text-base-content/60">Teammates can be invited now or any time from Users.</p>
+          <a routerLink="/users" class="btn btn-outline btn-secondary btn-sm mt-3">Invite teammates</a>
+        </div>
+
+        <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
+          <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="back()">Back</button>
+          <button type="button" class="btn btn-primary btn-sm" (click)="finish()">Go to my dashboard</button>
+        </div>
+        } }
+      </section>
+    </main>
+  </div>
+</div>
+}

@@ -45,12 +45,16 @@ import { DemoService } from './services/demo.service';
           </p>
 
           <div class="card-actions items-center gap-3">
-            <a routerLink="/workspace/billing" class="btn btn-primary btn-sm">Choose a plan</a>
+            <!-- One door, not two. Exiting demo mode needs a plan first, an organization address
+                 before anything can send, and a sending identity after that — so the honest
+                 primary action is the flow that walks through all of it in order, not a bare
+                 destructive button that refuses until the prerequisites happen to be met. -->
+            <a routerLink="/go-live" class="btn btn-primary btn-sm">Set up my workspace</a>
             <button type="button" class="btn btn-error btn-outline btn-sm" [disabled]="loading()" (click)="exitDemo()">
               @if (loading()) {
                 <span class="loading loading-spinner loading-xs"></span>
               }
-              Exit demo mode
+              Just remove the demo data
             </button>
           </div>
         </div>

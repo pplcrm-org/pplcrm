@@ -492,6 +492,16 @@ export const dashboardRoutes: Routes = [
     data: { breadcrumb: 'Profile' },
   },
   {
+    // A route rather than a modal: resumable, deep-linkable, back-button honest, and the sidebar
+    // stays visible so "where am I" keeps its answer. Admin/owner only, because demo.exit and
+    // most of what it writes are adminOrOwnerProcedure — an editor landing here would collect a
+    // string of 403s instead of a setup flow.
+    path: 'go-live',
+    canActivate: [roleGuard],
+    loadComponent: () => import('./experiences/go-live/go-live-page').then((m) => m.GoLivePage),
+    data: { breadcrumb: 'Go live' },
+  },
+  {
     path: 'imports/new',
     loadComponent: () => import('./experiences/imports/ui/import-wizard').then((m) => m.ImportWizard),
     // Flat route that conceptually nests under the Imports tab of the history page.
