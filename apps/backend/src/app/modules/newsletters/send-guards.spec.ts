@@ -187,10 +187,22 @@ describe('evaluateTripwires', () => {
 });
 
 describe('needsPhoneVerification', () => {
-  it('requires verification only on Free without a verified number', () => {
+  /**
+   * Every plan, not just Free. A shared platform sending domain means tenants send under one
+   * identity we own, so one abusive workspace degrades delivery for all of them — and a month of
+   * Grassroots is not a barrier to someone with a purchased list. A one-time SMS check is.
+   */
+  it('requires verification on every plan until a number is verified', () => {
     expect(needsPhoneVerification(tenantWith({ plan: 'free' }))).toBe(true);
-    expect(needsPhoneVerification(tenantWith({ plan: 'free', sending_phone_verified_at: new Date() }))).toBe(false);
-    expect(needsPhoneVerification(tenantWith({ plan: 'grassroots' }))).toBe(false);
+    expect(needsPhoneVerification(tenantWith({ plan: 'grassroots' }))).toBe(true);
+    expect(needsPhoneVerification(tenantWith({ plan: 'movement' }))).toBe(true);
+    expect(needsPhoneVerification(tenantWith({ plan: 'enterprise' }))).toBe(true);
+  });
+
+  it('is satisfied once a number is verified, on any plan', () => {
+    const verified = new Date();
+    expect(needsPhoneVerification(tenantWith({ plan: 'free', sending_phone_verified_at: verified }))).toBe(false);
+    expect(needsPhoneVerification(tenantWith({ plan: 'movement', sending_phone_verified_at: verified }))).toBe(false);
   });
 });
 

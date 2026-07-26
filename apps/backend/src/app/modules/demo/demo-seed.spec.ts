@@ -26,6 +26,7 @@ import {
   DEMO_USERS,
   DEMO_VOLUNTEER_EVENTS,
 } from './demo-seed-data';
+import { summarizeManifest } from './controller';
 import { ForbiddenError, NotFoundError } from '../../errors/app-errors';
 
 const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);
@@ -617,5 +618,28 @@ describe('demo seeding and exit-demo', () => {
       await db.deleteFrom('authusers').where('tenant_id', '=', tenant_id).execute();
       await db.deleteFrom('tenants').where('id', '=', tenant_id).execute();
     }
+  });
+
+  /**
+   * The exit confirm has to be specific enough to earn the interruption, and hard-coded counts
+   * drift the moment the seeder changes. These come from the manifest, so they cannot.
+   */
+  describe('summarizeManifest', () => {
+    it('reports real counts from the manifest', async () => {
+      const f = await seedFixture();
+      const items = summarizeManifest(f.manifest);
+
+      const people = items.find((i) => i.label === 'people');
+      expect(people?.count).toBe(f.manifest.persons.length);
+      expect(people?.count).toBeGreaterThan(0);
+      expect(items.find((i) => i.label === 'sample lists')?.count).toBe(f.manifest.lists.length);
+
+      // Nothing is reported at zero — the dialog should never read "0 companies".
+      expect(items.every((i) => i.count > 0)).toBe(true);
+
+      // Tags are never in the manifest (the starter vocabulary survives exit), so a category
+      // that is not deleted can never appear in the list of what will be deleted.
+      expect(items.some((i) => i.label.includes('tag'))).toBe(false);
+    });
   });
 });

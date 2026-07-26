@@ -14,14 +14,18 @@ async function createTestSeed(db: any) {
   const campaignId = rand();
   const householdId = rand();
 
-  // 1. Tenant — on a paid plan so the anti-abuse send guards (free-tier phone verification and
-  // warm-up cap) don't apply; the domain-verification gate is satisfied by the settings below.
+  // 1. Tenant — on a paid plan so the warm-up cap doesn't apply, and with a verified sending
+  // phone because that gate covers every plan now (a shared platform sending domain means one
+  // abusive workspace hurts all of them, so paying is not the barrier; the SMS check is).
+  // The domain-verification gate is satisfied by the settings below.
   await db
     .insertInto('tenants')
     .values({
       id: tenantId,
       name: 'Test Tenant',
       subscription_plan: 'movement',
+      sending_phone: '+15550000000',
+      sending_phone_verified_at: new Date(),
     })
     .execute();
 

@@ -245,7 +245,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
       pendingPhone: tenant?.pending_phone ? maskPhone(tenant.pending_phone) : null,
       // Whether a send is gated on it. Shares the send guard's predicate rather than restating
       // the rule, so the settings page can never disagree with what sending actually enforces.
-      required: phoneVerificationRequired(getPlanDef(tenant?.subscription_plan)?.key ?? 'free'),
+      required: phoneVerificationRequired(),
     };
   }
 

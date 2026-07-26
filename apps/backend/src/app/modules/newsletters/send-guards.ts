@@ -67,9 +67,9 @@ export const DOMAIN_UNVERIFIED_MESSAGE =
 export const REPLY_TO_REQUIRED_MESSAGE =
   'Before sending from your pplCRM address, set a Reply-to address (Settings → Communications) so replies reach you rather than us.';
 export const PHONE_UNVERIFIED_MESSAGE =
-  'On the Free plan, verify a mobile phone number (Settings → Communications) before your first newsletter send.';
+  'Verify a mobile phone number (Settings → Communications) before your first newsletter send. It is a one-time check that protects the sending reputation every pplCRM workspace shares.';
 export const AUTOMATION_PHONE_UNVERIFIED_MESSAGE =
-  'On the Free plan, verify a mobile phone number (Settings → Communications) before automation emails can send. This email was not sent.';
+  'Verify a mobile phone number (Settings → Communications) before automation emails can send. This email was not sent.';
 export const ORG_ADDRESS_MISSING_MESSAGE =
   'Before sending, an administrator must set your organization’s mailing address (Settings → Organization). Anti-spam laws (like CAN-SPAM and CASL) require it in every newsletter footer.';
 
@@ -223,21 +223,26 @@ export function hasPaymentHold(tenant: SendingTenant): boolean {
 }
 
 /**
- * Which plans must verify a mobile number before any tenant-originated email leaves the account.
+ * Whether a workspace must verify a mobile number before any tenant-originated email leaves it.
  *
- * The single home for this policy. It used to be written twice — here and in
- * `getPhoneVerificationStatus`, which computed the same `plan === 'free'` test to tell the UI
- * whether to show the card — so changing who must verify meant changing it in two places or
- * shipping a settings page that disagreed with the send guard.
+ * Every workspace, on every plan. It was Free-only when Free was the only spam vector worth
+ * pricing in, but a shared platform sending domain changes the maths: tenants now send under one
+ * identity we own, so one abusive workspace degrades delivery for every other one, and paying
+ * for a month of Grassroots is not a meaningful barrier to someone with a purchased list.
+ * A one-time SMS check is.
+ *
+ * The single home for this policy — it used to be written twice, here and in
+ * `getPhoneVerificationStatus`, so changing who must verify meant a two-place edit or a settings
+ * page that disagreed with the send guard.
  */
-export function phoneVerificationRequired(plan: PlanKey): boolean {
-  return plan === 'free';
+export function phoneVerificationRequired(): boolean {
+  return true;
 }
 
 /** Identity gate: a verified mobile number is required before any tenant-originated email
  * (newsletter or automation) leaves the account. Pure, shared by both send paths. */
 export function needsPhoneVerification(tenant: SendingTenant): boolean {
-  return phoneVerificationRequired(tenant.plan) && !tenant.sending_phone_verified_at;
+  return phoneVerificationRequired() && !tenant.sending_phone_verified_at;
 }
 
 /** Throws when the tenant is suspended, tripwire-paused, or on a payment hold. */
