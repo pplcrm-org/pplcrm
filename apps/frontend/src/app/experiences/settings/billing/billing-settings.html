@@ -65,19 +65,17 @@
       <button
         type="button"
         class="btn btn-outline btn-secondary btn-sm gap-1.5"
-        [disabled]="actionPending()"
+        [disabled]="portalPending()"
         (click)="openPortal()"
       >
+        @if (portalPending()) {
+        <span class="loading loading-spinner loading-xs"></span>
+        Opening Stripe… } @else {
         <pc-icon name="cog-6-tooth" />
-        Invoices &amp; payment method
+        Invoices &amp; payment method }
       </button>
       } @if (details()?.isMockMode && details()?.hasActiveSubscription) {
-      <button
-        type="button"
-        class="btn btn-outline btn-error btn-sm"
-        [disabled]="actionPending()"
-        (click)="cancelMock()"
-      >
+      <button type="button" class="btn btn-outline btn-error btn-sm" [disabled]="busy()" (click)="cancelMock()">
         Mock cancel subscription
       </button>
       }
@@ -197,7 +195,9 @@
             [disabled]="ctaDisabled(plan)"
             (click)="choosePlan(plan)"
           >
-            {{ ctaLabel(plan) }}
+            @if (pendingPlan() === plan.key) {
+            <span class="loading loading-spinner loading-xs"></span>
+            {{ plan.key === 'free' ? 'Switching…' : 'Opening Stripe…' }} } @else { {{ ctaLabel(plan) }} }
           </button>
           <!-- Guide, don't just grey out: a disabled button with no reason is a dead end. -->
           @if (blockedReason(plan); as reason) {

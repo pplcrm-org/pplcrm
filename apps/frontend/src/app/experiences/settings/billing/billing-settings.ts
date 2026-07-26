@@ -62,6 +62,9 @@ function isPurchasablePlan(value: string | undefined): value is PurchasablePlanK
   selector: 'pc-billing-settings',
   imports: [DatePipe, Icon, StatusBadge],
   templateUrl: './billing-settings.html',
+  host: {
+    '(window:pageshow)': 'onPageShow($event)',
+  },
 })
 export class BillingSettingsComponent extends TRPCService<any> implements OnInit {
   private readonly alerts = inject(AlertService);
@@ -71,9 +74,22 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
 
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
-  protected readonly actionPending = signal(false);
   protected readonly details = signal<BillingDetailsSnapshot | null>(null);
   protected readonly usage = signal<BillingUsageSnapshot | null>(null);
+
+  /**
+   * Which card is mid-redirect, rather than a page-wide "something is pending" flag.
+   *
+   * A single shared flag made every button on the page dead the moment one of them was clicked —
+   * and because both the Checkout and the portal handoffs end in `window.location.href` and never
+   * resolve, the flag was only ever cleared by an error. Come back from Stripe with the browser's
+   * back button and the page restores from the bfcache with the flag still set: three greyed-out
+   * plans and no way to recover short of a hard reload. Scoped per plan, the worst case is one
+   * busy card.
+   */
+  protected readonly pendingPlan = signal<PlanKey | null>(null);
+  protected readonly portalPending = signal(false);
+  protected readonly busy = computed(() => this.pendingPlan() !== null || this.portalPending());
 
   /** All three priced tiers, side by side: Free, Grassroots, Movement. Free sat in a separate
    * panel below the paid cards until 2026-07-26 and read as an afterthought — you could not
@@ -173,7 +189,7 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   }
 
   protected ctaDisabled(plan: PlanDef): boolean {
-    return this.isCurrentPlan(plan) || this.actionPending() || this.blockedReason(plan) !== null;
+    return this.isCurrentPlan(plan) || this.pendingPlan() === plan.key || this.blockedReason(plan) !== null;
   }
 
   /** Picking a tier. Free records a choice directly (it isn't purchasable); the paid tiers go
@@ -301,7 +317,7 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   protected async subscribe(plan: PlanDef) {
     if (!isPurchasablePlan(plan.key)) return;
     const planKey = plan.key;
-    this.actionPending.set(true);
+    this.pendingPlan.set(planKey);
     try {
       const res = await this.api.billing.createCheckout.mutate({ plan: planKey, interval: this.billingInterval() });
       if (res?.url) {
@@ -311,14 +327,14 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
       }
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Checkout failed. Please try again.');
-      this.actionPending.set(false);
+      this.pendingPlan.set(null);
     }
   }
 
   /** Commit to the Free plan. Not a checkout: Free isn't purchasable, so this records the choice
    * directly. It is what unblocks leaving demo mode, which needs a settled plan decision. */
   protected async continueOnFree() {
-    this.actionPending.set(true);
+    this.pendingPlan.set('free');
     try {
       await this.api.billing.selectFree.mutate();
       this.alerts.showSuccess('You’re on the Free plan. You can upgrade whenever you need to.');
@@ -328,12 +344,12 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
         err instanceof Error && err.message ? err.message : 'Could not switch to the Free plan. Please try again.',
       );
     } finally {
-      this.actionPending.set(false);
+      this.pendingPlan.set(null);
     }
   }
 
   protected async openPortal() {
-    this.actionPending.set(true);
+    this.portalPending.set(true);
     try {
       const res = await this.api.billing.createPortal.mutate();
       if (res?.url) {
@@ -343,8 +359,21 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
       }
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Could not open billing portal.');
-      this.actionPending.set(false);
+      this.portalPending.set(false);
     }
+  }
+
+  /**
+   * Coming back from Stripe with the back button restores this page from the bfcache — same JS
+   * state, no ngOnInit — so the in-flight redirect flags survive and would leave the plan buttons
+   * disabled forever. Clear them and re-read, since whatever they did on Stripe may have changed
+   * the subscription.
+   */
+  protected onPageShow(event: PageTransitionEvent): void {
+    if (!event.persisted) return;
+    this.pendingPlan.set(null);
+    this.portalPending.set(false);
+    void this.loadBilling();
   }
 
   private async handleMockActivation(plan: PurchasablePlanKey, interval: BillingInterval = 'month') {
