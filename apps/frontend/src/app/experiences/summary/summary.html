@@ -41,7 +41,8 @@
   <!-- Demo mode: what was seeded + the one place to exit (self-hides once exited) -->
   <pc-demo-mode-card (exited)="loadStats(true)"></pc-demo-mode-card>
 
-  <!-- First-run checklist — real account state; self-hides when complete (§3) -->
+  <!-- Setup checklist — derived from real account state, not a stored flag; self-hides when
+       nothing is outstanding, and hands each item back to the go-live wizard (§3) -->
   <pc-getting-started-card></pc-getting-started-card>
 
   <!-- Next-action cards: color is a message — attention (warning), waiting (info), ready (neutral) -->

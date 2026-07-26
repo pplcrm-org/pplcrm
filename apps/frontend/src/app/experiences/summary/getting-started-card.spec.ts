@@ -2,114 +2,86 @@ import { signal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthService } from '../../auth/auth-service';
+import { GoLiveService, type GoLiveStepId } from '../go-live/go-live.service';
 import { GettingStartedCard } from './getting-started-card';
-import type { GettingStartedStep } from './services/getting-started.service';
-import { GettingStartedService } from './services/getting-started.service';
 
 describe('GettingStartedCard', () => {
   let fixture: ComponentFixture<GettingStartedCard>;
   let userSignal: ReturnType<typeof signal<{ tenant_demo_mode_at: Date | null } | null>>;
-  let svcVisible: ReturnType<typeof signal<boolean>>;
-  let mockSvc: {
-    visible: () => boolean;
-    steps: () => GettingStartedStep[];
-    doneCount: () => number;
-    total: () => number;
-    nextStep: () => GettingStartedStep | null;
-    refresh: ReturnType<typeof vi.fn>;
-    dismiss: ReturnType<typeof vi.fn>;
-  };
-  let mockAlerts: { showInfo: ReturnType<typeof vi.fn> };
+  let outstanding: ReturnType<typeof signal<GoLiveStepId[]>>;
+  let state: ReturnType<typeof signal<{ deferred: GoLiveStepId[] }>>;
+  let load: ReturnType<typeof vi.fn>;
 
-  const steps: GettingStartedStep[] = [
-    {
-      id: 'import',
-      label: 'Import your contacts',
-      done: true,
-      evidence: '12 imported',
-      route: '/imports',
-      cta: 'Import contacts',
-    },
-    {
-      id: 'verify-sender',
-      label: 'Verify a sending address',
-      done: false,
-      evidence: null,
-      route: '/workspace/communications',
-      cta: 'Verify a sending address',
-    },
-  ];
-
-  function createCard(demo: boolean): void {
-    userSignal = signal<{ tenant_demo_mode_at: Date | null } | null>({
-      tenant_demo_mode_at: demo ? new Date() : null,
-    });
-    fixture = TestBed.createComponent(GettingStartedCard);
-    fixture.detectChanges();
-  }
+  const text = (): string => fixture.nativeElement.textContent as string;
 
   beforeEach(async () => {
-    svcVisible = signal(true);
-    mockSvc = {
-      visible: () => svcVisible(),
-      steps: () => steps,
-      doneCount: () => 1,
-      total: () => steps.length,
-      nextStep: () => steps[1] ?? null,
-      refresh: vi.fn().mockResolvedValue(undefined),
-      dismiss: vi.fn(),
-    };
-    mockAlerts = { showInfo: vi.fn() };
+    userSignal = signal<{ tenant_demo_mode_at: Date | null } | null>({ tenant_demo_mode_at: null });
+    outstanding = signal<GoLiveStepId[]>(['organization', 'sending']);
+    state = signal<{ deferred: GoLiveStepId[] }>({ deferred: [] });
+    load = vi.fn().mockResolvedValue(undefined);
 
     await TestBed.configureTestingModule({
       imports: [GettingStartedCard],
       providers: [
         provideRouter([]),
         { provide: AuthService, useValue: { getUserSignal: () => userSignal } },
-        { provide: GettingStartedService, useValue: mockSvc },
-        { provide: AlertService, useValue: mockAlerts },
+        { provide: GoLiveService, useValue: { outstanding, state, load } },
       ],
     }).compileComponents();
+
+    fixture = TestBed.createComponent(GettingStartedCard);
+    fixture.detectChanges();
   });
 
-  it('shows the checklist and refreshes when the tenant is not in demo mode', () => {
-    createCard(false);
-
-    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Getting started');
-    expect(mockSvc.refresh).toHaveBeenCalledTimes(1);
+  it('lists what is still outstanding, with a count and a way in', () => {
+    expect(text()).toContain('2 left');
+    expect(text()).toContain('Add your mailing address');
+    expect(text()).toContain('Set up sending');
+    expect(fixture.nativeElement.querySelector('a[href="/go-live"]')).not.toBeNull();
   });
 
-  it('stays hidden and does not fetch while the tenant is in demo mode', () => {
-    createCard(true);
-
-    expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('Getting started');
-    expect(mockSvc.refresh).not.toHaveBeenCalled();
+  /** Every item is a real blocker, so each one says what it costs to leave undone. */
+  it('says why each item matters', () => {
+    expect(text()).toContain('Required by law in every newsletter footer');
+    expect(text()).toContain('Newsletters stay locked until this is done');
   });
 
-  it('appears and fetches fresh counts once the demo flag clears', () => {
-    createCard(true);
-    expect(mockSvc.refresh).not.toHaveBeenCalled();
+  it('marks a deliberately deferred item as saved for later', () => {
+    state.set({ deferred: ['sending'] });
+    fixture.detectChanges();
+
+    expect(text()).toContain('You saved this for later.');
+  });
+
+  it('disappears once nothing is outstanding', () => {
+    outstanding.set([]);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent.trim()).toBe('');
+  });
+
+  /**
+   * The demo card already owns this conversation while the sample data is present, and the
+   * seeded records would make the list read wrong anyway.
+   */
+  it('stays hidden during demo mode', () => {
+    userSignal.set({ tenant_demo_mode_at: new Date() });
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.textContent.trim()).toBe('');
+  });
+
+  it('reloads when the demo flag clears, so it reflects the emptied workspace', () => {
+    load.mockClear();
+    userSignal.set({ tenant_demo_mode_at: new Date() });
+    fixture.detectChanges();
+    expect(load).not.toHaveBeenCalled();
 
     userSignal.set({ tenant_demo_mode_at: null });
     fixture.detectChanges();
-
-    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Getting started');
-    expect(mockSvc.refresh).toHaveBeenCalledTimes(1);
-  });
-
-  it('dismiss hides via the service and confirms with a toast', () => {
-    createCard(false);
-
-    const dismissBtn = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).find((b) =>
-      b.textContent?.includes('Dismiss'),
-    );
-    dismissBtn?.click();
-
-    expect(mockSvc.dismiss).toHaveBeenCalledTimes(1);
-    expect(mockAlerts.showInfo).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalled();
   });
 });
