@@ -4,6 +4,7 @@ import {
   BILLING_INTERVALS,
   bracketIndexForSubscribers,
   getPlanDef,
+  hasSettledPlan,
   maxQuantity,
   PLANS_BY_KEY,
   PURCHASABLE_PLAN_KEYS,
@@ -175,7 +176,7 @@ export class BillingController {
       endsAt: tenant.subscription_ends_at ? new Date(tenant.subscription_ends_at) : null,
       stripeCustomerId: tenant.stripe_customer_id || null,
       stripeSubscriptionId: tenant.stripe_subscription_id || null,
-      hasActiveSubscription: ['active', 'trialing'].includes(tenant.subscription_status || ''),
+      hasActiveSubscription: hasSettledPlan(tenant.subscription_status),
       isMockMode,
     };
   }

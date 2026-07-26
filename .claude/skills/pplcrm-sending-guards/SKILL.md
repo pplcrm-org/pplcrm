@@ -230,8 +230,33 @@ const authProcedure = baseAuthProcedure.use(planFeatureGate('forms'));
 web-forms, donations, workflows, lists, canvassing, deliveries, companion-access, teams,
 volunteer-events. Unknown/missing plan values fail closed to `free`.
 
+## Demo gate vs plan gate — `apps/backend/src/app/modules/demo/demo-guard.ts`
+
+Two guards, different questions. Confusing them deadlocks the go-live wizard, which is exactly
+what happened before 2026-07-26.
+
+| Guard                | Asks                                    | Blocks                                                                                                    |
+| -------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `assertNotDemoMode`  | is the seeded demo data still in place? | sending newsletters, inviting teammates, mailbox sync (Google/MS), Stripe Connect                         |
+| `assertPlanSelected` | has the tenant settled on a plan?       | phone verification, sender-email verification, domain add/verify/delete (all in `settings/controller.ts`) |
+
+"Settled" = `hasSettledPlan(tenants.subscription_status)` from `plans.ts` — `active` or
+`trialing`, which **includes Free**, since `billing.selectFree` writes `active`/`free`. A brand-new
+tenant has a null status; that is what "hasn't decided" means. Don't re-inline `['active','trialing']`.
+
+Why verification is plan-gated and not demo-gated: the wizard verifies phone and domain at steps 3
+and 4, _before_ removing the demo data at step 5 — and removing the demo data itself requires a
+plan. Gate verification on demo mode and step 3 becomes unreachable until step 5, which is
+unreachable until step 1. The frontend mirrors this: `settings-page.ts` has `isDemoLocked`
+(email-sync, donations) and a separate `isPlanLocked` (domains), and the communications
+verification block keys off `tenant_plan_selected` on the signed-in user — set in
+`sanitizeUser`, refreshed after any plan change.
+
 ## Test traps
 
+- Any spec touching phone/email/domain verification must seed the tenant with
+  `subscription_status: 'active'`, or it dies on `assertPlanSelected` rather than exercising the
+  behaviour under test (see `createTestSeed` in `settings/controller.spec.ts`).
 - Router specs that mock `BaseRepository.dbInstance` with one shared `executeTakeFirst` row must
   include `subscription_plan: 'movement'` in that row, or every mutation dies on the plan gate.
 - DB-backed newsletter send tests must seed the tenant on a paid plan **and** the two settings

@@ -38,6 +38,13 @@ export interface IAuthUser {
   /** Set while the tenant still has the seeded demo data (drives the demo-mode banner). */
   tenant_demo_mode_at?: Date | null;
 
+  /**
+   * The workspace has settled on a plan (Free counts). Sender/phone/domain verification is gated
+   * on this rather than on demo mode, so the UI needs it to explain a lock without a billing
+   * round-trip on every page.
+   */
+  tenant_plan_selected?: boolean;
+
   /** The tenant's public subdomain label — used to build public form URLs (`<slug>.<baseDomain>`). */
   tenant_slug?: string | null;
 }

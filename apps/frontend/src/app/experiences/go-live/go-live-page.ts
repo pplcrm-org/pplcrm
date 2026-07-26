@@ -8,6 +8,7 @@ import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AuthService } from '../../auth/auth-service';
 import { getUserErrorMessage } from '../../services/api/user-message';
 import { ConfirmDialogService } from '../../services/shared-dialog.service';
+import { SETUP_RETURN_PARAM } from '../../layout/setup-return-bar';
 import { DemoService } from '../summary/services/demo.service';
 import { PhoneVerification } from '../settings/phone/phone-verification';
 import { SettingsService } from '../settings/services/settings-service';
@@ -67,6 +68,14 @@ export class GoLivePage implements OnInit {
 
   protected readonly currentId = computed(() => this.state().step);
   protected readonly demoSummary = signal<DemoSummaryItem[]>([]);
+
+  /** Stamped on every link that leaves the wizard for a real page, so that page shows the way
+   * back (see `SetupReturnBar`). */
+  protected readonly setupParam = { [SETUP_RETURN_PARAM]: 1 };
+
+  /** Verification is refused server-side until a plan is settled, so the step says so instead of
+   * offering a control that only produces an error toast. */
+  protected readonly planLocked = computed(() => !this.done()['plan']);
 
   /** Organization fields are edited locally and saved on continue, so a half-typed address is
    * never persisted as if it were a decision. */
@@ -168,6 +177,13 @@ export class GoLivePage implements OnInit {
     } finally {
       this.busy.set(false);
     }
+  }
+
+  // --- Phone ----------------------------------------------------------------
+
+  /** The step's own truth comes from the tenant, not from the wizard's memory of the click. */
+  protected onPhoneVerified(): void {
+    this.goLive.setPhoneVerified(true);
   }
 
   // --- Organization ---------------------------------------------------------

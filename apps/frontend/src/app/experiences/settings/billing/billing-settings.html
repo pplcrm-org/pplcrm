@@ -23,100 +23,72 @@
   </div>
   }
 
-  <!-- Current Subscription Header -->
-  <div class="grid gap-6 md:grid-cols-3">
-    <!-- Current Plan Summary -->
-    <div class="md:col-span-2 card bg-base-200/40 border border-base-200 rounded-2xl p-6 flex flex-col justify-between">
-      <div class="space-y-4">
-        <div class="flex items-center justify-between">
-          <span class="pc-eyebrow">Current Plan</span>
-          @if (details()?.hasActiveSubscription) {
-          <pc-status-badge type="success"> <pc-icon name="check-circle" /> Active </pc-status-badge>
-          } @else if (details()?.endsAt) {
-          <pc-status-badge type="error">Inactive</pc-status-badge>
-          } @else {
-          <!-- Never subscribed is not a failure state, so it doesn't wear the error colour. -->
-          <pc-status-badge type="neutral">No plan chosen</pc-status-badge>
-          }
-        </div>
-
-        <div>
-          <h3 class="text-3xl font-extrabold text-base-content">{{ planLabel(details()?.plan) }} Plan</h3>
-          @if (details()?.hasActiveSubscription && details()?.endsAt) {
-          <p class="text-xs text-base-content/60 mt-1">
-            Your subscription will renew automatically on <strong>{{ details()?.endsAt | date:'mediumDate' }}</strong>.
-          </p>
-          } @else if (details()?.endsAt) {
-          <p class="text-xs text-error/80 mt-1 font-medium">
-            Your plan has expired or was canceled. Access ends on {{ details()?.endsAt | date:'mediumDate' }}.
-          </p>
-          } @else if (onFreePlan()) {
-          <p class="text-xs text-base-content/60 mt-1">
-            The Free plan does not expire. Upgrade below whenever you outgrow it.
-          </p>
-          } @else {
-          <p class="text-xs text-base-content/60 mt-1">
-            You have not chosen a plan yet. Pick one below, or continue on Free.
-          </p>
-          } @if (usageSummary()) {
-          <p class="text-xs text-base-content/70 mt-2 font-medium">{{ usageSummary() }}</p>
-          }
-        </div>
-      </div>
-
-      <!-- Action Footer -->
-      <div class="mt-6 flex flex-wrap items-center gap-3">
-        @if (details()?.stripeCustomerId) {
-        <button
-          type="button"
-          class="btn btn-outline btn-secondary btn-sm gap-1.5"
-          [disabled]="actionPending()"
-          (click)="openPortal()"
-        >
-          <pc-icon name="cog-6-tooth" />
-          Manage subscription
-        </button>
-        } @if (details()?.isMockMode && details()?.hasActiveSubscription) {
-        <button
-          type="button"
-          class="btn btn-outline btn-error btn-sm"
-          [disabled]="actionPending()"
-          (click)="cancelMock()"
-        >
-          Mock cancel subscription
-        </button>
+  <!-- Current plan: one strip, not a two-card grid. The old right-hand "Billing Account" panel
+       showed a truncated Stripe customer id (meaningless to the user) and a hardcoded •••• 4242
+       (a lie for anyone with a real card). Stripe owns the payment method; the portal button is
+       the honest way to reach it. -->
+  <div class="pc-panel flex flex-wrap items-start justify-between gap-4 p-6">
+    <div class="min-w-0 space-y-1.5">
+      <div class="flex flex-wrap items-center gap-2.5">
+        <span class="pc-eyebrow">Current plan</span>
+        @if (details()?.hasActiveSubscription) {
+        <pc-status-badge type="success"> <pc-icon name="check-circle" /> Active </pc-status-badge>
+        } @else if (details()?.endsAt) {
+        <pc-status-badge type="error">Inactive</pc-status-badge>
+        } @else {
+        <!-- Never subscribed is not a failure state, so it doesn't wear the error colour. -->
+        <pc-status-badge type="neutral">No plan chosen</pc-status-badge>
         }
       </div>
+
+      <h3 class="text-2xl font-extrabold tracking-tight text-base-content">{{ planLabel(details()?.plan) }}</h3>
+
+      @if (details()?.hasActiveSubscription && details()?.endsAt) {
+      <p class="text-xs text-base-content/60">
+        Renews automatically on <strong>{{ details()?.endsAt | date:'mediumDate' }}</strong>.
+      </p>
+      } @else if (details()?.endsAt) {
+      <p class="text-xs font-medium text-error/80">
+        Your plan has expired or was canceled. Access ends on {{ details()?.endsAt | date:'mediumDate' }}.
+      </p>
+      } @else if (onFreePlan()) {
+      <p class="text-xs text-base-content/60">The Free plan does not expire.</p>
+      } @else {
+      <p class="text-xs text-base-content/60">Pick one below to get started. Free is a real plan, not a trial.</p>
+      } @if (usageSummary()) {
+      <p class="text-xs font-medium text-base-content/70">{{ usageSummary() }}</p>
+      }
     </div>
 
-    <!-- Quick Stats Summary -->
-    <div class="card pc-panel p-6 space-y-4">
-      <h4 class="pc-eyebrow">Billing Account</h4>
-
-      <div class="space-y-3 text-xs">
-        <div>
-          <span class="text-base-content/50 block text-xs">Organization Tenant ID</span>
-          <span class="font-mono text-base-content/80 font-medium"
-            >#{{ details()?.stripeCustomerId ? details()?.stripeCustomerId?.substring(0, 15) + '...' : 'Unregistered'
-            }}</span
-          >
-        </div>
-        <div>
-          <span class="text-base-content/50 block text-xs">Linked Card</span>
-          <span class="flex items-center gap-1.5 font-medium text-base-content/80 mt-0.5">
-            <pc-icon name="credit-card" [size]="4" class="text-base-content/40" />
-            {{ details()?.stripeCustomerId ? '•••• •••• •••• 4242' : 'No card on file' }}
-          </span>
-        </div>
-      </div>
+    <div class="flex flex-wrap items-center gap-3">
+      @if (details()?.stripeCustomerId) {
+      <button
+        type="button"
+        class="btn btn-outline btn-secondary btn-sm gap-1.5"
+        [disabled]="actionPending()"
+        (click)="openPortal()"
+      >
+        <pc-icon name="cog-6-tooth" />
+        Invoices &amp; payment method
+      </button>
+      } @if (details()?.isMockMode && details()?.hasActiveSubscription) {
+      <button
+        type="button"
+        class="btn btn-outline btn-error btn-sm"
+        [disabled]="actionPending()"
+        (click)="cancelMock()"
+      >
+        Mock cancel subscription
+      </button>
+      }
     </div>
   </div>
 
-  <!-- Plans Selection Grid -->
+  <!-- Plans -->
   <div class="space-y-6">
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h3 class="text-xl font-bold tracking-tight text-base-content">Upgrade Options</h3>
+        <h3 class="text-xl font-bold tracking-tight text-base-content">Plans</h3>
         <p class="text-xs text-base-content/60">Choose the best fit for your campaign team or constituency office.</p>
       </div>
 
@@ -168,30 +140,24 @@
         <span>{{ formatCount(sliderStops[0]) }}</span>
         <span>{{ formatCount(maxSliderStop()) }}+</span>
       </div>
-      <p class="text-xs text-base-content/60">Prices below update live for this subscriber count.</p>
+      <p class="text-xs text-base-content/60">Paid prices below update live for this subscriber count.</p>
     </div>
 
-    <div class="grid gap-6 md:grid-cols-2">
+    <div class="grid gap-6 lg:grid-cols-3">
       @for (plan of plans; track plan.key) {
       <div
-        class="card flex flex-col justify-between p-6 relative overflow-hidden transition-all"
-        [class.pc-panel]="!plan.featured"
-        [class.hover:border-primary/30]="!plan.featured"
-        [class.bg-base-100]="plan.featured"
-        [class.border-2]="plan.featured"
-        [class.border-primary]="plan.featured"
-        [class.rounded-2xl]="plan.featured"
-        [class.shadow-md]="plan.featured"
+        class="card relative flex flex-col justify-between overflow-hidden p-6 transition-all"
+        [class]="isCurrentPlan(plan) ? 'border-2 border-primary bg-base-100 rounded-2xl shadow-md' : 'pc-panel hover:border-primary/30'"
       >
-        @if (details()?.plan === plan.key) {
+        @if (isCurrentPlan(plan)) {
         <div
           class="absolute top-0 right-0 bg-primary text-primary-content text-[10px] uppercase font-bold tracking-widest px-3 py-1 rounded-bl-xl"
         >
-          Active Plan
+          Current plan
         </div>
         } @else if (plan.featured) {
         <div
-          class="absolute top-0 right-0 bg-primary text-primary-content text-[10px] uppercase font-bold tracking-widest px-3 py-1 rounded-bl-xl"
+          class="absolute top-0 right-0 bg-base-content/70 text-base-100 text-[10px] uppercase font-bold tracking-widest px-3 py-1 rounded-bl-xl"
         >
           Popular
         </div>
@@ -199,23 +165,21 @@
 
         <div class="space-y-4">
           <div>
-            <h4 class="font-extrabold text-lg text-base-content">{{ plan.name }}</h4>
-            <p class="text-xs text-base-content/60 min-h-[32px] mt-1">{{ plan.blurb }}</p>
+            <h4 class="text-lg font-extrabold text-base-content">{{ plan.name }}</h4>
+            <p class="mt-1 min-h-[32px] text-xs text-base-content/60">{{ plan.blurb }}</p>
           </div>
 
           <div>
             <div class="flex items-baseline text-base-content">
               <span class="text-4xl font-extrabold tracking-tight">{{ priceLabel(plan) }}</span>
-              @if (priceLabel(plan).startsWith('$')) {
-              <span class="text-xs font-semibold text-base-content/60 ml-1">/ month</span>
-              }
+              <span class="ml-1 text-xs font-semibold text-base-content/60">{{ priceCadence(plan) }}</span>
             </div>
             @if (annualNote(plan); as note) {
-            <p class="text-xs text-base-content/60 mt-1">{{ note }} · {{ annualBadge }}</p>
+            <p class="mt-1 text-xs text-base-content/60">{{ note }} · {{ annualBadge }}</p>
             }
           </div>
 
-          <ul class="space-y-2.5 text-xs text-base-content/80 border-t border-base-200 pt-4">
+          <ul class="space-y-2.5 border-t border-base-200 pt-4 text-xs text-base-content/80">
             @for (feature of plan.features; track feature) {
             <li class="flex items-center gap-2">
               <pc-icon name="check-circle" class="text-primary shrink-0" />
@@ -225,48 +189,24 @@
           </ul>
         </div>
 
-        <div class="mt-6 pt-4">
+        <div class="mt-6 space-y-2 pt-4">
           <button
             type="button"
-            class="btn btn-primary w-full"
-            [disabled]="details()?.plan === plan.key || actionPending()"
-            (click)="subscribe(plan)"
+            class="btn w-full"
+            [class]="isCurrentPlan(plan) ? 'btn-outline btn-secondary' : plan.key === 'free' ? 'btn-outline btn-secondary' : 'btn-primary'"
+            [disabled]="ctaDisabled(plan)"
+            (click)="choosePlan(plan)"
           >
-            @if (details()?.plan === plan.key) { Current Tier } @else { Upgrade to {{ plan.name }} }
+            {{ ctaLabel(plan) }}
           </button>
-        </div>
-      </div>
-      }
-    </div>
-
-    <!-- Free plan: not an upgrade, so it sits below the grid as a quiet, deliberate choice rather
-         than a third card competing with the paid tiers. -->
-    @if (freePlan; as free) { @if (canChooseFree()) {
-    <div class="pc-panel p-5 flex flex-wrap items-center justify-between gap-4">
-      <div class="min-w-0">
-        <div class="flex items-center gap-2">
-          <h4 class="text-sm font-bold text-base-content">{{ free.name }}</h4>
-          @if (onFreePlan()) {
-          <pc-status-badge type="success">Current plan</pc-status-badge>
+          <!-- Guide, don't just grey out: a disabled button with no reason is a dead end. -->
+          @if (blockedReason(plan); as reason) {
+          <p class="text-center text-[11px] leading-relaxed text-base-content/55">{{ reason }}</p>
           }
         </div>
-        <p class="text-xs text-base-content/60 mt-1">{{ free.blurb }}</p>
       </div>
-
-      @if (onFreePlan()) {
-      <p class="text-xs text-base-content/60">Upgrade above whenever you need more.</p>
-      } @else {
-      <button
-        type="button"
-        class="btn btn-outline btn-secondary btn-sm"
-        [disabled]="actionPending()"
-        (click)="continueOnFree()"
-      >
-        Continue on Free
-      </button>
       }
     </div>
-    } }
 
     <!-- Enterprise footnote -->
     <p class="text-xs text-base-content/60 text-center">

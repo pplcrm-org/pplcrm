@@ -37,7 +37,7 @@ import {
 } from '../../lib/mail/shared-sending-domain';
 import { phoneVerificationRequired } from '../newsletters/send-guards';
 import { getPlanDef } from '@common';
-import { assertNotDemoMode } from '../demo/demo-guard';
+import { assertPlanSelected } from '../demo/demo-guard';
 import { DEMO_MANIFEST_SETTINGS_KEY } from '../demo/demo-seed';
 import { STRIPE_ACCOUNT_ID_KEY, STRIPE_ACCOUNT_STATUS_KEY } from '../donations/stripe-connect';
 
@@ -250,7 +250,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
   }
 
   public async requestPhoneVerification(auth: IAuthKeyPayload, phone: string) {
-    await assertNotDemoMode(this.getRepo().db, auth.tenant_id);
+    await assertPlanSelected(this.getRepo().db, auth.tenant_id);
     const normalized = normalizeE164(phone);
     if (!normalized) {
       throw new BadRequestError('Enter a valid mobile number, including the country code for non-US numbers.');
@@ -348,7 +348,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
   }
 
   public async requestEmailVerification(auth: IAuthKeyPayload, email: string) {
-    await assertNotDemoMode(this.getRepo().db, auth.tenant_id);
+    await assertPlanSelected(this.getRepo().db, auth.tenant_id);
     const normalized = email.toLowerCase().trim();
     const rateLimitKey = `${auth.tenant_id}:${normalized}`;
     const now = Date.now();
@@ -631,7 +631,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
   }
 
   public async addVerifiedDomain(auth: IAuthKeyPayload, domain: string) {
-    await assertNotDemoMode(this.getRepo().db, auth.tenant_id);
+    await assertPlanSelected(this.getRepo().db, auth.tenant_id);
     const domainVal = domain.toLowerCase().trim();
 
     const row = await this.getRepo().getByKey({
@@ -694,7 +694,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
   }
 
   public async verifyVerifiedDomain(auth: IAuthKeyPayload, domain: string) {
-    await assertNotDemoMode(this.getRepo().db, auth.tenant_id);
+    await assertPlanSelected(this.getRepo().db, auth.tenant_id);
     const domainVal = domain.toLowerCase().trim();
     const rateLimitKey = `${auth.tenant_id}:${domainVal}`;
     const now = Date.now();
@@ -862,7 +862,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
   }
 
   public async deleteVerifiedDomain(auth: IAuthKeyPayload, domain: string) {
-    await assertNotDemoMode(this.getRepo().db, auth.tenant_id);
+    await assertPlanSelected(this.getRepo().db, auth.tenant_id);
     const domainVal = domain.toLowerCase().trim();
 
     const row = await this.getRepo().getByKey({

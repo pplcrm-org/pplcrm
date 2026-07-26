@@ -135,7 +135,10 @@ describe('SettingsPage', () => {
 
     const router = TestBed.inject(Router);
     component['selectSection']('notifications');
-    expect(router.navigate).toHaveBeenCalledWith(['/', 'workspace', 'notifications']);
+    // Query params are preserved so a go-live `?setup` hop between sections keeps its way back.
+    expect(router.navigate).toHaveBeenCalledWith(['/', 'workspace', 'notifications'], {
+      queryParamsHandling: 'preserve',
+    });
 
     fixture.componentRef.setInput('section', 'notifications');
     fixture.detectChanges();

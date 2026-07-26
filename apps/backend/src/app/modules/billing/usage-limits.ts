@@ -7,6 +7,7 @@ import {
   emailCapForQuantity,
   getPlanDef,
   GB,
+  hasSettledPlan,
   maxQuantity,
   PLANS,
   PLANS_BY_KEY,
@@ -282,7 +283,7 @@ export async function checkTenantUsage(tenantId: string, db: Kysely<any>): Promi
   // Bracket-quantity notify-then-adjust: only meaningful for purchasable plans with an active
   // (or trialing) subscription — free/enterprise tenants have no Stripe quantity to sync.
   const subscriptionStatus = (tenant['subscription_status'] as string) || '';
-  if (plan.purchasable && (subscriptionStatus === 'active' || subscriptionStatus === 'trialing')) {
+  if (plan.purchasable && hasSettledPlan(subscriptionStatus)) {
     const targetQuantity = bracketIndexForSubscribers(plan.key, currentSubscribers);
 
     if (targetQuantity === null) {

@@ -5,6 +5,7 @@ import { TRPCError } from '@trpc/server';
 import { createSigner } from 'fast-jwt';
 import { env } from '../../../env';
 import { HouseholdsController } from '../households/controller';
+import { assertPlanSelected } from '../demo/demo-guard';
 import { DEMO_MANIFEST_SETTINGS_KEY } from '../demo/demo-seed';
 import { STRIPE_ACCOUNT_ID_KEY, STRIPE_ACCOUNT_STATUS_KEY } from '../donations/stripe-connect';
 import { sql } from 'kysely';
@@ -19,6 +20,10 @@ async function createTestSeed(db: any) {
     .values({
       id: tenantId,
       name: 'Test Tenant Settings',
+      // Sender/phone/domain verification is gated on a settled plan (see demo-guard); the
+      // baseline tenant has one so these specs exercise the behaviour under test, not the gate.
+      subscription_plan: 'free',
+      subscription_status: 'active',
     })
     .execute();
 
@@ -109,12 +114,26 @@ describe('SettingsController Integration', () => {
     expect(snapshot['organization.name']).toBe('Demo Org');
   });
 
-  it('should still block sender verification while the tenant is in demo mode', async () => {
+  it('should block sender verification until a plan is chosen', async () => {
     const auth = { tenant_id: tenantId, user_id: userId } as any;
-    await db.updateTable('tenants').set({ demo_mode_at: new Date() }).where('id', '=', tenantId).execute();
+    await db.updateTable('tenants').set({ subscription_status: null }).where('id', '=', tenantId).execute();
 
-    await expect(controller.requestEmailVerification(auth, 'demo-blocked@example.com')).rejects.toThrow(/demo/i);
-    await expect(controller.addVerifiedDomain(auth, 'demo-blocked.com')).rejects.toThrow(/demo/i);
+    await expect(controller.requestEmailVerification(auth, 'no-plan@example.com')).rejects.toThrow(/plan/i);
+    await expect(controller.addVerifiedDomain(auth, 'no-plan.com')).rejects.toThrow(/plan/i);
+    await expect(controller.requestPhoneVerification(auth, '+14165550123')).rejects.toThrow(/plan/i);
+  });
+
+  it('should not gate sender verification on demo mode once a plan is chosen', async () => {
+    // The go-live wizard verifies the phone and the sending domain BEFORE the demo data is
+    // removed. Gating those on demo mode deadlocked it — the step that unblocks demo removal
+    // was itself blocked by the demo.
+    await db
+      .updateTable('tenants')
+      .set({ demo_mode_at: new Date(), subscription_status: 'active', subscription_plan: 'free' })
+      .where('id', '=', tenantId)
+      .execute();
+
+    await expect(assertPlanSelected(db, tenantId)).resolves.toBeUndefined();
   });
 
   it('should block a From address on an unverified domain, and an unverified reply_to', async () => {

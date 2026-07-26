@@ -102,6 +102,21 @@ export type BillingInterval = (typeof BILLING_INTERVALS)[number];
 /** Months a customer doesn't pay for on annual billing — the marketing claim "2 months free". */
 export const ANNUAL_MONTHS_FREE = 2;
 
+/**
+ * `tenants.subscription_status` values that mean "this workspace has a settled plan".
+ *
+ * Free counts: `billing.selectFree` writes `active`/`free`, because choosing Free is a real
+ * decision and the things that need one (leaving demo mode, verifying a sending identity) must
+ * not be reserved for people who pay. The absence of a status — the state every brand-new
+ * workspace starts in — is what "no plan chosen yet" means.
+ */
+export const SETTLED_SUBSCRIPTION_STATUSES = ['active', 'trialing'] as const;
+
+/** True when `tenants.subscription_status` means the workspace has settled on a plan. */
+export function hasSettledPlan(subscriptionStatus: string | null | undefined): boolean {
+  return (SETTLED_SUBSCRIPTION_STATUSES as readonly string[]).includes(subscriptionStatus ?? '');
+}
+
 /** Annual price = monthly bracket price × this. Derived from ANNUAL_MONTHS_FREE so the
  * marketing claim and the multiplier can't drift apart. */
 export const ANNUAL_PRICE_MULTIPLIER = 12 - ANNUAL_MONTHS_FREE;

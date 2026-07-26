@@ -256,18 +256,20 @@
           }
 
           <div class="border-t border-base-200 pt-6 mt-6 space-y-6">
-            @if (isDemo()) {
-            <!-- Demo guard (§2/§3): verification is blocked server-side; explain it and prevent the dead end -->
+            @if (!planSelected()) {
+            <!-- Plan guard (§2/§3): verification is blocked server-side until a plan is settled;
+                 explain it and prevent the dead end. Free counts, and the demo data can stay. -->
             <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
               <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
               <p class="text-xs leading-relaxed text-base-content/80">
-                Sender email and phone verification aren't available in demo mode. Choose a plan on the
+                Choose a plan on the
                 <button type="button" class="link text-primary" (click)="selectSection('billing')">Billing</button>
-                page, then exit demo mode to unlock them.
+                page to verify a sender email or your phone number. Free counts, and you don't have to remove the demo
+                data first.
               </p>
             </div>
             }
-            <fieldset class="min-w-0 space-y-6" [disabled]="isDemo()">
+            <fieldset class="min-w-0 space-y-6" [disabled]="!planSelected()">
               <div class="space-y-1">
                 <h3 class="text-xs font-semibold text-base-content/90">Verified sender email addresses</h3>
                 <p class="text-xs text-base-content/50">
@@ -453,15 +455,24 @@
         <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
           <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
           <p class="text-xs leading-relaxed text-base-content/80">
-            @if (custom.id === 'email-sync') { Email sync isn't available in demo mode. } @else if (custom.id ===
-            'domains') { Domain verification isn't available in demo mode. } @else { Donation settings aren't available
-            in demo mode. } Choose a plan on the
+            @if (custom.id === 'email-sync') { Email sync isn't available in demo mode. } @else { Donation settings
+            aren't available in demo mode. } Choose a plan on the
             <button type="button" class="link text-primary" (click)="selectSection('billing')">Billing</button>
             page, then exit demo mode to unlock it.
           </p>
         </div>
+        } @else if (isPlanLocked(custom.id)) {
+        <!-- Plan guard (§2/§3): domain verification needs a settled plan, not demo removal -->
+        <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
+          <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+          <p class="text-xs leading-relaxed text-base-content/80">
+            Choose a plan on the
+            <button type="button" class="link text-primary" (click)="selectSection('billing')">Billing</button>
+            page to verify a sending domain. Free counts, and you don't have to remove the demo data first.
+          </p>
+        </div>
         }
-        <fieldset class="min-w-0 space-y-5" [disabled]="isDemoLocked(custom.id)">
+        <fieldset class="min-w-0 space-y-5" [disabled]="isDemoLocked(custom.id) || isPlanLocked(custom.id)">
           @switch (custom.id) { @case ('email-sync') {
           <div class="grid gap-8 lg:grid-cols-2">
             <!-- Microsoft Office 365 Card -->
