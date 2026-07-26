@@ -19,6 +19,7 @@ import { SidebarService } from 'apps/frontend/src/app/layout/sidebar/sidebar-ser
 import { CommandPalette } from '../command-palette/command-palette';
 import { KeyboardShortcutsHelp } from '../keyboard-shortcuts/keyboard-shortcuts-help';
 import { ReportBugDialog } from '../report-bug/report-bug-dialog';
+import { SetupReturnBar } from '../setup-return-bar';
 import { Tour } from '../tour/tour';
 import { TourService } from '../tour/tour.service';
 import { KeyboardShortcutsService } from '../../services/keyboard-shortcuts.service';
@@ -26,7 +27,18 @@ import { BreadcrumbDefaultsService } from '../../services/breadcrumb-defaults.se
 
 @Component({
   selector: 'pc-dashboard',
-  imports: [Navbar, Sidebar, RouterModule, Alerts, Icon, KeyboardShortcutsHelp, CommandPalette, ReportBugDialog, Tour],
+  imports: [
+    Navbar,
+    Sidebar,
+    RouterModule,
+    Alerts,
+    Icon,
+    KeyboardShortcutsHelp,
+    CommandPalette,
+    ReportBugDialog,
+    SetupReturnBar,
+    Tour,
+  ],
   templateUrl: './dashboard.html',
   host: {
     '(window:keydown)': 'onKeydown($event)',

@@ -106,11 +106,14 @@ export class GoLiveService extends TRPCService<any> {
   );
 
   /**
-   * Removing the demo data requires a settled plan — `demo.exit` refuses otherwise, so offering
-   * it early would be offering a button that throws.
+   * Steps whose server-side gate isn't satisfied yet, so the button would throw rather than work.
+   * Removing the demo data needs a settled plan (`demo.exit` refuses otherwise), and so does
+   * every kind of sender verification (see the backend's `assertPlanSelected`) — which is why
+   * the plan step comes first.
    */
   public readonly lockedReason = computed(
-    (): Partial<Record<GoLiveStepId, string>> => (this.planDone() ? {} : { demo: 'Choose a plan first' }),
+    (): Partial<Record<GoLiveStepId, string>> =>
+      this.planDone() ? {} : { phone: 'Choose a plan first', demo: 'Choose a plan first' },
   );
 
   /** What is still outstanding once the wizard is closed — the dashboard checklist's input. */
@@ -123,7 +126,19 @@ export class GoLiveService extends TRPCService<any> {
   public async load(): Promise<void> {
     await this.settings.load().catch(() => undefined);
     this._state.set(this.readState());
-    await Promise.all([this.refreshContacts(), this.refreshPlan()]);
+    await Promise.all([this.refreshContacts(), this.refreshPlan(), this.refreshPhone()]);
+  }
+
+  /** Phone verification is the one derived step whose truth lives on the tenant rather than in
+   * the settings snapshot, so it needs its own read — without it the step (and the dashboard
+   * checklist behind it) would stay outstanding forever after a successful verification. */
+  public async refreshPhone(): Promise<void> {
+    try {
+      const status = await this.settings.getPhoneVerificationStatus();
+      this._phoneVerified.set(status.verified === true);
+    } catch {
+      this._phoneVerified.set(false);
+    }
   }
 
   public async refreshContacts(): Promise<void> {
@@ -148,6 +163,9 @@ export class GoLiveService extends TRPCService<any> {
   public async selectFreePlan(): Promise<void> {
     await this.api.billing.selectFree.mutate();
     await this.refreshPlan();
+    // The signed-in user carries `tenant_plan_selected`, which is what unlocks the verification
+    // sections in Settings. Without this refresh they'd still claim to be locked.
+    await this.auth.getCurrentUser().catch(() => undefined);
   }
 
   public setPhoneVerified(verified: boolean): void {

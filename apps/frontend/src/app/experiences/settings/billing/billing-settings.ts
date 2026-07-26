@@ -15,11 +15,13 @@ import {
   maxQuantity,
   planDisplayName,
   priceLabelAt,
+  subscriberCapForQuantity,
   type BillingInterval,
   type PlanDef,
   type PlanKey,
   type PurchasablePlanKey,
 } from '@common';
+import { AuthService } from '../../../auth/auth-service';
 import { TRPCService } from '../../../services/api/trpc-service';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
 
@@ -63,6 +65,7 @@ function isPurchasablePlan(value: string | undefined): value is PurchasablePlanK
 })
 export class BillingSettingsComponent extends TRPCService<any> implements OnInit {
   private readonly alerts = inject(AlertService);
+  private readonly auth = inject(AuthService);
   private readonly route = inject(ActivatedRoute);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -72,14 +75,12 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   protected readonly details = signal<BillingDetailsSnapshot | null>(null);
   protected readonly usage = signal<BillingUsageSnapshot | null>(null);
 
-  /** Upgrade grid: the purchasable paid tiers only (Grassroots, Movement). Free is the current
-   * plan for everyone who hasn't upgraded, and Enterprise is a contact-us footnote, not a card. */
-  protected readonly plans: readonly PlanDef[] = PLANS.filter((p) => p.purchasable);
+  /** All three priced tiers, side by side: Free, Grassroots, Movement. Free sat in a separate
+   * panel below the paid cards until 2026-07-26 and read as an afterthought — you could not
+   * compare what you'd gain by paying, or see at a glance which tier you were on. Enterprise
+   * stays a contact-us footnote (`displayed: false`). */
+  protected readonly plans: readonly PlanDef[] = PLANS.filter((p) => p.displayed);
   protected readonly enterpriseMailto = 'mailto:hello@pplcrm.com?subject=Enterprise%20Inquiry';
-
-  /** Free is not an "upgrade option", so it gets its own quiet panel below the paid cards rather
-   * than a third card in the grid. */
-  protected readonly freePlan = PLANS.find((p) => p.key === 'free') ?? null;
 
   /** Free is settled (chosen, not merely defaulted-into). Everyone starts on plan 'free' with a
    * null status, which is not the same thing. */
@@ -90,6 +91,13 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   /** Moving to Free is only self-serve while no paid subscription is live; otherwise it is a
    * cancellation and belongs in the Stripe portal. */
   protected readonly canChooseFree = computed(() => !this.details()?.stripeSubscriptionId);
+
+  /** The Free tier's hard subscriber ceiling, read from the ladder rather than restated. */
+  protected readonly freeSubscriberCap = subscriberCapForQuantity('free', 1);
+
+  /** A list already past the Free ceiling can't move to Free — the send caps would refuse the
+   * next newsletter, so offering the button would be offering a downgrade that breaks sending. */
+  protected readonly outgrewFree = computed(() => (this.usage()?.subscribers ?? 0) > this.freeSubscriberCap);
 
   /** Billing interval for the upgrade cards. Monthly is the deliberate default — electoral
    * campaigns often end mid-year and shouldn't be nudged into annual prepay. */
@@ -126,13 +134,70 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     return planDisplayName(plan);
   }
 
+  /** Free is flat, so the subscriber slider must not move its price — running it through the
+   * ladder would print "Contact us" the moment the slider passed 1,000. */
   protected priceLabel(plan: PlanDef): string {
+    if (plan.key === 'free') return '$0';
     return priceLabelAt(plan, this.sliderValue(), this.billingInterval());
+  }
+
+  /** What sits under the price. Annual cards say "/ month" too — the exact annual total is
+   * spelled out by `annualNote` right below, which is the number actually charged. */
+  protected priceCadence(plan: PlanDef): string {
+    return plan.key === 'free' ? 'forever' : '/ month';
+  }
+
+  /** The tier this workspace is on. Free only counts once it has been chosen — every brand-new
+   * tenant carries plan 'free' with no status, which means "hasn't decided", not "on Free". */
+  protected isCurrentPlan(plan: PlanDef): boolean {
+    if (plan.key === 'free') return this.onFreePlan();
+    return this.details()?.plan === plan.key;
+  }
+
+  /** Why a tier can't be picked right now, in the user's terms. `null` = it can. */
+  protected blockedReason(plan: PlanDef): string | null {
+    if (this.isCurrentPlan(plan)) return null;
+    if (plan.key !== 'free') return null;
+    if (this.outgrewFree()) {
+      return `Your list is past the ${this.formatCount(this.freeSubscriberCap)}-subscriber Free limit.`;
+    }
+    if (!this.canChooseFree()) return 'Cancel your subscription in the billing portal to move back to Free.';
+    return null;
+  }
+
+  protected ctaLabel(plan: PlanDef): string {
+    if (this.isCurrentPlan(plan)) return 'Current plan';
+    if (plan.key === 'free') return 'Switch to Free';
+    if (!this.details()?.hasActiveSubscription) return `Choose ${plan.name}`;
+    return this.isUpgrade(plan) ? `Upgrade to ${plan.name}` : `Switch to ${plan.name}`;
+  }
+
+  protected ctaDisabled(plan: PlanDef): boolean {
+    return this.isCurrentPlan(plan) || this.actionPending() || this.blockedReason(plan) !== null;
+  }
+
+  /** Picking a tier. Free records a choice directly (it isn't purchasable); the paid tiers go
+   * through Stripe Checkout. One entry point so the cards stay uniform. */
+  protected async choosePlan(plan: PlanDef): Promise<void> {
+    if (this.ctaDisabled(plan)) return;
+    if (plan.key === 'free') {
+      await this.continueOnFree();
+      return;
+    }
+    await this.subscribe(plan);
+  }
+
+  private isUpgrade(plan: PlanDef): boolean {
+    const order: PlanKey[] = ['free', 'grassroots', 'movement', 'enterprise'];
+    const current = order.indexOf((this.details()?.plan ?? 'free') as PlanKey);
+    return order.indexOf(plan.key) > current;
   }
 
   /** "billed annually as $290" under an annual card price (null on monthly, out-of-ladder, or
    * ladderless plans — the card falls back to its plain monthly presentation). */
   protected annualNote(plan: PlanDef): string | null {
+    // Free has a ladder (one $0 bracket) but is not billed, so "billed annually as $0" is noise.
+    if (!plan.purchasable) return null;
     if (this.billingInterval() !== 'year' || !plan.pricing) return null;
     const index = bracketIndexForSubscribers(plan.key, this.sliderValue());
     if (index === null) return null;
@@ -175,6 +240,9 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
       this.details.set(details);
       this.usage.set(usage);
       this.syncSliderToUsage(usage);
+      // `tenant_plan_selected` on the signed-in user is what unlocks sender verification
+      // elsewhere in Settings; keep it in step with what this page just read.
+      await this.auth.getCurrentUser().catch(() => undefined);
     } catch (err) {
       console.error(err);
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load subscription details.');

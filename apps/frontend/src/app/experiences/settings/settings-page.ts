@@ -169,10 +169,13 @@ export class SettingsPage implements OnInit {
   protected readonly currentMode: 'settings' | 'workspace';
   protected readonly currentUserDetail = signal<IAuthUserDetail | null>(null);
   private readonly userSignal = this.auth.getUserSignal();
-  /** Sender verification, domain verification, and mailbox sync are blocked server-side
-   *  during the demo; the inline banners explain it (§2 explained-disabled). Ordinary
-   *  workspace settings save normally in demo mode. */
+  /** Mailbox sync and Stripe Connect are blocked server-side during the demo; the inline
+   *  banners explain it (§2 explained-disabled). Ordinary workspace settings save normally in
+   *  demo mode. */
   protected readonly isDemo = computed(() => !!this.userSignal()?.tenant_demo_mode_at);
+  /** Sender, phone and domain verification unlock with a settled plan — Free included — rather
+   *  than with demo removal, because the go-live wizard needs them before that point. */
+  protected readonly planSelected = computed(() => this.userSignal()?.tenant_plan_selected === true);
   protected readonly emailCooldownSeconds = signal<Record<string, number>>({});
   protected readonly lastFingerprintRecomputeTime = signal<Date | null>(null);
   protected readonly fingerprintRecomputeNextAvailable = computed(() => {
@@ -244,9 +247,17 @@ export class SettingsPage implements OnInit {
   }
 
   /** Custom sections whose actions the demo guard blocks; they render an explaining banner
-   *  and their controls are disabled instead of failing server-side. */
+   *  and their controls are disabled instead of failing server-side. Domains is NOT one of
+   *  them — verification is gated on a settled plan, not on demo mode (see `isPlanLocked`). */
   protected isDemoLocked(sectionId: string): boolean {
-    return this.isDemo() && (sectionId === 'email-sync' || sectionId === 'domains' || sectionId === 'donations');
+    return this.isDemo() && (sectionId === 'email-sync' || sectionId === 'donations');
+  }
+
+  /** Sections the server gates on a settled plan rather than on demo mode: proving you own a
+   *  domain, an email address or a phone number is setup, and the go-live wizard asks for it
+   *  while the demo data is still in place. */
+  protected isPlanLocked(sectionId: string): boolean {
+    return !this.planSelected() && sectionId === 'domains';
   }
 
   /** Nav-button classes shared by config-driven and custom section buttons. */
@@ -640,7 +651,10 @@ export class SettingsPage implements OnInit {
   }
 
   protected selectSection(sectionId: string) {
-    void this.router.navigate(['/', this.currentMode, sectionId]);
+    // Preserve query params: several of these hops are the go-live wizard sending the user from
+    // one settings section to another (Domains → Billing → Communications), and dropping `?setup`
+    // would strand them by removing the way back.
+    void this.router.navigate(['/', this.currentMode, sectionId], { queryParamsHandling: 'preserve' });
   }
 
   protected async verifySenderEmail(email: string | null | undefined) {

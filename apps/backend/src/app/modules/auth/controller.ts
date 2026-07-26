@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'crypto';
 import { createSigner } from 'fast-jwt';
 import type { QueryResult, Transaction } from 'kysely';
-import { RESERVED_SUBDOMAINS, slugifyHandle } from '../../../../../../libs/common/src';
+import { RESERVED_SUBDOMAINS, hasSettledPlan, slugifyHandle } from '../../../../../../libs/common/src';
 import { signedFileDownloadUrl } from '../../lib/signed-download';
 
 import type {
@@ -475,12 +475,13 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       let tenant_deletion_scheduled_at: Date | null = null;
       let tenant_paused_at: Date | null = null;
       let tenant_demo_mode_at: Date | null = null;
+      let tenant_plan_selected = false;
       let tenant_slug: string | null = null;
       let workspace_api_key_preview: { preview: string; createdAt: string; lastUsedAt: string | null } | null = null;
       if (auth.tenant_id) {
         const tenant = await this.getRepo()
           .db.selectFrom('tenants')
-          .select(['deletion_scheduled_at', 'paused_at', 'demo_mode_at', 'slug'])
+          .select(['deletion_scheduled_at', 'paused_at', 'demo_mode_at', 'slug', 'subscription_status'])
           .where('id', '=', auth.tenant_id)
           .executeTakeFirst();
         if (tenant?.deletion_scheduled_at) {
@@ -490,6 +491,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
           tenant_paused_at = tenant.paused_at;
         }
         tenant_demo_mode_at = tenant?.demo_mode_at ?? null;
+        tenant_plan_selected = hasSettledPlan(tenant?.subscription_status);
         tenant_slug = tenant?.slug ?? null;
 
         // Fetch API key preview
@@ -514,6 +516,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         tenant_deletion_scheduled_at,
         tenant_paused_at,
         tenant_demo_mode_at,
+        tenant_plan_selected,
         tenant_slug,
         workspace_api_key_preview,
       };

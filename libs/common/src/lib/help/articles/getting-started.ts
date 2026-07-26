@@ -114,7 +114,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
         kind: 'callout',
         tone: 'warning',
         title: 'What stays locked during the demo',
-        text: 'Demo mode is the free test drive before you pick a plan, so outward-facing setup is disabled: sending newsletters, inviting teammates on the [Users](/users) page, verifying sender emails and domains, connecting a mailbox, and connecting a Stripe account for donations. Everything else works, including workspace settings; update your organization details, service levels, and defaults at any time and they carry over when you exit the demo. Choose a plan on the [Billing](/workspace/billing) page to unlock the rest.',
+        text: 'Two different things are gated, and it is worth knowing which is which. **Until you choose a plan** — Free counts, and it takes one click on the [Billing](/workspace/billing) page — you cannot verify a sender email, a sending domain, or your mobile number. **Until you remove the demo data** you cannot send newsletters, invite teammates on the [Users](/users) page, connect a mailbox, or connect a Stripe account for donations. So verification is something you do *during* the demo, in the order the [go-live setup](/go-live) walks you through, not after it. Everything else works throughout, including workspace settings; update your organization details, service levels, and defaults at any time and they carry over when you exit the demo.',
       },
       { kind: 'h2', id: 'exit', text: 'Exiting demo mode' },
       {

@@ -1,4 +1,4 @@
-import type { IAuthKeyPayload } from '../../../../../../libs/common/src';
+import { hasSettledPlan, type IAuthKeyPayload } from '../../../../../../libs/common/src';
 import { ForbiddenError, InternalError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
@@ -69,7 +69,7 @@ export class DemoController extends BaseController<'settings', SettingsRepo> {
 
     // Demo mode is the pre-plan test drive: exiting (and the configuration it
     // unlocks) requires a subscription first. Same active-status rule as billing.
-    const hasActiveSubscription = ['active', 'trialing'].includes(tenant?.subscription_status ?? '');
+    const hasActiveSubscription = hasSettledPlan(tenant?.subscription_status);
     if (!hasActiveSubscription) {
       throw new ForbiddenError(
         'Choose a plan before exiting demo mode. Once you subscribe, you can remove the demo data and set up your workspace.',

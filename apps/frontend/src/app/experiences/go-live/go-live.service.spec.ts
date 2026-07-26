@@ -31,9 +31,10 @@ describe('GoLiveService', () => {
             load: vi.fn().mockResolvedValue({}),
             upsert: vi.fn().mockResolvedValue({}),
             getValue: <T>(key: string, fallback: T) => (snapshot()[key] as T) ?? fallback,
+            getPhoneVerificationStatus: vi.fn().mockResolvedValue({ verified: false }),
           },
         },
-        { provide: AuthService, useValue: { getUserSignal: () => user } },
+        { provide: AuthService, useValue: { getUserSignal: () => user, getCurrentUser: vi.fn() } },
         { provide: PersonsService, useValue: { count: vi.fn().mockResolvedValue(0) } },
       ],
     });
@@ -105,9 +106,38 @@ describe('GoLiveService', () => {
     });
   });
 
-  /** demo.exit refuses without a settled plan, so offering it early is offering a button that throws. */
-  it('locks the demo step until a plan is chosen, and says why', () => {
+  /** demo.exit and every kind of sender verification refuse without a settled plan, so offering
+   * them early is offering buttons that throw. */
+  it('locks the demo and phone steps until a plan is chosen, and says why', () => {
     expect(service.lockedReason()['demo']).toBe('Choose a plan first');
+    expect(service.lockedReason()['phone']).toBe('Choose a plan first');
+    // Sending is NOT locked: the platform address needs no verification, only a plan-free upsert.
+    expect(service.lockedReason()['sending']).toBeUndefined();
+  });
+
+  /** The phone step's truth lives on the tenant, not in the settings snapshot, so it needs its
+   * own read. Without it the step — and the dashboard checklist behind it — stayed outstanding
+   * forever after a successful verification. */
+  describe('phone', () => {
+    it('reads verification status from the server on load', async () => {
+      const settings = TestBed.inject(SettingsService);
+      expect(service.phoneDone()).toBe(false);
+
+      (settings.getPhoneVerificationStatus as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        verified: true,
+      });
+      await service.refreshPhone();
+      expect(service.phoneDone()).toBe(true);
+    });
+
+    it('treats an unreachable status endpoint as unverified', async () => {
+      const settings = TestBed.inject(SettingsService);
+      (settings.getPhoneVerificationStatus as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error('offline'),
+      );
+      await service.refreshPhone();
+      expect(service.phoneDone()).toBe(false);
+    });
   });
 
   describe('deferrals', () => {
