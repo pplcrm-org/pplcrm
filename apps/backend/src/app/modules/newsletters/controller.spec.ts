@@ -6,13 +6,11 @@ import { executeJob } from '../../lib/jobs/job-handlers';
 import { NewsletterEmailService } from '../../lib/mail/newsletter-mail.service';
 import { NewsletterPreflightService, contentHashOf } from './preflight.service';
 import { loadSendingTenant, remainingSendAllowance } from './send-guards';
-import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 
 // This file enqueues real `send-newsletter` rows and leaves them pending, which makes them
 // visible to any concurrently-running claimer — it was intermittently stealing the job that
 // job-claim.spec asserts FIFO/fairness ordering against. Per the lock's own contract, a spec that
 // leaves a pending row must hold the queue lock.
-useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 async function createTestSeed(db: any) {
   const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);

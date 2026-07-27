@@ -16,6 +16,8 @@ apps/
       app/
         _migrations/
           0001_baseline.ts
+          2026-07-26-list-name-unique.ts
+          2026-07-26-sort-indexes-hot-lists.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -96,6 +98,7 @@ apps/
           storage.service.ts
           stripe-platform-client.ts
           tenant-context.ts
+          tenant-members.ts
           token-hash.ts
           tombstone-user.ts
           user-activity.repo.ts
@@ -233,6 +236,7 @@ apps/
             routes/
               exports-download.route.ts
             controller.ts
+            export-tables.ts
             trpc.router.ts
           files/
             repositories/
