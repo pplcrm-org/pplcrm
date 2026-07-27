@@ -7,6 +7,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/x-icon" href="favicon.ico" />
+
+    <!--
+      Installable, and bootable without a connection. Volunteers run this on a phone for a whole
+      shift, often out of signal; without a manifest "Add to Home Screen" gave a generic icon in
+      browser chrome, and without a service worker a reload in a dead zone showed a blank page
+      even though their queued work was sitting safely in localStorage.
+    -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0ea5e9" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Companion" />
   </head>
 
   <body class="min-h-full">

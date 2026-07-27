@@ -17,6 +17,13 @@
         "tsConfig": "apps/companion/tsconfig.app.json",
         "assets": [
           "apps/companion/src/favicon.ico",
+          "apps/companion/src/manifest.webmanifest",
+          "apps/companion/src/sw.js",
+          {
+            "glob": "**/*",
+            "input": "apps/companion/src/assets",
+            "output": "assets"
+          },
           {
             "glob": "**/*",
             "input": "apps/frontend/src/assets/icons",
