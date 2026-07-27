@@ -91,7 +91,11 @@ body {
 }
 
 .bg-image {
-  background-image: url('assets/bg.jpg');
+  /* The auth card's text is near-white and its only contrast comes from this
+     photo, so the colour is the safety net: if the image is slow, blocked, or
+     missing, the form still has a dark ground instead of white-on-white. */
+  background-color: #1f2a37;
+  background-image: url('assets/bg.webp');
   background-size: cover; /* scale to cover entire container */
   background-position: center; /* keep it centered */
   background-repeat: no-repeat; /* prevent tiling */

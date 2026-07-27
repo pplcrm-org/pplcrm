@@ -4,22 +4,7 @@ import type { LogInstantExportInputType, QueueExportInputType } from '../../../.
 import { ExportsRepo } from './repositories/exports.repo';
 import { StorageService } from '../../lib/storage.service';
 import { logger } from '../../logger';
-
-const ENTITY_LABEL_MAP: Record<string, string> = {
-  persons: 'persons',
-  households: 'households',
-  companies: 'companies',
-  tags: 'tags',
-  issues: 'tags',
-  tasks: 'tasks',
-  lists: 'lists',
-  newsletters: 'marketing_emails',
-  teams: 'teams',
-  users: 'authusers',
-  volunteer: 'volunteer_events',
-  forms: 'web_forms',
-  workflows: 'workflows',
-};
+import { EXPORT_ENTITY_TABLE } from './export-tables';
 
 export class ExportsController {
   private readonly repo = new ExportsRepo();
@@ -58,7 +43,7 @@ export class ExportsController {
           tenant_id: auth.tenant_id,
           user_id: auth.user_id,
           entity: entityKey,
-          table: ENTITY_LABEL_MAP[entityKey] ?? entityKey,
+          table: EXPORT_ENTITY_TABLE[entityKey] ?? entityKey,
           options: input.options ?? {},
           columns,
           file_name: fileName,

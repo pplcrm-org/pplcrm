@@ -37,20 +37,26 @@ export const appRoutes = [
   },
   {
     path: 'f/:slug',
+    // Fallback for the pre-load frame only; PublicPageMeta replaces it with "<form> · <org>" once
+    // the config lands. Without a title here AppTitleStrategy title-cases the URL segment ("F").
+    title: 'Form',
     loadComponent: () => import('./experiences/forms/ui/public-form').then((m) => m.PublicFormComponent),
   },
   {
     path: 'e/:slug',
+    title: 'Event',
     data: { kind: 'event' },
     loadComponent: () => import('./experiences/events/ui/public-event').then((m) => m.PublicEventComponent),
   },
   {
     path: 'v/:slug',
+    title: 'Volunteer',
     data: { kind: 'volunteer' },
     loadComponent: () => import('./experiences/events/ui/public-event').then((m) => m.PublicEventComponent),
   },
   {
     path: 'volunteer',
+    title: 'Volunteer',
     loadComponent: () =>
       import('./experiences/shifts/ui/public-volunteer-list').then((m) => m.PublicVolunteerListComponent),
   },

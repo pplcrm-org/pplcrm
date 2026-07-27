@@ -30,13 +30,17 @@ import { SidebarService } from '../sidebar/sidebar-service';
         (mouseleave)="hovered.set(false)"
         (click)="onClick()"
       >
+        <!--
+          The hover colour is swapped wholesale rather than bound per-class: Angular class
+          bindings cannot apply variant classes (hover:*), so the old
+          [class.hover:text-base-400] binding was silently dead and a non-pinnable star still
+          lit up on hover, advertising an action it would refuse (§2, no misleading affordances).
+        -->
         <pc-icon
           [name]="iconName()"
           [size]="5"
-          class="text-base-400 hover:text-primary transition-opacity"
+          [class]="pinnable() ? 'text-base-content/60 hover:text-primary' : 'text-base-content/60 opacity-40'"
           [class.text-primary]="favourite() && pinnable()"
-          [class.opacity-40]="!pinnable()"
-          [class.hover:text-base-400]="!pinnable()"
         ></pc-icon>
       </button>
     }

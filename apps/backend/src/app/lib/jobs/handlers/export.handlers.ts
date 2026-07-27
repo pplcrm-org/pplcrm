@@ -11,26 +11,11 @@ import { StorageService } from '../../storage.service';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { UserActivityRepo } from '../../user-activity.repo';
 import type { JobPayloadOf } from '../job-payloads';
+import { ALLOWED_EXPORT_TABLES } from '../../../modules/exports/export-tables';
 
 const storageService = new StorageService();
 const mailService = new TransactionalEmailService();
 const userActivityRepo = new UserActivityRepo();
-
-const ALLOWED_EXPORT_TABLES = [
-  'persons',
-  'households',
-  'companies',
-  'forms',
-  'workflows',
-  'teams',
-  'events',
-  'newsletters',
-  'tasks',
-  'tags',
-  'issues',
-  'users',
-  'user_activity',
-];
 
 export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: Kysely<Models>): Promise<void> {
   const exportsRepo = new ExportsRepo();
@@ -39,7 +24,7 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
   try {
     // Make sure we're exporting one of the allowed tables
     const table = payload.table || payload.entity || '';
-    if (!ALLOWED_EXPORT_TABLES.includes(table)) throw new Error('Invalid export entity');
+    if (!ALLOWED_EXPORT_TABLES.has(table)) throw new Error(`Invalid export entity: ${table}`);
 
     // Mark as processing
     await exportsRepo.updateStatus(exportId, tenantId, 'processing');

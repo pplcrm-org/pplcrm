@@ -547,6 +547,7 @@ apps/
             resolve-avatar.pipe.ts
           services/
             date-format.service.ts
+          public-page-meta.ts
           public-pages.ts
         app.config.ts
         app.routes.ts
@@ -555,6 +556,7 @@ apps/
         environment-token.ts
       assets/
         .gitkeep
+        bg.webp
       environments/
         environment.prod.ts
         environment.ts
