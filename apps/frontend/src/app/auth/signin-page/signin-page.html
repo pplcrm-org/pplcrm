@@ -43,8 +43,9 @@
       </div>
     </div>
   </form>
-  <div class="pt-4 text-center">
-    <a routerLink="/signup" class="link link-hover text-neutral-100">SIGN UP</a>
+  <div class="text-neutral-100 pt-4 text-center">
+    New to pplCRM?
+    <a routerLink="/signup" class="link link-hover font-medium">Create an account</a>
   </div>
   } @case ('passkey') {
   <div class="flex flex-col items-center text-center gap-5 py-4">
@@ -157,7 +158,7 @@
         <button type="submit" class="btn btn-primary w-full" [disabled]="isLoading() || rateLimitSecondsLeft() > 0">
           @if (isLoading()) {
           <span class="loading loading-spinner loading-lg text-primary"></span>
-          } @else { SIGN IN }
+          } @else { Sign in }
         </button>
       </div>
     </div>
@@ -181,7 +182,7 @@
         <button type="submit" class="btn btn-primary w-full" [disabled]="isLoading() || rateLimitSecondsLeft() > 0">
           @if (isLoading()) {
           <span class="loading loading-spinner loading-lg text-primary"></span>
-          } @else { VERIFY }
+          } @else { Verify code }
         </button>
       </div>
 
@@ -218,11 +219,4 @@
     </div>
   </div>
   } }
-
-  <div class="text-neutral-200 text-center text-xs pt-2">
-    <span>
-      Copyright © 2024
-      <a href="" rel="" target="_blank" title="PplCRM" class="link link-hover">PplCRM</a>
-    </span>
-  </div>
 </pc-auth-layout>
