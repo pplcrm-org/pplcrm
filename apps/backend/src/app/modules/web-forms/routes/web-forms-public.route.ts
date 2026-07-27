@@ -46,7 +46,7 @@ const SUCCESS_HTML = `
   <title>Submission Successful</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-gradient: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
@@ -86,7 +86,7 @@ const SUCCESS_HTML = `
 
     body {
       font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-weight: 300;
+      font-weight: 400;
       background: var(--bg-gradient);
       color: var(--text-primary);
       min-height: 100vh;
@@ -254,7 +254,7 @@ const errorHtml = (message: string) => `
   <title>Submission Error</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-gradient: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
@@ -294,7 +294,7 @@ const errorHtml = (message: string) => `
 
     body {
       font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-weight: 300;
+      font-weight: 400;
       background: var(--bg-gradient);
       color: var(--text-primary);
       min-height: 100vh;
@@ -651,7 +651,7 @@ const renderFormHtml = (
   <title>${escapeHtml(formName)}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-gradient: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
@@ -699,7 +699,7 @@ const renderFormHtml = (
 
     body {
       font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-weight: 300;
+      font-weight: 400;
       background: var(--bg-gradient);
       color: var(--text-primary);
       min-height: 100vh;
