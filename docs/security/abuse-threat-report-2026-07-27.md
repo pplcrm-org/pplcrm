@@ -3,7 +3,49 @@
 **Date:** 2026-07-27
 **Branch audited:** `fix/pre-launch-hardening` (at commit `7b400cb4`)
 **Scope:** Application-layer abuse by a malicious user. Static source audit, no dynamic testing.
-**Status:** Findings only — no code was changed.
+**Status:** **Remediated 2026-07-27.** Every finding below is fixed, each with a regression
+test asserting the attack is refused. See "Remediation status" immediately below for the
+two findings closed as accepted risks and the one behaviour change worth knowing about.
+The finding text is kept in the past-tense-as-written form so the reasoning survives; treat
+it as a record of what was wrong, not of what is.
+
+---
+
+## 0. Remediation status
+
+| ID     | Fix                                                                                       | Commit |
+| ------ | ----------------------------------------------------------------------------------------- | ------ |
+| C1     | Signed upload handle; client can no longer name a blob                                    | wave 1 |
+| C2     | Deny-by-default role guards + `role` NOT NULL migration                                   | wave 1 |
+| C3     | `activateMockPlan` needs `ALLOW_MOCK_PAYMENTS`; prod refuses to boot without real secrets | wave 1 |
+| C4     | Campaign pin derived server-side, applied to `getAll`/`getOneById`/`update`/`deleteMany`  | wave 1 |
+| C5     | Audience-classified Postmark gate, `tenant_id` attribution, auto-escaping `html` template | wave 2 |
+| H1     | https-only + private-range block + DNS re-resolution at request time                      | wave 2 |
+| H2     | Blob size read from storage, not declared by the client                                   | wave 1 |
+| H3     | Per-assignment and per-destination-number caps on volunteer link sends                    | wave 2 |
+| H4     | Durable limiter; spamcheck moved inside it                                                | wave 2 |
+| H5     | Production refuses to boot without `OAUTH_TOKEN_ENC_KEY`                                  | wave 1 |
+| H6     | 3 pending / 30 per hour per tenant                                                        | wave 2 |
+| M1–M14 | See wave 3 commit message for the per-finding detail                                      | wave 3 |
+
+**Two findings were closed as accepted risks, not fixed:**
+
+- **M7 (enumeration).** `signUp` still tells you an address already has an account, and
+  `checkEmail` still reveals that an address has a passkey. Both are deliberate: silently
+  accepting a duplicate signup is worse for the person who forgot they had an account, and
+  the sign-in page needs the passkey answer to offer the right prompt. Mitigated by adding
+  a per-address limit alongside the per-IP one, so neither can be swept across a list.
+- **M6 (companion codes during a pause).** The report proposed gating verify-start on
+  `sending_paused_at`. That was wrong for this codebase: an existing spec pins that a
+  bounce-tripwire pause must _not_ strand volunteers already in the field. The real abuse
+  was cost (an indefinite SMS drip), so it is bounded by a per-link daily ceiling instead.
+
+**One user-visible behaviour change:** canvass companion tokens are now stored hashed
+(M5), matching delivery routes. The admin UI can no longer re-display an existing
+volunteer link, because the raw value no longer exists anywhere — the action is now
+"Re-issue volunteer link", which mints a fresh one. This is how deliveries already worked.
+
+**Not re-audited:** the areas listed as out of scope in §2 remain out of scope.
 
 ---
 

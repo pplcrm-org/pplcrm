@@ -8,6 +8,38 @@ description: "The anti-abuse layer around outbound email and plan enforcement: t
 Added 2026-07-14 to stop free-tier signups being used for spam. Two subsystems: **send guards**
 (newsletter sending) and **plan gates** (FEATURE_MATRIX enforcement).
 
+## Which pipe is which — read this first
+
+pplCRM has **two** outbound mail pipes and they have **separate** guards. Everything under
+"Send guards" below applies to the SendGrid newsletter/automation pipe ONLY.
+
+| Pipe         | Carries                                                        | Guarded by                             |
+| ------------ | -------------------------------------------------------------- | -------------------------------------- |
+| **SendGrid** | newsletters, automations                                       | `send-guards.ts` — this document       |
+| **Postmark** | transactional mail (confirmations, reminders, invites, alerts) | `lib/mail/transactional-send-guard.ts` |
+
+Until 2026-07-27 the Postmark pipe had **no** guards at all, which made it a usable spam relay
+(audit finding C5 — `docs/security/abuse-threat-report-2026-07-27.md`). It now classifies every
+message by audience and gates accordingly:
+
+- `account` — security mail to a login (password reset, verification, invites). **Never gated**:
+  a suspended tenant's owner still has to be able to sign in and read notices.
+- `staff` — internal notices to the tenant's own users. Gated on suspension, capped 500/h.
+- `contact` — audience-facing mail (event confirmations, form autoresponders, volunteer mail).
+  Gated on suspension AND `sending_paused_at`, capped 200/h.
+
+The default is `contact` — the most restricted — so a new call site that forgets to classify
+itself fails safe. A module that sends exclusively one kind declares it once:
+`new TransactionalEmailService({ defaultAudience: 'account' })`.
+
+**Always pass `tenant_id`.** Postmark round-trips it to the bounce webhook; without it a
+complaint cannot be attributed and no tripwire fires. That is precisely how the C5 abuse stayed
+invisible.
+
+**Build email HTML with the `html` tagged template** (`lib/html-escape.ts`), which escapes
+interpolations by default. These messages carry tenant-controlled strings and go out over the
+platform's own DKIM-signed domain.
+
 ## Send guards — `apps/backend/src/app/modules/newsletters/send-guards.ts`
 
 All constants (caps, rates, messages) live at the top of that file. Enforcement points:

@@ -10,6 +10,18 @@ tenant scope) but has real blind spots. A green lint does not mean a query is te
 still owe the manual checks below. A cross-tenant leak here is a real data breach, so treat every
 `eslint-disable` of this rule as a security decision that needs a reviewer, not a lint annoyance.
 
+**Two whole layers sit outside what this rule (or RLS) can see.** Both produced real findings in
+the 2026-07-27 audit (`docs/security/abuse-threat-report-2026-07-27.md`):
+
+- **Blob storage.** `files.registerFile` took a `storageKey` straight from the client. Every SQL
+  query on the path was correctly tenant-scoped — the row lookup included `where tenant_id` — but
+  the row pointed at another tenant's blob, and the download route dereferenced it. Storage keys
+  are now derived from a signed, tenant-bound handle. When a row holds a pointer to something
+  outside Postgres, tenant-scoping the row proves nothing about the thing it points at.
+- **Campaign scope.** Tenant isolation and campaign isolation are different walls. A query can be
+  perfectly tenant-scoped and still let a campaign-pinned Editor read another campaign's data.
+  See `pplcrm-campaigns` — the pin is server-derived and applied in `BaseRepository`.
+
 ## Two layers, not one: the lint rule AND Postgres RLS (S-1)
 
 Since the S-1 rollout (migration `2026-07-26-s1-row-level-security.ts`) the lint rule is **no
