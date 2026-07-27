@@ -44,7 +44,10 @@ describe('TeamsRouter', () => {
 
     const result = await caller().getById('1');
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' }, '1');
+    expect(spy).toHaveBeenCalledWith(
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
+      '1',
+    );
     expect(result).toEqual(mockTeam);
   });
 
@@ -72,9 +75,13 @@ describe('TeamsRouter', () => {
 
     const result = await caller().update({ id: '1', data: { name: 'Updated Team' } });
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' }, '1', {
-      name: 'Updated Team',
-    });
+    expect(spy).toHaveBeenCalledWith(
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
+      '1',
+      {
+        name: 'Updated Team',
+      },
+    );
     expect(result).toEqual(mockTeam);
   });
 
@@ -83,7 +90,10 @@ describe('TeamsRouter', () => {
 
     const result = await caller().delete('1');
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' }, '1');
+    expect(spy).toHaveBeenCalledWith(
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
+      '1',
+    );
     expect(result).toBe(true);
   });
 
@@ -93,7 +103,10 @@ describe('TeamsRouter', () => {
 
     const result = await caller().getForVolunteer('2');
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' }, '2');
+    expect(spy).toHaveBeenCalledWith(
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
+      '2',
+    );
     expect(result).toEqual(mockTeams);
   });
 
@@ -103,7 +116,10 @@ describe('TeamsRouter', () => {
 
     const result = await caller().getAssignedLists('1');
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' }, '1');
+    expect(spy).toHaveBeenCalledWith(
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
+      '1',
+    );
     expect(result).toEqual(mockLists);
   });
 

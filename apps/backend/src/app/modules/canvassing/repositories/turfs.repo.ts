@@ -18,7 +18,8 @@ export interface TurfRow {
   door_count: number;
   team_id: string | null;
   team_name: string | null;
-  token: string | null;
+  /** Whether an active companion link exists. The raw token is never stored (M5). */
+  has_link: boolean;
 }
 
 export class TurfsRepo extends BaseRepository<'turfs'> {
@@ -52,7 +53,7 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
         'turfs.updated_at as updated_at',
         'ta.team_id as team_id',
         'teams.name as team_name',
-        'ta.token as token',
+        'ta.token_hash as token_hash',
       ])
       .execute();
 
@@ -72,7 +73,10 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       door_count: counts.get(String(r.id)) ?? 0,
       team_id: r.team_id == null ? null : String(r.team_id),
       team_name: r.team_name ? String(r.team_name) : null,
-      token: r.token ? String(r.token) : null,
+      // The raw token is no longer stored (M5), so the list reports only WHETHER a link
+      // exists — enough to label the action, without handing the credential to every
+      // client that can read the turf list.
+      has_link: r.token_hash != null,
     }));
   }
 

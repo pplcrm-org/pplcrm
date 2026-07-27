@@ -149,10 +149,12 @@
               <pc-row-actions [label]="'Actions for ' + t.name">
                 <li>
                   <button type="button" (click)="assign(t)">
-                    {{ t.token ? 'Change volunteer' : 'Assign volunteer' }}
+                    {{ t.has_link ? 'Change volunteer' : 'Assign volunteer' }}
                   </button>
                 </li>
-                <li><button type="button" (click)="copyLink(t)">Copy volunteer link</button></li>
+                @if (t.has_link) {
+                <li><button type="button" (click)="copyLink(t)">Re-issue volunteer link</button></li>
+                }
                 <li><button type="button" (click)="refresh(t)">Refresh from list</button></li>
                 <li>
                   <button type="button" class="text-error" (click)="retire(t)">Retire turf</button>

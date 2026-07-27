@@ -34,7 +34,13 @@ describe('PersonConnectionsRouter', () => {
 
     const result = await caller().getForPerson('2');
 
-    expect(spy).toHaveBeenCalledWith('2', { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' });
+    expect(spy).toHaveBeenCalledWith('2', {
+      tenant_id: '1',
+      user_id: '1',
+      session_id: 's1',
+      role: 'owner',
+      campaign_id: null,
+    });
     expect(result).toEqual(mockConnections);
   });
 
@@ -47,7 +53,13 @@ describe('PersonConnectionsRouter', () => {
 
     const result = await caller().countForPerson('2');
 
-    expect(spy).toHaveBeenCalledWith('2', { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' });
+    expect(spy).toHaveBeenCalledWith('2', {
+      tenant_id: '1',
+      user_id: '1',
+      session_id: 's1',
+      role: 'owner',
+      campaign_id: null,
+    });
     expect(result).toBe(3);
   });
 
@@ -65,7 +77,7 @@ describe('PersonConnectionsRouter', () => {
     expect(spy).toHaveBeenCalledWith(
       '1',
       { to_person_id: '2', relation_type: 'colleague', is_mutual: false },
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
     );
     expect(result).toEqual(mockConnection);
   });
@@ -89,7 +101,13 @@ describe('PersonConnectionsRouter', () => {
 
     const result = await caller().remove('5');
 
-    expect(spy).toHaveBeenCalledWith('5', { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' });
+    expect(spy).toHaveBeenCalledWith('5', {
+      tenant_id: '1',
+      user_id: '1',
+      session_id: 's1',
+      role: 'owner',
+      campaign_id: null,
+    });
     expect(result).toEqual({ success: true });
   });
 

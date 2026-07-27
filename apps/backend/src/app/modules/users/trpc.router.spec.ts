@@ -32,7 +32,13 @@ describe('UsersRouter', () => {
 
     const result = await caller().getUsers();
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' });
+    expect(spy).toHaveBeenCalledWith({
+      tenant_id: '1',
+      user_id: '1',
+      session_id: 's1',
+      role: 'owner',
+      campaign_id: null,
+    });
     expect(result).toEqual(mockUsers);
   });
 
@@ -42,7 +48,10 @@ describe('UsersRouter', () => {
 
     const result = await caller().getProfileById('2');
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' }, '2');
+    expect(spy).toHaveBeenCalledWith(
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
+      '2',
+    );
     expect(result).toEqual(mockUser);
   });
 
@@ -56,9 +65,13 @@ describe('UsersRouter', () => {
 
     const result = await caller().updateUserProfile({ id: '2', data: { first_name: 'Updated' } });
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' }, '2', {
-      first_name: 'Updated',
-    });
+    expect(spy).toHaveBeenCalledWith(
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
+      '2',
+      {
+        first_name: 'Updated',
+      },
+    );
     expect(result).toEqual(mockUpdated);
   });
 

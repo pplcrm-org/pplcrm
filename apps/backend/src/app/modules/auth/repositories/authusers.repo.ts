@@ -184,9 +184,12 @@ export class AuthUsersRepo extends BaseRepository<'authusers'> {
     const options = {
       columns: ['password_reset_code_created_at'] as (keyof Models['authusers'])[],
     };
+    // executeTakeFirst, NOT ...OrThrow (finding M13): every caller already handles the
+    // "no such code" case with a clean BadRequest/PreconditionFailed. Throwing here fired
+    // first and surfaced an unknown verification code as a 500.
     return this.getSelectWithColumns(options, trx)
       .where('password_reset_code', '=', hashToken(code))
-      .executeTakeFirstOrThrow();
+      .executeTakeFirst();
   }
 
   public updatePassword(password: string, code: string, trx?: Transaction<Models>) {

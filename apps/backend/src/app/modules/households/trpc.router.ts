@@ -1,4 +1,10 @@
-import { UpdateHouseholdsObj, getAllOptions, idSchema, MAX_BULK_IDS } from '../../../../../../libs/common/src';
+import {
+  UpdateHouseholdsObj,
+  getAllOptions,
+  idSchema,
+  MAX_BULK_IDS,
+  MAX_IMPORT_ROWS,
+} from '../../../../../../libs/common/src';
 
 import { z } from 'zod';
 
@@ -20,20 +26,22 @@ export const HouseholdsRouter = router({
   import: authProcedure
     .input(
       z.object({
-        rows: z.array(
-          z.object({
-            street_num: z.string().trim().max(50).optional().nullable(),
-            apt: z.string().trim().max(50).optional().nullable(),
-            street1: z.string().trim().max(200).optional().nullable(),
-            street2: z.string().trim().max(200).optional().nullable(),
-            city: z.string().trim().max(100).optional().nullable(),
-            state: z.string().trim().max(100).optional().nullable(),
-            zip: z.string().trim().max(20).optional().nullable(),
-            country: z.string().trim().max(100).optional().nullable(),
-            home_phone: z.string().trim().max(50).optional().nullable(),
-            notes: z.string().trim().max(10000).optional().nullable(),
-          }),
-        ),
+        rows: z
+          .array(
+            z.object({
+              street_num: z.string().trim().max(50).optional().nullable(),
+              apt: z.string().trim().max(50).optional().nullable(),
+              street1: z.string().trim().max(200).optional().nullable(),
+              street2: z.string().trim().max(200).optional().nullable(),
+              city: z.string().trim().max(100).optional().nullable(),
+              state: z.string().trim().max(100).optional().nullable(),
+              zip: z.string().trim().max(20).optional().nullable(),
+              country: z.string().trim().max(100).optional().nullable(),
+              home_phone: z.string().trim().max(50).optional().nullable(),
+              notes: z.string().trim().max(10000).optional().nullable(),
+            }),
+          )
+          .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
         tags: z.array(z.string().trim().min(1).max(50)).optional(),
         skipped: z.number().int().nonnegative().optional(),
         file_name: z.string().trim().min(1).max(255).optional(),

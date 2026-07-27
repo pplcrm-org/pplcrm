@@ -5,6 +5,7 @@ import { ExportsRepo } from './repositories/exports.repo';
 import { StorageService } from '../../lib/storage.service';
 import { logger } from '../../logger';
 import { EXPORT_ENTITY_TABLE } from './export-tables';
+import { isPrivilegedRole } from '../../../../../../libs/common/src';
 import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
 
 /** Exports a tenant may have waiting at once. Matches the worker's per-tenant in-flight
@@ -175,6 +176,13 @@ export class ExportsController {
     const row = await this.repo.getById(id, auth.tenant_id);
     if (!row) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Export not found' });
+    }
+
+    // SECURITY (M14): scoped by tenant but not by owner, so any editor could delete a
+    // colleague's queued or finished export. An export is the requester's — it contains
+    // the data they chose to extract, under their name.
+    if (row.user_id != null && String(row.user_id) !== String(auth.user_id) && !isPrivilegedRole(auth.role)) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'You can only delete your own exports.' });
     }
 
     await this.repo.delete(id, auth.tenant_id);

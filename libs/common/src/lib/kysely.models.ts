@@ -421,7 +421,9 @@ interface TurfHouseholds extends JunctionRecordType {
 interface TurfAssignments extends RecordType {
   turf_id: string;
   team_id: string | null;
-  token: string;
+  /** SHA-256 of the bearer token. The raw value is never stored — see migration
+   *  2026-07-27-z-turf-assignment-token-hash. */
+  token_hash: string;
   status: string;
   assigned_at: Timestamp;
   /** The person this link belongs to — the companion access layer verifies against them. */

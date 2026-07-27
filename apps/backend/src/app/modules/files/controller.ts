@@ -8,6 +8,7 @@ import { ForbiddenError } from '../../errors/app-errors';
 import { getPlanLimits } from '../billing/usage-limits';
 import { verifyUploadHandle } from '../../lib/signed-download';
 import { sanitizeFilename } from '../../lib/storage-key';
+import { assertUploadAllowed, safeMimeType } from '../../lib/upload-content-types';
 
 const LARGEST_FILES_LIMIT = 5;
 
@@ -66,6 +67,10 @@ export class FilesController extends BaseController<'files', FilesRepo> {
     // downstream is tenant-scoped, but the blob it dereferences would not be.
     const storageKey = verifyUploadHandle(input.uploadHandle, auth.tenant_id);
 
+    // Re-checked here as well as at getUploadUrl (finding M11): registerFile is a separate
+    // call, so the filename recorded on the row is not necessarily the one that was vetted.
+    assertUploadAllowed(input.filename, input.mimeType);
+
     if (input.sha256Hex) {
       const existing = await this.getRepo()
         .db.selectFrom('files')
@@ -121,7 +126,9 @@ export class FilesController extends BaseController<'files', FilesRepo> {
     return this.add({
       tenant_id: auth.tenant_id,
       filename: sanitizeFilename(input.filename),
-      mime_type: input.mimeType || null,
+      // Never store a client-declared type verbatim — the download route echoes it back as
+      // the response Content-Type. Unrecognised types become application/octet-stream.
+      mime_type: safeMimeType(input.mimeType),
       size_bytes: sizeBytes || null,
       storage_key: storageKey,
       sha256_hex: input.sha256Hex || null,

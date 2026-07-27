@@ -79,10 +79,25 @@ export const MAX_PAGE_SIZE = 5000;
  */
 export const MAX_BULK_IDS = 2000;
 
+/**
+ * Rows accepted in one CSV/bulk import call (finding M2).
+ *
+ * Imports were bounded only by Fastify's default 1 MiB body limit — an accident, not a
+ * decision, so raising that limit for any unrelated reason would silently have opened an
+ * unbounded import. This states the real intent; the UI chunks larger files.
+ */
+export const MAX_IMPORT_ROWS = 5000;
+
 /** A row index/count: a non-negative integer, never a float or a negative that reaches Postgres. */
 const rowCountSchema = z.number().int().min(0).max(MAX_PAGE_SIZE);
-/** An offset can legitimately exceed one page's worth of rows, so it is bounded separately. */
-const rowOffsetSchema = z.number().int().min(0);
+/**
+ * An offset can legitimately exceed one page's worth of rows, so it is bounded separately —
+ * but it is still bounded (finding M13). Unbounded, `offset: 999999999` reached Postgres as
+ * a deep OFFSET scan the planner must walk row by row. Ten million rows is far past any real
+ * tenant's grid and still cheap to refuse.
+ */
+const MAX_ROW_OFFSET = 10_000_000;
+const rowOffsetSchema = z.number().int().min(0).max(MAX_ROW_OFFSET);
 
 export const getAllOptions = z
   .object({

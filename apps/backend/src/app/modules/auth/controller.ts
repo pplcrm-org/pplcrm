@@ -49,6 +49,7 @@ import { getPlanLimits } from '../billing/usage-limits';
 import { isDisposableEmail } from '../../lib/mail/disposable-email-domains';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { hashPassword, verifyPasswordConstantTime } from '../../lib/password-hash';
+import { assertSignInAttemptsRemaining, clearSignInAttempts, recordFailedSignIn } from '../../lib/signin-attempts';
 import { StorageService } from '../../lib/storage.service';
 import { tombstoneAuthUser } from '../../lib/tombstone-user';
 import { generateToken, hashToken } from '../../lib/token-hash';
@@ -63,6 +64,10 @@ import { seedDemoData } from '../demo/demo-seed';
 import { AuthUsersRepo } from './repositories/authusers.repo';
 import { SessionsRepo } from './repositories/sessions.repo';
 import { TenantsRepo } from './repositories/tenants.repo';
+
+/** How long a scheduled-deletion cancellation link stays valid. Comfortably longer than
+ *  the deletion grace period, so the link never dies before the window it belongs to. */
+const DELETION_CANCEL_TOKEN_TTL_MS = 45 * 24 * 60 * 60 * 1000;
 
 export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
   private static readonly AVATAR_ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -412,10 +417,19 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
   }
 
   public async cancelTenantDeletionByToken(tenantId: string, token: string) {
-    const expectedToken = this.makeDeletionCancelToken(tenantId);
+    const [expiresMs, mac] = token.split('.');
+    if (!expiresMs || !mac || !/^\d+$/.test(expiresMs)) {
+      throw new BadRequestError('Invalid or expired cancellation link.');
+    }
+    // Verify the signature over the SAME expiry the caller presented, then check that
+    // expiry — so a tampered timestamp fails the MAC and a genuine but stale one fails here.
+    const expectedToken = this.makeDeletionCancelToken(tenantId, new Date(Number(expiresMs)));
     const expected = Buffer.from(expectedToken);
     const provided = Buffer.from(token.length === expected.length ? token : expectedToken); // same length for safe compare
     if (token.length !== expectedToken.length || !timingSafeEqual(expected, provided)) {
+      throw new BadRequestError('Invalid or expired cancellation link.');
+    }
+    if (Number(expiresMs) < Date.now()) {
       throw new BadRequestError('Invalid or expired cancellation link.');
     }
 
@@ -908,8 +922,20 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     return this.sanitizeUser({ ...created, last_name: input.last_name });
   }
 
-  public makeDeletionCancelToken(tenantId: string): string {
-    return createHmac('sha256', env.sharedSecret).update(`cancel-deletion:${tenantId}`).digest('hex');
+  /**
+   * Mint the "undo the scheduled deletion" link token.
+   *
+   * SECURITY (M5): this used to be a bare HMAC of the tenant id — deterministic and
+   * therefore PERMANENT. One leaked cancellation email (a forwarded message, a shared
+   * inbox, a mail archive) was a capability to un-delete that account forever, and the
+   * procedure that consumes it is unauthenticated. The expiry is now inside the signed
+   * payload, so the link stops working on its own.
+   */
+  public makeDeletionCancelToken(tenantId: string, expiresAt?: Date): string {
+    const expiry = expiresAt ?? new Date(Date.now() + DELETION_CANCEL_TOKEN_TTL_MS);
+    const expiresMs = String(expiry.getTime());
+    const mac = createHmac('sha256', env.sharedSecret).update(`cancel-deletion:${tenantId}:${expiresMs}`).digest('hex');
+    return `${expiresMs}.${mac}`;
   }
 
   public async pauseTenant(auth: IAuthKeyPayload) {
@@ -1312,7 +1338,18 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
   }
 
   public async signIn(input: signInInputType, ipAddress?: string, userAgent?: string) {
-    const user = await this.getUserByEmailOrNull(input.email.toLowerCase());
+    const email = input.email.toLowerCase();
+
+    // SECURITY (M1): the only sign-in limit was per-IP, so a botnet spreading attempts
+    // across addresses faced no ceiling at all against one known email. This counter is
+    // keyed on the ACCOUNT and is durable (shared across replicas, survives deploys).
+    //
+    // The check runs before the lookup and the message is the generic sign-in error, so
+    // "locked" and "wrong password" stay indistinguishable — a lockout that announces
+    // itself is an enumeration oracle in its own right.
+    const priorFailures = await assertSignInAttemptsRemaining(email);
+
+    const user = await this.getUserByEmailOrNull(email);
 
     // Always run a password verification — against a dummy hash when the account does not exist —
     // so a non-existent email and a wrong password cost the same and fail with the same 401. This
@@ -1320,8 +1357,13 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     // returned faster (no argon2), distinguishing registered emails despite the generic message.
     const valid = await verifyPasswordConstantTime(input.password, user?.password);
     if (!user || !valid) {
+      await recordFailedSignIn(email);
       throw new UnauthorizedError();
     }
+
+    // A correct password clears the counter, so an ordinary user who mistypes a few times
+    // then succeeds is never left locked out.
+    await clearSignInAttempts(email, priorFailures);
 
     // Checked before the verified/deletion branches: a deactivated account must not receive
     // "verify your email" guidance, and signing in must NOT auto-restore it (that shortcut is
@@ -1983,7 +2025,8 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         // Email change confirmation: restore role and clear pending state.
         // Invalidate all existing sessions — an old-email session token
         // should not remain valid after the address has been changed.
-        updateData['role'] = user.previous_role;
+        // previous_role is nullable; never restore a null role (see DEFAULT_AUTH_ROLE).
+        updateData['role'] = isAuthRole(user.previous_role) ? user.previous_role : DEFAULT_AUTH_ROLE;
         updateData['previous_email'] = null;
         updateData['previous_role'] = null;
         await trx.deleteFrom('sessions').where('user_id', '=', user.id).execute();

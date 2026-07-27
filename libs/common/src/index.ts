@@ -172,6 +172,7 @@ export {
   getAllOptions,
   MAX_PAGE_SIZE,
   MAX_BULK_IDS,
+  MAX_IMPORT_ROWS,
   exportCsvInput,
   exportCsvResponse,
   queueExportInput,

@@ -76,7 +76,8 @@ export interface TurfListItem {
   conversations: number;
   team_id: string | null;
   team_name: string | null;
-  token: string | null;
+  /** Whether an active companion link exists. The raw token is never returned (M5). */
+  has_link: boolean;
   last_activity_at: string | null;
 }
 
@@ -136,6 +137,10 @@ const IN_FIELD_WINDOW_MS = 6 * 60 * 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const COMPANION_SOURCE = 'companion';
 
+/** Hard ceiling on a canvass companion link, matching the deliveries share-token TTL.
+ *  Re-assigning mints a fresh link, so this is not a limit on a real campaign. */
+const MAX_ASSIGNMENT_TTL_DAYS = 30;
+
 export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   private readonly turfHouseholds = new TurfHouseholdsRepo();
   private readonly assignments = new TurfAssignmentsRepo();
@@ -179,7 +184,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         conversations: p?.conversations ?? 0,
         team_id: r.team_id,
         team_name: r.team_name,
-        token: r.token,
+        has_link: r.has_link,
         last_activity_at: lastAt ? lastAt.toISOString() : null,
       };
     });
@@ -465,17 +470,27 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
    * Link expiry = the campaign's end date when one exists (spec §2: "end of the
    * canvass window"), otherwise no hard expiry (revocation still applies).
    */
-  private async assignmentExpiry(tenant_id: string, campaign_id: string): Promise<Date | null> {
-    if (!campaign_id) return null;
+  /**
+   * When the volunteer's capability link stops working.
+   *
+   * SECURITY (M5): this returned null — meaning "never expires" — whenever the campaign
+   * had no end date, which is the common case for an ongoing office context. A bearer
+   * token that never expires is a permanent credential sitting in someone's SMS history.
+   * A campaign end date still wins when it is sooner; otherwise the link gets a ceiling.
+   */
+  private async assignmentExpiry(tenant_id: string, campaign_id: string): Promise<Date> {
+    const ceiling = new Date(Date.now() + MAX_ASSIGNMENT_TTL_DAYS * 24 * 60 * 60 * 1000);
+    if (!campaign_id) return ceiling;
     const campaign = await this.knocks.db
       .selectFrom('campaigns')
       .select(['enddate'])
       .where('tenant_id', '=', tenant_id)
       .where('id', '=', campaign_id)
       .executeTakeFirst();
-    if (!campaign?.enddate) return null;
+    if (!campaign?.enddate) return ceiling;
     const end = new Date(`${campaign.enddate}T23:59:59`);
-    return Number.isNaN(end.getTime()) || end <= new Date() ? null : end;
+    if (Number.isNaN(end.getTime()) || end <= new Date()) return ceiling;
+    return end < ceiling ? end : ceiling;
   }
 
   public async retireTurf(auth: IAuthKeyPayload, turfId: string): Promise<void> {

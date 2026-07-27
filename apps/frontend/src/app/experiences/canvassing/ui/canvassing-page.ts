@@ -259,12 +259,14 @@ export class CanvassingPage implements OnInit {
     this.assignTarget.set(t);
   }
 
-  /** An existing link can be re-copied; a missing one needs an assignment first. */
+  /**
+   * Re-issue the volunteer link.
+   *
+   * The raw token is no longer stored server-side (it is hashed, like delivery routes),
+   * so an existing link cannot be re-displayed — re-assigning mints a fresh one and
+   * copies it. Same rule the deliveries page already follows.
+   */
   protected async copyLink(t: TurfListItem): Promise<void> {
-    if (t.token) {
-      await this.copyCompanionLink(t.token);
-      return;
-    }
     this.assign(t);
   }
 

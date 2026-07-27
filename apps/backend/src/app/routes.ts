@@ -25,6 +25,20 @@ import companionPublicRoute from './modules/companion-access/routes/companion-pu
 // beats every 5 minutes; 20 = 3-4 missed cycles plus slack for retry backoff).
 const WORKER_HEARTBEAT_STALE_MS = 20 * 60 * 1000;
 
+/** How long a /healthz result is reused. Short enough to stay a live readiness signal,
+ *  long enough that probe traffic cannot drive DB load (finding M3). */
+const HEALTH_CACHE_MS = 5000;
+let healthCache: { ok: boolean; at: number } | null = null;
+
+function readHealthCache(): boolean | null {
+  if (!healthCache || Date.now() - healthCache.at > HEALTH_CACHE_MS) return null;
+  return healthCache.ok;
+}
+
+function writeHealthCache(ok: boolean): void {
+  healthCache = { ok, at: Date.now() };
+}
+
 export const routes: FastifyPluginCallback = (fastify, _opts, done) => {
   // --- Public REST routes (No Auth required) ---
 
@@ -88,10 +102,19 @@ export const routes: FastifyPluginCallback = (fastify, _opts, done) => {
   // Readiness probe — verifies Postgres is reachable so an orchestrator can gate traffic/restarts.
   // Returns 503 (not 200) when the DB is down; body is intentionally minimal (no error details).
   fastify.get('/healthz', async (_req, res) => {
+    // Result cached briefly (finding M3): this is unauthenticated and was one DB round-trip
+    // per request, so anyone could turn it into a query generator. A few seconds of staleness
+    // is irrelevant to an orchestrator probing every 10-30s.
+    const cached = readHealthCache();
+    if (cached !== null) {
+      return cached ? res.send({ status: 'ok' }) : res.code(503).send({ status: 'unavailable' });
+    }
     try {
       await sql`select 1`.execute(BaseRepository.dbInstance);
+      writeHealthCache(true);
       return res.send({ status: 'ok' });
     } catch {
+      writeHealthCache(false);
       return res.code(503).send({ status: 'unavailable' });
     }
   });

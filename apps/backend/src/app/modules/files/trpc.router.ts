@@ -9,6 +9,7 @@ import {
   MAX_MIME_TYPE_LENGTH,
   sanitizeFilename,
 } from '../../lib/storage-key';
+import { assertUploadAllowed } from '../../lib/upload-content-types';
 import crypto from 'crypto';
 
 const files = new FilesController();
@@ -35,6 +36,8 @@ export const FilesRouter = router({
       }),
     )
     .query(async ({ input, ctx }) => {
+      // Reject the upload before minting a SAS, so a refused type never reaches storage.
+      assertUploadAllowed(input.filename, input.mimeType);
       const fileUUID = crypto.randomUUID();
       // sanitizeFilename strips path separators — the raw filename is interpolated
       // into the blob key, and `../` in it would escape the tenant prefix.

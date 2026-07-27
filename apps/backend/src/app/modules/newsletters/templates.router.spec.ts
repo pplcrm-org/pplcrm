@@ -15,7 +15,7 @@ function mockAuthDb() {
   } as any);
 }
 
-const auth = { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' };
+const auth = { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null };
 
 const templateRow = {
   id: '5',

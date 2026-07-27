@@ -2,6 +2,9 @@ import { randomInt } from 'node:crypto';
 
 import type { Transaction } from 'kysely';
 
+import { hashVerificationCode, verificationCodeMatches } from './verification-code-hash';
+import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
+
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import type {
   CompanionAccessPayload,
@@ -35,6 +38,10 @@ const VERIFY_START_LIMIT = 3; // sends per token per window
 const VERIFY_START_WINDOW_MS = 15 * 60 * 1000;
 const VERIFY_CONFIRM_LIMIT = 15; // confirms per token per window (attempt lockout is per code)
 const VERIFY_CONFIRM_WINDOW_MS = 15 * 60 * 1000;
+/** Ceiling on code sends per volunteer link per day — bounds the indefinite SMS drip the
+ *  per-window limit alone allowed (finding M6). Far above any real "resend it" loop. */
+const VERIFY_SENDS_PER_DAY = 20;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** What a capability link resolves to, whichever app it belongs to. */
 interface ResolvedLink {
@@ -129,6 +136,21 @@ export class CompanionAccessController {
       throw new ForbiddenError('This organization is temporarily unavailable. Please contact your organizer.');
     }
 
+    // NOT gated on sending_paused_at, deliberately: a hard-bounce pause halts newsletters
+    // but must not strand volunteers already in the field — only a full suspension (abuse
+    // review) closes this path. See the spec that pins this behaviour.
+    //
+    // The abuse the pause would otherwise have covered (finding M6) is cost, not content:
+    // whoever holds a link could drip 3 SMS every 15 minutes indefinitely, ~288/day, on the
+    // platform's Twilio account. A per-token daily ceiling bounds that without touching the
+    // legitimate "I didn't get the code, resend" loop.
+    await checkDurableRateLimit(
+      `companionVerifyStart:day:${link.tenant_id}:${link.volunteer_person_id}`,
+      VERIFY_SENDS_PER_DAY,
+      DAY_MS,
+      'Too many verification codes have been sent for this link today. Contact your organizer.',
+    );
+
     const person = await this.personContacts(link.tenant_id, link.volunteer_person_id);
     if (!person) throw new NotFoundError('This link is not active.');
 
@@ -148,7 +170,7 @@ export class CompanionAccessController {
         {
           tenant_id: link.tenant_id,
           id: volunteer.id,
-          code_hash: hashToken(code),
+          code_hash: hashVerificationCode(volunteer.id, code),
           expires_at: new Date(Date.now() + CODE_TTL_MS),
           channel,
         },
@@ -207,7 +229,8 @@ export class CompanionAccessController {
       await this.volunteersRepo.clearVerifyCode({ tenant_id: link.tenant_id, id: volunteer.id });
       throw new BadRequestError('Too many attempts. Request a new code.');
     }
-    if (hashToken(code) !== volunteer.verify_code_hash) {
+    // Constant-time, and keyed+bound to this volunteer — see verification-code-hash.
+    if (!verificationCodeMatches(volunteer.id, code, volunteer.verify_code_hash)) {
       await this.volunteersRepo.bumpVerifyAttempts({ tenant_id: link.tenant_id, id: volunteer.id });
       throw new BadRequestError("That code didn't match. Check it and try again.");
     }

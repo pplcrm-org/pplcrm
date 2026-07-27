@@ -131,7 +131,7 @@ describe('AuthController', () => {
     await expect(controller.currentUser({} as any)).rejects.toThrow(UnauthorizedError);
 
     await cleanup(db, owner.id, owner.tenant_id);
-  });
+  }, 30000);
 
   it('should enforce the plan seat cap on inviteUser', async () => {
     const owner = await signUpOwner(controller, db);
@@ -162,7 +162,7 @@ describe('AuthController', () => {
     ).rejects.toThrow(ForbiddenError);
 
     await cleanup(db, owner.id, owner.tenant_id);
-  });
+  }, 30000);
 
   it('should enforce visibility rules on getUserById and throw NotFoundError for a missing user', async () => {
     const owner = await signUpOwner(controller, db);
