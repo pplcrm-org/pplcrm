@@ -7,7 +7,7 @@
     </div>
 
     @if (state()!.message) {
-    <p class="pt-4 pb-6 font-light whitespace-pre-line">{{ state()!.message }}</p>
+    <p class="pt-4 pb-6 whitespace-pre-line">{{ state()!.message }}</p>
     } @if (state()!.type === 'prompt') {
     <input
       [placeholder]="state()!.inputPlaceholder || ''"

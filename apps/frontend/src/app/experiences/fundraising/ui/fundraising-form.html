@@ -247,7 +247,7 @@
                   @if (!selectedLists().length) {
                   <span class="text-[11px] text-base-content/50">No lists selected.</span>
                   } @else { @for (listId of selectedLists(); track listId) {
-                  <pc-tagitem [name]="listName(listId)" (close)="removeList(listId)"></pc-tagitem>
+                  <pc-tagitem [name]="listName(listId)" (tagClosed)="removeList(listId)"></pc-tagitem>
                   } }
                 </div>
                 }

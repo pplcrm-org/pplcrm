@@ -322,7 +322,7 @@
                       <pc-status-badge [type]="getShiftStatusType(shift.status)"> {{ shift.status }} </pc-status-badge>
                     </td>
                     <td class="font-mono">{{ shift.hours_worked || '--' }}</td>
-                    <td class="font-light">{{ shift.notes || '--' }}</td>
+                    <td class="">{{ shift.notes || '--' }}</td>
                   </tr>
                   }
                 </tbody>
@@ -461,7 +461,7 @@
                       </a>
                     </td>
                     <td>{{ reg.start_time | date:'mediumDate' }}</td>
-                    <td class="font-light">{{ reg.ticket_type_name || '—' }}</td>
+                    <td class="">{{ reg.ticket_type_name || '—' }}</td>
                     <td>
                       <pc-status-badge [type]="getEventStatusType(reg.status)">{{ reg.status }}</pc-status-badge>
                     </td>

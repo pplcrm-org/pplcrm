@@ -94,7 +94,7 @@
             } @else {
             <div
               (click)="startEditingDetails()"
-              class="prose max-w-none text-sm text-base-content/80 font-light leading-relaxed cursor-pointer hover:bg-base-200/50 p-3 rounded-lg min-h-[60px] border border-transparent hover:border-base-300 transition-all"
+              class="prose max-w-none text-sm text-base-content/80 leading-relaxed cursor-pointer hover:bg-base-200/50 p-3 rounded-lg min-h-[60px] border border-transparent hover:border-base-300 transition-all"
               [innerHTML]="(t.details || defaultDetails) | sanitizeHtml"
             ></div>
             }
@@ -215,7 +215,7 @@
               </div>
 
               <div
-                class="chat-bubble text-sm font-light shadow-sm"
+                class="chat-bubble text-sm shadow-sm"
                 [class.chat-bubble-primary]="(c.author_id || c.createdby_id) === myUserId()"
                 [innerHTML]="c.comment | mentionify:users() | sanitizeHtml"
               ></div>
@@ -237,7 +237,7 @@
               #taskComposer
               [value]="newComment()"
               placeholder="Write a comment... (use @ to mention colleagues, Cmd+Enter to submit)"
-              class="textarea textarea-bordered w-full text-sm font-light min-h-[80px]"
+              class="textarea textarea-bordered w-full text-sm min-h-[80px]"
               (input)="onComposerInput($event)"
               (keydown)="onComposerKeydown($event)"
               (click)="onComposerClick($event)"

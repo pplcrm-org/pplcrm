@@ -26,13 +26,11 @@ function randomHexColor(): string {
   template: `<pc-modal-shell #dlg title="New issue" icon="add-issue" [boxClass]="'max-w-md'" [dismissible]="false">
     <form id="add-issue-form" (submit)="add($event)" class="flex flex-col gap-4" novalidate>
       <div class="flex flex-col gap-2">
-        <label i18n class="label text-sm font-light">
-          Enter a unique issue name (and optionally, give it a description)
-        </label>
+        <label i18n class="label text-sm"> Enter a unique issue name (and optionally, give it a description) </label>
         <pc-input placeholder="Issue Name" i18n-placeholder [formField]="form.name"></pc-input>
         <pc-input placeholder="Optional description" i18n-placeholder [formField]="form.description"></pc-input>
         <div class="flex items-center gap-2">
-          <label i18n class="label-text font-light text-sm">Colour</label>
+          <label i18n class="label-text text-sm">Colour</label>
           <input
             class="input input-bordered input-sm w-24"
             type="color"

@@ -14,7 +14,7 @@
       <pc-icon [size]="6" name="check-circle" />
     </div>
     <div class="space-y-2">
-      <h2 class="text-xl font-bold tracking-tight text-neutral-100">Deletion Cancelled</h2>
+      <h2 class="text-xl font-bold tracking-tight text-neutral-100">Deletion cancelled</h2>
       <p class="text-sm text-neutral-300">
         Your account deletion has been cancelled. All your data is safe and your account remains active.
       </p>
@@ -27,7 +27,7 @@
       <pc-icon [size]="6" name="exclamation-circle" />
     </div>
     <div class="space-y-2">
-      <h2 class="text-xl font-bold tracking-tight text-neutral-100">Unable to Cancel</h2>
+      <h2 class="text-xl font-bold tracking-tight text-neutral-100">Unable to cancel</h2>
       <p class="text-sm text-neutral-300">{{ errorMessage() }}</p>
     </div>
     <a class="btn btn-primary w-full" routerLink="/signin">Go to Sign In</a>
@@ -41,7 +41,7 @@
         <pc-icon [size]="5" name="exclamation-triangle" />
       </div>
       <div>
-        <h2 class="text-lg font-bold tracking-tight text-neutral-100">Account Scheduled for Deletion</h2>
+        <h2 class="text-lg font-bold tracking-tight text-neutral-100">Account scheduled for deletion</h2>
         <p class="text-xs text-white">
           @if (deletionDate) { Deletion date: {{ deletionDate | date : 'medium' }} } @else { Deletion is pending. }
         </p>

@@ -171,10 +171,7 @@
             @if (notifications().length === 0) {
             <div class="flex flex-col items-center justify-center py-8 text-base-content/60">
               <pc-icon name="bell" [size]="6" class="opacity-20 mb-2"></pc-icon>
-              <p
-                class="text-xs font-light"
-                i18n="Navbar|Message when there are no notifications@@navbar.notifications.empty"
-              >
+              <p class="text-xs" i18n="Navbar|Message when there are no notifications@@navbar.notifications.empty">
                 All caught up!
               </p>
             </div>
@@ -268,7 +265,7 @@
         popover
         [id]="profileMenuId"
         [style.position-anchor]="profileMenuAnchor"
-        class="dropdown dropdown-end pc-dropdown-sheet menu menu-md bg-base-100 sm:rounded-box sm:mt-3 sm:w-44 cursor-pointer font-light shadow px-0 mx-0"
+        class="dropdown dropdown-end pc-dropdown-sheet menu menu-md bg-base-100 sm:rounded-box sm:mt-3 sm:w-44 cursor-pointer shadow px-0 mx-0"
         (click)="closeSheet($event)"
       >
         <li class="hover:text-primary">

@@ -55,13 +55,13 @@
         @if (email?.subject) {
         <span class="truncate flex-1">{{ email.subject }}</span>
         } @else {
-        <span class="truncate flex-1 italic font-light text-base-content/40">No Subject</span>
+        <span class="truncate flex-1 italic text-base-content/40">No Subject</span>
         } @if (email.has_attachment) {
         <pc-icon class="flex-none" name="paper-clip" [size]="4"></pc-icon>
         }
       </div>
       <div class="mt-1 flex items-center gap-2">
-        <span class="min-w-0 flex-1 truncate font-light text-xs text-base-content/60">{{ email.preview }}</span>
+        <span class="min-w-0 flex-1 truncate text-xs text-base-content/60">{{ email.preview }}</span>
         @if (rowStatus(email); as st) {
         <span
           class="shrink-0 rounded-full px-1.5 py-0.5 text-[10.5px] font-semibold"
