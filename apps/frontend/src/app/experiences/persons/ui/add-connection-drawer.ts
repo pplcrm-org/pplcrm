@@ -28,7 +28,13 @@ type PersonSearchResult = { id: string; first_name: string | null; last_name: st
               <span class="text-sm font-medium flex-1 truncate"
                 >{{ selectedPerson()!.first_name }} {{ selectedPerson()!.last_name }}</span
               >
-              <button type="button" class="btn btn-ghost btn-xs btn-circle" (click)="clearSelection()">
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs btn-circle"
+                aria-label="Clear the selected person"
+                title="Clear selection"
+                (click)="clearSelection()"
+              >
                 <pc-icon name="x-mark" [size]="3"></pc-icon>
               </button>
             </div>

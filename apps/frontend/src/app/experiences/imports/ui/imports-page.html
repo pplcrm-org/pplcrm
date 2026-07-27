@@ -121,6 +121,10 @@
             <button
               type="button"
               class="btn btn-sm btn-circle btn-ghost text-error"
+              aria-label="Delete this import"
+              i18n-aria-label="@@imports.delete.ariaLabel"
+              title="Delete this import"
+              i18n-title="@@imports.delete.title"
               (click)="openDeleteDialog(item, deleteDialog)"
               [disabled]="deleting()"
             >

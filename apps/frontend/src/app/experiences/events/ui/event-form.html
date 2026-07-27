@@ -177,7 +177,13 @@
                   <td class="font-mono">{{ formatPrice(ticket.price_cents) }}</td>
                   <td>{{ ticket.capacity ?? 'Unlimited' }}</td>
                   <td>
-                    <button type="button" class="btn btn-ghost btn-xs text-error" (click)="deleteTicketType(ticket.id)">
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-xs text-error"
+                      aria-label="Delete this ticket type"
+                      title="Delete ticket type"
+                      (click)="deleteTicketType(ticket.id)"
+                    >
                       <pc-icon name="trash" [size]="4"></pc-icon>
                     </button>
                   </td>
@@ -219,10 +225,22 @@
                   </td>
                   <td>
                     <div class="flex items-center gap-1">
-                      <button type="button" class="btn btn-ghost btn-xs text-success" (click)="saveNewTicket()">
+                      <button
+                        type="button"
+                        class="btn btn-ghost btn-xs text-success"
+                        aria-label="Save this ticket type"
+                        title="Save ticket type"
+                        (click)="saveNewTicket()"
+                      >
                         <pc-icon name="check-circle" [size]="4"></pc-icon>
                       </button>
-                      <button type="button" class="btn btn-ghost btn-xs text-error" (click)="cancelAddTicket()">
+                      <button
+                        type="button"
+                        class="btn btn-ghost btn-xs text-error"
+                        aria-label="Cancel adding a ticket type"
+                        title="Cancel"
+                        (click)="cancelAddTicket()"
+                      >
                         <pc-icon name="x-mark" [size]="4"></pc-icon>
                       </button>
                     </div>
