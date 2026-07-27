@@ -19,8 +19,13 @@ const rand = (): string => String(Math.floor(Math.random() * 100000000) + 100000
 const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 const publicKeyBase64 = publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
 
-function signedHeaders(rawBody: string): Record<string, string> {
-  const timestamp = String(Math.floor(1752700000));
+/**
+ * @param timestampSeconds override the signed timestamp to exercise the replay window; defaults to
+ * "now", because the route rejects a signature older than SIGNATURE_MAX_AGE_MS. (Note this is the
+ * *signature* timestamp, unrelated to the `timestamp` field inside an event payload.)
+ */
+function signedHeaders(rawBody: string, timestampSeconds = Math.floor(Date.now() / 1000)): Record<string, string> {
+  const timestamp = String(timestampSeconds);
   const signer = createSign('sha256');
   signer.update(timestamp + rawBody);
   signer.end();
@@ -173,6 +178,43 @@ describe('newsletters webhook route (SendGrid events)', () => {
       payload: JSON.stringify([makeEvent({ event: 'open' })]),
     });
     expect(res.statusCode).toBe(401);
+  });
+
+  // A signature never expires on its own, so without a freshness window one captured delivery
+  // replays forever. Newsletter events dedupe on sg_event_id, but the consent side effects
+  // (unsubscribe/suppression) and the automation workflow_runs stamping do not.
+  it('rejects a replayed delivery whose signed timestamp is outside the freshness window', async () => {
+    const rawBody = JSON.stringify([makeEvent()]);
+    const elevenMinutesAgo = Math.floor(Date.now() / 1000) - 11 * 60;
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/newsletters/webhook',
+      headers: signedHeaders(rawBody, elevenMinutesAgo),
+      payload: rawBody,
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('rejects a signature timestamped far in the future', async () => {
+    const rawBody = JSON.stringify([makeEvent()]);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/newsletters/webhook',
+      headers: signedHeaders(rawBody, Math.floor(Date.now() / 1000) + 11 * 60),
+      payload: rawBody,
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('accepts a delivery just inside the freshness window (SendGrid retries, clock skew)', async () => {
+    const rawBody = JSON.stringify([makeEvent()]);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/newsletters/webhook',
+      headers: signedHeaders(rawBody, Math.floor(Date.now() / 1000) - 9 * 60),
+      payload: rawBody,
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it('returns 400 for a correctly signed but non-JSON body', async () => {

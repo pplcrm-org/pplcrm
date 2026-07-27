@@ -17,6 +17,14 @@ import { logger } from '../../logger';
 // recorded (or a plan is never activated / a refund never reverses) until someone edits the row by hand.
 const STALE_EVENT_THRESHOLD_MS = 30 * 60 * 1000;
 const STALE_EVENT_RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
+/** Refresh `locked_at` well inside STALE_EVENT_THRESHOLD_MS so a live event never looks stale. */
+const WEBHOOK_HEARTBEAT_MS = 5 * 60 * 1000;
+/**
+ * Wall-clock cap per event. Comfortably above any real Stripe handler (the slowest do a handful of
+ * API calls plus DB writes) and well under STALE_EVENT_THRESHOLD_MS, so a wedged handler fails and
+ * retries through the normal path rather than being reclaimed underneath itself.
+ */
+const WEBHOOK_TIMEOUT_MS = 2 * 60 * 1000;
 
 export class WebhookEventWorker {
   private isRunning = false;
@@ -217,277 +225,361 @@ export class WebhookEventWorker {
 
     const payload = typeof eventRecord.payload === 'string' ? JSON.parse(eventRecord.payload) : eventRecord.payload;
 
+    // Keep this event's lock fresh while it runs. Without it, recoverStaleEvents reclaims a
+    // still-running event after WEBHOOK_STALE_MS and a second pass processes the same Stripe event
+    // concurrently. `donations_stripe_session_id_key` saves the donation path, but the billing
+    // handler's subscription/plan mutations have no such guard. Same shape as BackgroundJobWorker.
+    const heartbeat = setInterval(() => {
+      void this.db
+        .updateTable('webhook_events')
+        .set({ locked_at: new Date(), updated_at: new Date() })
+        .where('id', '=', eventRecord.id)
+        .where('status', '=', 'processing')
+        .where('locked_by', '=', workerId)
+        .execute()
+        .catch((err) => logger.error({ err, webhookEventId: eventRecord.id }, 'Webhook heartbeat failed'));
+    }, WEBHOOK_HEARTBEAT_MS);
+    if (typeof heartbeat.unref === 'function') heartbeat.unref();
+
+    // Wall-clock cap. This worker processes serially, so one wedged handler (a hung Stripe call)
+    // blocked every other webhook indefinitely; the heartbeat above would keep it looking healthy
+    // forever. Racing against a timer is what makes that recoverable.
+    let timeoutHandle: NodeJS.Timeout | undefined;
+
     try {
-      const stripeObj = payload.data?.object;
-      const eventType: string = payload.type;
+      await Promise.race([
+        (async () => {
+          const stripeObj = payload.data?.object;
+          const eventType: string = payload.type;
 
-      // Helper to resolve an admin userId for the tenant
-      const resolveUserId = async (tenantId: string, metaUserId: string | null): Promise<string> => {
-        if (metaUserId) return metaUserId;
-        const tenantRow = await this.db
-          .selectFrom('tenants')
-          .select('admin_id')
-          .where('id', '=', tenantId)
-          .executeTakeFirst();
-        if (!tenantRow?.admin_id) throw new Error(`Tenant ${tenantId} has no admin_id.`);
-        return String(tenantRow.admin_id);
-      };
+          // Helper to resolve an admin userId for the tenant
+          const resolveUserId = async (tenantId: string, metaUserId: string | null): Promise<string> => {
+            if (metaUserId) return metaUserId;
+            const tenantRow = await this.db
+              .selectFrom('tenants')
+              .select('admin_id')
+              .where('id', '=', tenantId)
+              .executeTakeFirst();
+            if (!tenantRow?.admin_id) throw new Error(`Tenant ${tenantId} has no admin_id.`);
+            return String(tenantRow.admin_id);
+          };
 
-      // Stripe Connect events (donations) carry the connected account id; platform-account events
-      // (billing) never do. This is the billing/donations discriminator — a Connect event must
-      // never fall through to the BillingController.
-      const isConnectEvent = typeof payload?.account === 'string' && payload.account.length > 0;
-      const isAccountUpdated = eventType === 'account.updated';
-
-      const isOneTimeDonation =
-        eventType === 'checkout.session.completed' &&
-        stripeObj?.metadata?.personId &&
-        stripeObj?.metadata?.isRecurring !== 'true';
-      const isRecurringCheckoutComplete =
-        eventType === 'checkout.session.completed' &&
-        stripeObj?.metadata?.personId &&
-        stripeObj?.metadata?.isRecurring === 'true';
-      const isInvoicePaid = eventType === 'invoice.payment_succeeded' && stripeObj?.subscription;
-      // `customer.subscription.updated/deleted` and `invoice.payment_failed` are emitted for BOTH a
-      // donation pledge (on the connected account) AND a tenant's own billing subscription (on the
-      // platform account). Only the connected-account variant belongs to the donation branches below.
-      // Gate them on isConnectEvent so the platform variant falls through to BillingController — without
-      // this, a failed renewal never triggers a payment hold and a Stripe-side cancellation never
-      // downgrades the tenant (the billing handlers become unreachable via webhook).
-      const isSubscriptionUpdated = isConnectEvent && eventType === 'customer.subscription.updated';
-      const isSubscriptionDeleted = isConnectEvent && eventType === 'customer.subscription.deleted';
-      const isInvoiceFailed = isConnectEvent && eventType === 'invoice.payment_failed' && stripeObj?.subscription;
-      const isChargeRefunded = eventType === 'charge.refunded';
-      const isDisputeCreated = eventType === 'charge.dispute.created';
-      const isDisputeClosed = eventType === 'charge.dispute.closed';
-
-      if (isAccountUpdated && eventRecord.tenant_id) {
-        // Connect onboarding progress: cache details_submitted / charges_enabled — this is what
-        // flips the tenant's "charges enabled" gate on after they finish Stripe-hosted onboarding.
-        const tenantId = String(eventRecord.tenant_id);
-        const userId = await resolveUserId(tenantId, null);
-        await updateCachedAccountStatus(tenantId, userId, {
-          detailsSubmitted: stripeObj?.details_submitted === true,
-          chargesEnabled: stripeObj?.charges_enabled === true,
-        });
-      } else if (isOneTimeDonation) {
-        // Standard one-time donation via checkout.session.completed
-        const donationsController = new DonationsController();
-        const tenantId = String(stripeObj.metadata.tenantId);
-        const personId = String(stripeObj.metadata.personId);
-        const amountCents = Number(stripeObj.metadata.amount);
-        const province = String(stripeObj.metadata.residencyProvince || '');
-        const country = String(stripeObj.metadata.residencyCountry || '');
-        const sessionId = String(stripeObj.id);
-        const paymentIntentId = stripeObj.payment_intent ? String(stripeObj.payment_intent) : null;
-        const createdBy = await resolveUserId(tenantId, stripeObj.metadata.createdBy || null);
-
-        await donationsController.recordSuccessfulDonation(
-          tenantId,
-          personId,
-          amountCents,
-          sessionId,
-          province,
-          country,
-          createdBy,
-          undefined,
-          'card',
-          undefined,
-          paymentIntentId,
-        );
-      } else if (isRecurringCheckoutComplete) {
-        // Subscription checkout completed — create the pledge record.
-        // The first invoice payment is handled separately by invoice.payment_succeeded.
-        const donationsController = new DonationsController();
-        const tenantId = String(stripeObj.metadata.tenantId);
-        const personId = String(stripeObj.metadata.personId);
-        const monthlyAmountCents = Number(stripeObj.metadata.monthlyAmount);
-        const province = String(stripeObj.metadata.residencyProvince || '');
-        const country = String(stripeObj.metadata.residencyCountry || '');
-        const createdBy = await resolveUserId(tenantId, stripeObj.metadata.createdBy || null);
-        const subscriptionId = String(stripeObj.subscription || '');
-        const customerId = stripeObj.customer ? String(stripeObj.customer) : null;
-
-        if (subscriptionId) {
-          await donationsController.recordNewPledge(
-            tenantId,
-            personId,
-            monthlyAmountCents,
-            subscriptionId,
-            customerId,
-            province,
-            country,
-            createdBy,
-          );
-        }
-      } else if (isInvoicePaid) {
-        // A subscription invoice was paid — record it as a donation installment.
-        const donationsController = new DonationsController();
-        const subscriptionId = String(stripeObj.subscription);
-        const invoiceId = String(stripeObj.id);
-        const amountPaidCents = Number(stripeObj.amount_paid || 0);
-
-        const pledge = await this.db
-          .selectFrom('donation_pledges')
-          .selectAll()
-          .where('stripe_subscription_id', '=', subscriptionId)
-          .executeTakeFirst();
-
-        if (pledge && amountPaidCents > 0) {
-          // Avoid duplicate recording (invoice id as session id key)
-          const alreadyRecorded = await this.db
-            .selectFrom('donations')
-            .select('id')
-            .where('stripe_session_id', '=', invoiceId)
-            .executeTakeFirst();
-
-          if (!alreadyRecorded) {
-            const createdBy = await resolveUserId(String(pledge.tenant_id), null);
-            const invoicePaymentIntentId = stripeObj.payment_intent ? String(stripeObj.payment_intent) : null;
-            await donationsController.recordSuccessfulDonation(
-              String(pledge.tenant_id),
-              String(pledge.person_id),
-              amountPaidCents,
-              invoiceId,
-              pledge.state || '',
-              pledge.country || '',
-              createdBy,
-              String(pledge.id),
-              'card',
-              undefined,
-              invoicePaymentIntentId,
-            );
-          }
-        }
-      } else if (isSubscriptionUpdated) {
-        // Sync pledge status from Stripe subscription status
-        const subscriptionId = String(stripeObj.id);
-        const stripeStatus: string = stripeObj.status;
-        const statusMap: Record<string, string> = {
-          active: 'active',
-          past_due: 'past_due',
-          canceled: 'cancelled',
-          unpaid: 'unpaid',
-        };
-        const mappedStatus = statusMap[stripeStatus];
-        // Stripe's 2025 "basil" API moved `current_period_end` off the Subscription object onto
-        // each item; keep the legacy top-level read as a fallback for older event payloads.
-        const periodEndUnix = stripeObj.current_period_end ?? stripeObj.items?.data?.[0]?.current_period_end;
-        const nextBillingDate = periodEndUnix ? new Date(periodEndUnix * 1000).toISOString().slice(0, 10) : null;
-
-        if (mappedStatus) {
-          await this.db
-            .updateTable('donation_pledges')
-            .set({
-              status: mappedStatus,
-              next_billing_date: nextBillingDate,
-              cancelled_at: mappedStatus === 'cancelled' ? new Date() : null,
-              updated_at: new Date(),
-            })
-            .where('stripe_subscription_id', '=', subscriptionId)
-            .execute();
-        }
-      } else if (isSubscriptionDeleted) {
-        const subscriptionId = String(stripeObj.id);
-        await this.db
-          .updateTable('donation_pledges')
-          .set({ status: 'cancelled', cancelled_at: new Date(), updated_at: new Date() })
-          .where('stripe_subscription_id', '=', subscriptionId)
-          .execute();
-      } else if (isInvoiceFailed) {
-        const subscriptionId = String(stripeObj.subscription);
-        await this.db
-          .updateTable('donation_pledges')
-          .set({ status: 'past_due', updated_at: new Date() })
-          .where('stripe_subscription_id', '=', subscriptionId)
-          .execute();
-      } else if (isChargeRefunded && eventRecord.tenant_id) {
-        // A donation charge was refunded. Only a FULL refund reverses the gift; a partial refund
-        // can't be represented on a single-amount donation row, so we log it and leave the record.
-        const tenantId = String(eventRecord.tenant_id);
-        const amount = Number(stripeObj.amount || 0);
-        const amountRefunded = Number(stripeObj.amount_refunded || 0);
-        const fullyRefunded = stripeObj.refunded === true || (amount > 0 && amountRefunded >= amount);
-        if (fullyRefunded) {
-          const donationsController = new DonationsController();
-          const userId = await resolveUserId(tenantId, null);
-          await donationsController.reverseDonation(tenantId, userId, {
-            paymentIntentId: stripeObj.payment_intent ? String(stripeObj.payment_intent) : null,
-            invoiceId: stripeObj.invoice ? String(stripeObj.invoice) : null,
-            status: 'refunded',
-          });
-
-          // Return our platform fee on a fully refunded gift (decided 2026-07-16) — keeping it
-          // would leave the campaign out of pocket. Application fees live on the PLATFORM account,
-          // so no stripeAccount option. Non-fatal: the donation reversal above must stand even if
-          // the fee refund fails (it can be replayed from the Stripe dashboard).
-          if (!isMockMode && stripeObj.application_fee) {
-            try {
-              await getStripe().applicationFees.createRefund(String(stripeObj.application_fee));
-            } catch (feeErr) {
+          /**
+           * The only trustworthy owner of a Connect event is `eventRecord.tenant_id`, which the
+           * ingest route resolved from `event.account` -> the connected account -> the tenant that
+           * owns it (donations-webhook.route.ts). Session `metadata` is set by whoever created the
+           * Checkout Session, so a tenant with their own connected account could otherwise point
+           * `metadata.tenantId` at a victim and have the donation written into that tenant's
+           * financial records. The refund/dispute branches below already use eventRecord.tenant_id;
+           * this makes the checkout branches consistent with them.
+           *
+           * In mock mode the ingest route derives eventRecord.tenant_id from the same metadata, so
+           * the check is a no-op there rather than needing an exemption.
+           */
+          const donationTenantId = (): string => {
+            if (!eventRecord.tenant_id) {
+              throw new Error(`Stripe event ${eventRecord.id} has no resolved tenant; refusing to write a donation.`);
+            }
+            const trusted = String(eventRecord.tenant_id);
+            const claimed = stripeObj?.metadata?.tenantId ? String(stripeObj.metadata.tenantId) : null;
+            if (claimed && claimed !== trusted) {
               logger.error(
-                { err: feeErr, tenantId, applicationFee: String(stripeObj.application_fee) },
-                'Application fee refund failed after full donation refund',
+                { eventId: eventRecord.id, trustedTenantId: trusted, claimedTenantId: claimed },
+                'Stripe session metadata claims a different tenant than the connected account owns; rejecting',
+              );
+              throw new Error(`Stripe event ${eventRecord.id} metadata tenant does not match the connected account.`);
+            }
+            return trusted;
+          };
+
+          /**
+           * `metadata.personId` is attacker-controllable for the same reason. Even with the tenant
+           * pinned above, a foreign person id would attach the gift to someone outside the tenant.
+           */
+          const assertPersonInTenant = async (tenantId: string, personId: string): Promise<string> => {
+            const person = await this.db
+              .selectFrom('persons')
+              .select('id')
+              .where('tenant_id', '=', tenantId)
+              .where('id', '=', personId)
+              .executeTakeFirst();
+            if (!person) {
+              throw new Error(
+                `Stripe event ${eventRecord.id} references person ${personId} outside tenant ${tenantId}.`,
               );
             }
+            return personId;
+          };
+
+          // Stripe Connect events (donations) carry the connected account id; platform-account events
+          // (billing) never do. This is the billing/donations discriminator — a Connect event must
+          // never fall through to the BillingController.
+          const isConnectEvent = typeof payload?.account === 'string' && payload.account.length > 0;
+          const isAccountUpdated = eventType === 'account.updated';
+
+          const isOneTimeDonation =
+            eventType === 'checkout.session.completed' &&
+            stripeObj?.metadata?.personId &&
+            stripeObj?.metadata?.isRecurring !== 'true';
+          const isRecurringCheckoutComplete =
+            eventType === 'checkout.session.completed' &&
+            stripeObj?.metadata?.personId &&
+            stripeObj?.metadata?.isRecurring === 'true';
+          const isInvoicePaid = eventType === 'invoice.payment_succeeded' && stripeObj?.subscription;
+          // `customer.subscription.updated/deleted` and `invoice.payment_failed` are emitted for BOTH a
+          // donation pledge (on the connected account) AND a tenant's own billing subscription (on the
+          // platform account). Only the connected-account variant belongs to the donation branches below.
+          // Gate them on isConnectEvent so the platform variant falls through to BillingController — without
+          // this, a failed renewal never triggers a payment hold and a Stripe-side cancellation never
+          // downgrades the tenant (the billing handlers become unreachable via webhook).
+          const isSubscriptionUpdated = isConnectEvent && eventType === 'customer.subscription.updated';
+          const isSubscriptionDeleted = isConnectEvent && eventType === 'customer.subscription.deleted';
+          const isInvoiceFailed = isConnectEvent && eventType === 'invoice.payment_failed' && stripeObj?.subscription;
+          const isChargeRefunded = eventType === 'charge.refunded';
+          const isDisputeCreated = eventType === 'charge.dispute.created';
+          const isDisputeClosed = eventType === 'charge.dispute.closed';
+
+          if (isAccountUpdated && eventRecord.tenant_id) {
+            // Connect onboarding progress: cache details_submitted / charges_enabled — this is what
+            // flips the tenant's "charges enabled" gate on after they finish Stripe-hosted onboarding.
+            const tenantId = String(eventRecord.tenant_id);
+            const userId = await resolveUserId(tenantId, null);
+            await updateCachedAccountStatus(tenantId, userId, {
+              detailsSubmitted: stripeObj?.details_submitted === true,
+              chargesEnabled: stripeObj?.charges_enabled === true,
+            });
+          } else if (isOneTimeDonation) {
+            // Standard one-time donation via checkout.session.completed
+            const donationsController = new DonationsController();
+            const tenantId = donationTenantId();
+            const personId = await assertPersonInTenant(tenantId, String(stripeObj.metadata.personId));
+            const amountCents = Number(stripeObj.metadata.amount);
+            const province = String(stripeObj.metadata.residencyProvince || '');
+            const country = String(stripeObj.metadata.residencyCountry || '');
+            const sessionId = String(stripeObj.id);
+            const paymentIntentId = stripeObj.payment_intent ? String(stripeObj.payment_intent) : null;
+            const createdBy = await resolveUserId(tenantId, stripeObj.metadata.createdBy || null);
+
+            await donationsController.recordSuccessfulDonation(
+              tenantId,
+              personId,
+              amountCents,
+              sessionId,
+              province,
+              country,
+              createdBy,
+              undefined,
+              'card',
+              undefined,
+              paymentIntentId,
+            );
+          } else if (isRecurringCheckoutComplete) {
+            // Subscription checkout completed — create the pledge record.
+            // The first invoice payment is handled separately by invoice.payment_succeeded.
+            const donationsController = new DonationsController();
+            const tenantId = donationTenantId();
+            const personId = await assertPersonInTenant(tenantId, String(stripeObj.metadata.personId));
+            const monthlyAmountCents = Number(stripeObj.metadata.monthlyAmount);
+            const province = String(stripeObj.metadata.residencyProvince || '');
+            const country = String(stripeObj.metadata.residencyCountry || '');
+            const createdBy = await resolveUserId(tenantId, stripeObj.metadata.createdBy || null);
+            const subscriptionId = String(stripeObj.subscription || '');
+            const customerId = stripeObj.customer ? String(stripeObj.customer) : null;
+
+            if (subscriptionId) {
+              await donationsController.recordNewPledge(
+                tenantId,
+                personId,
+                monthlyAmountCents,
+                subscriptionId,
+                customerId,
+                province,
+                country,
+                createdBy,
+              );
+            }
+          } else if (isInvoicePaid) {
+            // A subscription invoice was paid — record it as a donation installment.
+            const donationsController = new DonationsController();
+            const subscriptionId = String(stripeObj.subscription);
+            const invoiceId = String(stripeObj.id);
+            const amountPaidCents = Number(stripeObj.amount_paid || 0);
+
+            const pledge = await this.db
+              .selectFrom('donation_pledges')
+              .selectAll()
+              .where('stripe_subscription_id', '=', subscriptionId)
+              .executeTakeFirst();
+
+            if (pledge && amountPaidCents > 0) {
+              // Avoid duplicate recording (invoice id as session id key)
+              const alreadyRecorded = await this.db
+                .selectFrom('donations')
+                .select('id')
+                .where('stripe_session_id', '=', invoiceId)
+                .executeTakeFirst();
+
+              if (!alreadyRecorded) {
+                const createdBy = await resolveUserId(String(pledge.tenant_id), null);
+                const invoicePaymentIntentId = stripeObj.payment_intent ? String(stripeObj.payment_intent) : null;
+                await donationsController.recordSuccessfulDonation(
+                  String(pledge.tenant_id),
+                  String(pledge.person_id),
+                  amountPaidCents,
+                  invoiceId,
+                  pledge.state || '',
+                  pledge.country || '',
+                  createdBy,
+                  String(pledge.id),
+                  'card',
+                  undefined,
+                  invoicePaymentIntentId,
+                );
+              }
+            }
+          } else if (isSubscriptionUpdated) {
+            // Sync pledge status from Stripe subscription status
+            const subscriptionId = String(stripeObj.id);
+            const stripeStatus: string = stripeObj.status;
+            const statusMap: Record<string, string> = {
+              active: 'active',
+              past_due: 'past_due',
+              canceled: 'cancelled',
+              unpaid: 'unpaid',
+            };
+            const mappedStatus = statusMap[stripeStatus];
+            // Stripe's 2025 "basil" API moved `current_period_end` off the Subscription object onto
+            // each item; keep the legacy top-level read as a fallback for older event payloads.
+            const periodEndUnix = stripeObj.current_period_end ?? stripeObj.items?.data?.[0]?.current_period_end;
+            const nextBillingDate = periodEndUnix ? new Date(periodEndUnix * 1000).toISOString().slice(0, 10) : null;
+
+            if (mappedStatus) {
+              await this.db
+                .updateTable('donation_pledges')
+                .set({
+                  status: mappedStatus,
+                  next_billing_date: nextBillingDate,
+                  cancelled_at: mappedStatus === 'cancelled' ? new Date() : null,
+                  updated_at: new Date(),
+                })
+                .where('stripe_subscription_id', '=', subscriptionId)
+                .execute();
+            }
+          } else if (isSubscriptionDeleted) {
+            const subscriptionId = String(stripeObj.id);
+            await this.db
+              .updateTable('donation_pledges')
+              .set({ status: 'cancelled', cancelled_at: new Date(), updated_at: new Date() })
+              .where('stripe_subscription_id', '=', subscriptionId)
+              .execute();
+          } else if (isInvoiceFailed) {
+            const subscriptionId = String(stripeObj.subscription);
+            await this.db
+              .updateTable('donation_pledges')
+              .set({ status: 'past_due', updated_at: new Date() })
+              .where('stripe_subscription_id', '=', subscriptionId)
+              .execute();
+          } else if (isChargeRefunded && eventRecord.tenant_id) {
+            // A donation charge was refunded. Only a FULL refund reverses the gift; a partial refund
+            // can't be represented on a single-amount donation row, so we log it and leave the record.
+            const tenantId = String(eventRecord.tenant_id);
+            const amount = Number(stripeObj.amount || 0);
+            const amountRefunded = Number(stripeObj.amount_refunded || 0);
+            const fullyRefunded = stripeObj.refunded === true || (amount > 0 && amountRefunded >= amount);
+            if (fullyRefunded) {
+              const donationsController = new DonationsController();
+              const userId = await resolveUserId(tenantId, null);
+              await donationsController.reverseDonation(tenantId, userId, {
+                paymentIntentId: stripeObj.payment_intent ? String(stripeObj.payment_intent) : null,
+                invoiceId: stripeObj.invoice ? String(stripeObj.invoice) : null,
+                status: 'refunded',
+              });
+
+              // Return our platform fee on a fully refunded gift (decided 2026-07-16) — keeping it
+              // would leave the campaign out of pocket. Application fees live on the PLATFORM account,
+              // so no stripeAccount option. Non-fatal: the donation reversal above must stand even if
+              // the fee refund fails (it can be replayed from the Stripe dashboard).
+              if (!isMockMode && stripeObj.application_fee) {
+                try {
+                  await getStripe().applicationFees.createRefund(String(stripeObj.application_fee));
+                } catch (feeErr) {
+                  logger.error(
+                    { err: feeErr, tenantId, applicationFee: String(stripeObj.application_fee) },
+                    'Application fee refund failed after full donation refund',
+                  );
+                }
+              }
+            } else {
+              logger.warn(
+                { tenantId, chargeId: stripeObj.id, amount, amountRefunded },
+                'Partial refund received; donation record left unchanged',
+              );
+            }
+          } else if (isDisputeCreated && eventRecord.tenant_id) {
+            // Chargeback opened — funds are withheld, so stop counting the gift toward totals.
+            const tenantId = String(eventRecord.tenant_id);
+            const donationsController = new DonationsController();
+            const userId = await resolveUserId(tenantId, null);
+            await donationsController.reverseDonation(tenantId, userId, {
+              paymentIntentId: stripeObj.payment_intent ? String(stripeObj.payment_intent) : null,
+              invoiceId: null,
+              status: 'disputed',
+            });
+          } else if (isDisputeClosed && eventRecord.tenant_id) {
+            // Chargeback resolved: 'won' restores the gift; 'lost' makes the reversal permanent.
+            const tenantId = String(eventRecord.tenant_id);
+            const donationsController = new DonationsController();
+            const userId = await resolveUserId(tenantId, null);
+            const paymentIntentId = stripeObj.payment_intent ? String(stripeObj.payment_intent) : null;
+            if (stripeObj.status === 'won') {
+              await donationsController.restoreDisputedDonation(tenantId, userId, { paymentIntentId, invoiceId: null });
+            } else if (stripeObj.status === 'lost') {
+              await donationsController.reverseDonation(tenantId, userId, {
+                paymentIntentId,
+                invoiceId: null,
+                status: 'refunded',
+              });
+            }
+          } else if (isConnectEvent) {
+            // A connected-account event we don't have a handler for. Never hand it to the billing
+            // controller — its customer-id lookups only make sense for platform-account events.
+            logger.info(
+              { eventType, account: payload.account, tenantId: eventRecord.tenant_id },
+              'Unhandled Connect webhook event; acknowledged without action',
+            );
+          } else {
+            const billingController = new BillingController();
+            await billingController.processWebhookEvent(payload);
           }
-        } else {
-          logger.warn(
-            { tenantId, chargeId: stripeObj.id, amount, amountRefunded },
-            'Partial refund received; donation record left unchanged',
+
+          // Mark event as processed/completed
+          await this.db
+            .updateTable('webhook_events')
+            .set({
+              status: 'processed',
+              locked_at: null,
+              locked_by: null,
+              processed_at: new Date(),
+              updated_at: new Date(),
+            })
+            .where('id', '=', eventRecord.id)
+            .execute();
+
+          logger.info({ webhookEventId: eventRecord.id }, 'Webhook event completed successfully');
+        })(),
+        new Promise<never>((_resolve, reject) => {
+          timeoutHandle = setTimeout(
+            () =>
+              reject(
+                new Error(
+                  `Webhook event ${eventRecord.id} (${eventRecord.type}) timed out after ${WEBHOOK_TIMEOUT_MS}ms`,
+                ),
+              ),
+            WEBHOOK_TIMEOUT_MS,
           );
-        }
-      } else if (isDisputeCreated && eventRecord.tenant_id) {
-        // Chargeback opened — funds are withheld, so stop counting the gift toward totals.
-        const tenantId = String(eventRecord.tenant_id);
-        const donationsController = new DonationsController();
-        const userId = await resolveUserId(tenantId, null);
-        await donationsController.reverseDonation(tenantId, userId, {
-          paymentIntentId: stripeObj.payment_intent ? String(stripeObj.payment_intent) : null,
-          invoiceId: null,
-          status: 'disputed',
-        });
-      } else if (isDisputeClosed && eventRecord.tenant_id) {
-        // Chargeback resolved: 'won' restores the gift; 'lost' makes the reversal permanent.
-        const tenantId = String(eventRecord.tenant_id);
-        const donationsController = new DonationsController();
-        const userId = await resolveUserId(tenantId, null);
-        const paymentIntentId = stripeObj.payment_intent ? String(stripeObj.payment_intent) : null;
-        if (stripeObj.status === 'won') {
-          await donationsController.restoreDisputedDonation(tenantId, userId, { paymentIntentId, invoiceId: null });
-        } else if (stripeObj.status === 'lost') {
-          await donationsController.reverseDonation(tenantId, userId, {
-            paymentIntentId,
-            invoiceId: null,
-            status: 'refunded',
-          });
-        }
-      } else if (isConnectEvent) {
-        // A connected-account event we don't have a handler for. Never hand it to the billing
-        // controller — its customer-id lookups only make sense for platform-account events.
-        logger.info(
-          { eventType, account: payload.account, tenantId: eventRecord.tenant_id },
-          'Unhandled Connect webhook event; acknowledged without action',
-        );
-      } else {
-        const billingController = new BillingController();
-        await billingController.processWebhookEvent(payload);
-      }
-
-      // Mark event as processed/completed
-      await this.db
-        .updateTable('webhook_events')
-        .set({
-          status: 'processed',
-          locked_at: null,
-          locked_by: null,
-          processed_at: new Date(),
-          updated_at: new Date(),
-        })
-        .where('id', '=', eventRecord.id)
-        .execute();
-
-      logger.info({ webhookEventId: eventRecord.id }, 'Webhook event completed successfully');
+          if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
+        }),
+      ]);
     } catch (err) {
       const errorMsg = err instanceof Error && err.message ? err.message : String(err);
       logger.error({ err, webhookEventId: eventRecord.id }, 'Failed to process webhook event');
@@ -539,6 +631,9 @@ export class WebhookEventWorker {
           .where('id', '=', eventRecord.id)
           .execute();
       }
+    } finally {
+      clearInterval(heartbeat);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
 
     return true;

@@ -16,7 +16,6 @@ import { NotificationsRepo } from '../notifications/repositories/notifications.r
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { notificationEnabled } from '../../lib/profile-preferences';
 import { UserActivityRepo } from '../../lib/user-activity.repo';
-import { processMentions } from '../../lib/mail/mentions-util';
 import { sanitizeHtml } from '../../lib/mail/sanitize-util';
 import { StorageService } from '../../lib/storage.service';
 import { signedEmailAttachmentUrl } from '../../lib/signed-download';
@@ -147,22 +146,46 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
     }
     await this.assertInboxCampaignScope(tenant_id, author_id, author_role, email_id);
     try {
-      const row = await this.commentsRepo.add({
-        row: {
-          tenant_id,
-          email_id,
-          author_id,
-          comment,
-          createdby_id: author_id,
-          updatedby_id: author_id,
-        },
-      });
-      if (!row) throw new InternalError('Failed to add comment');
+      // Comment + mention job in one transaction (the transactional-outbox rule): a rolled-back
+      // comment must not leave a ghost notification, and a failed job insert must not report an
+      // error for a comment that was already saved.
+      const row = await this.commentsRepo.transaction().execute(async (trx) => {
+        const created = await this.commentsRepo.add(
+          {
+            row: {
+              tenant_id,
+              email_id,
+              author_id,
+              comment,
+              createdby_id: author_id,
+              updatedby_id: author_id,
+            },
+          },
+          trx,
+        );
+        if (!created) throw new InternalError('Failed to add comment');
 
-      const commentLink = `${env.appUrl}/emails/${email_id}`;
-      processMentions(this.commentsRepo.db, tenant_id, comment, commentLink, author_id).catch((err) =>
-        logger.error({ err }, 'Failed to process email comment mentions'),
-      );
+        // Queued, not detached — see tasks/comments.controller.ts for the same reasoning.
+        await trx
+          .insertInto('background_jobs')
+          .values({
+            tenant_id,
+            queue: 'default',
+            status: 'pending',
+            payload: JSON.stringify({
+              type: 'process_mentions',
+              tenant_id,
+              commentText: comment,
+              commentLink: `${env.appUrl}/emails/${email_id}`,
+              authorId: author_id,
+            }),
+            run_at: new Date(),
+            max_attempts: 3,
+          })
+          .execute();
+
+        return created;
+      });
 
       return row;
     } catch (err) {

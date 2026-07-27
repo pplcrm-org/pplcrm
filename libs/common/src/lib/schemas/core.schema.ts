@@ -62,17 +62,39 @@ export const oldAdvancedFilterModelSchema = z.object({
   ),
 });
 
+/**
+ * Hard ceiling on how many rows one list request may ask for, and the default the repo applies
+ * when a request derives no limit at all. Without this, `getAll` with no paging fields selected
+ * every row in the tenant into memory — a request-sized denial of service on any large tenant.
+ * Generous on purpose: real grid pages are in the tens, and the largest legitimate consumer
+ * (an inline CSV export) sets its own explicit limit and refuses past 50k rather than truncating.
+ */
+export const MAX_PAGE_SIZE = 5000;
+
+/**
+ * Ceiling on a bulk-action id list (delete these, archive those, assign this tag to them).
+ * These become `where('id', 'in', ids)`, so an unbounded array is both a huge query and, for
+ * destructive actions, an unbounded amount of work behind one request. 2000 matches the cap
+ * already used by the duplicate-email check and is far above any real selection.
+ */
+export const MAX_BULK_IDS = 2000;
+
+/** A row index/count: a non-negative integer, never a float or a negative that reaches Postgres. */
+const rowCountSchema = z.number().int().min(0).max(MAX_PAGE_SIZE);
+/** An offset can legitimately exceed one page's worth of rows, so it is bounded separately. */
+const rowOffsetSchema = z.number().int().min(0);
+
 export const getAllOptions = z
   .object({
     searchStr: z.string().optional(),
-    startRow: z.number().optional(),
-    endRow: z.number().optional(),
+    startRow: rowOffsetSchema.optional(),
+    endRow: rowOffsetSchema.optional(),
     sortModel: z.array(sortModelItem).optional(),
     filterModel: z.record(z.string(), z.unknown()).optional(),
     includeArchived: z.boolean().optional(),
     columns: z.array(z.string()).optional(),
-    limit: z.number().optional(),
-    offset: z.number().optional(),
+    limit: rowCountSchema.optional(),
+    offset: rowOffsetSchema.optional(),
     orderBy: z.array(z.string()).optional(),
     groupBy: z.array(z.string()).optional(),
     tags: z.array(z.string()).optional(),

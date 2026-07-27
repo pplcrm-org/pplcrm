@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { BaseRepository } from '../../../lib/base.repo';
-import { saveLocalEmail } from './emails-api.route';
+import { BadRequestError } from '../../../errors/app-errors';
+import { buildRawMime, parseRecipientField, saveLocalEmail } from './emails-api.route';
 
 // Integration tests for the outbound-email persistence path.
 //
@@ -195,5 +196,84 @@ describe('saveLocalEmail (integration)', () => {
     // The attachment must be linked to that file so downloads can resolve it.
     expect(attachments[0].file_id).toBeTruthy();
     expect(String(attachments[0].file_id)).toBe(String(file?.id));
+  });
+});
+
+// Recipient lists arrive as JSON strings inside a multipart form and are the only
+// user-supplied values in the send path that reach a mail header unencoded. A CR/LF
+// there terminates the header and lets the remainder be read as new headers — e.g. a
+// hidden `Bcc:` on mail sent through the tenant's own connected mailbox.
+describe('parseRecipientField (MIME header injection guard)', () => {
+  it('returns an empty list for a missing field', () => {
+    expect(parseRecipientField(undefined, 'cc')).toEqual([]);
+    expect(parseRecipientField('', 'cc')).toEqual([]);
+  });
+
+  it('parses and trims a well-formed list', () => {
+    expect(parseRecipientField('[" a@example.com ","b@example.com"]', 'to')).toEqual([
+      'a@example.com',
+      'b@example.com',
+    ]);
+  });
+
+  it('rejects malformed JSON as a 400 rather than throwing a raw SyntaxError', () => {
+    expect(() => parseRecipientField('{not json', 'to')).toThrow(BadRequestError);
+  });
+
+  it('rejects a non-array payload (previously threw on .join)', () => {
+    expect(() => parseRecipientField('"a@example.com"', 'to')).toThrow(BadRequestError);
+    expect(() => parseRecipientField('{"0":"a@example.com"}', 'to')).toThrow(BadRequestError);
+  });
+
+  it('rejects a recipient carrying a CRLF header injection', () => {
+    const payload = JSON.stringify(['victim@example.com\r\nBcc: attacker@evil.com']);
+    expect(() => parseRecipientField(payload, 'to')).toThrow(BadRequestError);
+  });
+
+  it('rejects a bare newline injection', () => {
+    expect(() => parseRecipientField(JSON.stringify(['a@example.com\nBcc: x@y.com']), 'bcc')).toThrow(BadRequestError);
+  });
+
+  it('caps the number of addresses', () => {
+    const many = JSON.stringify(Array.from({ length: 101 }, (_, i) => `u${i}@example.com`));
+    expect(() => parseRecipientField(many, 'to')).toThrow(BadRequestError);
+  });
+});
+
+// Second line of defence: even if a caller hands buildRawMime unvalidated strings, a line
+// break must never reach the assembled headers.
+describe('buildRawMime (header safety)', () => {
+  const base = {
+    fromName: 'Amira Hassan',
+    fromEmail: 'amira@example.com',
+    to: ['voter@example.com'],
+    cc: [],
+    bcc: [],
+    subject: 'Hello',
+    html: '<p>hi</p>',
+    attachments: [],
+  };
+
+  it('assembles a normal message', () => {
+    const raw = buildRawMime(base).toString('utf-8');
+    expect(raw).toContain('To: voter@example.com');
+    expect(raw).toContain('From: "Amira Hassan" <amira@example.com>');
+  });
+
+  it('throws when a recipient contains a line break', () => {
+    expect(() => buildRawMime({ ...base, to: ['a@b.com\r\nBcc: attacker@evil.com'] })).toThrow(BadRequestError);
+    expect(() => buildRawMime({ ...base, cc: ['a@b.com\nX-Evil: 1'] })).toThrow(BadRequestError);
+    expect(() => buildRawMime({ ...base, bcc: ['a@b.com\rX-Evil: 1'] })).toThrow(BadRequestError);
+  });
+
+  it('throws when the sender name or address contains a line break', () => {
+    expect(() => buildRawMime({ ...base, fromName: 'Evil\r\nBcc: attacker@evil.com' })).toThrow(BadRequestError);
+    expect(() => buildRawMime({ ...base, fromEmail: 'a@b.com>\r\nBcc: attacker@evil.com' })).toThrow(BadRequestError);
+  });
+
+  it('base64-encodes the subject, so a line break there cannot reach the headers', () => {
+    const raw = buildRawMime({ ...base, subject: 'Hi\r\nBcc: attacker@evil.com' }).toString('utf-8');
+    expect(raw).not.toContain('Bcc: attacker@evil.com');
+    expect(raw).toContain('Subject: =?utf-8?B?');
   });
 });

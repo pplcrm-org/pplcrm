@@ -23,9 +23,10 @@ import { HouseholdRepo } from '../households/repositories/households.repo';
 import { WorkflowsController } from '../workflows/controller';
 import { DonationsController } from '../donations/controller';
 import { logger } from '../../logger';
+import { isRateLimited } from '../../lib/rate-limiter';
 
-// Sliding window memory for rate-limiting
-const ipSubmissionTimestamps = new Map<string, number[]>();
+// Sliding-window per-IP submission limit. Counters live in the shared limiter (lib/rate-limiter),
+// which sweeps stale keys; see the single-instance caveat documented there.
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 
@@ -138,21 +139,13 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     // 1. Rate limiting check. Keyed (workspace-API-key) submissions skip the per-IP window —
     // they come from one integration server and are rate-limited per tenant by the route.
     if (!opts?.skipIpRateLimit) {
-      const now = Date.now();
-      let timestamps = ipSubmissionTimestamps.get(clientIp) || [];
-      timestamps = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-      if (timestamps.length >= RATE_LIMIT_MAX) {
+      // Backed by the shared limiter, which sweeps stale keys on a timer. The local Map this
+      // used only ever pruned the requesting IP, so every distinct visitor accumulated forever.
+      if (isRateLimited(`web-form-submit:${clientIp}`, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS)) {
         throw new TRPCError({
           code: 'TOO_MANY_REQUESTS',
           message: 'Rate limit exceeded. Please try again in a minute.',
         });
-      }
-      timestamps.push(now);
-      // Prune empty keys to prevent unbounded Map growth
-      if (timestamps.length > 0) {
-        ipSubmissionTimestamps.set(clientIp, timestamps);
-      } else {
-        ipSubmissionTimestamps.delete(clientIp);
       }
     }
 

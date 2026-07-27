@@ -150,10 +150,27 @@ const envSchema = z.object({
   OAUTH_TOKEN_ENC_KEY: z.string().optional(),
 });
 
-/** Coerce TRUST_PROXY into the shape Fastify's `trustProxy` option accepts. */
+/**
+ * Coerce TRUST_PROXY into the shape Fastify's `trustProxy` option accepts.
+ *
+ * This is a security setting, not a convenience one. We always deploy behind a proxy (Cloudflare
+ * -> Azure Container Apps), so with `trustProxy: false` every request reports the proxy's address
+ * as `req.ip` — which collapses every per-IP rate limit in the app (sign-in attempts, public form
+ * submissions, companion token endpoints) into one shared bucket. Silently defaulting to `false`
+ * in production is therefore a failure, not a safe fallback: refuse to boot instead.
+ */
 function parseTrustProxy(raw: string): boolean | number | string {
   const value = raw.trim();
-  if (value === '' || value.toLowerCase() === 'false') return false;
+
+  if (value === '' || value.toLowerCase() === 'false') {
+    if (process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        'TRUST_PROXY must be set in production (e.g. TRUST_PROXY=1 for a single proxy hop). ' +
+          'Without it every per-IP rate limit keys on the proxy address instead of the client.',
+      );
+    }
+    return false;
+  }
   if (value.toLowerCase() === 'true') return true;
   if (/^\d+$/.test(value)) return Number(value);
   return value;

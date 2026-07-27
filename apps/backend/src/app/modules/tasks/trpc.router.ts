@@ -7,6 +7,7 @@ import {
   exportCsvResponse,
   getAllOptions,
   idSchema,
+  MAX_BULK_IDS,
 } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 
@@ -52,7 +53,12 @@ export const TasksRouter = router({
     .input(idSchema)
     .mutation(({ input, ctx }) => tasks.delete(ctx.auth.tenant_id, input, ctx.auth.user_id)),
   deleteMany: authProcedure
-    .input(z.array(idSchema).min(1, 'At least one ID is required'))
+    .input(
+      z
+        .array(idSchema)
+        .min(1, 'At least one ID is required')
+        .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+    )
     .mutation(({ input, ctx }) => tasks.deleteMany(ctx.auth.tenant_id, input)),
   getAll: authProcedure.input(getAllOptions).query(({ input, ctx }) => tasks.getAllTasks(ctx.auth, input)),
   getArchived: authProcedure.input(getAllOptions).query(({ input, ctx }) => tasks.getArchivedTasks(ctx.auth, input)),

@@ -58,6 +58,15 @@ const SIGNATURE_HEADER = 'x-twilio-email-event-webhook-signature';
 const TIMESTAMP_HEADER = 'x-twilio-email-event-webhook-timestamp';
 
 /**
+ * How far the signed timestamp may be from our clock. A signature stays valid forever, so without
+ * a freshness window a single captured delivery can be replayed indefinitely. Newsletter events
+ * dedupe on `sg_event_id`, but the consent side effects (unsubscribe) and the automation
+ * `workflow_runs` stamping re-run on every replay. Wide enough to absorb clock skew and SendGrid's
+ * own retry backoff.
+ */
+const SIGNATURE_MAX_AGE_MS = 10 * 60 * 1000;
+
+/**
  * Verifies a SendGrid Signed Event Webhook request.
  * SendGrid signs `timestamp + rawBody` with an ECDSA (P-256) key; we verify it
  * against the base64-DER public verification key configured in the dashboard.
@@ -65,6 +74,13 @@ const TIMESTAMP_HEADER = 'x-twilio-email-event-webhook-timestamp';
 function verifySendGridSignature(rawBody: string, signature?: string, timestamp?: string): boolean {
   const verificationKey = env.sendgridWebhookVerificationKey;
   if (!verificationKey || !signature || !timestamp) {
+    return false;
+  }
+
+  // Freshness first: reject a stale (replayed) delivery before spending a signature verification.
+  // SendGrid sends seconds since the epoch.
+  const signedAtMs = Number(timestamp) * 1000;
+  if (!Number.isFinite(signedAtMs) || Math.abs(Date.now() - signedAtMs) > SIGNATURE_MAX_AGE_MS) {
     return false;
   }
 

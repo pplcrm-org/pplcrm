@@ -1,4 +1,4 @@
-import { idSchema, getAllOptions } from '../../../../../../libs/common/src';
+import { idSchema, getAllOptions, MAX_BULK_IDS } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
 import { FilesController } from './controller';
@@ -53,6 +53,11 @@ export const FilesRouter = router({
     .mutation(({ input, ctx }) => files.delete(ctx.auth.tenant_id, input, ctx.auth.user_id)),
 
   deleteMany: authProcedure
-    .input(z.array(idSchema).min(1, 'At least one ID is required'))
+    .input(
+      z
+        .array(idSchema)
+        .min(1, 'At least one ID is required')
+        .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+    )
     .mutation(({ input, ctx }) => files.deleteMany(ctx.auth.tenant_id, input, ctx.auth.user_id)),
 });

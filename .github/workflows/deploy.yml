@@ -163,7 +163,7 @@ jobs:
                 --name "${{ vars.AZURE_API_APP }}" \
                 --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
                 --image ghcr.io/${{ github.repository }}/backend:${{ github.sha }} \
-                --set-env-vars PUBLIC_BASE_DOMAIN=pplforms.com COMPANION_URL=https://go.pplcrm.com
+                --set-env-vars PUBLIC_BASE_DOMAIN=pplforms.com COMPANION_URL=https://go.pplcrm.com TRUST_PROXY=1
             else
               echo "::warning::${{ vars.AZURE_API_APP }} does not exist yet — create it manually (PROD-CHECKLIST §5), then re-run."
             fi

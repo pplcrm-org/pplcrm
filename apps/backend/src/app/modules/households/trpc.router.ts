@@ -1,4 +1,4 @@
-import { UpdateHouseholdsObj, idSchema } from '../../../../../../libs/common/src';
+import { UpdateHouseholdsObj, getAllOptions, idSchema, MAX_BULK_IDS } from '../../../../../../libs/common/src';
 
 import { z } from 'zod';
 
@@ -46,7 +46,12 @@ export const HouseholdsRouter = router({
     }),
 
   deleteMany: authProcedure
-    .input(z.array(idSchema).min(1, 'At least one ID is required'))
+    .input(
+      z
+        .array(idSchema)
+        .min(1, 'At least one ID is required')
+        .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+    )
     .mutation(({ input, ctx }) => households.deleteManyForTenant(ctx.auth, input)),
 
   attachTag: authProcedure
@@ -79,8 +84,10 @@ export const HouseholdsRouter = router({
       return households.getTags(id, ctx.auth, type);
     }),
 
+  // `z.any()` here let entirely unvalidated input reach the query builder — including
+  // `advancedFilterModel`, which getAllOptions otherwise validates through queryBuilderNodeSchema.
   getAllWithPeopleCount: authProcedure
-    .input(z.any().optional())
+    .input(getAllOptions)
     .query(({ input, ctx }) => households.getAllWithPeopleCount(ctx.auth, input)),
 
   getPeopleCount: authProcedure.input(idSchema).query(({ input, ctx }) => households.getPeopleCount(input, ctx.auth)),

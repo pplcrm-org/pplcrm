@@ -7,6 +7,7 @@ import { fingerprintFull, fingerprintStreet } from '../../../lib/address-normali
 import { backfillMissingSlugs } from '../../../lib/slug';
 import { backfillPersonPublicIds, insertPersonWithPublicId } from '../../../lib/person-public-id';
 import { notificationEnabled } from '../../../lib/profile-preferences';
+import { assertAssigneeInTenant, findAssigneeForNotification } from '../../../lib/tenant-members';
 import { HouseholdRepo } from '../../households/repositories/households.repo';
 import { SettingsController } from '../../settings/controller';
 import { TagsRepo } from '../../tags/repositories/tags.repo';
@@ -43,6 +44,9 @@ export class PersonsService {
   private mapListsPersonsRepo = new MapListsPersonsRepo();
 
   public async addPerson(payload: UpdatePersonsType, auth: IAuthKeyPayload) {
+    // persons.assigned_to has no tenant-composite FK (see lib/tenant-members).
+    await assertAssigneeInTenant(this.personsRepo.db, auth.tenant_id, payload.assigned_to);
+
     // Enforce email uniqueness within the tenant
     const emailToCheck = payload.email?.trim();
     if (emailToCheck) {
@@ -115,12 +119,7 @@ export class PersonsService {
       if (payload.assigned_to) {
         try {
           const assigneeId = String(payload.assigned_to);
-          const assignee = await this.personsRepo.db
-            .selectFrom('authusers')
-            .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
-            .select(['authusers.email', 'authusers.first_name', 'profiles.preferences as profile_preferences'])
-            .where('authusers.id', '=', assigneeId)
-            .executeTakeFirst();
+          const assignee = await findAssigneeForNotification(this.personsRepo.db, auth.tenant_id, assigneeId);
           if (assignee) {
             const createdPerson = result as Record<string, unknown>;
             const personName =
@@ -190,6 +189,8 @@ export class PersonsService {
   }
 
   public async updatePerson(id: string, data: UpdatePersonsType, auth: IAuthKeyPayload) {
+    await assertAssigneeInTenant(this.personsRepo.db, auth.tenant_id, data.assigned_to);
+
     // Enforce email uniqueness within the tenant (excluding the person being updated)
     const emailToCheck = data.email?.trim();
     if (emailToCheck) {
@@ -227,12 +228,7 @@ export class PersonsService {
           try {
             // String conversion ensures precision is maintained down to the database driver level
             const assigneeId = String(newAssigneeId);
-            const assignee = await this.personsRepo.db
-              .selectFrom('authusers')
-              .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
-              .select(['authusers.email', 'authusers.first_name', 'profiles.preferences as profile_preferences'])
-              .where('authusers.id', '=', assigneeId)
-              .executeTakeFirst();
+            const assignee = await findAssigneeForNotification(this.personsRepo.db, auth.tenant_id, assigneeId);
 
             if (assignee) {
               const personName =

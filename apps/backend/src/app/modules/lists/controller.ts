@@ -15,7 +15,7 @@ import { ListsRepo } from './repositories/lists.repo';
 import { MapListsHouseholdsRepo } from './repositories/map-lists-households.repo';
 import { MapListsPersonsRepo } from './repositories/map-lists-persons.repo';
 import { ensureSystemLists, queueSystemListRefreshes } from './system-lists';
-import type { OperationDataType, TypeTenantId } from '../../../../../../libs/common/src/lib/kysely.models';
+import type { OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { WorkflowsController } from '../workflows/controller';
 import { logger } from '../../logger';
 
@@ -152,7 +152,9 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
   }
 
   public async addList(payload: AddListType, auth: IAuthKeyPayload) {
-    // Enforce unique list names per tenant
+    // Enforce unique list names per tenant. This check is the friendly path; two concurrent
+    // creates can both pass it, so uq_lists_tenant_campaign_name is the real guarantee and the
+    // 23505 below turns the loser of that race into the same CONFLICT rather than a 500.
     const existing = await this.getRepo().getOneBy('name', {
       tenant_id: auth.tenant_id,
       value: payload.name,
@@ -176,7 +178,15 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
       status: (payload.is_dynamic ?? false) ? 'refreshing' : 'idle',
     };
 
-    const list = await this.add(row as OperationDataType<'lists', 'insert'>);
+    let list: Awaited<ReturnType<typeof this.add>>;
+    try {
+      list = await this.add(row as OperationDataType<'lists', 'insert'>);
+    } catch (err) {
+      if ((err as { code?: string })?.code === '23505') {
+        throw new TRPCError({ code: 'CONFLICT', message: 'A list with this name already exists.' });
+      }
+      throw err;
+    }
 
     // For dynamic lists, trigger an immediate initial refresh via background job
     if (row.is_dynamic) {
@@ -706,41 +716,69 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
     });
   }
 
+  /**
+   * Deleting a list is a three-table write: its person memberships, its household memberships,
+   * and the list row itself. Run unwrapped, a failure between steps left membership rows pointing
+   * at a list that no longer exists, or stripped a list's members while leaving the list. One
+   * transaction makes it all-or-nothing.
+   */
+  private async deleteListsWithMemberships(tenant_id: string, ids: string[]): Promise<boolean> {
+    return this.getRepo()
+      .transaction()
+      .execute(async (trx) => {
+        await trx
+          .deleteFrom('map_lists_persons')
+          .where('tenant_id', '=', tenant_id)
+          .where('list_id', 'in', ids)
+          .execute();
+
+        await trx
+          .deleteFrom('map_lists_households')
+          .where('tenant_id', '=', tenant_id)
+          .where('list_id', 'in', ids)
+          .execute();
+
+        const result = await trx
+          .deleteFrom('lists')
+          .where('tenant_id', '=', tenant_id)
+          .where('id', 'in', ids)
+          .execute();
+
+        return result.some((r) => Number(r.numDeletedRows ?? 0) > 0);
+      });
+  }
+
   public override async delete(tenant_id: string, idToDelete: string, userId?: string) {
     await this.assertDeletable(tenant_id, [idToDelete]);
 
-    await this.mapListsPersonsRepo.db
-      .deleteFrom('map_lists_persons')
-      .where('tenant_id', '=', tenant_id)
-      .where('list_id', '=', idToDelete)
-      .execute();
+    const deleted = await this.deleteListsWithMemberships(tenant_id, [idToDelete]);
 
-    await this.mapListsHouseholdsRepo.db
-      .deleteFrom('map_lists_households')
-      .where('tenant_id', '=', tenant_id)
-      .where('list_id', '=', idToDelete)
-      .execute();
+    // Activity logging stays outside the transaction and best-effort, matching BaseController:
+    // a failed audit write must not roll back a delete the user already saw succeed.
+    if (userId != null) {
+      try {
+        await this.userActivity.log({
+          tenant_id,
+          user_id: String(userId),
+          activity: 'delete',
+          entity: 'lists',
+          entity_id: String(idToDelete),
+          quantity: 1,
+          metadata: { id: idToDelete },
+        });
+      } catch (e) {
+        logger.error({ err: e }, 'Failed to log list delete activity');
+      }
+    }
 
-    return super.delete(tenant_id as TypeTenantId<'lists'>, idToDelete, userId);
+    return deleted;
   }
 
   public override async deleteMany(tenant_id: string, idsToDelete: string[]) {
     if (idsToDelete.length === 0) return false;
     await this.assertDeletable(tenant_id, idsToDelete);
 
-    await this.mapListsPersonsRepo.db
-      .deleteFrom('map_lists_persons')
-      .where('tenant_id', '=', tenant_id)
-      .where('list_id', 'in', idsToDelete)
-      .execute();
-
-    await this.mapListsHouseholdsRepo.db
-      .deleteFrom('map_lists_households')
-      .where('tenant_id', '=', tenant_id)
-      .where('list_id', 'in', idsToDelete)
-      .execute();
-
-    return super.deleteMany(tenant_id as TypeTenantId<'lists'>, idsToDelete);
+    return this.deleteListsWithMemberships(tenant_id, idsToDelete);
   }
 
   public override async getOneById(input: { tenant_id: string; id: string }) {

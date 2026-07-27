@@ -2,6 +2,7 @@ import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastif
 
 import { CompanionResultsObj } from '../../../../../../../libs/common/src';
 import { CanvassingController } from '../controller';
+import { isRateLimited } from '../../../lib/rate-limiter';
 
 /**
  * Public Canvass Companion API (§13.4 / COMPANION-APPS-PLAN.md §5 B3) — the
@@ -21,17 +22,9 @@ const controller = new CanvassingController();
 // Per-IP fixed-window rate limit (same shape as deliveries-public.route.ts).
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 120;
-const hits = new Map<string, { count: number; resetAt: number }>();
-
+/** Delegates to the shared limiter so these counters are swept instead of growing forever. */
 function rateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = hits.get(ip);
-  if (!entry || entry.resetAt < now) {
-    hits.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return false;
-  }
-  entry.count += 1;
-  return entry.count > RATE_MAX;
+  return isRateLimited(`canvass-public:${ip}`, RATE_MAX, RATE_WINDOW_MS);
 }
 
 /** Narrow an unknown thrown value to an HTTP status without leaking internals. */

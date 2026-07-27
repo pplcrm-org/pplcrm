@@ -1,10 +1,12 @@
 import { Client } from '@microsoft/microsoft-graph-client';
 import crypto from 'crypto';
+import { z } from 'zod';
 import { ALL_FOLDERS } from '../../../../../../../libs/common/src/lib/emails';
 import type { FastifyPluginCallback, FastifyRequest } from 'fastify';
 import type { Insertable, Kysely, Transaction } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
+import { BadRequestError } from '../../../errors/app-errors';
 import { authenticateRest } from '../../../lib/rest-auth';
 import { verifyEmailAttachmentToken } from '../../../lib/signed-download';
 import { BaseRepository } from '../../../lib/base.repo';
@@ -12,13 +14,92 @@ import { attachmentDisposition } from '../../../lib/download-headers';
 import { sanitizeHtml } from '../../../lib/mail/sanitize-util';
 import { StorageService } from '../../../lib/storage.service';
 import { GoogleOAuthService } from '../../google-sync/google-oauth.service';
-import { GoogleSyncService } from '../../google-sync/google-sync.service';
 import { MsOAuthService } from '../../ms-sync/ms-oauth.service';
-import { MsSyncService } from '../../ms-sync/ms-sync.service';
 import { materializeAttachment } from '../services/attachment-materializer';
 import { extractBodyText } from '../services/email-body-text';
 
-function buildRawMime(options: {
+/** Max addresses per header. Well above any real send, low enough to bound the raw MIME. */
+const MAX_RECIPIENTS_PER_FIELD = 100;
+
+/** Recipient lists arrive as JSON strings in a multipart form, so they get parsed, not bound. */
+const recipientListSchema = z.array(z.string().trim().email()).max(MAX_RECIPIENTS_PER_FIELD);
+
+/**
+ * Parse one `to`/`cc`/`bcc` multipart field. These are the only values in the send path that
+ * reach a mail header unencoded, so a malformed or hostile value has to fail as a 400 here
+ * rather than as a 500 (raw `SyntaxError`) or, worse, as an injected header downstream.
+ */
+export function parseRecipientField(raw: string | undefined, label: 'to' | 'cc' | 'bcc'): string[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new BadRequestError(`The "${label}" field is not valid JSON.`);
+  }
+  const result = recipientListSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new BadRequestError(
+      `The "${label}" field must be a list of up to ${MAX_RECIPIENTS_PER_FIELD} email addresses.`,
+    );
+  }
+  return result.data;
+}
+
+/**
+ * CR/LF in a header value terminates the header and lets the rest of the string be read as
+ * new headers (a hidden `Bcc:`, a forged `Reply-To:`). Zod's `.email()` already rejects them
+ * on the recipient path; this is the second line of defence that also covers the sender name
+ * and address, and it guards every future caller of `buildRawMime`.
+ */
+function assertHeaderSafe(value: string, label: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new BadRequestError(`The ${label} contains a line break, which is not allowed.`);
+  }
+  return value;
+}
+
+/**
+ * Same concern as {@link assertHeaderSafe}, but for the `raw_headers` blob we persist as a
+ * record of a sent message. A line break there can't reach the wire, but it would make the
+ * stored headers parse as forged ones, so it is folded to a space rather than rejected — by
+ * the time this runs the message is already composed, and a stray break in a subject is a
+ * typo, not an attack.
+ */
+function stripHeaderBreaks(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ');
+}
+
+/**
+ * Queue a post-send mailbox sync so the Sent copy and any new folders show up.
+ *
+ * This used to be `syncSvc.syncTenant(...).catch(log)` — a detached promise doing long HTTP work
+ * against Gmail/Graph plus database writes, with no job row, no retry, no timeout, and silent
+ * death on deploy. When it was killed the user's Sent folder simply never synced. The `ms_sync` /
+ * `google_sync` job types already exist and the worker already has permanent-failure recovery for
+ * both, so this just hands the work to the outbox like every other background task in the app.
+ */
+async function queueMailboxSync(
+  db: Kysely<Models>,
+  type: 'ms_sync' | 'google_sync',
+  tenantId: string,
+  campaignId: string,
+  userId: string,
+): Promise<void> {
+  await db
+    .insertInto('background_jobs')
+    .values({
+      tenant_id: tenantId,
+      queue: 'default',
+      status: 'pending',
+      payload: JSON.stringify({ type, tenantId, campaignId, requestedBy: userId }),
+      run_at: new Date(),
+      max_attempts: 3,
+    })
+    .execute();
+}
+
+export function buildRawMime(options: {
   fromName: string;
   fromEmail: string;
   to: string[];
@@ -31,8 +112,16 @@ function buildRawMime(options: {
   const boundary = `----=_Part_${crypto.randomBytes(8).toString('hex')}_${Date.now()}`;
   const headers: string[] = [];
 
-  const safeFromName = options.fromName.replace(/"/g, '\\"');
-  headers.push(`From: "${safeFromName}" <${options.fromEmail}>`);
+  for (const [label, list] of [
+    ['recipient list', options.to],
+    ['Cc list', options.cc],
+    ['Bcc list', options.bcc],
+  ] as const) {
+    for (const address of list) assertHeaderSafe(address, label);
+  }
+
+  const safeFromName = assertHeaderSafe(options.fromName, 'sender name').replace(/"/g, '\\"');
+  headers.push(`From: "${safeFromName}" <${assertHeaderSafe(options.fromEmail, 'sender address')}>`);
   headers.push(`To: ${options.to.join(', ')}`);
   if (options.cc.length > 0) {
     headers.push(`Cc: ${options.cc.join(', ')}`);
@@ -209,7 +298,7 @@ export async function saveLocalEmail(
 
     // 4. Insert headers
     const internetMessageId = `<${crypto.randomUUID()}@pplcrm.local>`;
-    const rawHeaders = `Message-ID: ${internetMessageId}\r\nSubject: ${subject}\r\nFrom: "${fromName}" <${fromEmail}>\r\nTo: ${toList.join(', ')}\r\nDate: ${new Date().toUTCString()}\r\n`;
+    const rawHeaders = `Message-ID: ${internetMessageId}\r\nSubject: ${stripHeaderBreaks(subject)}\r\nFrom: "${stripHeaderBreaks(fromName)}" <${stripHeaderBreaks(fromEmail)}>\r\nTo: ${toList.join(', ')}\r\nDate: ${new Date().toUTCString()}\r\n`;
 
     await trx
       .insertInto('email_headers')
@@ -344,10 +433,12 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
       }
     }
 
-    // Parse recipient lists and content fields
-    const toList = fields.to ? JSON.parse(fields.to) : [];
-    const ccList = fields.cc ? JSON.parse(fields.cc) : [];
-    const bccList = fields.bcc ? JSON.parse(fields.bcc) : [];
+    // Parse recipient lists and content fields. These are the only user-supplied values that
+    // reach a mail header unencoded, so they are validated rather than trusted (see
+    // parseRecipientField).
+    const toList = parseRecipientField(fields.to, 'to');
+    const ccList = parseRecipientField(fields.cc, 'cc');
+    const bccList = parseRecipientField(fields.bcc, 'bcc');
     const subject = fields.subject || '';
     const html = sanitizeHtml(fields.html || '');
 
@@ -481,7 +572,7 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
             .execute();
 
           if (graphInternetMessageId) {
-            const rawHeaders = `Message-ID: ${graphInternetMessageId}\r\nSubject: ${subject}\r\nFrom: "${fromName}" <${fromEmail}>\r\nTo: ${toList.join(', ')}\r\nDate: ${new Date().toUTCString()}\r\n`;
+            const rawHeaders = `Message-ID: ${graphInternetMessageId}\r\nSubject: ${stripHeaderBreaks(subject)}\r\nFrom: "${stripHeaderBreaks(fromName)}" <${stripHeaderBreaks(fromEmail)}>\r\nTo: ${toList.join(', ')}\r\nDate: ${new Date().toUTCString()}\r\n`;
             await db
               .updateTable('email_headers')
               .set({
@@ -516,11 +607,12 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
             .returningAll()
             .executeTakeFirstOrThrow();
 
-          // Trigger background sync to get folders/Sent items synchronized
-          const syncSvc = new MsSyncService(db, oauthSvc);
-          syncSvc.syncTenant(tenantId, campaignId, userId).catch((err: unknown) => {
-            fastify.log.error(err, `Failed to trigger background sync after sending email ${emailRow.id}`);
-          });
+          // Sync folders/Sent items through the outbox so the work survives a deploy.
+          try {
+            await queueMailboxSync(db, 'ms_sync', tenantId, campaignId, userId);
+          } catch (err) {
+            fastify.log.error(err, `Failed to queue mailbox sync after sending email ${emailRow.id}`);
+          }
 
           try {
             const { queueUsageLimitCheck } = await import('../../billing/usage-limits');
@@ -608,10 +700,11 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
             .returningAll()
             .executeTakeFirstOrThrow();
 
-          const googleSyncSvc = new GoogleSyncService(db, oauthSvc);
-          googleSyncSvc.syncTenant(tenantId, campaignId, userId).catch((err: unknown) => {
-            fastify.log.error(err, `Failed to trigger background sync after sending Google email ${emailRow.id}`);
-          });
+          try {
+            await queueMailboxSync(db, 'google_sync', tenantId, campaignId, userId);
+          } catch (err) {
+            fastify.log.error(err, `Failed to queue mailbox sync after sending Google email ${emailRow.id}`);
+          }
 
           try {
             const { queueUsageLimitCheck } = await import('../../billing/usage-limits');

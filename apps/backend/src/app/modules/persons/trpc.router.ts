@@ -4,6 +4,7 @@ import {
   exportCsvResponse,
   getAllOptions,
   idSchema,
+  MAX_BULK_IDS,
 } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
@@ -50,9 +51,12 @@ function deleteOne() {
 }
 
 const deleteManyInput = z.union([
-  z.array(idSchema).min(1, 'At least one ID is required'),
+  z.array(idSchema).min(1, 'At least one ID is required').max(MAX_BULK_IDS, 'Too many items selected for one action'),
   z.object({
-    ids: z.array(idSchema).min(1, 'At least one ID is required'),
+    ids: z
+      .array(idSchema)
+      .min(1, 'At least one ID is required')
+      .max(MAX_BULK_IDS, 'Too many items selected for one action'),
     force: z.boolean().optional(),
   }),
 ]);

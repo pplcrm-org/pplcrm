@@ -10,7 +10,24 @@ describe('EmailsController Comments', () => {
   beforeEach(() => {
     controller = new EmailsController();
     vi.restoreAllMocks();
+    stubCommentTransaction();
   });
+
+  /**
+   * addComment writes the comment and its `process_mentions` outbox job in one transaction.
+   * These are unit tests with fake non-numeric ids, so run the callback against a fake trx whose
+   * only job is to absorb the background_jobs insert.
+   */
+  function stubCommentTransaction(): void {
+    const trx: any = {
+      insertInto: vi.fn(() => trx),
+      values: vi.fn(() => trx),
+      execute: vi.fn().mockResolvedValue([]),
+    };
+    vi.spyOn((controller as any).commentsRepo, 'transaction').mockReturnValue({
+      execute: (cb: (t: unknown) => Promise<unknown>) => cb(trx),
+    } as any);
+  }
 
   it('should throw BadRequestError if comment is empty or whitespace', async () => {
     await expect(controller.addComment('tenant-1', 'email-1', 'author-1', '')).rejects.toThrow(BadRequestError);
@@ -33,16 +50,19 @@ describe('EmailsController Comments', () => {
     // role 'owner' short-circuits the campaign-scope check (these fake ids aren't real DB rows)
     const result = await controller.addComment('tenant-1', 'email-1', 'author-1', 'This is a test comment', 'owner');
 
-    expect(addSpy).toHaveBeenCalledWith({
-      row: {
-        tenant_id: 'tenant-1',
-        email_id: 'email-1',
-        author_id: 'author-1',
-        comment: 'This is a test comment',
-        createdby_id: 'author-1',
-        updatedby_id: 'author-1',
+    expect(addSpy).toHaveBeenCalledWith(
+      {
+        row: {
+          tenant_id: 'tenant-1',
+          email_id: 'email-1',
+          author_id: 'author-1',
+          comment: 'This is a test comment',
+          createdby_id: 'author-1',
+          updatedby_id: 'author-1',
+        },
       },
-    });
+      expect.anything(), // the transaction the comment and its mention job share
+    );
     expect(result).toEqual(mockCommentRow);
   });
 

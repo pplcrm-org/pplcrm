@@ -30,6 +30,7 @@ import type {
   TypeTenantId,
 } from '../../../../../libs/common/src/lib/kysely.models';
 import type { GridColumnFilter } from '../../../../../libs/common/src';
+import { MAX_PAGE_SIZE } from '../../../../../libs/common/src';
 import { Pool } from 'pg';
 import { env } from '../../env';
 import { currentTenantId } from './tenant-context';
@@ -40,6 +41,9 @@ import Cursor from 'pg-cursor';
 // a bound parameter (never string-interpolated), but still validate here so a
 // corrupt context can never smuggle SQL or a non-numeric GUC into the session.
 const TENANT_ID_PATTERN = /^\d+$/;
+
+/** How deeply the advanced-filter rule builder may nest groups before we refuse the payload. */
+const MAX_FILTER_DEPTH = 10;
 
 /**
  * Tables whose rows belong to exactly one campaign context (Campaigns §15).
@@ -399,7 +403,11 @@ export class BaseRepository<T extends keyof Models> {
     const derivedLimit = !hasLimit && typeof endRow === 'number' ? Math.max(0, endRow - (startRow ?? 0)) : undefined;
     const derivedOffset = !hasOffset && typeof startRow === 'number' ? startRow : undefined;
 
-    const finalLimit = hasLimit ? options?.limit : derivedLimit;
+    // A request that derives no limit at all used to select every row in the tenant into memory.
+    // MAX_PAGE_SIZE is the backstop for that case only — an explicit limit from a trusted caller
+    // (e.g. the inline CSV export, which deliberately asks for 50k+1 so it can refuse rather than
+    // truncate) still wins, and untrusted input is already bounded by getAllOptions.
+    const finalLimit = hasLimit ? options?.limit : (derivedLimit ?? MAX_PAGE_SIZE);
     const finalOffset = hasOffset ? options?.offset : derivedOffset;
 
     query = typeof finalLimit === 'number' ? query.limit(finalLimit) : query;
@@ -679,7 +687,15 @@ export class BaseRepository<T extends keyof Models> {
     eb: any,
     group: QueryBuilderGroupNode,
     columnMapping: Record<string, { col: string; isCast?: boolean }>,
+    depth = 0,
   ): any {
+    // The rule builder nests groups, and this walks them recursively. The UI never goes more
+    // than a couple of levels deep, so anything past this is a hand-crafted payload trying to
+    // blow the stack — refuse it rather than recursing.
+    if (depth > MAX_FILTER_DEPTH) {
+      throw new Error(`Advanced filter is nested more than ${MAX_FILTER_DEPTH} levels deep.`);
+    }
+
     if (!group.rules || group.rules.length === 0) {
       return null;
     }
@@ -699,7 +715,7 @@ export class BaseRepository<T extends keyof Models> {
           const mappedOp = node.op === 'eq' ? 'equals' : node.op === 'neq' ? 'notEquals' : node.op;
           return this.buildRuleExpression(eb, mapping.col, !!mapping.isCast, mappedOp, node.value);
         } else {
-          return this.buildGroupExpression(eb, node, columnMapping);
+          return this.buildGroupExpression(eb, node, columnMapping, depth + 1);
         }
       })
       .filter(Boolean);

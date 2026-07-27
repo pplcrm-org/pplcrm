@@ -4,6 +4,14 @@ import type { Models } from '../../../../../../../libs/common/src/lib/kysely.mod
 import { env } from '../../../../env';
 import { logger } from '../../../logger';
 
+/**
+ * Per-run ceiling on enrichment jobs queued by the daily cron, across all tenants. Each job is a
+ * Google Places call, so this also paces API spend; the leftovers are queued by the next run.
+ */
+const ENRICHMENT_QUEUE_BATCH = 2000;
+/** Rows per insert statement, so one run never builds a single enormous multi-row INSERT. */
+const ENRICHMENT_INSERT_CHUNK = 500;
+
 /** Fields we lift from Google Places. All optional — Google may not know them. */
 export interface CompanyLookupResult {
   website: string | null;
@@ -143,11 +151,31 @@ export class CompaniesEnrichmentService {
       .execute();
   }
 
+  /**
+   * Enqueue enrichment jobs for companies that have never been enriched.
+   *
+   * Called from the daily `refresh_companies_google` cron with no tenant, i.e. across every tenant
+   * at once. It used to select every matching row with no limit and write them in one giant insert,
+   * and it did not skip companies that already had a pending job — so a backlog re-duplicated the
+   * whole queue every single day. Now: a per-run ceiling, batched inserts, and a NOT EXISTS guard.
+   * Whatever is left over is simply picked up by tomorrow's run.
+   */
   public async queueUnenrichedCompanies(tenantId?: string): Promise<number> {
     let query = this.db
       .selectFrom('companies')
       .select(['id', 'tenant_id'])
-      .where((eb) => eb.or([eb('enrichment', 'is', null), sql<boolean>`enrichment->>'google_enriched' is null`]));
+      .where((eb) => eb.or([eb('enrichment', 'is', null), sql<boolean>`enrichment->>'google_enriched' is null`]))
+      // Don't re-queue a company that is already waiting to be enriched.
+      .where(
+        (eb) => sql<boolean>`not exists (
+          select 1 from background_jobs bj
+          where bj.status in ('pending', 'processing')
+            and bj.payload->>'type' = 'enrich_company_google'
+            and bj.payload->>'company_id' = ${eb.ref('companies.id')}::text
+        )`,
+      )
+      .orderBy('id', 'asc')
+      .limit(ENRICHMENT_QUEUE_BATCH);
 
     if (tenantId) {
       query = query.where('tenant_id', '=', tenantId);
@@ -169,7 +197,19 @@ export class CompaniesEnrichmentService {
       max_attempts: 3,
     }));
 
-    await this.db.insertInto('background_jobs').values(values).execute();
+    for (let i = 0; i < values.length; i += ENRICHMENT_INSERT_CHUNK) {
+      await this.db
+        .insertInto('background_jobs')
+        .values(values.slice(i, i + ENRICHMENT_INSERT_CHUNK))
+        .execute();
+    }
+
+    if (unenriched.length === ENRICHMENT_QUEUE_BATCH) {
+      logger.info(
+        { queued: unenriched.length, tenantId: tenantId ?? 'all' },
+        'Company enrichment hit the per-run cap; the remainder is picked up by the next run',
+      );
+    }
 
     return unenriched.length;
   }

@@ -1,5 +1,9 @@
 import type { FastifyPluginCallback, FastifyRequest } from 'fastify';
 import type { Kysely } from 'kysely';
+// `lower(email) = ?` rather than ILIKE: `_` and `%` are LIKE wildcards and are both legal in an
+// email local part, so an ILIKE lookup can match — and then overwrite — the wrong person.
+// It also lets Postgres use idx_persons_tenant_email_btree, which ILIKE cannot.
+import { sql } from 'kysely';
 import { z } from 'zod';
 import { PersonsService } from '../persons/services/persons.service';
 import type { IAuthKeyPayload } from '@common';
@@ -104,7 +108,7 @@ const zapierInboundRoute: FastifyPluginCallback = (fastify, _opts, done) => {
         .selectFrom('persons')
         .select(['id', 'email'])
         .where('tenant_id', '=', tenantId)
-        .where('email', 'ilike', email.trim())
+        .where(sql`lower(email)`, '=', email.trim().toLowerCase())
         .executeTakeFirst();
 
       if (existing) {
@@ -144,7 +148,7 @@ const zapierInboundRoute: FastifyPluginCallback = (fastify, _opts, done) => {
         .selectFrom('persons')
         .select(['id'])
         .where('tenant_id', '=', tenantId)
-        .where('email', 'ilike', email.trim())
+        .where(sql`lower(email)`, '=', email.trim().toLowerCase())
         .executeTakeFirst();
 
       if (!person) {
@@ -183,7 +187,7 @@ const zapierInboundRoute: FastifyPluginCallback = (fastify, _opts, done) => {
         .selectFrom('persons')
         .select(['id'])
         .where('tenant_id', '=', tenantId)
-        .where('email', 'ilike', email.trim())
+        .where(sql`lower(email)`, '=', email.trim().toLowerCase())
         .executeTakeFirst();
 
       if (!person) {

@@ -1,4 +1,10 @@
-import { getAllOptions, idSchema, exportCsvInput, exportCsvResponse } from '../../../../../libs/common/src';
+import {
+  getAllOptions,
+  idSchema,
+  exportCsvInput,
+  exportCsvResponse,
+  MAX_BULK_IDS,
+} from '../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure } from '../../trpc';
 import type { BaseController } from './base.controller';
@@ -53,7 +59,12 @@ export function createCrudRouter<
       .input(idSchema)
       .mutation(({ input, ctx }) => controller.delete(ctx.auth.tenant_id, input, ctx.auth.user_id)),
     deleteMany: procedure
-      .input(z.array(idSchema).min(1, 'At least one ID is required'))
+      .input(
+        z
+          .array(idSchema)
+          .min(1, 'At least one ID is required')
+          .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+      )
       .mutation(({ input, ctx }) => controller.deleteMany(ctx.auth.tenant_id, input)),
     count: procedure.query(({ ctx }) => controller.getCount(ctx.auth.tenant_id)),
     exportCsv: procedure

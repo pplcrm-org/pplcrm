@@ -5,6 +5,7 @@ import { logger } from '../../../logger';
 import { NotificationsRepo } from '../../../modules/notifications/repositories/notifications.repo';
 import { notificationEnabled } from '../../profile-preferences';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { processMentions } from '../../mail/mentions-util';
 import { SmsService } from '../../sms/sms.service';
 import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
@@ -547,4 +548,19 @@ export async function checkDueTasks(db: Kysely<Models>): Promise<void> {
   } catch (err) {
     logger.error({ err }, 'Failed to check and notify due tasks');
   }
+}
+
+/**
+ * Deliver @mention notifications for one comment.
+ *
+ * A thin wrapper over `processMentions` so the work runs on the outbox instead of as a detached
+ * promise on the comment request. The comment itself is already committed by the time this runs;
+ * this only fans out notifications, so a retry is safe (pushNotification/sendMail are the same
+ * per-user, preference-gated calls the inline version made).
+ */
+export async function handleProcessMentions(
+  payload: JobPayloadOf<'process_mentions'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  await processMentions(db, payload.tenant_id, payload.commentText, payload.commentLink, payload.authorId);
 }

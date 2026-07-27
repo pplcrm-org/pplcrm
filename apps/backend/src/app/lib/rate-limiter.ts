@@ -24,6 +24,23 @@ function sweep(now: number): void {
   }
 }
 
+/**
+ * Record a hit and report whether the caller is now over the limit, without throwing.
+ *
+ * This is the same counter `checkRateLimit` uses — including the sweep above — and exists for the
+ * public companion/canvass/deliveries routes, which reply with their own uniform 429 body rather
+ * than letting an error propagate. Those routes previously each kept their own `Map` with no
+ * eviction at all, so distinct client IPs accumulated for the life of the process.
+ */
+export function isRateLimited(key: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  sweep(now);
+  const hits = (store.get(key) ?? []).filter((t) => now - t < windowMs);
+  hits.push(now);
+  store.set(key, hits);
+  return hits.length > limit;
+}
+
 export function checkRateLimit(key: string, limit: number, windowMs: number): void {
   const now = Date.now();
   sweep(now);
