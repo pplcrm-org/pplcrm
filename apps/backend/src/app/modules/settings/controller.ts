@@ -27,7 +27,7 @@ interface VerifiedDomainEntry {
 import { randomInt, timingSafeEqual } from 'crypto';
 
 import { BaseController } from '../../lib/base.controller';
-import { BadRequestError, TooManyRequestsError } from '../../errors/app-errors';
+import { BadRequestError, ConflictError, TooManyRequestsError } from '../../errors/app-errors';
 import { SendGridWhitelabelService } from '../../lib/mail/sendgrid-whitelabel.service';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { checkRateLimit } from '../../lib/rate-limiter';
@@ -70,6 +70,11 @@ const verificationRequestTimestamps = new Map<string, number>(); // key: `${tena
 const tenantVerificationTimestamps = new Map<string, number[]>(); // key: tenant_id, value: array of timestamps
 const domainVerificationTimestamps = new Map<string, number>(); // key: `${tenant_id}:${domain}`, value: timestamp
 const tenantDomainVerificationTimestamps = new Map<string, number[]>(); // key: tenant_id, value: array of timestamps
+
+/** Postgres unique-violation, narrowed without asserting a shape onto an unknown catch binding. */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === '23505';
+}
 
 export class SettingsController extends BaseController<'settings', SettingsRepo> {
   private mailService = new TransactionalEmailService();
@@ -1020,63 +1025,81 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     return updatedList;
   }
 
-  public async generateApiKey(auth: IAuthKeyPayload) {
+  /**
+   * Issue a key into the tenant's first free slot.
+   *
+   * A workspace may hold two at once (KEY_SLOTS), which is what makes rotation non-destructive:
+   * issue the second key, move the integrations across, then revoke the first. There is no
+   * "regenerate" any more — replacing a key in place is precisely the outage this replaces.
+   */
+  public async createApiKey(auth: IAuthKeyPayload) {
+    // Dynamic import: plan-gate pulls in the tRPC root, which transitively imports the routers
+    // that import this controller. A static import here would close that cycle.
+    const { assertPlanFeature } = await import('../billing/plan-gate');
+    await assertPlanFeature(this.getRepo().db, auth.tenant_id, 'api');
+
     const { generateApiKey, hashApiKey, getKeyPreview } = await import('../../lib/api-key');
-    const workspaceApiKeysRepo = (await import('./repositories/workspace-api-keys.repo')).WorkspaceApiKeysRepo;
-    const repo = new workspaceApiKeysRepo();
+    const { WorkspaceApiKeysRepo, KEY_SLOTS, MAX_KEYS_PER_TENANT } =
+      await import('./repositories/workspace-api-keys.repo');
+    const repo = new WorkspaceApiKeysRepo();
 
-    // Generate new key
-    const rawKey = generateApiKey();
-    const keyHash = hashApiKey(rawKey);
-    const keyPreview = getKeyPreview(rawKey);
-
-    // Store in database (will overwrite existing key if present)
-    await repo.create(auth.tenant_id, keyHash, keyPreview);
-
-    // Return the full key only once — it's never retrievable again, only the preview
-    return {
-      key: rawKey,
-      preview: keyPreview,
-    };
-  }
-
-  public async getApiKeyPreview(auth: IAuthKeyPayload) {
-    const workspaceApiKeysRepo = (await import('./repositories/workspace-api-keys.repo')).WorkspaceApiKeysRepo;
-    const repo = new workspaceApiKeysRepo();
-
-    const row = await repo.getByTenantId(auth.tenant_id);
-    if (!row) {
-      return null;
+    const existing = await repo.listByTenantId(auth.tenant_id);
+    if (existing.length >= MAX_KEYS_PER_TENANT) {
+      throw new ConflictError(
+        `A workspace can hold ${MAX_KEYS_PER_TENANT} API keys. Revoke one before creating another.`,
+      );
     }
 
-    return {
+    const taken = new Set(existing.map((row) => Number(row.slot)));
+    const slot = KEY_SLOTS.find((candidate) => !taken.has(candidate));
+    if (slot == null) {
+      throw new ConflictError(
+        `A workspace can hold ${MAX_KEYS_PER_TENANT} API keys. Revoke one before creating another.`,
+      );
+    }
+
+    const rawKey = generateApiKey();
+
+    try {
+      await repo.createInSlot(auth.tenant_id, slot, hashApiKey(rawKey), getKeyPreview(rawKey));
+    } catch (err) {
+      // uq_workspace_api_keys_tenant_slot: two concurrent creates both saw the slot free. The
+      // constraint is the real cap — without this the loser would surface as a raw 500.
+      if (isUniqueViolation(err)) {
+        throw new ConflictError('Another API key was just created. Reload the page and try again.');
+      }
+      throw err;
+    }
+
+    // The raw key is returned exactly once and never stored — only its hash and a short preview.
+    return { key: rawKey, preview: getKeyPreview(rawKey), slot };
+  }
+
+  /** The tenant's keys, previews only. Never gated on plan: a downgraded tenant must still be
+   * able to see and revoke credentials it can no longer use. */
+  public async listApiKeys(auth: IAuthKeyPayload) {
+    const { WorkspaceApiKeysRepo } = await import('./repositories/workspace-api-keys.repo');
+    const rows = await new WorkspaceApiKeysRepo().listByTenantId(auth.tenant_id);
+
+    return rows.map((row) => ({
+      slot: Number(row.slot),
       preview: row.key_preview,
       createdAt: row.created_at,
       lastUsedAt: row.last_used_at,
-    };
-  }
-
-  public async regenerateApiKey(auth: IAuthKeyPayload) {
-    // Regenerate is just generate with replace semantics — the repo's
-    // ON CONFLICT handling automatically replaces the old key
-    return this.generateApiKey(auth);
+    }));
   }
 
   /**
-   * Revoke the key without issuing a replacement.
+   * Revoke one key without issuing a replacement.
    *
-   * Deliberately distinct from regenerate, which always leaves a live credential behind.
-   * Regenerate answers "this key leaked but I still need the API"; this answers "we are done
-   * with the API". Without it, a workspace that clicks Generate once carries a credential that
-   * authenticates public write endpoints (form submit, RSVP, volunteer signup) forever, whether
-   * or not anyone still uses it.
-   *
-   * Safe to expose because it is one click to undo: the empty state offers Generate again.
+   * Two distinct jobs, now that a workspace can hold two keys: revoking the older half of a
+   * rotation once traffic has moved, and switching API access off entirely. Neither is served by
+   * replacing a key in place. Not plan-gated for the same reason as `listApiKeys` — taking a
+   * credential out of service must never require an upgrade.
    */
-  public async revokeApiKey(auth: IAuthKeyPayload) {
-    const workspaceApiKeysRepo = (await import('./repositories/workspace-api-keys.repo')).WorkspaceApiKeysRepo;
-    const repo = new workspaceApiKeysRepo();
+  public async revokeApiKey(auth: IAuthKeyPayload, slot: number) {
+    const { WorkspaceApiKeysRepo } = await import('./repositories/workspace-api-keys.repo');
 
-    await repo.deleteByTenantId(auth.tenant_id);
+    await new WorkspaceApiKeysRepo().deleteByTenantAndSlot(auth.tenant_id, slot);
   }
 }

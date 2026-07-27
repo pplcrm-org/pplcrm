@@ -18,6 +18,7 @@ apps/
           0001_baseline.ts
           2026-07-26-list-name-unique.ts
           2026-07-26-sort-indexes-hot-lists.ts
+          2026-07-27-workspace-api-keys-two-slots.ts
           schema.sql
         config/
           email-folders.config.ts

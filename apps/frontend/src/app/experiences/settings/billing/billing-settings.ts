@@ -22,6 +22,7 @@ import {
   type PurchasablePlanKey,
 } from '@common';
 import { AuthService } from '../../../auth/auth-service';
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { TRPCService } from '../../../services/api/trpc-service';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
 
@@ -69,6 +70,7 @@ function isPurchasablePlan(value: string | undefined): value is PurchasablePlanK
 export class BillingSettingsComponent extends TRPCService<any> implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly auth = inject(AuthService);
+  private readonly dialogs = inject(ConfirmDialogService);
   private readonly route = inject(ActivatedRoute);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -331,9 +333,59 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     }
   }
 
+  /**
+   * What stops working on Free, phrased for a human. Empty when nothing would break.
+   *
+   * Forms and API keys are the dangerous ones: both keep *looking* live after a downgrade while
+   * quietly refusing traffic, so a campaign finds out from a drop in signups rather than from us.
+   */
+  private async downgradeWarning(): Promise<string | null> {
+    let impact: { activeAutomations: number; apiKeys: number; publishedForms: number };
+    try {
+      impact = await this.api.billing.getDowngradeImpact.query();
+    } catch {
+      // Never let a failed advisory lookup block a billing action the user is entitled to take.
+      return null;
+    }
+
+    const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+    const losses: string[] = [];
+    if (impact.publishedForms > 0) {
+      losses.push(
+        `${plural(impact.publishedForms, 'published form', 'published forms')} will stop accepting submissions` +
+          ' — anyone who opens one on your website sees an error',
+      );
+    }
+    if (impact.apiKeys > 0) {
+      losses.push(
+        `${plural(impact.apiKeys, 'API key', 'API keys')} will stop working, so Zapier and any server-side` +
+          ' integration you have built will fail',
+      );
+    }
+    if (impact.activeAutomations > 0) {
+      losses.push(`${plural(impact.activeAutomations, 'active automation', 'active automations')} will stop sending`);
+    }
+    if (losses.length === 0) return null;
+
+    return `On the Free plan, ${losses.join('; ')}. Nothing is deleted — it all resumes if you upgrade again.`;
+  }
+
   /** Commit to the Free plan. Not a checkout: Free isn't purchasable, so this records the choice
    * directly. It is what unblocks leaving demo mode, which needs a settled plan decision. */
   protected async continueOnFree() {
+    const warning = await this.downgradeWarning();
+    if (warning) {
+      const confirmed = await this.dialogs.confirm({
+        title: 'Move to the Free plan?',
+        message: warning,
+        variant: 'danger',
+        confirmText: 'Move to Free',
+        cancelText: 'Stay on my plan',
+        emphasizeCancel: true,
+      });
+      if (!confirmed) return;
+    }
+
     this.pendingPlan.set('free');
     try {
       await this.api.billing.selectFree.mutate();
@@ -349,6 +401,23 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   }
 
   protected async openPortal() {
+    // The portal is where a paid downgrade or cancellation actually happens, and it is Stripe's
+    // UI — we cannot warn inside it, and by the time the webhook tells us, the forms have already
+    // gone quiet. So warn on the way in. Only for paid tenants with something to lose, because
+    // this button is also the ordinary "update my card" path and must not nag.
+    if (this.details()?.plan && this.details()?.plan !== 'free') {
+      const warning = await this.downgradeWarning();
+      if (warning) {
+        const proceed = await this.dialogs.confirm({
+          title: 'Before you change your plan',
+          message: `If you cancel or move to the Free plan: ${warning} Changing your payment details is unaffected.`,
+          variant: 'warning',
+          confirmText: 'Open billing portal',
+        });
+        if (!proceed) return;
+      }
+    }
+
     this.portalPending.set(true);
     try {
       const res = await this.api.billing.createPortal.mutate();

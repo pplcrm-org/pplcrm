@@ -762,6 +762,8 @@ interface WorkspaceApiKeys {
   tenant_id: string;
   key_hash: string;
   key_preview: string;
+  /** 1 or 2 — a tenant may hold two live keys so a rotation can overlap. Unique per tenant. */
+  slot: Generated<number>;
   created_at: Generated<Timestamp>;
   last_used_at: Timestamp | null;
 }

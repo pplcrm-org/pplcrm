@@ -24,6 +24,7 @@ import { WorkflowsController } from '../workflows/controller';
 import { DonationsController } from '../donations/controller';
 import { logger } from '../../logger';
 import { isRateLimited } from '../../lib/rate-limiter';
+import { assertPlanFeature } from '../billing/plan-gate';
 
 // Sliding-window per-IP submission limit. Counters live in the shared limiter (lib/rate-limiter),
 // which sweeps stale keys; see the single-instance caveat documented there.
@@ -158,15 +159,23 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
         message: 'Web form not found or inactive.',
       });
     }
+
+    // 3. Plan gate. The web-forms tRPC router already gates authoring, but a downgrade left every
+    // already-embedded form quietly accepting submissions — the gate only stopped you editing.
+    // Enforced here rather than on the route so the keyless embed and the keyed server-side
+    // submit are covered by one check. `assertPlanFeature` throws FORBIDDEN, which the public
+    // route renders as its 403 page, so the visitor sees a real message rather than a blank fail.
+    // A tenant is warned about exactly this before the downgrade goes through (BillingController).
+    await assertPlanFeature(this.getRepo().db, tenantId, 'forms');
     const formId = String(form.id);
 
-    // 3. Honeypot check
+    // 4. Honeypot check
     if (payload['_hp'] && payload['_hp'].trim().length > 0) {
       logger.warn(`Spam bot detected from IP ${clientIp} for form ${formId}`);
       return { redirect_url: form.redirect_url || null };
     }
 
-    // 4. Validate email
+    // 5. Validate email
     const email = payload['email']?.trim();
     if (!email) {
       throw new TRPCError({
@@ -314,7 +323,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
       }
     }
 
-    // 5. Gather submission fields. New-model forms collect a single `full_name`; split it on the
+    // 6. Gather submission fields. New-model forms collect a single `full_name`; split it on the
     // last space so the person record still gets a first/last name.
     let firstName = payload['first_name'] || payload['firstName'] || null;
     let lastName = payload['last_name'] || payload['lastName'] || null;
@@ -336,7 +345,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     let resolvedPersonId = '';
     let resolvedCreatorId = '1';
 
-    // 6. Find or Create person & apply merges/tags
+    // 7. Find or Create person & apply merges/tags
     await this.getRepo()
       .transaction()
       .execute(async (trx: Transaction<Models>) => {
@@ -689,7 +698,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
           .execute();
       });
 
-    // 7. If donation/recurring form, initialize checkout session after transactional writes commit
+    // 8. If donation/recurring form, initialize checkout session after transactional writes commit
     if (form.form_type === 'donation' || form.form_type === 'recurring_donation') {
       const donationsController = new DonationsController();
       const successUrl = `${env.apiUrl.replace(/\/$/, '')}/api/forms/success?checkout_session_id={CHECKOUT_SESSION_ID}`;

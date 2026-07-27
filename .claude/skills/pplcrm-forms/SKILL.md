@@ -34,7 +34,13 @@ grid + form-editor model is gone; `forms-grid.ts` and `form-editor.ts` were dele
   `UpdateFormObj`, `FormSubmissionObj`. Legacy `AddWebFormObj`/`UpdateWebFormObj` still exist for the
   donation path.
 - **Backend** — `apps/backend/src/app/modules/web-forms/`: `controller.ts` (lifecycle methods +
-  `submitFormPublic` + `getPublicFormBySlug`). **List targeting** lives in the `map_web_forms_lists`
+  `submitFormPublic` + `getPublicFormBySlug`). **`submitFormPublic` carries the `forms` plan gate
+  (2026-07-27)** — `assertPlanFeature(db, tenantId, 'forms')` right after the published-status
+  check, so BOTH the keyless embed and the keyed server-side submit are covered by one call. The
+  tRPC router gates authoring only, which meant a downgraded tenant could not edit a form but every
+  already-embedded form kept quietly accepting submissions. Consequence for specs: a tenant row must
+  seed `subscription_plan: 'grassroots'` or every submission test fails on the gate. **List
+  targeting** lives in the `map_web_forms_lists`
   join table (FK ON DELETE CASCADE — source of truth; the controller write paths sync it via
   `syncTargetLists` and the submit path reads it). The JSONB `web_forms.target_lists` column is
   legacy dual-write only, slated to drop. `target_tags` stays JSONB deliberately: it holds tag

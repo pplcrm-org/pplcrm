@@ -13,7 +13,7 @@ export const SECURITY_DOC: LegalDoc = {
   title: 'Security',
   intro:
     'Boring, deliberate security: what we actually do to protect your list, described specifically enough to be checked. No badges we have not earned.',
-  updated: 'July 25, 2026',
+  updated: 'July 27, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -94,7 +94,7 @@ export const SECURITY_DOC: LegalDoc = {
       items: [
         'Every inbound webhook is authenticated before we act on it: Stripe events by signature, SendGrid events by ECDSA signature, and Postmark events by a shared token compared in constant time.',
         'Mailbox sync is opt-in per workspace, scoped by OAuth consent, disconnectable at any time, and its tokens are encrypted as described above.',
-        'API keys for integrations are generated per workspace and revocable.',
+        'API keys for integrations are issued per workspace, stored only as a SHA-256 hash, and shown once at creation. A workspace can hold two at a time so a key can be rotated without downtime, and either can be revoked at any moment — revocation takes effect on the next request.',
       ],
     },
     {

@@ -213,19 +213,25 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Submitting from your own server or backend instead? Generate a **workspace API key** (Workspace settings → **API keys**) and send it as an `Authorization: Bearer` header. The key identifies your workspace on its own — no `?t=` needed — and lifts the anonymous per-visitor rate limit in favor of a per-workspace one built for batch traffic. The same key authenticates Zapier and the event RSVP and volunteer signup endpoints.',
+        text: 'Submitting from your own server or backend instead? Create a **workspace API key** (Workspace settings → **API keys**) and send it as an `Authorization: Bearer` header. The key identifies your workspace on its own — no `?t=` needed — and lifts the anonymous per-visitor rate limit in favor of a per-workspace one built for batch traffic. The same key authenticates Zapier and the event RSVP and volunteer signup endpoints. API access is available on **Grassroots** and above.',
       },
       {
         kind: 'callout',
         tone: 'warning',
         title: 'Never put the API key in a public page',
-        text: 'The key is a secret — anyone who has it can write into your workspace. Browser-side forms don’t need it (the public endpoint works keyless); the key belongs only in server-side code. If it ever leaks, **Regenerate key** in Workspace settings → API keys invalidates the old key instantly and issues a replacement. If you have stopped using the API altogether, **Revoke key** invalidates it without issuing a replacement — use that rather than leaving an unused key live. Either way, anything still calling the API stops working the moment you click, so update your integrations first.',
+        text: 'The key is a secret — anyone who has it can write into your workspace. Browser-side forms don’t need it (the public endpoint works keyless); the key belongs only in server-side code. If it ever leaks, **Revoke** it in Workspace settings → API keys: it stops working instantly. A workspace can hold **two keys at once**, which is how you rotate without downtime — add a second key, move your integrations onto it, then revoke the first. Each key shows when it was last used, so you can tell which one is still in service before you revoke anything.',
       },
       {
         kind: 'callout',
         tone: 'tip',
         title: 'Archive, don’t delete',
         text: 'A form with responses can be archived. Its public link shows a friendly closed notice and every record keeps pointing at it. Restore brings it back as a draft. Only an untouched draft with zero responses can be deleted outright.',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'Forms need a paid plan — including forms already published',
+        text: 'Forms are available on **Grassroots** and above. If your workspace moves to the Free plan, published forms stop accepting submissions: anyone opening one on your website sees an error. Nothing is deleted — your forms and every response you have already collected stay exactly as they are, and everything resumes the moment you upgrade again. The Billing page warns you about this, and tells you how many published forms are affected, before the change goes through.',
       },
       {
         kind: 'callout',

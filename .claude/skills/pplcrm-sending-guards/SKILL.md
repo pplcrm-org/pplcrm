@@ -226,7 +226,7 @@ Apple users look like openers, so the resend under-reaches rather than over-reac
 
 `GATED_FEATURES` in `libs/common/src/lib/billing/plans.ts` is the machine-readable core of
 FEATURE_MATRIX (keep both in sync): forms/donations/automations/lists/volunteers (staff-side
-management: teams, volunteer-events) → `grassroots`+; canvassing/deliveries/companions
+management: teams, volunteer-events)/**api** → `grassroots`+; canvassing/deliveries/companions
 (companion-access) → `movement`+. `planFeatureGate(feature)` is a tRPC
 middleware that blocks **mutations only** (reads stay open — disclosure over suppression);
 gated routers rebind locally:
@@ -240,6 +240,32 @@ const authProcedure = baseAuthProcedure.use(planFeatureGate('forms'));
 `createCrudRouter` accepts the gated procedure as its 4th argument. Gated routers today:
 web-forms, donations, workflows, lists, canvassing, deliveries, companion-access, teams,
 volunteer-events. Unknown/missing plan values fail closed to `free`.
+
+**Two gates are NOT tRPC middleware, because the traffic they protect is public (2026-07-27):**
+
+- **`api`** — enforced in `lib/validate-api-key.ts` `lookupTenantByApiKey()`, the single chokepoint
+  every keyed request resolves through (Zapier inbound + the server-side form/RSVP/volunteer-signup
+  submits). A plan miss returns `null`, which callers surface as the same generic "Invalid API key"
+  as an unknown key — saying "this workspace is on the free plan" would leak billing status to an
+  unauthenticated caller. Gating only key ISSUANCE (`SettingsController.createApiKey`, which also
+  calls `assertPlanFeature`) would leave every already-issued key working forever, so a downgrade
+  would not actually revoke API access.
+- **`forms`** — enforced in `WebFormsController.submitFormPublic`, not on the route, so the keyless
+  embed (`?t=`) and the keyed server-side submit are covered by one check. Before this, the
+  web-forms router gated authoring only: a downgraded tenant could not edit a form, but every
+  already-embedded form kept quietly accepting submissions.
+
+Both mean **spec tenants must seed `subscription_plan: 'grassroots'`** to exercise form submission
+or keyed requests at all — the baseline seed is Free, so omitting it fails with "requires the
+Grassroots plan". `BillingController.getDowngradeImpact()` backs the billing page's pre-downgrade
+warning (published forms, API keys, active automations) so the cut-off is announced rather than
+discovered from a drop in signups.
+
+**Workspace API keys hold two slots** (`workspace_api_keys.slot`, UNIQUE `(tenant_id, slot)`,
+migration `2026-07-27-workspace-api-keys-two-slots`) so rotation can overlap: create the second key,
+move integrations across, revoke the first. There is no "regenerate" — replacing a key in place was
+the outage. `listApiKeys`/`revokeApiKey` are deliberately NOT plan-gated: taking a credential out of
+service must never require an upgrade.
 
 ## Demo gate vs plan gate — `apps/backend/src/app/modules/demo/demo-guard.ts`
 

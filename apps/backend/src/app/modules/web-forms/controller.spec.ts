@@ -11,7 +11,9 @@ async function createTestSeed(db: any) {
   const campaignId = rand();
   const householdId = rand();
 
-  // 1. Tenant (slug is the public subdomain identity — globally unique)
+  // 1. Tenant (slug is the public subdomain identity — globally unique).
+  // Grassroots because forms are gated on it (GATED_FEATURES.forms) and submitFormPublic
+  // enforces that on the public submit path too, not just on authoring.
   const tenantSlug = `test-${tenantId}`;
   await db
     .insertInto('tenants')
@@ -19,6 +21,7 @@ async function createTestSeed(db: any) {
       id: tenantId,
       name: 'Test Tenant',
       slug: tenantSlug,
+      subscription_plan: 'grassroots',
     })
     .execute();
 
@@ -638,5 +641,31 @@ describe('WebFormsController lifecycle', () => {
     await expect(controller.getPublicFormBySlug('donation-page', tenantId)).rejects.toThrow();
     const donation = await controller.getDonationFormPublic(tenantId, 'donation-page');
     expect(donation?.name).toBe('Donation page');
+  });
+
+  it('refuses public submissions once the tenant drops to the Free plan', async () => {
+    const form = await controller.createForm({ name: 'Downgrade guard', type: 'signup' }, auth() as any);
+    await controller.publishForm(form.id, auth() as any);
+
+    await db.updateTable('tenants').set({ subscription_plan: 'free' }).where('id', '=', tenantId).execute();
+
+    // Gating only the authoring router left every already-embedded form quietly accepting
+    // submissions after a downgrade — the tRPC gate stopped you editing the form, not using it.
+    await expect(
+      controller.submitFormPublic(
+        tenant(),
+        form.slug,
+        { email: 'late@example.com', full_name: 'Too Late' },
+        '127.0.0.55',
+      ),
+    ).rejects.toThrow(/Grassroots plan/);
+
+    const submissions = await db
+      .selectFrom('form_submissions')
+      .select('id')
+      .where('tenant_id', '=', tenantId)
+      .where('form_id', '=', form.id)
+      .execute();
+    expect(submissions).toHaveLength(0);
   });
 });
