@@ -156,7 +156,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
           '**App**: how the volunteer-facing apps behave, including whether volunteer route links expire after 30 days. Expiry is the secure default (a forwarded or long-lost link goes dead on its own), but you can turn it off if your delivery routes run longer. Volunteers still verify a code and need a one-time approval either way.',
           '**Storage**: your plan quota, live usage, and the files taking up the most space.',
           '**Billing**: your plan, live usage, and payment details.',
-          '**API keys**: the workspace API key for server-side integrations (submitting forms, RSVPs, and volunteer signups from your own backend, or connecting Zapier). Shown once at generation; regenerating invalidates the old key.',
+          '**API keys**: the workspace API key for server-side integrations (submitting forms, RSVPs, and volunteer signups from your own backend, or connecting Zapier). Shown once at generation. Regenerate to replace it, or revoke to switch API access off entirely — both invalidate the old key immediately.',
           '**Account**: pause your organization account, or permanently delete it and all its data.',
         ],
       },

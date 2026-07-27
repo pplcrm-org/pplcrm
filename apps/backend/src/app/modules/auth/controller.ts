@@ -477,7 +477,6 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       let tenant_demo_mode_at: Date | null = null;
       let tenant_plan_selected = false;
       let tenant_slug: string | null = null;
-      let workspace_api_key_preview: { preview: string; createdAt: string; lastUsedAt: string | null } | null = null;
       if (auth.tenant_id) {
         const tenant = await this.getRepo()
           .db.selectFrom('tenants')
@@ -493,19 +492,6 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         tenant_demo_mode_at = tenant?.demo_mode_at ?? null;
         tenant_plan_selected = hasSettledPlan(tenant?.subscription_status);
         tenant_slug = tenant?.slug ?? null;
-
-        // Fetch API key preview
-        const workspaceApiKeysRepo = (await import('../settings/repositories/workspace-api-keys.repo'))
-          .WorkspaceApiKeysRepo;
-        const apiKeyRepo = new workspaceApiKeysRepo();
-        const apiKey = await apiKeyRepo.getByTenantId(auth.tenant_id);
-        if (apiKey) {
-          workspace_api_key_preview = {
-            preview: apiKey.key_preview,
-            createdAt: apiKey.created_at.toISOString(),
-            lastUsedAt: apiKey.last_used_at?.toISOString() ?? null,
-          };
-        }
       }
 
       return {
@@ -518,7 +504,6 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         tenant_demo_mode_at,
         tenant_plan_selected,
         tenant_slug,
-        workspace_api_key_preview,
       };
     } catch (err) {
       throw new InternalError('Something went wrong, please try again', undefined, { cause: err });

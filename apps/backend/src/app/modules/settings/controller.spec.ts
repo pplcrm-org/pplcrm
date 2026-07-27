@@ -51,6 +51,7 @@ async function cleanTenant(db: any, tenantId: string) {
   await db.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
   await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('workspace_api_keys').where('tenant_id', '=', tenantId).execute();
   // Activity rows reference authusers, so they have to go first — any controller method under
   // test that logs activity would otherwise break teardown for the whole file.
   await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
@@ -456,5 +457,65 @@ describe('SettingsController Integration', () => {
     await expect(householdsController.recomputeAddressFingerprints(tenantId)).rejects.toThrow(
       /Address fingerprints can only be recomputed once a month/,
     );
+  });
+
+  it('should return the raw workspace API key exactly once, then only a preview', async () => {
+    const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+    const generated = await controller.generateApiKey(auth);
+    expect(generated.key).toMatch(/\S/);
+
+    const stored = await controller.getApiKeyPreview(auth);
+    // The preview is a prefix, never the key — anything else means the key is retrievable twice.
+    expect(stored?.preview).toBe(generated.preview);
+    expect(stored?.preview).not.toBe(generated.key);
+    expect(generated.key).toContain(generated.preview);
+    expect(stored?.lastUsedAt).toBeNull();
+  });
+
+  it('should replace the key on regenerate and leave exactly one row', async () => {
+    const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+    const first = await controller.generateApiKey(auth);
+    const second = await controller.regenerateApiKey(auth);
+    expect(second.key).not.toBe(first.key);
+
+    // The repo upserts on (tenant_id), so a bug here would silently leave the old hash valid.
+    const rows = await db.selectFrom('workspace_api_keys').selectAll().where('tenant_id', '=', tenantId).execute();
+    expect(rows.length).toBe(1);
+    expect(rows[0].key_preview).toBe(second.preview);
+  });
+
+  it('should revoke without replacing, and allow generating a fresh key afterwards', async () => {
+    const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+    await controller.generateApiKey(auth);
+    await controller.revokeApiKey(auth);
+
+    // Revoke means gone, not rotated: leaving a live credential behind is the whole bug it exists
+    // to prevent, since this key authenticates public form/RSVP/signup writes.
+    expect(await controller.getApiKeyPreview(auth)).toBeNull();
+    const rows = await db.selectFrom('workspace_api_keys').selectAll().where('tenant_id', '=', tenantId).execute();
+    expect(rows.length).toBe(0);
+
+    // Reversible in one click — that is what makes revoke safe to expose in the UI.
+    const fresh = await controller.generateApiKey(auth);
+    expect((await controller.getApiKeyPreview(auth))?.preview).toBe(fresh.preview);
+  });
+
+  it('should not let one tenant revoke another tenant API key', async () => {
+    const victim = await createTestSeed(db);
+    try {
+      const victimAuth = { tenant_id: victim.tenantId, user_id: victim.userId } as any;
+      const attackerAuth = { tenant_id: tenantId, user_id: userId } as any;
+
+      const victimKey = await controller.generateApiKey(victimAuth);
+      await controller.generateApiKey(attackerAuth);
+      await controller.revokeApiKey(attackerAuth);
+
+      expect((await controller.getApiKeyPreview(victimAuth))?.preview).toBe(victimKey.preview);
+    } finally {
+      await cleanTenant(db, victim.tenantId);
+    }
   });
 });

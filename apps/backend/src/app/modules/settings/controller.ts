@@ -1061,4 +1061,22 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     // ON CONFLICT handling automatically replaces the old key
     return this.generateApiKey(auth);
   }
+
+  /**
+   * Revoke the key without issuing a replacement.
+   *
+   * Deliberately distinct from regenerate, which always leaves a live credential behind.
+   * Regenerate answers "this key leaked but I still need the API"; this answers "we are done
+   * with the API". Without it, a workspace that clicks Generate once carries a credential that
+   * authenticates public write endpoints (form submit, RSVP, volunteer signup) forever, whether
+   * or not anyone still uses it.
+   *
+   * Safe to expose because it is one click to undo: the empty state offers Generate again.
+   */
+  public async revokeApiKey(auth: IAuthKeyPayload) {
+    const workspaceApiKeysRepo = (await import('./repositories/workspace-api-keys.repo')).WorkspaceApiKeysRepo;
+    const repo = new workspaceApiKeysRepo();
+
+    await repo.deleteByTenantId(auth.tenant_id);
+  }
 }

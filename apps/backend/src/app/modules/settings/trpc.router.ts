@@ -41,4 +41,5 @@ export const SettingsRouter = router({
   generateApiKey: adminOrOwnerProcedure.mutation(({ ctx }) => settings.generateApiKey(ctx.auth)),
   getApiKeyPreview: authProcedure.query(({ ctx }) => settings.getApiKeyPreview(ctx.auth)),
   regenerateApiKey: adminOrOwnerProcedure.mutation(({ ctx }) => settings.regenerateApiKey(ctx.auth)),
+  revokeApiKey: adminOrOwnerProcedure.mutation(({ ctx }) => settings.revokeApiKey(ctx.auth)),
 });

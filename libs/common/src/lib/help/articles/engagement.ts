@@ -219,7 +219,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'callout',
         tone: 'warning',
         title: 'Never put the API key in a public page',
-        text: 'The key is a secret — anyone who has it can write into your workspace. Browser-side forms don’t need it (the public endpoint works keyless); the key belongs only in server-side code. If it ever leaks, regenerate it in Workspace settings → API keys, which invalidates the old key instantly.',
+        text: 'The key is a secret — anyone who has it can write into your workspace. Browser-side forms don’t need it (the public endpoint works keyless); the key belongs only in server-side code. If it ever leaks, **Regenerate key** in Workspace settings → API keys invalidates the old key instantly and issues a replacement. If you have stopped using the API altogether, **Revoke key** invalidates it without issuing a replacement — use that rather than leaving an unused key live. Either way, anything still calling the API stops working the moment you click, so update your integrations first.',
       },
       {
         kind: 'callout',

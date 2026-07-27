@@ -134,6 +134,10 @@ export class SettingsService extends TRPCService<TenantSettingsSnapshot> {
     return this.api.settings.regenerateApiKey.mutate();
   }
 
+  public async revokeApiKey() {
+    return this.api.settings.revokeApiKey.mutate();
+  }
+
   public snapshot(): TenantSettingsSnapshot {
     return this.snapshotSignal();
   }
