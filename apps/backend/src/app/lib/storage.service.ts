@@ -4,6 +4,9 @@ import type { Readable } from 'stream';
 import { logger } from '../logger';
 
 export class StorageService {
+  /** Account-wide CORS is applied once per process — see {@link ensureCorsPolicy}. */
+  private static corsApplied = false;
+
   private serviceClient: BlobServiceClient;
   private containerClient;
 
@@ -30,24 +33,55 @@ export class StorageService {
     });
   }
 
-  public async generateWriteSasUrl(key: string, expiryMinutes = 15): Promise<string> {
-    await this.containerClient.createIfNotExists();
-
+  /**
+   * Apply the storage account's CORS policy, once per process.
+   *
+   * `setProperties` is a SERVICE-wide setting, not per-container — so this is the
+   * whole account's policy, and it used to be re-applied on every single upload with
+   * `allowedOrigins: '*'` and DELETE in the method list. Browser uploads only ever
+   * need to PUT a block blob from the app origin, so that is all this grants.
+   */
+  private async ensureCorsPolicy(): Promise<void> {
+    if (StorageService.corsApplied) return;
+    StorageService.corsApplied = true;
     try {
       await this.serviceClient.setProperties({
         cors: [
           {
-            allowedOrigins: '*',
-            allowedMethods: 'GET,HEAD,POST,PUT,DELETE,OPTIONS',
-            allowedHeaders: '*',
-            exposedHeaders: '*',
+            allowedOrigins: env.appUrl,
+            allowedMethods: 'PUT,OPTIONS',
+            allowedHeaders: 'content-type,x-ms-blob-type',
+            exposedHeaders: '',
             maxAgeInSeconds: 3600,
           },
         ],
       });
     } catch (err) {
+      // Don't wedge the process on a transient failure — let the next upload retry.
+      StorageService.corsApplied = false;
       logger.warn({ err }, 'Failed to set storage service CORS properties');
     }
+  }
+
+  /**
+   * The blob's real size in bytes, or null if it cannot be read.
+   *
+   * Callers must not trust a client-declared size: the browser uploads straight to
+   * Azure via a write SAS, so the only honest byte count is the one the account reports.
+   */
+  public async getSizeBytes(key: string): Promise<number | null> {
+    try {
+      const properties = await this.containerClient.getBlockBlobClient(key).getProperties();
+      return typeof properties.contentLength === 'number' ? properties.contentLength : null;
+    } catch (err) {
+      logger.warn({ err }, `Failed to read blob size for ${key}`);
+      return null;
+    }
+  }
+
+  public async generateWriteSasUrl(key: string, expiryMinutes = 15): Promise<string> {
+    await this.containerClient.createIfNotExists();
+    await this.ensureCorsPolicy();
 
     const blockBlobClient = this.containerClient.getBlockBlobClient(key);
     const permissions = BlobSASPermissions.parse('w');

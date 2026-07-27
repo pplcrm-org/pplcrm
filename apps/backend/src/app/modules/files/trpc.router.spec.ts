@@ -2,6 +2,7 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { FilesRouter } from './trpc.router';
 import { FilesController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
+import { signUploadHandle, verifyUploadHandle } from '../../lib/signed-download';
 
 function mockAuthDb() {
   const mockQB: any = {
@@ -51,8 +52,27 @@ describe('FilesRouter', () => {
     const result = await caller.getUploadUrl({ filename: 'report.pdf', mimeType: 'application/pdf' });
 
     expect(result.uploadUrl).toBe('https://mock-storage.example.com/sas-url');
-    expect(result.storageKey).toMatch(new RegExp(`^uploads/${AUTH.tenant_id}/.+_report\\.pdf$`));
-    expect(spy).toHaveBeenCalledWith(result.storageKey);
+    // The SAS is minted for a tenant-prefixed key...
+    const signedKey = spy.mock.calls[0]?.[0] as string;
+    expect(signedKey).toMatch(new RegExp(`^uploads/${AUTH.tenant_id}/.+_report\\.pdf$`));
+    // ...but the key itself is never handed to the client — only a signed handle is.
+    expect(result).not.toHaveProperty('storageKey');
+    expect(verifyUploadHandle(result.uploadHandle, AUTH.tenant_id)).toBe(signedKey);
+  });
+
+  // SECURITY REGRESSION (C1) — a filename is interpolated into the storage key, so path
+  // traversal in it would escape the tenant prefix that scopes the key.
+  it('strips path traversal from the filename before it reaches the storage key', async () => {
+    const spy = vi
+      .spyOn(FilesController.prototype, 'generateUploadSasUrl')
+      .mockResolvedValue('https://mock-storage.example.com/sas-url');
+
+    const caller = FilesRouter.createCaller({ auth: AUTH } as any);
+    await caller.getUploadUrl({ filename: '../../../../etc/passwd', mimeType: null });
+
+    const signedKey = spy.mock.calls[0]?.[0] as string;
+    expect(signedKey).toMatch(new RegExp(`^uploads/${AUTH.tenant_id}/[^/]+$`));
+    expect(signedKey).not.toContain('..');
   });
 
   it('calls registerFile on the controller with the parsed input', async () => {
@@ -60,16 +80,35 @@ describe('FilesRouter', () => {
     const spy = vi.spyOn(FilesController.prototype, 'registerFile').mockResolvedValue(mockFile as any);
 
     const caller = FilesRouter.createCaller({ auth: AUTH } as any);
-    const input = { filename: 'report.pdf', storageKey: 'uploads/10/xyz_report.pdf', sizeBytes: 100 };
+    const input = { filename: 'report.pdf', uploadHandle: signUploadHandle('uploads/10/xyz_report.pdf', '10') };
     const result = await caller.registerFile(input);
 
     expect(spy).toHaveBeenCalledWith(input, AUTH_MATCHER);
     expect(result).toEqual(mockFile);
   });
 
-  it('rejects registerFile when storageKey is missing', async () => {
+  it('rejects registerFile when the upload handle is missing', async () => {
     const caller = FilesRouter.createCaller({ auth: AUTH } as any);
     await expect(caller.registerFile({ filename: 'report.pdf' } as any)).rejects.toThrow();
+  });
+
+  // SECURITY REGRESSION (C1/H2) — the schema must not carry a client-chosen blob key or
+  // a self-reported size; both were the exploit surface. Unknown keys are stripped by Zod,
+  // so assert on what actually reaches the controller.
+  it('ignores a client-supplied storageKey or sizeBytes on registerFile', async () => {
+    const spy = vi.spyOn(FilesController.prototype, 'registerFile').mockResolvedValue({ id: '1' } as any);
+
+    const caller = FilesRouter.createCaller({ auth: AUTH } as any);
+    await caller.registerFile({
+      filename: 'report.pdf',
+      uploadHandle: signUploadHandle('uploads/10/xyz_report.pdf', '10'),
+      storageKey: 'exports/99/victim.csv',
+      sizeBytes: 0,
+    } as any);
+
+    const forwarded = spy.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty('storageKey');
+    expect(forwarded).not.toHaveProperty('sizeBytes');
   });
 
   it('calls delete on the controller with tenant/user scoping', async () => {

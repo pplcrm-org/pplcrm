@@ -33,7 +33,7 @@ import type { GridColumnFilter } from '../../../../../libs/common/src';
 import { MAX_PAGE_SIZE } from '../../../../../libs/common/src';
 import { Pool } from 'pg';
 import { env } from '../../env';
-import { currentTenantId } from './tenant-context';
+import { currentTenantId, pinnedCampaignId } from './tenant-context';
 import Cursor from 'pg-cursor';
 
 // S-1 (schema review 2026-07-06 §6): the tenant id is a bigint stored as a
@@ -196,6 +196,10 @@ export class BaseRepository<T extends keyof Models> {
     if (this.table !== 'tenants') {
       query = query.where('tenant_id' as ReferenceExpression<Models, T>, '=', input.tenant_id);
     }
+    const campaignId = this.campaignPin();
+    if (campaignId) {
+      query = query.where('campaign_id' as ReferenceExpression<Models, T>, '=', campaignId);
+    }
     const result = await query.executeTakeFirst();
 
     return Number(result?.numDeletedRows ?? 0) > 0;
@@ -251,15 +255,34 @@ export class BaseRepository<T extends keyof Models> {
   }
 
   /**
-   * Campaigns §15 — the active-context filter. Returns the campaign id to scope
-   * by when (a) the caller passed one and (b) this table's rows belong to
-   * exactly one campaign. Shared rolodex tables (persons, households, …) are
-   * never scoped here.
+   * Campaigns §15 — the active-context filter. Returns the campaign id to scope by,
+   * when this table's rows belong to exactly one campaign. Shared rolodex tables
+   * (persons, households, …) are never scoped here.
+   *
+   * SECURITY: the caller's server-derived pin wins over anything in `options`. Scoping
+   * used to depend entirely on the client passing `campaignId`, so a pinned Editor who
+   * omitted it read every campaign in the tenant. A pinned caller cannot widen past
+   * their assignment; an unpinned one (admin/owner, background job) may still narrow
+   * by passing the option. A disagreeing option is rejected upstream in `isAuthed`.
    */
   protected campaignScope(options?: QueryParams<T>): string | null {
-    const campaignId = (options as { campaignId?: string } | undefined)?.campaignId;
-    if (!campaignId) return null;
-    return CAMPAIGN_SCOPED_TABLES.has(String(this.table)) ? campaignId : null;
+    if (!CAMPAIGN_SCOPED_TABLES.has(String(this.table))) return null;
+    const requested = (options as { campaignId?: string } | undefined)?.campaignId;
+    const campaignId = pinnedCampaignId() ?? (requested ? String(requested) : null);
+    return campaignId || null;
+  }
+
+  /**
+   * The campaign pin to apply to a by-id read/write, or null when unpinned.
+   *
+   * By-id procedures carry no campaign key, so the middleware guard never fires on
+   * them — without this, a campaign-pinned Editor could fetch, update, or delete
+   * another campaign's row simply by knowing its id (e.g. sending another campaign's
+   * newsletter). Tenant scoping alone does not catch it; both rows are in-tenant.
+   */
+  protected campaignPin(): string | null {
+    if (!CAMPAIGN_SCOPED_TABLES.has(String(this.table))) return null;
+    return pinnedCampaignId();
   }
 
   public async getAllWithCounts(
@@ -339,6 +362,10 @@ export class BaseRepository<T extends keyof Models> {
     if (this.table !== 'tenants') {
       query = query.where('tenant_id' as ReferenceExpression<Models, T>, '=', input.tenant_id);
     }
+    const campaignId = this.campaignPin();
+    if (campaignId) {
+      query = query.where('campaign_id' as ReferenceExpression<Models, T>, '=', campaignId);
+    }
     return query.executeTakeFirst();
   }
 
@@ -378,6 +405,10 @@ export class BaseRepository<T extends keyof Models> {
       .where('id' as ReferenceExpression<Models, T>, '=', input.id);
     if (this.table !== 'tenants') {
       query = query.where('tenant_id' as ReferenceExpression<Models, T>, '=', input.tenant_id);
+    }
+    const campaignId = this.campaignPin();
+    if (campaignId) {
+      query = query.where('campaign_id' as ReferenceExpression<Models, T>, '=', campaignId);
     }
     return query.returningAll().executeTakeFirst();
   }

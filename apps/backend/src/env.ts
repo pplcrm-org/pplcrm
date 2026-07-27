@@ -176,7 +176,62 @@ function parseTrustProxy(raw: string): boolean | number | string {
   return value;
 }
 
+/**
+ * Minimum length for a secret that signs or encrypts something. Not a strength
+ * measure — just a floor that catches a placeholder or a truncated secretref.
+ */
+const MIN_SECRET_LENGTH = 32;
+
+/**
+ * Refuse to boot in production when a security-relevant credential is missing or
+ * obviously a placeholder.
+ *
+ * This exists because the failure mode of an unresolved secret is *silent degradation*,
+ * not an error, and that has already bitten twice:
+ *
+ *  - An unset STRIPE_SECRET_KEY puts billing into "mock mode" (`stripe === null`), which
+ *    is what `activateMockPlan` used to gate on — so a typo'd secretref let any tenant
+ *    owner self-grant the top plan (finding C3).
+ *  - An unset OAUTH_TOKEN_ENC_KEY makes `encryptSecret()` a pass-through, storing every
+ *    tenant's Gmail/Graph refresh token in cleartext with no warning (finding H5).
+ *
+ * A deploy that cannot reach its secrets must fail loudly rather than come up degraded.
+ * Mirrors the long-standing TRUST_PROXY guard above.
+ */
+function assertProductionSecrets(parsed: z.infer<typeof envSchema>): void {
+  if (process.env['NODE_ENV'] !== 'production') return;
+
+  const problems: string[] = [];
+
+  if (parsed.SHARED_SECRET.trim().length < MIN_SECRET_LENGTH) {
+    problems.push(
+      `SHARED_SECRET must be at least ${MIN_SECRET_LENGTH} characters — it signs session JWTs and scoped download tokens.`,
+    );
+  }
+  if (!parsed.OAUTH_TOKEN_ENC_KEY || parsed.OAUTH_TOKEN_ENC_KEY.trim().length < MIN_SECRET_LENGTH) {
+    problems.push(
+      `OAUTH_TOKEN_ENC_KEY must be set (at least ${MIN_SECRET_LENGTH} characters) — without it mailbox OAuth tokens are stored as plaintext.`,
+    );
+  }
+  if (!parsed.STRIPE_SECRET_KEY?.trim() || parsed.STRIPE_SECRET_KEY.includes('MockKey')) {
+    problems.push('STRIPE_SECRET_KEY must be set to a real key — an unset key silently enables billing mock mode.');
+  }
+  if (parsed.ALLOW_MOCK_PAYMENTS) {
+    problems.push('ALLOW_MOCK_PAYMENTS must never be set in production — it accepts forged payment data.');
+  }
+  if (parsed.ALLOW_MOCK_DOMAIN_VERIFICATION) {
+    problems.push(
+      'ALLOW_MOCK_DOMAIN_VERIFICATION must never be set in production — it marks sending domains verified without checking.',
+    );
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`Refusing to start in production with an insecure configuration:\n  - ${problems.join('\n  - ')}`);
+  }
+}
+
 const parsedEnv = envSchema.parse(process.env);
+assertProductionSecrets(parsedEnv);
 
 export const env = {
   host: parsedEnv.HOST,

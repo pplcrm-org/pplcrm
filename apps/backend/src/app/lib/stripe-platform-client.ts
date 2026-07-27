@@ -14,3 +14,18 @@ export function getStripe(): Stripe {
   }
   return stripe;
 }
+
+/**
+ * Guard for the client-callable mock-billing helpers (activateMockPlan / cancelMockPlan),
+ * which write `subscription_plan` and `subscription_status` straight onto `tenants`.
+ *
+ * SECURITY: `isMockMode` only means "no Stripe key resolved", which is also what a
+ * misconfigured production deploy looks like. Requiring the explicit ALLOW_MOCK_PAYMENTS
+ * opt-in as well means a missing key can never be mistaken for permission to fabricate a
+ * subscription. Per env.ts, money-touching mock paths are opt-in, never inferred.
+ */
+export function assertMockModeAllowed(): void {
+  if (!isMockMode || !env.allowMockPayments) {
+    throw new Error('This helper is only available in local Mock Mode');
+  }
+}

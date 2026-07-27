@@ -20,7 +20,7 @@ import { TenantsRepo } from '../auth/repositories/tenants.repo';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import { WorkflowsController } from '../workflows/controller';
 import { WebhookEventsRepo } from './repositories/webhook-events.repo';
-import { getStripe, isMockMode, stripe } from '../../lib/stripe-platform-client';
+import { assertMockModeAllowed, getStripe, isMockMode, stripe } from '../../lib/stripe-platform-client';
 import { syncSubscriptionQuantity } from './subscription-sync';
 import { countEmailableSubscribers, getPlanLimits } from './usage-limits';
 
@@ -835,9 +835,11 @@ export class BillingController {
     quantity = 1,
     interval: BillingInterval = 'month',
   ) {
-    if (!isMockMode) {
-      throw new Error('This helper is only available in local Mock Mode');
-    }
+    // Money-touching mock paths need an EXPLICIT opt-in (env.ts). Gating on `isMockMode`
+    // alone meant "the Stripe key is absent" — so a prod deploy whose Stripe secretref
+    // failed to resolve let any owner write themselves the top plan, with no Stripe
+    // subscription behind it and no sync path to correct it.
+    assertMockModeAllowed();
 
     const expiry = new Date();
     if (interval === 'year') {
@@ -871,9 +873,7 @@ export class BillingController {
   }
 
   public async cancelMockPlan(auth: { tenant_id: string }) {
-    if (!isMockMode) {
-      throw new Error('This helper is only available in local Mock Mode');
-    }
+    assertMockModeAllowed();
 
     await tenantsRepo.update({
       tenant_id: auth.tenant_id,

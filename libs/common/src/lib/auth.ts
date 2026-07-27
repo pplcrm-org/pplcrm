@@ -11,6 +11,13 @@ export interface IAuthKeyPayload {
 
   role?: string | null;
 
+  /**
+   * Campaigns §15 — the campaign this caller is pinned to, resolved server-side from
+   * their assignment. Null means they may work across campaigns (admin/owner). Set by
+   * the `isAuthed` middleware; never taken from request input.
+   */
+  campaign_id?: string | null;
+
   source?: string;
 }
 
@@ -134,6 +141,34 @@ export const AUTH_ROLE_LABELS: Record<string, string> = {
 
 export function authRoleLabel(role: string | null | undefined): string {
   return role ? (AUTH_ROLE_LABELS[role] ?? role) : '—';
+}
+
+/** Every role an account may hold, most privileged first. */
+export const AUTH_ROLES = ['owner', 'admin', 'user', 'viewer'] as const;
+
+export type AuthRole = (typeof AUTH_ROLES)[number];
+
+/**
+ * The role an account gets when none was chosen.
+ *
+ * SECURITY: never leave a role unset. `authusers.role` is nullable for historical
+ * reasons, and permission checks written as "deny if role === 'user'" silently pass
+ * for a null role — which made an unroled invitee more privileged than an Editor.
+ * Checks must ask {@link isPrivilegedRole}, and writes must land a real role.
+ */
+export const DEFAULT_AUTH_ROLE: AuthRole = 'user';
+
+export function isAuthRole(role: unknown): role is AuthRole {
+  return typeof role === 'string' && (AUTH_ROLES as readonly string[]).includes(role);
+}
+
+/**
+ * True only for roles that may administer a workspace (invite, change roles, assign
+ * campaigns, manage billing). Fails closed: anything unrecognised or absent is not
+ * privileged.
+ */
+export function isPrivilegedRole(role: string | null | undefined): boolean {
+  return role === 'owner' || role === 'admin';
 }
 
 export type signInInputType = z.infer<typeof signInInputObj>;

@@ -6,6 +6,8 @@ import type { getAllOptionsType } from '../../../../../../libs/common/src';
 import { logger } from '../../logger';
 import { ForbiddenError } from '../../errors/app-errors';
 import { getPlanLimits } from '../billing/usage-limits';
+import { verifyUploadHandle } from '../../lib/signed-download';
+import { sanitizeFilename } from '../../lib/storage-key';
 
 const LARGEST_FILES_LIMIT = 5;
 
@@ -51,14 +53,19 @@ export class FilesController extends BaseController<'files', FilesRepo> {
     input: {
       filename: string;
       mimeType?: string | null;
-      sizeBytes?: number | null;
-      storageKey: string;
+      uploadHandle: string;
       sha256Hex?: string | null;
       entityType?: string | null;
       entityId?: string | null;
     },
     auth: IAuthKeyPayload,
   ) {
+    // The storage key is re-derived from the signed handle minted by getUploadUrl, never
+    // taken from the client. A client-chosen key would let any tenant register a row
+    // pointing at another tenant's blob and then download or delete it — the row lookup
+    // downstream is tenant-scoped, but the blob it dereferences would not be.
+    const storageKey = verifyUploadHandle(input.uploadHandle, auth.tenant_id);
+
     if (input.sha256Hex) {
       const existing = await this.getRepo()
         .db.selectFrom('files')
@@ -69,19 +76,23 @@ export class FilesController extends BaseController<'files', FilesRepo> {
       if (existing) {
         // Clean up the newly uploaded duplicate file from storage since we won't be using it
         try {
-          await this.storageService.delete(input.storageKey);
+          await this.storageService.delete(storageKey);
         } catch (err) {
-          logger.error({ err }, `Failed to clean up duplicate file ${input.storageKey}`);
+          logger.error({ err }, `Failed to clean up duplicate file ${storageKey}`);
         }
         return existing;
       }
     }
 
+    // Size is read back from storage, never declared by the client: the browser PUTs
+    // straight to Azure via the write SAS, so a self-reported byte count is unverifiable
+    // and declaring 0 would skip the quota check entirely.
+    const sizeBytes = (await this.storageService.getSizeBytes(storageKey)) ?? 0;
+
     // Storage quota: enforce the plan's storage cap before recording the file, otherwise the limit
     // is only ever measured after the fact by the async usage job (and by then the bytes are
     // already stored). Dedup hits above add no bytes, so they're exempt. The blob has already been
     // uploaded to storage by the client SAS flow, so a rejected upload is cleaned up here.
-    const sizeBytes = input.sizeBytes || 0;
     if (sizeBytes > 0) {
       const tenant = await this.getRepo()
         .db.selectFrom('tenants')
@@ -96,9 +107,9 @@ export class FilesController extends BaseController<'files', FilesRepo> {
         const usedBytes = await this.getRepo().getTotalBytes(auth.tenant_id);
         if (usedBytes + sizeBytes > quotaBytes) {
           try {
-            await this.storageService.delete(input.storageKey);
+            await this.storageService.delete(storageKey);
           } catch (err) {
-            logger.error({ err }, `Failed to clean up over-quota upload ${input.storageKey}`);
+            logger.error({ err }, `Failed to clean up over-quota upload ${storageKey}`);
           }
           throw new ForbiddenError(
             "This upload would exceed your plan's storage quota. Free up space or upgrade your plan to add more files.",
@@ -109,10 +120,10 @@ export class FilesController extends BaseController<'files', FilesRepo> {
 
     return this.add({
       tenant_id: auth.tenant_id,
-      filename: input.filename,
+      filename: sanitizeFilename(input.filename),
       mime_type: input.mimeType || null,
-      size_bytes: input.sizeBytes || null,
-      storage_key: input.storageKey,
+      size_bytes: sizeBytes || null,
+      storage_key: storageKey,
       sha256_hex: input.sha256Hex || null,
       uploaded_by: auth.user_id,
       entity_type: input.entityType || null,

@@ -250,6 +250,10 @@ describe('AuthController Integration', () => {
       tenant_id: creator.tenant_id,
       user_id: creator.id,
       session_id: 'dummy-session-id',
+      // The isAuthed middleware always attaches the role it reads from authusers, so a
+      // controller never sees a roleless payload in production. Mirror that here: invite
+      // is admin/owner-only and now fails closed on a missing role (finding C2).
+      role: creator.role,
     };
 
     const inviteEmail = `invited-${Date.now()}@example.com`;

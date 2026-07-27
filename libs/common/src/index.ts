@@ -9,7 +9,18 @@ export type {
   signUpInputType,
 } from './lib/auth';
 
-export { AUTH_ROLE_LABELS, GENERIC_SIGNIN_ERROR, authRoleLabel, signInInputObj, signUpInputObj } from './lib/auth';
+export {
+  AUTH_ROLES,
+  AUTH_ROLE_LABELS,
+  DEFAULT_AUTH_ROLE,
+  GENERIC_SIGNIN_ERROR,
+  authRoleLabel,
+  isAuthRole,
+  isPrivilegedRole,
+  signInInputObj,
+  signUpInputObj,
+} from './lib/auth';
+export type { AuthRole } from './lib/auth';
 
 export type {
   INow,

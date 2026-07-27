@@ -38,7 +38,13 @@ import type { QueryParams } from '../../lib/base.repo';
 import { COMMON_PASSWORDS } from '../../lib/common-passwords';
 import { getPwnedCount } from '../../lib/hibp';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
-import { TourStateObj, type TourStateType } from '../../../../../../libs/common/src';
+import {
+  DEFAULT_AUTH_ROLE,
+  TourStateObj,
+  isAuthRole,
+  isPrivilegedRole,
+  type TourStateType,
+} from '../../../../../../libs/common/src';
 import { getPlanLimits } from '../billing/usage-limits';
 import { isDisposableEmail } from '../../lib/mail/disposable-email-domains';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
@@ -349,7 +355,8 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         .updateTable('authusers')
         .set({
           email: previousEmail,
-          role: authUser.previous_role,
+          // previous_role is nullable; never restore a null role (see DEFAULT_AUTH_ROLE).
+          role: isAuthRole(authUser.previous_role) ? authUser.previous_role : DEFAULT_AUTH_ROLE,
           verified: true,
           previous_email: null,
           previous_role: null,
@@ -773,7 +780,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     // Demo teammates are seeded; real invites unlock with a plan (see demo-guard).
     await assertNotDemoMode(this.getRepo().db, auth.tenant_id, DEMO_MODE_INVITES_BLOCKED_MESSAGE);
     const callerRole = auth.role;
-    if (callerRole === 'user') {
+    // Deny by default: only admins and owners invite. Testing for `=== 'user'` let a
+    // null-role account through, which is more access than an Editor has.
+    if (!isPrivilegedRole(callerRole)) {
       throw new ForbiddenError('You do not have permission to invite users.');
     }
     if (callerRole === 'admin' && input.role === 'owner') {
@@ -812,12 +821,17 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       }
     }
 
-    // Fall back to the tenant's configured default invite role when the caller didn't specify one.
-    let role = input.role ?? null;
+    // Fall back to the tenant's configured default invite role when the caller didn't specify
+    // one, and to the least-privileged working role when the tenant has not configured one.
+    // A null role must never reach the database — see DEFAULT_AUTH_ROLE.
+    let role: string = input.role ?? '';
     if (!role) {
       const defaultRole = await this.getTenantSetting(auth.tenant_id, 'access.default_role');
-      if (typeof defaultRole === 'string' && defaultRole.trim()) role = defaultRole.trim();
+      // Only honour a recognised role; an unknown setting value would land a role that
+      // no permission check accounts for.
+      if (isAuthRole(defaultRole?.toString().trim())) role = String(defaultRole).trim();
     }
+    if (!role) role = DEFAULT_AUTH_ROLE;
     if (callerRole === 'admin' && role === 'owner') {
       throw new ForbiddenError('Admins cannot invite users with the Owner role.');
     }
@@ -1553,7 +1567,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     const userId = String(id);
     const callerRole = auth.role;
 
-    if (callerRole === 'user' && userId !== auth.user_id) {
+    // Deny by default — anyone who is not an admin/owner may only edit themselves.
+    // This previously tested `=== 'user'`, so a null-role account could edit anyone.
+    if (!isPrivilegedRole(callerRole) && userId !== auth.user_id) {
       throw new ForbiddenError('You do not have permission to update other users.');
     }
 
@@ -1573,10 +1589,15 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       throw new BadRequestError('Deactivated accounts keep their role. Reactivate the account first.');
     }
 
-    if (callerRole === 'user') {
-      if (isRoleChange) {
-        throw new ForbiddenError('You do not have permission to change roles.');
-      }
+    // Deny by default — granting privilege is an admin/owner decision.
+    if (isRoleChange && !isPrivilegedRole(callerRole)) {
+      throw new ForbiddenError('You do not have permission to change roles.');
+    }
+
+    // A role, once set, must stay a real role: clearing it back to null would
+    // reintroduce the account that no permission check accounts for.
+    if (data.role !== undefined && !isAuthRole(data.role)) {
+      throw new BadRequestError('Choose a valid role.');
     }
 
     if (callerRole === 'admin') {
@@ -1620,7 +1641,8 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     }
     if (data.first_name !== undefined) row['first_name'] = data.first_name;
     if (data.last_name !== undefined) row['last_name'] = data.last_name ?? '';
-    if (data.role !== undefined) row['role'] = data.role ?? null;
+    // Validated as a real role above — never coalesce to null here.
+    if (data.role !== undefined) row['role'] = data.role;
     // Campaigns §15 — campaign assignment is an admin/owner decision; users never
     // reassign themselves (that would be self-service context switching).
     if (data.campaign_id !== undefined) {
