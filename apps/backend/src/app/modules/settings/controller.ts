@@ -77,7 +77,7 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 export class SettingsController extends BaseController<'settings', SettingsRepo> {
-  private mailService = new TransactionalEmailService();
+  private mailService = new TransactionalEmailService({ defaultAudience: 'account' });
 
   constructor() {
     super(new SettingsRepo());

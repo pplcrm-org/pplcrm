@@ -48,7 +48,7 @@ export async function processMentions(
       .where('authusers.tenant_id', '=', tenantId)
       .execute();
 
-    const mailService = new TransactionalEmailService();
+    const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
     const notificationsRepo = new NotificationsRepo();
 
     // Map over matching users and send them notifications

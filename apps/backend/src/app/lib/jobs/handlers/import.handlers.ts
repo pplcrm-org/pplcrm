@@ -16,7 +16,7 @@ import { runImportEmailVerification } from './import-verification';
 
 const storageService = new StorageService();
 const importsRepo = new ImportsRepo();
-const mailService = new TransactionalEmailService();
+const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
 
 /** How many typo suspects to spell out in the completion email before summarizing the rest. */
 const TYPO_SAMPLE_IN_EMAIL = 10;

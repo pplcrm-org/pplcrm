@@ -36,7 +36,7 @@ export interface PlanLimits {
 }
 
 const settingsRepo = new SettingsRepo();
-const mailService = new TransactionalEmailService();
+const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
 
 /** null limit in a plan def means "unlimited" — represent it as Infinity so usage % never trips an alert. */
 function orUnlimited(value: number | null): number {

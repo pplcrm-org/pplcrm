@@ -62,7 +62,7 @@ interface PersonContacts {
  */
 export class CompanionAccessController {
   private activityRepo = new UserActivityRepo();
-  private mailService = new TransactionalEmailService();
+  private mailService = new TransactionalEmailService({ defaultAudience: 'account' });
   private notificationsRepo = new NotificationsRepo();
   private routesRepo = new DeliveryRoutesRepo();
   private sessionsRepo = new CompanionSessionsRepo();
@@ -402,6 +402,7 @@ export class CompanionAccessController {
         {
           to: admin.email,
           subject: `${volunteerName} is waiting for companion app approval`,
+          audience: 'staff',
           text: `${volunteerName} verified their contact and is waiting for approval to use their volunteer link. Approve them at ${approveUrl}`,
           html: `<h2>Volunteer waiting for approval</h2><p>${volunteerName} verified their contact and is waiting for approval to use their volunteer link.</p><div class="btn-container"><a class="btn" href="${approveUrl}">Review in pplCRM</a></div>`,
           tenant_id: link.tenant_id,

@@ -28,7 +28,7 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
   private commentsRepo = new EmailCommentsRepo();
   private draftsRepo = new EmailDraftsRepo();
   private activityRepo = new UserActivityRepo();
-  private mailService = new TransactionalEmailService();
+  private mailService = new TransactionalEmailService({ defaultAudience: 'contact' });
   private storageService = new StorageService();
 
   constructor() {

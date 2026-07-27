@@ -667,7 +667,7 @@ export class BillingController {
               }
             }
 
-            const mailService = new TransactionalEmailService();
+            const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
             const amountPaid = invoice.amount_paid / 100;
             const pdfUrl = invoice.hosted_invoice_url || '';
 
@@ -755,7 +755,7 @@ export class BillingController {
               }
             }
 
-            const mailService = new TransactionalEmailService();
+            const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
             const billingPageUrl = `${env.appUrl}/workspace/billing`;
             const amountDue = (invoice.amount_due || 0) / 100;
             await mailService.sendMail({
@@ -933,7 +933,7 @@ export class BillingController {
       const mockPrefix = isMock ? '[MOCK] ' : '';
       const fmt = (n: number): string => (Number.isFinite(n) ? n.toLocaleString() : 'Unlimited');
 
-      const mailService = new TransactionalEmailService();
+      const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
       const planLabel = planName.charAt(0).toUpperCase() + planName.slice(1);
       await mailService.sendMail({
         to: admin.email,

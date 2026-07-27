@@ -69,7 +69,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
   private static readonly AVATAR_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 
   private emailsRepo: EmailRepo = new EmailRepo();
-  private mailService = new TransactionalEmailService();
+  private mailService = new TransactionalEmailService({ defaultAudience: 'account' });
   private personsRepo: PersonsRepo = new PersonsRepo();
   private profiles: UserProfiles = new UserProfiles();
   private sessions: SessionsRepo = new SessionsRepo();

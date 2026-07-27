@@ -19,6 +19,7 @@ import type {
 } from '../../../../../../libs/common/src';
 
 import { env } from '../../../env';
+import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resend-limit';
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
 import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
@@ -428,6 +429,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           trx,
         );
         // Assignment sends the personal link — same transaction, so a rollback sends nothing.
+        // Capped like the deliveries re-send (H3): repeated assign/unassign of the same turf
+        // would otherwise be an unlimited SMS bomber aimed at the person's number.
+        await assertVolunteerLinkResendAllowed(auth.tenant_id, input.turf_id, person.mobile);
         sent = await notifyVolunteerOfLink(
           {
             tenant_id: auth.tenant_id,

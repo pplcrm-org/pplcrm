@@ -11,7 +11,7 @@ import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
 import { scheduleNextRun } from '../reschedule';
 
-const mailService = new TransactionalEmailService();
+const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
 
 const HEARTBEAT_NAME = 'ops_watchdog';
 // First run (or lost details) looks back this far for failures.

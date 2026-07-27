@@ -127,6 +127,9 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     text: z.string().nullish(),
     html: z.string().nullish(),
     tenant_id: idSchema.nullish(),
+    // Optional: rows enqueued before the anti-abuse gate landed carry no audience, and a
+    // required check would fail them at claim time. Missing = the restricted default.
+    audience: z.enum(['account', 'staff', 'contact']).nullish(),
     notificationSettingsLink: z.boolean().nullish(),
   }),
   z.object({
@@ -139,6 +142,10 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     email: z.string(),
     firstName: z.string().nullish(),
     confirmUrl: z.string(),
+    // The enqueue site already sends this; it was simply not declared, so the handler
+    // could not attribute the message to a tenant (see the C5 attribution note).
+    // Optional so rows enqueued before this landed still parse at claim time.
+    tenantId: idSchema.nullish(),
   }),
   z.object({ type: z.literal('check_due_tasks') }),
   // @mentions in a task/email comment -> in-app notification + email, per mentioned user's

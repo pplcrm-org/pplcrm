@@ -96,6 +96,7 @@ export interface Models {
   background_jobs: BackgroundJobs;
   webhook_events: WebhookEvents;
   ops_heartbeats: OpsHeartbeats;
+  rate_limits: RateLimits;
   data_exports: DataExports;
   potential_duplicates: PotentialDuplicates;
   dismissed_duplicate_groups: DismissedDuplicateGroups;
@@ -1097,6 +1098,18 @@ export interface OpsHeartbeats {
   name: string;
   beat_at: Generated<Timestamp>;
   details: Json | null;
+}
+
+/**
+ * Global (non-tenant) fixed-window counters for the durable rate limiter
+ * (lib/durable-rate-limiter.ts). `key` is an opaque, caller-namespaced string that may
+ * identify a tenant, an IP, or an email address, so there is no tenant_id to scope by —
+ * see the `rate_limits` entry in the no-unscoped-db-query allow-list.
+ */
+export interface RateLimits {
+  key: string;
+  window_start: Timestamp;
+  count: Generated<number>;
 }
 
 export interface WebhookEvents {

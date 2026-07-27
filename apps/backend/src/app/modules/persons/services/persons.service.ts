@@ -137,7 +137,7 @@ export class PersonsService {
               });
             }
             if (assignee.email && notificationEnabled(assignee.profile_preferences, 'person_assigned')) {
-              const mailService = new TransactionalEmailService();
+              const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
               await mailService.sendMail({
                 to: assignee.email,
                 subject: `Contact assigned to you: ${personName}`,
@@ -246,7 +246,7 @@ export class PersonsService {
                 });
               }
               if (assignee.email && notificationEnabled(assignee.profile_preferences, 'person_assigned')) {
-                const mailService = new TransactionalEmailService();
+                const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
                 await mailService.sendMail({
                   to: assignee.email,
                   subject: `Contact assigned to you: ${personName}`,

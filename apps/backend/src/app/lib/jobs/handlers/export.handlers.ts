@@ -14,7 +14,7 @@ import type { JobPayloadOf } from '../job-payloads';
 import { ALLOWED_EXPORT_TABLES } from '../../../modules/exports/export-tables';
 
 const storageService = new StorageService();
-const mailService = new TransactionalEmailService();
+const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
 const userActivityRepo = new UserActivityRepo();
 
 export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: Kysely<Models>): Promise<void> {

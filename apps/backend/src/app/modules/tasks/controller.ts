@@ -33,7 +33,7 @@ import { NotFoundError } from '../../errors/app-errors';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 
 export class TasksController extends BaseController<'tasks', TasksRepo> {
-  private mailService = new TransactionalEmailService();
+  private mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
 
   constructor() {
     super(new TasksRepo());

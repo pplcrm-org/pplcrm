@@ -2,6 +2,7 @@ import type { Kysely } from 'kysely';
 import { env } from '../../../../env';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../../logger';
+import { html, joinHtml, trustedHtml } from '../../html-escape';
 import { NotificationsRepo } from '../../../modules/notifications/repositories/notifications.repo';
 import { notificationEnabled } from '../../profile-preferences';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
@@ -54,20 +55,30 @@ export async function handleSendFormNotifications(
     const coordinatorDetails = [coordEmailLine, coordPhoneLine].filter(Boolean).join('\n');
 
     const coordEmailHtml = event.contact_email
-      ? `Email: <a href="mailto:${event.contact_email}">${event.contact_email}</a>`
+      ? html`Email: <a href="mailto:${event.contact_email}">${event.contact_email}</a>`
       : '';
-    const coordPhoneHtml = event.contact_phone ? `Phone: ${event.contact_phone}` : '';
-    const coordinatorDetailsHtml = [coordEmailHtml, coordPhoneHtml].filter(Boolean).join('<br>');
+    const coordPhoneHtml = event.contact_phone ? html`Phone: ${event.contact_phone}` : '';
+    const coordinatorDetailsHtml = [coordEmailHtml, coordPhoneHtml].filter(Boolean);
 
     await mailService.sendMail({
       to: payload.email,
       subject: `You're signed up to volunteer: ${event.name}`,
       text: `Hi ${payload.firstName || 'there'},\n\nThank you for signing up to volunteer for "${event.name}"!\n\nDetails:\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}\n\nEvent coordinator:\n${coordinatorDetails || 'N/A'}\n\nWe look forward to seeing you there!`,
-      html: `<h2>You're signed up to volunteer</h2>
-<p>Hi ${payload.firstName || 'there'},</p>
-<p>Thank you for signing up to volunteer for <strong>"${event.name}"</strong>!</p>
-<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p><p><strong>Event coordinator:</strong><br>${coordinatorDetailsHtml || 'N/A'}</p></div>
-<p>We look forward to seeing you there!</p>`,
+      html: html`<h2>You're signed up to volunteer</h2>
+        <p>Hi ${payload.firstName || 'there'},</p>
+        <p>Thank you for signing up to volunteer for <strong>"${event.name}"</strong>!</p>
+        <div class="panel">
+          <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
+          <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
+          <p>
+            <strong>Event coordinator:</strong><br />${coordinatorDetailsHtml.length
+              ? joinHtml(coordinatorDetailsHtml, trustedHtml('<br>'))
+              : 'N/A'}
+          </p>
+        </div>
+        <p>We look forward to seeing you there!</p>`.toString(),
+      tenant_id: payload.tenantId,
+      audience: 'contact',
     });
   }
 
@@ -92,10 +103,17 @@ export async function handleSendFormNotifications(
         to: alertRecipient,
         subject: `New volunteer signup: ${event.name}`,
         text: `Hi,\n\nA new constituent has signed up to volunteer for "${event.name}".\n\nName: ${payload.firstName || ''} ${payload.lastName || ''}\nEmail: ${payload.email}\nPhone: ${payload.mobile || 'N/A'}\nNotes: ${payload.notes || 'None'}`,
-        html: `<h2>New volunteer signup</h2>
-<p>Hi,</p>
-<p>A new constituent has signed up to volunteer for <strong>"${event.name}"</strong>.</p>
-<div class="panel"><p><strong>Name:</strong> ${payload.firstName || ''} ${payload.lastName || ''}</p><p><strong>Email:</strong> ${payload.email}</p><p><strong>Phone:</strong> ${payload.mobile || 'N/A'}</p><p><strong>Notes:</strong> ${payload.notes || 'None'}</p></div>`,
+        html: html`<h2>New volunteer signup</h2>
+          <p>Hi,</p>
+          <p>A new constituent has signed up to volunteer for <strong>"${event.name}"</strong>.</p>
+          <div class="panel">
+            <p><strong>Name:</strong> ${payload.firstName || ''} ${payload.lastName || ''}</p>
+            <p><strong>Email:</strong> ${payload.email}</p>
+            <p><strong>Phone:</strong> ${payload.mobile || 'N/A'}</p>
+            <p><strong>Notes:</strong> ${payload.notes || 'None'}</p>
+          </div>`,
+        tenant_id: payload.tenantId,
+        audience: 'staff',
       });
     }
   }
@@ -173,21 +191,23 @@ export async function handleSendShiftReminder(
   const subject = `Volunteer shift reminder: ${event.name}`;
   const text = `Hi ${person.first_name || 'there'},\n\nThis is a reminder that you have an upcoming volunteer shift for "${event.name}".\n\nDetails:\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${mapsLinkText}\n\nThank you for volunteering, and we look forward to seeing you there!`;
 
-  const html = `<h2>Volunteer shift reminder</h2>
-<p>Hi ${person.first_name || 'there'},</p>
-<p>This is a reminder that you have an upcoming volunteer shift for <strong>"${event.name}"</strong>.</p>
-<div class="panel">
-  <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
-  <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
-  ${mapsUrl ? `<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}
-</div>
-<p>Thank you for volunteering, and we look forward to seeing you there!</p>`;
+  const body = html`<h2>Volunteer shift reminder</h2>
+    <p>Hi ${person.first_name || 'there'},</p>
+    <p>This is a reminder that you have an upcoming volunteer shift for <strong>"${event.name}"</strong>.</p>
+    <div class="panel">
+      <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
+      <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
+      ${mapsUrl ? html`<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}
+    </div>
+    <p>Thank you for volunteering, and we look forward to seeing you there!</p>`;
 
   await mailService.sendMail({
     to: person.email,
     subject,
     text,
-    html,
+    html: body,
+    tenant_id: shift.tenant_id,
+    audience: 'contact',
   });
 
   logger.info(`Successfully sent shift reminder email to ${person.email} for shift ${shift.id}`);
@@ -217,9 +237,14 @@ export async function handleSendWebformNotifications(
       to: payload.email,
       subject: `Thank you for your submission to ${form.name}`,
       text: `Hi ${payload.firstName || 'there'},\n\nThank you for submitting our form "${form.name}". We have received your request and our team will follow up with you soon.`,
-      html: `<h2>Thank you for your submission</h2>
-<p>Hi ${payload.firstName || 'there'},</p>
-<p>Thank you for submitting our form <strong>"${form.name}"</strong>. We have received your request and our team will follow up with you soon.</p>`,
+      html: html`<h2>Thank you for your submission</h2>
+        <p>Hi ${payload.firstName || 'there'},</p>
+        <p>
+          Thank you for submitting our form <strong>"${form.name}"</strong>. We have received your request and our team
+          will follow up with you soon.
+        </p>`,
+      tenant_id: form.tenant_id,
+      audience: 'contact',
     });
   }
 
@@ -237,10 +262,17 @@ export async function handleSendWebformNotifications(
         to: admin.email,
         subject: `New submission on ${form.name}`,
         text: `Hi ${admin.first_name || 'there'},\n\nYou have received a new submission on form "${form.name}" from ${payload.firstName || ''} ${payload.lastName || ''} (${payload.email}).\n\nNotes:\n${payload.notes || 'None'}`,
-        html: `<h2>New form submission</h2>
-<p>Hi ${admin.first_name || 'there'},</p>
-<p>You have received a new submission on form <strong>"${form.name}"</strong> from <strong>${payload.firstName || ''} ${payload.lastName || ''}</strong> (${payload.email}).</p>
-<div class="panel"><p><strong>Notes:</strong><br>${payload.notes || 'None'}</p></div>`,
+        html: html`<h2>New form submission</h2>
+          <p>Hi ${admin.first_name || 'there'},</p>
+          <p>
+            You have received a new submission on form <strong>"${form.name}"</strong> from
+            <strong>${payload.firstName || ''} ${payload.lastName || ''}</strong> (${payload.email}).
+          </p>
+          <div class="panel">
+            <p><strong>Notes:</strong><br />${payload.notes || 'None'}</p>
+          </div>`,
+        tenant_id: form.tenant_id,
+        audience: 'staff',
       });
     }
   }
@@ -306,22 +338,29 @@ export async function handleSendEventRegistrationConfirmation(
   ]
     .filter(Boolean)
     .join('\n');
-  const coordHtml = [
-    event.contact_email ? `Email: <a href="mailto:${event.contact_email}">${event.contact_email}</a>` : '',
-    event.contact_phone ? `Phone: ${event.contact_phone}` : '',
-  ]
-    .filter(Boolean)
-    .join('<br>');
+  const coordHtml = joinHtml(
+    [
+      event.contact_email ? html`Email: <a href="mailto:${event.contact_email}">${event.contact_email}</a>` : '',
+      event.contact_phone ? html`Phone: ${event.contact_phone}` : '',
+    ],
+    trustedHtml('<br>'),
+  );
 
   await mailService.sendMail({
     to: person.email,
     subject: `Registration confirmed: ${event.name}`,
     text: `Hi ${person.first_name || 'there'},\n\nYou're registered for "${event.name}"!\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${coordLine ? `\n\nContact:\n${coordLine}` : ''}\n\nWe look forward to seeing you there!`,
-    html: `<h2>Registration confirmed</h2>
-<p>Hi ${person.first_name || 'there'},</p>
-<p>You're registered for <strong>"${event.name}"</strong>!</p>
-<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>${coordHtml ? `<p><strong>Contact:</strong><br>${coordHtml}</p>` : ''}</div>
-<p>We look forward to seeing you there!</p>`,
+    html: html`<h2>Registration confirmed</h2>
+      <p>Hi ${person.first_name || 'there'},</p>
+      <p>You're registered for <strong>"${event.name}"</strong>!</p>
+      <div class="panel">
+        <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
+        <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
+        ${String(coordHtml) ? html`<p><strong>Contact:</strong><br />${coordHtml}</p>` : ''}
+      </div>
+      <p>We look forward to seeing you there!</p>`,
+    tenant_id: registration.tenant_id,
+    audience: 'contact',
   });
 
   logger.info(`Sent registration confirmation to ${person.email} for event ${registration.event_id}`);
@@ -383,11 +422,17 @@ export async function handleSendEventReminder(
     to: person.email,
     subject: `Reminder: ${event.name} is tomorrow`,
     text: `Hi ${person.first_name || 'there'},\n\nThis is a reminder that you're registered for "${event.name}" tomorrow.\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${mapsUrl ? `\nDirections: ${mapsUrl}` : ''}\n\nWe look forward to seeing you there!`,
-    html: `<h2>Event reminder</h2>
-<p>Hi ${person.first_name || 'there'},</p>
-<p>This is a reminder that you're registered for <strong>"${event.name}"</strong> tomorrow.</p>
-<div class="panel"><p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p><p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>${mapsUrl ? `<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}</div>
-<p>We look forward to seeing you there!</p>`,
+    html: html`<h2>Event reminder</h2>
+      <p>Hi ${person.first_name || 'there'},</p>
+      <p>This is a reminder that you're registered for <strong>"${event.name}"</strong> tomorrow.</p>
+      <div class="panel">
+        <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
+        <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
+        ${mapsUrl ? html`<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}
+      </div>
+      <p>We look forward to seeing you there!</p>`,
+    tenant_id: registration.tenant_id,
+    audience: 'contact',
   });
 
   logger.info(`Sent event reminder to ${person.email} for event ${registration.event_id}`);
@@ -400,6 +445,7 @@ export async function handleSendTransactionalEmail(payload: JobPayloadOf<'send-t
     text: payload.text ?? '',
     html: payload.html ?? '',
     tenant_id: payload.tenant_id ?? null,
+    audience: payload.audience ?? undefined,
     notificationSettingsLink: payload.notificationSettingsLink ?? undefined,
   });
 }
@@ -415,13 +461,15 @@ export async function handleSendSubscriptionConfirmation(
     to: payload.email,
     subject: 'Please confirm your subscription',
     text: `Hi ${payload.firstName || 'there'},\n\nPlease confirm your subscription by visiting the link below:\n\n${payload.confirmUrl}\n\nIf you did not request this, you can safely ignore this email.`,
-    html: `<h2>Confirm your subscription</h2>
-<p>Hi ${payload.firstName || 'there'},</p>
-<p>Please confirm your subscription by clicking the button below:</p>
-<div class="btn-container">
-  <a href="${payload.confirmUrl}" class="btn">Confirm subscription</a>
-</div>
-<p class="warning">If you did not request this, you can safely ignore this email.</p>`,
+    html: html`<h2>Confirm your subscription</h2>
+      <p>Hi ${payload.firstName || 'there'},</p>
+      <p>Please confirm your subscription by clicking the button below:</p>
+      <div class="btn-container">
+        <a href="${payload.confirmUrl}" class="btn">Confirm subscription</a>
+      </div>
+      <p class="warning">If you did not request this, you can safely ignore this email.</p>`,
+    tenant_id: payload.tenantId ?? null,
+    audience: 'contact',
   });
 }
 

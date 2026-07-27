@@ -320,7 +320,7 @@ export class BaseController<T extends keyof Models, R extends BaseRepository<T>>
           .executeTakeFirst();
         if (user && user.email) {
           if (notificationEnabled(user.profile_preferences, 'export_ready')) {
-            const mailService = new TransactionalEmailService();
+            const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
             await mailService.sendMail({
               to: user.email,
               subject: `Your export is ready: ${response.fileName}`,
