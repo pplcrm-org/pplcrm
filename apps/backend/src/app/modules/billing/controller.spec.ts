@@ -620,6 +620,150 @@ describe('BillingController.processWebhookEvent — receipt email tax line', () 
  * Free is not purchasable, so it never arrives from Stripe. Without an explicit path a tenant
  * sits at subscription_status = NULL forever, which is what strands them in demo mode.
  */
+/**
+ * `getDowngradeImpact` is the only thing standing between a downgrade and a campaign discovering,
+ * days later, that its website form quietly stopped collecting names. If it under-reports, the
+ * billing page shows no warning and the cut-off happens silently — which is precisely the outcome
+ * the warning exists to prevent. So the counts are worth pinning.
+ */
+describe('BillingController.getDowngradeImpact', () => {
+  const db = (BaseRepository as any)._db;
+  let controller: BillingController;
+  let tenantId: string;
+  let campaignId: string;
+  let userId: string;
+
+  beforeEach(async () => {
+    controller = new BillingController();
+    ({ tenantId } = await seedBillingTenant(db));
+    userId = String(Math.floor(Math.random() * 100000000) + 1000000);
+    campaignId = String(Math.floor(Math.random() * 100000000) + 1000000);
+    await db
+      .insertInto('authusers')
+      .values({ id: userId, tenant_id: tenantId, email: `impact-${userId}@example.com`, password: 'x' })
+      .execute();
+    await db
+      .insertInto('campaigns')
+      .values({ id: campaignId, tenant_id: tenantId, admin_id: userId, createdby_id: userId, name: 'Impact spec' })
+      .execute();
+  });
+
+  afterEach(async () => {
+    await db.deleteFrom('workflows').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('web_forms').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('workspace_api_keys').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
+    await cleanBillingTenant(db, tenantId);
+  });
+
+  async function addForm(name: string, status: 'draft' | 'published' | 'archived'): Promise<void> {
+    await db
+      .insertInto('web_forms')
+      .values({
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name,
+        slug: `${name}-${Math.floor(Math.random() * 1e6)}`,
+        status,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+  }
+
+  async function addWorkflow(name: string, status: 'draft' | 'active' | 'paused'): Promise<void> {
+    await db
+      .insertInto('workflows')
+      .values({ tenant_id: tenantId, name, trigger_type: 'manual', status, createdby_id: userId, updatedby_id: userId })
+      .execute();
+  }
+
+  it('reports nothing to lose for a workspace using none of the gated features', async () => {
+    // A zero result is what suppresses the warning dialog entirely, so it has to be reachable —
+    // otherwise every card update nags.
+    expect(await controller.getDowngradeImpact({ tenant_id: tenantId })).toEqual({
+      activeAutomations: 0,
+      apiKeys: 0,
+      publishedForms: 0,
+    });
+  });
+
+  it('counts only PUBLISHED forms — a draft or archived form has no traffic to lose', async () => {
+    await addForm('live-one', 'published');
+    await addForm('live-two', 'published');
+    await addForm('not-live', 'draft');
+    await addForm('retired', 'archived');
+
+    const impact = await controller.getDowngradeImpact({ tenant_id: tenantId });
+    expect(impact.publishedForms).toBe(2);
+  });
+
+  it('counts only ACTIVE automations — a paused or draft one is already not sending', async () => {
+    await addWorkflow('running', 'active');
+    await addWorkflow('halted', 'paused');
+    await addWorkflow('unfinished', 'draft');
+
+    const impact = await controller.getDowngradeImpact({ tenant_id: tenantId });
+    expect(impact.activeAutomations).toBe(1);
+  });
+
+  it('counts every live API key, since all of them stop resolving at once', async () => {
+    for (const slot of [1, 2]) {
+      await db
+        .insertInto('workspace_api_keys')
+        .values({ tenant_id: tenantId, slot, key_hash: `hash-${tenantId}-${slot}`, key_preview: `ws_p${slot}` })
+        .execute();
+    }
+
+    const impact = await controller.getDowngradeImpact({ tenant_id: tenantId });
+    expect(impact.apiKeys).toBe(2);
+  });
+
+  it('never counts another tenant rows', async () => {
+    const { tenantId: otherId } = await seedBillingTenant(db);
+    const otherUser = String(Math.floor(Math.random() * 100000000) + 1000000);
+    const otherCampaign = String(Math.floor(Math.random() * 100000000) + 1000000);
+    try {
+      await db
+        .insertInto('authusers')
+        .values({ id: otherUser, tenant_id: otherId, email: `other-${otherUser}@example.com`, password: 'x' })
+        .execute();
+      await db
+        .insertInto('campaigns')
+        .values({
+          id: otherCampaign,
+          tenant_id: otherId,
+          admin_id: otherUser,
+          createdby_id: otherUser,
+          name: 'Other',
+        })
+        .execute();
+      await db
+        .insertInto('web_forms')
+        .values({
+          tenant_id: otherId,
+          campaign_id: otherCampaign,
+          name: 'theirs',
+          slug: `theirs-${otherId}`,
+          status: 'published',
+          createdby_id: otherUser,
+          updatedby_id: otherUser,
+        })
+        .execute();
+
+      // Inflating the warning with someone else's forms would scare a tenant out of a downgrade
+      // they are entitled to make.
+      expect((await controller.getDowngradeImpact({ tenant_id: tenantId })).publishedForms).toBe(0);
+    } finally {
+      await db.deleteFrom('web_forms').where('tenant_id', '=', otherId).execute();
+      await db.deleteFrom('campaigns').where('tenant_id', '=', otherId).execute();
+      await db.deleteFrom('authusers').where('tenant_id', '=', otherId).execute();
+      await cleanBillingTenant(db, otherId);
+    }
+  });
+});
+
 describe('BillingController.selectFreePlan', () => {
   const db = (BaseRepository as any)._db;
   let controller: BillingController;
