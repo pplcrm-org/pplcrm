@@ -22,6 +22,7 @@ import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { QueryBuilderField, QueryBuilderComponent } from '@frontend/shared/components/query-builder/query-builder';
 import { QueryBuilderNode, QueryBuilderGroupNode, cloneQueryBuilderNode } from '../../../../../../../libs/common/src';
 import { RULE_FIELD_CHOICES, ruleFieldLabel } from '@experiences/lists/services/list-rule-fields';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
 interface RuleOperator {
   value: string;
@@ -236,6 +237,9 @@ export class ListForm implements OnInit {
   protected readonly form = form(this.payload, (p) => {
     required(p.name);
   });
+
+  /** Narrates "Unsaved changes · N fields" and powers canDeactivate below. */
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
 
   protected readonly listType = computed<'people' | 'households'>(() => this.payload().object);
 
@@ -495,7 +499,12 @@ export class ListForm implements OnInit {
     this.householdGrid()?.triggerFilterChanged();
   }
 
-  protected save(done: (() => void) | Event) {
+  /**
+   * @param done supplied by the leave guard; when present the method reports back instead of
+   * navigating, because the router is already mid-navigation.
+   * @returns whether the write landed.
+   */
+  protected async save(done: (() => void) | Event, stayPut = false): Promise<boolean> {
     let doneFn: () => void = () => {
       /* no-op default */
     };
@@ -506,12 +515,12 @@ export class ListForm implements OnInit {
     }
 
     this.form().markAsTouched();
-    if (this.form().invalid()) return;
-    if (this.saving()) return;
+    if (this.form().invalid()) return false;
+    if (this.saving()) return false;
 
     const formValue = this.payload();
     const listId = this.id();
-    if (!this.isNew() && !listId) return;
+    if (!this.isNew() && !listId) return false;
 
     this.saving.set(true);
     const end = this._loading.begin();
@@ -560,36 +569,46 @@ export class ListForm implements OnInit {
       savePromise = this.listsSvc.update(listId ?? '', payload);
     }
 
-    savePromise
-      .then(async () => {
-        this.alertSvc.showSuccess(this.isNew() ? 'List added' : 'List updated');
-        this.listsRefresh.trigger();
-        doneFn();
-        if (this.isNew()) {
-          await this.router.navigate(['/lists']);
-        } else {
-          await this.router.navigate(['/lists', listId ?? '']);
-        }
-      })
-      .catch((err: any) => {
-        const message =
-          err instanceof Error && err.message
-            ? err.message
-            : isRecord(err) &&
-                isRecord(err['data']) &&
-                typeof err['data']['message'] === 'string' &&
-                err['data']['message']
-              ? err['data']['message']
-              : this.isNew()
-                ? 'Failed to add list'
-                : 'Failed to update list';
-        this.alertSvc.showError(message);
-        doneFn();
-      })
-      .finally(() => {
-        end();
-        this.saving.set(false);
-      });
+    try {
+      await savePromise;
+      this.alertSvc.showSuccess(this.isNew() ? 'List added' : 'List updated');
+      this.listsRefresh.trigger();
+      doneFn();
+      // The leave guard's save must not navigate — the router is already doing that.
+      if (!stayPut) {
+        await this.router.navigate(this.isNew() ? ['/lists'] : ['/lists', listId ?? '']);
+      }
+      return true;
+    } catch (err: any) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : isRecord(err) &&
+              isRecord(err['data']) &&
+              typeof err['data']['message'] === 'string' &&
+              err['data']['message']
+            ? err['data']['message']
+            : this.isNew()
+              ? 'Failed to add list'
+              : 'Failed to update list';
+      this.alertSvc.showError(message);
+      doneFn();
+      return false;
+    } finally {
+      end();
+      this.saving.set(false);
+    }
+  }
+
+  /**
+   * A whole rule-builder definition was discardable by a stray click. The rules live outside the
+   * form payload, so this only narrates the name/description fields; the prompt still fires and
+   * still offers Save, which persists the rules too.
+   */
+  public canDeactivate(): Promise<boolean> {
+    return this.unsavedChanges.confirmDiscardIfDirty(this.payload().name || 'this list', () =>
+      this.save(() => undefined, true),
+    );
   }
 
   protected async deleteList() {

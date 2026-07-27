@@ -322,10 +322,13 @@ describe('EmailsController Integration', () => {
   });
 
   it('pages stably when emails share the same date_sent (id tiebreaker)', async () => {
-    // Five more emails whose headers all carry an IDENTICAL date_sent — exactly
-    // what a bulk sync produces. The sort key alone is then ambiguous: without a
-    // unique tiebreaker Postgres may order ties differently per query, so
-    // limit/offset pages can repeat or skip rows.
+    // Five more emails all carrying an IDENTICAL date_sent — exactly what a bulk sync produces.
+    // The sort key alone is then ambiguous: without a unique tiebreaker Postgres may order ties
+    // differently per query, so limit/offset pages can repeat or skip rows.
+    //
+    // date_sent is set on BOTH the email row and its header, which is what the ingester now does:
+    // the column is denormalized onto `emails` so the inbox can sort on one indexed column
+    // (see the 2026-07-26 sort-indexes migration).
     const sameInstant = new Date('2026-07-01T12:00:00.000Z');
     const tiedIds: string[] = [];
     for (let i = 0; i < 5; i++) {
@@ -344,6 +347,7 @@ describe('EmailsController Integration', () => {
           preview: 'Preview',
           is_favourite: false,
           status: 'open',
+          date_sent: sameInstant,
           createdby_id: userId,
           updatedby_id: userId,
         })

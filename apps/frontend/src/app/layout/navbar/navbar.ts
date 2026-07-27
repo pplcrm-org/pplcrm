@@ -17,6 +17,8 @@ import { ThemeService } from 'apps/frontend/src/app/layout/theme/theme-service';
 import { UserService } from '@frontend/services/user.service';
 import { EmailActionsStore } from '../../experiences/emails/services/store/email-actions.store';
 import { NotificationsService } from '../../services/api/notifications-service';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { getUserErrorMessage } from '../../services/api/user-message';
 import { BugReportDialogService } from '../../services/bug-report-dialog.service';
 
 type NotificationItem = {
@@ -40,6 +42,7 @@ type NotificationItem = {
 export class Navbar implements OnDestroy {
   protected readonly emailActions = inject(EmailActionsStore);
   protected readonly breadcrumbs = inject(BreadcrumbsService);
+  private readonly alerts = inject(AlertService);
   private readonly auth = inject(AuthService);
   private readonly tourSvc = inject(TourService);
 
@@ -135,11 +138,14 @@ export class Navbar implements OnDestroy {
       this.unreadCount.set(count || 0);
       await this.fetchInitial();
     } catch (err) {
+      // Deliberately silent: this runs on every app boot, and a toast on a cold start with a
+      // flaky connection would greet the user with an error they did not ask for. The bell
+      // simply shows no badge; any user-initiated action below reports its own failure.
       console.error('Failed to initialize notifications', err);
     }
   }
 
-  protected async fetchInitial() {
+  protected async fetchInitial(notifyOnError = false) {
     this.isLoadingMore.set(true);
     try {
       const list = await this.notificationsSvc.getLatest({ limit: 5, offset: 0 });
@@ -147,6 +153,11 @@ export class Navbar implements OnDestroy {
       this.hasMore.set((list || []).length === 5);
     } catch (err) {
       console.error('Failed to fetch initial notifications', err);
+      // Only when the user opened the panel — the same call also runs from init and from the
+      // background poll, which must stay quiet (see initNotifications/refreshCount).
+      if (notifyOnError) {
+        this.alerts.showError(getUserErrorMessage(err, 'Could not load your notifications.'));
+      }
     } finally {
       this.isLoadingMore.set(false);
     }
@@ -162,13 +173,17 @@ export class Navbar implements OnDestroy {
         await this.fetchInitial();
       }
     } catch (err) {
+      // Deliberately silent: this is a background poll on an interval. Toasting here would
+      // produce one error per tick for as long as the connection is down.
       console.error('Failed to poll notification count', err);
     }
   }
 
   protected onNotificationOpen() {
     if (this.notifications().length === 0) {
-      void this.fetchInitial();
+      // The user opened the panel, so a failure here IS worth reporting — unlike the boot and
+      // poll callers, which pass no flag and stay silent.
+      void this.fetchInitial(true);
     }
   }
 
@@ -201,6 +216,7 @@ export class Navbar implements OnDestroy {
       }
     } catch (err) {
       console.error('Failed to load more notifications', err);
+      this.alerts.showError(getUserErrorMessage(err, 'Could not load more notifications.'));
     } finally {
       this.isLoadingMore.set(false);
     }
@@ -213,7 +229,9 @@ export class Navbar implements OnDestroy {
         this.notifications.update((list) => list.map((n) => (n.id === notif.id ? { ...n, read: true } : n)));
         this.unreadCount.update((c) => Math.max(0, c - 1));
       } catch (err) {
+        // The row stays visibly unread, which would otherwise look like the click did nothing.
         console.error('Failed to mark notification read', err);
+        this.alerts.showError(getUserErrorMessage(err, 'Could not mark that notification as read.'));
       }
     }
     if (notif.link) {
@@ -229,7 +247,9 @@ export class Navbar implements OnDestroy {
       this.notifications.update((list) => list.map((n) => ({ ...n, read: true })));
       this.unreadCount.set(0);
     } catch (err) {
+      // Without this the dots just stay put and "Mark all read" looks like a dead button.
       console.error('Failed to mark all read', err);
+      this.alerts.showError(getUserErrorMessage(err, 'Could not mark your notifications as read.'));
     }
   }
 

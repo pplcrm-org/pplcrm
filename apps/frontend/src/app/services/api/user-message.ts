@@ -3,9 +3,25 @@ import { TRPCClientError } from '@trpc/client';
 
 import { ApiError } from './api-error';
 
-/** Shown whenever a request never got a response from the backend (offline, outage, edge 503). */
+/** Shown when a request never got a response from the backend and the browser IS online. */
 export const SERVER_UNREACHABLE_MESSAGE =
   "We can't reach the server right now. Check your internet connection and try again in a moment.";
+
+/**
+ * Shown for the same class of failure when the browser reports it is offline.
+ *
+ * The two are worth separating (§3, fail specifically): "check your internet connection" is a
+ * guess, while "you're offline" is a fact the browser already told us, and it tells the user the
+ * problem is on their end and their work is still on screen. Nothing else in the CRM consulted
+ * `navigator.onLine` at all.
+ */
+export const OFFLINE_MESSAGE =
+  "You're offline, so that didn't save. Your changes are still here — reconnect and retry.";
+
+/** `navigator` is absent under SSR/tests; assume online so we never invent an offline message. */
+export function isBrowserOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
 
 /**
  * True when the request never produced a server-authored error: the backend is down/unreachable or
@@ -44,9 +60,10 @@ function hasServerAuthoredError(error: unknown, depth: number): boolean {
  * instead — the full error still goes to the console via the usual handlers.
  */
 export function getUserErrorMessage(error: unknown, fallback: string): string {
-  // A raw fetch failure would surface as browser-speak ("Failed to fetch") — translate it.
+  // A raw fetch failure would surface as browser-speak ("Failed to fetch") — translate it, and
+  // name the actual cause when the browser already knows the connection is down.
   if (isServerUnreachable(error)) {
-    return SERVER_UNREACHABLE_MESSAGE;
+    return isBrowserOffline() ? OFFLINE_MESSAGE : SERVER_UNREACHABLE_MESSAGE;
   }
   if (error instanceof ApiError || error instanceof TRPCClientError) {
     return error.message || fallback;

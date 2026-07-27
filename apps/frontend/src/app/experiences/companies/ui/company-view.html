@@ -81,7 +81,15 @@
         @if (c.notes) {
         <p class="whitespace-pre-line text-sm font-light leading-relaxed text-base-content/80">{{ c.notes }}</p>
         } @else {
-        <p class="text-sm italic text-base-content/40">No internal notes recorded.</p>
+        <!-- Guided, not decorative: an empty field ends in the action that fills it (§3). -->
+        <button
+          type="button"
+          class="text-left text-sm text-primary hover:underline"
+          (click)="editCompany()"
+          i18n="CompanyView|Notes empty-state guided link@@company.notes.emptyLink"
+        >
+          No notes yet. Add what your team should know
+        </button>
         }
       </pc-card>
     </div>
@@ -110,7 +118,15 @@
           @if (c.description) {
           <p class="whitespace-pre-line text-sm font-light leading-relaxed text-base-content/80">{{ c.description }}</p>
           } @else {
-          <p class="text-sm italic text-base-content/40">No description recorded. Re-check Google to fill it in.</p>
+          <button
+            type="button"
+            class="text-left text-sm text-primary hover:underline"
+            [disabled]="enriching()"
+            (click)="enrichCompany()"
+            i18n="CompanyView|Description empty-state guided link@@company.description.emptyLink"
+          >
+            No description yet. Check Google for one
+          </button>
           }
         </pc-tab-panel>
       </pc-tabs>

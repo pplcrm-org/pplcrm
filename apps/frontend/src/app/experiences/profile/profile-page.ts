@@ -17,6 +17,7 @@ import { AuthService } from '../../auth/auth-service';
 import { CampaignContextService } from '../../services/campaign-context.service';
 import { UserService } from '../../services/user.service';
 import { Input as PcInput } from '@uxcommon/components/input/input';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
 @Component({
   selector: 'pc-profile-page',
@@ -103,11 +104,11 @@ export class ProfilePage implements OnInit {
     return role ? (descriptions[role] ?? authRoleLabel(role)) : '—';
   });
 
-  // Narrate unsaved identity edits (§2 disclosure).
-  protected readonly dirtyFieldCount = computed(() => {
-    const f = this.form;
-    return [f.first_name().dirty(), f.last_name().dirty(), f.email().dirty()].filter(Boolean).length;
-  });
+  // Narrate unsaved identity edits (§2 disclosure) AND guard against losing them. This page
+  // used to compute the dirty count by hand and have no canDeactivate at all — it told the user
+  // their work was at risk and then let them navigate away and lose it.
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
+  protected readonly dirtyFieldCount = this.unsavedChanges.dirtyCount;
 
   protected readonly displayName = computed(() => {
     const user = this.detail();
@@ -176,18 +177,22 @@ export class ProfilePage implements OnInit {
     void this.load();
   }
 
-  protected async save(event?: Event) {
+  /**
+   * @returns whether the write landed — the leave guard needs this to decide between keeping the
+   * user on the form and letting the navigation through.
+   */
+  protected async save(event?: Event): Promise<boolean> {
     if (event) {
       event.preventDefault();
     }
 
     this.form().markAsTouched();
     if (this.form().invalid()) {
-      return;
+      return false;
     }
 
     const user = this.detail();
-    if (!user) return;
+    if (!user) return false;
 
     const payload = this.buildPayload();
 
@@ -198,6 +203,7 @@ export class ProfilePage implements OnInit {
       this.alerts.showSuccess('Profile updated successfully');
       await this.load();
       this.form().reset();
+      return true;
     } catch (err) {
       const message =
         err instanceof Error && err.message
@@ -210,6 +216,7 @@ export class ProfilePage implements OnInit {
             : 'Unable to update profile';
       this.error.set(message);
       this.alerts.showError(message);
+      return false;
     } finally {
       this.saving.set(false);
     }
@@ -428,6 +435,11 @@ export class ProfilePage implements OnInit {
       first_name: raw.first_name?.trim() ?? '',
       last_name: normalize(raw.last_name),
     } as UpdateAuthUserType;
+  }
+
+  public canDeactivate(): Promise<boolean> {
+    // stayPut is implicit: save() never navigates, and the router is already mid-navigation.
+    return this.unsavedChanges.confirmDiscardIfDirty('your profile', () => this.save());
   }
 }
 

@@ -473,6 +473,7 @@ apps/
           bug-report-dialog.service.ts
           campaign-context.service.ts
           command-palette.service.ts
+          connectivity.service.ts
           error.service.ts
           fullscreen.service.ts
           global-error-handler.ts

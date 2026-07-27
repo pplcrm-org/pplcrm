@@ -132,6 +132,7 @@ export const dashboardRoutes: Routes = [
       {
         path: 'add',
         loadComponent: () => import('./experiences/lists/ui/list-form').then((m) => m.ListForm),
+        canDeactivate: [unsavedChangesGuard],
         data: { mode: 'new', breadcrumb: 'New list' },
       },
       {
@@ -141,6 +142,7 @@ export const dashboardRoutes: Routes = [
       {
         path: ':id/edit',
         loadComponent: () => import('./experiences/lists/ui/list-form').then((m) => m.ListForm),
+        canDeactivate: [unsavedChangesGuard],
         data: { mode: 'edit', breadcrumb: 'Edit list' },
       },
     ],
@@ -191,11 +193,13 @@ export const dashboardRoutes: Routes = [
       {
         path: 'add',
         loadComponent: () => import('./experiences/workflows/ui/workflow-form').then((m) => m.WorkflowFormComponent),
+        canDeactivate: [unsavedChangesGuard],
         data: { breadcrumb: 'New automation' },
       },
       {
         path: ':id',
         loadComponent: () => import('./experiences/workflows/ui/workflow-form').then((m) => m.WorkflowFormComponent),
+        canDeactivate: [unsavedChangesGuard],
       },
     ],
   },
@@ -427,6 +431,7 @@ export const dashboardRoutes: Routes = [
         path: 'add',
         loadComponent: () =>
           import('./experiences/fundraising/ui/fundraising-form').then((m) => m.FundraisingFormComponent),
+        canDeactivate: [unsavedChangesGuard],
         // Flat route that conceptually nests under Donations — pre-built trail.
         data: { breadcrumb: [{ label: 'Donations', route: '/donations' }, { label: 'New donation page' }] },
       },
@@ -439,6 +444,7 @@ export const dashboardRoutes: Routes = [
         path: ':id/edit',
         loadComponent: () =>
           import('./experiences/fundraising/ui/fundraising-form').then((m) => m.FundraisingFormComponent),
+        canDeactivate: [unsavedChangesGuard],
         data: { breadcrumb: [{ label: 'Donations', route: '/donations' }, { label: 'Edit donation page' }] },
       },
     ],
@@ -489,6 +495,7 @@ export const dashboardRoutes: Routes = [
   {
     path: 'profile',
     loadComponent: () => import('./experiences/profile/profile-page').then((m) => m.ProfilePage),
+    canDeactivate: [unsavedChangesGuard],
     data: { breadcrumb: 'Profile' },
   },
   {

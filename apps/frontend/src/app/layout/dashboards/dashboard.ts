@@ -24,6 +24,7 @@ import { Tour } from '../tour/tour';
 import { TourService } from '../tour/tour.service';
 import { KeyboardShortcutsService } from '../../services/keyboard-shortcuts.service';
 import { BreadcrumbDefaultsService } from '../../services/breadcrumb-defaults.service';
+import { ConnectivityService } from '../../services/connectivity.service';
 
 @Component({
   selector: 'pc-dashboard',
@@ -45,6 +46,7 @@ import { BreadcrumbDefaultsService } from '../../services/breadcrumb-defaults.se
   },
 })
 export class Dashboard implements OnInit {
+  private readonly connectivity = inject(ConnectivityService);
   private readonly sidebarSvc = inject(SidebarService);
   private readonly auth = inject(AuthService);
   private readonly shortcuts = inject(KeyboardShortcutsService);
@@ -52,6 +54,8 @@ export class Dashboard implements OnInit {
   private readonly router = inject(Router);
 
   protected readonly userSignal = this.auth.getUserSignal();
+  /** Drives the offline banner — see the template. */
+  protected readonly online = this.connectivity.online;
   protected readonly isViewer = computed(() => this.userSignal()?.role === 'viewer');
   protected readonly isDemo = computed(() => !!this.userSignal()?.tenant_demo_mode_at);
 

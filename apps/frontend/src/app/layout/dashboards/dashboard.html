@@ -13,7 +13,23 @@
 
   <div class="drawer-content flex flex-col h-screen overflow-hidden">
     <pc-navbar></pc-navbar>
-    @if (isViewer()) {
+    <!--
+      Offline banner (§2, narrate state rather than hide it). Saying so up front is the difference
+      between "this app is broken" and "my wifi dropped": the user knows why the next save will
+      fail before they attempt it, and that their work is still on screen.
+    -->
+    @if (!online()) {
+    <div
+      class="alert alert-warning border-b px-4 py-2 flex items-center gap-2 text-xs sm:text-sm shadow-inner"
+      role="status"
+      aria-live="polite"
+    >
+      <pc-icon name="exclamation-triangle" [size]="4" class="shrink-0"></pc-icon>
+      <span i18n="Dashboard|Banner shown while the browser is offline@@dashboard.offline.banner">
+        You're offline. Nothing will save until you reconnect; your unsaved work stays on screen.
+      </span>
+    </div>
+    } @if (isViewer()) {
     <div
       class="alert alert-warning border-b px-4 py-2 flex items-center justify-between gap-4 text-xs sm:text-sm shadow-inner"
     >

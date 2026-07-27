@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { TRPCClientError } from '@trpc/client';
 import { JSendServerError } from '../../../../../../libs/common/src';
 import { ApiError } from './api-error';
-import { getUserErrorMessage, isServerUnreachable, SERVER_UNREACHABLE_MESSAGE } from './user-message';
+import { getUserErrorMessage, isServerUnreachable, OFFLINE_MESSAGE, SERVER_UNREACHABLE_MESSAGE } from './user-message';
 
 const FALLBACK = 'Something went wrong, please try again';
 
@@ -107,5 +107,39 @@ describe('isServerUnreachable', () => {
   it('is true for a non-tRPC error', () => {
     expect(isServerUnreachable(new Error('boom'))).toBe(false);
     expect(isServerUnreachable(null)).toBe(false);
+  });
+});
+
+// The CRM previously had no notion of connectivity at all, so a dropped wifi connection and a
+// backend outage produced the same guess ("check your internet connection"). When the browser
+// already knows it is offline, say so.
+describe('offline vs unreachable', () => {
+  const FALLBACK = 'Something went wrong.';
+  const unreachable = new TRPCClientError('Failed to fetch');
+  const original = Object.getOwnPropertyDescriptor(globalThis.navigator, 'onLine');
+
+  function setOnLine(value: boolean): void {
+    Object.defineProperty(globalThis.navigator, 'onLine', { value, configurable: true });
+  }
+
+  afterEach(() => {
+    if (original) Object.defineProperty(globalThis.navigator, 'onLine', original);
+  });
+
+  it('names the offline state when the browser reports no connection', () => {
+    setOnLine(false);
+    expect(getUserErrorMessage(unreachable, FALLBACK)).toBe(OFFLINE_MESSAGE);
+  });
+
+  it('falls back to the outage wording when the browser is online', () => {
+    setOnLine(true);
+    expect(getUserErrorMessage(unreachable, FALLBACK)).toBe(SERVER_UNREACHABLE_MESSAGE);
+  });
+
+  it('does not hijack a real server-authored error while offline', () => {
+    setOnLine(false);
+    const serverError = new TRPCClientError('That name is already taken.');
+    (serverError as { data?: unknown }).data = { code: 'CONFLICT' };
+    expect(getUserErrorMessage(serverError, FALLBACK)).toBe('That name is already taken.');
   });
 });

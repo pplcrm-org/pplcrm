@@ -779,6 +779,14 @@ interface Emails extends RecordType {
   is_favourite: boolean;
   deleted_at: Timestamp | null;
   status: EmailStatus | null;
+  /**
+   * When the message is dated — denormalized from `email_headers.date_sent`, falling back to this
+   * row's own `created_at`. It exists so the inbox can sort on one indexed column; sorting by
+   * `coalesce(email_headers.date_sent, emails.created_at)` across a join was unindexable and made
+   * every page load a full fetch plus external sort. Writers must keep it in step with the header
+   * row (see the 2026-07-26 sort-indexes-hot-lists migration).
+   */
+  date_sent: Timestamp;
 }
 
 interface Newsletters extends RecordType {

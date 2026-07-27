@@ -17,6 +17,7 @@ import { DonationsService } from '../../../services/api/donations-service';
 import { environment } from '../../../../environments/environment';
 import { donationPageUrl } from '../../../shared/public-pages';
 import { AuthService } from '../../../auth/auth-service';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
 @Component({
   selector: 'pc-fundraising-form',
@@ -74,6 +75,9 @@ export class FundraisingFormComponent implements OnInit {
   protected readonly form = form(this.payload, (p) => {
     validateStandardSchema(p, AddWebFormObj);
   });
+
+  /** Narrates "Unsaved changes · N fields" and powers canDeactivate below. */
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
 
   protected readonly isRecurring = computed(() => this.payload().form_type === 'recurring_donation');
 
@@ -256,7 +260,12 @@ export class FundraisingFormComponent implements OnInit {
     }
   }
 
-  protected async save(done?: (() => void) | Event) {
+  /**
+   * @param done called instead of navigating, so the leave guard can save without fighting the
+   * router.
+   * @returns whether the write landed.
+   */
+  protected async save(done?: (() => void) | Event): Promise<boolean> {
     if (done instanceof Event) {
       done.preventDefault();
     }
@@ -264,9 +273,10 @@ export class FundraisingFormComponent implements OnInit {
     this.form().markAsTouched();
     if (this.form().invalid()) {
       this.alertSvc.showError('Please check your inputs.');
-      return;
+      return false;
     }
 
+    let saved = false;
     this.saving.set(true);
     this.error.set(null);
 
@@ -290,7 +300,9 @@ export class FundraisingFormComponent implements OnInit {
             };
             const result = (await this.formsSvc.add(payload)) as { id: string };
             this.alertSvc.showSuccess('Donation page created successfully!');
-            void this.router.navigate(['/donation-pages', result.id]);
+            saved = true;
+            if (typeof done === 'function') done();
+            else void this.router.navigate(['/donation-pages', result.id]);
           } else {
             const id = this.formId()!;
             const payload = {
@@ -306,6 +318,7 @@ export class FundraisingFormComponent implements OnInit {
             };
             await this.formsSvc.update(id, payload);
             this.alertSvc.showSuccess('Donation page updated successfully!');
+            saved = true;
             if (typeof done === 'function') {
               done();
             } else {
@@ -322,6 +335,13 @@ export class FundraisingFormComponent implements OnInit {
         return null;
       },
     });
+    return saved;
+  }
+
+  public canDeactivate(): Promise<boolean> {
+    return this.unsavedChanges.confirmDiscardIfDirty(this.payload().name || 'this donation page', () =>
+      this.save(() => undefined),
+    );
   }
 
   private async loadLists(): Promise<void> {

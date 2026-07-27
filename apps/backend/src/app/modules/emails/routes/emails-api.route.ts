@@ -220,6 +220,9 @@ export async function saveLocalEmail(
         is_favourite: false,
         deleted_at: null,
         status: 'open',
+        // Denormalized sort key — must mirror the email_headers.date_sent written below, or the
+        // message sorts to the wrong place in the inbox (see the sort-indexes-hot-lists migration).
+        date_sent: new Date(),
         createdby_id: userId,
         updatedby_id: userId,
       })

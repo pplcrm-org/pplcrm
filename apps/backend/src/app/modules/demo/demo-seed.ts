@@ -509,6 +509,9 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         assigned_to,
         is_favourite: e.is_favourite ?? false,
         created_at: daysAgo(e.daysAgo),
+        // The inbox sorts on date_sent, so demo mail has to carry the same backdated timestamp
+        // as created_at or every seeded message stacks up at "now".
+        date_sent: daysAgo(e.daysAgo),
       })
       .returning('id')
       .executeTakeFirstOrThrow();
