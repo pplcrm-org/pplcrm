@@ -26,6 +26,7 @@ apps/
           2026-07-28-x-tenant-approval.ts
           2026-07-28-z-canvass-volunteer-roam.ts
           2026-07-28-zz-companion-join-codes.ts
+          2026-07-28-zzz-street-claims-organizer.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -170,6 +171,7 @@ apps/
               turf-assignments.repo.ts
               turf-households.repo.ts
               turf-knocks.repo.ts
+              turf-segment-claims.repo.ts
               turfs.repo.ts
             routes/
               canvass-public.route.ts
@@ -188,6 +190,7 @@ apps/
               companion-sessions.repo.ts
               companion-volunteers.repo.ts
               join-codes.repo.ts
+              organizer-tokens.repo.ts
             routes/
               companion-public.route.ts
             controller.ts

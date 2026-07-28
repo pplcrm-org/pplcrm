@@ -66,3 +66,16 @@ export interface JoinCodeQr {
   url: string;
   matrix: boolean[][];
 }
+
+/**
+ * "Send to my phone" — the result of texting yourself the organizer link for a code.
+ *
+ * `no_mobile` is not an error: an admin with no mobile on file did nothing wrong, and the
+ * UI's job is to point at Personal settings rather than to show a red toast (§3, guide
+ * don't error). Hence a discriminated result instead of a thrown `BadRequestError`.
+ */
+export interface JoinCodePhoneSendResult {
+  status: 'sent' | 'no_mobile';
+  /** Masked destination, so "sent" can name where it went without printing the number. */
+  masked?: string;
+}

@@ -317,6 +317,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'approve-by-text', text: 'Approve from your phone' },
       {
         kind: 'p',
+        text: 'If you are the one running the launch, **Send to my phone** on the Join by QR panel texts you the whole thing on one page: the QR blown up to hold across a room, the eight-character code under it, and everyone who has scanned it waiting, with **Approve** next to each name. The list refreshes itself while you stand there. That link only ever goes to the mobile on your own profile, it only reaches the people who scanned that one code, and it stops working after twelve hours or the moment you rotate the code — whichever comes first.',
+      },
+      {
+        kind: 'p',
         text: 'Approving from the Volunteer access page always works. But when you are the one who invited someone — you assigned them a turf, or you created the join code they scanned — we can also text you a link that approves them in one tap. It shows who is asking and what they’d be joining before you decide, and it expires after three days. It’s on by default — an unapproved volunteer is standing at a door unable to work, and a text is the fastest way to unblock them — but it only ever reaches you if your profile has a mobile number, and you can switch it off from the **Volunteer waiting for approval** row in your notification settings. Email and in-app alerts go out either way.',
       },
       { kind: 'h2', id: 'companion', text: 'The Canvass Companion' },
@@ -327,6 +331,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'On a big turf they can walk **one street at a time**. The bar above the door list says what they’re looking at — “All doors in this turf” to start, so nothing is ever hidden — and tapping it opens a street picker: all doors, the streets nearest them if they let the phone share its location, then every street in the turf in walk order. Picking one narrows the list and the map together and says so; “All doors” is always the first option back. Turf progress in the header stays turf-wide either way, so a finished street never reads as a finished turf.',
+      },
+      {
+        kind: 'p',
+        text: 'When a group is splitting one turf, the street picker also shows who has taken what — “Dana is here” next to a street someone else picked. It’s a note to the group, never a lock: any volunteer can still take any street, and nothing stops a knock. Streets are handed back automatically when someone picks a different one, switches turfs, or ends their shift.',
       },
       {
         kind: 'p',

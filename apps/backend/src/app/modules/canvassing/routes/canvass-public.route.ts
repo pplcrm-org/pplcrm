@@ -1,6 +1,6 @@
 import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastify';
 
-import { CompanionResultsObj } from '../../../../../../../libs/common/src';
+import { CompanionClaimSegmentObj, CompanionResultsObj } from '../../../../../../../libs/common/src';
 import { CanvassingController } from '../controller';
 import { isRateLimited } from '../../../lib/rate-limiter';
 
@@ -121,6 +121,23 @@ const canvassPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     } catch (err: unknown) {
       fastify.log.error(err);
       return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to load this turf.') });
+    }
+  });
+
+  // Advisory street claims — "I'm on Scott Blvd", so the rest of the group can split the
+  // turf. Session-first only: every claiming device already holds a session, and there is
+  // nothing here a capability link needs to reach. Nothing downstream treats a claim as
+  // permission, so a failure here costs the group a label and never a knock.
+  fastify.post('/turf/:turfId/segment', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { turfId } = req.params as { turfId: string };
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    const parsed = CompanionClaimSegmentObj.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid street.' });
+    try {
+      return reply.status(200).send(await controller.claimSegment(sessionTokenOf(req), String(turfId), parsed.data));
+    } catch (err: unknown) {
+      fastify.log.error(err);
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to update your street.') });
     }
   });
 

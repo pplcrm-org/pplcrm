@@ -237,6 +237,7 @@ every downstream read/write is scoped by the `tenant_id` it returns. The full se
 | `TurfAssignmentsRepo.resolveByToken`      | sha256 of the `/t/:token` capability link                             |
 | `JoinCodesRepo.resolveByCode`             | the 8-char QR join code (`campaign_join_codes.code`, UNIQUE globally) |
 | `ApprovalTokensRepo.resolveByToken`       | sha256 of an approve-by-text link                                     |
+| `OrganizerTokensRepo.resolveByToken`      | sha256 of the `/o/:token` organizer launch-page link                  |
 | `CompanionVolunteersRepo.findByJoinClaim` | sha256 of the one-shot QR-join claim                                  |
 
 Adding a new one is the same review as adding an allow-list entry: the key must be globally

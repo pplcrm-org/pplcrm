@@ -10,27 +10,30 @@ Cut a smart-list universe into walkable **turfs**, hand them to volunteers via a
 Built net-new in Wave 2 Track F. Reuses Wave 1A geocoding (`households.lat/lng` +
 `ward`) and Wave 1C `lists.getCurrentMembers` — do **not** re-derive either.
 
-## Data model (migration `_migrations/2026-07-11-canvassing.ts`)
+## Data model
 
-Four tables, canvassing-namespaced (so they never collide with Track G's
+The four core tables live in the squashed baseline (`_migrations/schema.sql`) — the old
+dated `2026-07-11-canvassing.ts` no longer exists post-squash (see `pplcrm-migrations`).
+`turf_segment_claims` was added later by its own dated file.
+
+Canvassing-namespaced (so they never collide with Track G's
 delivery tables). All follow the house pattern: `bigint` id + `UNIQUE(id)` +
 `PRIMARY KEY(id, tenant_id)`, `ENABLE`+`FORCE ROW LEVEL SECURITY` with the
 standard `tenant_isolation` policy, grants to `pplcrm_app`. Multi-statement DDL
 runs through `sql.raw(...)` (parameterless → simple protocol), like the baseline.
 
-| Table              | What it is                                                                                                                                                                                                                                                              |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `turfs`            | A turf. `status` = `draft`\|`active`\|`retired` (stored lifecycle only). `list_id`, `target_doors`, `centroid_lat/lng`, `ward`.                                                                                                                                         |
-| `turf_households`  | The doors — one row per household (junction, PK includes both).                                                                                                                                                                                                         |
-| `turf_assignments` | A turf handed to a volunteer: `volunteer_person_id` (the person the link belongs to — required by the access layer), optional `expires_at`, `team_id`, `token`. `status` = `active`\|`revoked`.                                                                         |
-| `turf_knocks`      | **The source of truth for progress.** One row per door interaction. `outcome`, `response`, `issues[]`, follow-up flags (`wants_volunteer`/`wants_yard_sign`/`set_dnc`/`subscribe`), `contact_phone/email`, `source`, `canvasser_name`, `client_knock_id`, `knocked_at`. |
+| Table                 | What it is                                                                                                                                                                                                                                                                             |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `turfs`               | A turf. `status` = `draft`\|`active`\|`retired` (stored lifecycle only). `list_id`, `target_doors`, `centroid_lat/lng`, `ward`.                                                                                                                                                        |
+| `turf_households`     | The doors — one row per household (junction, PK includes both).                                                                                                                                                                                                                        |
+| `turf_assignments`    | A turf handed to a volunteer: `volunteer_person_id` (the person the link belongs to — required by the access layer), optional `expires_at`, `team_id`, `token`. `status` = `active`\|`revoked`.                                                                                        |
+| `turf_knocks`         | **The source of truth for progress.** One row per door interaction. `outcome`, `response`, `issues[]`, follow-up flags (`wants_volunteer`/`wants_yard_sign`/`set_dnc`/`subscribe`), `contact_phone/email`, `source`, `canvasser_name`, `client_knock_id`, `knocked_at`.                |
+| `turf_segment_claims` | **Advisory only** — "Dana is on Scott Blvd", so a group can split a turf. Never consulted before a knock; no unique index on the street, one live claim per `assignment_id`, 6-hour expiry. Migration `2026-07-28-zzz-street-claims-organizer.ts`. See "Advisory street claims" below. |
 
-The migration is dated **2026-07-11** deliberately: Kysely aborts with "corrupted
-migrations" if a new file sorts alphabetically _before_ an already-applied one, and
-the dev DB has applied `2026-07-10-person-public-id` and
-`2026-07-11-automations-step-kinds` ("automations" < "canvassing", so we still
-sort last). If you add another canvassing migration, keep it dated ≥ the newest
-applied file.
+Kysely aborts with "corrupted migrations" if a new file sorts alphabetically _before_
+an already-applied one, so a new canvassing migration must sort after every applied
+file — same-day additions use a `-z`/`-zz`/`-zzz` infix (see the existing companion
+files) rather than a future date.
 
 `turf_households.walk_order` stores the suggested visit order (set at cut time
 from the engine's snake sweep — a hint, never a lock). `campaigns` carries the
@@ -168,6 +171,27 @@ or optimistic is lost and re-applying an op the server already has is a no-op. I
 silent on failure (a poll that missed one tick is not a doorstep interruption) and the
 narrated "Updated just now" line is what tells the volunteer how fresh the numbers are.
 It posts to `/api/canvass/turf/:turfId`, not the link, so it works after a QR join too.
+
+### Advisory street claims (`turf_segment_claims`)
+
+"Dana is here" next to a street in the picker, so a group splitting one turf can see how it
+has been split. **Advisory and nothing else** — read that as a hard rule, not a caveat:
+
+- Nothing consults a claim before accepting a knock. `claimSegment` is the only writer and
+  no reader outside `companionTurfPayload` exists.
+- There is deliberately **no unique index on `(turf_id, street_key)`**. Two people choosing
+  to work one street together is a decision they are allowed to make. What IS unique is one
+  live claim per `assignment_id`, so nobody appears to stand in two places.
+- The client fires and forgets (`CanvassStore.chooseSegment` scopes locally first, then
+  POSTs `/api/canvass/turf/:turfId/segment`). A failed claim costs the group a label,
+  never a knock, and never an error message at a doorstep.
+
+`SEGMENT_CLAIM_TTL_MS` (6 h) is what stops a phone locked at 4pm telling Sunday's group a
+street is taken; `activeForTurf` filters expiry at read time rather than by a sweep job.
+Claims are released explicitly on picking a different street, switching turfs, and
+`endShift()`. `canvasser_name` is denormalized onto the row like `turf_knocks.canvasser_name`,
+so reading claims never touches `persons`. The payload marks the reader's own claim `mine:
+true` and the store drops those — "Showing" and "You're here" would say the same thing twice.
 
 ## The cutting engine (`modules/canvassing/lib/cutting-engine.ts`)
 

@@ -9,6 +9,7 @@ import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import type {
   AddJoinCodeType,
+  JoinCodePhoneSendResult,
   JoinCodeQr,
   JoinCodeRow,
   UpdateJoinCodeType,
@@ -19,6 +20,9 @@ import type {
   CompanionJoinStartResult,
   CompanionJoinStartType,
   CompanionLinkKind,
+  CompanionOrganizerDecisionType,
+  CompanionOrganizerPayload,
+  CompanionOrganizerPending,
   CompanionVerifyChannel,
   CompanionVerifyConfirmResult,
   CompanionVerifyKind,
@@ -43,6 +47,7 @@ import { NotificationsRepo } from '../notifications/repositories/notifications.r
 import { ApprovalTokensRepo } from './repositories/approval-tokens.repo';
 import { CompanionSessionsRepo } from './repositories/companion-sessions.repo';
 import { JoinCodesRepo, type ResolvedJoinCode } from './repositories/join-codes.repo';
+import { OrganizerTokensRepo, type ResolvedOrganizerToken } from './repositories/organizer-tokens.repo';
 import { CompanionVolunteersRepo, type CompanionVolunteer } from './repositories/companion-volunteers.repo';
 
 const CODE_TTL_MS = 10 * 60 * 1000;
@@ -80,9 +85,41 @@ const JOIN_START_PER_CODE_PER_DAY = 200;
  */
 const JOIN_REFUSAL = 'That code is not accepting new volunteers. Check with your organizer.';
 
+/**
+ * How long the organizer's phone link lives.
+ *
+ * The length of a canvass launch, not of a campaign. It is a bearer credential in an SMS
+ * that can approve everyone who scans one poster, so it is deliberately the shortest
+ * lifetime that still covers "text it to myself at 9am, use it all morning". Re-sending is
+ * one tap from the CRM; a link that outlived the event would be a standing grant nobody
+ * remembers holding.
+ */
+const ORGANIZER_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+/** Sends per admin per window — this texts a real phone and costs real money. */
+const ORGANIZER_SEND_LIMIT = 5;
+const ORGANIZER_SEND_WINDOW_MS = 60 * 60 * 1000;
+
 /** The URL a join QR encodes. Built server-side so the companion origin is never guessed. */
 function joinUrl(code: string): string {
   return `${env.companionUrl}/j/${code}`;
+}
+
+/**
+ * The QR module matrix for a URL.
+ *
+ * Always a matrix, never an image: the client draws one `<svg>` from it, so nothing renders
+ * a binary here, nothing is cached as a file, and the code scales to a projector without
+ * going fuzzy.
+ */
+function qrMatrix(url: string): boolean[][] {
+  const { modules } = QRCode.create(url, { errorCorrectionLevel: 'M' });
+  const matrix: boolean[][] = [];
+  for (let row = 0; row < modules.size; row++) {
+    const cells: boolean[] = [];
+    for (let col = 0; col < modules.size; col++) cells.push(modules.data[row * modules.size + col] === 1);
+    matrix.push(cells);
+  }
+  return matrix;
 }
 
 /** An unselected `<select>` sends '' — that means "none", not "leave it alone". */
@@ -135,6 +172,7 @@ export class CompanionAccessController {
   private joinCodesRepo = new JoinCodesRepo();
   private mailService = new TransactionalEmailService({ defaultAudience: 'account' });
   private notificationsRepo = new NotificationsRepo();
+  private organizerTokensRepo = new OrganizerTokensRepo();
   private routesRepo = new DeliveryRoutesRepo();
   private sessionsRepo = new CompanionSessionsRepo();
   private smsService = new SmsService();
@@ -671,6 +709,10 @@ export class CompanionAccessController {
         { tenant_id: auth.tenant_id, id, status: 'revoked', user_id: auth.user_id },
         trx,
       );
+      // The poster and the phone link that was texted alongside it have to die together —
+      // otherwise the printed code stops working while the credential handed out with it
+      // keeps approving people.
+      await this.organizerTokensRepo.revokeForJoinCode({ tenant_id: auth.tenant_id, join_code_id: id }, trx);
       return this.joinCodesRepo.createCode(
         {
           tenant_id: auth.tenant_id,
@@ -699,7 +741,13 @@ export class CompanionAccessController {
   public async revokeJoinCode(auth: IAuthKeyPayload, id: string): Promise<void> {
     const existing = await this.joinCodesRepo.findById({ tenant_id: auth.tenant_id, id });
     if (!existing) throw new NotFoundError('Join code not found.');
-    await this.joinCodesRepo.setStatus({ tenant_id: auth.tenant_id, id, status: 'revoked', user_id: auth.user_id });
+    await this.joinCodesRepo.transaction().execute(async (trx) => {
+      await this.joinCodesRepo.setStatus(
+        { tenant_id: auth.tenant_id, id, status: 'revoked', user_id: auth.user_id },
+        trx,
+      );
+      await this.organizerTokensRepo.revokeForJoinCode({ tenant_id: auth.tenant_id, join_code_id: id }, trx);
+    });
     await this.activityRepo.log({
       tenant_id: auth.tenant_id,
       user_id: auth.user_id,
@@ -721,14 +769,160 @@ export class CompanionAccessController {
     const existing = await this.joinCodesRepo.findById({ tenant_id: auth.tenant_id, id });
     if (!existing) throw new NotFoundError('Join code not found.');
     const url = joinUrl(existing.code);
-    const { modules } = QRCode.create(url, { errorCorrectionLevel: 'M' });
-    const matrix: boolean[][] = [];
-    for (let row = 0; row < modules.size; row++) {
-      const cells: boolean[] = [];
-      for (let col = 0; col < modules.size; col++) cells.push(modules.data[row * modules.size + col] === 1);
-      matrix.push(cells);
+    return { code: existing.code, url, matrix: qrMatrix(url) };
+  }
+
+  /**
+   * "Send to my phone" — text the caller the organizer link for this code.
+   *
+   * To *themselves*, never to a number they type: this mints a credential that can approve
+   * volunteers, and a free-text destination would turn one admin's session into a way to
+   * hand that credential to anyone. The only destination is the mobile already on their own
+   * profile.
+   *
+   * No mobile on file returns `no_mobile` rather than throwing. The admin did nothing wrong,
+   * and the useful answer is "add one in Personal settings", which is a sentence on the
+   * screen and not a red toast (§3).
+   */
+  public async sendJoinCodeToPhone(auth: IAuthKeyPayload, id: string): Promise<JoinCodePhoneSendResult> {
+    checkRateLimit(`companion-organizer-send:${auth.user_id}`, ORGANIZER_SEND_LIMIT, ORGANIZER_SEND_WINDOW_MS);
+
+    const code = await this.joinCodesRepo.findById({ tenant_id: auth.tenant_id, id });
+    if (!code) throw new NotFoundError('Join code not found.');
+    if (code.status !== 'active') throw new BadRequestError('That code has been revoked. Create a new one first.');
+
+    const profile = await this.volunteersRepo.db
+      .selectFrom('profiles')
+      .select('mobile')
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('auth_id', '=', auth.user_id)
+      .executeTakeFirst();
+    const to = normalizeE164(profile?.mobile ?? null);
+    if (!to) return { status: 'no_mobile' };
+
+    const token = generateToken();
+    const orgName = await publicOrgName(auth.tenant_id);
+    const label = (await this.joinCodeLabel(code)) ?? orgName;
+
+    await this.volunteersRepo.transaction().execute(async (trx) => {
+      await this.organizerTokensRepo.create(
+        {
+          tenant_id: auth.tenant_id,
+          join_code_id: id,
+          admin_user_id: auth.user_id,
+          token,
+          expires_at: new Date(Date.now() + ORGANIZER_TOKEN_TTL_MS),
+        },
+        trx,
+      );
+      await this.smsService.enqueueSms(
+        {
+          to,
+          body: `${orgName}: sign-up page for ${label}. ${env.companionUrl}/o/${token}`,
+          tenant_id: auth.tenant_id,
+        },
+        trx,
+      );
+    });
+
+    await this.activityRepo.log({
+      tenant_id: auth.tenant_id,
+      user_id: auth.user_id,
+      activity: 'update',
+      entity: 'campaign_join_codes',
+      entity_id: id,
+      metadata: { action: 'join_code_sent_to_phone', message: 'Texted themselves the organizer link' },
+    });
+    return { status: 'sent', masked: maskPhone(to) };
+  }
+
+  // -------------------------------------------------- organizer mobile page --
+
+  /**
+   * GET /api/companion/organizer/:token — the whole page, polled.
+   *
+   * The page an organizer actually holds at a launch: the QR big enough to show a room,
+   * and the people who have scanned it standing in front of them waiting to be let in.
+   * When they are standing right there, texting each approval back and forth is a worse
+   * version of a list they could just look at.
+   *
+   * Everything it can see is scoped to the one join code the token names, so this is
+   * strictly narrower than the admin's own Volunteer access page — it cannot show, or
+   * decide on, anyone who did not scan this poster.
+   */
+  public async getOrganizerPage(token: string): Promise<CompanionOrganizerPayload> {
+    const resolved = await this.resolveOrganizerToken(token);
+    if (!resolved) return { state: 'dead' };
+    const { organizer, code } = resolved;
+
+    const [pending, approved] = await Promise.all([
+      this.volunteersRepo.getForJoinCode({
+        tenant_id: organizer.tenant_id,
+        join_code_id: organizer.join_code_id,
+        statuses: ['verified'],
+      }),
+      this.volunteersRepo.getForJoinCode({
+        tenant_id: organizer.tenant_id,
+        join_code_id: organizer.join_code_id,
+        statuses: ['approved'],
+      }),
+    ]);
+
+    const url = joinUrl(code.code);
+    return {
+      state: 'live',
+      organizationName: await publicOrgName(organizer.tenant_id),
+      joiningLabel: await this.joinCodeLabel(code),
+      code: code.code,
+      url,
+      matrix: qrMatrix(url),
+      expiresAt: organizer.expires_at.toISOString(),
+      approvedCount: approved.length,
+      pending: pending.map(
+        (v): CompanionOrganizerPending => ({
+          volunteer_id: v.id,
+          name: `${v.first_name ?? ''} ${v.last_name ?? ''}`.trim() || 'A volunteer',
+          contact: v.email ? maskEmail(v.email) : this.maskedMobile(v.mobile),
+          requestedAt: v.verified_at?.toISOString(),
+        }),
+      ),
+    };
+  }
+
+  /**
+   * POST /api/companion/organizer/:token/decide — approve or decline one person, inline.
+   *
+   * Delegates to the same `approveVolunteer` / `revokeVolunteer` every other surface calls,
+   * acting as the admin who minted the link, so turf placement, activity logging and
+   * session revocation cannot drift between the CRM, the SMS link and this page.
+   *
+   * The membership check is the security boundary: a volunteer id that did not come in
+   * through THIS code is refused, so guessing ids cannot widen the token's reach.
+   */
+  public async decideOnOrganizerPage(
+    token: string,
+    input: CompanionOrganizerDecisionType,
+  ): Promise<CompanionOrganizerPayload> {
+    const resolved = await this.resolveOrganizerToken(token);
+    if (!resolved) return { state: 'dead' };
+    const { organizer } = resolved;
+
+    const volunteer = await this.volunteersRepo.findById({
+      tenant_id: organizer.tenant_id,
+      id: input.volunteer_id,
+    });
+    if (!volunteer || volunteer.join_code_id !== organizer.join_code_id) {
+      throw new NotFoundError('That volunteer is not on this list.');
     }
-    return { code: existing.code, url, matrix };
+    // Someone already decided — from the CRM, from an SMS link, or on another phone.
+    // Re-rendering the list is the honest answer; it will simply no longer contain them.
+    if (volunteer.status === 'approved' || volunteer.status === 'revoked') return this.getOrganizerPage(token);
+
+    const auth = { tenant_id: organizer.tenant_id, user_id: organizer.admin_user_id } as IAuthKeyPayload;
+    if (input.decision === 'approve') await this.approveVolunteer(auth, volunteer.id);
+    else await this.revokeVolunteer(auth, volunteer.id);
+
+    return this.getOrganizerPage(token);
   }
 
   // ---------------------------------------------------------------- admin API
@@ -1020,6 +1214,32 @@ export class CompanionAccessController {
         trx,
       );
     }
+  }
+
+  /** A phone we could never text is not a contact worth showing half of. */
+  private maskedMobile(mobile: string | null): string | undefined {
+    const normalized = normalizeE164(mobile);
+    return normalized ? maskPhone(normalized) : undefined;
+  }
+
+  /**
+   * An organizer link plus the code it names, or null for every reason it might not work.
+   *
+   * Uniform on purpose: expired, revoked, a code that was rotated out from under it, or a
+   * code someone revoked all answer the same 'dead'. This is a URL anyone can hold, so
+   * explaining which of those it was tells a stranger about the workspace.
+   */
+  private async resolveOrganizerToken(
+    token: string,
+  ): Promise<{ organizer: ResolvedOrganizerToken; code: ResolvedJoinCode } | null> {
+    const organizer = await this.organizerTokensRepo.resolveByToken(token);
+    if (!organizer || organizer.revoked_at || organizer.expires_at < new Date()) return null;
+    const code = await this.joinCodesRepo.findById({
+      tenant_id: organizer.tenant_id,
+      id: organizer.join_code_id,
+    });
+    if (!code || code.status !== 'active') return null;
+    return { organizer, code };
   }
 
   /** Re-read a code as the admin list shows it, so create/update/rotate all answer the same shape. */

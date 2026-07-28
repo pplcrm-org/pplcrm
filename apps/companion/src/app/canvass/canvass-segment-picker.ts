@@ -5,6 +5,7 @@ import { Icon } from '@icons/icon';
 
 import type { CanvassSegment } from './canvass-derive';
 import { CanvassStore } from './canvass-store';
+import { firstNameOf } from './canvass-ui';
 import { GeoPosition } from './geo-position';
 
 /** Anything further away than this is not "the street you are standing on". */
@@ -69,6 +70,9 @@ const NEARBY_RADIUS_KM = 0.5;
               <span class="min-w-0">
                 <span class="block truncate font-medium">{{ s.street }}</span>
                 <span class="block truncate text-xs text-base-content/70">{{ subtitle(s) }}</span>
+                @if (whoIsHere(s); as who) {
+                  <span class="block truncate text-xs font-medium text-secondary">{{ who }}</span>
+                }
               </span>
               <span class="shrink-0 text-xs text-base-content/60">{{ distanceLabel(s) }}</span>
             </button>
@@ -102,6 +106,11 @@ const NEARBY_RADIUS_KM = 0.5;
             <span class="min-w-0">
               <span class="block truncate font-medium">{{ s.street }}</span>
               <span class="block truncate text-xs text-base-content/70">{{ subtitle(s) }}</span>
+              <!-- Advisory, and worded as advice. Never disables the button: two people
+                   choosing to work one street together is their call, not the app's. -->
+              @if (whoIsHere(s); as who) {
+                <span class="block truncate text-xs font-medium text-secondary">{{ who }}</span>
+              }
             </span>
             @if (store.segmentKey() === s.key) {
               <span class="badge badge-primary badge-sm shrink-0">Showing</span>
@@ -144,8 +153,24 @@ export class CanvassSegmentPicker {
   }
 
   protected choose(key: string | null): void {
-    this.store.segmentKey.set(key);
+    this.store.chooseSegment(key);
     this.closed.emit();
+  }
+
+  /**
+   * "Dana is here" — who else has taken this street.
+   *
+   * Names, not counts, up to two: at a launch of five people the useful question is which
+   * of your friends is over there, and "2 canvassers" answers a different one. Own claims
+   * never appear (the store filters them), so this can only ever read as news.
+   */
+  protected whoIsHere(s: CanvassSegment): string | null {
+    const claims = this.store.claimsByStreet().get(s.key);
+    if (!claims?.length) return null;
+    const names = claims.map((c) => firstNameOf(c.canvasser_name));
+    if (names.length === 1) return `${names[0]} is here`;
+    if (names.length === 2) return `${names[0]} and ${names[1]} are here`;
+    return `${names[0]}, ${names[1]} and ${names.length - 2} more are here`;
   }
 
   protected distanceLabel(s: CanvassSegment): string {

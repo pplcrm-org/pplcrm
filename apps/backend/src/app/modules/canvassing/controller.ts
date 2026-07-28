@@ -1,10 +1,12 @@
 import type {
   AddTurfType,
   AssignTurfType,
+  CompanionClaimSegmentType,
   CompanionHousehold,
   CompanionOpAck,
   CompanionOpType,
   CompanionPerson,
+  CompanionSegmentClaim,
   CompanionSurveyPrefill,
   CompanionSurveyType,
   CompanionTurfChoice,
@@ -44,6 +46,7 @@ import {
 import { TurfHouseholdsRepo, type CoverageDoorRow } from './repositories/turf-households.repo';
 import { type TurfCanvasser, TurfAssignmentsRepo, generateTurfToken } from './repositories/turf-assignments.repo';
 import { TurfKnocksRepo, type FieldReport, type ResponseMix } from './repositories/turf-knocks.repo';
+import { TurfSegmentClaimsRepo } from './repositories/turf-segment-claims.repo';
 import { TurfsRepo, type TurfRow } from './repositories/turfs.repo';
 
 /** What a voter said at the door → the campaign support scale (§15). */
@@ -91,6 +94,8 @@ export interface TurfListItem {
  * assignment, so both paths feed the same payload/ops code.
  */
 interface CompanionContext {
+  /** The assignment row — the identity a street claim is filed under. */
+  id: string;
   tenant_id: string;
   turf_id: string;
   volunteer_person_id: string | null;
@@ -152,12 +157,23 @@ const MIN_HULL_POINTS = 3;
 // A turf is "in the field" if a knock landed within this window.
 const IN_FIELD_WINDOW_MS = 6 * 60 * 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * How long a street claim stands before it stops being believed.
+ *
+ * Long enough to cover a canvass shift without a volunteer having to re-claim the street
+ * they are visibly standing on; short enough that a phone locked at the end of the
+ * afternoon is not still telling Sunday's group that Scott Blvd is taken. Nobody is ever
+ * blocked by a stale claim — the cost of getting this wrong is only a misleading label.
+ */
+const SEGMENT_CLAIM_TTL_MS = 6 * 60 * 60 * 1000;
 const COMPANION_SOURCE = 'companion';
 
 export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   private readonly turfHouseholds = new TurfHouseholdsRepo();
   private readonly assignments = new TurfAssignmentsRepo();
   private readonly knocks = new TurfKnocksRepo();
+  private readonly segmentClaims = new TurfSegmentClaimsRepo();
   private readonly lists = new ListsController();
   private readonly campaignsRepo = new CampaignsRepo();
   private readonly factsRepo = new CampaignPersonFactsRepo();
@@ -638,11 +654,12 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     const turf = await this.turfsRepo().getTurfCore({ tenant_id, id: turf_id });
     if (!turf) throw new NotFoundError('Turf not found');
 
-    const [doorRows, state, campaign, canvasserName] = await Promise.all([
+    const [doorRows, state, campaign, canvasserName, claims] = await Promise.all([
       this.turfHouseholds.getDoors({ tenant_id, turf_id }),
       this.knocks.getCompanionState({ tenant_id, turf_id }),
       this.companionCampaign(tenant_id, String(turf.campaign_id ?? '')),
       this.personFirstLast(tenant_id, String(assignment.volunteer_person_id)),
+      this.segmentClaims.activeForTurf({ tenant_id, turf_id }),
     ]);
 
     const householdIds = doorRows.map((d) => d.household_id);
@@ -707,7 +724,58 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       issues: campaign.issues,
       expires_at: assignment.expires_at ? assignment.expires_at.toISOString() : null,
       households,
+      segment_claims: claims.map(
+        (c): CompanionSegmentClaim => ({
+          street_key: c.street_key,
+          street: c.street_label,
+          canvasser_name: c.canvasser_name,
+          claimed_at: c.claimed_at.toISOString(),
+          mine: c.assignment_id === assignment.id,
+        }),
+      ),
     };
+  }
+
+  /**
+   * "I'm taking Scott Blvd" — or, with a null key, "I'm back on the whole turf".
+   *
+   * Advisory throughout: this writes a note for the rest of the group and changes nothing
+   * about what anyone may knock. It cannot fail in a way worth interrupting a volunteer
+   * over, which is why the client fires it and forgets it — the worst outcome is that the
+   * group's picture of who is where is briefly stale, exactly as it was before any of this
+   * existed.
+   *
+   * A claim outlives neither the shift nor the assignment: `SEGMENT_CLAIM_TTL_MS` is what
+   * stops a phone going into a pocket at 4pm from telling tomorrow's group that a street
+   * is taken.
+   */
+  public async claimSegment(
+    sessionToken: string | null,
+    turfId: string,
+    input: CompanionClaimSegmentType,
+  ): Promise<{ ok: true }> {
+    const assignment = await this.assignmentForSession(sessionToken, turfId);
+    const tenant_id = assignment.tenant_id;
+    const key = input.street_key?.trim() ?? null;
+
+    if (!key) {
+      await this.segmentClaims.release({ tenant_id, turf_id: turfId, assignment_id: assignment.id });
+      return { ok: true };
+    }
+
+    await this.segmentClaims.claim({
+      tenant_id,
+      turf_id: turfId,
+      assignment_id: assignment.id,
+      volunteer_person_id: String(assignment.volunteer_person_id),
+      street_key: key,
+      // Falling back to the key keeps the row readable even if a client ever sends only
+      // the key; the label is only ever display text.
+      street_label: input.street?.trim() || key,
+      canvasser_name: await this.personFirstLast(tenant_id, String(assignment.volunteer_person_id)),
+      expires_at: new Date(Date.now() + SEGMENT_CLAIM_TTL_MS),
+    });
+    return { ok: true };
   }
 
   /**

@@ -17,6 +17,8 @@ libs/
         billing/
           currency.ts
           plans.ts
+        geo/
+          haversine.ts
         help/
           articles/
             administration.ts
@@ -48,6 +50,7 @@ libs/
           donations.schema.ts
           emails.schema.ts
           events.schema.ts
+          join-codes.schema.ts
           lists.schema.ts
           marketing.schema.ts
           newsletter-templates.schema.ts
@@ -60,10 +63,13 @@ libs/
           web-forms.schema.ts
           workflows.schema.ts
         auth.ts
+        dns-label.ts
         emails.ts
         jsend.ts
         kysely.models.ts
         models.ts
+        money.ts
+        org-mode.ts
         preflight-lint.ts
         public-id.ts
         schema.ts
@@ -133,6 +139,8 @@ libs/
         public-link-panel/
           public-link-panel.html
           public-link-panel.ts
+        qr/
+          qr.ts
         row-actions/
           row-actions.ts
         select/

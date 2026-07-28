@@ -120,6 +120,8 @@ async function seed(db: Db, opts?: { email?: string | null; mobile?: string | nu
 async function cleanup(db: Db, tenantId: string): Promise<void> {
   await db.deleteFrom('companion_sessions').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('companion_approval_tokens').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('companion_organizer_tokens').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('turf_segment_claims').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('campaign_join_codes').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('companion_volunteers').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
@@ -641,5 +643,148 @@ describe('CompanionAccessController', () => {
       .where('tenant_id', '=', s.tenantId)
       .execute();
     expect((await controller.getApprovalRequest(token)).state).toBe('dead');
+  });
+
+  // ------------------------------------------------- organizer mobile page --
+
+  /** Give the admin a mobile, then text themselves a code's organizer link. */
+  async function organizerLinkFor(joinCodeId: string): Promise<string> {
+    await db
+      .insertInto('profiles')
+      .values({
+        tenant_id: s.tenantId,
+        auth_id: s.adminId,
+        mobile: '(613) 555-0177',
+        createdby_id: s.adminId,
+        updatedby_id: s.adminId,
+      })
+      .execute();
+    const sent = await controller.sendJoinCodeToPhone(adminAuth, joinCodeId);
+    expect(sent.status).toBe('sent');
+
+    const rows = await db
+      .selectFrom('background_jobs')
+      .select(['payload'])
+      .where('tenant_id', '=', s.tenantId)
+      .orderBy('id', 'desc')
+      .execute();
+    for (const row of rows) {
+      const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+      const match = String(payload?.body ?? '').match(/\/o\/([A-Za-z0-9_-]+)/);
+      if (match?.[1]) return match[1];
+    }
+    throw new Error('no organizer link found in the outbox');
+  }
+
+  /** Scan a code as a stranger and verify, leaving them waiting for approval. */
+  async function scanAndVerify(code: string, email: string): Promise<void> {
+    const started = await controller.joinStart({ code, first_name: 'Priya', email }, `203.0.113.${rand().slice(0, 2)}`);
+    const verifyCode = await lastCodeFromOutbox(db, s.tenantId);
+    await controller.verifyConfirm('join', started.claim, verifyCode, null);
+  }
+
+  it('guides rather than errors when the admin has no mobile on file', async () => {
+    const created = await controller.createJoinCode(adminAuth, {});
+    // Nothing was minted and nothing was sent — the caller narrates "add a number".
+    expect(await controller.sendJoinCodeToPhone(adminAuth, created.id)).toEqual({ status: 'no_mobile' });
+    expect((await outboxTypes(db, s.tenantId)).filter((t) => t === 'send-sms')).toHaveLength(0);
+  });
+
+  it('shows the QR and the people who scanned it, and approves them inline', async () => {
+    await givePlaceholderHousehold();
+    const created = await controller.createJoinCode(adminAuth, { turf_id: s.turfId });
+    const token = await organizerLinkFor(created.id);
+
+    const empty = await controller.getOrganizerPage(token);
+    expect(empty.state).toBe('live');
+    expect(empty.code).toBe(created.code);
+    expect(empty.joiningLabel).toBe('Maple Heights');
+    // The matrix is what the page draws — never a server-rendered image.
+    expect(empty.matrix?.length).toBeGreaterThan(0);
+    expect(empty.pending).toEqual([]);
+
+    await scanAndVerify(created.code, 'priya@example.com');
+    const waiting = await controller.getOrganizerPage(token);
+    expect(waiting.pending?.map((p) => p.name)).toEqual(['Priya']);
+    expect(waiting.pending?.[0]?.contact).toBe('p•••@example.com');
+
+    const after = await controller.decideOnOrganizerPage(token, {
+      volunteer_id: String(waiting.pending?.[0]?.volunteer_id),
+      decision: 'approve',
+    });
+    expect(after.pending).toEqual([]);
+    expect(after.approvedCount).toBe(1);
+  });
+
+  it('records the admin who minted the link as the approver', async () => {
+    await givePlaceholderHousehold();
+    const created = await controller.createJoinCode(adminAuth, {});
+    const token = await organizerLinkFor(created.id);
+    await scanAndVerify(created.code, 'priya@example.com');
+
+    const waiting = await controller.getOrganizerPage(token);
+    await controller.decideOnOrganizerPage(token, {
+      volunteer_id: String(waiting.pending?.[0]?.volunteer_id),
+      decision: 'approve',
+    });
+
+    // The whole reason the token names an admin: `approved_by` has to be a real person.
+    const row = await db
+      .selectFrom('companion_volunteers')
+      .select(['approved_by'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', String(waiting.pending?.[0]?.volunteer_id))
+      .executeTakeFirst();
+    expect(String(row?.approved_by)).toBe(s.adminId);
+  });
+
+  it('cannot reach a volunteer who joined through a different code', async () => {
+    await givePlaceholderHousehold();
+    const mine = await controller.createJoinCode(adminAuth, {});
+    const other = await controller.createJoinCode(adminAuth, {});
+    const token = await organizerLinkFor(mine.id);
+
+    await scanAndVerify(other.code, 'elsewhere@example.com');
+    // Visible to nobody on this page, and refused even with the id in hand — the token's
+    // reach is exactly the poster it was minted for.
+    expect((await controller.getOrganizerPage(token)).pending).toEqual([]);
+    const stranger = await db
+      .selectFrom('companion_volunteers')
+      .select(['id'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('status', '=', 'verified')
+      .executeTakeFirst();
+    await expect(
+      controller.decideOnOrganizerPage(token, { volunteer_id: String(stranger?.id), decision: 'approve' }),
+    ).rejects.toThrow(/not on this list/i);
+  });
+
+  it('dies with the poster it was printed alongside', async () => {
+    const created = await controller.createJoinCode(adminAuth, {});
+    const token = await organizerLinkFor(created.id);
+    expect((await controller.getOrganizerPage(token)).state).toBe('live');
+
+    await controller.rotateJoinCode(adminAuth, created.id);
+
+    // A live phone link against a dead poster would keep approving people into a code
+    // nobody can scan any more.
+    expect((await controller.getOrganizerPage(token)).state).toBe('dead');
+    const revoked = await db
+      .selectFrom('companion_organizer_tokens')
+      .select(['revoked_at'])
+      .where('tenant_id', '=', s.tenantId)
+      .executeTakeFirst();
+    expect(revoked?.revoked_at).not.toBeNull();
+  });
+
+  it('refuses an expired organizer link', async () => {
+    const created = await controller.createJoinCode(adminAuth, {});
+    const token = await organizerLinkFor(created.id);
+    await db
+      .updateTable('companion_organizer_tokens')
+      .set({ expires_at: new Date(Date.now() - 1000) })
+      .where('tenant_id', '=', s.tenantId)
+      .execute();
+    expect((await controller.getOrganizerPage(token)).state).toBe('dead');
   });
 });

@@ -52,6 +52,7 @@ function turfPayload(): CompanionTurfPayload {
         people: [],
       },
     ],
+    segment_claims: [],
   };
 }
 
@@ -78,7 +79,11 @@ function postedOps(
   fetchMock: FetchMock,
   call: number,
 ): { op_id: string; type: string; payload: Record<string, unknown> }[] {
-  const posts = fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'POST');
+  // Only results batches — street claims POST to the same turf and would otherwise shift
+  // every index here by one the moment a test scopes the list to a street.
+  const posts = fetchMock.mock.calls.filter(
+    (c) => (c[1] as RequestInit | undefined)?.method === 'POST' && String(c[0]).endsWith('/results'),
+  );
   const init = posts[call]?.[1] as RequestInit;
   return (JSON.parse(String(init.body)) as { ops: { op_id: string; type: string; payload: Record<string, unknown> }[] })
     .ops;
@@ -527,6 +532,89 @@ describe('CanvassStore', () => {
       store.segmentKey.set(store.segments()[0]?.key ?? null);
       await store.switchTurf(TURF_ID);
       expect(store.segmentKey()).toBeNull();
+    });
+  });
+
+  describe('advisory street claims', () => {
+    /** Every POST that is a claim rather than a results batch. */
+    function claimPosts(): { street_key: string | null; street: string | null }[] {
+      return fetchMock.mock.calls
+        .filter((c) => (c[1] as RequestInit | undefined)?.method === 'POST' && String(c[0]).endsWith('/segment'))
+        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { street_key: string | null; street: string });
+    }
+
+    it('scopes immediately and tells the group afterwards', async () => {
+      await store.load(TOKEN);
+      const scott = store.segments().find((seg) => seg.street === 'Scott Blvd');
+
+      store.chooseSegment(scott?.key ?? null);
+
+      // The scope is local and instant — a volunteer narrowing to the street they are
+      // standing on never waits on the network.
+      expect(store.scopedHouseholds().map((h) => h.id)).toEqual(['11']);
+      await flushMicrotasks();
+      expect(claimPosts()).toEqual([{ street_key: scott?.key, street: 'Scott Blvd' }]);
+    });
+
+    it('releases the street when the volunteer goes back to the whole turf', async () => {
+      await store.load(TOKEN);
+      store.chooseSegment(store.segments()[0]?.key ?? null);
+      await flushMicrotasks();
+
+      store.chooseSegment(null);
+      await flushMicrotasks();
+
+      expect(claimPosts().at(-1)).toEqual({ street_key: null, street: null });
+    });
+
+    it('hands the street back on end of shift', async () => {
+      await store.load(TOKEN);
+      store.chooseSegment(store.segments()[0]?.key ?? null);
+      await flushMicrotasks();
+
+      store.endShift();
+      await flushMicrotasks();
+
+      // Otherwise tomorrow's group is told a street is taken until the TTL catches up.
+      expect(claimPosts().at(-1)?.street_key).toBeNull();
+    });
+
+    it('keeps scoping when the claim call fails — it is advisory, not a gate', async () => {
+      await store.load(TOKEN);
+      fetchMock.mockImplementation((url, init) => {
+        if (String(url).endsWith('/segment')) return Promise.reject(new Error('offline'));
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
+        return Promise.resolve(jsonResponse({ acks: [] }));
+      });
+
+      const alder = store.segments().find((seg) => seg.street === 'Alder St');
+      store.chooseSegment(alder?.key ?? null);
+      await flushMicrotasks();
+
+      expect(store.scopedHouseholds().map((h) => h.id)).toEqual(['10']);
+      expect(store.loadError()).toBeNull();
+    });
+
+    it('surfaces other people’s claims and hides its own', async () => {
+      fetchMock.mockImplementation((url, init) => {
+        if (!init || init.method !== 'POST') {
+          return Promise.resolve(
+            jsonResponse({
+              ...turfPayload(),
+              segment_claims: [
+                { street_key: 'alder st', street: 'Alder St', canvasser_name: 'Dana Fox', claimed_at: '', mine: false },
+                { street_key: 'scott blvd', street: 'Scott Blvd', canvasser_name: 'Me', claimed_at: '', mine: true },
+              ],
+            }),
+          );
+        }
+        return Promise.resolve(jsonResponse({ acks: [] }));
+      });
+      await store.load(TOKEN);
+
+      // "You're here" alongside "Showing" would say the same thing twice.
+      expect(store.claimsByStreet().get('alder st')?.[0]?.canvasser_name).toBe('Dana Fox');
+      expect(store.claimsByStreet().has('scott blvd')).toBe(false);
     });
   });
 

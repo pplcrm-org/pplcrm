@@ -2,6 +2,7 @@ import { Service, inject } from '@angular/core';
 
 import type {
   AddJoinCodeType,
+  JoinCodePhoneSendResult,
   JoinCodeQr,
   JoinCodeRow,
   UpdateJoinCodeType,
@@ -39,6 +40,15 @@ export class JoinCodesService extends TRPCService<'campaign_join_codes'> {
 
   public qr(id: string): Promise<JoinCodeQr> {
     return this.api.joinCodes.qr.query({ id }) as Promise<JoinCodeQr>;
+  }
+
+  /**
+   * Text yourself the organizer page for this code — the QR to hold up, plus the people
+   * who scanned it waiting to be let in. Only ever goes to the mobile on your own profile;
+   * `no_mobile` is a real answer, not a failure, so the caller narrates it.
+   */
+  public sendToMyPhone(id: string): Promise<JoinCodePhoneSendResult> {
+    return this.api.joinCodes.sendToMyPhone.mutate({ id }) as Promise<JoinCodePhoneSendResult>;
   }
 
   /** Retires the current code and mints a replacement — anything printed stops working. */

@@ -191,6 +191,20 @@ export const CompanionResultsObj = z.object({
   ops: z.array(CompanionOpObj).min(1).max(200),
 });
 
+/**
+ * "I'm taking Scott Blvd" — POST /api/canvass/turf/:turfId/segment.
+ *
+ * `street_key` null releases whatever this volunteer held and means "I'm walking the whole
+ * turf again". `street` is the spelling to show the rest of the group; the key is what
+ * matches, so the two are sent together rather than the server re-deriving one from the
+ * other and risking a mismatch with `segmentKeyOf`.
+ */
+export const CompanionClaimSegmentObj = z.object({
+  street_key: z.string().trim().max(200).nullable(),
+  street: z.string().trim().max(200).nullable().optional(),
+});
+export type CompanionClaimSegmentType = z.infer<typeof CompanionClaimSegmentObj>;
+
 export type CompanionSurveyType = z.infer<typeof CompanionSurveyObj>;
 export type CompanionOpType = z.infer<typeof CompanionOpObj>;
 export type CompanionResultsType = z.infer<typeof CompanionResultsObj>;
@@ -277,6 +291,25 @@ export interface CompanionTurfChoices {
   available: CompanionTurfChoice[];
 }
 
+/**
+ * Somebody else is already on this street.
+ *
+ * Advisory in the strongest sense: nothing on the server or the client treats a claim as
+ * permission, and every door stays knockable by everyone. It exists so that five people
+ * splitting one turf can see how it has been split, instead of discovering it at a door
+ * someone already knocked.
+ */
+export interface CompanionSegmentClaim {
+  /** Matches `segmentKeyOf(household)` — the normalized street. */
+  street_key: string;
+  /** The spelling to display, as the claiming volunteer's doors spell it. */
+  street: string;
+  canvasser_name: string;
+  claimed_at: string;
+  /** This device's own claim, so the UI can say "You're here" instead of naming them. */
+  mine: boolean;
+}
+
 export interface CompanionTurfPayload {
   campaign_name: string;
   /**
@@ -294,6 +327,8 @@ export interface CompanionTurfPayload {
   issues: string[];
   expires_at: string | null;
   households: CompanionHousehold[];
+  /** Who else is on which street right now. Empty when nobody has claimed anything. */
+  segment_claims: CompanionSegmentClaim[];
 }
 
 /** Staff-configured survey vocabulary (campaigns.canvass_issues/script). */

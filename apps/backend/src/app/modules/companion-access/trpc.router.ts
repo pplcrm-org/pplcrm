@@ -49,6 +49,12 @@ export const JoinCodesRouter = router({
   update: adminOrOwnerProcedure
     .input(z.object({ id: idSchema, data: UpdateJoinCodeObj }))
     .mutation(({ ctx, input }) => controller.updateJoinCode(ctx.auth, input.id, input.data)),
+  // Texts the CALLER (never a typed number) the organizer page for this code — the QR to
+  // hold up plus the people waiting. A mutation because it mints a credential and spends
+  // an SMS, and admin/owner because that credential can approve volunteers.
+  sendToMyPhone: adminOrOwnerProcedure
+    .input(z.object({ id: idSchema }))
+    .mutation(({ ctx, input }) => controller.sendJoinCodeToPhone(ctx.auth, input.id)),
   // Kills whatever is printed on the poster — the UI confirms before calling this.
   rotate: adminOrOwnerProcedure
     .input(z.object({ id: idSchema }))

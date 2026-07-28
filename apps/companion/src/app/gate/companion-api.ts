@@ -6,6 +6,7 @@ import type {
   CompanionApprovalPayload,
   CompanionJoinStartResult,
   CompanionJoinStartType,
+  CompanionOrganizerPayload,
   CompanionVerifyChannel,
   CompanionVerifyConfirmResult,
   CompanionVerifyKind,
@@ -126,6 +127,30 @@ export class CompanionSessionService {
 
   public actOnApproval(token: string, decision: 'approve' | 'decline'): Promise<CompanionApprovalPayload> {
     return post<CompanionApprovalPayload>(`/api/companion/approve/${encodeURIComponent(token)}`, { decision });
+  }
+
+  /**
+   * The organizer's launch page — the join QR plus everyone who has scanned it.
+   *
+   * Like `getApproval`, a non-ok response is treated as dead rather than retried: the
+   * endpoint answers 200 for every resolved outcome, so anything else is not an answer
+   * about this link. The page polls, so a transient blip corrects itself on the next tick.
+   */
+  public async getOrganizerPage(token: string): Promise<CompanionOrganizerPayload> {
+    const res = await fetch(`/api/companion/organizer/${encodeURIComponent(token)}`);
+    if (!res.ok) return { state: 'dead' };
+    return (await res.json()) as CompanionOrganizerPayload;
+  }
+
+  public decideOnOrganizerPage(
+    token: string,
+    volunteerId: string,
+    decision: 'approve' | 'decline',
+  ): Promise<CompanionOrganizerPayload> {
+    return post<CompanionOrganizerPayload>(`/api/companion/organizer/${encodeURIComponent(token)}/decide`, {
+      volunteer_id: volunteerId,
+      decision,
+    });
   }
 
   /** Headers to attach to every companion data request. */

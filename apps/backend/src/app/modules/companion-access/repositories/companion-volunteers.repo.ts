@@ -2,7 +2,18 @@ import type { Transaction } from 'kysely';
 
 import { BaseRepository } from '../../../lib/base.repo';
 import type { Models, OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
-import type { CompanionVolunteerRow } from '../../../../../../../libs/common/src';
+import type { CompanionVolunteerRow, CompanionVolunteerStatus } from '../../../../../../../libs/common/src';
+
+/** One person who arrived through a join code, with the contacts the caller then masks. */
+export interface JoinCodeVolunteer {
+  id: string;
+  status: CompanionVolunteerStatus;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  mobile: string | null;
+  verified_at: Date | null;
+}
 
 export interface CompanionVolunteer {
   id: string;
@@ -208,6 +219,52 @@ export class CompanionVolunteersRepo extends BaseRepository<'companion_volunteer
       can_roam: r.can_roam == null ? null : Boolean(r.can_roam),
       approved_by_name: r.approver_first_name ? `${r.approver_first_name} ${r.approver_last_name ?? ''}`.trim() : null,
       created_at: new Date(String(r.created_at)).toISOString(),
+    }));
+  }
+
+  /**
+   * Everyone who came in through one join code, in one of the given states.
+   *
+   * The organizer's mobile page is built on this: its token is scoped to a single code, so
+   * the list it can show — and therefore the people it can approve — is exactly the people
+   * who scanned that poster. Contacts come back raw and are masked by the caller, the same
+   * way the approval screen does it.
+   */
+  public async getForJoinCode(input: {
+    tenant_id: string;
+    join_code_id: string;
+    statuses: readonly CompanionVolunteerStatus[];
+  }): Promise<JoinCodeVolunteer[]> {
+    if (input.statuses.length === 0) return [];
+    const rows = await this.getSelect()
+      .innerJoin('persons', (join) =>
+        join
+          .onRef('persons.id', '=', 'companion_volunteers.person_id')
+          .onRef('persons.tenant_id', '=', 'companion_volunteers.tenant_id'),
+      )
+      .select([
+        'companion_volunteers.id',
+        'companion_volunteers.status',
+        'companion_volunteers.verified_at',
+        'persons.first_name',
+        'persons.last_name',
+        'persons.email',
+        'persons.mobile',
+      ])
+      .where('companion_volunteers.tenant_id', '=', input.tenant_id)
+      .where('companion_volunteers.join_code_id', '=', input.join_code_id)
+      .where('companion_volunteers.status', 'in', [...input.statuses])
+      .orderBy('companion_volunteers.verified_at', 'asc')
+      .execute();
+
+    return rows.map((r) => ({
+      id: String(r.id),
+      status: String(r.status) as CompanionVolunteerStatus,
+      first_name: r.first_name,
+      last_name: r.last_name,
+      email: r.email,
+      mobile: r.mobile,
+      verified_at: r.verified_at ? new Date(String(r.verified_at)) : null,
     }));
   }
 

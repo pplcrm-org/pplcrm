@@ -1,11 +1,12 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
 import { Qr } from '@uxcommon/components/qr/qr';
 
-import type { JoinCodeQr, JoinCodeRow } from '../../../../../../../libs/common/src';
+import type { JoinCodePhoneSendResult, JoinCodeQr, JoinCodeRow } from '../../../../../../../libs/common/src';
 import { JoinCodesService } from '../services/join-codes-service';
 
 /**
@@ -22,7 +23,7 @@ import { JoinCodesService } from '../services/join-codes-service';
 @Component({
   selector: 'pc-join-code-panel',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [Icon, Qr],
+  imports: [Icon, Qr, RouterLink],
   template: `
     <section class="pc-panel flex flex-col gap-4 p-5">
       <header class="flex flex-wrap items-start justify-between gap-3">
@@ -40,6 +41,10 @@ import { JoinCodesService } from '../services/join-codes-service';
             <button type="button" class="btn btn-outline btn-sm" [disabled]="!qr()" (click)="fullscreen.set(true)">
               <pc-icon name="arrows-pointing-out" [size]="4" />
               Show fullscreen
+            </button>
+            <button type="button" class="btn btn-outline btn-sm" [disabled]="busy()" (click)="sendToPhone(code)">
+              <pc-icon name="paper-airplane" [size]="4" />
+              Send to my phone
             </button>
             <button type="button" class="btn btn-ghost btn-sm" [disabled]="busy()" (click)="rotate(code)">
               Rotate code
@@ -64,6 +69,16 @@ import { JoinCodesService } from '../services/join-codes-service';
             @if (code.max_uses != null) {
               <p class="text-xs text-base-content/60">
                 Stops accepting people after {{ code.max_uses }} {{ code.max_uses === 1 ? 'scan' : 'scans' }}.
+              </p>
+            }
+            <!-- Guide, don't error (§3): no mobile on file is a missing setting, not a
+                 failure, so it ends in the link that fixes it rather than a red toast. -->
+            @if (phoneHint(); as hint) {
+              <p class="text-xs text-base-content/70">
+                {{ hint }}
+                @if (needsMobile()) {
+                  <a class="link link-primary" routerLink="/profile">Add one to your profile</a>
+                }
               </p>
             }
           </div>
@@ -113,6 +128,8 @@ export class JoinCodePanel {
   protected readonly loading = signal(true);
   protected readonly qr = signal<JoinCodeQr | null>(null);
   protected readonly rows = signal<JoinCodeRow[]>([]);
+  /** Outcome of the last "Send to my phone", narrated in place rather than as a toast. */
+  protected readonly phoneSend = signal<JoinCodePhoneSendResult | null>(null);
 
   /** The live code for this scope. Revoked ones stay in the table but are not offered. */
   protected readonly active = computed(
@@ -178,6 +195,32 @@ export class JoinCodePanel {
       this.alerts.showSuccess('New code created. Reprint anything with the old one on it');
     } catch {
       this.alerts.showError('Could not rotate the code. Try again');
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  protected readonly needsMobile = computed(() => this.phoneSend()?.status === 'no_mobile');
+
+  protected phoneHint(): string | null {
+    const result = this.phoneSend();
+    if (!result) return null;
+    return result.status === 'sent'
+      ? `Sent to ${result.masked}. The link opens the QR and the people waiting, and works for 12 hours.`
+      : 'We need a mobile number to text you that link.';
+  }
+
+  /**
+   * Text yourself the organizer page: the QR to hold up and everyone who has scanned it,
+   * on the phone that is already in your hand at a launch.
+   */
+  protected async sendToPhone(code: JoinCodeRow): Promise<void> {
+    this.busy.set(true);
+    try {
+      this.phoneSend.set(await this.svc.sendToMyPhone(code.id));
+    } catch {
+      this.phoneSend.set(null);
+      this.alerts.showError('Could not send that. Try again');
     } finally {
       this.busy.set(false);
     }

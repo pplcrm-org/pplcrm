@@ -256,6 +256,7 @@ async function cleanup(db: Db, tenantId: string): Promise<void> {
   await db.deleteFrom('map_peoples_tags').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('tags').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_knocks').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('turf_segment_claims').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_assignments').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_households').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turfs').where('tenant_id', '=', tenantId).execute();
@@ -351,6 +352,84 @@ describe('CanvassingController', () => {
     // nor multiply the door count hanging off it.
     expect(after.length).toBe(before.length);
     expect(listed?.door_count).toBe(turf.door_count);
+  });
+
+  describe('advisory street claims', () => {
+    /** One turf with both volunteers on it, and a session each. */
+    async function turfWithTwoCanvassers(): Promise<{ turfId: string; sessionA: string; sessionB: string }> {
+      await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+      const [turf] = await controller.getTurfs(auth);
+      if (!turf) throw new Error('expected a turf');
+      for (const personId of [s.volunteerPersonId, s.volunteer2PersonId]) {
+        await controller.assignTurf(auth, { turf_id: turf.id, team_id: null, volunteer_person_id: personId });
+      }
+      return {
+        turfId: turf.id,
+        sessionA: await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId),
+        sessionB: await mintApprovedSession(db, s.tenantId, s.volunteer2PersonId, s.userId),
+      };
+    }
+
+    it('shows one volunteer’s street to the other, flagged as theirs and not mine', async () => {
+      const { turfId, sessionA, sessionB } = await turfWithTwoCanvassers();
+
+      await controller.claimSegment(sessionA, turfId, { street_key: 'scott blvd', street: 'Scott Blvd' });
+
+      const mine = await controller.getCompanionTurfBySession(sessionA, turfId);
+      expect(mine.segment_claims).toEqual([
+        expect.objectContaining({ street_key: 'scott blvd', street: 'Scott Blvd', mine: true }),
+      ]);
+      const theirs = await controller.getCompanionTurfBySession(sessionB, turfId);
+      expect(theirs.segment_claims[0]).toMatchObject({ canvasser_name: 'Sam Volunteer', mine: false });
+    });
+
+    it('never blocks the other volunteer from taking the same street', async () => {
+      const { turfId, sessionA, sessionB } = await turfWithTwoCanvassers();
+      await controller.claimSegment(sessionA, turfId, { street_key: 'scott blvd', street: 'Scott Blvd' });
+
+      // Two people deciding to work one street together is their call, not the app's.
+      await expect(
+        controller.claimSegment(sessionB, turfId, { street_key: 'scott blvd', street: 'Scott Blvd' }),
+      ).resolves.toEqual({ ok: true });
+      const payload = await controller.getCompanionTurfBySession(sessionA, turfId);
+      expect(payload.segment_claims).toHaveLength(2);
+    });
+
+    it('replaces a volunteer’s own claim rather than stacking them up', async () => {
+      const { turfId, sessionA } = await turfWithTwoCanvassers();
+      await controller.claimSegment(sessionA, turfId, { street_key: 'scott blvd', street: 'Scott Blvd' });
+      await controller.claimSegment(sessionA, turfId, { street_key: 'alder st', street: 'Alder St' });
+
+      const payload = await controller.getCompanionTurfBySession(sessionA, turfId);
+      // Nobody is standing in two places.
+      expect(payload.segment_claims.map((c) => c.street_key)).toEqual(['alder st']);
+    });
+
+    it('releases the street on a null key and drops expired claims', async () => {
+      const { turfId, sessionA } = await turfWithTwoCanvassers();
+      await controller.claimSegment(sessionA, turfId, { street_key: 'scott blvd', street: 'Scott Blvd' });
+      await controller.claimSegment(sessionA, turfId, { street_key: null });
+      expect((await controller.getCompanionTurfBySession(sessionA, turfId)).segment_claims).toEqual([]);
+
+      await controller.claimSegment(sessionA, turfId, { street_key: 'alder st', street: 'Alder St' });
+      await db
+        .updateTable('turf_segment_claims')
+        .set({ expires_at: new Date(Date.now() - 1000) })
+        .where('tenant_id', '=', s.tenantId)
+        .execute();
+      // A phone that went into a pocket must not tell tomorrow's group a street is taken.
+      expect((await controller.getCompanionTurfBySession(sessionA, turfId)).segment_claims).toEqual([]);
+    });
+
+    it('refuses a claim from someone who is not on the turf', async () => {
+      const { turfId } = await turfWithTwoCanvassers();
+      await controller.removeVolunteerFromTurf(auth, { turf_id: turfId, volunteer_person_id: s.volunteer2PersonId });
+      const stranger = await mintApprovedSession(db, s.tenantId, s.volunteer2PersonId, s.userId);
+
+      await expect(
+        controller.claimSegment(stranger, turfId, { street_key: 'scott blvd', street: 'Scott Blvd' }),
+      ).rejects.toThrow(/not on this turf/i);
+    });
   });
 
   it('removes one canvasser without disturbing the rest of the roster', async () => {

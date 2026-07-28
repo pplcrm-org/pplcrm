@@ -119,6 +119,8 @@ export interface Models {
   companion_ops: CompanionOps;
   campaign_join_codes: CampaignJoinCodes;
   companion_approval_tokens: CompanionApprovalTokens;
+  companion_organizer_tokens: CompanionOrganizerTokens;
+  turf_segment_claims: TurfSegmentClaims;
 }
 
 export type AuthUsersType = Omit<AuthUsers, 'id'> & { id: string };
@@ -435,6 +437,28 @@ interface TurfAssignments extends RecordType {
 }
 
 /**
+ * "Dana is on Scott Blvd" — an ADVISORY note to the rest of the group, never a lock.
+ * Nothing consults this before accepting a knock; it exists only so the street picker
+ * can say who is already somewhere. See migration 2026-07-28-zzz-street-claims-organizer.
+ */
+interface TurfSegmentClaims {
+  id: Generated<string>;
+  tenant_id: string;
+  turf_id: string;
+  assignment_id: string;
+  volunteer_person_id: string;
+  /** Normalized street (lowercased, whitespace-collapsed) — matches `segmentKeyOf`. */
+  street_key: string;
+  /** The spelling to display, kept because normalizing what a volunteer reads is a lie. */
+  street_label: string;
+  /** Denormalized like `turf_knocks.canvasser_name`, so reading claims never touches persons. */
+  canvasser_name: string;
+  claimed_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  released_at: Timestamp | null;
+}
+
+/**
  * Companion access layer (COMPANION-APPS-PLAN.md §2): one row per (tenant,
  * person) who has ever been sent a companion link. `status` is the approval
  * lifecycle — 'invited' → 'verified' (code confirmed, awaiting admin) →
@@ -493,6 +517,22 @@ interface CompanionApprovalTokens {
   token_hash: string;
   expires_at: Timestamp;
   used_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
+}
+
+/**
+ * The credential behind the organizer's mobile page (`/o/:token`): the join QR and the
+ * people who scanned it, on the phone of whoever is running the launch. Scoped to ONE
+ * join code, short-lived, sha256 only — see the migration for why each of those matters.
+ */
+interface CompanionOrganizerTokens {
+  id: Generated<string>;
+  tenant_id: string;
+  join_code_id: string;
+  admin_user_id: string;
+  token_hash: string;
+  expires_at: Timestamp;
+  revoked_at: Timestamp | null;
   created_at: Generated<Timestamp>;
 }
 

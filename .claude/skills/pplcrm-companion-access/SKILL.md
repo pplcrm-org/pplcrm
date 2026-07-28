@@ -20,13 +20,14 @@ The companion tables live in the squashed baseline (`_migrations/schema.sql`), n
 dated migration — the old `2026-07-12-companion-apps.ts` no longer exists. New columns
 need a new dated file (see `pplcrm-migrations`).
 
-| Table                       | What it is                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `companion_volunteers`      | One row per (tenant, person) ever sent a link. `status`: `invited` → `verified` (code confirmed, awaiting admin) → `approved` \| `revoked`. Carries the hashed verify code + attempt count.                                                                                                                                                                                                               |
-| `companion_sessions`        | A verified device. Only `sha256(token)` stored (`lib/token-hash.ts`); raw token returned once; 30-day expiry; `revoked_at` set for all rows on volunteer revoke.                                                                                                                                                                                                                                          |
-| `companion_ops`             | Write-once idempotency ledger for BOTH apps: PK `(tenant_id, op_id)`, `scope` 'canvass'/'deliveries'. Insert `ON CONFLICT DO NOTHING`; a conflict means "already applied".                                                                                                                                                                                                                                |
-| `campaign_join_codes`       | A shareable QR/typeable code that puts a **stranger** into this gate. `code` is 8 Crockford-ish chars (no 0/O/1/I) and UNIQUE **globally** — a scan has no tenant context, so the code resolves it. `turf_id` set = everyone who scans lands on that turf; null = they land on the turf picker. `status`/`expires_at`/`max_uses`/`use_count` bound it. Migration `2026-07-28-zz-companion-join-codes.ts`. |
-| `companion_approval_tokens` | One-tap "approve this volunteer" links, minted **per admin** so `approved_by` records who actually tapped. sha256 only, 72-hour TTL, single use (`markUsedForVolunteer` burns every outstanding row for that volunteer once anyone decides).                                                                                                                                                              |
+| Table                        | What it is                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `companion_volunteers`       | One row per (tenant, person) ever sent a link. `status`: `invited` → `verified` (code confirmed, awaiting admin) → `approved` \| `revoked`. Carries the hashed verify code + attempt count.                                                                                                                                                                                                               |
+| `companion_sessions`         | A verified device. Only `sha256(token)` stored (`lib/token-hash.ts`); raw token returned once; 30-day expiry; `revoked_at` set for all rows on volunteer revoke.                                                                                                                                                                                                                                          |
+| `companion_ops`              | Write-once idempotency ledger for BOTH apps: PK `(tenant_id, op_id)`, `scope` 'canvass'/'deliveries'. Insert `ON CONFLICT DO NOTHING`; a conflict means "already applied".                                                                                                                                                                                                                                |
+| `campaign_join_codes`        | A shareable QR/typeable code that puts a **stranger** into this gate. `code` is 8 Crockford-ish chars (no 0/O/1/I) and UNIQUE **globally** — a scan has no tenant context, so the code resolves it. `turf_id` set = everyone who scans lands on that turf; null = they land on the turf picker. `status`/`expires_at`/`max_uses`/`use_count` bound it. Migration `2026-07-28-zz-companion-join-codes.ts`. |
+| `companion_approval_tokens`  | One-tap "approve this volunteer" links, minted **per admin** so `approved_by` records who actually tapped. sha256 only, 72-hour TTL, single use (`markUsedForVolunteer` burns every outstanding row for that volunteer once anyone decides).                                                                                                                                                              |
+| `companion_organizer_tokens` | The credential behind `/o/:token`, the organizer's launch page. sha256 only, 12-hour TTL, **multi-use but scoped to ONE `join_code_id`** — it can approve the people who scanned that poster and nothing else in the workspace. `revoked_at` set by `revokeForJoinCode` whenever the code is rotated or revoked. Migration `2026-07-28-zzz-street-claims-organizer.ts`.                                   |
 
 `companion_volunteers` also carries the QR-join handshake: `join_claim_hash` +
 `join_claim_expires_at` (30 min, one live claim per person — a second scan replaces the
@@ -119,10 +120,29 @@ existing `/t/:token` and `/r/:token` caller depends on its link-first check.
 `app.canvass_volunteer_roam` setting for one person; null inherits. See
 `pplcrm-canvassing` → "Session-first access, and roaming".
 
+### The organizer's launch page (`/o/:token`)
+
+At a real launch the organizer is standing next to the people signing up, so texting an
+approval link per person is a worse version of a list they could look at. `/o/:token` is
+that list: the join QR (full-screenable), the typeable code, and everyone who scanned it
+with **Approve** inline. It polls at the gate's 20 s cadence.
+
+Minted by `joinCodes.sendToMyPhone` (admin/owner), which texts **the caller's own
+`profiles.mobile`** — never a typed destination, because this credential can approve
+volunteers. No mobile on file returns `{status:'no_mobile'}` rather than throwing; the
+panel narrates "add one to your profile" (§3, guide don't error).
+
+Containment, all three deliberate: scoped to one `join_code_id` (`decideOnOrganizerPage`
+refuses a `volunteer_id` whose `join_code_id` doesn't match — guessing ids widens
+nothing), 12-hour TTL, and `resolveOrganizerToken` refuses once the code is no longer
+`active`, so **rotating the poster kills the phone link with it**. Decisions delegate to
+the same `approveVolunteer`/`revokeVolunteer` every other surface calls, acting as the
+admin who minted the link.
+
 Admin tRPC (`joinCodes` router): `getForCampaign`, `qr` (returns `{code, url, matrix}`
 — a module matrix, **never** a rendered image) as `authProcedure`; `create`, `update`,
-`rotate`, `revoke` as admin/owner + `planFeatureGate('companions')`. Rotating kills
-whatever is printed on the poster, which is why the UI confirms first.
+`rotate`, `revoke`, `sendToMyPhone` as admin/owner + `planFeatureGate('companions')`.
+Rotating kills whatever is printed on the poster, which is why the UI confirms first.
 
 Admin tRPC (`companionAccess` router): `getAll`, `pendingCount`, `approve(id)`,
 `revoke(id)`, `setRoam(id, can_roam)` (admin/owner only; revoke cascades to every session). Mutations are

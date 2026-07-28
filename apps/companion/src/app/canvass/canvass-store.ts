@@ -6,6 +6,7 @@ import type {
   CompanionOpAck,
   CompanionOpType,
   CompanionPersonResult,
+  CompanionSegmentClaim,
   CompanionTurfChoices,
   CompanionTurfPayload,
   KnockResponse,
@@ -184,6 +185,24 @@ export class CanvassStore {
     const key = this.segmentKey();
     return key == null ? null : (this.segments().find((s) => s.key === key) ?? null);
   });
+  /**
+   * Who else is on which street, keyed by street.
+   *
+   * Purely informational: nothing in this store consults it before recording anything. It
+   * exists so a group splitting one turf can see how it has been split instead of finding
+   * out at a door somebody already knocked. Own claims are dropped — the picker already
+   * shows which street you are on, and "Showing · You're here" says the same thing twice.
+   */
+  public readonly claimsByStreet = computed<Map<string, CompanionSegmentClaim[]>>(() => {
+    const out = new Map<string, CompanionSegmentClaim[]>();
+    for (const claim of this.payload()?.segment_claims ?? []) {
+      if (claim.mine) continue;
+      const existing = out.get(claim.street_key);
+      if (existing) existing.push(claim);
+      else out.set(claim.street_key, [claim]);
+    }
+    return out;
+  });
   /** Turf-wide stats — these include every canvasser's work, not just this device's. */
   public readonly stats = computed(() => meStats(this.households()));
   /** Doors this volunteer logged on this device this shift. */
@@ -337,6 +356,9 @@ export class CanvassStore {
    */
   public async switchTurf(turfId: string): Promise<boolean> {
     this.loadError.set(null);
+    // Released against the turf being LEFT, before the payload changes underneath it —
+    // otherwise the release would be aimed at the turf they are arriving on.
+    if (this.segmentKey() != null) await this.postSegmentClaim(null, null);
     try {
       const res = await fetch(`/api/canvass/turf/${encodeURIComponent(turfId)}`, {
         headers: this.session.headers(),
@@ -389,6 +411,20 @@ export class CanvassStore {
     } catch {
       return 'Could not start on that turf. Check your connection.';
     }
+  }
+
+  /**
+   * Scope the walk to one street and tell the rest of the group.
+   *
+   * The scope changes immediately and locally; the claim is fire-and-forget. That ordering
+   * is deliberate — a volunteer narrowing to the street they are standing on must not wait
+   * on a network round-trip, and a claim that never lands costs the group a label, never a
+   * knock. Nothing here or on the server treats a claim as permission.
+   */
+  public chooseSegment(key: string | null): void {
+    this.segmentKey.set(key);
+    const street = key == null ? null : (this.segments().find((s) => s.key === key)?.street ?? null);
+    void this.postSegmentClaim(key, street);
   }
 
   public householdById(id: string): CompanionHousehold | null {
@@ -573,6 +609,9 @@ export class CanvassStore {
 
   /** "End shift on this device" — wipe local traces, back to the landing view. */
   public endShift(): void {
+    // Hand the street back so tomorrow's group isn't told it's taken. The TTL would get
+    // there eventually; saying so now is the honest version.
+    if (this.segmentKey() != null) void this.postSegmentClaim(null, null);
     try {
       localStorage.removeItem(this.storageKey());
       localStorage.removeItem(this.myDoorsKey());
@@ -627,6 +666,24 @@ export class CanvassStore {
   private expireSession(): void {
     this.session.clearSession();
     this.sessionExpired.set(true);
+  }
+
+  /**
+   * Post (or release) this device's street claim. Silent on every failure by design —
+   * see `chooseSegment`. A null key releases whatever was held.
+   */
+  private async postSegmentClaim(key: string | null, street: string | null): Promise<void> {
+    const turfId = this.payload()?.turf_id;
+    if (!turfId) return;
+    try {
+      await fetch(`/api/canvass/turf/${encodeURIComponent(turfId)}/segment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.session.headers() },
+        body: JSON.stringify({ street_key: key, street }),
+      });
+    } catch {
+      // Advisory only — the group's picture is briefly stale and nothing else changes.
+    }
   }
 
   private personLabel(householdId: string, personId: string | null): string {

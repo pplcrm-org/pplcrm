@@ -171,6 +171,54 @@ export interface CompanionApprovalPayload {
   decidedAt?: string;
 }
 
+// ---------------------------------------------------------------------------
+// The organizer's mobile page — /o/:token
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/companion/organizer/:token/decide — approve or decline one of the people
+ * who scanned this poster. Named by volunteer id rather than by a second token: the
+ * organizer link is already the credential, and it is scoped to one join code, so it
+ * cannot reach anyone who did not scan that code.
+ */
+export const CompanionOrganizerDecisionObj = z.object({
+  volunteer_id: z.string().trim().min(1).max(40),
+  decision: z.enum(['approve', 'decline']),
+});
+export type CompanionOrganizerDecisionType = z.infer<typeof CompanionOrganizerDecisionObj>;
+
+/** One person waiting on the organizer's phone. Masked contact — enough to recognize, never to harvest. */
+export interface CompanionOrganizerPending {
+  volunteer_id: string;
+  name: string;
+  contact?: string;
+  requestedAt?: string;
+}
+
+/**
+ * GET /api/companion/organizer/:token — the whole page in one response, polled.
+ *
+ * 'dead' covers expired, revoked, and a join code that was rotated out from under the
+ * link, deliberately without distinguishing them: this is a bearer token and the page
+ * is reachable by anyone holding the URL.
+ */
+export interface CompanionOrganizerPayload {
+  state: 'live' | 'dead';
+  organizationName?: string;
+  /** What the poster is for — the turf name, else the campaign name, else the code's label. */
+  joiningLabel?: string;
+  code?: string;
+  /** The URL the QR encodes, shown as the typeable fallback. */
+  url?: string;
+  /** `matrix[row][col]` — true = dark module. Drawn client-side, never served as an image. */
+  matrix?: boolean[][];
+  /** When this link stops working, so an organizer is never surprised mid-launch. */
+  expiresAt?: string;
+  pending?: CompanionOrganizerPending[];
+  /** People who scanned this code and are already approved — the progress half of the count. */
+  approvedCount?: number;
+}
+
 /** One row of the admin Volunteer access page. */
 export interface CompanionVolunteerRow {
   id: string;

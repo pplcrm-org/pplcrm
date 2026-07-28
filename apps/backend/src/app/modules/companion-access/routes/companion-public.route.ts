@@ -4,6 +4,7 @@ import {
   CompanionAccessQueryObj,
   CompanionApprovalDecisionObj,
   CompanionJoinStartObj,
+  CompanionOrganizerDecisionObj,
   CompanionVerifyConfirmObj,
   CompanionVerifyStartObj,
 } from '../../../../../../../libs/common/src';
@@ -140,6 +141,35 @@ const companionPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
       return reply.status(200).send(await controller.actOnApprovalRequest(String(token), parsed.data.decision));
     } catch (err: unknown) {
       fastify.log.error(err, 'Failed to act on a companion approval request');
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to record that decision.') });
+    }
+  });
+
+  // ---- the organizer's mobile page ----------------------------------------
+  // Same bearer model as /approve/:token, one step wider: this one names a join code
+  // rather than a single volunteer, so it can show the QR and approve everyone who
+  // scanned that poster — and nobody else in the workspace.
+  fastify.get('/organizer/:token', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { token } = req.params as { token: string };
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    try {
+      return reply.status(200).send(await controller.getOrganizerPage(String(token)));
+    } catch (err: unknown) {
+      fastify.log.error(err, 'Failed to resolve a companion organizer page');
+      // Uniform dead state, exactly like /access — never leak why a link failed.
+      return reply.status(200).send({ state: 'dead' });
+    }
+  });
+
+  fastify.post('/organizer/:token/decide', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { token } = req.params as { token: string };
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    const parsed = CompanionOrganizerDecisionObj.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid request.' });
+    try {
+      return reply.status(200).send(await controller.decideOnOrganizerPage(String(token), parsed.data));
+    } catch (err: unknown) {
+      fastify.log.error(err, 'Failed to decide from a companion organizer page');
       return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to record that decision.') });
     }
   });

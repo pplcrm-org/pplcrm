@@ -265,6 +265,7 @@ export {
   CompanionPersonCreateObj,
   CompanionOpObj,
   CompanionResultsObj,
+  CompanionClaimSegmentObj,
   UpdateCompanionSettingsObj,
   AddDeliveryRequestObj,
   UpdateDeliveryRequestObj,
@@ -301,6 +302,7 @@ export {
   CompanionVerifyConfirmObj,
   CompanionJoinStartObj,
   CompanionApprovalDecisionObj,
+  CompanionOrganizerDecisionObj,
   COMPANION_LINK_KINDS,
   COMPANION_ACCESS_KINDS,
   COMPANION_VERIFY_KINDS,
@@ -328,12 +330,16 @@ export type {
   CompanionJoinStartResult,
   CompanionApprovalDecisionType,
   CompanionApprovalPayload,
+  CompanionOrganizerDecisionType,
+  CompanionOrganizerPayload,
+  CompanionOrganizerPending,
   CompanionVolunteerRow,
 } from './lib/schemas/companion-access.schema';
 
 export type {
   AddJoinCodeType,
   UpdateJoinCodeType,
+  JoinCodePhoneSendResult,
   JoinCodeRow,
   JoinCodeQr,
   JoinCodeStatus,
@@ -406,6 +412,8 @@ export type {
   CompanionTurfChoice,
   CompanionTurfChoices,
   CompanionTurfPayload,
+  CompanionSegmentClaim,
+  CompanionClaimSegmentType,
   UpdateCompanionSettingsType,
 } from './lib/schemas/canvassing.schema';
 export type {

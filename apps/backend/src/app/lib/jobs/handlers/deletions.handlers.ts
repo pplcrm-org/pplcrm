@@ -27,6 +27,7 @@ const mailService = new TransactionalEmailService({ defaultAudience: 'account' }
 export const TENANT_SCOPED_TABLES = [
   'background_jobs',
   'bug_reports',
+  'companion_organizer_tokens',
   'campaign_join_codes',
   'campaign_person_facts',
   'campaign_subscriptions',
@@ -88,6 +89,7 @@ export const TENANT_SCOPED_TABLES = [
   'task_subtasks',
   'tasks',
   'teams',
+  'turf_segment_claims',
   'turf_assignments',
   'turf_households',
   'turf_knocks',
