@@ -124,8 +124,28 @@ delete. Covered by _"reuses an identical blob instead of uploading it twice"_.
 ## Where things are stored
 
 `emails.preview` is **not** a body snippet — it is the dedupe key, `google:<id>` / `ms:<id>`. All
-provider reconciliation and the materializer's provider detection key off it. `emails` has no sent
-date; that lives in `email_headers.date_sent`, which is why the sweep needs the join.
+provider reconciliation and the materializer's provider detection key off it.
+
+> ⚠ The inbox list template renders `{{ email.preview }}` as the snippet under the subject, and
+> nothing maps anything else into it — so synced mail currently displays its raw dedupe key. The
+> demo seeder writes human snippet text into the same column, which hides the bug in a fresh
+> workspace. `emails` has no snippet column; adding one is the fix.
+
+`emails.date_sent` is a **denormalized copy** of `email_headers.date_sent` (falling back to the
+row's own `created_at`), added by the 2026-07-26 sort-indexes-hot-lists migration so the inbox can
+sort on one indexed column. Writers must keep the two in step. The sweep still joins
+`email_headers`, which is the source of truth.
+
+### Demo mail
+
+`modules/demo/demo-seed.ts` writes the same shape by hand rather than going through the ingester,
+so the two can drift. It deliberately matches on the parts that matter: bodies stay inline with a
+`body_text` extract (they are a few hundred bytes, far under `INLINE_BODY_MAX_BYTES`), and
+attachments are seeded **materialized** — real blob, real `files` row — because demo mail has no
+provider message behind it, so a deferred row could never be resolved and would 404 forever.
+`files` is not reached by the emails cascade, so the manifest tracks the ids and `deleteDemoData`
+returns the blob keys for the caller to purge after commit. Payloads are built, not bundled
+(`demo-attachment-assets.ts`). It does **not** write an `email_headers` row.
 
 ## Tests
 

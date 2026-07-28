@@ -44,3 +44,23 @@ export function extractBodyText(html: string): string {
 
   return text.length > BODY_TEXT_MAX_CHARS ? text.slice(0, BODY_TEXT_MAX_CHARS) : text;
 }
+
+/**
+ * How much of the extract is stored on `emails.preview_text`. The inbox truncates the line
+ * with CSS anyway; this only bounds what the hot list query has to carry per row.
+ *
+ * Kept in step with the backfill in `2026-07-28-zzzz-emails-preview-text.ts`.
+ */
+export const PREVIEW_TEXT_MAX_CHARS = 200;
+
+/**
+ * The snippet shown under the subject in the inbox list.
+ *
+ * Returns null rather than an empty string for a body with no prose (an image-only message,
+ * say), so the UI renders nothing instead of an empty element with a stray gap.
+ */
+export function previewTextFrom(bodyText: string): string | null {
+  const trimmed = bodyText.trim();
+  if (!trimmed) return null;
+  return trimmed.length > PREVIEW_TEXT_MAX_CHARS ? trimmed.slice(0, PREVIEW_TEXT_MAX_CHARS) : trimmed;
+}

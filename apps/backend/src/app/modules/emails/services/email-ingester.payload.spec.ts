@@ -246,6 +246,49 @@ describe('EmailIngesterService payload policy (integration)', () => {
       expect((body?.body_text ?? '').length).toBeLessThan(1000);
       expect(uploadSpy).toHaveBeenCalledTimes(1);
     });
+
+    it('stores a display snippet on the row, never the dedupe key', async () => {
+      await ingester.ingestEmail(
+        makeEmail('MSG_SNIPPET', { bodyHtml: '<p>Bonjour! We talked at the market.</p>' }),
+        tenantId,
+        campaignId,
+        userId,
+        INBOX,
+      );
+
+      const row = await db
+        .selectFrom('emails')
+        .select(['preview', 'preview_text'])
+        .where('tenant_id', '=', tenantId)
+        .where('preview', '=', 'google:MSG_SNIPPET')
+        .executeTakeFirst();
+
+      // The regression: the inbox list renders preview_text, and `preview` is the dedupe key.
+      // If a snippet ever lands in `preview`, dedupe breaks; if the key lands in `preview_text`,
+      // the user reads "google:MSG_SNIPPET" under every subject.
+      expect(row?.preview_text).toBe('Bonjour! We talked at the market.');
+      expect(row?.preview).toBe('google:MSG_SNIPPET');
+      expect(row?.preview_text).not.toMatch(/^(google|ms):/);
+    });
+
+    it('leaves the snippet null for a body with no prose, rather than an empty line', async () => {
+      await ingester.ingestEmail(
+        makeEmail('MSG_IMG_ONLY', { bodyHtml: '<div><img src="https://example.com/a.png" /></div>' }),
+        tenantId,
+        campaignId,
+        userId,
+        INBOX,
+      );
+
+      const row = await db
+        .selectFrom('emails')
+        .select('preview_text')
+        .where('tenant_id', '=', tenantId)
+        .where('preview', '=', 'google:MSG_IMG_ONLY')
+        .executeTakeFirst();
+
+      expect(row?.preview_text).toBeNull();
+    });
   });
 
   // Bodies live in two places, so nothing may read `body_html` directly. The inline fallback in

@@ -47,7 +47,10 @@ export const EmailObj = z.object({
   from_name: z.string().optional(),
   to_email: z.string().optional(),
   subject: z.string().optional(),
+  /** Provider dedupe key (`google:<id>` / `ms:<id>`), not a snippet — never render it. */
   preview: z.string().optional(),
+  /** The snippet shown under the subject in the inbox list. */
+  preview_text: z.string().nullish(),
   assigned_to: z.string().optional(),
   updated_at: z.date(),
   date_sent: z.date().nullable().optional(),

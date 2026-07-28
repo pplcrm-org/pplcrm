@@ -11,6 +11,8 @@ import type { LatLng } from '../../lib/routing/geo';
 import { SERVICE_MINUTES_PER_STOP, SHARE_TOKEN_TTL_DAYS } from '../../lib/routing/route-constants';
 import { backfillMissingSlugs } from '../../lib/slug';
 import { DuplicateMaintenanceService } from '../persons/services/duplicate-maintenance.service';
+import { extractBodyText } from '../emails/services/email-body-text';
+import { buildDemoAttachment } from './demo-attachment-assets';
 import type { DemoDataset, DemoEngagementDef, DemoNewsletterDef } from './demo-data-types';
 
 /**
@@ -40,6 +42,13 @@ export const DemoSeedManifestObj = z.object({
   /** Demo teammates (authusers ids). */
   users: z.array(z.string()),
   emails: z.array(z.string()),
+  /**
+   * `files` rows behind the demo inbox attachments. `email_attachments` CASCADEs from
+   * `emails`, but `files` does not — without this the rows (and their blobs) would
+   * outlive exit-demo. Optional-with-default so manifests written before attachments
+   * existed still parse.
+   */
+  files: z.array(z.string()).default([]),
   // Canvassing (§13) and Deliveries (§14) rows. Optional-with-default so a
   // manifest written before these features (or an empty test manifest) still
   // parses on exit-demo — a missing key just deletes nothing.
@@ -314,21 +323,23 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     .execute();
 
   // ── Lists ─────────────────────────────────────────────────────────────────
-  const listRows = await trx
-    .insertInto('lists')
-    .values(
-      dataset.lists.map((l) => ({
-        ...audit,
-        campaign_id,
-        name: l.name,
-        description: l.description,
-        object: 'people' as const,
-        is_dynamic: false,
-        status: 'idle' as const,
-      })),
-    )
-    .returning('id')
-    .execute();
+  const listRows = !dataset.lists.length
+    ? []
+    : await trx
+        .insertInto('lists')
+        .values(
+          dataset.lists.map((l) => ({
+            ...audit,
+            campaign_id,
+            name: l.name,
+            description: l.description,
+            object: 'people' as const,
+            is_dynamic: false,
+            status: 'idle' as const,
+          })),
+        )
+        .returning('id')
+        .execute();
   const listMemberRows = dataset.lists.flatMap((l, i) =>
     l.members.flatMap((personKey) => {
       const person_id = personIdByKey.get(personKey);
@@ -478,12 +489,14 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   // ── Inbox/sent emails (folder ids: '11' = Inbox, '3' = Sent) ──────────────
   const OFFICE_EMAIL = 'office@example.org';
   const emailIds: string[] = [];
+  let attachmentCount = 0;
   for (const e of dataset.emails) {
     const person = personByKey.get(e.person);
     const personEmail = person?.email ?? OFFICE_EMAIL;
     const personName = person ? `${person.first_name} ${person.last_name}` : null;
     const isInbox = e.folder === 'inbox';
     const assigned_to = e.assignTo === 'owner' ? user_id : e.assignTo ? (userIdByKey.get(e.assignTo) ?? null) : null;
+    const sentAt = daysAgo(e.daysAgo);
     const email = await trx
       .insertInto('emails')
       .values({
@@ -493,21 +506,54 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         from_email: isInbox ? personEmail : OFFICE_EMAIL,
         to_email: isInbox ? OFFICE_EMAIL : personEmail,
         subject: e.subject,
-        preview: e.preview,
+        // `preview` is the PROVIDER DEDUPE KEY. Demo mail was never synced from anywhere, so
+        // it has no key and this stays null — writing the snippet here (as this seeder used
+        // to) is what masked the bug where the inbox rendered the dedupe key as the snippet.
+        preview: null,
+        preview_text: e.preview_text,
         status: e.status,
         assigned_to,
         is_favourite: e.is_favourite ?? false,
-        created_at: daysAgo(e.daysAgo),
+        created_at: sentAt,
         // The inbox sorts on date_sent, so demo mail has to carry the same backdated timestamp
         // as created_at or every seeded message stacks up at "now".
-        date_sent: daysAgo(e.daysAgo),
+        date_sent: sentAt,
       })
       .returning('id')
       .executeTakeFirstOrThrow();
     emailIds.push(String(email.id));
+
+    // The header row `emails.date_sent` is denormalized FROM. Writers are required to keep the
+    // two in step, and the sweep reads the header side.
+    //
+    // The Message-ID deliberately uses `.invalid` (RFC 2606, never resolvable). The ingester
+    // adopts a local, untagged message when a synced one carries a matching Message-ID — and
+    // demo mail is untagged by definition now that `preview` is null. A reserved domain no real
+    // provider can emit means a genuine sync can never collide with, and silently swallow, a
+    // demo message.
+    await trx
+      .insertInto('email_headers')
+      .values({
+        ...audit,
+        email_id: String(email.id),
+        headers_json: null,
+        raw_headers: `Message-ID: <demo-${email.id}@demo.invalid>`,
+        date_sent: sentAt,
+      })
+      .execute();
     await trx
       .insertInto('email_bodies')
-      .values({ ...audit, email_id: String(email.id), body_html: e.body_html })
+      .values({
+        ...audit,
+        email_id: String(email.id),
+        body_html: e.body_html,
+        // Demo bodies are a few hundred bytes, far under INLINE_BODY_MAX_BYTES, so they
+        // stay inline exactly as the ingester would keep them — `storage_key` stays null.
+        // `body_text` is not optional though: it is what the GIN index covers, and the
+        // ingester always writes it. Omitting it would leave demo mail unsearchable the
+        // day search ships, which reads as a search bug rather than missing seed data.
+        body_text: extractBodyText(e.body_html),
+      })
       .execute();
     await trx
       .insertInto('email_recipients')
@@ -518,6 +564,50 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         name: isInbox ? null : personName,
         email: isInbox ? OFFICE_EMAIL : personEmail,
         pos: 0,
+      })
+      .execute();
+
+    // Attachments are seeded as METADATA ONLY here — filename, type and size, with a null
+    // `file_id`. The payloads are built and uploaded afterwards by the
+    // `materialize_demo_attachments` job enqueued below.
+    //
+    // Uploading inline instead would put blob I/O in the signup path: it adds latency to every
+    // signup, turns a storage outage into a signup failure, and strands blobs when the signup
+    // transaction rolls back. This is exactly the case the transactional outbox exists for.
+    //
+    // `remote_ref` carries the asset key, which is what the deferred-attachment shape is for:
+    // the row describes the attachment while pointing at where its payload can still be got.
+    let attachmentPos = 0;
+    for (const assetKey of e.attachments ?? []) {
+      attachmentPos++;
+      const asset = buildDemoAttachment(assetKey);
+      await trx
+        .insertInto('email_attachments')
+        .values({
+          ...audit,
+          email_id: String(email.id),
+          filename: asset.filename,
+          content_type: asset.content_type,
+          size_bytes: asset.size_bytes,
+          cid: null,
+          is_inline: false,
+          pos: attachmentPos,
+          file_id: null,
+          remote_ref: `demo:${assetKey}`,
+        })
+        .execute();
+      attachmentCount++;
+    }
+  }
+
+  // Transactional outbox: queued in the same transaction as the rows it completes, so a
+  // rolled-back signup cannot leave a job pointing at data that never existed.
+  if (attachmentCount > 0) {
+    await trx
+      .insertInto('background_jobs')
+      .values({
+        tenant_id,
+        payload: JSON.stringify({ type: 'materialize_demo_attachments', tenant_id, user_id }),
       })
       .execute();
   }
@@ -613,24 +703,26 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   //    is delivered — the seeded statuses already encode that. Route leg/est
   //    numbers are computed from the real coordinates with the routing engine's
   //    own geo helpers, never hand-faked.
-  const requestRows = await trx
-    .insertInto('delivery_requests')
-    .values(
-      dataset.deliveryRequests.map((r) => ({
-        ...audit,
-        campaign_id,
-        household_id: householdIdByKey.get(r.household) as string,
-        person_id: r.person ? (personIdByKey.get(r.person) ?? null) : null,
-        web_form_id: null,
-        source: r.source ?? 'manual',
-        status: r.status,
-        notes: r.notes ?? null,
-        skip_reason: r.skipReason ?? null,
-        created_at: daysAgo(r.createdDaysAgo),
-      })),
-    )
-    .returning('id')
-    .execute();
+  const requestRows = !dataset.deliveryRequests.length
+    ? []
+    : await trx
+        .insertInto('delivery_requests')
+        .values(
+          dataset.deliveryRequests.map((r) => ({
+            ...audit,
+            campaign_id,
+            household_id: householdIdByKey.get(r.household) as string,
+            person_id: r.person ? (personIdByKey.get(r.person) ?? null) : null,
+            web_form_id: null,
+            source: r.source ?? 'manual',
+            status: r.status,
+            notes: r.notes ?? null,
+            skip_reason: r.skipReason ?? null,
+            created_at: daysAgo(r.createdDaysAgo),
+          })),
+        )
+        .returning('id')
+        .execute();
   const deliveryRequestIdByKey = new Map(dataset.deliveryRequests.map((r, i) => [r.key, String(requestRows[i]?.id)]));
   const deliveryRequestIds = requestRows.map((r) => String(r.id));
 
@@ -711,57 +803,61 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   //    recorded gifts populate the Donations page ledger + stats and ARE demo
   //    data. Only 'succeeded' gifts and 'active' pledges count toward the page
   //    numbers, so that is what we seed. Amounts are already in cents.
-  const pledgeRows = await trx
-    .insertInto('donation_pledges')
-    .values(
-      dataset.pledges.map((p) => {
-        const person = personByKey.get(p.person);
-        return {
-          ...audit,
-          campaign_id,
-          person_id: personIdByKey.get(p.person) ?? null,
-          monthly_amount: p.monthlyAmountCents,
-          status: 'active',
-          started_at: daysAgo(p.startedDaysAgo),
-          next_billing_date: daysFromNow(p.nextBillingInDays),
-          first_name: person?.first_name ?? null,
-          last_name: person?.last_name ?? null,
-          email: person?.email ?? null,
-          stripe_subscription_id: null,
-          stripe_customer_id: null,
-        };
-      }),
-    )
-    .returning('id')
-    .execute();
+  const pledgeRows = !dataset.pledges.length
+    ? []
+    : await trx
+        .insertInto('donation_pledges')
+        .values(
+          dataset.pledges.map((p) => {
+            const person = personByKey.get(p.person);
+            return {
+              ...audit,
+              campaign_id,
+              person_id: personIdByKey.get(p.person) ?? null,
+              monthly_amount: p.monthlyAmountCents,
+              status: 'active',
+              started_at: daysAgo(p.startedDaysAgo),
+              next_billing_date: daysFromNow(p.nextBillingInDays),
+              first_name: person?.first_name ?? null,
+              last_name: person?.last_name ?? null,
+              email: person?.email ?? null,
+              stripe_subscription_id: null,
+              stripe_customer_id: null,
+            };
+          }),
+        )
+        .returning('id')
+        .execute();
   const pledgeIdByKey = new Map(dataset.pledges.map((p, i) => [p.key, String(pledgeRows[i]?.id)]));
   const donationPledgeIds = pledgeRows.map((r) => String(r.id));
 
   // donations has no createdby_id/updatedby_id columns — only tenant_id.
-  const donationRows = await trx
-    .insertInto('donations')
-    .values(
-      dataset.donations.map((d) => {
-        const person = personByKey.get(d.person);
-        return {
-          tenant_id,
-          campaign_id,
-          person_id: personIdByKey.get(d.person) ?? null,
-          amount: d.amountCents,
-          status: 'succeeded',
-          method: d.method,
-          receipt_sent: d.receiptSent ?? true,
-          pledge_id: d.pledge ? (pledgeIdByKey.get(d.pledge) ?? null) : null,
-          first_name: person?.first_name ?? null,
-          last_name: person?.last_name ?? null,
-          email: person?.email ?? null,
-          stripe_session_id: null,
-          created_at: daysAgo(d.createdDaysAgo),
-        };
-      }),
-    )
-    .returning('id')
-    .execute();
+  const donationRows = !dataset.donations.length
+    ? []
+    : await trx
+        .insertInto('donations')
+        .values(
+          dataset.donations.map((d) => {
+            const person = personByKey.get(d.person);
+            return {
+              tenant_id,
+              campaign_id,
+              person_id: personIdByKey.get(d.person) ?? null,
+              amount: d.amountCents,
+              status: 'succeeded',
+              method: d.method,
+              receipt_sent: d.receiptSent ?? true,
+              pledge_id: d.pledge ? (pledgeIdByKey.get(d.pledge) ?? null) : null,
+              first_name: person?.first_name ?? null,
+              last_name: person?.last_name ?? null,
+              email: person?.email ?? null,
+              stripe_session_id: null,
+              created_at: daysAgo(d.createdDaysAgo),
+            };
+          }),
+        )
+        .returning('id')
+        .execute();
   const donationIds = donationRows.map((r) => String(r.id));
 
   // ── Duplicates queue (§9.3) ───────────────────────────────────────────────
@@ -791,6 +887,8 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     newsletters: newsletterIds,
     users: [...userIdByKey.values()],
     emails: emailIds,
+    // Populated by the materialize_demo_attachments job, which appends the ids it creates.
+    files: [],
     turfs: turfIds,
     turf_assignments: turfAssignmentIds,
     turf_knocks: turfKnockIds,
@@ -831,8 +929,12 @@ interface DeleteParams {
  * (persons.household_id) is handled first by re-pointing any person the user
  * created inside a demo household at the tenant's placeholder household.
  * Clears the manifest settings row and the tenant's demo flag last.
+ *
+ * Returns the blob storage keys the caller must purge AFTER the transaction commits.
+ * Deleting them inside would orphan real files if the transaction then rolled back —
+ * the rows would come back and their payloads would not.
  */
-export async function deleteDemoData(params: DeleteParams, trx: Transaction<Models>): Promise<void> {
+export async function deleteDemoData(params: DeleteParams, trx: Transaction<Models>): Promise<string[]> {
   const { tenant_id, user_id, manifest: m, placeholder_household_id } = params;
 
   if (m.households.length > 0) {
@@ -910,9 +1012,24 @@ export async function deleteDemoData(params: DeleteParams, trx: Transaction<Mode
     await trx.deleteFrom('tasks').where('tenant_id', '=', tenant_id).where('id', 'in', m.tasks).execute();
   }
 
+  const blobKeysToPurge: string[] = [];
   if (m.emails.length > 0) {
     // email_bodies/recipients/headers/comments/attachments/read_states/trash all CASCADE.
     await trx.deleteFrom('emails').where('tenant_id', '=', tenant_id).where('id', 'in', m.emails).execute();
+  }
+
+  // `files` is NOT reached by that cascade — email_attachments references it, not the
+  // other way round — so the demo attachment files are deleted explicitly here and
+  // their blobs handed back to the caller.
+  if (m.files.length > 0) {
+    const fileRows = await trx
+      .selectFrom('files')
+      .select('storage_key')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', m.files)
+      .execute();
+    blobKeysToPurge.push(...fileRows.map((f) => f.storage_key).filter((k): k is string => k != null));
+    await trx.deleteFrom('files').where('tenant_id', '=', tenant_id).where('id', 'in', m.files).execute();
   }
 
   if (m.newsletters.length > 0) {
@@ -1080,6 +1197,8 @@ export async function deleteDemoData(params: DeleteParams, trx: Transaction<Mode
     .where('key', '=', DEMO_MANIFEST_SETTINGS_KEY)
     .execute();
   await trx.updateTable('tenants').set({ demo_mode_at: null }).where('id', '=', tenant_id).execute();
+
+  return blobKeysToPurge;
 }
 
 const hoursAfter = (base: Date, hours: number) => new Date(base.getTime() + hours * 60 * 60 * 1000);

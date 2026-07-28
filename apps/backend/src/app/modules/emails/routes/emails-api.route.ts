@@ -16,7 +16,7 @@ import { StorageService } from '../../../lib/storage.service';
 import { GoogleOAuthService } from '../../google-sync/google-oauth.service';
 import { MsOAuthService } from '../../ms-sync/ms-oauth.service';
 import { materializeAttachment } from '../services/attachment-materializer';
-import { extractBodyText } from '../services/email-body-text';
+import { extractBodyText, previewTextFrom } from '../services/email-body-text';
 
 /** Max addresses per header. Well above any real send, low enough to bound the raw MIME. */
 const MAX_RECIPIENTS_PER_FIELD = 100;
@@ -216,6 +216,9 @@ export async function saveLocalEmail(
         to_email: toList.join(', '),
         subject: subject,
         preview: previewKey,
+        // Mail we composed gets the same snippet treatment as mail we received, or the Sent
+        // folder would be the one place in the inbox with a blank second line.
+        preview_text: previewTextFrom(extractBodyText(html)),
         assigned_to: userId,
         is_favourite: false,
         deleted_at: null,

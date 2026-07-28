@@ -61,6 +61,18 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     household_id: idSchema,
     tenant_id: idSchema,
   }),
+  /**
+   * Materialize the demo inbox's attachment payloads (build the bytes, upload, link a `files`
+   * row). Enqueued in the signup transaction rather than uploaded inline: blob I/O in the
+   * signup path adds latency, makes a storage outage a signup problem, and strands blobs if
+   * the transaction rolls back. Until it runs the rows exist as metadata-only, which is a
+   * state the UI already handles.
+   */
+  z.object({
+    type: z.literal('materialize_demo_attachments'),
+    tenant_id: idSchema,
+    user_id: idSchema,
+  }),
 
   // ── External account sync ───────────────────────────────────────────────
   z.object({ type: z.literal('schedule_sync_jobs') }),

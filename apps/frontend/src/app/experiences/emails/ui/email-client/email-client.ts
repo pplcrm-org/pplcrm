@@ -99,6 +99,7 @@ export class EmailClient {
             to_email: res.email.to_email ?? undefined,
             subject: res.email.subject ?? undefined,
             preview: res.email.preview ?? undefined,
+            preview_text: res.email.preview_text ?? undefined,
             assigned_to: res.email.assigned_to ?? undefined,
             has_attachment: !!res.email.has_attachment,
             is_read: !!(res.email as any).is_read,

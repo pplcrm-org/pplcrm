@@ -136,6 +136,7 @@ export class EmailStateStore {
           to_email: s.to_email ?? undefined,
           subject: s.subject ?? undefined,
           preview: s.preview ?? undefined,
+          preview_text: s.preview_text ?? undefined,
           assigned_to: s.assigned_to ?? undefined,
           has_attachment: has, // keep in the normalized email too
           is_read: !!(s as any).is_read,

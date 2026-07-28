@@ -146,6 +146,7 @@ function normalizeServerEmailRow(r: any): ServerEmail {
     to_email: r.to_email ?? null,
     subject: r.subject ?? null,
     preview: r.preview ?? null,
+    preview_text: r.preview_text ?? null,
     assigned_to: r.assigned_to ?? null,
 
     has_attachment: hasFlag ?? (countNum !== undefined ? countNum > 0 : undefined),

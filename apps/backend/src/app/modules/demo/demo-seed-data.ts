@@ -29,10 +29,7 @@ import type {
   DemoVolunteerEventDef,
   DemoDonationDef,
 } from './demo-data-types';
-
-export const DEMO_CITY = 'Ottawa';
-export const DEMO_STATE = 'ON';
-export const DEMO_COUNTRY = 'Canada';
+import { DEMO_CITY, DEMO_COUNTRY, DEMO_STATE, allSites } from './demo-data-places';
 
 export const DEMO_COMPANIES: DemoCompanyDef[] = [
   {
@@ -139,255 +136,13 @@ export const DEMO_COMPANIES: DemoCompanyDef[] = [
   },
 ];
 
-export const DEMO_HOUSEHOLDS: DemoHouseholdDef[] = [
-  // ── Somerset ward (Centretown) ──────────────────────────────────────────
-  {
-    key: 'hh-cooper',
-    street_num: '174',
-    street1: 'Cooper Street',
-    zip: 'K2P 0E8',
-    lat: 45.4136,
-    lng: -75.691,
-    ward: 'Somerset',
-    home_phone: '613-555-0221',
-    tags: ['lawn sign location'],
-  },
-  {
-    key: 'hh-maclaren',
-    street_num: '288',
-    street1: 'MacLaren Street',
-    zip: 'K2P 0M6',
-    lat: 45.4152,
-    lng: -75.696,
-    ward: 'Somerset',
-  },
-  {
-    key: 'hh-frank',
-    street_num: '92',
-    street1: 'Frank Street',
-    zip: 'K2P 0X2',
-    lat: 45.4126,
-    lng: -75.6875,
-    ward: 'Somerset',
-  },
-  {
-    key: 'hh-arlington',
-    street_num: '41',
-    street1: 'Arlington Avenue',
-    zip: 'K2P 1C1',
-    lat: 45.4079,
-    lng: -75.6944,
-    ward: 'Somerset',
-  },
-  {
-    key: 'hh-gladstone',
-    street_num: '356',
-    street1: 'Gladstone Avenue',
-    zip: 'K2P 0Y9',
-    lat: 45.4107,
-    lng: -75.6987,
-    ward: 'Somerset',
-    notes: 'Buzzer broken — knock loudly.',
-  },
-  {
-    key: 'hh-bay',
-    street_num: '145',
-    street1: 'Bay Street',
-    zip: 'K1R 7T2',
-    lat: 45.4155,
-    lng: -75.705,
-    ward: 'Somerset',
-    home_phone: '613-555-0244',
-  },
-
-  // ── Kitchissippi ward (Westboro / Hintonburg) ───────────────────────────
-  {
-    key: 'hh-byron',
-    street_num: '468',
-    street1: 'Byron Avenue',
-    zip: 'K2A 3G4',
-    lat: 45.3925,
-    lng: -75.7565,
-    ward: 'Kitchissippi',
-    tags: ['lawn sign location'],
-  },
-  {
-    key: 'hh-kirkwood',
-    street_num: '175',
-    street1: 'Kirkwood Avenue',
-    zip: 'K1Z 8K3',
-    lat: 45.394,
-    lng: -75.7495,
-    ward: 'Kitchissippi',
-  },
-  {
-    key: 'hh-java',
-    street_num: '33',
-    street1: 'Java Street',
-    zip: 'K1Y 3L2',
-    lat: 45.4028,
-    lng: -75.7291,
-    ward: 'Kitchissippi',
-  },
-  {
-    key: 'hh-armstrong',
-    street_num: '245',
-    street1: 'Armstrong Street',
-    zip: 'K1Y 2W3',
-    lat: 45.4046,
-    lng: -75.7247,
-    ward: 'Kitchissippi',
-  },
-  {
-    key: 'hh-huron',
-    street_num: '58',
-    street1: 'Huron Avenue N',
-    zip: 'K1Y 0W8',
-    lat: 45.4013,
-    lng: -75.7346,
-    ward: 'Kitchissippi',
-  },
-
-  // ── Capital ward (Glebe / Old Ottawa South) ─────────────────────────────
-  {
-    key: 'hh-fifth',
-    street_num: '87',
-    street1: 'Fifth Avenue',
-    zip: 'K1S 2M8',
-    lat: 45.4009,
-    lng: -75.6926,
-    ward: 'Capital',
-  },
-  {
-    key: 'hh-holmwood',
-    street_num: '224',
-    street1: 'Holmwood Avenue',
-    zip: 'K1S 2P4',
-    lat: 45.399,
-    lng: -75.6858,
-    ward: 'Capital',
-    home_phone: '613-555-0268',
-  },
-  {
-    key: 'hh-sunnyside',
-    street_num: '145',
-    street1: 'Sunnyside Avenue',
-    zip: 'K1S 0R2',
-    lat: 45.3949,
-    lng: -75.6812,
-    ward: 'Capital',
-  },
-  {
-    key: 'hh-powell',
-    street_num: '36',
-    street1: 'Powell Avenue',
-    zip: 'K1S 2A2',
-    lat: 45.4046,
-    lng: -75.6949,
-    ward: 'Capital',
-  },
-  {
-    key: 'hh-aylmer',
-    street_num: '112',
-    street1: 'Aylmer Avenue',
-    zip: 'K1S 2X6',
-    lat: 45.3952,
-    lng: -75.6867,
-    ward: 'Capital',
-  },
-
-  // ── Rideau-Vanier ward (Sandy Hill) ─────────────────────────────────────
-  {
-    key: 'hh-sweetland',
-    street_num: '61',
-    street1: 'Sweetland Avenue',
-    zip: 'K1N 7T7',
-    lat: 45.4266,
-    lng: -75.6797,
-    ward: 'Rideau-Vanier',
-  },
-  {
-    key: 'hh-marlborough',
-    street_num: '128',
-    street1: 'Marlborough Avenue',
-    zip: 'K1N 8G3',
-    lat: 45.4229,
-    lng: -75.6752,
-    ward: 'Rideau-Vanier',
-  },
-  {
-    key: 'hh-blackburn',
-    street_num: '45',
-    street1: 'Blackburn Avenue',
-    zip: 'K1N 8A4',
-    lat: 45.4245,
-    lng: -75.6791,
-    ward: 'Rideau-Vanier',
-  },
-  {
-    key: 'hh-charlotte',
-    street_num: '219',
-    street1: 'Charlotte Street',
-    zip: 'K1N 8L2',
-    lat: 45.4287,
-    lng: -75.6832,
-    ward: 'Rideau-Vanier',
-  },
-
-  // ── Alta Vista ward ─────────────────────────────────────────────────────
-  {
-    key: 'hh-kilborn',
-    street_num: '1128',
-    street1: 'Kilborn Avenue',
-    zip: 'K1H 6L1',
-    lat: 45.3867,
-    lng: -75.6544,
-    ward: 'Alta Vista',
-    tags: ['lawn sign location'],
-  },
-  {
-    key: 'hh-pleasantpark',
-    street_num: '645',
-    street1: 'Pleasant Park Road',
-    zip: 'K1H 5M2',
-    lat: 45.3901,
-    lng: -75.6608,
-    ward: 'Alta Vista',
-  },
-  {
-    key: 'hh-halifax',
-    street_num: '88',
-    street1: 'Halifax Drive',
-    zip: 'K1G 0T6',
-    lat: 45.3945,
-    lng: -75.6377,
-    ward: 'Alta Vista',
-  },
-  {
-    key: 'hh-featherston',
-    street_num: '1520',
-    street1: 'Featherston Drive',
-    zip: 'K1H 6P2',
-    lat: 45.3846,
-    lng: -75.6414,
-    ward: 'Alta Vista',
-  },
-
-  // ── March import duplicate (Duplicates → Households) ────────────────────
-  // The same address as hh-kilborn typed with an abbreviated street type:
-  // address_normalize expands "Ave." to "avenue", so both rows land on one
-  // address_fp_full and the sweep flags them as a matching-address pair.
-  {
-    key: 'hh-kilborn-import',
-    street_num: '1128',
-    street1: 'Kilborn Ave.',
-    zip: 'K1H 6L1',
-    lat: 45.3867,
-    lng: -75.6544,
-    ward: 'Alta Vista',
-    notes: 'Came in on the March CSV import.',
-  },
-];
+export const DEMO_HOUSEHOLDS: DemoHouseholdDef[] = allSites({
+  'hh-cooper': { tags: ['lawn sign location'] },
+  'hh-gladstone': { notes: 'Buzzer broken — knock loudly.' },
+  'hh-byron': { tags: ['lawn sign location'] },
+  'hh-kilborn': { tags: ['lawn sign location'] },
+  'hh-kilborn-import': { notes: 'Came in on the March CSV import.' },
+});
 
 export const DEMO_PERSONS: DemoPersonDef[] = [
   // ── hh-cooper: the Tremblays ────────────────────────────────────────────
@@ -1670,40 +1425,43 @@ export const DEMO_EMAILS: DemoEmailDef[] = [
     folder: 'inbox',
     person: 'marc-tremblay',
     subject: 'Lawn sign for our porch',
-    preview: 'Bonjour! We talked at the market on Saturday — we would love a sign for our porch on Cooper…',
+    preview_text: 'Bonjour! We talked at the market on Saturday — we would love a sign for our porch on Cooper…',
     status: 'open',
     daysAgo: 2,
     is_favourite: true,
+    attachments: ['porch-sign-spot'],
     body_html:
-      '<p>Bonjour!</p><p>We talked at the market on Saturday — we would love a sign for our porch at 174 Cooper Street. A larger one if you have them.</p><p>Merci,<br>Marc</p>',
+      '<p>Bonjour!</p><p>We talked at the market on Saturday — we would love a sign for our porch at 174 Cooper Street. A larger one if you have them. I have attached a photo of the spot.</p><p>Merci,<br>Marc</p>',
   },
   {
     folder: 'inbox',
     person: 'devon-clarke',
     subject: 'Meet-and-greet at the café — possible dates',
-    preview: 'Happy to host the evening you mentioned. The café can take about 30 people on a weeknight…',
+    preview_text: 'Happy to host the evening you mentioned. The café can take about 30 people on a weeknight…',
     status: 'open',
     assignTo: 'owner',
     daysAgo: 1,
+    attachments: ['meet-and-greet-hold'],
     body_html:
-      '<p>Hi,</p><p>Happy to host the evening you mentioned. The café can take about 30 people on a weeknight — the last two Thursdays of the month are open right now.</p><p>Devon<br>Bytown Coffee Roasters</p>',
+      '<p>Hi,</p><p>Happy to host the evening you mentioned. The café can take about 30 people on a weeknight — the last two Thursdays of the month are open right now. Calendar hold attached for the first one.</p><p>Devon<br>Bytown Coffee Roasters</p>',
   },
   {
     folder: 'inbox',
     person: 'fatima-elsayed',
     subject: 'Newsletter swap with the community association?',
-    preview: 'Our association newsletter goes to about 900 households in Westboro. Would you be open to…',
+    preview_text: 'Our association newsletter goes to about 900 households in Westboro. Would you be open to…',
     status: 'open',
     assignTo: 'u-emma',
     daysAgo: 3,
+    attachments: ['westboro-circulation'],
     body_html:
-      '<p>Hello,</p><p>Our association newsletter goes to about 900 households in Westboro. Would you be open to trading a short intro blurb next month?</p><p>Fatima</p>',
+      '<p>Hello,</p><p>Our association newsletter goes to about 900 households in Westboro. Would you be open to trading a short intro blurb next month?</p><p>Our last three months of circulation are attached.</p><p>Fatima</p>',
   },
   {
     folder: 'inbox',
     person: 'isabelle-fortin',
     subject: 'Interview request: community profile piece',
-    preview: 'I am putting together a profile on new community organizations for the weekly. Could we set up…',
+    preview_text: 'I am putting together a profile on new community organizations for the weekly. Could we set up…',
     status: 'open',
     assignTo: 'u-natalie',
     daysAgo: 5,
@@ -1714,7 +1472,7 @@ export const DEMO_EMAILS: DemoEmailDef[] = [
     folder: 'inbox',
     person: 'harpreet-singh',
     subject: 'Soccer league fundraiser — table for you',
-    preview: 'The league fundraiser is on the 22nd and we can hold a table for your team if you want it…',
+    preview_text: 'The league fundraiser is on the 22nd and we can hold a table for your team if you want it…',
     status: 'closed',
     assignTo: 'u-carlos',
     daysAgo: 12,
@@ -1725,7 +1483,7 @@ export const DEMO_EMAILS: DemoEmailDef[] = [
     folder: 'inbox',
     person: 'grace-okafor',
     subject: 'Riverkeepers endorsement process',
-    preview: 'Following up from the cleanup — the board reviews community partnerships quarterly, and the…',
+    preview_text: 'Following up from the cleanup — the board reviews community partnerships quarterly, and the…',
     status: 'closed',
     assignTo: 'owner',
     daysAgo: 15,
@@ -1736,7 +1494,7 @@ export const DEMO_EMAILS: DemoEmailDef[] = [
     folder: 'sent',
     person: 'marc-tremblay',
     subject: 'Re: Lawn sign for our porch',
-    preview: 'Merci Marc! A large sign is yours — we will drop it off this week and confirm the day by text…',
+    preview_text: 'Merci Marc! A large sign is yours — we will drop it off this week and confirm the day by text…',
     status: 'closed',
     daysAgo: 1,
     body_html:
@@ -2135,6 +1893,8 @@ export const DEMO_DONATIONS: DemoDonationDef[] = [
   { person: 'fatima-elsayed', amountCents: 4500, method: 'card', createdDaysAgo: 45 },
   { person: 'mai-nguyen', amountCents: 2000, method: 'card', createdDaysAgo: 37, pledge: 'pledge-mai' },
 ];
+
+export { DEMO_CITY, DEMO_STATE, DEMO_COUNTRY };
 
 /** The electoral dataset, bundled for `demo-datasets.ts`. */
 export const CAMPAIGN_DEMO_DATASET: DemoDataset = {

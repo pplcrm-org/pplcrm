@@ -1,4 +1,5 @@
 import type { SupportLevel, VotingStatus, VolunteerStatus, StaffStatus } from '../../../../../../libs/common/src';
+import type { DemoAttachmentKey } from './demo-attachment-assets';
 
 /**
  * Shapes for the hand-curated demo datasets, one per organization mode.
@@ -174,13 +175,24 @@ export interface DemoEmailDef {
   /** Person key the email is from (inbox) or to (sent) — ties the thread to a CRM contact. */
   person: string;
   subject: string;
-  preview: string;
+  /**
+   * The snippet under the subject. Writes to `emails.preview_text` — NOT `emails.preview`,
+   * which is the provider dedupe key and stays null for demo mail that no provider owns.
+   */
+  preview_text: string;
   status: 'open' | 'closed';
   /** 'owner' or a demo user key. */
   assignTo?: string;
   daysAgo: number;
   is_favourite?: boolean;
   body_html: string;
+  /**
+   * Asset keys from `demo-attachment-assets.ts`. Seeded as fully materialized
+   * attachments (a real blob + `files` row), so the demo inbox can actually download
+   * them; if storage is unavailable at signup the seeder degrades to a metadata-only
+   * row rather than failing the signup.
+   */
+  attachments?: DemoAttachmentKey[];
 }
 
 export interface DemoKnockDef {

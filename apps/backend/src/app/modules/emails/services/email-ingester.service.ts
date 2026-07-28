@@ -9,7 +9,7 @@ import {
 import { env } from '../../../../env';
 import crypto from 'crypto';
 import { sanitizeHtml } from '../../../lib/mail/sanitize-util';
-import { extractBodyText, INLINE_BODY_MAX_BYTES } from './email-body-text';
+import { extractBodyText, previewTextFrom, INLINE_BODY_MAX_BYTES } from './email-body-text';
 import { logger } from '../../../logger';
 
 export interface IngestableEmail {
@@ -422,6 +422,13 @@ export class EmailIngesterService {
     }
 
     return this.db.transaction().execute(async (trx) => {
+      // Sanitize up front: the email row is inserted before the body (it owns the id the body
+      // references), but it now carries the display snippet, which must come from the same
+      // extract as `email_bodies.body_text`. The cid rewrite below only edits `src` attributes,
+      // and the extractor strips all tags — so extracting here and after the rewrite are
+      // identical, and this avoids sanitizing twice.
+      const sanitizedHtml = sanitizeHtml(email.bodyHtml);
+
       // 1. Insert into emails
       const emailRow = await trx
         .insertInto('emails')
@@ -432,7 +439,8 @@ export class EmailIngesterService {
           from_email: email.fromEmail,
           to_email: email.toEmail,
           subject: email.subject,
-          preview: dedupeKey, // store ID as dedup key
+          preview: dedupeKey, // the DEDUPE KEY, never displayed — see preview_text
+          preview_text: previewTextFrom(extractBodyText(sanitizedHtml)),
           assigned_to: null,
           is_favourite: false,
           deleted_at: null,
@@ -456,7 +464,7 @@ export class EmailIngesterService {
       // deferred inline images too — the endpoint materializes them on first view. In Spam it is
       // skipped entirely: loading an image in junk mail confirms the address is live, and those
       // payloads are never fetched anyway.
-      let bodyHtml = sanitizeHtml(email.bodyHtml);
+      let bodyHtml = sanitizedHtml;
       if (allowsInlineImages(folderId)) {
         const inlineCids = [...materialized, ...deferred].filter((a) => a.is_inline && a.cid);
         for (const att of inlineCids) {

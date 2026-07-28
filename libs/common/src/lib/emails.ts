@@ -66,7 +66,10 @@ export type ServerEmail = {
   has_attachment?: boolean | null;
   id: string | number;
   is_favourite: boolean;
+  /** Provider dedupe key, not a snippet — never render it. See `preview_text`. */
   preview?: string | null;
+  /** The snippet under the subject in the inbox list. */
+  preview_text?: string | null;
   status?: string;
   subject?: string | null;
   to_email?: string | null;

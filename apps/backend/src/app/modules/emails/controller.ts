@@ -635,6 +635,9 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
           to_email: Array.isArray(d.to_list) ? d.to_list.join(', ') : '',
           subject: d.subject,
           preview: '',
+          // Drafts are listed from `email_drafts`, which stores no body extract — so there is
+          // no honest snippet to show rather than a fabricated one.
+          preview_text: null,
           assigned_to: undefined,
           updated_at: d.updated_at,
           date_sent: d.updated_at,

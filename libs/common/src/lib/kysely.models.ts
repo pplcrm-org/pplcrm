@@ -866,7 +866,15 @@ interface Emails extends RecordType {
   /** Display-only cache of the To list; email_recipients is the source of truth (D-10). */
   to_email: string | null;
   subject: string | null;
+  /**
+   * The provider DEDUPE KEY (`google:<id>` / `ms:<id>`), not a snippet — the ingester's
+   * duplicate check, the Message-ID adoption fallback and the attachment materializer's
+   * provider detection all key off it. Null for locally-created mail that no provider has
+   * claimed. Never render this: the user-facing snippet is `preview_text`.
+   */
   preview: string | null;
+  /** The snippet shown under the subject in the inbox list — a plain-text lead-in to the body. */
+  preview_text: string | null;
   assigned_to: string | null;
   is_favourite: boolean;
   deleted_at: Timestamp | null;

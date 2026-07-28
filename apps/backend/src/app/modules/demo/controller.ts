@@ -1,6 +1,8 @@
 import { hasSettledPlan, type IAuthKeyPayload } from '../../../../../../libs/common/src';
 import { ForbiddenError, InternalError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
+import { logger } from '../../logger';
+import { StorageService } from '../../lib/storage.service';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import { DEMO_MANIFEST_SETTINGS_KEY, DemoSeedManifestObj, deleteDemoData } from './demo-seed';
 import type { DemoSeedManifest } from './demo-seed';
@@ -81,10 +83,10 @@ export class DemoController extends BaseController<'settings', SettingsRepo> {
       throw new InternalError('This workspace has no placeholder household. Cannot exit demo mode.');
     }
 
-    await this.getRepo()
+    const blobKeys = await this.getRepo()
       .transaction()
-      .execute(async (trx) => {
-        await deleteDemoData(
+      .execute((trx) =>
+        deleteDemoData(
           {
             tenant_id: auth.tenant_id,
             user_id: auth.user_id,
@@ -92,8 +94,20 @@ export class DemoController extends BaseController<'settings', SettingsRepo> {
             placeholder_household_id: String(placeholderHouseholdId),
           },
           trx,
-        );
-      });
+        ),
+      );
+
+    // After commit, never before: a blob deleted inside the transaction would be gone
+    // even if the transaction rolled back and its `files` row came back. Best-effort —
+    // a leaked demo blob is a few hundred bytes and must not fail the exit.
+    const storage = new StorageService();
+    for (const key of blobKeys) {
+      try {
+        await storage.delete(key);
+      } catch (err) {
+        logger.error({ err }, `Exit demo: failed to delete attachment blob ${key}`);
+      }
+    }
 
     return { success: true };
   }

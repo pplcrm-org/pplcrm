@@ -180,14 +180,12 @@ export const ORG_MODE_IS_ELECTORAL: Record<OrgMode, boolean> = {
  * import backend code. `demo-datasets.spec.ts` asserts the two agree, so a mode gaining a dataset
  * without gaining its tour — or the reverse — fails a test rather than shipping.
  *
- * INTENDED END STATE: all four true. The marketing site and help centre already state the
- * universal claim ("Every new workspace starts in demo mode"), so the copy is waiting on the
- * code. nonprofit and church are false only because their datasets are not written yet — not
- * because they should start empty.
+ * All four true: every new workspace opens with sample data written for the kind of organization
+ * it is, which is what the marketing site and the help centre both state.
  */
 export const ORG_MODE_SEEDS_DEMO: Record<OrgMode, boolean> = {
   office: true,
   campaign: true,
-  nonprofit: false,
-  church: false,
+  nonprofit: true,
+  church: true,
 };

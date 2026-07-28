@@ -4,6 +4,7 @@ import type { Models } from '../../../../../../libs/common/src/lib/kysely.models
 import { jobPayloadSchema, legacyImportJobSchema } from './job-payloads';
 import { handleCheckAllUsageLimits, handleCheckUsageLimits, handleZapierTrigger } from './handlers/billing.handlers';
 import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
+import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
 import { handleImportJob } from './handlers/import.handlers';
 import {
@@ -91,6 +92,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'geocode_household':
       await handleGeocodeHousehold(job, db);
+      break;
+    case 'materialize_demo_attachments':
+      await handleMaterializeDemoAttachments(job, db);
       break;
     case 'schedule_sync_jobs':
       await handleScheduleSyncJobs(db);

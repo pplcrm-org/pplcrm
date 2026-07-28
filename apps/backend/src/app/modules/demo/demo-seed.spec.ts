@@ -1,16 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { BaseRepository } from '../../lib/base.repo';
+import { INLINE_BODY_MAX_BYTES } from '../emails/services/email-body-text';
+import { handleMaterializeDemoAttachments } from '../../lib/jobs/handlers/demo.handlers';
+import { StorageService } from '../../lib/storage.service';
 import { useTestTransaction } from '../../lib/test-utils/db-test-isolation';
 import { SYSTEM_LISTS } from '@common';
 import { STARTER_ISSUES, STARTER_TAGS, seedStarterForms, seedStarterTags } from '../auth/onboarding-seed';
 import { ensureSystemLists } from '../lists/system-lists';
 import { DemoController } from './controller';
 import { assertNotDemoMode } from './demo-guard';
-import { DEMO_MANIFEST_SETTINGS_KEY, deleteDemoData, seedDemoData } from './demo-seed';
+import type { OrgMode } from '@common';
+import { DEMO_DATASETS } from './demo-datasets';
+import { DEMO_MANIFEST_SETTINGS_KEY, DemoSeedManifestObj, deleteDemoData, seedDemoData } from './demo-seed';
 import type { DemoSeedManifest } from './demo-seed';
 import {
-  CAMPAIGN_DEMO_DATASET,
   DEMO_COMPANIES,
   DEMO_DELIVERY_REQUESTS,
   DEMO_DELIVERY_ROUTES,
@@ -44,8 +49,25 @@ describe('demo seeding and exit-demo', () => {
     manifest: DemoSeedManifest;
   }
 
-  /** Mirrors the signUp transaction's seeding-relevant steps for one fresh tenant. */
-  async function seedFixture(): Promise<Fixture> {
+  /** `settings.value` is jsonb: pg returns it parsed, but a string is valid too. */
+  const parseManifestValue = (value: unknown): Record<string, unknown> =>
+    typeof value === 'string' ? JSON.parse(value) : (value as Record<string, unknown>);
+
+  /** The two ids the materialize job's payload carries. */
+  const idsOf = (f: Fixture) => ({ tenant_id: f.tenant_id, user_id: f.user_id });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Mirrors the signUp transaction's seeding-relevant steps for one fresh tenant, in the given
+   * organization mode — starter vocabulary, starter forms and demo dataset all chosen the way
+   * signup chooses them. Defaults to 'office', which is what most of this suite asserts against.
+   */
+  async function seedFixture(mode: OrgMode = 'office'): Promise<Fixture> {
+    const dataset = DEMO_DATASETS[mode];
+    if (!dataset) throw new Error(`No demo dataset for mode "${mode}"`);
     const trx = ctx.trx;
     const tenant_id = rand();
     const user_id = rand();
@@ -97,15 +119,13 @@ describe('demo seeding and exit-demo', () => {
       .set({ admin_id: user_id, createdby_id: user_id, placeholder_household_id })
       .where('id', '=', tenant_id)
       .execute();
-    await seedStarterTags({ tenant_id, user_id }, trx);
-    const forms = await seedStarterForms({ tenant_id, user_id, campaign_id }, trx);
+    await seedStarterTags({ tenant_id, user_id, mode }, trx);
+    const forms = await seedStarterForms({ tenant_id, user_id, campaign_id, mode }, trx);
     // Mirrors signup: the built-in lists (§8) are seeded alongside the starter
     // data, not with the demo dataset, which is why they survive exit-demo.
     await ensureSystemLists({ tenant_id, user_id, campaign_id }, trx);
-    // The electoral dataset specifically: this suite asserts against its turfs, deliveries and
-    // lawn-sign tags, none of which every mode's dataset has.
     const manifest = await seedDemoData(
-      { tenant_id, user_id, campaign_id, placeholder_household_id, forms, dataset: CAMPAIGN_DEMO_DATASET },
+      { tenant_id, user_id, campaign_id, placeholder_household_id, forms, dataset },
       trx,
     );
     return { tenant_id, user_id, campaign_id, placeholder_household_id, forms, manifest };
@@ -284,6 +304,184 @@ describe('demo seeding and exit-demo', () => {
     await expect(assertNotDemoMode(trx, f.tenant_id)).rejects.toBeInstanceOf(ForbiddenError);
   });
 
+  it('keeps demo bodies inline and searchable, exactly as the ingester would store them', async () => {
+    const f = await seedFixture();
+    const bodies = await ctx.trx
+      .selectFrom('email_bodies')
+      .select(['body_html', 'storage_key', 'body_text'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+
+    expect(bodies).toHaveLength(DEMO_EMAILS.length);
+    for (const body of bodies) {
+      // Every demo body is a few hundred bytes — far under INLINE_BODY_MAX_BYTES — so
+      // the ingester would keep it inline too. Nothing belongs in blob storage here.
+      expect(body.body_html).toBeTruthy();
+      expect(Buffer.byteLength(body.body_html ?? '', 'utf8')).toBeLessThan(INLINE_BODY_MAX_BYTES);
+      expect(body.storage_key).toBeNull();
+      // The GIN-indexed extract search will read. Omitting it leaves demo mail
+      // unsearchable the day search ships.
+      expect(body.body_text).toBeTruthy();
+      expect(body.body_text).not.toContain('<p>');
+    }
+  });
+
+  it('puts the snippet in preview_text and leaves the dedupe key alone', async () => {
+    const f = await seedFixture();
+    const rows = await ctx.trx
+      .selectFrom('emails')
+      .select(['preview', 'preview_text'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+
+    expect(rows).toHaveLength(DEMO_EMAILS.length);
+    for (const row of rows) {
+      // Demo mail was never synced, so it owns no provider dedupe key. Writing the snippet
+      // here (as this seeder used to) is what hid the bug where the inbox displayed the key.
+      expect(row.preview).toBeNull();
+      expect(row.preview_text).toBeTruthy();
+    }
+    expect(rows.map((r) => r.preview_text).sort()).toEqual(DEMO_EMAILS.map((e) => e.preview_text).sort());
+  });
+
+  it('writes an email_headers row whose Message-ID a real sync can never adopt', async () => {
+    const f = await seedFixture();
+    const headers = await ctx.trx
+      .selectFrom('email_headers')
+      .innerJoin('emails', 'emails.id', 'email_headers.email_id')
+      .select(['email_headers.raw_headers', 'email_headers.date_sent', 'emails.date_sent as denormalized'])
+      .where('email_headers.tenant_id', '=', f.tenant_id)
+      .execute();
+
+    expect(headers).toHaveLength(DEMO_EMAILS.length);
+    for (const h of headers) {
+      // `emails.date_sent` is denormalized from this column and writers must keep them in step.
+      expect(h.date_sent).toEqual(h.denormalized);
+      // Demo mail is untagged (preview is null), so the ingester's Message-ID adoption path
+      // would claim it if a synced message ever matched. `.invalid` is reserved and
+      // unresolvable, so no real provider can emit a colliding id.
+      expect(h.raw_headers).toMatch(/^Message-ID: <demo-\d+@demo\.invalid>$/);
+    }
+  });
+
+  it('seeds attachments as metadata plus an outbox job, doing no blob I/O during signup', async () => {
+    const f = await seedFixture();
+    const trx = ctx.trx;
+    const expected = DEMO_EMAILS.flatMap((e) => e.attachments ?? []);
+    expect(expected.length).toBeGreaterThan(0);
+
+    const attachments = await trx
+      .selectFrom('email_attachments')
+      .select(['filename', 'content_type', 'size_bytes', 'file_id', 'remote_ref', 'is_inline'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    expect(attachments).toHaveLength(expected.length);
+
+    for (const att of attachments) {
+      // Signup writes the description only. Uploading here would add latency to every signup,
+      // make a storage outage a signup failure, and strand blobs on rollback.
+      expect(att.file_id).toBeNull();
+      expect(att.remote_ref).toMatch(/^demo:/);
+      // pg returns bigint columns as strings.
+      expect(Number(att.size_bytes)).toBeGreaterThan(0);
+    }
+    expect(await trx.selectFrom('files').select('id').where('tenant_id', '=', f.tenant_id).execute()).toHaveLength(0);
+
+    // Transactional outbox: exactly one job, queued in the seeding transaction.
+    const jobs = await trx
+      .selectFrom('background_jobs')
+      .select('payload')
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    const materializeJobs = jobs.filter(
+      (j) =>
+        (typeof j.payload === 'string' ? JSON.parse(j.payload) : j.payload)?.type === 'materialize_demo_attachments',
+    );
+    expect(materializeJobs).toHaveLength(1);
+  });
+
+  it('materializes the attachment payloads when the job runs, deduping identical blobs', async () => {
+    const f = await seedFixture();
+    const trx = ctx.trx;
+    const uploads: { key: string; bytes: Buffer }[] = [];
+    vi.spyOn(StorageService.prototype, 'upload').mockImplementation(async (key: string, bytes: Buffer) => {
+      uploads.push({ key, bytes });
+    });
+
+    await handleMaterializeDemoAttachments({ type: 'materialize_demo_attachments', ...idsOf(f) }, trx as never);
+
+    const attachments = await trx
+      .selectFrom('email_attachments')
+      .select('file_id')
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    expect(attachments.every((a) => a.file_id !== null)).toBe(true);
+
+    const files = await trx
+      .selectFrom('files')
+      .select(['storage_key', 'sha256_hex', 'size_bytes'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+
+    // One blob per DISTINCT payload — an asset used twice links one row, as the ingester does.
+    const uniquePayloads = new Set(DEMO_EMAILS.flatMap((e) => e.attachments ?? [])).size;
+    expect(files).toHaveLength(uniquePayloads);
+    expect(uploads).toHaveLength(uniquePayloads);
+    for (const upload of uploads) {
+      const row = files.find((r) => r.storage_key === upload.key);
+      expect(Number(row?.size_bytes)).toBe(upload.bytes.length);
+      expect(row?.sha256_hex).toBe(createHash('sha256').update(upload.bytes).digest('hex'));
+    }
+
+    // The manifest must learn about the new files rows, or exit-demo leaks every blob:
+    // `files` is not reached by the emails cascade.
+    const manifestRow = await trx
+      .selectFrom('settings')
+      .select('value')
+      .where('tenant_id', '=', f.tenant_id)
+      .where('key', '=', DEMO_MANIFEST_SETTINGS_KEY)
+      .executeTakeFirstOrThrow();
+    // `settings.value` is jsonb — pg hands it back parsed, not as a string.
+    const stored = parseManifestValue(manifestRow.value);
+    expect(stored.files).toHaveLength(uniquePayloads);
+  });
+
+  it('is idempotent: a second run of the job uploads nothing new', async () => {
+    const f = await seedFixture();
+    const trx = ctx.trx;
+    const uploadSpy = vi.spyOn(StorageService.prototype, 'upload').mockResolvedValue(undefined);
+
+    const job = { type: 'materialize_demo_attachments' as const, ...idsOf(f) };
+    await handleMaterializeDemoAttachments(job, trx as never);
+    const afterFirst = uploadSpy.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    // A retry after a partial failure must finish the remainder, not duplicate blobs.
+    await handleMaterializeDemoAttachments(job, trx as never);
+    expect(uploadSpy.mock.calls.length).toBe(afterFirst);
+  });
+
+  it('leaves rows metadata-only when storage is down, without failing the job', async () => {
+    const f = await seedFixture();
+    const trx = ctx.trx;
+    vi.spyOn(StorageService.prototype, 'upload').mockRejectedValue(new Error('storage down'));
+
+    await expect(
+      handleMaterializeDemoAttachments({ type: 'materialize_demo_attachments', ...idsOf(f) }, trx as never),
+    ).resolves.toBeUndefined();
+
+    const attachments = await trx
+      .selectFrom('email_attachments')
+      .select(['filename', 'size_bytes', 'file_id'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    // The rows still describe the attachment (name and size show in the UI); only the payload
+    // is missing, and no `files` row claims a blob that was never written.
+    expect(attachments.length).toBeGreaterThan(0);
+    expect(attachments.every((a) => a.file_id === null)).toBe(true);
+    expect(await trx.selectFrom('files').select('id').where('tenant_id', '=', f.tenant_id).execute()).toHaveLength(0);
+  });
+
   it('seeds a duplicates queue the March-import leftovers explain', async () => {
     const f = await seedFixture();
     const trx = ctx.trx;
@@ -410,15 +608,41 @@ describe('demo seeding and exit-demo', () => {
       .returning('id')
       .executeTakeFirstOrThrow();
 
-    await deleteDemoData(
+    // Materialize the attachments first, so exit-demo is tested against a workspace whose
+    // demo files actually exist — the state a real user exits from.
+    const uploaded: string[] = [];
+    vi.spyOn(StorageService.prototype, 'upload').mockImplementation(async (key: string) => {
+      uploaded.push(key);
+    });
+    await handleMaterializeDemoAttachments({ type: 'materialize_demo_attachments', ...idsOf(f) }, trx as never);
+    expect(uploaded.length).toBeGreaterThan(0);
+
+    // Reload the manifest: the job appended the files ids it created, and exit-demo deletes
+    // exactly what the manifest lists.
+    const storedManifest = await trx
+      .selectFrom('settings')
+      .select('value')
+      .where('tenant_id', '=', f.tenant_id)
+      .where('key', '=', DEMO_MANIFEST_SETTINGS_KEY)
+      .executeTakeFirstOrThrow();
+    const manifest = DemoSeedManifestObj.parse(parseManifestValue(storedManifest.value));
+
+    const purgedBlobKeys = await deleteDemoData(
       {
         tenant_id: f.tenant_id,
         user_id: f.user_id,
-        manifest: f.manifest,
+        manifest,
         placeholder_household_id: f.placeholder_household_id,
       },
       trx,
     );
+
+    // The attachment `files` rows go with the demo data — they are NOT reached by the
+    // emails cascade — and their blob keys come back so the caller can purge them after
+    // the commit. Miss this and every exit-demo leaks a blob per attachment.
+    expect(await trx.selectFrom('files').select('id').where('tenant_id', '=', f.tenant_id).execute()).toHaveLength(0);
+    expect(new Set(purgedBlobKeys)).toEqual(new Set(uploaded));
+    expect(purgedBlobKeys.length).toBeGreaterThan(0);
 
     // Demo data is gone.
     expect(await count('companies', f.tenant_id)).toBe(0);
@@ -646,6 +870,65 @@ describe('demo seeding and exit-demo', () => {
       // Tags are never in the manifest (the starter vocabulary survives exit), so a category
       // that is not deleted can never appear in the list of what will be deleted.
       expect(items.some((i) => i.label.includes('tag'))).toBe(false);
+    });
+  });
+
+  /**
+   * The electoral suite above proves the SEEDER works. These prove the two datasets written for
+   * the non-electoral modes actually land in Postgres — the failure this catches is not a broken
+   * reference (demo-datasets.spec.ts covers those statically) but a row the database rejects, or
+   * a submission silently dropped because the form slug does not exist for that mode.
+   */
+  describe.each([['nonprofit' as const], ['church' as const]])('%s demo workspace', (mode) => {
+    it('seeds end to end, with no electoral leftovers', async () => {
+      const dataset = DEMO_DATASETS[mode];
+      if (!dataset) throw new Error(`no dataset for ${mode}`);
+      const f = await seedFixture(mode);
+
+      expect(await count('persons', f.tenant_id)).toBe(dataset.persons.length);
+      expect(await count('households', f.tenant_id)).toBe(dataset.households.length + 1); // + placeholder
+      expect(await count('companies', f.tenant_id)).toBe(dataset.companies.length);
+      expect(await count('tasks', f.tenant_id)).toBe(dataset.tasks.length);
+      expect(await count('emails', f.tenant_id)).toBe(dataset.emails.length);
+      expect(await count('newsletters', f.tenant_id)).toBe(dataset.newsletters.length);
+      expect(await count('volunteer_events', f.tenant_id)).toBe(dataset.volunteerEvents.length);
+      expect(await count('donations', f.tenant_id)).toBe(dataset.donations.length);
+      expect(await count('donation_pledges', f.tenant_id)).toBe(dataset.pledges.length);
+
+      // The silent-skip failure: a submission whose form slug this mode never seeds is dropped
+      // without an error, so the count is the only evidence.
+      expect(await count('form_submissions', f.tenant_id)).toBe(dataset.submissions.length);
+
+      // Tag and issue attachments likewise vanish quietly when the name does not match.
+      expect(await count('map_peoples_tags', f.tenant_id)).toBeGreaterThan(0);
+
+      // These modes hide canvassing and deliveries, so nothing may be seeded behind them.
+      expect(await count('turfs', f.tenant_id)).toBe(0);
+      expect(await count('delivery_requests', f.tenant_id)).toBe(0);
+      expect(await count('delivery_routes', f.tenant_id)).toBe(0);
+
+      // No support levels or voting statuses: these organizations do not canvass for votes.
+      expect(await count('campaign_person_facts', f.tenant_id)).toBe(0);
+      expect(await count('campaign_subscriptions', f.tenant_id)).toBeGreaterThan(0);
+    });
+
+    it('exits demo mode leaving the starter vocabulary behind', async () => {
+      const f = await seedFixture(mode);
+      await deleteDemoData(
+        {
+          tenant_id: f.tenant_id,
+          user_id: f.user_id,
+          manifest: f.manifest,
+          placeholder_household_id: f.placeholder_household_id,
+        },
+        ctx.trx,
+      );
+
+      expect(await count('persons', f.tenant_id)).toBe(0);
+      expect(await count('donations', f.tenant_id)).toBe(0);
+      // Starter tags/issues and starter forms are not demo data — they survive.
+      expect(await count('tags', f.tenant_id)).toBeGreaterThan(0);
+      expect(await count('web_forms', f.tenant_id)).toBeGreaterThan(0);
     });
   });
 });

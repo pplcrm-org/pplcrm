@@ -27,6 +27,7 @@ apps/
           2026-07-28-z-canvass-volunteer-roam.ts
           2026-07-28-zz-companion-join-codes.ts
           2026-07-28-zzz-street-claims-organizer.ts
+          2026-07-28-zzzz-emails-preview-text.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -212,6 +213,10 @@ apps/
             trpc.router.ts
           demo/
             controller.ts
+            demo-attachment-assets.ts
+            demo-data-church.ts
+            demo-data-nonprofit.ts
+            demo-data-places.ts
             demo-data-types.ts
             demo-datasets.ts
             demo-guard.ts
