@@ -14,6 +14,7 @@ import eventsPublicRoute from './modules/events/routes/events-public.route';
 import billingWebhookRoute from './modules/billing/routes/billing-webhook.route';
 import newslettersWebhookRoute from './modules/newsletters/routes/newsletters-webhook.route';
 import unsubscribeRoute from './modules/newsletters/routes/unsubscribe.route';
+import tenantApprovalRoute from './modules/auth/routes/tenant-approval.route';
 import postmarkWebhookRoute from './modules/mail/routes/postmark-webhook.route';
 import donationsWebhookRoute from './modules/donations/routes/donations-webhook.route';
 import zapierInboundRoute from './modules/zapier/zapier-inbound.route';
@@ -71,6 +72,9 @@ export const routes: FastifyPluginCallback = (fastify, _opts, done) => {
 
   // One-click unsubscribe for automation emails (signed token, no session)
   fastify.register(unsubscribeRoute, { prefix: '/api/unsubscribe' });
+
+  // Closed-beta gate: the ops approve/decline link mailed on every new signup
+  fastify.register(tenantApprovalRoute, { prefix: '/api/tenant-approval' });
 
   // Register Postmark transactional bounce/spam-complaint webhook route
   fastify.register(postmarkWebhookRoute, { prefix: '/api/postmark' });

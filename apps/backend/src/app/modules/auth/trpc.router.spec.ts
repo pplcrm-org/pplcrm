@@ -157,6 +157,7 @@ describe('AuthRouter', () => {
       auth_token: 'signup-auth-token',
       refresh_token: 'signup-refresh-token',
       refresh_expires_at: null,
+      approval_pending: false,
     };
     const spy = vi.spyOn(AuthController.prototype, 'signUp').mockResolvedValue(mockTokens as any);
     const setCookie = vi.fn();
@@ -171,12 +172,36 @@ describe('AuthRouter', () => {
     const result = await caller.signUp(signUpData);
 
     expect(spy).toHaveBeenCalledWith(signUpData);
-    expect(result).toEqual({ auth_token: 'signup-auth-token' });
+    expect(result).toEqual({ auth_token: 'signup-auth-token', approval_pending: false });
     expect(setCookie).toHaveBeenCalledWith(
       'pc_refresh',
       'signup-refresh-token',
       expect.objectContaining({ httpOnly: true }),
     );
+  });
+
+  // Closed beta: a workspace awaiting approval must leave signUp with no session at all —
+  // no access token in the body and no refresh cookie on the response.
+  it('should issue neither a token nor a refresh cookie when the workspace awaits beta approval', async () => {
+    vi.spyOn(AuthController.prototype, 'signUp').mockResolvedValue({
+      auth_token: '',
+      refresh_token: '',
+      refresh_expires_at: null,
+      approval_pending: true,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test double for the controller's return shape
+    } as any);
+    const setCookie = vi.fn();
+
+    const caller = AuthRouter.createCaller(cookieCtx({ setCookie }));
+    const result = await caller.signUp({
+      email: 'pending@example.com',
+      password: 'StrongPassword123!',
+      first_name: 'Casey',
+      organization: 'Pending Org',
+    });
+
+    expect(result).toEqual({ auth_token: '', approval_pending: true });
+    expect(setCookie).not.toHaveBeenCalled();
   });
 });
 

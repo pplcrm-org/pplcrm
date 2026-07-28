@@ -211,8 +211,14 @@ function signUp() {
     checkRateLimit(`email:${input.email.toLowerCase()}:signUp`, 3, HOUR1);
     checkRateLimit(`${ip}:signUp`, 5, HOUR1);
     const result = await controller.signUp(input);
+    // Closed beta: a workspace awaiting approval gets no session at all, so there is no
+    // refresh cookie to set and no auth token to hand back — just the flag the signup page
+    // uses to send the user to the waitlist screen.
+    if (result.approval_pending) {
+      return { auth_token: '', approval_pending: true };
+    }
     setRefreshCookie(ctx.res, result.refresh_token, result.refresh_expires_at);
-    return { auth_token: result.auth_token };
+    return { auth_token: result.auth_token, approval_pending: false };
   });
 }
 

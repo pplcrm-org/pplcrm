@@ -90,7 +90,41 @@
       </button>
     </div>
   </div>
-  } @case ('password') { @if (verificationPending()) {
+  } @case ('password') { @if (approvalPending()) {
+  <!--
+    Closed beta: the workspace exists but has not been let in yet, so the password form below is
+    hidden rather than left there to fail. Informational tone (sky, not amber): nothing is broken
+    and there is nothing for the user to fix, so this narrates the wait instead of raising an
+    alarm. It ends with a real next step rather than a dead end.
+  -->
+  <div class="alert text-sm mb-4 bg-sky-950/40 border-sky-500/40 text-sky-100">
+    <div class="flex flex-col gap-2 w-full">
+      <div class="flex items-center gap-2 font-semibold">
+        <pc-icon name="clock" [size]="5"></pc-icon>
+        <span>Waiting for approval</span>
+      </div>
+      <p class="text-xs text-sky-100/80">{{ approvalPendingMessage }}</p>
+      @if (pendingEmail()) {
+      <p class="text-xs text-sky-100/80">
+        We will write to <strong class="text-sky-50">{{ pendingEmail() }}</strong> as soon as your workspace is open.
+      </p>
+      }
+      <!--
+        Always leave a way through. This panel can be reached from a bookmarked
+        ?approvalPending=true URL, which would otherwise still be showing long after the
+        workspace was opened.
+      -->
+      <div class="flex flex-wrap gap-2 mt-1">
+        <button type="button" class="btn btn-xs btn-outline btn-info" (click)="dismissApprovalNotice()">
+          Try signing in
+        </button>
+        <a href="mailto:hello@pplcrm.com?subject=pplCRM beta access" class="btn btn-xs btn-ghost text-sky-100">
+          Ask about your workspace
+        </a>
+      </div>
+    </div>
+  </div>
+  } @else if (verificationPending()) {
   <div class="alert alert-warning text-sm mb-4 bg-amber-950/40 border-amber-500/40 text-amber-200">
     <div class="flex flex-col gap-2 w-full">
       <div class="flex items-center gap-2 font-semibold">
@@ -122,7 +156,7 @@
     </button>
   </div>
 
-  @if (!verificationPending()) {
+  @if (!verificationPending() && !approvalPending()) {
   <label class="label text-neutral-100">Enter your password</label>
   <form (submit)="signIn($event)" novalidate>
     <div class="space-y-3">

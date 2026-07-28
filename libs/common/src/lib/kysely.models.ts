@@ -747,6 +747,14 @@ interface Tenants extends Omit<RecordType, 'createdby_id'>, AddressType {
   paused_at: Timestamp | null;
   /** Demo mode: set while the seeded test-drive data is present; NULL = exited/never. */
   demo_mode_at: Timestamp | null;
+  /** Beta gate: 'pending' until pplCRM ops approves the account, then 'approved' (or 'declined').
+   * Anything other than 'approved' blocks every sign-in path — see modules/auth/tenant-approval.ts. */
+  approval_status: Generated<'pending' | 'approved' | 'declined'>;
+  approval_requested_at: Timestamp | null;
+  approved_at: Timestamp | null;
+  declined_at: Timestamp | null;
+  /** SHA-256 of the single-use token in the ops approve/decline link; NULLed once ops decides. */
+  approval_token_hash: string | null;
   /** Automated anti-abuse pause (hard-bounce tripwire): blocks newsletter sending only.
    * Distinct from the user-initiated `paused_at` and the sign-in-blocking `suspended_at`. */
   sending_paused_at: Timestamp | null;

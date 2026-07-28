@@ -7,7 +7,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
     title: 'Welcome to pplCRM',
     summary: 'What pplCRM is for and a five-minute tour of the main areas.',
     keywords: ['introduction', 'overview', 'tour', 'start', 'basics', 'new user', 'onboarding'],
-    related: ['demo-mode', 'getting-around', 'add-people', 'grid-basics'],
+    related: ['beta-approval', 'demo-mode', 'getting-around', 'add-people', 'grid-basics'],
     blocks: [
       {
         kind: 'p',
@@ -66,6 +66,64 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
         tone: 'tip',
         title: 'Your workspace starts in demo mode',
         text: 'New workspaces come pre-loaded with realistic sample contacts so every page has something to show. See [Demo mode and sample data](/help/demo-mode) for what is included and how to clear it.',
+      },
+    ],
+  },
+  {
+    id: 'beta-approval',
+    category: 'getting-started',
+    title: 'Waiting for beta approval',
+    summary: 'Why a brand-new workspace cannot sign in yet, and what happens next.',
+    keywords: [
+      'beta',
+      'approval',
+      'waitlist',
+      'pending',
+      'waiting for approval',
+      'cannot sign in',
+      'account not active',
+      'invitation',
+    ],
+    related: ['welcome', 'demo-mode', 'users-roles'],
+    blocks: [
+      {
+        kind: 'p',
+        text: 'pplCRM is in beta. Anyone can sign up, but each new workspace is reviewed before it opens, so we only take on as many organizations as we can support properly.',
+      },
+      { kind: 'h2', id: 'what-happens', text: 'What happens after you sign up' },
+      {
+        kind: 'steps',
+        items: [
+          {
+            title: 'Your workspace is created',
+            detail:
+              'Nothing is lost while you wait. The organization, your owner account, and the sample data are all set up and waiting for you.',
+          },
+          {
+            title: 'Verify your email',
+            detail:
+              'You get the usual verification link. Click it now so there is nothing left to do when your workspace opens.',
+          },
+          {
+            title: 'We review the signup',
+            detail:
+              'Trying to sign in before then shows a "waiting for approval" note instead of the password box. That is expected; your password is fine.',
+          },
+          {
+            title: 'We email you when you are in',
+            detail: 'The message goes to the address you signed up with and links straight to sign-in.',
+          },
+        ],
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Joining an organization that already uses pplCRM?',
+        text: 'Ask them to invite you from [Users](/users) instead of signing up. Invitations are not affected by the beta review; you can sign in as soon as you set your password. See [Users and roles](/help/users-roles).',
+      },
+      {
+        kind: 'p',
+        text: 'If you have been waiting longer than you expected, or your situation is time-sensitive (an election date, for example), write to `hello@pplcrm.com` and tell us. We read every one.',
       },
     ],
   },

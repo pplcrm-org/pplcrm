@@ -84,8 +84,21 @@ const envSchema = z.object({
   // bounce/complaint webhooks. The webhook rejects requests without it.
   POSTMARK_WEBHOOK_TOKEN: z.string().optional(),
   // Where the ops watchdog cron emails its failed-jobs/backlog digest (via Postmark, directly —
-  // not through the job queue). Unset = digest is logged but not emailed.
+  // not through the job queue). Unset = digest is logged but not emailed. Also where the beta
+  // signup approve/decline mail goes (falling back to POSTMARK_FROM_EMAIL).
   OPS_ALERT_EMAIL: z.string().email().optional(),
+  // Beta gate: new tenants land in `approval_status = 'pending'` and cannot be signed into until
+  // pplCRM ops approves them. Setting this to 'true' auto-approves on signup instead, which is
+  // what local dev and the test suite want (nobody is there to click the ops link).
+  //
+  // An EXPLICIT opt-in, never merely "NODE_ENV !== production": an unset NODE_ENV must not
+  // silently open a gate whose whole job is to keep strangers out (same rule as
+  // ALLOW_MOCK_PAYMENTS below). The gate on the sign-in side is unconditional — this only
+  // decides the status a brand-new tenant starts in.
+  AUTO_APPROVE_TENANTS: z
+    .string()
+    .optional()
+    .transform((val) => val === 'true'),
   // Sentry error tracking. Unset = Sentry disabled entirely (no startup cost, no traffic).
   // NOTE: instrument.ts reads this from process.env directly (it must run before this file's
   // parse); it is declared here so the schema stays the single inventory of backend config.
@@ -293,6 +306,7 @@ export const env = {
   sendgridSharedSendingDomain: parsedEnv.SENDGRID_SHARED_SENDING_DOMAIN,
   postmarkWebhookToken: parsedEnv.POSTMARK_WEBHOOK_TOKEN,
   opsAlertEmail: parsedEnv.OPS_ALERT_EMAIL,
+  autoApproveTenants: parsedEnv.AUTO_APPROVE_TENANTS,
   sentryDsn: parsedEnv.SENTRY_DSN,
   anthropicApiKey: parsedEnv.ANTHROPIC_API_KEY,
   anthropicModel: parsedEnv.ANTHROPIC_MODEL,

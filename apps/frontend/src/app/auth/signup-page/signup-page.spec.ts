@@ -15,7 +15,7 @@ describe('SignUpPage', () => {
 
   beforeEach(async () => {
     mockAuthSvc = {
-      signUp: vi.fn().mockResolvedValue({ first_name: 'John' }),
+      signUp: vi.fn().mockResolvedValue({ user: { first_name: 'John' }, approvalPending: false }),
     };
 
     mockAlertSvc = {
@@ -52,7 +52,10 @@ describe('SignUpPage', () => {
   });
 
   it('should submit form and redirect to signin with verificationPending when valid', async () => {
-    mockAuthSvc.signUp.mockResolvedValue({ first_name: 'John', email: 'test@example.com' });
+    mockAuthSvc.signUp.mockResolvedValue({
+      user: { first_name: 'John', email: 'test@example.com' },
+      approvalPending: false,
+    });
 
     const mockRouter = TestBed.inject(Router);
     const navigateSpy = vi.spyOn(mockRouter, 'navigate').mockResolvedValue(true as any);
@@ -86,8 +89,8 @@ describe('SignUpPage', () => {
     });
   });
 
-  it('should show error if signup returns falsy user', async () => {
-    mockAuthSvc.signUp.mockResolvedValue(null);
+  it('should show error if signup returns no user', async () => {
+    mockAuthSvc.signUp.mockResolvedValue({ user: null, approvalPending: false });
 
     component['signUpData'].set({
       organization: 'Acme Corp',
@@ -126,7 +129,10 @@ describe('SignUpPage', () => {
   });
 
   it('should redirect to signin with verificationPending on successful sign up', async () => {
-    mockAuthSvc.signUp.mockResolvedValue({ first_name: 'John', email: 'test@example.com' });
+    mockAuthSvc.signUp.mockResolvedValue({
+      user: { first_name: 'John', email: 'test@example.com' },
+      approvalPending: false,
+    });
 
     const mockRouter = TestBed.inject(Router);
     const navigateSpy = vi.spyOn(mockRouter, 'navigate').mockResolvedValue(true as any);
@@ -147,6 +153,33 @@ describe('SignUpPage', () => {
     expect(navigateSpy).toHaveBeenCalledWith(['/signin'], {
       queryParams: { verificationPending: 'true', email: 'test@example.com' },
     });
+  });
+
+  // Closed beta: signup succeeds but issues no session, so the page must route to the waitlist
+  // panel rather than treat "no user" as a failure.
+  it('should redirect to signin with approvalPending when the workspace awaits beta approval', async () => {
+    mockAuthSvc.signUp.mockResolvedValue({ user: null, approvalPending: true });
+
+    const mockRouter = TestBed.inject(Router);
+    const navigateSpy = vi.spyOn(mockRouter, 'navigate').mockResolvedValue(true as any);
+
+    component['signUpData'].set({
+      organization: 'Acme Corp',
+      email: 'test@example.com',
+      password: 'validPassword123',
+      first_name: 'John',
+      middle_names: '',
+      last_name: 'Doe',
+      terms: 'true',
+    });
+
+    fixture.detectChanges();
+    await component.join();
+
+    expect(navigateSpy).toHaveBeenCalledWith(['/signin'], {
+      queryParams: { approvalPending: 'true', email: 'test@example.com' },
+    });
+    expect(mockAlertSvc.showError).not.toHaveBeenCalled();
   });
 
   it('should call join only once on form submit via button click', async () => {

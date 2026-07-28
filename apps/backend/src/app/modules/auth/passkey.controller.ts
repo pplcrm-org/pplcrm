@@ -18,6 +18,7 @@ import { BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError } fro
 import { BaseRepository } from '../../lib/base.repo';
 import { consumeChallenge, storeChallenge } from '../../lib/webauthn-challenges';
 import { createTokens } from './auth-tokens';
+import { assertTenantApprovedForSignIn } from './tenant-approval';
 
 export class PasskeyController {
   private get db() {
@@ -204,6 +205,10 @@ export class PasskeyController {
 
     const tenantId = String(user.tenant_id);
     const userId = String(user.id);
+
+    // Closed beta: passkeys are a third way to mint a session, so the gate has to be here too
+    // or an unapproved workspace could simply register one and walk in.
+    await assertTenantApprovedForSignIn(tenantId);
 
     return createTokens({
       user_id: userId,

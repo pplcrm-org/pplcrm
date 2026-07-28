@@ -2,7 +2,7 @@ import { DecimalPipe } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { form, submit, required, email, minLength, FormField } from '@angular/forms/signals';
 import { Router, RouterModule } from '@angular/router';
-import { IAuthUser, signUpInputType } from '../../../../../../libs/common/src';
+import { signUpInputType } from '../../../../../../libs/common/src';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -72,9 +72,15 @@ export class SignUpPage {
       action: async () => {
         const end = this._loading.begin();
         try {
-          const data = await this.authService.signUp(this.signUpData() as signUpInputType);
-          const user = data as IAuthUser;
-          if (user) {
+          const { user, approvalPending } = await this.authService.signUp(this.signUpData() as signUpInputType);
+          if (approvalPending) {
+            // Closed beta: the workspace exists but has no session yet. Send them to sign-in
+            // with the waitlist panel rather than a toast that scrolls away, so the state is
+            // still on screen when they come back to try again.
+            await this.router.navigate(['/signin'], {
+              queryParams: { approvalPending: 'true', email: this.signUpData().email },
+            });
+          } else if (user) {
             await this.router.navigate(['/signin'], {
               queryParams: { verificationPending: 'true', email: user.email },
             });

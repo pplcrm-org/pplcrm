@@ -1,7 +1,11 @@
 import { Component, OnDestroy, OnInit, computed, effect, inject, signal } from '@angular/core';
 import { FormField, email, form, minLength, pattern, required, submit } from '@angular/forms/signals';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { GENERIC_SIGNIN_ERROR } from '../../../../../../libs/common/src';
+import {
+  GENERIC_SIGNIN_ERROR,
+  TENANT_PENDING_APPROVAL_MESSAGE,
+  TENANT_PENDING_APPROVAL_REASON,
+} from '../../../../../../libs/common/src';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -45,6 +49,9 @@ export class SignInPage implements OnInit, OnDestroy {
   protected readonly resendCooldownRemSecs = computed(() => this.resendCooldownSeconds() % 60);
   protected readonly settingUpPasskey = signal<boolean>(false);
   protected readonly verificationPending = signal<boolean>(false);
+  /** Closed beta: this workspace exists but has not been let in yet. */
+  protected readonly approvalPending = signal<boolean>(false);
+  protected readonly approvalPendingMessage = TENANT_PENDING_APPROVAL_MESSAGE;
 
   protected isLoading = this._loading.visible;
   protected persistence = signal(this.tokenService.getPersistence());
@@ -86,7 +93,16 @@ export class SignInPage implements OnInit, OnDestroy {
   public ngOnInit() {
     const params = this.route.snapshot.queryParamMap;
     const emailVal = params.get('email') || '';
-    if (params.get('emailChanged') === 'true' || params.get('verificationPending') === 'true') {
+    if (params.get('approvalPending') === 'true') {
+      // Arrived straight from signup: show the waitlist panel before they try a password that
+      // cannot work yet.
+      this.approvalPending.set(true);
+      this.pendingEmail.set(emailVal);
+      if (emailVal) {
+        this.emailForm.email().value.set(emailVal);
+        this.step.set('password');
+      }
+    } else if (params.get('emailChanged') === 'true' || params.get('verificationPending') === 'true') {
       this.verificationPending.set(true);
       this.pendingEmail.set(emailVal);
       if (emailVal) {
@@ -108,11 +124,24 @@ export class SignInPage implements OnInit, OnDestroy {
   public goBackToEmail() {
     this.step.set('email');
     this.verificationPending.set(false);
+    this.approvalPending.set(false);
     this.passwordData.update((p) => ({ ...p, password: '' }));
     this.otpData.update((o) => ({ ...o, code: '' }));
   }
 
   public usePasswordInstead() {
+    this.step.set('password');
+  }
+
+  /**
+   * Put the password form back after the beta-waitlist panel.
+   *
+   * The panel is also reachable from a bookmarked `?approvalPending=true` URL, so it would
+   * otherwise still be showing after the workspace was approved. If the tenant really is
+   * still waiting, the next attempt just raises the panel again.
+   */
+  public dismissApprovalNotice() {
+    this.approvalPending.set(false);
     this.step.set('password');
   }
 
@@ -371,6 +400,13 @@ export class SignInPage implements OnInit, OnDestroy {
       return;
     }
     const code = typeof tRPCData?.['code'] === 'string' ? tRPCData['code'] : undefined;
+    // Closed beta: the backend marks this 403 with a reason, so the panel is shown off a
+    // machine-readable flag rather than the message text.
+    if (tRPCData?.['reason'] === TENANT_PENDING_APPROVAL_REASON) {
+      this.approvalPending.set(true);
+      if (emailVal) this.pendingEmail.set(emailVal);
+      return;
+    }
     if (emailVal && message.toLowerCase().includes('not verified')) {
       this.verificationPending.set(true);
       this.pendingEmail.set(emailVal);
