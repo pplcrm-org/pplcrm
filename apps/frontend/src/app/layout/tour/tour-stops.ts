@@ -1,3 +1,5 @@
+import type { ModuleId } from '@common';
+
 /** Plan a stop needs, shown as a chip so the ceiling is honest rather than discovered later. */
 export type TourPlanChip = 'Grassroots' | 'Movement' | null;
 
@@ -5,6 +7,12 @@ export interface TourStop {
   id: string;
   /** Route the tour navigates to before showing the bubble. Null keeps the current page. */
   route: string | null;
+  /**
+   * Optional module this stop depends on. The stop is dropped when the workspace has that module
+   * turned off (ORG_MODE_MODULE_DEFAULTS + the user's overrides) — otherwise the tour navigates to
+   * a page the sidebar deliberately hides and spotlights an anchor that is not rendered.
+   */
+  moduleId?: ModuleId;
   /**
    * Id of the element to spotlight, matched by `pcTourAnchor`. Null renders the bubble centred,
    * which is what the opening and closing stops want.
@@ -34,9 +42,12 @@ export const TOUR_STOPS: readonly TourStop[] = [
     anchor: null,
     title: 'Take a two-minute look around',
     body:
+      // Deliberately does not enumerate the field data: which sections exist depends on the
+      // workspace's organization mode, and a welcome that promises turfs to a congregation is
+      // wrong on the first screen.
       'Your workspace is loaded with realistic sample data: people and households across Ottawa, a sent ' +
-      'newsletter with its full report, canvassing turfs, and three demo teammates. Everything here is safe ' +
-      'to open, edit, and delete.',
+      'newsletter with its full report, and three demo teammates. Everything here is safe to open, edit, ' +
+      'and delete.',
     planChip: null,
   },
   {
@@ -87,6 +98,7 @@ export const TOUR_STOPS: readonly TourStop[] = [
   {
     id: 'canvassing',
     route: '/canvassing',
+    moduleId: 'canvassing',
     anchor: 'nav-canvassing',
     title: 'The part a generic CRM cannot do',
     body:

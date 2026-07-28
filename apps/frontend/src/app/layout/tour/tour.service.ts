@@ -2,6 +2,7 @@ import { Service, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
 import { AuthService } from '../../auth/auth-service';
+import { OrgModeService } from '../../services/org-mode.service';
 import { TRPCService } from '../../services/api/trpc-service';
 import { TOUR_STOPS, type TourStop } from './tour-stops';
 
@@ -29,6 +30,7 @@ const MIN_TOUR_WIDTH = 640;
 export class TourService extends TRPCService<any> {
   private readonly auth = inject(AuthService);
   private readonly appRouter = inject(Router);
+  private readonly orgMode = inject(OrgModeService);
 
   private readonly user = this.auth.getUserSignal();
 
@@ -39,9 +41,19 @@ export class TourService extends TRPCService<any> {
 
   public readonly active = this._active.asReadonly();
   public readonly index = this._index.asReadonly();
-  public readonly stops = TOUR_STOPS;
-  public readonly stop = computed<TourStop | null>(() => TOUR_STOPS[this._index()] ?? null);
-  public readonly isLast = computed(() => this._index() === TOUR_STOPS.length - 1);
+  /**
+   * The stops this workspace can actually be shown, in order.
+   *
+   * A stop tied to a module the workspace has turned off is dropped rather than skipped at
+   * runtime: it would otherwise navigate to a page the sidebar hides and spotlight an anchor that
+   * was never rendered, leaving the bubble floating over nothing. Filtering here also keeps
+   * "Stop 3 of 6" honest.
+   */
+  public readonly stops = computed<readonly TourStop[]>(() =>
+    TOUR_STOPS.filter((stop) => !stop.moduleId || this.orgMode.enabledModules().has(stop.moduleId)),
+  );
+  public readonly stop = computed<TourStop | null>(() => this.stops()[this._index()] ?? null);
+  public readonly isLast = computed(() => this._index() === this.stops().length - 1);
 
   /** Anchor id of the stop being shown, so the directive knows which element to spotlight. */
   public readonly activeAnchor = computed(() => (this._active() ? (this.stop()?.anchor ?? null) : null));
@@ -93,7 +105,7 @@ export class TourService extends TRPCService<any> {
 
   public async start(fromBeginning = false): Promise<void> {
     await this.load();
-    const resumeAt = fromBeginning ? 0 : Math.min(this._state().lastStep, TOUR_STOPS.length - 1);
+    const resumeAt = fromBeginning ? 0 : Math.min(this._state().lastStep, this.stops().length - 1);
     this._index.set(resumeAt);
     this._active.set(true);
     await this.persist({ startedAt: this._state().startedAt ?? new Date().toISOString() });
@@ -118,7 +130,7 @@ export class TourService extends TRPCService<any> {
   }
 
   public async goTo(index: number): Promise<void> {
-    if (index < 0 || index >= TOUR_STOPS.length) return;
+    if (index < 0 || index >= this.stops().length) return;
     this._index.set(index);
     await this.persist({ lastStep: index });
     await this.navigateToStop();
@@ -132,7 +144,7 @@ export class TourService extends TRPCService<any> {
 
   public async complete(): Promise<void> {
     this._active.set(false);
-    await this.persist({ completedAt: new Date().toISOString(), lastStep: TOUR_STOPS.length - 1 });
+    await this.persist({ completedAt: new Date().toISOString(), lastStep: this.stops().length - 1 });
   }
 
   private async navigateToStop(): Promise<void> {

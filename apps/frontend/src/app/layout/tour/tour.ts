@@ -28,7 +28,7 @@ import { TourService } from './tour.service';
         [attr.aria-label]="stop.title"
       >
         <div class="flex items-start justify-between gap-3">
-          <p class="pc-eyebrow text-primary">Stop {{ tour.index() + 1 }} of {{ tour.stops.length }}</p>
+          <p class="pc-eyebrow text-primary">Stop {{ tour.index() + 1 }} of {{ tour.stops().length }}</p>
           @if (stop.planChip) {
             <span class="badge badge-warning badge-sm shrink-0 font-semibold">{{ stop.planChip }}</span>
           }
@@ -45,7 +45,7 @@ import { TourService } from './tour.service';
 
         <div class="mt-3.5 flex items-center justify-between gap-3 border-t border-base-200 pt-3">
           <div class="flex items-center gap-1" role="presentation">
-            @for (s of tour.stops; track s.id; let i = $index) {
+            @for (s of tour.stops(); track s.id; let i = $index) {
               <button
                 type="button"
                 class="pc-tour-pip cursor-pointer"

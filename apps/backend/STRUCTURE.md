@@ -212,6 +212,8 @@ apps/
             trpc.router.ts
           demo/
             controller.ts
+            demo-data-types.ts
+            demo-datasets.ts
             demo-guard.ts
             demo-seed-data.ts
             demo-seed.ts

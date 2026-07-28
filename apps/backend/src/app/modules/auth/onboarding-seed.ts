@@ -3,7 +3,7 @@ import type { Models } from '../../../../../../libs/common/src/lib/kysely.models
 import {
   DEFAULT_ORG_MODE,
   FORM_TEMPLATES,
-  ORG_MODE_SEEDS_DEMO,
+  ORG_MODE_IS_ELECTORAL,
   fieldsForTemplate,
 } from '../../../../../../libs/common/src';
 import type { FormType, OrgMode } from '../../../../../../libs/common/src';
@@ -47,9 +47,10 @@ export const SHARED_STARTER_TAGS: StarterTagDef[] = [
 ];
 
 /**
- * Starter tags that only make sense for an electoral organization. Seeded exactly when
- * the demo dataset is (see ORG_MODE_SEEDS_DEMO) — demo-seed-data.ts attaches demo
- * households to 'lawn sign location' BY NAME, so the two must never diverge.
+ * Starter tags that only make sense for an electoral organization (see ORG_MODE_IS_ELECTORAL).
+ * The electoral demo dataset attaches demo households to 'lawn sign location' BY NAME, so any
+ * mode whose dataset references these tags must also be electoral — `demo-datasets.spec.ts`
+ * checks exactly that.
  */
 export const CAMPAIGN_STARTER_TAGS: StarterTagDef[] = [
   { name: 'new to riding', description: 'Moved into the riding within the last year.', color: '#06b6d4' },
@@ -140,16 +141,27 @@ export const MODE_ISSUES: Record<OrgMode, StarterTagDef[]> = {
   ],
 };
 
+/**
+ * Every starter tag a mode's signup creates, in seeding order.
+ *
+ * Exported so `demo-datasets.spec.ts` can check a dataset's tag references against the REAL list
+ * rather than re-deriving it — a re-derived copy silently stops testing anything the day this
+ * composition changes.
+ */
+export function starterTagsFor(mode: OrgMode): StarterTagDef[] {
+  return [
+    ...SHARED_STARTER_TAGS,
+    ...(ORG_MODE_IS_ELECTORAL[mode] ? CAMPAIGN_STARTER_TAGS : []),
+    ...MODE_EXTRA_TAGS[mode],
+  ];
+}
+
 export async function seedStarterTags(
   params: { tenant_id: string; user_id: string; mode?: OrgMode },
   trx: Transaction<Models>,
 ): Promise<void> {
   const mode = params.mode ?? DEFAULT_ORG_MODE;
-  const tags = [
-    ...SHARED_STARTER_TAGS,
-    ...(ORG_MODE_SEEDS_DEMO[mode] ? CAMPAIGN_STARTER_TAGS : []),
-    ...MODE_EXTRA_TAGS[mode],
-  ];
+  const tags = starterTagsFor(mode);
   const audit = { tenant_id: params.tenant_id, createdby_id: params.user_id, updatedby_id: params.user_id };
   await trx
     .insertInto('tags')
@@ -218,6 +230,115 @@ export const MODE_STARTER_FORMS: Record<OrgMode, StarterFormDef[]> = {
  * Returns the created ids + slugs so the demo seeder can attach sample
  * submissions to two of them.
  */
+/** The starter forms every organization gets, whatever it organizes. */
+export const UNIVERSAL_STARTER_FORMS: StarterFormDef[] = [
+  {
+    key: 'signup',
+    formType: 'standard',
+    name: 'Volunteer sign-up',
+    slug: 'volunteer-signup',
+    description: 'Volunteer sign-up form for your website. Customize the fields, then publish to get a public link.',
+    submitLabel: FORM_TEMPLATES.signup.submitLabel,
+    thanksBody: 'You’re signed up — we’ll be in touch soon.',
+    confirmSubject: 'Thanks for signing up',
+    confirmBody: 'Hi [First name],\n\nThanks for signing up to volunteer — we’ll be in touch soon.',
+  },
+  {
+    key: 'signup',
+    formType: 'standard',
+    name: 'Newsletter sign-up',
+    slug: 'newsletter-sign-up',
+    description: 'Sign-up form for your email newsletter. Customize the fields, then publish to get a public link.',
+    submitLabel: FORM_TEMPLATES.signup.submitLabel,
+    thanksBody: 'You’re on the list — thanks for signing up.',
+    confirmSubject: 'Thanks for signing up',
+    confirmBody: 'Hi [First name],\n\nThanks for signing up — we’ll be in touch soon.',
+  },
+  {
+    key: 'pledge',
+    formType: 'recurring_donation',
+    name: 'Recurring donation',
+    slug: 'recurring-donation',
+    description: 'Monthly-giving form. Customize the fields, then publish to start accepting recurring gifts.',
+    submitLabel: 'Set up recurring gift',
+    thanksBody: 'Your recurring gift means a lot to us.',
+    confirmSubject: 'Thanks for your recurring gift',
+    confirmBody: 'Hi [First name],\n\nThanks for setting up a recurring gift — we’ll send a receipt each month.',
+  },
+  {
+    key: 'pledge',
+    formType: 'donation',
+    name: 'One-time donation',
+    slug: 'one-time-donation',
+    description: 'One-time donation form. Customize the fields, then publish to start accepting gifts.',
+    submitLabel: 'Give now',
+    thanksBody: 'Your gift means a lot to us.',
+    confirmSubject: 'Thanks for your gift',
+    confirmBody: 'Hi [First name],\n\nThanks for your gift — a receipt is on its way.',
+  },
+  {
+    key: 'pledge',
+    formType: 'standard',
+    name: 'Fundraising pledge',
+    slug: 'fundraising-pledge',
+    description:
+      'Collect pledges of support from your website. Responses become people you can follow up with — no payment is taken here (use the Fundraising donation pages for card gifts).',
+    submitLabel: FORM_TEMPLATES.pledge.submitLabel,
+    thanksBody: 'Thank you for pledging your support — we’ll be in touch about next steps.',
+    confirmSubject: 'Thanks for your pledge',
+    confirmBody: 'Hi [First name],\n\nThank you for pledging your support — we’ll be in touch about next steps soon.',
+  },
+];
+
+/**
+ * Electoral-only starters (see ORG_MODE_IS_ELECTORAL). The electoral demo dataset attaches sample
+ * submissions to 'issues-survey' BY SLUG and demo-seed.ts silently skips a slug it cannot find,
+ * so a dataset referencing these must belong to an electoral mode.
+ */
+export const ELECTORAL_STARTER_FORMS: StarterFormDef[] = [
+  {
+    key: 'request',
+    formType: 'standard',
+    name: 'Yard sign request',
+    slug: 'yard-sign-request',
+    description: 'Yard sign request form for your website. Requests feed the Deliveries page for route planning.',
+    submitLabel: FORM_TEMPLATES.request.submitLabel,
+    thanksBody: 'We’ll deliver your yard sign soon.',
+    confirmSubject: 'Your yard sign request',
+    confirmBody: 'Hi [First name],\n\nThanks for your request — a volunteer will drop off your sign soon.',
+  },
+  {
+    key: 'survey',
+    formType: 'standard',
+    name: 'Issues survey',
+    slug: 'issues-survey',
+    description: 'Issues survey for your website. Answers help you rank what your community cares about.',
+    submitLabel: FORM_TEMPLATES.survey.submitLabel,
+    thanksBody: 'Thanks for sharing your priorities with us.',
+    confirmSubject: 'Thanks for your input',
+    confirmBody: 'Hi [First name],\n\nThanks for filling out our survey — your input helps shape our priorities.',
+  },
+];
+
+/**
+ * Every starter form a mode's signup creates. Exported for the same reason as
+ * {@link starterTagsFor}: the dataset spec checks the real list, not a re-derived one.
+ */
+export function starterFormsFor(mode: OrgMode): StarterFormDef[] {
+  return [
+    ...UNIVERSAL_STARTER_FORMS,
+    ...(ORG_MODE_IS_ELECTORAL[mode] ? ELECTORAL_STARTER_FORMS : []),
+    ...MODE_STARTER_FORMS[mode],
+  ];
+}
+
+/**
+ * Creates the starter web forms (all drafts) for a new tenant. These are deliberately separate
+ * from the demo dataset (modules/demo/demo-seed.ts): exiting demo mode deletes the demo data but
+ * keeps these forms — a ready-made starting point the user publishes when they're ready.
+ *
+ * Returns the created ids + slugs so the demo seeder can attach sample submissions to them.
+ */
 export async function seedStarterForms(
   params: {
     tenant_id: string;
@@ -229,98 +350,7 @@ export async function seedStarterForms(
 ): Promise<{ id: string; slug: string }[]> {
   const { tenant_id, user_id } = params;
   const campaign_id = String(params.campaign_id);
-  const mode = params.mode ?? DEFAULT_ORG_MODE;
-
-  const starterForms: StarterFormDef[] = [
-    {
-      key: 'signup',
-      formType: 'standard',
-      name: 'Volunteer sign-up',
-      slug: 'volunteer-signup',
-      description: 'Volunteer sign-up form for your website. Customize the fields, then publish to get a public link.',
-      submitLabel: FORM_TEMPLATES.signup.submitLabel,
-      thanksBody: 'You’re signed up — we’ll be in touch soon.',
-      confirmSubject: 'Thanks for signing up',
-      confirmBody: 'Hi [First name],\n\nThanks for signing up to volunteer — we’ll be in touch soon.',
-    },
-    {
-      key: 'signup',
-      formType: 'standard',
-      name: 'Newsletter sign-up',
-      slug: 'newsletter-sign-up',
-      description: 'Sign-up form for your email newsletter. Customize the fields, then publish to get a public link.',
-      submitLabel: FORM_TEMPLATES.signup.submitLabel,
-      thanksBody: 'You’re on the list — thanks for signing up.',
-      confirmSubject: 'Thanks for signing up',
-      confirmBody: 'Hi [First name],\n\nThanks for signing up — we’ll be in touch soon.',
-    },
-    {
-      key: 'pledge',
-      formType: 'recurring_donation',
-      name: 'Recurring donation',
-      slug: 'recurring-donation',
-      description: 'Monthly-giving form. Customize the fields, then publish to start accepting recurring gifts.',
-      submitLabel: 'Set up recurring gift',
-      thanksBody: 'Your recurring gift means a lot to us.',
-      confirmSubject: 'Thanks for your recurring gift',
-      confirmBody: 'Hi [First name],\n\nThanks for setting up a recurring gift — we’ll send a receipt each month.',
-    },
-    {
-      key: 'pledge',
-      formType: 'donation',
-      name: 'One-time donation',
-      slug: 'one-time-donation',
-      description: 'One-time donation form. Customize the fields, then publish to start accepting gifts.',
-      submitLabel: 'Give now',
-      thanksBody: 'Your gift means a lot to us.',
-      confirmSubject: 'Thanks for your gift',
-      confirmBody: 'Hi [First name],\n\nThanks for your gift — a receipt is on its way.',
-    },
-    {
-      key: 'pledge',
-      formType: 'standard',
-      name: 'Fundraising pledge',
-      slug: 'fundraising-pledge',
-      description:
-        'Collect pledges of support from your website. Responses become people you can follow up with — no payment is taken here (use the Fundraising donation pages for card gifts).',
-      submitLabel: FORM_TEMPLATES.pledge.submitLabel,
-      thanksBody: 'Thank you for pledging your support — we’ll be in touch about next steps.',
-      confirmSubject: 'Thanks for your pledge',
-      confirmBody: 'Hi [First name],\n\nThank you for pledging your support — we’ll be in touch about next steps soon.',
-    },
-    // The two campaign-shaped starters. Gated on the same flag as the demo dataset:
-    // demo-seed.ts attaches sample submissions to 'issues-survey' BY SLUG and silently
-    // skips a slug it cannot find, so seeding them apart would fail quietly.
-    ...(ORG_MODE_SEEDS_DEMO[mode]
-      ? ([
-          {
-            key: 'request' as const,
-            formType: 'standard' as const,
-            name: 'Yard sign request',
-            slug: 'yard-sign-request',
-            description:
-              'Yard sign request form for your website. Requests feed the Deliveries page for route planning.',
-            submitLabel: FORM_TEMPLATES.request.submitLabel,
-            thanksBody: 'We’ll deliver your yard sign soon.',
-            confirmSubject: 'Your yard sign request',
-            confirmBody: 'Hi [First name],\n\nThanks for your request — a volunteer will drop off your sign soon.',
-          },
-          {
-            key: 'survey' as const,
-            formType: 'standard' as const,
-            name: 'Issues survey',
-            slug: 'issues-survey',
-            description: 'Issues survey for your website. Answers help you rank what your community cares about.',
-            submitLabel: FORM_TEMPLATES.survey.submitLabel,
-            thanksBody: 'Thanks for sharing your priorities with us.',
-            confirmSubject: 'Thanks for your input',
-            confirmBody:
-              'Hi [First name],\n\nThanks for filling out our survey — your input helps shape our priorities.',
-          },
-        ] as const)
-      : []),
-    ...MODE_STARTER_FORMS[mode],
-  ];
+  const starterForms = starterFormsFor(params.mode ?? DEFAULT_ORG_MODE);
 
   const created = await trx
     .insertInto('web_forms')

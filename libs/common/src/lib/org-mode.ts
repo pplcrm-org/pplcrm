@@ -156,30 +156,34 @@ export function parseModuleOverrides(value: unknown): Partial<Record<ModuleId, b
 }
 
 /**
- * Whether a mode's signup seeds the campaign-flavoured starter vocabulary and the
- * demo dataset.
+ * Whether a mode runs elections — the only thing that justifies the campaign-flavoured starter
+ * vocabulary ("new to riding", "lawn sign location", the yard-sign request and issues-survey
+ * forms).
  *
- * One flag for both, deliberately: `demo-seed-data.ts` attaches its demo people to
- * starter tags BY NAME and its sample submissions to starter forms BY SLUG (and
- * `demo-seed.ts` silently skips a slug it can't match). Gating both on the same
- * boolean makes that coupling correct by construction rather than by convention.
+ * Kept apart from ORG_MODE_SEEDS_DEMO below on purpose. The two used to be one flag, which was
+ * fine while only electoral modes had a demo dataset; once a church seeds a demo workspace, one
+ * flag would hand it lawn-sign tags. What each mode CAN organize and whether it happens to have
+ * sample data are unrelated questions.
+ */
+export const ORG_MODE_IS_ELECTORAL: Record<OrgMode, boolean> = {
+  office: true,
+  campaign: true,
+  nonprofit: false,
+  church: false,
+};
+
+/**
+ * Whether a mode's signup seeds a demo dataset.
  *
- * INTENDED END STATE: every mode seeds a demo dataset, so this table goes all-true and
- * then stops earning its keep as a flag. The marketing site and the help centre already
- * state the universal claim ("Every new workspace starts in demo mode"), so the copy is
- * waiting on the code, not the reverse.
+ * Mirrors `DEMO_DATASETS` in `apps/backend/src/app/modules/demo/demo-datasets.ts`, which is the
+ * real registry; this copy exists because the frontend (the tour) needs the answer and cannot
+ * import backend code. `demo-datasets.spec.ts` asserts the two agree, so a mode gaining a dataset
+ * without gaining its tour — or the reverse — fails a test rather than shipping.
  *
- * It is NOT all-true yet because there is only one dataset and it is a fictional
- * municipal campaign: riding-association notes, lawn-sign tags, ward-bounded turfs, an
- * issues survey. Seeding that into a church workspace would contradict the very
- * vocabulary ORG_MODE_TERMS exists to set. Flipping a mode to `true` therefore requires,
- * together:
- *   1. a mode-appropriate dataset in `modules/demo/`, whose tags/issues/form slugs are all
- *      seeded for that mode (see the onboarding-seed spec — the seeder skips misses SILENTLY);
- *   2. the campaign-only starter tags/forms decoupled from this flag, or the new dataset
- *      written to need them;
- *   3. tour stops that hold up (`tour-stops.ts` navigates to /canvassing and anchors
- *      `nav-canvassing`, which nonprofit and church mode hide by default).
+ * INTENDED END STATE: all four true. The marketing site and help centre already state the
+ * universal claim ("Every new workspace starts in demo mode"), so the copy is waiting on the
+ * code. nonprofit and church are false only because their datasets are not written yet — not
+ * because they should start empty.
  */
 export const ORG_MODE_SEEDS_DEMO: Record<OrgMode, boolean> = {
   office: true,

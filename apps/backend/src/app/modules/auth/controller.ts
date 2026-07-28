@@ -4,7 +4,6 @@ import type { QueryResult, Transaction } from 'kysely';
 import {
   DEFAULT_ORG_MODE,
   MODULE_VISIBILITY_SETTINGS_KEY,
-  ORG_MODE_SEEDS_DEMO,
   ORG_MODE_SETTINGS_KEY,
   RESERVED_SUBDOMAINS,
   hasSettledPlan,
@@ -80,6 +79,7 @@ import {
 import { ensureSystemLists, queueSystemListRefreshes } from '../lists/system-lists';
 import { DEMO_MODE_INVITES_BLOCKED_MESSAGE, assertNotDemoMode } from '../demo/demo-guard';
 import { seedDemoData } from '../demo/demo-seed';
+import { demoDatasetFor } from '../demo/demo-datasets';
 import { AuthUsersRepo } from './repositories/authusers.repo';
 import { SessionsRepo } from './repositories/sessions.repo';
 import { TenantsRepo } from './repositories/tenants.repo';
@@ -1622,11 +1622,11 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         // Built-in lists (§8) — product-owned, so they are seeded here rather
         // than with the demo data and survive exiting demo mode.
         await ensureSystemLists({ tenant_id, user_id: userId, campaign_id: String(campaign.id) }, trx);
-        // The demo dataset is a fictional municipal campaign, so it is only seeded for the
-        // modes whose starter vocabulary it matches (it attaches to those tags by name and
-        // those forms by slug). Other modes start clean — `demo_mode_at` stays null, which
-        // is already what GoLiveService.demoDone reads.
-        if (ORG_MODE_SEEDS_DEMO[orgMode]) {
+        // Each mode gets the demo workspace written for it (demo-datasets.ts). A mode with no
+        // dataset yet starts clean — `demo_mode_at` stays null, which is already what
+        // GoLiveService.demoDone reads.
+        const demoDataset = demoDatasetFor(orgMode);
+        if (demoDataset) {
           await seedDemoData(
             {
               tenant_id,
@@ -1634,6 +1634,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
               campaign_id: String(campaign.id),
               placeholder_household_id: String(placeholderHousehold.id),
               forms: starterForms,
+              dataset: demoDataset,
             },
             trx,
           );

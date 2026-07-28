@@ -10,6 +10,7 @@ import { assertNotDemoMode } from './demo-guard';
 import { DEMO_MANIFEST_SETTINGS_KEY, deleteDemoData, seedDemoData } from './demo-seed';
 import type { DemoSeedManifest } from './demo-seed';
 import {
+  CAMPAIGN_DEMO_DATASET,
   DEMO_COMPANIES,
   DEMO_DELIVERY_REQUESTS,
   DEMO_DELIVERY_ROUTES,
@@ -101,7 +102,12 @@ describe('demo seeding and exit-demo', () => {
     // Mirrors signup: the built-in lists (§8) are seeded alongside the starter
     // data, not with the demo dataset, which is why they survive exit-demo.
     await ensureSystemLists({ tenant_id, user_id, campaign_id }, trx);
-    const manifest = await seedDemoData({ tenant_id, user_id, campaign_id, placeholder_household_id, forms }, trx);
+    // The electoral dataset specifically: this suite asserts against its turfs, deliveries and
+    // lawn-sign tags, none of which every mode's dataset has.
+    const manifest = await seedDemoData(
+      { tenant_id, user_id, campaign_id, placeholder_household_id, forms, dataset: CAMPAIGN_DEMO_DATASET },
+      trx,
+    );
     return { tenant_id, user_id, campaign_id, placeholder_household_id, forms, manifest };
   }
 

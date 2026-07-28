@@ -4,6 +4,8 @@ import { provideRouter } from '@angular/router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthService } from '../../auth/auth-service';
+import { OrgModeService } from '../../services/org-mode.service';
+import type { ModuleId } from '@common';
 import { TOUR_STOPS } from './tour-stops';
 import { TourService } from './tour.service';
 
@@ -12,6 +14,7 @@ describe('TourService', () => {
   let service: TourService;
   let getState: ReturnType<typeof vi.fn>;
   let setState: ReturnType<typeof vi.fn>;
+  let enabledModules: ReturnType<typeof signal<ReadonlySet<ModuleId>>>;
 
   const build = (): TourService => {
     // Reset first: several tests re-build with different stored state, and TestBed refuses to be
@@ -25,6 +28,7 @@ describe('TourService', () => {
           ['dashboard', 'people', 'lists', 'newsletters', 'canvassing'].map((path) => ({ path, children: [] })),
         ),
         { provide: AuthService, useValue: { getUserSignal: () => user } },
+        { provide: OrgModeService, useValue: { enabledModules } },
       ],
     });
     const svc = TestBed.inject(TourService);
@@ -39,6 +43,9 @@ describe('TourService', () => {
     user = signal<Record<string, unknown> | null>({ tenant_demo_mode_at: new Date(), role: 'admin' });
     getState = vi.fn().mockResolvedValue({ lastStep: 0, startedAt: null, completedAt: null, dismissedAt: null });
     setState = vi.fn().mockResolvedValue({});
+    enabledModules = signal<ReadonlySet<ModuleId>>(
+      new Set<ModuleId>(['canvassing', 'deliveries', 'donations', 'volunteerAccess']),
+    );
     vi.stubGlobal('innerWidth', 1280);
     service = build();
   });
@@ -167,5 +174,35 @@ describe('TourService', () => {
     await expect(service.maybeAutoStart()).resolves.toBeUndefined();
     expect(service.active()).toBe(true);
     await expect(service.next()).resolves.toBeUndefined();
+  });
+
+  /**
+   * Nonprofit and church workspaces hide canvassing by default (ORG_MODE_MODULE_DEFAULTS). Left
+   * unfiltered the tour would navigate them to /canvassing and spotlight `nav-canvassing`, an
+   * anchor the sidebar never renders — a bubble pointing at nothing, on a page the workspace has
+   * deliberately turned off.
+   */
+  describe('module-aware stops', () => {
+    it('drops a stop whose module the workspace has turned off', () => {
+      expect(service.stops().some((s) => s.id === 'canvassing')).toBe(true);
+
+      enabledModules.set(new Set<ModuleId>(['donations', 'volunteerAccess']));
+
+      expect(service.stops().some((s) => s.id === 'canvassing')).toBe(false);
+      expect(service.stops().length).toBe(TOUR_STOPS.length - 1);
+    });
+
+    it('keeps every module-free stop whatever is turned off', () => {
+      enabledModules.set(new Set<ModuleId>());
+      const universal = TOUR_STOPS.filter((s) => !s.moduleId).map((s) => s.id);
+      expect(service.stops().map((s) => s.id)).toEqual(universal);
+    });
+
+    it('reports the last stop against the filtered list', async () => {
+      enabledModules.set(new Set<ModuleId>());
+      await service.start();
+      await service.goTo(service.stops().length - 1);
+      expect(service.isLast()).toBe(true);
+    });
   });
 });

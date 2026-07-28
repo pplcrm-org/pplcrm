@@ -11,29 +11,7 @@ import type { LatLng } from '../../lib/routing/geo';
 import { SERVICE_MINUTES_PER_STOP, SHARE_TOKEN_TTL_DAYS } from '../../lib/routing/route-constants';
 import { backfillMissingSlugs } from '../../lib/slug';
 import { DuplicateMaintenanceService } from '../persons/services/duplicate-maintenance.service';
-import {
-  DEMO_CITY,
-  DEMO_COMPANIES,
-  DEMO_COUNTRY,
-  DEMO_DELIVERY_REQUESTS,
-  DEMO_DELIVERY_ROUTES,
-  DEMO_DONATIONS,
-  DEMO_EMAILS,
-  DEMO_HOUSEHOLDS,
-  DEMO_ISSUE_ASSIGNMENTS,
-  DEMO_LISTS,
-  DEMO_NEWSLETTERS,
-  DEMO_PERSONS,
-  DEMO_PLEDGES,
-  DEMO_STATE,
-  DEMO_SUBMISSIONS,
-  DEMO_TASKS,
-  DEMO_TEAM,
-  DEMO_TURFS,
-  DEMO_USERS,
-  DEMO_VOLUNTEER_EVENTS,
-} from './demo-seed-data';
-import type { DemoEngagementDef, DemoNewsletterDef } from './demo-seed-data';
+import type { DemoDataset, DemoEngagementDef, DemoNewsletterDef } from './demo-data-types';
 
 /**
  * Everything `seedDemoData` created, keyed by table — stored as a `settings`
@@ -93,6 +71,12 @@ interface SeedParams {
   placeholder_household_id: string;
   /** The starter forms created by seedStarterForms — submissions attach to two of them. */
   forms: { id: string; slug: string }[];
+  /**
+   * The demo workspace to seed, chosen by organization mode (see `demo-datasets.ts`). The seeder
+   * is deliberately dataset-agnostic: everything vertical-specific lives in the data, so a mode
+   * whose story has no doors simply arrives with `turfs: []`.
+   */
+  dataset: DemoDataset;
 }
 
 /**
@@ -104,7 +88,7 @@ interface SeedParams {
  * geocode_household jobs are enqueued and no Google API calls happen at signup.
  */
 export async function seedDemoData(params: SeedParams, trx: Transaction<Models>): Promise<DemoSeedManifest> {
-  const { tenant_id, user_id, campaign_id, placeholder_household_id } = params;
+  const { tenant_id, user_id, campaign_id, placeholder_household_id, dataset } = params;
   const audit = { tenant_id, createdby_id: user_id, updatedby_id: user_id };
 
   // ── Demo teammates (real authusers so Users/assignment/inbox look staffed;
@@ -117,7 +101,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   const userRows = await trx
     .insertInto('authusers')
     .values(
-      DEMO_USERS.map((u) => ({
+      dataset.users.map((u) => ({
         ...audit,
         email: `${u.emailLocal}@${demoEmailDomain}`,
         first_name: u.first_name,
@@ -139,7 +123,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     )
     .returning('id')
     .execute();
-  const userIdByKey = new Map(DEMO_USERS.map((u, i) => [u.key, String(userRows[i]?.id)]));
+  const userIdByKey = new Map(dataset.users.map((u, i) => [u.key, String(userRows[i]?.id)]));
   // Mirrors AuthController.createProfile: profile id == authuser id.
   await trx
     .insertInto('profiles')
@@ -158,7 +142,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   const companyRows = await trx
     .insertInto('companies')
     .values(
-      DEMO_COMPANIES.map((c) => ({
+      dataset.companies.map((c) => ({
         ...audit,
         name: c.name,
         description: c.description,
@@ -170,20 +154,20 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     )
     .returning('id')
     .execute();
-  const companyIdByKey = new Map(DEMO_COMPANIES.map((c, i) => [c.key, String(companyRows[i]?.id)]));
+  const companyIdByKey = new Map(dataset.companies.map((c, i) => [c.key, String(companyRows[i]?.id)]));
 
   // ── Households (geocode pre-baked: success + lat/lng + ward) ─────────────
   const householdRows = await trx
     .insertInto('households')
     .values(
-      DEMO_HOUSEHOLDS.map((h) => {
+      dataset.households.map((h) => {
         const address = {
           street_num: h.street_num,
           street1: h.street1,
-          city: DEMO_CITY,
-          state: DEMO_STATE,
+          city: dataset.city,
+          state: dataset.state,
           zip: h.zip,
-          country: DEMO_COUNTRY,
+          country: dataset.country,
         };
         return {
           ...audit,
@@ -194,7 +178,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
           lat: h.lat,
           lng: h.lng,
           ward: h.ward,
-          formatted_address: `${h.street_num} ${h.street1}, ${DEMO_CITY}, ${DEMO_STATE} ${h.zip}, ${DEMO_COUNTRY}`,
+          formatted_address: `${h.street_num} ${h.street1}, ${dataset.city}, ${dataset.state} ${h.zip}, ${dataset.country}`,
           geocoding_status: 'success',
           address_fp_street: fingerprintStreet(address),
           address_fp_full: fingerprintFull(address),
@@ -203,13 +187,13 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     )
     .returning('id')
     .execute();
-  const householdIdByKey = new Map(DEMO_HOUSEHOLDS.map((h, i) => [h.key, String(householdRows[i]?.id)]));
+  const householdIdByKey = new Map(dataset.households.map((h, i) => [h.key, String(householdRows[i]?.id)]));
 
   // ── Persons (created_at staggered so the dashboard growth chart is real) ──
   const personRows = await trx
     .insertInto('persons')
     .values(
-      DEMO_PERSONS.map((p) => ({
+      dataset.persons.map((p) => ({
         ...audit,
         campaign_id,
         household_id: p.household ? householdIdByKey.get(p.household) : placeholder_household_id,
@@ -227,8 +211,8 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     )
     .returning('id')
     .execute();
-  const personIdByKey = new Map(DEMO_PERSONS.map((p, i) => [p.key, String(personRows[i]?.id)]));
-  const personByKey = new Map(DEMO_PERSONS.map((p) => [p.key, p]));
+  const personIdByKey = new Map(dataset.persons.map((p, i) => [p.key, String(personRows[i]?.id)]));
+  const personByKey = new Map(dataset.persons.map((p) => [p.key, p]));
 
   await backfillPersonPublicIds(trx, tenant_id);
   await backfillMissingSlugs(trx, 'households', tenant_id);
@@ -241,7 +225,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   const allTags = await trx.selectFrom('tags').select(['id', 'name']).where('tenant_id', '=', tenant_id).execute();
   const tagIdByName = new Map(allTags.map((t) => [t.name, String(t.id)]));
 
-  const personTagRows = DEMO_PERSONS.flatMap((p) =>
+  const personTagRows = dataset.persons.flatMap((p) =>
     (p.tags ?? []).flatMap((tagName) => {
       const tag_id = tagIdByName.get(tagName);
       const person_id = personIdByKey.get(p.key);
@@ -252,7 +236,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     await trx.insertInto('map_peoples_tags').values(personTagRows).execute();
   }
 
-  const householdTagRows = DEMO_HOUSEHOLDS.flatMap((h) =>
+  const householdTagRows = dataset.households.flatMap((h) =>
     (h.tags ?? []).flatMap((tagName) => {
       const tag_id = tagIdByName.get(tagName);
       const household_id = householdIdByKey.get(h.key);
@@ -264,7 +248,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   }
 
   // ── Issue assignments (starter issues live in the tags table, type 'issue') ─
-  const issueAssignmentRows = DEMO_ISSUE_ASSIGNMENTS.flatMap((assignment) =>
+  const issueAssignmentRows = dataset.issueAssignments.flatMap((assignment) =>
     assignment.people.flatMap((personKey) => {
       const person_id = personIdByKey.get(personKey);
       const tag_id = tagIdByName.get(assignment.issue);
@@ -276,32 +260,36 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   }
 
   // ── Campaign-scoped facts + newsletter consent (Campaigns §15) ────────────
-  const factRows = DEMO_PERSONS.filter((p) => p.supportLevel || p.votingStatus).map((p) => ({
-    ...audit,
-    campaign_id,
-    person_id: personIdByKey.get(p.key) as string,
-    support_level: p.supportLevel ?? null,
-    support_source: p.supportLevel ? 'import' : null,
-    support_recorded_by: p.supportLevel ? user_id : null,
-    support_recorded_at: p.supportLevel ? daysAgo(p.createdDaysAgo) : null,
-    voting_status: p.votingStatus ?? null,
-    voting_source: p.votingStatus ? 'import' : null,
-    voting_recorded_by: p.votingStatus ? user_id : null,
-    voting_recorded_at: p.votingStatus ? daysAgo(Math.max(p.createdDaysAgo - 1, 0)) : null,
-  }));
+  const factRows = dataset.persons
+    .filter((p) => p.supportLevel || p.votingStatus)
+    .map((p) => ({
+      ...audit,
+      campaign_id,
+      person_id: personIdByKey.get(p.key) as string,
+      support_level: p.supportLevel ?? null,
+      support_source: p.supportLevel ? 'import' : null,
+      support_recorded_by: p.supportLevel ? user_id : null,
+      support_recorded_at: p.supportLevel ? daysAgo(p.createdDaysAgo) : null,
+      voting_status: p.votingStatus ?? null,
+      voting_source: p.votingStatus ? 'import' : null,
+      voting_recorded_by: p.votingStatus ? user_id : null,
+      voting_recorded_at: p.votingStatus ? daysAgo(Math.max(p.createdDaysAgo - 1, 0)) : null,
+    }));
   if (factRows.length > 0) {
     await trx.insertInto('campaign_person_facts').values(factRows).execute();
   }
 
-  const subscriptionRows = DEMO_PERSONS.filter((p) => p.subscribed && p.email).map((p) => ({
-    ...audit,
-    campaign_id,
-    person_id: personIdByKey.get(p.key) as string,
-    email: p.email as string,
-    status: 'subscribed',
-    consent_source: 'import',
-    consent_at: daysAgo(p.createdDaysAgo),
-  }));
+  const subscriptionRows = dataset.persons
+    .filter((p) => p.subscribed && p.email)
+    .map((p) => ({
+      ...audit,
+      campaign_id,
+      person_id: personIdByKey.get(p.key) as string,
+      email: p.email as string,
+      status: 'subscribed',
+      consent_source: 'import',
+      consent_at: daysAgo(p.createdDaysAgo),
+    }));
   if (subscriptionRows.length > 0) {
     await trx.insertInto('campaign_subscriptions').values(subscriptionRows).execute();
   }
@@ -310,7 +298,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   const taskRows = await trx
     .insertInto('tasks')
     .values(
-      DEMO_TASKS.map((t) => ({
+      dataset.tasks.map((t) => ({
         ...audit,
         name: t.name,
         details: t.details,
@@ -329,7 +317,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   const listRows = await trx
     .insertInto('lists')
     .values(
-      DEMO_LISTS.map((l) => ({
+      dataset.lists.map((l) => ({
         ...audit,
         campaign_id,
         name: l.name,
@@ -341,7 +329,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     )
     .returning('id')
     .execute();
-  const listMemberRows = DEMO_LISTS.flatMap((l, i) =>
+  const listMemberRows = dataset.lists.flatMap((l, i) =>
     l.members.flatMap((personKey) => {
       const person_id = personIdByKey.get(personKey);
       const list_id = listRows[i]?.id;
@@ -357,13 +345,13 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     .insertInto('teams')
     .values({
       ...audit,
-      name: DEMO_TEAM.name,
-      description: DEMO_TEAM.description,
+      name: dataset.team.name,
+      description: dataset.team.description,
       team_lead_user_id: user_id,
     })
     .returning('id')
     .executeTakeFirstOrThrow();
-  const teamMemberRows = DEMO_TEAM.members.flatMap((personKey) => {
+  const teamMemberRows = dataset.team.members.flatMap((personKey) => {
     const person_id = personIdByKey.get(personKey);
     return person_id ? [{ ...audit, team_id: String(team.id), person_id }] : [];
   });
@@ -373,7 +361,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
 
   // ── Volunteer events + shifts ─────────────────────────────────────────────
   const eventIds: string[] = [];
-  for (const ev of DEMO_VOLUNTEER_EVENTS) {
+  for (const ev of dataset.volunteerEvents) {
     const start = daysFromNow(ev.startInDays);
     start.setHours(10, 0, 0, 0);
     const end = new Date(start.getTime() + ev.durationHours * 60 * 60 * 1000);
@@ -407,7 +395,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
 
   // ── Newsletters — aggregates DERIVED from the engagement spec ─────────────
   const newsletterIds: string[] = [];
-  for (const nl of DEMO_NEWSLETTERS) {
+  for (const nl of dataset.newsletters) {
     const sendDate = nl.sentDaysAgo != null ? daysAgo(nl.sentDaysAgo) : null;
     const stats = deriveNewsletterStats(nl);
     const newsletter = await trx
@@ -468,7 +456,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
 
   // ── Form submissions (against two of the starter forms) ──────────────────
   const formIdBySlug = new Map(params.forms.map((f) => [f.slug, f.id]));
-  const submissionRows = DEMO_SUBMISSIONS.flatMap((s) => {
+  const submissionRows = dataset.submissions.flatMap((s) => {
     const form_id = formIdBySlug.get(s.formSlug);
     const person_id = personIdByKey.get(s.person);
     return form_id && person_id
@@ -490,7 +478,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   // ── Inbox/sent emails (folder ids: '11' = Inbox, '3' = Sent) ──────────────
   const OFFICE_EMAIL = 'office@example.org';
   const emailIds: string[] = [];
-  for (const e of DEMO_EMAILS) {
+  for (const e of dataset.emails) {
     const person = personByKey.get(e.person);
     const personEmail = person?.email ?? OFFICE_EMAIL;
     const personName = person ? `${person.first_name} ${person.last_name}` : null;
@@ -539,12 +527,12 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   //    lifecycle status and the raw knock rows (never counters). Knock times
   //    are relative to now so the derived display state is stable.
   const round1 = (n: number): number => Math.round(n * 10) / 10;
-  const householdGeoByKey = new Map<string, LatLng>(DEMO_HOUSEHOLDS.map((h) => [h.key, { lat: h.lat, lng: h.lng }]));
+  const householdGeoByKey = new Map<string, LatLng>(dataset.households.map((h) => [h.key, { lat: h.lat, lng: h.lng }]));
 
   const turfIds: string[] = [];
   const turfAssignmentIds: string[] = [];
   const turfKnockIds: string[] = [];
-  for (const turf of DEMO_TURFS) {
+  for (const turf of dataset.turfs) {
     const coords = turf.households.map((k) => householdGeoByKey.get(k)).filter((c): c is LatLng => c != null);
     const centroid_lat = coords.length > 0 ? coords.reduce((s, c) => s + c.lat, 0) / coords.length : null;
     const centroid_lng = coords.length > 0 ? coords.reduce((s, c) => s + c.lng, 0) / coords.length : null;
@@ -628,7 +616,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   const requestRows = await trx
     .insertInto('delivery_requests')
     .values(
-      DEMO_DELIVERY_REQUESTS.map((r) => ({
+      dataset.deliveryRequests.map((r) => ({
         ...audit,
         campaign_id,
         household_id: householdIdByKey.get(r.household) as string,
@@ -643,19 +631,19 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     )
     .returning('id')
     .execute();
-  const deliveryRequestIdByKey = new Map(DEMO_DELIVERY_REQUESTS.map((r, i) => [r.key, String(requestRows[i]?.id)]));
+  const deliveryRequestIdByKey = new Map(dataset.deliveryRequests.map((r, i) => [r.key, String(requestRows[i]?.id)]));
   const deliveryRequestIds = requestRows.map((r) => String(r.id));
 
   const deliveryRouteIds: string[] = [];
   const deliveryStopIds: string[] = [];
-  for (const route of DEMO_DELIVERY_ROUTES) {
+  for (const route of dataset.deliveryRoutes) {
     const start: LatLng = { lat: route.startLat, lng: route.startLng };
     let travelMinutes = 0;
     let est_km = 0;
     const legs: number[] = [];
     let prev = start;
     for (const stop of route.stops) {
-      const reqDef = DEMO_DELIVERY_REQUESTS.find((r) => r.key === stop.request);
+      const reqDef = dataset.deliveryRequests.find((r) => r.key === stop.request);
       const coord = (reqDef ? householdGeoByKey.get(reqDef.household) : undefined) ?? start;
       legs.push(round1(legMinutes(prev, coord)));
       travelMinutes += legMinutes(prev, coord);
@@ -726,7 +714,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   const pledgeRows = await trx
     .insertInto('donation_pledges')
     .values(
-      DEMO_PLEDGES.map((p) => {
+      dataset.pledges.map((p) => {
         const person = personByKey.get(p.person);
         return {
           ...audit,
@@ -746,14 +734,14 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     )
     .returning('id')
     .execute();
-  const pledgeIdByKey = new Map(DEMO_PLEDGES.map((p, i) => [p.key, String(pledgeRows[i]?.id)]));
+  const pledgeIdByKey = new Map(dataset.pledges.map((p, i) => [p.key, String(pledgeRows[i]?.id)]));
   const donationPledgeIds = pledgeRows.map((r) => String(r.id));
 
   // donations has no createdby_id/updatedby_id columns — only tenant_id.
   const donationRows = await trx
     .insertInto('donations')
     .values(
-      DEMO_DONATIONS.map((d) => {
+      dataset.donations.map((d) => {
         const person = personByKey.get(d.person);
         return {
           tenant_id,
