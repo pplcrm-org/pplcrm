@@ -10,6 +10,7 @@ import { DonationsService } from '../../../services/api/donations-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { DONATION_TABS } from './donation-tabs';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+import { WorkspaceCurrencyService } from '../../../shared/services/currency.service';
 
 @Component({
   selector: 'pc-pledges-grid',
@@ -20,6 +21,7 @@ export class PledgesGridComponent implements OnInit {
   private readonly donationsSvc = inject(DonationsService);
   private readonly alertSvc = inject(AlertService);
   private readonly dialogs = inject(ConfirmDialogService);
+  private readonly money = inject(WorkspaceCurrencyService);
 
   /** All / One-time / Monthly pledges are sibling pages — route-linked pills, same bar on each. */
   protected readonly donationTabs = DONATION_TABS;
@@ -68,8 +70,7 @@ export class PledgesGridComponent implements OnInit {
   }
 
   protected formatCurrency(amountCents: number | null | undefined): string {
-    if (amountCents == null) return '$0.00';
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amountCents / 100);
+    return this.money.format(amountCents);
   }
 
   protected formatDate(dateStr: string | null | undefined): string {

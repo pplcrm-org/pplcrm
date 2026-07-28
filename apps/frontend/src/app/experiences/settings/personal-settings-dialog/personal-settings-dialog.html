@@ -33,31 +33,49 @@
         <span class="flex-1 pc-eyebrow">Notifications</span>
         <span class="w-10 text-center pc-eyebrow">Email</span>
         <span class="w-10 text-center pc-eyebrow">In-app</span>
+        <span class="w-10 text-center pc-eyebrow">Text</span>
       </div>
       <div class="mt-2 flex flex-col">
-        @for (row of rows; track row.emailKey) {
+        @for (row of rows; track row.key) {
         <div class="flex items-center gap-2 py-2">
           <div class="min-w-0 flex-1">
             <div class="text-xs font-medium text-base-content">{{ row.label }}</div>
             <div class="text-xs text-base-content/55">{{ row.helper }}</div>
           </div>
+          <!-- An empty cell means "this channel isn't yours to turn off here", which is
+               the truth for the approval alerts. A disabled toggle would imply otherwise. -->
           <label class="flex w-10 justify-center">
+            @if (row.emailKey; as emailKey) {
             <input
               type="checkbox"
               class="checkbox checkbox-primary checkbox-sm"
-              [checked]="isOn(row.emailKey)"
-              (change)="toggle(row.emailKey)"
+              [checked]="isOn(emailKey, row.defaultOn)"
+              (change)="toggle(emailKey, row.defaultOn)"
               [attr.aria-label]="row.label + ': email'"
             />
+            }
           </label>
           <label class="flex w-10 justify-center">
+            @if (row.inAppKey; as inAppKey) {
             <input
               type="checkbox"
               class="checkbox checkbox-primary checkbox-sm"
-              [checked]="isOn(row.inAppKey)"
-              (change)="toggle(row.inAppKey)"
+              [checked]="isOn(inAppKey, row.defaultOn)"
+              (change)="toggle(inAppKey, row.defaultOn)"
               [attr.aria-label]="row.label + ': in-app'"
             />
+            }
+          </label>
+          <label class="flex w-10 justify-center">
+            @if (row.smsKey; as smsKey) {
+            <input
+              type="checkbox"
+              class="checkbox checkbox-primary checkbox-sm"
+              [checked]="isOn(smsKey, row.defaultOn)"
+              (change)="toggle(smsKey, row.defaultOn)"
+              [attr.aria-label]="row.label + ': text message'"
+            />
+            }
           </label>
         </div>
         }

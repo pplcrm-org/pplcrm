@@ -171,7 +171,9 @@ describe('AuthRouter', () => {
     };
     const result = await caller.signUp(signUpData);
 
-    expect(spy).toHaveBeenCalledWith(signUpData);
+    // `mode` is defaulted by signUpInputObj, so the controller always sees it even when
+    // the caller (an audience landing page with no ?for=) never sent one.
+    expect(spy).toHaveBeenCalledWith({ ...signUpData, mode: 'office' });
     expect(result).toEqual({ auth_token: 'signup-auth-token', approval_pending: false });
     expect(setCookie).toHaveBeenCalledWith(
       'pc_refresh',
@@ -371,12 +373,14 @@ describe('AuthController Integration', () => {
     expect(campaign?.admin_id).toBe(user.id);
     expect(campaign?.createdby_id).toBe(user.id);
 
-    // 2. Verify settings were created (current_campaign, notifications, and the
-    // demo-seed manifest written by the demo-mode seeder)
+    // 2. Verify settings were created (current_campaign, notifications, the organization
+    // mode, and the demo-seed manifest written by the demo-mode seeder)
     const settings = await db.selectFrom('settings').selectAll().where('tenant_id', '=', user.tenant_id).execute();
 
-    expect(settings).toHaveLength(3);
+    expect(settings).toHaveLength(4);
     expect(settings.some((s) => s.key === 'demo_seed_manifest')).toBe(true);
+    // jsonb round-trip: stored as `"office"`, read back as the bare string.
+    expect(settings.find((s) => s.key === 'workspace.mode')?.value).toBe('office');
 
     const currentCampaignSetting = settings.find((s) => s.key === 'current_campaign');
     expect(currentCampaignSetting).toBeDefined();

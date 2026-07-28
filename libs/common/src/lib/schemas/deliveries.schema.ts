@@ -64,6 +64,18 @@ export const PlanDeliveriesObj = z.object({
   include_return_leg: z.boolean().nullable().optional(),
 });
 
+/**
+ * Workspace → Deliveries planning defaults (`deliveries.route_defaults`). Same bounds as the
+ * per-plan overrides above, since these seed exactly those fields. `drivers: null` means
+ * "as many as needed", matching the Plan routes placeholder.
+ */
+export const SetRouteDefaultsObj = z.object({
+  serviceMinutes: z.number().min(0).max(60),
+  avgSpeedKmh: z.number().min(1).max(120),
+  includeReturnLeg: z.boolean(),
+  drivers: z.number().int().min(1).max(50).nullable(),
+});
+
 export const CommitDeliveriesObj = PlanDeliveriesObj.extend({
   routes: z
     .array(
@@ -130,6 +142,7 @@ export type UpdateDeliveryRequestType = z.infer<typeof UpdateDeliveryRequestObj>
 export type SetDeliveryRequestStatusType = z.infer<typeof SetDeliveryRequestStatusObj>;
 export type GetSignStatusType = z.infer<typeof GetSignStatusObj>;
 export type PlanDeliveriesType = z.infer<typeof PlanDeliveriesObj>;
+export type SetRouteDefaultsType = z.infer<typeof SetRouteDefaultsObj>;
 export type CommitDeliveriesType = z.infer<typeof CommitDeliveriesObj>;
 export type UpdateDeliveryRouteType = z.infer<typeof UpdateDeliveryRouteObj>;
 export type AssignVolunteerType = z.infer<typeof AssignVolunteerObj>;

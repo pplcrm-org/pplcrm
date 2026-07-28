@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+// Type-only, so this does not create a runtime cycle with auth.schema.ts (which imports
+// AUTH_ROLES from here). One definition of the preference keys, not two.
+import type { NotificationPreferencesType } from './schemas/auth.schema';
+import { DEFAULT_ORG_MODE, ORG_MODES, type ModuleId, type OrgMode } from './org-mode';
+
 export interface IAuthKeyPayload {
   name?: string;
 
@@ -54,6 +59,19 @@ export interface IAuthUser {
 
   /** The tenant's public subdomain label — used to build public form URLs (`<slug>.<baseDomain>`). */
   tenant_slug?: string | null;
+
+  /**
+   * Organization mode and the sparse module-visibility overrides, mirrored from the
+   * `settings` rows onto the session.
+   *
+   * They ride here rather than being read from the settings snapshot because
+   * `SettingsService.load()` is not called at boot — the sidebar renders before any
+   * page requests it. The session is resolved in `provideAppInitializer` ahead of the
+   * first paint, so a label sourced from here never flickers. See OrgModeService.
+   */
+  tenant_org_mode?: OrgMode;
+
+  tenant_module_overrides?: Partial<Record<ModuleId, boolean>>;
 }
 
 export interface IUserStatsSnapshot {
@@ -95,20 +113,7 @@ export interface IAuthUserRecord extends IAuthUser {
   previous_email?: string | null;
   previous_role?: string | null;
   avatar_url?: string | null;
-  notification_preferences?: {
-    mention_in_comment: boolean;
-    mention_in_comment_in_app: boolean;
-    task_assigned: boolean;
-    task_assigned_in_app: boolean;
-    task_due: boolean;
-    task_due_in_app: boolean;
-    person_assigned: boolean;
-    person_assigned_in_app: boolean;
-    export_ready: boolean;
-    export_ready_in_app: boolean;
-    import_summary: boolean;
-    import_summary_in_app: boolean;
-  };
+  notification_preferences?: NotificationPreferencesType;
 }
 
 export interface IAuthUserDetail extends IAuthUserRecord {
@@ -208,4 +213,11 @@ export const signUpInputObj = z.object({
   email: z.string().max(100),
   password: z.string().min(8).max(72),
   first_name: z.string().max(100),
+  /**
+   * Organization type. Asked at signup rather than later because the starter tags,
+   * starter forms and demo dataset are all seeded inside the signup transaction — a
+   * mode chosen afterwards would be too late to change any of them. Defaulted so every
+   * existing caller keeps working.
+   */
+  mode: z.enum(ORG_MODES).default(DEFAULT_ORG_MODE),
 });

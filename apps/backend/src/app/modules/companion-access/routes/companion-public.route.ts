@@ -2,6 +2,8 @@ import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastif
 
 import {
   CompanionAccessQueryObj,
+  CompanionApprovalDecisionObj,
+  CompanionJoinStartObj,
   CompanionVerifyConfirmObj,
   CompanionVerifyStartObj,
 } from '../../../../../../../libs/common/src';
@@ -54,7 +56,7 @@ const companionPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     const parsed = CompanionAccessQueryObj.safeParse(req.query);
     if (!parsed.success) return reply.status(200).send({ state: 'dead' });
     try {
-      const payload = await controller.getAccess(parsed.data.kind, parsed.data.token, sessionTokenOf(req));
+      const payload = await controller.getAccess(parsed.data.kind, parsed.data.token ?? null, sessionTokenOf(req));
       return reply.status(200).send(payload);
     } catch (err: unknown) {
       fastify.log.error(err, 'Failed to resolve companion access');
@@ -93,6 +95,52 @@ const companionPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     } catch (err: unknown) {
       fastify.log.error(err, 'Failed to confirm companion verification');
       return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to verify that code.') });
+    }
+  });
+
+  // ---- QR join ------------------------------------------------------------
+  // The one public endpoint that can write into `persons`. Every refusal answers with
+  // the controller's single uniform message, so this cannot be probed for which codes
+  // exist or who is already in the database.
+  fastify.post('/join/start', async (req: FastifyRequest, reply: FastifyReply) => {
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    const parsed = CompanionJoinStartObj.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.issues[0]?.message ?? 'Check the details you entered.' });
+    }
+    try {
+      return reply.status(200).send(await controller.joinStart(parsed.data, req.ip));
+    } catch (err: unknown) {
+      fastify.log.error(err, 'Failed to start a companion join');
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to join right now.') });
+    }
+  });
+
+  // ---- approve by text ----------------------------------------------------
+  // The admin taps a link from an SMS with no session in hand, so the token is the
+  // credential. GET shows who is asking; POST is the decision.
+  fastify.get('/approve/:token', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { token } = req.params as { token: string };
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    try {
+      return reply.status(200).send(await controller.getApprovalRequest(String(token)));
+    } catch (err: unknown) {
+      fastify.log.error(err, 'Failed to resolve a companion approval request');
+      // Uniform dead state, exactly like /access — never leak why a link failed.
+      return reply.status(200).send({ state: 'dead' });
+    }
+  });
+
+  fastify.post('/approve/:token', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { token } = req.params as { token: string };
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    const parsed = CompanionApprovalDecisionObj.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid request.' });
+    try {
+      return reply.status(200).send(await controller.actOnApprovalRequest(String(token), parsed.data.decision));
+    } catch (err: unknown) {
+      fastify.log.error(err, 'Failed to act on a companion approval request');
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to record that decision.') });
     }
   });
 

@@ -2,14 +2,16 @@
  * go-edge — the reverse proxy for `go.pplcrm.com` (the volunteer companion app).
  *
  * Runs at the Cloudflare edge. Two jobs:
- *   1. Serve the built companion Angular SPA (`/t/:token` canvass, `/r/:token` deliveries) as static
- *      assets, with SPA fallback to index.html.
+ *   1. Serve the built companion Angular SPA as static assets, with SPA fallback to index.html:
+ *      `/t/:token` canvass, `/r/:token` deliveries, `/j/:code` QR join, `/a/:token` approve-by-text,
+ *      and `/canvass` (session-first — no URL credential at all).
  *   2. Forward the companion's backend surface (`/api/*`) to the CRM backend unchanged.
  *
  * This makes every companion call **same-origin** on `go.pplcrm.com`, which is why backend CORS
  * stays locked to the CRM origin (do NOT widen it). The companion resolves its tenant from the
- * opaque token in the path (see apps/backend/src/app/modules/companion-access), so — unlike the
- * pplforms forms surface — there is no `?t=<org>` injection and no `/d/` donation rewrite here.
+ * opaque token or code in the path — or, on `/canvass`, from the device session header (see
+ * apps/backend/src/app/modules/companion-access) — so, unlike the pplforms forms surface, there is
+ * no `?t=<org>` injection and no `/d/` donation rewrite here.
  */
 
 interface Env {

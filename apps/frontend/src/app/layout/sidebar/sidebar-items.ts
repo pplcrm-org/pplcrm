@@ -1,3 +1,4 @@
+import type { ModuleId, TermKey } from '@common';
 import type { PcIconNameType } from '@icons/icons.index';
 
 export interface ISidebarItem {
@@ -20,10 +21,23 @@ export interface ISidebarItem {
   indicator?: boolean;
   /** Transient: set on a pin clone so the sidebar plays the `up` entry once. */
   justPinned?: boolean;
+  /**
+   * Stable identity, never displayed when `termKey` is set. Keyed on by the collapse
+   * state, `getItemKey`, the `@for` track expressions and the specs — so a per-mode
+   * rename must go through `termKey`, never by mutating this.
+   */
   name: string;
+  /**
+   * Optional module this entry belongs to. When the tenant's mode (or their explicit
+   * override) turns the module off, Sidebar sets `hidden` on the entry — the route
+   * still resolves and the `g` chord still works.
+   */
+  moduleId?: ModuleId;
   parent?: ISidebarItem;
   pathMatchExact?: boolean;
   route?: string;
+  /** Per-mode display label. Falls back to `name` when absent. See `sidebarLabel`. */
+  termKey?: TermKey;
   /**
    * Second key of the Gmail-style `g` navigation chord (press `g` then this key).
    * A single lowercase letter, unique across all items. Rendered as a hint in the
@@ -31,6 +45,16 @@ export interface ISidebarItem {
    */
   shortcut?: string;
   type?: 'item' | 'subheading' | 'bookmark';
+}
+
+/**
+ * The label to display for an item under the tenant's organization mode.
+ *
+ * Kept as a free function so every consumer (the sidebar, the `g`-chord help overlay,
+ * the tab title, the pin tooltip) resolves a name exactly one way.
+ */
+export function sidebarLabel(item: Pick<ISidebarItem, 'name' | 'termKey'>, terms: Record<TermKey, string>): string {
+  return item.termKey ? terms[item.termKey] : item.name;
 }
 
 /**
@@ -152,6 +176,8 @@ export const SidebarItems: ISidebarItem[] = [
       },
       {
         name: 'Donations',
+        termKey: 'nav.donations',
+        moduleId: 'donations',
         route: '/donations',
         icon: 'currency-dollar',
         shortcut: 'o',
@@ -165,18 +191,26 @@ export const SidebarItems: ISidebarItem[] = [
     ],
   },
   {
-    name: `FIELD`,
+    // Headed VOLUNTEERS rather than FIELD in every mode: all four entries are
+    // volunteer-powered work or volunteer administration, which is equally true of a
+    // church, a campaign and a constituency office. Teams is deliberately NOT an
+    // optional module, so the section can never empty out.
+    name: `VOLUNTEERS`,
     type: 'subheading',
     children: [
-      // Wave 2 FIELD surfaces: Canvassing (§13) and Deliveries (§14).
+      // Wave 2 field surfaces: Canvassing (§13) and Deliveries (§14).
       {
         name: 'Canvassing',
+        termKey: 'nav.canvassing',
+        moduleId: 'canvassing',
         route: '/canvassing',
         icon: 'route',
         shortcut: 'v',
       },
       {
         name: 'Deliveries',
+        termKey: 'nav.deliveries',
+        moduleId: 'deliveries',
         route: '/deliveries',
         icon: 'house-modern',
         // badgeCount = live approved-and-ready request count (spec §14), populated at runtime by
@@ -189,7 +223,12 @@ export const SidebarItems: ISidebarItem[] = [
         shortcut: 't',
       },
       {
-        name: 'Volunteer access',
+        // "Approvals", not "Volunteer access": under a VOLUNTEERS heading the qualifier
+        // was redundant, and this is the queue you come here to clear — which is also
+        // exactly what the badge counts. ("Access" was rejected: Workspace settings
+        // already has a "Teams & access" section.)
+        name: 'Approvals',
+        moduleId: 'volunteerAccess',
         route: '/volunteer-access',
         icon: 'identification',
         // badgeCount = volunteers awaiting approval, populated at runtime by

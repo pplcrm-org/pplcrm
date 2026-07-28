@@ -1,29 +1,28 @@
 import { DatePipe } from '@angular/common';
 import { Component, OnInit, WritableSignal, computed, effect, inject, input, signal } from '@angular/core';
 import { FormField, email, form, pattern, validate } from '@angular/forms/signals';
-import { ActivatedRoute, Router } from '@angular/router';
+import { Router } from '@angular/router';
 import { Icon } from '@icons/icon';
 import { PcIconNameType } from '@icons/icons.index';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
-import { IAuthUserDetail, SettingsEntryType, UpdateAuthUserType } from '../../../../../../libs/common/src';
+import { IAuthUserDetail, SettingsEntryType } from '../../../../../../libs/common/src';
 import { AuthService } from '../../auth/auth-service';
-import { UserService } from '../../services/user.service';
 import { HouseholdsService } from '../households/services/households-service';
 import { AccountSettingsComponent } from './account/account-settings';
 import { ApiKeysSettingsComponent } from './api-keys/api-keys-settings';
 import { BillingSettingsComponent } from './billing/billing-settings';
 import { CampaignsSettingsComponent } from './campaigns/campaigns-settings';
+import { ModulesSettings } from './modules/modules-settings';
+import { DeliveriesSettingsComponent } from './deliveries/deliveries-settings';
 import { DomainSettingsComponent } from './domains/domains-settings';
 import { PhoneVerification } from './phone/phone-verification';
 import { DonationsSettingsComponent } from './donations/donations-settings';
 import { GoogleSyncSettings } from './google-sync/google-sync-settings';
 import { MsSyncSettings } from './ms-sync/ms-sync-settings';
-import { PasskeySettingsComponent } from './security/passkey-settings';
 import { SettingsService, TenantSettingsSnapshot } from './services/settings-service';
 import {
-  PERSONAL_NAV_GROUPS,
   SETTINGS_SECTIONS,
   SettingsFieldConfig,
   SettingsNavGroup,
@@ -51,7 +50,6 @@ interface CustomSectionConfig {
   description: string;
   icon: PcIconNameType;
   id: string;
-  mode: 'settings' | 'workspace';
   title: string;
 }
 
@@ -71,23 +69,21 @@ interface NavGroup {
 
 const CUSTOM_SECTIONS: CustomSectionConfig[] = [
   {
+    id: 'modules',
+    icon: 'adjustments-horizontal',
+    title: 'Modules',
+    description:
+      'What kind of organization this is, and which optional modules appear in your sidebar. Turning one off never deletes anything.',
+  },
+  {
     id: 'campaigns',
-    mode: 'workspace',
     icon: 'square-3-stack-3d',
     title: 'Campaigns',
     description:
       'Separate working contexts (your permanent office plus election campaigns) that share one contact list. Admins manage them and assign users to them.',
   },
   {
-    id: 'passkeys',
-    mode: 'settings',
-    icon: 'lock-closed',
-    title: 'Passkeys',
-    description: 'Manage your passkeys for fast, phishing-resistant sign-in using your device biometrics or PIN.',
-  },
-  {
     id: 'email-sync',
-    mode: 'workspace',
     icon: 'envelope',
     title: 'Email sync',
     description:
@@ -95,43 +91,43 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
   },
   {
     id: 'domains',
-    mode: 'workspace',
     icon: 'globe-americas',
     title: 'Domain verification',
     description: 'Configure DNS verification records (SPF, DKIM, DMARC) so you can send emails from your own domain.',
   },
   {
     id: 'donations',
-    mode: 'workspace',
     icon: 'currency-dollar',
     title: 'Donations',
     description:
       'Configure donation limit, residency restrictions, progressive tax credit tiers, and connect your Stripe account.',
   },
   {
+    id: 'deliveries',
+    icon: 'house-modern',
+    title: 'Deliveries',
+    description: 'Planning defaults the Plan routes page starts from — stop time, driving speed, drivers, return trip.',
+  },
+  {
     id: 'storage',
-    mode: 'workspace',
     icon: 'archive-box',
     title: 'Storage',
     description: 'Plan quota, usage, and the files taking up the most space.',
   },
   {
     id: 'billing',
-    mode: 'workspace',
     icon: 'credit-card',
     title: 'Billing',
     description: 'Manage your subscription plans, view invoice details, and update payment methods.',
   },
   {
     id: 'account',
-    mode: 'workspace',
     icon: 'user-circle',
     title: 'Account',
     description: 'Manage your organization account: pause billing or permanently delete all data.',
   },
   {
     id: 'api-keys',
-    mode: 'workspace',
     icon: 'lock-closed',
     title: 'API keys',
     description: 'One key for server-side integrations: submit forms, RSVPs, and signups, or connect Zapier.',
@@ -147,11 +143,12 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
     GoogleSyncSettings,
     BillingSettingsComponent,
     CampaignsSettingsComponent,
+    ModulesSettings,
+    DeliveriesSettingsComponent,
     DomainSettingsComponent,
     DonationsSettingsComponent,
     AccountSettingsComponent,
     ApiKeysSettingsComponent,
-    PasskeySettingsComponent,
     StorageSettingsComponent,
     PhoneVerification,
     DatePipe,
@@ -162,11 +159,10 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
 export class SettingsPage implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly auth = inject(AuthService);
-  private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
-  private readonly userService = inject(UserService);
 
-  protected readonly currentMode: 'settings' | 'workspace';
+  /** Kept so existing template/route bindings read naturally; the page is workspace-only now. */
+  protected readonly currentMode = 'workspace' as const;
   protected readonly currentUserDetail = signal<IAuthUserDetail | null>(null);
   private readonly userSignal = this.auth.getUserSignal();
   /** Mailbox sync and Stripe Connect are blocked server-side during the demo; the inline
@@ -203,7 +199,10 @@ export class SettingsPage implements OnInit {
   // Custom self-saving sections (billing, domains, email-sync, etc.) aren't in sectionStates → returns null.
   protected readonly headerSection = computed<SectionState | null>(() => {
     const id = this.selectedSectionId();
-    return this.visibleSections.find((s) => s.config.id === id) ?? null;
+    const section = this.visibleSections.find((s) => s.config.id === id) ?? null;
+    // A section with no stored fields (Data & duplicates) is action-only — a permanently
+    // disabled Save/Cancel pair reads as something being broken.
+    return section && section.fields.length > 0 ? section : null;
   });
   protected readonly senderEmailInput = signal('');
   protected readonly settingsSvc = inject(SettingsService);
@@ -218,7 +217,7 @@ export class SettingsPage implements OnInit {
 
   /** The custom (self-saving) sections visible in the current mode. */
   protected get visibleCustomSections(): CustomSectionConfig[] {
-    return CUSTOM_SECTIONS.filter((s) => s.mode === this.currentMode);
+    return CUSTOM_SECTIONS;
   }
 
   /** The sidebar nav: both section sources merged in the order declared by the
@@ -232,7 +231,7 @@ export class SettingsPage implements OnInit {
     for (const c of this.visibleCustomSections) {
       byId.set(c.id, { id: c.id, title: c.title, icon: c.icon });
     }
-    const declared: SettingsNavGroup[] = this.currentMode === 'workspace' ? WORKSPACE_NAV_GROUPS : PERSONAL_NAV_GROUPS;
+    const declared: SettingsNavGroup[] = WORKSPACE_NAV_GROUPS;
     const groups: NavGroup[] = declared.map((g) => ({
       label: g.label,
       items: g.ids.map((id) => byId.get(id)).filter((item): item is NavItem => item != null),
@@ -268,7 +267,6 @@ export class SettingsPage implements OnInit {
   public readonly section = input<string>();
 
   constructor() {
-    this.currentMode = (this.route.snapshot.data['mode'] as 'settings' | 'workspace') || 'settings';
     this.sectionStates = this.sections.map((section) => this.buildSectionState(section));
 
     // Navbar crumb ("Settings"/"Workspace") comes from the route's `data.breadcrumb`
@@ -279,11 +277,7 @@ export class SettingsPage implements OnInit {
       if (s) {
         this.selectedSectionId.set(s);
       } else {
-        if (this.currentMode === 'settings') {
-          this.selectedSectionId.set('notifications');
-        } else if (this.currentMode === 'workspace') {
-          this.selectedSectionId.set('organization');
-        }
+        this.selectedSectionId.set('organization');
       }
     });
 
@@ -387,13 +381,7 @@ export class SettingsPage implements OnInit {
   });
 
   protected get visibleSections(): SectionState[] {
-    if (this.currentMode === 'settings') {
-      return this.sectionStates.filter((s) => s.config.id === 'notifications' || s.config.id === 'appearance');
-    }
-    if (this.currentMode === 'workspace') {
-      return this.sectionStates.filter((s) => s.config.id !== 'notifications' && s.config.id !== 'appearance');
-    }
-    return [];
+    return this.sectionStates;
   }
 
   public ngOnInit(): void {
@@ -404,7 +392,6 @@ export class SettingsPage implements OnInit {
     await this.settingsSvc.load();
     this.hasLoaded.set(true);
     this.applySnapshot(this.settingsSvc.snapshot(), true);
-    await this.loadUserPrefs();
     await this.loadLastFingerprintRecomputeTime();
   }
 
@@ -442,26 +429,6 @@ export class SettingsPage implements OnInit {
       .join(',');
     section.payload.update((p) => ({ ...p, [controlName]: ordered }));
     section.form[controlName]().markAsDirty();
-  }
-
-  protected getNotificationGroups(section: SectionState) {
-    const groups: { label: string; helper: string; emailField: any; inAppField: any }[] = [];
-    const fields = section.fields;
-
-    for (const field of fields) {
-      if (field.config.key.endsWith('_in_app')) continue;
-
-      const inAppControlName = `${field.controlName}_in_app`;
-      const inAppField = fields.find((f) => f.controlName === inAppControlName);
-
-      groups.push({
-        label: field.config.label,
-        helper: field.config.helper || '',
-        emailField: field,
-        inAppField: inAppField,
-      });
-    }
-    return groups;
   }
 
   protected isEmailVerified(email: string | null | undefined): boolean {
@@ -506,55 +473,6 @@ export class SettingsPage implements OnInit {
     }
   }
 
-  protected async loadUserPrefs() {
-    try {
-      const currentUser = await this.auth.getCurrentUser();
-      if (currentUser) {
-        const user = await this.userService.getProfileById(currentUser.id);
-        this.currentUserDetail.set(user);
-        const prefs = user.notification_preferences || {
-          mention_in_comment: true,
-          mention_in_comment_in_app: true,
-          task_assigned: true,
-          task_assigned_in_app: true,
-          task_due: true,
-          task_due_in_app: true,
-          person_assigned: true,
-          person_assigned_in_app: true,
-          email_assigned: true,
-          email_assigned_in_app: true,
-          export_ready: true,
-          export_ready_in_app: true,
-          import_summary: true,
-          import_summary_in_app: true,
-        };
-        const notifState = this.sectionStates.find((s) => s.config.id === 'notifications');
-        if (notifState) {
-          notifState.payload.update((p) => ({
-            ...p,
-            notifications_mention_in_comment: prefs.mention_in_comment ?? true,
-            notifications_mention_in_comment_in_app: prefs.mention_in_comment_in_app ?? true,
-            notifications_task_assigned: prefs.task_assigned ?? true,
-            notifications_task_assigned_in_app: prefs.task_assigned_in_app ?? true,
-            notifications_task_due: prefs.task_due ?? true,
-            notifications_task_due_in_app: prefs.task_due_in_app ?? true,
-            notifications_person_assigned: prefs.person_assigned ?? true,
-            notifications_person_assigned_in_app: prefs.person_assigned_in_app ?? true,
-            notifications_email_assigned: prefs.email_assigned ?? true,
-            notifications_email_assigned_in_app: prefs.email_assigned_in_app ?? true,
-            notifications_export_ready: prefs.export_ready ?? true,
-            notifications_export_ready_in_app: prefs.export_ready_in_app ?? true,
-            notifications_import_summary: prefs.import_summary ?? true,
-            notifications_import_summary_in_app: prefs.import_summary_in_app ?? true,
-          }));
-          notifState.form().reset();
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load user preferences in settings page', err);
-    }
-  }
-
   protected async recomputeAddressFingerprints() {
     if (this.isFingerprintRecomputeCooldown()) {
       this.alerts.showError('Fingerprints can only be recomputed once a month.');
@@ -577,9 +495,6 @@ export class SettingsPage implements OnInit {
 
   protected resetSection(section: SectionState) {
     this.applySnapshot(this.settingsSvc.snapshot(), true, section);
-    if (section.config.id === 'notifications') {
-      void this.loadUserPrefs();
-    }
   }
 
   protected async saveSection(section: SectionState) {
@@ -589,11 +504,6 @@ export class SettingsPage implements OnInit {
     for (const field of section.fields) {
       const fieldSignal = (section.form as any)[field.controlName]();
       if (!fieldSignal.dirty()) continue;
-
-      // Skip user notification preferences from tenant settings upsert
-      if (section.config.id === 'notifications') {
-        continue;
-      }
 
       const value = this.prepareOutgoingValue(field.config, fieldSignal.value());
       entries.push({ key: field.config.key, value });
@@ -606,33 +516,6 @@ export class SettingsPage implements OnInit {
         this.applySnapshot(snapshot ?? this.settingsSvc.snapshot(), true, section);
       }
 
-      if (section.config.id === 'notifications') {
-        const user = this.currentUserDetail();
-        if (user) {
-          const raw = section.payload();
-          const parseBool = (val: any) => val === true || val === 'true';
-          const payload: UpdateAuthUserType = {
-            notification_preferences: {
-              mention_in_comment: parseBool(raw['notifications_mention_in_comment']),
-              mention_in_comment_in_app: parseBool(raw['notifications_mention_in_comment_in_app']),
-              task_assigned: parseBool(raw['notifications_task_assigned']),
-              task_assigned_in_app: parseBool(raw['notifications_task_assigned_in_app']),
-              task_due: parseBool(raw['notifications_task_due']),
-              task_due_in_app: parseBool(raw['notifications_task_due_in_app']),
-              person_assigned: parseBool(raw['notifications_person_assigned']),
-              person_assigned_in_app: parseBool(raw['notifications_person_assigned_in_app']),
-              email_assigned: parseBool(raw['notifications_email_assigned']),
-              email_assigned_in_app: parseBool(raw['notifications_email_assigned_in_app']),
-              export_ready: parseBool(raw['notifications_export_ready']),
-              export_ready_in_app: parseBool(raw['notifications_export_ready_in_app']),
-              import_summary: parseBool(raw['notifications_import_summary']),
-              import_summary_in_app: parseBool(raw['notifications_import_summary_in_app']),
-            },
-          };
-          await this.userService.updateUserProfile(user.id, payload);
-          await this.loadUserPrefs();
-        }
-      }
       this.alerts.showSuccess('Settings updated successfully');
     } catch (err) {
       const message =
@@ -698,11 +581,6 @@ export class SettingsPage implements OnInit {
       for (const field of state.fields) {
         const fieldSignal = (state.form as any)[field.controlName]();
         if (!resetDirty && fieldSignal.dirty()) continue;
-
-        // Skip user notification preferences from tenant settings snapshot update
-        if (state.config.id === 'notifications') {
-          continue;
-        }
 
         const incoming = this.normalizeIncomingValue(field.config, snapshot[field.config.key]);
         if (nextPayload[field.controlName] !== incoming) {

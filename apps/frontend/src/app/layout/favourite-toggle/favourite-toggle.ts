@@ -3,7 +3,8 @@ import { Router } from '@angular/router';
 
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
-import { ISidebarItem } from '../sidebar/sidebar-items';
+import { ISidebarItem, sidebarLabel } from '../sidebar/sidebar-items';
+import { OrgModeService } from '../../services/org-mode.service';
 import { SidebarService } from '../sidebar/sidebar-service';
 
 /**
@@ -50,6 +51,7 @@ export class FavouriteToggle {
   private readonly router = inject(Router);
   private readonly sidebarSvc = inject(SidebarService);
   private readonly alertSvc = inject(AlertService);
+  private readonly orgMode = inject(OrgModeService);
 
   private readonly navigationUrl = computed(() => {
     const navigation = this.router.currentNavigation();
@@ -65,7 +67,15 @@ export class FavouriteToggle {
   protected readonly hovered = signal(false);
   protected readonly pinnable = signal(false);
   protected readonly visible = signal(false);
-  protected readonly itemName = signal('');
+  /** The sidebar entry the current URL maps to, whether or not it is pinnable. */
+  private readonly namedItem = signal<ISidebarItem | undefined>(undefined);
+
+  /** Display name — a computed rather than a stored string so a mode change refreshes
+   * the tooltip immediately instead of waiting for the next navigation. */
+  protected readonly itemName = computed(() => {
+    const item = this.namedItem();
+    return item ? sidebarLabel(item, this.orgMode.terms()) : '';
+  });
 
   protected readonly iconName = computed(() => {
     if (!this.pinnable()) return 'bookmark';
@@ -107,7 +117,7 @@ export class FavouriteToggle {
     // Show the (dimmed) control whenever the URL maps to a known section, so a
     // record page still explains why it can't be pinned; hide only on unknown routes.
     this.visible.set(!!item?.route);
-    this.itemName.set(item?.name ?? '');
+    this.namedItem.set(item);
   }
 
   private normalizePath(route: string): string {

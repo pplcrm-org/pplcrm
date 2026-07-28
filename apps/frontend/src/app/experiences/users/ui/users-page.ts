@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { planDisplayName } from '@common';
+import { isAuthRole, planDisplayName } from '@common';
 
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -238,7 +238,9 @@ export class UsersPageComponent implements OnInit {
   protected async changeRole(row: UserRow, event: Event): Promise<void> {
     const select = event.target as HTMLSelectElement;
     const role = select.value;
-    if (!role || role === row.role) return;
+    // The options come from userRoleOptions(), so this only rejects a tampered DOM — but the
+    // server takes AUTH_ROLES only, and an unknown role in authusers.role fails every check.
+    if (!isAuthRole(role) || role === row.role) return;
 
     this.savingIds.update((ids) => new Set(ids).add(row.id));
     try {

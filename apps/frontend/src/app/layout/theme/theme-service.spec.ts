@@ -124,8 +124,8 @@ describe('ThemeService', () => {
     expect(localStorage.getItem('pc-theme')).toBe('system');
   });
 
-  it('should clear localStorage pc-theme override if default settings theme changes after load', async () => {
-    // Initial setup: Settings default is 'light', user manually set override to 'dark'
+  it('keeps a personal theme pin when the workspace default changes', async () => {
+    // The workspace default is 'light'; this user deliberately pinned 'dark'.
     settingsStore['appearance.theme'] = 'light';
     localStorage.setItem('pc-theme', 'dark');
 
@@ -133,22 +133,35 @@ describe('ThemeService', () => {
       providers: [ThemeService, { provide: SettingsService, useValue: mockSettingsSvc }],
     });
     service = TestBed.inject(ThemeService);
-    expect(service.getTheme()).toBe('dark'); // localStorage wins initially
+    expect(service.getTheme()).toBe('dark'); // the pin wins over the workspace default
 
-    // Now default settings theme changes to 'dark' (e.g. user changes setting in UI)
+    // An admin now flips the workspace default. This must not reach into anyone's own choice:
+    // the service previously cleared `pc-theme` here, silently unpinning every user.
     settingsStore['appearance.theme'] = 'dark';
-    // Trigger the signal effect by updating the snapshot signal
     mockSnapshotSignal.set({});
 
-    // Allow effects to run
-    await TestBed.runInInjectionContext(() => {
-      // Force Vitest/Angular to run scheduled effects
-      return new Promise<void>((resolve) => setTimeout(resolve, 0));
-    });
+    await TestBed.runInInjectionContext(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
 
-    // It should have called localStorage.removeItem('pc-theme') because the default theme changed.
-    expect(localStorage.getItem('pc-theme')).toBeNull();
-    // And theme should be updated to dark
+    expect(localStorage.getItem('pc-theme')).toBe('dark');
     expect(service.getTheme()).toBe('dark');
+  });
+
+  it('follows the workspace default for a user who never pinned a theme', async () => {
+    settingsStore['appearance.theme'] = 'light';
+    localStorage.removeItem('pc-theme');
+
+    TestBed.configureTestingModule({
+      providers: [ThemeService, { provide: SettingsService, useValue: mockSettingsSvc }],
+    });
+    service = TestBed.inject(ThemeService);
+    expect(service.getTheme()).toBe('light');
+
+    settingsStore['appearance.theme'] = 'dark';
+    mockSnapshotSignal.set({});
+
+    await TestBed.runInInjectionContext(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+    expect(service.getTheme()).toBe('dark');
+    expect(localStorage.getItem('pc-theme')).toBeNull();
   });
 });

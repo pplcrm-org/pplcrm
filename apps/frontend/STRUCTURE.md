@@ -306,6 +306,8 @@ apps/
             campaigns/
               campaigns-settings.html
               campaigns-settings.ts
+            deliveries/
+              deliveries-settings.ts
             domains/
               domains-settings.html
               domains-settings.ts
@@ -316,6 +318,9 @@ apps/
             google-sync/
               google-sync-settings.html
               google-sync-settings.ts
+            modules/
+              modules-settings.html
+              modules-settings.ts
             ms-sync/
               ms-sync-settings.html
               ms-sync-settings.ts
@@ -332,6 +337,7 @@ apps/
             storage/
               storage-settings.html
               storage-settings.ts
+            personal-settings-redirect.ts
             settings-page.html
             settings-page.ts
             settings.config.ts
@@ -405,8 +411,10 @@ apps/
             user-status.ts
           volunteer-access/
             services/
+              join-codes-service.ts
               volunteer-access-service.ts
             ui/
+              join-code-panel.ts
               volunteer-access-page.html
               volunteer-access-page.ts
           workflows/
@@ -450,6 +458,7 @@ apps/
             tour-stops.ts
             tour.service.ts
             tour.ts
+          module-off-bar.ts
           setup-return-bar.ts
         routing/
           public-routes.ts
@@ -481,6 +490,7 @@ apps/
           global-error-handler.ts
           jsend.interceptor.ts
           keyboard-shortcuts.service.ts
+          org-mode.service.ts
           record-navigation.service.ts
           record-slug.resolver.ts
           shared-dialog.service.ts
@@ -549,6 +559,7 @@ apps/
             pc-date.pipe.ts
             resolve-avatar.pipe.ts
           services/
+            currency.service.ts
             date-format.service.ts
           public-page-meta.ts
           public-pages.ts

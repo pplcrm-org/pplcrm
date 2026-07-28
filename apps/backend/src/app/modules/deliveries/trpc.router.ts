@@ -9,6 +9,7 @@ import {
   ReorderStopsObj,
   RouteIdObj,
   SetDeliveryRequestStatusObj,
+  SetRouteDefaultsObj,
   SetDeliveryRouteStatusObj,
   StopActionObj,
   UpdateDeliveryRequestObj,
@@ -19,7 +20,7 @@ import {
 
 import { z } from 'zod';
 
-import { authProcedure as baseAuthProcedure, router } from '../../../trpc';
+import { adminOrOwnerProcedure as baseAdminProcedure, authProcedure as baseAuthProcedure, router } from '../../../trpc';
 import { planFeatureGate } from '../billing/plan-gate';
 import { DeliveriesController } from './controller';
 
@@ -27,6 +28,8 @@ const controller = new DeliveriesController();
 
 // FEATURE_MATRIX plan gate: deliveries are Movement-only; mutations below are blocked on lower plans.
 const authProcedure = baseAuthProcedure.use(planFeatureGate('deliveries'));
+// Workspace-level planning defaults are admin config, not something an organizer flips per plan.
+const adminProcedure = baseAdminProcedure.use(planFeatureGate('deliveries'));
 
 export const DeliveriesRouter = router({
   // Requests
@@ -50,6 +53,9 @@ export const DeliveriesRouter = router({
 
   // Planning
   getRouteDefaults: authProcedure.query(({ ctx }) => controller.getRouteDefaults(ctx.auth.tenant_id)),
+  setRouteDefaults: adminProcedure
+    .input(SetRouteDefaultsObj)
+    .mutation(({ ctx, input }) => controller.setRouteDefaults(ctx.auth, input)),
   previewPlan: authProcedure
     .input(PlanDeliveriesObj)
     .mutation(({ ctx, input }) => controller.previewPlan(ctx.auth, input)),

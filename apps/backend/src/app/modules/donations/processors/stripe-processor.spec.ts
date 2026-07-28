@@ -66,6 +66,40 @@ describe('StripeDonationProcessor.createOneTimeCheckout (Connect direct charge)'
     );
   });
 
+  it('charges in the workspace currency', async () => {
+    state.createSession.mockResolvedValue({ url: 'https://stripe.example/session_gbp' });
+
+    const processor = new StripeDonationProcessor({ accountId: 'acct_42', feePercent: 1, currency: 'gbp' });
+    await processor.createOneTimeCheckout({
+      tenantId: '42',
+      userId: '7',
+      personId: '99',
+      amountCents: 5000,
+      address: { country: 'GB' },
+    });
+
+    const [payload] = state.createSession.mock.calls[0];
+    expect(payload.line_items[0].price_data.currency).toBe('gbp');
+  });
+
+  it('falls back to CAD rather than sending an undefined currency', async () => {
+    // A charge with `currency: undefined` is rejected by Stripe; the config field is optional
+    // so a caller that forgets it must still produce a valid, correctly-denominated charge.
+    state.createSession.mockResolvedValue({ url: 'https://stripe.example/session_default' });
+
+    const processor = new StripeDonationProcessor({ accountId: 'acct_42', feePercent: 1 });
+    await processor.createOneTimeCheckout({
+      tenantId: '42',
+      userId: '7',
+      personId: '99',
+      amountCents: 5000,
+      address: { country: 'CA' },
+    });
+
+    const [payload] = state.createSession.mock.calls[0];
+    expect(payload.line_items[0].price_data.currency).toBe('cad');
+  });
+
   it('omits payment_intent_data entirely when the fee rounds to zero', async () => {
     state.createSession.mockResolvedValue({ url: 'https://stripe.example/session_tiny' });
     const processor = new StripeDonationProcessor({ accountId: 'acct_42', feePercent: 1 });

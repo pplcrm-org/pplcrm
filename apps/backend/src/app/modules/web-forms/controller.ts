@@ -926,18 +926,37 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     return this.normalizeForm(form);
   }
 
+  /**
+   * The campaign's staff-configured issue list (`campaigns.canvass_issues`). Empty for the
+   * office context or a campaign that has not set any, in which case the form template's own
+   * starter list is used.
+   */
+  private async campaignIssues(tenantId: string, campaignId: string | null): Promise<string[]> {
+    if (!campaignId) return [];
+    const row = await this.getRepo()
+      .db.selectFrom('campaigns')
+      .select('canvass_issues')
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', campaignId)
+      .executeTakeFirst();
+    return Array.isArray(row?.canvass_issues) ? row.canvass_issues.map(String) : [];
+  }
+
   /** Create a draft from a template. Lands the user in edit mode (frontend). */
   public async createForm(payload: CreateFormType, auth: IAuthKeyPayload) {
     const template = FORM_TEMPLATES[payload.type];
     const slug = await this.uniqueSlug(auth.tenant_id, payload.name);
-    const fields = fieldsForTemplate(payload.type);
+    // A form collects consent for exactly one campaign (§15).
+    const campaignId = await this.campaignsRepo.resolveForWrite({
+      tenant_id: auth.tenant_id,
+      campaign_id: payload.campaign_id,
+    });
+    // Seed the survey issue checklist from the campaign's own issue list rather than the
+    // template literal, so Forms and the Canvass Companion ask about the same things.
+    const fields = fieldsForTemplate(payload.type, await this.campaignIssues(auth.tenant_id, campaignId));
     const row = {
       tenant_id: auth.tenant_id,
-      // A form collects consent for exactly one campaign (§15).
-      campaign_id: await this.campaignsRepo.resolveForWrite({
-        tenant_id: auth.tenant_id,
-        campaign_id: payload.campaign_id,
-      }),
+      campaign_id: campaignId,
       name: payload.name,
       description: template.description,
       redirect_url: null,

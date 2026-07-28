@@ -6,6 +6,7 @@ import {
   personRecordIdResolver,
 } from './services/record-slug.resolver';
 import { unsavedChangesGuard } from './services/unsaved-changes-guard';
+import { PersonalSettingsRedirect } from './experiences/settings/personal-settings-redirect';
 
 export const dashboardRoutes: Routes = [
   { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
@@ -252,7 +253,7 @@ export const dashboardRoutes: Routes = [
 
   {
     path: 'donations',
-    data: { breadcrumb: 'Donations' },
+    data: { breadcrumb: { term: 'nav.donations' } },
     children: [
       {
         path: '',
@@ -309,7 +310,7 @@ export const dashboardRoutes: Routes = [
   {
     path: 'canvassing',
     loadComponent: () => import('./experiences/canvassing/ui/canvassing-page').then((m) => m.CanvassingPage),
-    data: { breadcrumb: 'Canvassing' },
+    data: { breadcrumb: { term: 'nav.canvassing' } },
   },
 
   {
@@ -368,7 +369,7 @@ export const dashboardRoutes: Routes = [
   },
   {
     path: 'deliveries',
-    data: { breadcrumb: 'Deliveries' },
+    data: { breadcrumb: { term: 'nav.deliveries' } },
     children: [
       {
         path: '',
@@ -422,7 +423,7 @@ export const dashboardRoutes: Routes = [
     canActivate: [roleGuard],
     loadComponent: () =>
       import('./experiences/volunteer-access/ui/volunteer-access-page').then((m) => m.VolunteerAccessPage),
-    data: { breadcrumb: 'Volunteer access' },
+    data: { breadcrumb: 'Approvals' },
   },
   {
     path: 'forms',
@@ -455,16 +456,14 @@ export const dashboardRoutes: Routes = [
     ],
   },
 
+  // Personal settings are the avatar-menu dialog, not a page. These routes stay because
+  // notification emails link to /settings/notifications and old bookmarks exist: they land on
+  // the dashboard with ?settings=<section>, which the navbar reads to open the dialog.
   {
     path: 'settings',
-    data: { breadcrumb: 'Settings' },
     children: [
       { path: '', redirectTo: 'notifications', pathMatch: 'full' },
-      {
-        path: ':section',
-        loadComponent: () => import('./experiences/settings/settings-page').then((m) => m.SettingsPage),
-        data: { mode: 'settings' },
-      },
+      { path: ':section', component: PersonalSettingsRedirect },
     ],
   },
   {

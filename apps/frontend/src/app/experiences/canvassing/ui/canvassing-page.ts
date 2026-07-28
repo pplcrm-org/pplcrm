@@ -23,6 +23,7 @@ import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pa
 import { AssignTurfDialog } from './assign-turf-dialog';
 import { CompanionSettingsDialog } from './companion-settings-dialog';
 import { CutTurfsDialog } from './cut-turfs-dialog';
+import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
 
 type TurfStatus = TurfListItem['status'];
 type Tab = 'turfs' | 'report';
@@ -80,7 +81,17 @@ const RANGES: { key: ReportRange; label: string }[] = [
 
 @Component({
   selector: 'pc-canvassing-page',
-  imports: [DatePipe, Icon, PcMap, RowActions, TabBar, CutTurfsDialog, AssignTurfDialog, CompanionSettingsDialog],
+  imports: [
+    DatePipe,
+    Icon,
+    PcMap,
+    RowActions,
+    TabBar,
+    CutTurfsDialog,
+    AssignTurfDialog,
+    CompanionSettingsDialog,
+    JoinCodePanel,
+  ],
   templateUrl: './canvassing-page.html',
 })
 export class CanvassingPage implements OnInit {
@@ -111,6 +122,8 @@ export class CanvassingPage implements OnInit {
   protected readonly assignTarget = signal<TurfListItem | null>(null);
   /** Companion survey settings dialog (issues vocabulary + door script). */
   protected readonly settingsOpen = signal(false);
+  /** Turf whose join QR is on screen (null = closed) — the group-canvass entry point. */
+  protected readonly qrTarget = signal<TurfListItem | null>(null);
 
   protected readonly ranges = RANGES;
   protected readonly statusLabel = STATUS_LABEL;

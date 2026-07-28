@@ -172,6 +172,9 @@
                     {{ t.has_link ? 'Manage canvassers' : 'Add canvassers' }}
                   </button>
                 </li>
+                <li>
+                  <button type="button" (click)="qrTarget.set(t)">Show join QR</button>
+                </li>
                 <li><button type="button" (click)="refresh(t)">Refresh from list</button></li>
                 <li>
                   <button type="button" class="text-error" (click)="retire(t)">Retire turf</button>
@@ -441,6 +444,19 @@
     (closed)="onRosterClosed()"
     (assigned)="onAssigned($event)"
   />
+  } @if (qrTarget(); as target) {
+  <!-- The group-canvass entry point: everyone who scans this lands on THIS turf. -->
+  <dialog class="modal" [open]="true">
+    <div class="modal-box flex max-w-xl flex-col gap-4">
+      <pc-join-code-panel [turfId]="target.id" [turfName]="target.name" />
+      <div class="modal-action">
+        <button type="button" class="btn btn-ghost btn-sm" (click)="qrTarget.set(null)">Close</button>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop">
+      <button type="button" (click)="qrTarget.set(null)">Close</button>
+    </form>
+  </dialog>
   } @if (settingsOpen()) {
   <pc-companion-settings-dialog (closed)="settingsOpen.set(false)" />
   }

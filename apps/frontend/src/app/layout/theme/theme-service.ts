@@ -10,7 +10,6 @@ export class ThemeService {
   /** The user's stated preference (drives the settings segmented control). */
   private readonly preference = signal<ThemePreference>('system');
   private readonly settingsSvc = inject(SettingsService, { optional: true });
-  private lastDefaultTheme: string | null = null;
 
   constructor() {
     this.updateTheme();
@@ -51,16 +50,10 @@ export class ThemeService {
   }
 
   private updateTheme() {
-    let defaultTheme: string | null = null;
-    if (this.settingsSvc) {
-      defaultTheme = this.settingsSvc.getValue<string>('appearance.theme') ?? null;
-      if (defaultTheme === 'light' || defaultTheme === 'dark') {
-        if (this.lastDefaultTheme !== null && this.lastDefaultTheme !== defaultTheme) {
-          localStorage.removeItem('pc-theme');
-        }
-        this.lastDefaultTheme = defaultTheme;
-      }
-    }
+    // The workspace default is a *default*, not an override: it seeds users who have never
+    // stated a preference and is otherwise ignored. (It used to clear `pc-theme` whenever it
+    // changed, so an admin flipping the workspace theme unpinned everyone who had chosen one.)
+    const defaultTheme = this.settingsSvc?.getValue<string>('appearance.theme') ?? null;
 
     const stored = localStorage.getItem('pc-theme');
     if (stored === 'light' || stored === 'dark') {

@@ -237,6 +237,16 @@ export interface CompanionHousehold {
   id: string;
   walk_order: number;
   address: string;
+  /**
+   * The address parts, alongside the flattened `address` rather than instead of it.
+   *
+   * `households.street_num` and `street1` are separate real columns; the payload used to
+   * flatten them and throw the pieces away, which meant a volunteer standing on one
+   * street could not scope the list to it. Additive and back-compatible — `address` is
+   * still what every card renders.
+   */
+  street: string | null;
+  street_num: string | null;
   lat: number | null;
   lng: number | null;
   /** Whole-door do-not-contact (every resident is DNC) — skip, but it still counts. */

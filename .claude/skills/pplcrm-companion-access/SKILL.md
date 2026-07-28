@@ -1,6 +1,6 @@
 ---
 name: pplcrm-companion-access
-description: The volunteer access layer gating both companion apps (canvass /t/:token, deliveries /r/:token) — verify-a-code + once-per-volunteer admin approval + hashed device sessions, the requireSession() guard, the apps/companion gate component, Twilio SMS, and the admin Volunteer access page. USE WHEN touching modules/companion-access, companion_volunteers/companion_sessions/companion_ops tables, the /api/companion endpoints, the pc-companion-gate component, SMS sending, X-Companion-Session handling, or the /volunteer-access admin page. EXAMPLES 'why does the volunteer see a verify screen', 'revoke a volunteer', 'add another companion surface behind the gate', 'the code SMS never arrives'.
+description: The volunteer access layer gating both companion apps (canvass /t/:token, deliveries /r/:token) — verify-a-code + once-per-volunteer admin approval + hashed device sessions, the requireSession() guard, QR join codes (/j/:code) for volunteers not yet in the database, approve-by-text (/a/:token), the apps/companion gate component, Twilio SMS, and the admin Volunteer access page. USE WHEN touching modules/companion-access, companion_volunteers/companion_sessions/companion_ops/campaign_join_codes/companion_approval_tokens tables, the /api/companion endpoints, the pc-companion-gate component, SMS sending, X-Companion-Session handling, or the /volunteer-access admin page. EXAMPLES 'why does the volunteer see a verify screen', 'revoke a volunteer', 'add a volunteer who is not in the CRM', 'the approve-by-text link is dead', 'add another companion surface behind the gate', 'the code SMS never arrives'.
 ---
 
 # Companion access layer (COMPANION-APPS-PLAN.md §2/§4)
@@ -20,11 +20,17 @@ The companion tables live in the squashed baseline (`_migrations/schema.sql`), n
 dated migration — the old `2026-07-12-companion-apps.ts` no longer exists. New columns
 need a new dated file (see `pplcrm-migrations`).
 
-| Table                  | What it is                                                                                                                                                                                  |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `companion_volunteers` | One row per (tenant, person) ever sent a link. `status`: `invited` → `verified` (code confirmed, awaiting admin) → `approved` \| `revoked`. Carries the hashed verify code + attempt count. |
-| `companion_sessions`   | A verified device. Only `sha256(token)` stored (`lib/token-hash.ts`); raw token returned once; 30-day expiry; `revoked_at` set for all rows on volunteer revoke.                            |
-| `companion_ops`        | Write-once idempotency ledger for BOTH apps: PK `(tenant_id, op_id)`, `scope` 'canvass'/'deliveries'. Insert `ON CONFLICT DO NOTHING`; a conflict means "already applied".                  |
+| Table                       | What it is                                                                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `companion_volunteers`      | One row per (tenant, person) ever sent a link. `status`: `invited` → `verified` (code confirmed, awaiting admin) → `approved` \| `revoked`. Carries the hashed verify code + attempt count.                                                                                                                                                                                                               |
+| `companion_sessions`        | A verified device. Only `sha256(token)` stored (`lib/token-hash.ts`); raw token returned once; 30-day expiry; `revoked_at` set for all rows on volunteer revoke.                                                                                                                                                                                                                                          |
+| `companion_ops`             | Write-once idempotency ledger for BOTH apps: PK `(tenant_id, op_id)`, `scope` 'canvass'/'deliveries'. Insert `ON CONFLICT DO NOTHING`; a conflict means "already applied".                                                                                                                                                                                                                                |
+| `campaign_join_codes`       | A shareable QR/typeable code that puts a **stranger** into this gate. `code` is 8 Crockford-ish chars (no 0/O/1/I) and UNIQUE **globally** — a scan has no tenant context, so the code resolves it. `turf_id` set = everyone who scans lands on that turf; null = they land on the turf picker. `status`/`expires_at`/`max_uses`/`use_count` bound it. Migration `2026-07-28-zz-companion-join-codes.ts`. |
+| `companion_approval_tokens` | One-tap "approve this volunteer" links, minted **per admin** so `approved_by` records who actually tapped. sha256 only, 72-hour TTL, single use (`markUsedForVolunteer` burns every outstanding row for that volunteer once anyone decides).                                                                                                                                                              |
+
+`companion_volunteers` also carries the QR-join handshake: `join_claim_hash` +
+`join_claim_expires_at` (30 min, one live claim per person — a second scan replaces the
+first) and `join_code_id` (provenance, kept after the claim is burned).
 
 Assignments carry the volunteer identity: `turf_assignments.volunteer_person_id`
 (+ `expires_at`) and `delivery_routes.volunteer_person_id`. An assignment without a
@@ -41,8 +47,9 @@ the person has no contacts on file.
 
 Public REST at `/api/companion` (`routes/companion-public.route.ts`, per-IP limited):
 
-- `GET /access?kind=turf|route&token=…` (+ optional session header) → `{ state, … }`
-  where state ∈ `dead | unassigned | need_verification | pending_approval | ready`
+- `GET /access?kind=turf|route|join|session[&token=…]` (+ optional session header) →
+  `{ state, … }` where state ∈
+  `dead | unassigned | need_identity | need_verification | pending_approval | ready`
   (`CompanionAccessPayload` in `libs/common/.../companion-access.schema.ts`). Errors
   return a uniform `{state:'dead'}` — never leak why a link failed. Contacts are only
   ever masked (`maskEmail`/`maskPhone` in `lib/sms/phone.ts`).
@@ -54,6 +61,42 @@ Public REST at `/api/companion` (`routes/companion-public.route.ts`, per-IP limi
   emails every tenant admin/owner. The session is minted even while
   `pending_approval` — it is simply unusable until approval, so the gate just polls
   `GET /access` until `ready`; the volunteer never re-enters a code.
+- `POST /join/start {code, first_name, last_name?, email? | mobile?}` → `{masked,
+channel, claim}` — the QR path. See below.
+- `GET|POST /approve/:token` — approve-by-text. GET says who is asking; POST carries
+  `{decision: 'approve'|'decline'}` and delegates to the same `approveVolunteer` /
+  `revokeVolunteer` the CRM calls, so logging, session revocation and the join-code
+  turf placement never fork.
+
+**Two of the four `kind`s are not capability links.** `join` names an ORGANIZATION, not
+a person, so it grants nothing on its own; `session` carries no token at all (the
+device session is the whole credential) and is what the companion's `/canvass` route
+uses. `COMPANION_LINK_KINDS` still means just `turf|route`; the wider set is
+`COMPANION_ACCESS_KINDS`, and `COMPANION_VERIFY_KINDS` (`turf|route|join`) is what can
+send + confirm a code.
+
+### The QR join path (`/j/:code`)
+
+The only public endpoint that writes into `persons`. `joinStart`, in one transaction:
+per-IP burst limit -> durable per-code daily ceiling -> `bumpUseCount` **first** (the
+`max_uses` guard is in the UPDATE's own WHERE, so two simultaneous scans of the last
+slot cannot both win) -> match an existing person by normalized email or by
+raw-or-E.164 mobile -> else create them in `tenants.placeholder_household_id` with
+`volunteer_status='prospective'` -> `ensureForPerson` -> `setVerifyCode` ->
+`setJoinClaim` -> enqueue the code.
+
+Every refusal — unknown code, revoked, expired, exhausted, suspended tenant,
+previously-revoked volunteer — answers with the **single** `JOIN_REFUSAL` message.
+Distinguishing them would make this an oracle for which codes exist and who is already
+in the database. (Response _shape_ is identical whether or not the person existed; the
+amount of work differs by one INSERT, an accepted timing residual documented in the
+controller.)
+
+`verifyStart`/`verifyConfirm` with `kind='join'` take the **claim**, not the code —
+`resolveVerifySubject` is the seam. Confirming burns the claim so a screenshotted QR
+cannot be replayed. A turf-scoped code places the volunteer on its turf at
+**approval** time (`placeOnJoinCodeTurf` inside `approveVolunteer`), never at scan
+time — a declined stranger must never have held an assignment.
 
 **The guard**: `CompanionAccessController.requireSession(sessionToken, {tenant_id,
 volunteer_person_id})` — call it from any companion data endpoint after resolving the
@@ -76,6 +119,11 @@ existing `/t/:token` and `/r/:token` caller depends on its link-first check.
 `app.canvass_volunteer_roam` setting for one person; null inherits. See
 `pplcrm-canvassing` → "Session-first access, and roaming".
 
+Admin tRPC (`joinCodes` router): `getForCampaign`, `qr` (returns `{code, url, matrix}`
+— a module matrix, **never** a rendered image) as `authProcedure`; `create`, `update`,
+`rotate`, `revoke` as admin/owner + `planFeatureGate('companions')`. Rotating kills
+whatever is printed on the poster, which is why the UI confirms first.
+
 Admin tRPC (`companionAccess` router): `getAll`, `pendingCount`, `approve(id)`,
 `revoke(id)`, `setRoam(id, can_roam)` (admin/owner only; revoke cascades to every session). Mutations are
 plan-gated via `planFeatureGate('companions')` — Movement-only, matching the two
@@ -92,13 +140,31 @@ management (teams, volunteer-events) is a separate `volunteers` gate at Grassroo
 is the gatekeeper — a mobile that can't be normalized simply isn't offered as a
 verification channel.
 
+**Approve-by-text** rides on `notifyAdminsOfPendingVolunteer`, which fires from
+`verifyConfirm` for BOTH front doors (assignment link and QR join) — extending it once
+is why approve-by-text needed no second code path. It mints a token per admin/owner,
+then texts **only the inviter** (`link.organizer_id`: the assignment's or the join
+code's `createdby_id`), and only when `companion_approval_sms` is on (opt-out, like every
+other preference) and `profiles.mobile` normalizes. That key is the only SMS preference
+and has no `_in_app` twin — see `pplcrm-notifications`. An inviter who isn't an admin gets
+no token and no text, which is correct: they couldn't approve anyway.
+
 ## Frontend
 
 - **Gate component** (`apps/companion/src/app/gate/companion-gate.ts`): wrap any
   companion surface in `<pc-companion-gate kind="…" [token]="…">…</pc-companion-gate>`;
   content projects only when `ready`. `CompanionSessionService` (companion-api.ts)
   stores the session in localStorage (`pc-companion-session`) and `headers()` builds
-  the `X-Companion-Session` header for data fetches.
+  the `X-Companion-Session` header for data fetches. The gate owns the whole
+  who-are-you state machine including the QR-join identity form — **do not fork it**;
+  `JoinPage` (`/j/:code`) is a ~30-line wrapper for exactly that reason. `token` is
+  optional (absent for `kind='session'`), and `verifyToken` is the internal swap that
+  puts the join claim in the credential slot.
+- **Companion routes** (`app.routes.ts`): `/t/:token`, `/r/:token`, `/j/:code`
+  (QR join), `/a/:token` (`ApprovePage` — approve-by-text, deliberately in the
+  companion app so an SMS opens a thumb-sized page with no sign-in), and `/canvass`
+  (session-first; no URL credential at all). `/canvass` exists because turf tokens are
+  hashed: once someone joins by QR there is no `/t/:token` to hand them.
 - **Admin page** `/volunteer-access`
   (`apps/frontend/src/app/experiences/volunteer-access/`), a pc-table with
   Approve/Revoke; sidebar ADMIN entry with a pendingCount badge (loaded in
@@ -106,9 +172,12 @@ verification channel.
 
 ## Traps
 
-- The one intentionally un-tenant-scoped query here is
-  `CompanionSessionsRepo.findByTokenHash` (the hashed token IS the credential) —
-  same pattern and eslint-disable as `delivery_routes.findByTokenHash`.
+- The intentionally un-tenant-scoped queries here are
+  `CompanionSessionsRepo.findByTokenHash`, `JoinCodesRepo.resolveByCode`,
+  `ApprovalTokensRepo.resolveByToken` and
+  `CompanionVolunteersRepo.findByJoinClaim` — in every case the token/code IS the
+  credential and is what resolves the tenant. Same pattern as
+  `delivery_routes.findByTokenHash`; listed in `pplcrm-tenant-safety`.
 - Verification codes and sessions store **hashes only**; if you ever need to show a
   token again, you can't — mint a new one.
 - Rate limiting is in-process (SECURITY-REVIEW §4.1 caveat applies).

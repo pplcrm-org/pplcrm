@@ -4,7 +4,8 @@ import { Breadcrumbs } from '@uxcommon/components/breadcrumbs/breadcrumbs';
 import { BreadcrumbsService } from '@uxcommon/components/breadcrumbs/breadcrumbs.service';
 import { Swap } from '@uxcommon/components/swap/swap';
 import { AnimateIfDirective } from '@uxcommon/directives/animate-if.directive';
-import { Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { toSignal } from '@angular/core/rxjs-interop';
 
 import { FavouriteToggle } from '../favourite-toggle/favourite-toggle';
 import { TourService } from '../tour/tour.service';
@@ -57,6 +58,7 @@ export class Navbar implements OnDestroy {
   private readonly notificationsSvc = inject(NotificationsService);
   private readonly bugReportDialog = inject(BugReportDialogService);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
 
   protected readonly currentUser = this.auth.getUserSignal();
   protected readonly currentUserAvatar = computed(() => {
@@ -97,6 +99,25 @@ export class Navbar implements OnDestroy {
   protected openSettings(): void {
     this.settingsOpen.set(true);
   }
+
+  /**
+   * `?settings=…` opens the personal dialog. Notification emails and old bookmarks point at
+   * /settings/:section, which PersonalSettingsRedirect rewrites to this param — that link has
+   * to keep working now that personal settings are a dialog rather than a page.
+   */
+  private readonly settingsParam = toSignal(this.route.queryParamMap);
+  protected readonly openFromQueryParam = effect(() => {
+    if (this.settingsParam()?.has('settings')) {
+      this.settingsOpen.set(true);
+      // Drop the param so a refresh (or a back-navigation) does not reopen the dialog.
+      void this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: { settings: null },
+        queryParamsHandling: 'merge',
+        replaceUrl: true,
+      });
+    }
+  });
 
   protected startTour(): void {
     void this.tourSvc.start(true);

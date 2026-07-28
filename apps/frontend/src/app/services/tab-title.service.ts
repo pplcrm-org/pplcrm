@@ -4,22 +4,27 @@ import { Title } from '@angular/platform-browser';
 import { TitleStrategy } from '@angular/router';
 
 import type { ISidebarItem } from '../layout/sidebar/sidebar-items';
-import { SidebarItems } from '../layout/sidebar/sidebar-items';
+import { SidebarItems, sidebarLabel } from '../layout/sidebar/sidebar-items';
+import { OrgModeService } from './org-mode.service';
 
 const APP_NAME = 'pplCRM';
 
 /**
- * Build a lookup from the first URL segment (e.g. `inbox`) to the friendly screen name the
- * sidebar already uses (e.g. `Inbox`), so the tab title and the nav never disagree.
+ * Build a lookup from the first URL segment (e.g. `inbox`) to the sidebar entry that owns it,
+ * so the tab title and the nav never disagree.
+ *
+ * Maps to the ITEM rather than to its name: an entry with a `termKey` is worded by the
+ * tenant's organization mode, and this map is built once at construction — resolving the
+ * string here would freeze the wording of whichever mode happened to be active first.
  */
-function buildSegmentNameMap(items: ISidebarItem[]): ReadonlyMap<string, string> {
-  const map = new Map<string, string>();
+function buildSegmentItemMap(items: ISidebarItem[]): ReadonlyMap<string, ISidebarItem> {
+  const map = new Map<string, ISidebarItem>();
   const walk = (list: ISidebarItem[]): void => {
     for (const item of list) {
       if (item.route && item.type !== 'subheading' && item.type !== 'bookmark') {
         const segment = item.route.replace(/^\//, '').split('/')[0];
         if (segment && !map.has(segment)) {
-          map.set(segment, item.name);
+          map.set(segment, item);
         }
       }
       if (item.children) {
@@ -89,7 +94,8 @@ export class TabTitleService {
 @Injectable({ providedIn: 'root' })
 export class AppTitleStrategy extends TitleStrategy {
   private readonly tabTitle = inject(TabTitleService);
-  private readonly segmentNames = buildSegmentNameMap(SidebarItems);
+  private readonly orgMode = inject(OrgModeService);
+  private readonly segmentItems = buildSegmentItemMap(SidebarItems);
 
   public override updateTitle(snapshot: RouterStateSnapshot): void {
     const explicit = this.buildTitle(snapshot);
@@ -102,6 +108,7 @@ export class AppTitleStrategy extends TitleStrategy {
     if (!segment) {
       return 'Dashboard';
     }
-    return this.segmentNames.get(segment) ?? toTitleCase(segment);
+    const item = this.segmentItems.get(segment);
+    return item ? sidebarLabel(item, this.orgMode.terms()) : toTitleCase(segment);
   }
 }

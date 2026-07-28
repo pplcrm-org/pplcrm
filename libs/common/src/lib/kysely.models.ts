@@ -117,6 +117,8 @@ export interface Models {
   companion_volunteers: CompanionVolunteers;
   companion_sessions: CompanionSessions;
   companion_ops: CompanionOps;
+  campaign_join_codes: CampaignJoinCodes;
+  companion_approval_tokens: CompanionApprovalTokens;
 }
 
 export type AuthUsersType = Omit<AuthUsers, 'id'> & { id: string };
@@ -453,10 +455,45 @@ interface CompanionVolunteers {
   revoked_at: Timestamp | null;
   /** Per-volunteer roam override; null = inherit `app.canvass_volunteer_roam`. */
   can_roam: boolean | null;
+  /** SHA-256 of the one-shot claim minted when someone scans a join QR — see
+   *  migration 2026-07-28-zz-companion-join-codes. Cleared once redeemed. */
+  join_claim_hash: string | null;
+  join_claim_expires_at: Timestamp | null;
+  /** Which join code brought them in; null for volunteers an admin assigned directly. */
+  join_code_id: string | null;
   createdby_id: string | null;
   updatedby_id: string | null;
   created_at: Generated<Timestamp>;
   updated_at: Generated<Timestamp>;
+}
+
+/**
+ * A shareable QR/typeable code that puts a stranger into the companion access gate.
+ * `code` is UNIQUE globally, not per tenant: a scan arrives with no session, so the
+ * code is what resolves the tenant. `turf_id` set means everyone who scans lands on
+ * that turf together; null means they land on the turf picker.
+ */
+interface CampaignJoinCodes extends RecordType {
+  campaign_id: string | null;
+  turf_id: string | null;
+  code: string;
+  label: string | null;
+  status: Generated<string>;
+  expires_at: Timestamp | null;
+  max_uses: number | null;
+  use_count: Generated<number>;
+}
+
+/** A single-use approve-this-volunteer link texted to one admin. Only the sha256 is stored. */
+interface CompanionApprovalTokens {
+  id: Generated<string>;
+  tenant_id: string;
+  volunteer_id: string;
+  admin_user_id: string;
+  token_hash: string;
+  expires_at: Timestamp;
+  used_at: Timestamp | null;
+  created_at: Generated<Timestamp>;
 }
 
 /** A verified companion device — only the sha256 of the session token is stored. */

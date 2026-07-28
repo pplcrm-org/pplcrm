@@ -123,6 +123,21 @@
           </label>
         </div>
 
+        <!-- Organization type was chosen at signup; surfaced here because this is the page
+             about "who are you", and because a workspace created from a generic link may
+             never have been asked deliberately. -->
+        <div class="flex max-w-2xl items-center justify-between gap-4 rounded-lg border border-base-200 px-3.5 py-3">
+          <div class="min-w-0">
+            <p class="text-xs font-medium text-base-content/70">Organization type</p>
+            <p class="mt-0.5 text-xs text-base-content/60">
+              {{ orgModeLabel() }} — sets the wording and which modules start in your sidebar.
+            </p>
+          </div>
+          <a routerLink="/workspace" [queryParams]="{ section: 'modules' }" class="btn btn-ghost btn-xs shrink-0">
+            Change
+          </a>
+        </div>
+
         <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
           <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="back()">Back</button>
           <button type="button" class="btn btn-primary btn-sm" [disabled]="busy()" (click)="saveOrganization()">

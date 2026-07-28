@@ -1,5 +1,7 @@
+import { ORG_MODES, ORG_MODE_TERMS, OPTIONAL_MODULES, TERM_KEYS } from '@common';
+
 import type { ISidebarItem } from './sidebar-items';
-import { SidebarItems, isSidebarRouteActive } from './sidebar-items';
+import { SidebarItems, isSidebarRouteActive, sidebarLabel } from './sidebar-items';
 
 /** Flatten the sidebar tree (top-level items plus their children) into a single list. */
 function flatten(items: ISidebarItem[]): ISidebarItem[] {
@@ -52,6 +54,50 @@ describe('SidebarItems', () => {
   it('hides the internal App root entry from the visible sidebar', () => {
     const appEntry = SidebarItems.find((item) => item.name === 'App');
     expect(appEntry?.hidden).toBe(true);
+  });
+
+  describe('organization-mode wiring', () => {
+    it('points every termKey at a real entry in the term table', () => {
+      for (const item of all) {
+        if (!item.termKey) continue;
+        expect(TERM_KEYS, `"${item.name}" has an unknown termKey`).toContain(item.termKey);
+      }
+    });
+
+    it('points every moduleId at a real optional module', () => {
+      for (const item of all) {
+        if (!item.moduleId) continue;
+        expect(OPTIONAL_MODULES, `"${item.name}" has an unknown moduleId`).toContain(item.moduleId);
+      }
+    });
+
+    /** Every module a mode can switch off must be reachable, or it can never be switched on. */
+    it('gives every optional module exactly one sidebar entry', () => {
+      for (const id of OPTIONAL_MODULES) {
+        const owners = all.filter((item) => item.moduleId === id);
+        expect(owners.length, `module "${id}" should have exactly one entry`).toBe(1);
+        expect(owners[0].route, `module "${id}" needs a route`).toBeTruthy();
+      }
+    });
+
+    it('resolves a label for every item in every mode', () => {
+      for (const mode of ORG_MODES) {
+        for (const item of all) {
+          expect(sidebarLabel(item, ORG_MODE_TERMS[mode]).trim(), `${mode}/${item.name}`).not.toBe('');
+        }
+      }
+    });
+
+    it('falls back to name for an item with no termKey', () => {
+      expect(sidebarLabel({ name: 'Teams' }, ORG_MODE_TERMS.church)).toBe('Teams');
+    });
+
+    it('words the mode-sensitive entries from the table', () => {
+      const canvassing = all.find((item) => item.moduleId === 'canvassing');
+      expect(canvassing).toBeDefined();
+      expect(sidebarLabel(canvassing!, ORG_MODE_TERMS.campaign)).toBe('Canvassing');
+      expect(sidebarLabel(canvassing!, ORG_MODE_TERMS.church)).toBe('Visitation');
+    });
   });
 });
 

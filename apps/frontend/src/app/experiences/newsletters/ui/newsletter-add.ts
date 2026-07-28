@@ -80,8 +80,10 @@ const SUBJECT_COACH = "Add a subject line. It's the one field every recipient se
 const FROM_NAME_COACH = 'Add a from name so recipients know who the email is from.';
 const FROM_ADDRESS_COACH = 'Choose a verified sender address.';
 const SCHEDULE_COACH = 'Pick a send date and time, or switch to "Send now".';
-const COMMS_SETTINGS_LINK = '/settings/communications';
-const VERIFY_SENDER_LINK = '/settings/communications';
+// Sending identity is workspace config, not personal — the `communications` section is only
+// registered under /workspace. (/settings/communications resolved to an empty page.)
+const COMMS_SETTINGS_LINK = '/workspace/communications';
+const VERIFY_SENDER_LINK = '/workspace/communications';
 
 const EMPTY_REGULAR_PAYLOAD: RegularNewsletterPayload = {
   subject: '',
@@ -258,11 +260,6 @@ export class NewsletterAddComponent implements OnInit {
       this.excludeListIds().length > 0 ||
       this.excludeTagsList().length > 0,
   );
-  /** Reads the live workspace setting; ON by default (skip previously bounced addresses). */
-  protected readonly skipBounced = computed(() =>
-    this.settingsSvc.getValue<boolean>('communications.skip_bounced', true),
-  );
-
   /** The compliance footer needs the org's mailing address, so sending is gated on it being set. */
   protected readonly orgAddressSet = computed(() => {
     const value = this.settingsSvc.snapshotSignal()['organization.address'];
@@ -991,10 +988,10 @@ export class NewsletterAddComponent implements OnInit {
         ? `Deliverability score ${check.score} — looking good.`
         : `Deliverability score ${check.score} — ${flagged} item${flagged === 1 ? '' : 's'} worth fixing first (see the Review & send step).`;
     const base = `It will go to ${this.peopleLabel(count)}.`;
-    if (this.skipBounced()) {
-      return `${scoreLine} ${base} Previously bounced addresses are skipped automatically.`;
-    }
-    return `${scoreLine} ${base} Bounced addresses are NOT being skipped (Workspace setting).`;
+    // Not configurable: a hard bounce suppresses the address globally (email_suppressions),
+    // so a send can never include one. The old `communications.skip_bounced` lookup had no UI
+    // and could not have changed this.
+    return `${scoreLine} ${base} Previously bounced addresses are skipped automatically.`;
   }
 
   private scheduleWhenLabel(): string {

@@ -5,6 +5,7 @@ import type { WorkflowExitCondition, WorkflowSendCondition } from '@common';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
 import { logger } from '../../../logger';
+import { SLA_SETTING_KEYS, type SlaPolicy, settingsMapFrom, slaPolicyFrom } from '../../sla-policy';
 import {
   AUTOMATION_PHONE_UNVERIFIED_MESSAGE,
   assertTenantSendingNotBlocked,
@@ -465,6 +466,7 @@ export async function detectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
             config.workingDays,
             config.workingHoursStart,
             config.workingHoursEnd,
+            config.timeZone,
           );
           if (workingMs <= slaMs) continue;
 
@@ -508,36 +510,14 @@ export async function detectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
 }
 
 /** The tenant's working-hours SLA settings, with the same fallbacks used tenant-wide. */
-async function loadTaskSlaConfig(
-  db: Kysely<Models>,
-  tenantId: string,
-): Promise<{
-  taskSlaHours: number;
-  workingDays: number[];
-  workingHoursStart: string;
-  workingHoursEnd: string;
-}> {
+async function loadTaskSlaConfig(db: Kysely<Models>, tenantId: string): Promise<SlaPolicy> {
   const rows = await db
     .selectFrom('settings')
     .select(['key', 'value'])
     .where('tenant_id', '=', tenantId)
-    .where('key', 'in', ['sla.tasks_hours', 'sla.working_days', 'sla.working_hours_start', 'sla.working_hours_end'])
+    .where('key', 'in', [...SLA_SETTING_KEYS])
     .execute();
-  const settingsMap = rows.reduce<Record<string, unknown>>((acc, row) => {
-    acc[row.key] = row.value;
-    return acc;
-  }, {});
-
-  const workingDaysStr = String(settingsMap['sla.working_days'] ?? '1,2,3,4,5');
-  return {
-    taskSlaHours: Number(settingsMap['sla.tasks_hours'] ?? 24),
-    workingDays: workingDaysStr
-      .split(',')
-      .map((s) => Number(s.trim()))
-      .filter((n) => !isNaN(n)),
-    workingHoursStart: String(settingsMap['sla.working_hours_start'] ?? '09:00'),
-    workingHoursEnd: String(settingsMap['sla.working_hours_end'] ?? '17:00'),
-  };
+  return slaPolicyFrom(settingsMapFrom(rows));
 }
 
 async function completeEnrollment(trx: Transaction<Models>, enrollmentId: string): Promise<void> {

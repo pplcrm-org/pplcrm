@@ -305,10 +305,32 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         title: 'Before you assign',
         text: 'Make sure the volunteer’s person record has an email or mobile number. That’s where their link and verification code go. No contact on file means nothing can be sent and the link can’t be opened — the app warns you and leaves the copied link for you to deliver another way.',
       },
+      { kind: 'h2', id: 'join-qr', text: 'Sign volunteers up on the spot with a QR code' },
+      {
+        kind: 'p',
+        text: 'Everything above assumes the volunteer is already in your database. For the five people who turned up at the launch and aren’t, use a **join code**. On the [Volunteer access](/volunteer-access) page, **Join by QR** gives you a QR code and an eight-character code to go with it — show it on your phone, project it, or print it on the sign-in sheet. Someone scans it, types their name and one contact, gets a one-time code to prove that contact is theirs, and lands in your approval queue. If they are already in your rolodex we match them rather than making a second copy; if they aren’t, we create them with volunteer status **Prospective** so you can tidy them up later.',
+      },
+      {
+        kind: 'p',
+        text: 'A turf can have its own QR too — **Show join QR** in a turf’s ⋯ menu. Everyone who scans that one lands on that turf, which is how you get a group walking together off one poster. The campaign-wide code on Volunteer access drops people on the turf picker instead. Either way nobody sees a single door until you approve them: **Rotate code** mints a replacement and kills the old one instantly, so anything already printed stops working.',
+      },
+      { kind: 'h2', id: 'approve-by-text', text: 'Approve from your phone' },
+      {
+        kind: 'p',
+        text: 'Approving from the Volunteer access page always works. But when you are the one who invited someone — you assigned them a turf, or you created the join code they scanned — we can also text you a link that approves them in one tap. It shows who is asking and what they’d be joining before you decide, and it expires after three days. It’s on by default — an unapproved volunteer is standing at a door unable to work, and a text is the fastest way to unblock them — but it only ever reaches you if your profile has a mobile number, and you can switch it off from the **Volunteer waiting for approval** row in your notification settings. Email and in-app alerts go out either way.',
+      },
       { kind: 'h2', id: 'companion', text: 'The Canvass Companion' },
       {
         kind: 'p',
         text: 'The Companion is a web app, nothing to install. After verifying, the volunteer lands on their assignment, taps **Start walking**, and works the door list in the suggested walk order (any order works). At each door they survey the people on file (support level, top issues, follow-up flags, and notes) or record a one-tap result like not home or moved. Door-level outcomes (nobody home, inaccessible, refused) close a door with one tap and can be cleared just as fast, and “+ Add someone at this door” captures a new name on the spot. Every result syncs live to the person, the household, the turf’s progress, and the Activity log, attributed honestly as “via Canvass Companion”. No signal? Results queue on the phone and upload automatically when the volunteer is back online.',
+      },
+      {
+        kind: 'p',
+        text: 'On a big turf they can walk **one street at a time**. The bar above the door list says what they’re looking at — “All doors in this turf” to start, so nothing is ever hidden — and tapping it opens a street picker: all doors, the streets nearest them if they let the phone share its location, then every street in the turf in walk order. Picking one narrows the list and the map together and says so; “All doors” is always the first option back. Turf progress in the header stays turf-wide either way, so a finished street never reads as a finished turf.',
+      },
+      {
+        kind: 'p',
+        text: 'Because several people can walk one turf at once, the door list re-checks itself about once a minute and says how fresh it is (“Updated just now”). Tap that line to update immediately. It means a door someone else just knocked shows up as knocked instead of being knocked twice — and anything the volunteer recorded but hasn’t synced yet is kept, not overwritten.',
       },
       {
         kind: 'p',

@@ -119,9 +119,12 @@ async function seed(db: Db, opts?: { email?: string | null; mobile?: string | nu
 
 async function cleanup(db: Db, tenantId: string): Promise<void> {
   await db.deleteFrom('companion_sessions').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('companion_approval_tokens').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('campaign_join_codes').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('companion_volunteers').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('profiles').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_assignments').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turfs').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
@@ -329,5 +332,314 @@ describe('CompanionAccessController', () => {
       .where('tenant_id', '=', s.tenantId)
       .execute();
     expect((await controller.getAccess('turf', s.token, confirm.sessionToken)).state).toBe('dead');
+  });
+
+  // ------------------------------------------------------------- QR join ---
+
+  /** A live join code for the seeded tenant, optionally scoped to the seeded turf. */
+  async function makeJoinCode(opts?: { turf_id?: string | null; max_uses?: number | null }): Promise<string> {
+    const created = await controller.createJoinCode(adminAuth, {
+      turf_id: opts?.turf_id ?? null,
+      max_uses: opts?.max_uses ?? null,
+      label: 'Saturday launch',
+    });
+    return created.code;
+  }
+
+  /** joinStart needs somewhere to put a person with no address. */
+  async function givePlaceholderHousehold(): Promise<void> {
+    const householdId = rand();
+    await db
+      .insertInto('households')
+      .values({
+        id: householdId,
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .execute();
+    await db
+      .updateTable('tenants')
+      .set({ placeholder_household_id: householdId })
+      .where('id', '=', s.tenantId)
+      .execute();
+  }
+
+  it('asks a scanned join code who is holding the phone', async () => {
+    const code = await makeJoinCode({ turf_id: s.turfId });
+    const access = await controller.getAccess('join', code, null);
+    expect(access.state).toBe('need_identity');
+    expect(access.organizerName).toBe('Avery');
+    // Answers "what am I signing up for?" before anything is typed.
+    expect(access.joiningLabel).toBe('Maple Heights');
+  });
+
+  it('creates a person for a stranger and matches one who already exists', async () => {
+    await givePlaceholderHousehold();
+    const code = await makeJoinCode();
+
+    const stranger = await controller.joinStart(
+      { code, first_name: 'Priya', last_name: 'Anand', email: 'priya@example.com' },
+      '203.0.113.1',
+    );
+    expect(stranger.channel).toBe('email');
+    expect(stranger.claim).toBeTruthy();
+    const created = await db
+      .selectFrom('persons')
+      .select(['id', 'volunteer_status'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('email', '=', 'priya@example.com')
+      .executeTakeFirst();
+    // Prospective, not active: scanning a poster is an intention, not a commitment.
+    expect(created?.volunteer_status).toBe('prospective');
+
+    // Someone already in the rolodex must not become a second copy of themselves.
+    const before = await db
+      .selectFrom('persons')
+      .select((eb) => eb.fn.countAll<string>().as('c'))
+      .where('tenant_id', '=', s.tenantId)
+      .executeTakeFirst();
+    await controller.joinStart({ code, first_name: 'Jordan', email: 'jordan@example.com' }, '203.0.113.2');
+    const after = await db
+      .selectFrom('persons')
+      .select((eb) => eb.fn.countAll<string>().as('c'))
+      .where('tenant_id', '=', s.tenantId)
+      .executeTakeFirst();
+    expect(Number(after?.c)).toBe(Number(before?.c));
+  });
+
+  it('answers every unusable code with the same refusal', async () => {
+    await givePlaceholderHousehold();
+    const messages: string[] = [];
+
+    const collect = async (code: string): Promise<void> => {
+      await expect(
+        controller
+          .joinStart({ code, first_name: 'Test', email: `t-${rand()}@example.com` }, `203.0.113.${rand().slice(0, 2)}`)
+          .catch((err: unknown) => {
+            messages.push(err instanceof Error ? err.message : String(err));
+            throw err;
+          }),
+      ).rejects.toThrow();
+    };
+
+    await collect('NOTACODE');
+    const revoked = await controller.createJoinCode(adminAuth, {});
+    await controller.revokeJoinCode(adminAuth, revoked.id);
+    await collect(revoked.code);
+    const exhausted = await makeJoinCode({ max_uses: 1 });
+    await controller.joinStart({ code: exhausted, first_name: 'A', email: `a-${rand()}@example.com` }, '203.0.113.9');
+    await collect(exhausted);
+
+    // One message for three very different causes — otherwise this is an oracle.
+    expect(new Set(messages).size).toBe(1);
+  });
+
+  it('verifies a QR joiner through the claim and places them on the turf once approved', async () => {
+    await givePlaceholderHousehold();
+    const code = await makeJoinCode({ turf_id: s.turfId });
+    const started = await controller.joinStart({ code, first_name: 'Priya', mobile: '(613) 555-0199' }, '203.0.113.20');
+
+    const verifyCode = await lastCodeFromOutbox(db, s.tenantId);
+    const confirm = await controller.verifyConfirm('join', started.claim, verifyCode, null);
+    expect(confirm.status).toBe('pending_approval');
+
+    // The claim is one-shot: a screenshotted QR cannot be replayed into a second signup.
+    await expect(controller.verifyConfirm('join', started.claim, verifyCode, null)).rejects.toThrow();
+
+    const volunteer = await db
+      .selectFrom('companion_volunteers')
+      .select(['id', 'person_id'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('status', '=', 'verified')
+      .executeTakeFirstOrThrow();
+
+    // No assignment before approval — a stranger holds nothing until someone says so.
+    const beforeApproval = await db
+      .selectFrom('turf_assignments')
+      .select('id')
+      .where('tenant_id', '=', s.tenantId)
+      .where('volunteer_person_id', '=', String(volunteer.person_id))
+      .execute();
+    expect(beforeApproval).toHaveLength(0);
+
+    await controller.approveVolunteer(adminAuth, String(volunteer.id));
+    const afterApproval = await db
+      .selectFrom('turf_assignments')
+      .select('turf_id')
+      .where('tenant_id', '=', s.tenantId)
+      .where('volunteer_person_id', '=', String(volunteer.person_id))
+      .where('status', '=', 'active')
+      .execute();
+    expect(afterApproval.map((r) => String(r.turf_id))).toEqual([s.turfId]);
+
+    // And the session alone now opens the app, with no link in hand.
+    expect((await controller.getAccess('session', null, confirm.sessionToken)).state).toBe('ready');
+  });
+
+  // -------------------------------------------------------- approve by text --
+
+  /**
+   * Make the seeded turf link look like an admin invited it, and opt that admin into the
+   * approval SMS. The inviter must be an admin for any of this to fire — a staff member
+   * who cannot approve is not sent a link to approve with.
+   */
+  async function optInviterIntoSms(): Promise<void> {
+    await db
+      .updateTable('turf_assignments')
+      .set({ createdby_id: s.adminId })
+      .where('tenant_id', '=', s.tenantId)
+      .execute();
+    await db
+      .insertInto('profiles')
+      .values({
+        tenant_id: s.tenantId,
+        auth_id: s.adminId,
+        mobile: '(613) 555-0177',
+        preferences: JSON.stringify({ notifications: { companion_approval_sms: true } }),
+        createdby_id: s.adminId,
+        updatedby_id: s.adminId,
+      })
+      .execute();
+  }
+
+  /** Verify the seeded volunteer and pull the raw approval token out of the SMS body. */
+  async function approvalTokenFromSms(): Promise<string> {
+    await controller.verifyStart('turf', s.token, 'email');
+    const code = await lastCodeFromOutbox(db, s.tenantId);
+    await controller.verifyConfirm('turf', s.token, code, null);
+
+    const rows = await db
+      .selectFrom('background_jobs')
+      .select(['payload'])
+      .where('tenant_id', '=', s.tenantId)
+      .orderBy('id', 'desc')
+      .execute();
+    for (const row of rows) {
+      const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+      const match = String(payload?.body ?? '').match(/\/a\/([A-Za-z0-9_-]+)/);
+      if (match?.[1]) return match[1];
+    }
+    throw new Error('no approval link found in the outbox');
+  }
+
+  it('mints one approval token per admin', async () => {
+    await controller.verifyStart('turf', s.token, 'email');
+    const code = await lastCodeFromOutbox(db, s.tenantId);
+    await controller.verifyConfirm('turf', s.token, code, null);
+    const minted = await db
+      .selectFrom('companion_approval_tokens')
+      .select(['admin_user_id'])
+      .where('tenant_id', '=', s.tenantId)
+      .execute();
+    // One per admin/owner — per-admin is what makes `approved_by` honest.
+    expect(minted.map((r) => String(r.admin_user_id))).toEqual([s.adminId]);
+  });
+
+  it('texts an inviter who has never touched the preference', async () => {
+    // The preference defaults ON: an unapproved volunteer is stuck until someone lets them in,
+    // so silence is the worse failure. A profile with no stored preferences must still text.
+    await db
+      .updateTable('turf_assignments')
+      .set({ createdby_id: s.adminId })
+      .where('tenant_id', '=', s.tenantId)
+      .execute();
+    await db
+      .insertInto('profiles')
+      .values({
+        tenant_id: s.tenantId,
+        auth_id: s.adminId,
+        mobile: '(613) 555-0177',
+        createdby_id: s.adminId,
+        updatedby_id: s.adminId,
+      })
+      .execute();
+
+    await controller.verifyStart('turf', s.token, 'email');
+    const code = await lastCodeFromOutbox(db, s.tenantId);
+    await controller.verifyConfirm('turf', s.token, code, null);
+
+    expect((await outboxTypes(db, s.tenantId)).filter((t) => t === 'send-sms')).toHaveLength(1);
+  });
+
+  it('does not text an inviter who turned the preference off', async () => {
+    await db
+      .updateTable('turf_assignments')
+      .set({ createdby_id: s.adminId })
+      .where('tenant_id', '=', s.tenantId)
+      .execute();
+    await db
+      .insertInto('profiles')
+      .values({
+        tenant_id: s.tenantId,
+        auth_id: s.adminId,
+        mobile: '(613) 555-0177',
+        preferences: JSON.stringify({ notifications: { companion_approval_sms: false } }),
+        createdby_id: s.adminId,
+        updatedby_id: s.adminId,
+      })
+      .execute();
+
+    await controller.verifyStart('turf', s.token, 'email');
+    const code = await lastCodeFromOutbox(db, s.tenantId);
+    await controller.verifyConfirm('turf', s.token, code, null);
+
+    // An explicit opt-out is honoured even though a mobile is on file.
+    expect((await outboxTypes(db, s.tenantId)).filter((t) => t === 'send-sms')).toHaveLength(0);
+  });
+
+  it('does not text an inviter with no mobile on file', async () => {
+    await db
+      .updateTable('turf_assignments')
+      .set({ createdby_id: s.adminId })
+      .where('tenant_id', '=', s.tenantId)
+      .execute();
+    await db
+      .insertInto('profiles')
+      .values({
+        tenant_id: s.tenantId,
+        auth_id: s.adminId,
+        createdby_id: s.adminId,
+        updatedby_id: s.adminId,
+      })
+      .execute();
+
+    await controller.verifyStart('turf', s.token, 'email');
+    const code = await lastCodeFromOutbox(db, s.tenantId);
+    await controller.verifyConfirm('turf', s.token, code, null);
+
+    expect((await outboxTypes(db, s.tenantId)).filter((t) => t === 'send-sms')).toHaveLength(0);
+  });
+
+  it('texts the opted-in inviter a link that approves, and reports back to a second tap', async () => {
+    await optInviterIntoSms();
+    const token = await approvalTokenFromSms();
+
+    const pending = await controller.getApprovalRequest(token);
+    expect(pending.state).toBe('pending');
+    expect(pending.volunteerName).toBe('Jordan');
+    // Enough to recognize someone, never enough to harvest.
+    expect(pending.volunteerContact).toBe('j•••@example.com');
+
+    const decided = await controller.actOnApprovalRequest(token, 'approve');
+    expect(decided.state).toBe('decided');
+    expect(decided.decision).toBe('approved');
+    expect(decided.decidedByName).toBe('Avery Staff');
+
+    // A second tap reports what happened; it never re-decides.
+    const again = await controller.actOnApprovalRequest(token, 'decline');
+    expect(again.decision).toBe('approved');
+  });
+
+  it('refuses an expired approval link', async () => {
+    await optInviterIntoSms();
+    const token = await approvalTokenFromSms();
+    await db
+      .updateTable('companion_approval_tokens')
+      .set({ expires_at: new Date(Date.now() - 1000) })
+      .where('tenant_id', '=', s.tenantId)
+      .execute();
+    expect((await controller.getApprovalRequest(token)).state).toBe('dead');
   });
 });

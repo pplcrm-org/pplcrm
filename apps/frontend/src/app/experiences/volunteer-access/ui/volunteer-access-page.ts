@@ -10,6 +10,7 @@ import { Table } from '@uxcommon/components/table/table';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
 import type { CompanionVolunteerRow, CompanionVolunteerStatus } from '../../../../../../../libs/common/src';
+import { JoinCodePanel } from './join-code-panel';
 import { VolunteerAccessService } from '../services/volunteer-access-service';
 
 const STATUS_LABELS: Record<CompanionVolunteerStatus, string> = {
@@ -35,7 +36,7 @@ const STATUS_TYPES: Record<CompanionVolunteerStatus, PcStatusType> = {
 @Component({
   selector: 'pc-volunteer-access-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [Icon, StatusBadge, Table, GridHeaderComponent],
+  imports: [Icon, StatusBadge, Table, GridHeaderComponent, JoinCodePanel],
   templateUrl: './volunteer-access-page.html',
 })
 export class VolunteerAccessPage implements OnInit {

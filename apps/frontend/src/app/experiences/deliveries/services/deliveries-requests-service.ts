@@ -7,6 +7,7 @@ import type {
   ExportCsvInputType,
   ExportCsvResponseType,
   PlanDeliveriesType,
+  SetRouteDefaultsType,
   UpdateDeliveryRequestType,
   getAllOptionsType,
 } from '../../../../../../../libs/common/src';
@@ -59,6 +60,10 @@ export class DeliveriesRequestsService extends AbstractAPIService<'delivery_requ
 
   public getRouteDefaults(): Promise<RouterOutputs['deliveries']['getRouteDefaults']> {
     return this.api.deliveries.getRouteDefaults.query(undefined, { signal: this.ac.signal });
+  }
+
+  public setRouteDefaults(input: SetRouteDefaultsType): Promise<RouterOutputs['deliveries']['setRouteDefaults']> {
+    return this.api.deliveries.setRouteDefaults.mutate(input);
   }
 
   public previewPlan(input: PlanDeliveriesType): Promise<DeliveryPlanPreview> {

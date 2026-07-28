@@ -1,10 +1,21 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 
 import type { CompanionHousehold } from '@common';
+import { Icon } from '@icons/icon';
 
 import { conversations, doorStatus, doorStatusLabel, isAttempted } from './canvass-derive';
+import { CanvassSegmentPicker } from './canvass-segment-picker';
 import { CanvassStore } from './canvass-store';
 import { firstNameOf, statusBadgeClass } from './canvass-ui';
+
+/**
+ * How often the turf re-pulls itself while the walk list is open.
+ *
+ * With a group on one turf, a stale payload means two people knock the same door. A
+ * minute is short enough that the duplicate window is small and long enough that a phone
+ * in a pocket isn't burning battery on it.
+ */
+const REFRESH_MS = 60_000;
 
 type ListFilter = 'all' | 'remaining' | 'visited';
 
@@ -16,6 +27,7 @@ type ListFilter = 'all' | 'remaining' | 'visited';
 @Component({
   selector: 'pc-canvass-list',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [Icon, CanvassSegmentPicker],
   template: `
     <div class="flex flex-col gap-4 p-4">
       <header class="flex items-start justify-between gap-3">
@@ -39,6 +51,35 @@ type ListFilter = 'all' | 'remaining' | 'visited';
         <p class="mt-1 text-xs text-base-content/70">
           {{ conversationCount() }} {{ conversationCount() === 1 ? 'conversation' : 'conversations' }}
         </p>
+        <!-- Several people can be walking this turf, so say how fresh these numbers are
+             rather than letting them look authoritative when they're an hour old. -->
+        <button
+          type="button"
+          class="mt-1 text-xs text-base-content/50 underline decoration-dotted underline-offset-2"
+          [disabled]="store.refreshing()"
+          (click)="refreshNow()"
+        >
+          {{ freshness() }}
+        </button>
+      </div>
+
+      <!-- Scope, always narrated (§2). The button is the whole row so it's thumb-sized. -->
+      <div class="flex flex-col gap-2">
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 rounded-lg border border-base-300 bg-base-100 p-3 text-left"
+          [attr.aria-expanded]="pickerOpen()"
+          (click)="pickerOpen.set(!pickerOpen())"
+        >
+          <span class="min-w-0 flex-1">
+            <span class="block truncate font-medium">{{ scopeTitle() }}</span>
+            <span class="block truncate text-xs text-base-content/70">{{ scopeSubtitle() }}</span>
+          </span>
+          <pc-icon [name]="pickerOpen() ? 'chevron-up' : 'chevron-down'" [size]="5" />
+        </button>
+        @if (pickerOpen()) {
+          <pc-canvass-segment-picker (closed)="pickerOpen.set(false)" />
+        }
       </div>
 
       <div class="flex gap-2" role="group" aria-label="Filter doors">
@@ -98,9 +139,10 @@ type ListFilter = 'all' | 'remaining' | 'visited';
     </div>
   `,
 })
-export class CanvassList {
+export class CanvassList implements OnInit {
   protected readonly store = inject(CanvassStore);
 
+  protected readonly pickerOpen = signal(false);
   protected readonly filter = signal<ListFilter>('all');
   protected readonly filterOptions: { id: ListFilter; label: string }[] = [
     { id: 'all', label: 'All' },
@@ -108,12 +150,15 @@ export class CanvassList {
     { id: 'visited', label: 'Visited' },
   ];
 
+  // Turf-wide on purpose, even when the list is scoped to one street: the progress bar
+  // answers "how is the turf doing", and the scope row right below it answers "what am I
+  // looking at". Two different questions, two different numbers, both labelled.
   protected readonly attempted = computed(() => this.store.stats().doors_attempted);
   protected readonly total = computed(() => this.store.stats().doors_total);
   protected readonly conversationCount = computed(() => conversations(this.store.households()));
 
   protected readonly filtered = computed<CompanionHousehold[]>(() => {
-    const households = [...this.store.households()].sort((a, b) => a.walk_order - b.walk_order);
+    const households = [...this.store.scopedHouseholds()].sort((a, b) => a.walk_order - b.walk_order);
     const filter = this.filter();
     switch (filter) {
       case 'remaining':
@@ -137,22 +182,58 @@ export class CanvassList {
     return doorStatusLabel(doorStatus(h));
   }
 
+  public ngOnInit(): void {
+    const timer = setInterval(() => void this.store.refresh(), REFRESH_MS);
+    inject(DestroyRef).onDestroy(() => clearInterval(timer));
+  }
+
   protected countFor(filter: ListFilter): number {
-    const households = this.store.households();
+    const households = this.store.scopedHouseholds();
     if (filter === 'remaining') return households.filter((h) => !isAttempted(h)).length;
     if (filter === 'visited') return households.filter((h) => isAttempted(h)).length;
     return households.length;
   }
 
+  /** "Updated just now" — vague on purpose past the first hour; the exact minute is noise. */
+  protected freshness(): string {
+    if (this.store.refreshing()) return 'Updating…';
+    const at = this.store.lastRefreshedAt();
+    if (!at) return 'Tap to update';
+    const minutes = Math.floor((Date.now() - at.getTime()) / 60_000);
+    if (minutes < 1) return 'Updated just now';
+    if (minutes === 1) return 'Updated 1 minute ago';
+    if (minutes < 60) return `Updated ${minutes} minutes ago`;
+    return 'Updated over an hour ago · tap to update';
+  }
+
+  protected refreshNow(): void {
+    void this.store.refresh();
+  }
+
+  protected scopeTitle(): string {
+    return this.store.activeSegment()?.street ?? 'All doors in this turf';
+  }
+
+  /** Always states the scope against the whole turf, so "20 doors" can't read as "20 left". */
+  protected scopeSubtitle(): string {
+    const total = this.store.stats().doors_total;
+    const segment = this.store.activeSegment();
+    if (!segment) return `${total} ${total === 1 ? 'door' : 'doors'} · tap to walk one street at a time`;
+    return `${segment.attempted} of ${segment.doors} attempted · ${total} doors in this turf`;
+  }
+
   protected emptyMessage(): string {
     const filter = this.filter();
+    // Say which scope is empty. "Every door is attempted" about one street, read as if it
+    // were the whole turf, would send a volunteer home early.
+    const where = this.store.activeSegment()?.street ?? 'this turf';
     switch (filter) {
       case 'remaining':
-        return 'Every door is attempted. Nice work.';
+        return `Every door on ${where} is attempted. Nice work.`;
       case 'visited':
-        return 'No doors visited yet. Start with door 1.';
+        return `No doors visited on ${where} yet. Start with the ringed door.`;
       case 'all':
-        return 'There are no doors in this turf yet.';
+        return `There are no doors on ${where} yet.`;
       default: {
         const _exhaustive: never = filter;
         return _exhaustive;

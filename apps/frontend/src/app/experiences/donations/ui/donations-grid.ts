@@ -1,6 +1,5 @@
 import { Component, inject, signal, computed, OnInit, viewChild } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
-import { CurrencyPipe } from '@angular/common';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -12,6 +11,7 @@ import { DonationsService } from '../../../services/api/donations-service';
 import { DONATION_TABS, type DonationsScope } from './donation-tabs';
 import { RecordDonationDialog } from './record-donation-dialog';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+import { WorkspaceCurrencyService } from '../../../shared/services/currency.service';
 
 /** Row shapes inferred from the actual tRPC return types (superjson preserves `Date`, so
  * `created_at` arrives as a real `Date`, not a string) — avoids a hand-rolled interface drifting
@@ -25,13 +25,14 @@ const RECENT_GIFTS_LIMIT = 8;
 
 @Component({
   selector: 'pc-donations-grid',
-  imports: [EmptyState, RouterLink, Icon, CurrencyPipe, RecordDonationDialog, TabBar, Table, GridHeaderComponent],
+  imports: [EmptyState, RouterLink, Icon, RecordDonationDialog, TabBar, Table, GridHeaderComponent],
   templateUrl: './donations-grid.html',
 })
 export class DonationsGridComponent implements OnInit {
   private readonly donationsSvc = inject(DonationsService);
   private readonly alertSvc = inject(AlertService);
   private readonly route = inject(ActivatedRoute);
+  private readonly money = inject(WorkspaceCurrencyService);
 
   private readonly recordDialog = viewChild.required(RecordDonationDialog);
 
@@ -94,7 +95,7 @@ export class DonationsGridComponent implements OnInit {
     const allTime = this.scope === 'all';
     const total = allTime ? this.totalRaised() : this.thisMonthTotal();
     const count = allTime ? this.totalGiftCount() : this.thisMonthCount();
-    const formattedTotal = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(total);
+    const formattedTotal = this.money.formatUnits(total);
     const gifts = `${count} ${count === 1 ? 'gift' : 'gifts'}`;
     if (count === 0) return allTime ? 'No donations recorded yet' : 'No gifts recorded yet this month';
     return allTime
@@ -127,8 +128,12 @@ export class DonationsGridComponent implements OnInit {
   }
 
   protected formatCurrency(amountCents: number | null | undefined): string {
-    if (amountCents === null || amountCents === undefined) return '$0.00';
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amountCents / 100);
+    return this.money.format(amountCents);
+  }
+
+  /** Header stat tiles hold already-divided dollar amounts, not cents. */
+  protected formatUnits(amount: number | null | undefined): string {
+    return this.money.formatUnits(amount);
   }
 
   protected formatDate(date: Date | string): string {

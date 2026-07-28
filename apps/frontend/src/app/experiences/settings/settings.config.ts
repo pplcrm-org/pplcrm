@@ -1,3 +1,4 @@
+import { DEFAULT_CURRENCY, DEFAULT_TIMEZONE, WORKSPACE_CURRENCIES, WORKSPACE_CURRENCY_LABELS } from '@common';
 import type { PcIconNameType } from '@icons/icons.index';
 
 export type SettingsFieldType =
@@ -38,8 +39,7 @@ export interface SettingsSectionConfig {
   fields: SettingsFieldConfig[];
 }
 
-/** One labeled cluster of sidebar nav items. `label: null` renders the items
- *  without an eyebrow (the personal /settings mode stays a flat list). */
+/** One labeled cluster of sidebar nav items. */
 export interface SettingsNavGroup {
   label: string | null;
   /** Section ids in display order — may mix form-driven (SETTINGS_SECTIONS)
@@ -48,15 +48,36 @@ export interface SettingsNavGroup {
 }
 
 export const WORKSPACE_NAV_GROUPS: SettingsNavGroup[] = [
-  { label: 'Workspace', ids: ['organization', 'campaigns', 'access'] },
+  { label: 'Workspace', ids: ['organization', 'modules', 'campaigns', 'access', 'data'] },
   { label: 'Email', ids: ['communications', 'email-sync', 'domains'] },
-  { label: 'Features', ids: ['sla', 'donations', 'app'] },
+  { label: 'Features', ids: ['sla', 'donations', 'deliveries', 'app'] },
   { label: 'Plan & account', ids: ['storage', 'billing', 'api-keys', 'account'] },
 ];
 
-export const PERSONAL_NAV_GROUPS: SettingsNavGroup[] = [
-  { label: null, ids: ['notifications', 'appearance', 'passkeys'] },
-];
+// There is no personal nav any more. Notifications, theme and passkeys live in the avatar-menu
+// dialog (`personal-settings-dialog`), which is the surface users actually find; the parallel
+// /settings page rendered the same toggles from a second hand-maintained list and drifted from
+// it. Appearance's two keys were never personal at all — they are tenant defaults, so they moved
+// to Workspace → Organization, where saving them does not need an admin-only call from a page
+// captioned "nothing here affects teammates".
+
+/**
+ * Every IANA zone the runtime knows, so a workspace anywhere can find itself. Built once at
+ * module load; `supportedValuesOf` is absent on older engines, hence the fallback to the
+ * browser's own zone plus the default.
+ */
+const TIMEZONE_OPTIONS: SettingsOptionConfig[] = (() => {
+  const zones =
+    typeof Intl.supportedValuesOf === 'function'
+      ? Intl.supportedValuesOf('timeZone')
+      : [...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, DEFAULT_TIMEZONE])];
+  return zones.map((zone) => ({ label: zone.replace(/_/g, ' '), value: zone }));
+})();
+
+const CURRENCY_OPTIONS: SettingsOptionConfig[] = WORKSPACE_CURRENCIES.map((code) => ({
+  label: WORKSPACE_CURRENCY_LABELS[code],
+  value: code,
+}));
 
 export const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
   {
@@ -93,7 +114,58 @@ export const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
         placeholder: '123 Main St, Springfield, USA',
         defaultValue: '',
       },
+      {
+        key: 'organization.timezone',
+        label: 'Time zone',
+        type: 'select',
+        defaultValue: DEFAULT_TIMEZONE,
+        options: TIMEZONE_OPTIONS,
+        helper:
+          'Decides what “9am” means for service levels, working hours, and dates shown across the app. Without it the server’s clock is used, which is rarely yours.',
+      },
+      {
+        key: 'organization.currency',
+        label: 'Currency',
+        type: 'select',
+        defaultValue: DEFAULT_CURRENCY,
+        options: CURRENCY_OPTIONS,
+        helper: 'Used for donations, pledges, and event pricing — both what donors are charged and what you see.',
+      },
+      {
+        key: 'appearance.date_format',
+        label: 'Date format',
+        type: 'select',
+        defaultValue: 'MMMM d, yyyy',
+        options: [
+          { label: 'January 10, 2025', value: 'MMMM d, yyyy' },
+          { label: '01/10/2025', value: 'MM/dd/yyyy' },
+          { label: '10/01/2025', value: 'dd/MM/yyyy' },
+        ],
+      },
+      {
+        key: 'appearance.theme',
+        label: 'Default theme',
+        type: 'select',
+        defaultValue: 'system',
+        options: [
+          { label: 'System', value: 'system' },
+          { label: 'Light', value: 'light' },
+          { label: 'Dark', value: 'dark' },
+        ],
+        helper:
+          'The starting theme for everyone in this workspace. Anyone who picks their own theme from the avatar menu keeps it.',
+      },
     ],
+  },
+  {
+    id: 'data',
+    title: 'Data & duplicates',
+    description: 'Maintenance for the matching that powers duplicate detection.',
+    icon: 'document-duplicate',
+    // No stored settings — duplicate matching has no thresholds to tune. The section exists
+    // to give the address-fingerprint recompute tool (rendered from settings-page.html) a home;
+    // it was previously gated on this section id while no such section was registered.
+    fields: [],
   },
   {
     id: 'app',
@@ -170,105 +242,6 @@ export const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
     ],
   },
   {
-    id: 'notifications',
-    title: 'Notifications',
-    description: 'Tenant-wide notification defaults and escalation.',
-    icon: 'bell',
-    fields: [
-      {
-        key: 'notifications.mention_in_comment',
-        label: 'Mentioned in comment',
-        type: 'toggle',
-        helper: 'Alerts when someone mentions you in a thread',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.mention_in_comment_in_app',
-        label: 'Mentioned in comment (in-app)',
-        type: 'toggle',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.task_assigned',
-        label: 'Task assigned',
-        type: 'toggle',
-        helper: 'Alerts when a task is assigned to you',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.task_assigned_in_app',
-        label: 'Task assigned (in-app)',
-        type: 'toggle',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.task_due',
-        label: 'Task due today / overdue',
-        type: 'toggle',
-        helper: 'Daily reminder check of active tasks due',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.task_due_in_app',
-        label: 'Task due today / overdue (in-app)',
-        type: 'toggle',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.person_assigned',
-        label: 'Person assigned',
-        type: 'toggle',
-        helper: 'Alerts when a contact ownership is assigned to you',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.person_assigned_in_app',
-        label: 'Person assigned (in-app)',
-        type: 'toggle',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.email_assigned',
-        label: 'Email assigned',
-        type: 'toggle',
-        helper: 'Alerts when an inbox conversation is assigned to you',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.email_assigned_in_app',
-        label: 'Email assigned (in-app)',
-        type: 'toggle',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.export_ready',
-        label: 'Export ready',
-        type: 'toggle',
-        helper: 'Receive download link when CSV export finishes',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.export_ready_in_app',
-        label: 'Export ready (in-app)',
-        type: 'toggle',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.import_summary',
-        label: 'Import summary',
-        type: 'toggle',
-        helper: 'Spreadsheet import completion stats report',
-        defaultValue: true,
-      },
-      {
-        key: 'notifications.import_summary_in_app',
-        label: 'Import summary (in-app)',
-        type: 'toggle',
-        defaultValue: true,
-      },
-    ],
-  },
-  {
     id: 'access',
     title: 'Teams & access',
     description: 'Default role for new invites and tenant-wide MFA enforcement.',
@@ -278,10 +251,13 @@ export const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
         key: 'access.default_role',
         label: 'Default invite role',
         type: 'select',
-        defaultValue: 'editor',
+        // Values are AUTH_ROLES, not the labels. 'Editor' is the label for the `user` role
+        // (AUTH_ROLE_LABELS in libs/common/src/lib/auth.ts) — storing 'editor' here writes a
+        // role no permission check recognises.
+        defaultValue: 'user',
         options: [
           { label: 'Viewer', value: 'viewer' },
-          { label: 'Editor', value: 'editor' },
+          { label: 'Editor', value: 'user' },
           { label: 'Admin', value: 'admin' },
         ],
       },
@@ -365,36 +341,6 @@ export const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
         type: 'text',
         defaultValue: '17:00',
         helper: 'End of the business day for working time tracking.',
-      },
-    ],
-  },
-  {
-    id: 'appearance',
-    title: 'Appearance',
-    description: 'Global UI defaults that users can override locally.',
-    icon: 'sun',
-    fields: [
-      {
-        key: 'appearance.theme',
-        label: 'Default theme',
-        type: 'select',
-        defaultValue: 'system',
-        options: [
-          { label: 'System', value: 'system' },
-          { label: 'Light', value: 'light' },
-          { label: 'Dark', value: 'dark' },
-        ],
-      },
-      {
-        key: 'appearance.date_format',
-        label: 'Date format',
-        type: 'select',
-        defaultValue: 'MMMM d, yyyy',
-        options: [
-          { label: 'January 10, 2025', value: 'MMMM d, yyyy' },
-          { label: '01/10/2025', value: 'MM/dd/yyyy' },
-          { label: '10/01/2025', value: 'dd/MM/yyyy' },
-        ],
       },
     ],
   },

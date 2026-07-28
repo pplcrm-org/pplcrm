@@ -5,7 +5,10 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Stepper, type StepperStep } from '@uxcommon/components/stepper/stepper';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
+import { ORG_MODE_LABELS } from '@common';
+
 import { AuthService } from '../../auth/auth-service';
+import { OrgModeService } from '../../services/org-mode.service';
 import { getUserErrorMessage } from '../../services/api/user-message';
 import { ConfirmDialogService } from '../../services/shared-dialog.service';
 import { SETUP_RETURN_PARAM } from '../../layout/setup-return-bar';
@@ -48,6 +51,11 @@ const STEP_LABELS: Record<GoLiveStepId, string> = {
   templateUrl: './go-live-page.html',
 })
 export class GoLivePage implements OnInit {
+  private readonly orgModeSvc = inject(OrgModeService);
+
+  /** Read-only echo of the type chosen at signup; changed in Workspace → Modules. */
+  protected readonly orgModeLabel = computed(() => ORG_MODE_LABELS[this.orgModeSvc.mode()]);
+
   private readonly goLive = inject(GoLiveService);
   private readonly settings = inject(SettingsService);
   private readonly auth = inject(AuthService);

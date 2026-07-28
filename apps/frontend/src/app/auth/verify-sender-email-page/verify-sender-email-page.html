@@ -20,7 +20,7 @@
       </p>
     </div>
     <div class="pt-2">
-      <a class="btn btn-primary w-full" routerLink="/settings">Go to Settings</a>
+      <a class="btn btn-primary w-full" routerLink="/workspace/communications">Go to sending settings</a>
     </div>
   </div>
   } @case ('error') {
@@ -33,7 +33,7 @@
       <p class="text-sm text-neutral-300">{{ errorMessage() || 'The verification link expired or is invalid.' }}</p>
     </div>
     <div class="pt-2">
-      <a class="btn btn-primary w-full" routerLink="/settings">Return to Settings</a>
+      <a class="btn btn-primary w-full" routerLink="/workspace/communications">Return to sending settings</a>
     </div>
   </div>
   } } }

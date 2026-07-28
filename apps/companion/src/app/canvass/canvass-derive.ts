@@ -5,6 +5,7 @@ import type {
   CompanionPerson,
   CompanionSurveyPrefill,
   KnockResponse,
+  LatLng,
 } from '@common';
 
 /**
@@ -77,6 +78,87 @@ export function nextDoor(households: readonly CompanionHousehold[]): CompanionHo
     if (next == null || h.walk_order < next.walk_order) next = h;
   }
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// Street segments
+// ---------------------------------------------------------------------------
+
+/** Doors with no street on file all land in one bucket rather than one bucket each. */
+export const UNKNOWN_SEGMENT_KEY = '';
+
+export interface CanvassSegment {
+  /** Selection key: the normalized street, or `''` for doors with no street on file. */
+  key: string;
+  /** What to show — the first spelling encountered, not the normalized key. */
+  street: string;
+  doors: number;
+  attempted: number;
+  /** Lowest walk order in the segment. Segments sort by this, so the list keeps walk order. */
+  minWalkOrder: number;
+  /** Mean of the geocoded doors; null when none of them are geocoded. */
+  centroid: LatLng | null;
+}
+
+/**
+ * Group a turf's doors by street.
+ *
+ * A volunteer standing on Scott Blvd wants Scott Blvd, not all 143 doors in the turf —
+ * and a group splitting a turf needs some unit to split by. The street is that unit,
+ * derived here rather than stored, like everything else in this file.
+ *
+ * Streets are keyed case- and whitespace-insensitively (`Alder St` and `alder  st` are one
+ * street) but displayed with the first spelling seen, because normalizing what a volunteer
+ * reads would be a lie about the data. Segments come back in walk order — the ordering the
+ * turf was cut in, and the only one that means anything on foot.
+ */
+export function deriveSegments(households: readonly CompanionHousehold[]): CanvassSegment[] {
+  interface Acc extends CanvassSegment {
+    latSum: number;
+    lngSum: number;
+    geocoded: number;
+  }
+  const byKey = new Map<string, Acc>();
+
+  for (const h of households) {
+    const key = segmentKeyOf(h);
+    const existing = byKey.get(key);
+    const acc: Acc = existing ?? {
+      key,
+      street: h.street?.trim() || 'No street on file',
+      doors: 0,
+      attempted: 0,
+      minWalkOrder: h.walk_order,
+      centroid: null,
+      latSum: 0,
+      lngSum: 0,
+      geocoded: 0,
+    };
+    acc.doors += 1;
+    if (isAttempted(h)) acc.attempted += 1;
+    if (h.walk_order < acc.minWalkOrder) acc.minWalkOrder = h.walk_order;
+    if (h.lat != null && h.lng != null) {
+      acc.latSum += h.lat;
+      acc.lngSum += h.lng;
+      acc.geocoded += 1;
+    }
+    byKey.set(key, acc);
+  }
+
+  return [...byKey.values()]
+    .map(
+      ({ latSum, lngSum, geocoded, ...segment }): CanvassSegment => ({
+        ...segment,
+        centroid: geocoded > 0 ? { lat: latSum / geocoded, lng: lngSum / geocoded } : null,
+      }),
+    )
+    .sort((a, b) => a.minWalkOrder - b.minWalkOrder);
+}
+
+/** The segment a door belongs to. Exported so filtering and grouping can never disagree. */
+export function segmentKeyOf(h: CompanionHousehold): string {
+  const street = h.street?.trim().toLowerCase().replace(/\s+/g, ' ');
+  return street ? street : UNKNOWN_SEGMENT_KEY;
 }
 
 // ---------------------------------------------------------------------------

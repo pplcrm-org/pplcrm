@@ -27,6 +27,7 @@ import { BaseController } from '../../lib/base.controller';
 import { volunteerMayRoam } from '../../lib/canvass-roam-policy';
 import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
 import { publicOrgName } from '../../lib/public-tenant';
+import { turfAssignmentExpiry } from '../../lib/volunteer-link-policy';
 import { CampaignPersonFactsRepo } from '../campaigns/repositories/campaign-person-facts.repo';
 import { CampaignSubscriptionsRepo } from '../campaigns/repositories/campaign-subscriptions.repo';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
@@ -152,10 +153,6 @@ const MIN_HULL_POINTS = 3;
 const IN_FIELD_WINDOW_MS = 6 * 60 * 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const COMPANION_SOURCE = 'companion';
-
-/** Hard ceiling on a canvass companion link, matching the deliveries share-token TTL.
- *  Re-assigning mints a fresh link, so this is not a limit on a real campaign. */
-const MAX_ASSIGNMENT_TTL_DAYS = 30;
 
 export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   private readonly turfHouseholds = new TurfHouseholdsRepo();
@@ -542,31 +539,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     });
   }
 
-  /**
-   * Link expiry = the campaign's end date when one exists (spec §2: "end of the
-   * canvass window"), otherwise no hard expiry (revocation still applies).
-   */
-  /**
-   * When the volunteer's capability link stops working.
-   *
-   * SECURITY (M5): this returned null — meaning "never expires" — whenever the campaign
-   * had no end date, which is the common case for an ongoing office context. A bearer
-   * token that never expires is a permanent credential sitting in someone's SMS history.
-   * A campaign end date still wins when it is sooner; otherwise the link gets a ceiling.
-   */
-  private async assignmentExpiry(tenant_id: string, campaign_id: string): Promise<Date> {
-    const ceiling = new Date(Date.now() + MAX_ASSIGNMENT_TTL_DAYS * 24 * 60 * 60 * 1000);
-    if (!campaign_id) return ceiling;
-    const campaign = await this.knocks.db
-      .selectFrom('campaigns')
-      .select(['enddate'])
-      .where('tenant_id', '=', tenant_id)
-      .where('id', '=', campaign_id)
-      .executeTakeFirst();
-    if (!campaign?.enddate) return ceiling;
-    const end = new Date(`${campaign.enddate}T23:59:59`);
-    if (Number.isNaN(end.getTime()) || end <= new Date()) return ceiling;
-    return end < ceiling ? end : ceiling;
+  /** Shared with the companion-access layer's QR-join path — see volunteer-link-policy. */
+  private assignmentExpiry(tenant_id: string, campaign_id: string): Promise<Date> {
+    return turfAssignmentExpiry(this.knocks.db, tenant_id, campaign_id);
   }
 
   public async retireTurf(auth: IAuthKeyPayload, turfId: string): Promise<void> {
@@ -693,6 +668,10 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         id: d.household_id,
         walk_order: d.walk_order ?? i + 1,
         address: this.formatAddress(d),
+        // Kept separate so the companion can group doors by street; `address` stays the
+        // one thing the UI renders.
+        street: d.street1,
+        street_num: d.street_num,
         lat: d.lat,
         lng: d.lng,
         dnc: residents.length > 0 && residents.every((p) => p.dnc),

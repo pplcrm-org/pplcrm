@@ -9,7 +9,8 @@ import { Swap } from '@uxcommon/components/swap/swap';
 import { SidebarService } from 'apps/frontend/src/app/layout/sidebar/sidebar-service';
 import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
 import { DuplicatesService } from '@experiences/duplicates/services/duplicates-service';
-import { ISidebarItem, isSidebarRouteActive } from './sidebar-items';
+import { ISidebarItem, isSidebarRouteActive, sidebarLabel } from './sidebar-items';
+import { OrgModeService } from 'apps/frontend/src/app/services/org-mode.service';
 import { AnimateIfDirective } from '@uxcommon/directives/animate-if.directive';
 import { TourAnchor } from '../tour/tour-anchor.directive';
 import { TasksService } from '@experiences/tasks/services/tasks-service';
@@ -40,6 +41,7 @@ export class Sidebar {
 
   private readonly sidebarSvc = inject(SidebarService);
   private readonly auth = inject(AuthService);
+  private readonly orgMode = inject(OrgModeService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private readonly tasksSvc = inject(TasksService);
@@ -117,8 +119,9 @@ export class Sidebar {
     const role = this.auth.getUser()?.role;
     const allItems = this.sidebarSvc.getItems()();
     const withBadges = this.applyBadges(allItems);
+    const scoped = this.applyModuleVisibility(withBadges);
     if (role === 'user') {
-      return withBadges
+      return scoped
         .filter((item) => !item.adminOnly)
         .map((item) => {
           if (item.children) {
@@ -130,8 +133,29 @@ export class Sidebar {
           return item;
         });
     }
-    return withBadges;
+    return scoped;
   });
+
+  /**
+   * Hide the entries for modules the tenant's organization mode (or their explicit
+   * override) leaves off.
+   *
+   * Sets `hidden` rather than dropping the item, which is the same mechanism Task
+   * board / Households / Companies already use. That keeps the `g` chord working, the
+   * route resolvable, and an existing pin visible in PINS — a module being off is a
+   * default, not a permission, and the user can turn it back on in Workspace → Modules.
+   */
+  private applyModuleVisibility(items: ISidebarItem[]): ISidebarItem[] {
+    const enabled = this.orgMode.enabledModules();
+    const scope = (item: ISidebarItem): ISidebarItem =>
+      item.moduleId && !enabled.has(item.moduleId) ? { ...item, hidden: true } : item;
+    return items.map((item) => (item.children ? { ...scope(item), children: item.children.map(scope) } : scope(item)));
+  }
+
+  /** Display name under the tenant's organization mode. */
+  protected label(item: ISidebarItem): string {
+    return sidebarLabel(item, this.orgMode.terms());
+  }
 
   constructor() {
     if (this._mql) {

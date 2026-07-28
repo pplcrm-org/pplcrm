@@ -11,7 +11,7 @@ import {
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
-import type { CompanionAccessPayload, CompanionLinkKind, CompanionVerifyChannel } from '@common';
+import type { CompanionAccessKind, CompanionAccessPayload, CompanionVerifyChannel, CompanionVerifyKind } from '@common';
 import { Icon } from '@icons/icon';
 
 import { CompanionApiError, CompanionSessionService } from './companion-api';
@@ -19,7 +19,7 @@ import { CompanionApiError, CompanionSessionService } from './companion-api';
 const POLL_MS = 20_000;
 const RESEND_COOLDOWN_S = 30;
 
-type GateView = 'loading' | 'dead' | 'unassigned' | 'verify' | 'pending' | 'ready' | 'unreachable';
+type GateView = 'loading' | 'dead' | 'unassigned' | 'identity' | 'verify' | 'pending' | 'ready' | 'unreachable';
 
 /**
  * The verify + approve gate both companions sit behind (COMPANION-APPS-PLAN.md
@@ -103,6 +103,70 @@ type GateView = 'loading' | 'dead' | 'unassigned' | 'verify' | 'pending' | 'read
               Check again
             }
           </button>
+        </div>
+      }
+      @case ('identity') {
+        <div class="mx-auto flex min-h-screen max-w-md flex-col justify-center gap-5 p-6">
+          <header class="flex flex-col gap-1 text-center">
+            @if (access()?.organizationName) {
+              <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">
+                {{ access()?.organizationName }}
+              </p>
+            }
+            <h1 class="text-lg font-semibold">Join the canvass</h1>
+            <!-- What am I signing up for? Answered before anything is typed (§1). -->
+            @if (access()?.joiningLabel) {
+              <p class="text-base-content/70">You'll be helping with {{ access()?.joiningLabel }}.</p>
+            } @else {
+              <p class="text-base-content/70">Tell us who you are and we'll send a code to confirm it.</p>
+            }
+          </header>
+
+          <form class="flex flex-col gap-3" (submit)="submitIdentity($event)">
+            <label class="flex flex-col gap-1">
+              <span class="text-xs font-medium text-base-content/70">Your name</span>
+              <input
+                class="input input-bordered min-h-11 w-full"
+                type="text"
+                name="name"
+                autocomplete="name"
+                autocapitalize="words"
+                placeholder="Dana Whitfield"
+                [(ngModel)]="joinName"
+              />
+            </label>
+            <label class="flex flex-col gap-1">
+              <span class="text-xs font-medium text-base-content/70">Email or mobile number</span>
+              <input
+                class="input input-bordered min-h-11 w-full"
+                type="text"
+                name="contact"
+                inputmode="email"
+                autocomplete="email"
+                autocapitalize="none"
+                placeholder="dana@example.com"
+                [(ngModel)]="joinContact"
+              />
+              <span class="text-[11px] text-base-content/55">
+                We send a one-time code here. {{ access()?.organizerName || 'Your organizer' }} approves you before you
+                see anything.
+              </span>
+            </label>
+            @if (error()) {
+              <p class="text-center text-sm text-error" role="alert">{{ error() }}</p>
+            }
+            <button
+              type="submit"
+              class="btn btn-primary min-h-11 w-full"
+              [disabled]="sending() || !joinName.trim() || !joinContact.trim()"
+            >
+              @if (sending()) {
+                Sending a code…
+              } @else {
+                Send me a code
+              }
+            </button>
+          </form>
         </div>
       }
       @case ('verify') {
@@ -191,8 +255,9 @@ type GateView = 'loading' | 'dead' | 'unassigned' | 'verify' | 'pending' | 'read
   `,
 })
 export class CompanionGate implements OnInit {
-  public readonly kind = input.required<CompanionLinkKind>();
-  public readonly token = input.required<string>();
+  public readonly kind = input.required<CompanionAccessKind>();
+  /** Absent for kind 'session', where the device session is the whole credential. */
+  public readonly token = input<string | null>(null);
   /** Fires when the gate opens — the app behind it can start loading data. */
   public readonly ready = output<void>();
 
@@ -212,11 +277,27 @@ export class CompanionGate implements OnInit {
     if (state === 'ready') return 'ready';
     if (state === 'pending_approval') return 'pending';
     if (state === 'need_verification') return 'verify';
+    // The identity form hands back a claim; from that point the code entry takes over,
+    // which is why this checks the claim first rather than the server state.
+    if (state === 'need_identity') return this.verifyToken() ? 'verify' : 'identity';
     if (state === 'unassigned') return 'unassigned';
     return 'dead';
   });
 
   protected codeValue = '';
+  protected joinName = '';
+  protected joinContact = '';
+
+  /**
+   * The credential the verify calls use.
+   *
+   * Identical to `token()` on every path but one: a join code names an ORGANIZATION, so
+   * it cannot verify anybody. The identity step swaps in the one-shot claim that names
+   * the person, and everything downstream is unchanged.
+   */
+  protected readonly verifyToken = signal<string | null>(null);
+  /** The channel a QR joiner gave us, so "resend code" has somewhere to send it. */
+  protected readonly joinChannel = signal<CompanionVerifyChannel | null>(null);
 
   private readonly destroyRef = inject(DestroyRef);
   private readonly session = inject(CompanionSessionService);
@@ -246,7 +327,7 @@ export class CompanionGate implements OnInit {
     this.confirming.set(true);
     this.error.set(null);
     try {
-      const result = await this.session.verifyConfirm(this.kind(), this.token(), this.codeValue);
+      const result = await this.session.verifyConfirm(this.verifyKind(), this.credential(), this.codeValue);
       this.codeValue = '';
       if (result.status === 'ready') {
         this.state.set('ready');
@@ -262,10 +343,51 @@ export class CompanionGate implements OnInit {
     }
   }
 
+  /**
+   * Step one of a QR join: name plus one contact. Everything after this is the same
+   * code-entry screen every other volunteer sees — deliberately not a second flow.
+   */
+  protected async submitIdentity(event: Event): Promise<void> {
+    event.preventDefault();
+    if (this.sending()) return;
+    const code = this.token();
+    const contact = this.joinContact.trim();
+    if (!code || !this.joinName.trim() || !contact) return;
+    this.sending.set(true);
+    this.error.set(null);
+    try {
+      // One field, two channels: an '@' is the only thing that distinguishes them, and
+      // making someone pick from a radio group first is a question they can already answer.
+      const looksLikeEmail = contact.includes('@');
+      const [first, ...rest] = this.joinName.trim().split(/\s+/);
+      const result = await this.session.joinStart({
+        code,
+        first_name: first ?? contact,
+        ...(rest.length ? { last_name: rest.join(' ') } : {}),
+        ...(looksLikeEmail ? { email: contact } : { mobile: contact }),
+      });
+      this.verifyToken.set(result.claim);
+      this.joinChannel.set(result.channel);
+      this.sentTo.set(result.masked);
+      this.startCooldown();
+    } catch (err: unknown) {
+      this.error.set(err instanceof CompanionApiError ? err.message : 'Could not sign you up. Try again.');
+    } finally {
+      this.sending.set(false);
+    }
+  }
+
   protected resend(): void {
     const sent = this.sentTo();
-    this.sentTo.set(null);
     this.error.set(null);
+    // On the join path there is no channel picker to fall back to — the volunteer gave
+    // exactly one contact — so resend to it rather than emptying the screen.
+    const joinChannel = this.joinChannel();
+    if (joinChannel) {
+      void this.send(joinChannel);
+      return;
+    }
+    this.sentTo.set(null);
     // Re-open the channel picker; if there was exactly one channel, resend directly.
     const contacts = this.access()?.contacts ?? [];
     const only = contacts.length === 1 ? contacts[0] : undefined;
@@ -277,7 +399,7 @@ export class CompanionGate implements OnInit {
     this.sending.set(true);
     this.error.set(null);
     try {
-      const { masked } = await this.session.verifyStart(this.kind(), this.token(), channel);
+      const { masked } = await this.session.verifyStart(this.verifyKind(), this.credential(), channel);
       this.sentTo.set(masked);
       this.startCooldown();
     } catch (err: unknown) {
@@ -312,6 +434,17 @@ export class CompanionGate implements OnInit {
       this.stopPolling();
       if (access.state === 'ready' && !wasReady) this.ready.emit();
     }
+  }
+
+  /** The token the verify calls send: the join claim once we have one, else the link. */
+  private credential(): string {
+    return this.verifyToken() ?? this.token() ?? '';
+  }
+
+  /** 'session' never verifies — it is already past that point — so it maps to the link kind. */
+  private verifyKind(): CompanionVerifyKind {
+    const kind = this.kind();
+    return kind === 'session' ? 'turf' : kind;
   }
 
   private startCooldown(): void {

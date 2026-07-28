@@ -1,8 +1,16 @@
 import { DecimalPipe } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { form, submit, required, email, minLength, FormField } from '@angular/forms/signals';
-import { Router, RouterModule } from '@angular/router';
-import { signUpInputType } from '../../../../../../libs/common/src';
+import { ActivatedRoute, Router, RouterModule } from '@angular/router';
+import {
+  DEFAULT_ORG_MODE,
+  ORG_MODES,
+  ORG_MODE_DESCRIPTIONS,
+  ORG_MODE_LABELS,
+  isOrgMode,
+  type OrgMode,
+  type signUpInputType,
+} from '../../../../../../libs/common/src';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -21,6 +29,11 @@ export class SignUpPage {
   private readonly alertSvc = inject(AlertService);
   private readonly authService = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+
+  protected readonly modes = ORG_MODES;
+  protected readonly modeLabels = ORG_MODE_LABELS;
+  protected readonly modeDescriptions = ORG_MODE_DESCRIPTIONS;
 
   private _loading = createLoadingGate();
 
@@ -32,6 +45,12 @@ export class SignUpPage {
     middle_names: '',
     last_name: '',
     terms: '',
+    /**
+     * Organization type. Asked here rather than later because the starter tags, forms and
+     * demo data are seeded in the signup transaction. Preselected from `?for=` so the
+     * marketing site's audience pages carry the answer through for free.
+     */
+    mode: this.initialMode(),
   });
 
   public readonly form = form(this.signUpData, (p) => {
@@ -44,6 +63,16 @@ export class SignUpPage {
   });
 
   protected isLoading = this._loading.visible;
+
+  protected selectMode(mode: OrgMode): void {
+    this.signUpData.update((d) => ({ ...d, mode }));
+  }
+
+  /** `?for=church` from an audience landing page; anything unrecognised falls back. */
+  private initialMode(): OrgMode {
+    const raw = this.route.snapshot.queryParamMap.get('for');
+    return isOrgMode(raw) ? raw : DEFAULT_ORG_MODE;
+  }
 
   protected passwordBreachNumber = passwordBreachNumber;
   protected passwordInBreach = passwordInBreach;

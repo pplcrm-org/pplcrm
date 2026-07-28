@@ -38,8 +38,14 @@ export class DeliveriesPlan implements OnInit {
   protected readonly routeCount = computed(() => this.preview()?.routes.length ?? 0);
 
   public ngOnInit(): void {
+    // Seed from the workspace planning defaults (Workspace → Deliveries). The Advanced panel
+    // still overrides them for this one run without writing anything back.
     void this.svc.getRouteDefaults().then((d) => {
       if (d.start_address) this.startAddress.set(d.start_address);
+      this.serviceMinutes.set(d.serviceMinutes);
+      this.avgSpeed.set(d.avgSpeedKmh);
+      this.includeReturn.set(d.includeReturnLeg);
+      this.drivers.set(d.drivers);
     });
   }
 

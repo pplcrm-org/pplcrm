@@ -16,6 +16,8 @@ export interface CompanionVolunteer {
   verified_at: Date | null;
   /** Per-volunteer roam override; null = inherit the workspace roam setting. */
   can_roam: boolean | null;
+  /** The join code this volunteer arrived through; null for admin-assigned volunteers. */
+  join_code_id: string | null;
 }
 
 export class CompanionVolunteersRepo extends BaseRepository<'companion_volunteers'> {
@@ -231,7 +233,60 @@ export class CompanionVolunteersRepo extends BaseRepository<'companion_volunteer
       verify_channel: row['verify_channel'] == null ? null : String(row['verify_channel']),
       verified_at: row['verified_at'] ? new Date(String(row['verified_at'])) : null,
       can_roam: row['can_roam'] == null ? null : Boolean(row['can_roam']),
+      join_code_id: row['join_code_id'] == null ? null : String(row['join_code_id']),
     };
+  }
+
+  /**
+   * Resolve the one-shot claim minted when someone scans a join QR.
+   *
+   * Intentionally NOT tenant-scoped: the claim stands in for the capability link the QR
+   * path never had, arriving with no session and no tenant context, so it is what
+   * resolves the tenant. Same bearer model as `turf_assignments.resolveByToken`; the
+   * partial unique index on `join_claim_hash` is what makes it unambiguous. Listed in
+   * `pplcrm-tenant-safety`.
+   */
+  public async findByJoinClaim(claimHash: string, trx?: Transaction<Models>): Promise<CompanionVolunteer | null> {
+    const row = await this.getSelect(trx)
+      .selectAll()
+      .where('join_claim_hash', '=', claimHash)
+      .where('join_claim_expires_at', '>', new Date())
+      .executeTakeFirst();
+    return row ? this.toVolunteer(row) : null;
+  }
+
+  /** Arm the join handshake. A second scan replaces the first — one live claim per person. */
+  public async setJoinClaim(
+    input: {
+      tenant_id: string;
+      id: string;
+      claim_hash: string;
+      expires_at: Date;
+      join_code_id: string;
+      user_id: string;
+    },
+    trx?: Transaction<Models>,
+  ): Promise<void> {
+    await this.getUpdate(trx)
+      .set({
+        join_claim_hash: input.claim_hash,
+        join_claim_expires_at: input.expires_at,
+        join_code_id: input.join_code_id,
+        updatedby_id: input.user_id,
+        updated_at: new Date(),
+      })
+      .where('tenant_id', '=', input.tenant_id)
+      .where('id', '=', input.id)
+      .execute();
+  }
+
+  /** Burn the claim once redeemed. `join_code_id` stays — it is provenance, not a credential. */
+  public async clearJoinClaim(input: { tenant_id: string; id: string }, trx?: Transaction<Models>): Promise<void> {
+    await this.getUpdate(trx)
+      .set({ join_claim_hash: null, join_claim_expires_at: null, updated_at: new Date() })
+      .where('tenant_id', '=', input.tenant_id)
+      .where('id', '=', input.id)
+      .execute();
   }
 
   /** Set or clear this volunteer's roam override (null = follow the workspace setting). */

@@ -1,7 +1,8 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
-import { SidebarItems, type ISidebarItem } from '../layout/sidebar/sidebar-items';
+import { SidebarItems, sidebarLabel, type ISidebarItem } from '../layout/sidebar/sidebar-items';
+import { OrgModeService } from './org-mode.service';
 
 /** A single documented shortcut, rendered as a row in the help overlay. */
 export interface ShortcutRow {
@@ -34,6 +35,7 @@ const NAV_PREFIX = 'g';
 @Injectable({ providedIn: 'root' })
 export class KeyboardShortcutsService {
   private readonly router = inject(Router);
+  private readonly orgMode = inject(OrgModeService);
 
   private readonly _helpVisible = signal(false);
   /** True while the shortcuts-help overlay is open. */
@@ -69,9 +71,11 @@ export class KeyboardShortcutsService {
     },
     {
       title: 'Go to',
+      // Display, not identity: an entry with a `termKey` is worded by the tenant's
+      // organization mode, and this is already a computed so it tracks a mode change.
       rows: this.navItems.map((item) => ({
         keys: [NAV_PREFIX, item.shortcut as string],
-        label: item.name,
+        label: sidebarLabel(item, this.orgMode.terms()),
       })),
     },
     {

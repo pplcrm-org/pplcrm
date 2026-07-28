@@ -1,11 +1,20 @@
 import { z } from 'zod';
+import { AUTH_ROLES } from '../auth';
 import { emailSchema, nameSchema } from './core.schema';
+
+/**
+ * A role arriving from a client. Constrained to AUTH_ROLES because an unrecognised role is
+ * worse than a missing one: it lands in `authusers.role` where every permission check falls
+ * through it. (A free-form string here previously let the label 'editor' — the display name
+ * for the `user` role — be written verbatim.)
+ */
+const authRoleSchema = z.enum(AUTH_ROLES);
 
 export const InviteAuthUserObj = z.object({
   email: emailSchema,
   first_name: nameSchema('First name'),
   last_name: nameSchema('Last name').nullable().optional(),
-  role: z.string().max(100).nullable().optional(),
+  role: authRoleSchema.nullable().optional(),
   /** Campaigns §15 — assign the invitee to a campaign; null/absent = the office context. */
   campaign_id: z.string().nullable().optional(),
 });
@@ -23,8 +32,21 @@ export const NotificationPreferencesObj = z.object({
   email_assigned_in_app: z.boolean().default(true),
   export_ready: z.boolean().default(true),
   export_ready_in_app: z.boolean().default(true),
+  // No `import_summary_in_app` twin: imports have never produced an in-app notification, only
+  // the email (see import.handlers.ts). A toggle governing nothing is worse than no toggle.
   import_summary: z.boolean().default(true),
-  import_summary_in_app: z.boolean().default(true),
+  /**
+   * Text me when a volunteer is waiting for companion-app approval.
+   *
+   * Still the only SMS preference — a third channel, not the other half of an email/bell pair,
+   * so it has no `_in_app` twin and the email and bell alerts for this event fire regardless.
+   *
+   * Defaults ON despite the cost of a text, because the failure it prevents is worse than the
+   * interruption it causes: an unapproved volunteer is standing at a door unable to work, and
+   * nobody finds out until an admin happens to check. Anyone who disagrees turns it off in
+   * Settings, and an admin with no mobile on file is never texted either way.
+   */
+  companion_approval_sms: z.boolean().default(true),
 });
 
 /**
@@ -59,7 +81,7 @@ export const UpdateAuthUserObj = z.object({
   email: emailSchema.optional(),
   first_name: nameSchema('First name').optional(),
   last_name: nameSchema('Last name').nullable().optional(),
-  role: z.string().max(100).nullable().optional(),
+  role: authRoleSchema.nullable().optional(),
   verified: z.boolean().optional(),
   two_factor_enabled: z.boolean().optional(),
   notification_preferences: NotificationPreferencesObj.optional(),
@@ -72,3 +94,9 @@ export const Verify2FAObj = z.object({
   code: z.string().length(6),
   rememberMe: z.boolean().optional(),
 });
+
+/**
+ * The resolved preference set (every key present). `IAuthUserRecord` imports this rather than
+ * restating the keys — the hand-written copy had silently fallen two keys behind.
+ */
+export type NotificationPreferencesType = z.infer<typeof NotificationPreferencesObj>;

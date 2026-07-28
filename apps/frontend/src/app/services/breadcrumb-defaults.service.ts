@@ -2,12 +2,22 @@ import { Injectable, inject } from '@angular/core';
 import { ActivatedRouteSnapshot, NavigationEnd, Router } from '@angular/router';
 import { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
 import { BreadcrumbsService } from '@uxcommon/components/breadcrumbs/breadcrumbs.service';
+import type { TermKey } from '@common';
+
+import { OrgModeService } from './org-mode.service';
 
 /**
  * A route's `data.breadcrumb`: a single label (linked to that route's own URL),
  * or a pre-built trail for flat routes that conceptually nest (e.g. /imports/new).
  */
-export type RouteBreadcrumbData = string | PcBreadcrumb[];
+export type RouteBreadcrumbData = string | PcBreadcrumb[] | { term: TermKey };
+
+/** A `data.breadcrumb` whose label is worded by the tenant's organization mode. */
+function isTermCrumb(raw: unknown): raw is { term: TermKey } {
+  return (
+    !!raw && typeof raw === 'object' && !Array.isArray(raw) && typeof (raw as { term?: unknown }).term === 'string'
+  );
+}
 
 /**
  * Publishes a default breadcrumb trail for every navigation, built from
@@ -25,6 +35,7 @@ export type RouteBreadcrumbData = string | PcBreadcrumb[];
 export class BreadcrumbDefaultsService {
   private readonly router = inject(Router);
   private readonly breadcrumbs = inject(BreadcrumbsService);
+  private readonly orgMode = inject(OrgModeService);
   private started = false;
 
   public start(): void {
@@ -53,6 +64,8 @@ export class BreadcrumbDefaultsService {
         crumbs.push({ label: raw, route: url });
       } else if (Array.isArray(raw)) {
         crumbs.push(...(raw as PcBreadcrumb[]));
+      } else if (isTermCrumb(raw)) {
+        crumbs.push({ label: this.orgMode.term(raw.term), route: url });
       }
       node = node.firstChild;
     }

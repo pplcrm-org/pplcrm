@@ -14,7 +14,17 @@ import { CompanionOpObj } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 
 import { CompanionSessionService } from '../gate/companion-api';
-import { applyLocalOps, isTempPersonId, meStats, nextDoor, opPersonId, type LocalOp } from './canvass-derive';
+import {
+  applyLocalOps,
+  deriveSegments,
+  isTempPersonId,
+  meStats,
+  nextDoor,
+  opPersonId,
+  segmentKeyOf,
+  type CanvassSegment,
+  type LocalOp,
+} from './canvass-derive';
 
 /**
  * The canvass companion's signals store (COMPANION-APPS-PLAN.md §6). Provided
@@ -74,7 +84,19 @@ interface LastAction {
   household_id: string;
 }
 
-const QUEUE_KEY_PREFIX = 'pc-canvass-queue:';
+/**
+ * The offline queue, keyed per DEVICE rather than per link.
+ *
+ * It used to hang off the capability token, which was fine while a token was the only
+ * way in. It no longer is: a volunteer can arrive on `/t/:token` in the morning and on
+ * `/canvass` (session-first, after joining by QR) in the afternoon, and a per-token key
+ * would strand the morning's unsynced results under a key nothing reads again. Every op
+ * already carries the turf it belongs to, so one queue per device is both correct and
+ * simpler.
+ */
+const QUEUE_KEY = 'pc-canvass-queue';
+/** Pre-2026-07-28 per-token keys, adopted once so a deploy never eats an offline shift. */
+const LEGACY_QUEUE_KEY_PREFIX = 'pc-canvass-queue:';
 /**
  * Doors THIS device logged this shift.
  *
@@ -113,6 +135,17 @@ export class CanvassStore {
   public readonly sessionExpired = signal(false);
   public readonly loadError = signal<string | null>(null);
   public readonly view = signal<CanvassView>({ kind: 'landing' });
+  /**
+   * Which street the walk list and map are scoped to; null = the whole turf.
+   *
+   * Lives here rather than in the list component so the list and the map can never show
+   * different scopes, and so switching tabs doesn't silently widen it back out.
+   */
+  public readonly segmentKey = signal<string | null>(null);
+  /** When the server payload was last pulled. Drives "Updated just now". */
+  public readonly lastRefreshedAt = signal<Date | null>(null);
+  /** A refresh is in flight — distinct from the initial load, which blanks the screen. */
+  public readonly refreshing = signal(false);
 
   /** All ops recorded this session (queued + acked) — the optimistic overlay source. */
   private readonly localOps = signal<QueuedOp[]>([]);
@@ -131,11 +164,32 @@ export class CanvassStore {
     const payload = this.payload();
     return payload ? applyLocalOps(payload.households, this.localOps()) : [];
   });
+  /** Every street in this turf, in walk order, with its own progress. */
+  public readonly segments = computed<CanvassSegment[]>(() => deriveSegments(this.households()));
+  /**
+   * The doors currently in scope — the whole turf, or one street.
+   *
+   * A scope naming a street that no longer exists (the turf was refreshed from its list
+   * and that street dropped out) falls back to the whole turf rather than showing an
+   * empty list: the volunteer did nothing wrong and an empty screen would not say so.
+   */
+  public readonly scopedHouseholds = computed<CompanionHousehold[]>(() => {
+    const key = this.segmentKey();
+    if (key == null) return this.households();
+    const matching = this.households().filter((h) => segmentKeyOf(h) === key);
+    return matching.length > 0 ? matching : this.households();
+  });
+  /** The scoped street, or null when the whole turf is in view. */
+  public readonly activeSegment = computed<CanvassSegment | null>(() => {
+    const key = this.segmentKey();
+    return key == null ? null : (this.segments().find((s) => s.key === key) ?? null);
+  });
   /** Turf-wide stats — these include every canvasser's work, not just this device's. */
   public readonly stats = computed(() => meStats(this.households()));
   /** Doors this volunteer logged on this device this shift. */
   public readonly myDoorCount = computed(() => this.myDoorIds().size);
-  public readonly nextDoorId = computed(() => nextDoor(this.households())?.id ?? null);
+  /** Scoped, so narrowing to a street moves the ring to the next door ON that street. */
+  public readonly nextDoorId = computed(() => nextDoor(this.scopedHouseholds())?.id ?? null);
   /**
    * Undo is offered for door outcomes (inverse op) or while the op is still
    * queued AND not in the in-flight batch — mid-flight the server may already
@@ -186,6 +240,7 @@ export class CanvassStore {
         return;
       }
       this.payload.set((await res.json()) as CompanionTurfPayload);
+      this.lastRefreshedAt.set(new Date());
       // After the payload, because the tally is keyed by turf id.
       this.restoreMyDoors();
       void this.flush();
@@ -193,6 +248,65 @@ export class CanvassStore {
       this.loadError.set('Could not load your turf. Check your connection and try again.');
       if (this.queue().length > 0) this.syncStatus.set('offline');
     }
+  }
+
+  /**
+   * Re-pull the current turf without disturbing anything local.
+   *
+   * With several volunteers on one turf, a payload that never refreshes means two people
+   * knock the same door — the app would be actively hiding the fact that someone else
+   * already did it. Only the SERVER payload is replaced; `localOps` replay on top
+   * unchanged, so nothing queued or optimistic is lost, and re-applying an op the server
+   * already has is a no-op.
+   *
+   * Silent on failure by design: this runs on a timer, and a poll that missed on one
+   * tick is not something to interrupt a volunteer at a doorstep about. The narrated
+   * "Updated …" timestamp is what tells them how fresh the numbers are.
+   */
+  public async refresh(): Promise<void> {
+    const turfId = this.payload()?.turf_id;
+    if (!turfId || this.refreshing() || !this.online()) return;
+    this.refreshing.set(true);
+    try {
+      const res = await fetch(`/api/canvass/turf/${encodeURIComponent(turfId)}`, {
+        headers: this.session.headers(),
+      });
+      if (res.status === 401 || res.status === 403) {
+        this.expireSession();
+        return;
+      }
+      if (!res.ok) return;
+      this.payload.set((await res.json()) as CompanionTurfPayload);
+      this.lastRefreshedAt.set(new Date());
+    } catch {
+      // Transient — keep showing what we have and let the next tick try again.
+    } finally {
+      this.refreshing.set(false);
+    }
+  }
+
+  /**
+   * Open the app with a device session and no link.
+   *
+   * This is where a QR joiner lands: their turf assignment token is hashed and can never
+   * be handed back to them, so there is no `/t/:token` URL to send them to. One turf
+   * opens straight into the walk list — the common case after a turf-scoped QR — and
+   * anything else goes to the picker, which explains itself either way.
+   */
+  public async bootstrapFromSession(): Promise<void> {
+    this.restoreQueue();
+    this.loadError.set(null);
+    const choices = await this.fetchTurfChoices();
+    if (!choices) {
+      this.loadError.set('Could not load your turfs. Check your connection and try again.');
+      return;
+    }
+    const only = choices.mine.length === 1 ? choices.mine[0] : null;
+    if (only) {
+      await this.switchTurf(only.turf_id);
+      return;
+    }
+    this.view.set({ kind: 'picker' });
   }
 
   /**
@@ -236,6 +350,9 @@ export class CanvassStore {
         return false;
       }
       this.payload.set((await res.json()) as CompanionTurfPayload);
+      this.lastRefreshedAt.set(new Date());
+      // A street scope belongs to the turf it was chosen on, never to the next one.
+      this.segmentKey.set(null);
       this.restoreMyDoors();
       this.view.set({ kind: 'list' });
       void this.flush();
@@ -468,6 +585,7 @@ export class CanvassStore {
     this.lastAction.set(null);
     this.workOffline.set(false);
     this.syncStatus.set('idle');
+    this.segmentKey.set(null);
     this.view.set({ kind: 'landing' });
   }
 
@@ -573,7 +691,7 @@ export class CanvassStore {
 
   private restoreQueue(): void {
     try {
-      const raw = localStorage.getItem(this.storageKey());
+      const raw = localStorage.getItem(QUEUE_KEY) ?? this.legacyQueue();
       if (!raw) return;
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) return;
@@ -583,6 +701,15 @@ export class CanvassStore {
     } catch {
       // Corrupt/blocked storage — start with an empty queue rather than crash.
     }
+  }
+
+  /** Adopt a queue written under the old per-token key, then retire that key. */
+  private legacyQueue(): string | null {
+    if (!this.token) return null;
+    const legacyKey = `${LEGACY_QUEUE_KEY_PREFIX}${this.token}`;
+    const raw = localStorage.getItem(legacyKey);
+    if (raw) localStorage.removeItem(legacyKey);
+    return raw;
   }
 
   /**
@@ -606,7 +733,7 @@ export class CanvassStore {
   }
 
   private storageKey(): string {
-    return `${QUEUE_KEY_PREFIX}${this.token}`;
+    return QUEUE_KEY;
   }
 
   /** The server created the person — swap the temp id everywhere it appears. */

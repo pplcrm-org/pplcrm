@@ -129,8 +129,9 @@ describe('PledgesGridComponent', () => {
   });
 
   it('should format currency and dates defensively', () => {
-    expect(component['formatCurrency'](2000)).toBe('$20.00');
-    expect(component['formatCurrency'](null)).toBe('$0.00');
+    // Workspace currency (Workspace → Organization); CAD is the default.
+    expect(component['formatCurrency'](2000)).toBe('CA$20.00');
+    expect(component['formatCurrency'](null)).toBe('CA$0.00');
     expect(component['formatDate'](null)).toBe('—');
     expect(component['formatDate']('2026-02-01T00:00:00Z')).toContain('2026');
   });

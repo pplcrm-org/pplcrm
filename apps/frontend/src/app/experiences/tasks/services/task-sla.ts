@@ -17,6 +17,9 @@ export interface TaskSlaInputs {
   workingHoursStart: string | null | undefined;
   /** '1,2,3,4,5' — day numbers, 0=Sun … 6=Sat. */
   workingDays: string | null | undefined;
+  /** Workspace IANA zone (`organization.timezone`); without it the pill would use the
+   *  viewer's browser zone and disagree with the server-computed breach badge. */
+  timeZone?: string | null | undefined;
 }
 
 function parseWorkingDays(raw: string | null | undefined): number[] {
@@ -49,7 +52,8 @@ export function computeTaskSla(inputs: TaskSlaInputs, now: Date = new Date()): S
   const start = inputs.workingHoursStart || '09:00';
   const end = inputs.workingHoursEnd || '17:00';
 
-  const elapsedHours = calculateWorkingTimeMs(created, now, workingDays, start, end) / MS_PER_HOUR;
+  const elapsedHours =
+    calculateWorkingTimeMs(created, now, workingDays, start, end, inputs.timeZone ?? undefined) / MS_PER_HOUR;
   const remaining = target - elapsedHours;
   const targetLabel = Math.round(target);
 

@@ -67,6 +67,12 @@ export class TourService extends TRPCService<any> {
   /**
    * Auto-start exactly once: first time a demo-mode user reaches the shell and the tour has never
    * been offered. Never on a later sign-in, never after a skip.
+   *
+   * Still gated on demo mode, deliberately. Modes that skip the demo dataset (see
+   * ORG_MODE_SEEDS_DEMO) get no tour, which is correct: every stop's copy describes seeded
+   * records ("one newsletter was already sent for you"), so running it on an empty workspace
+   * would narrate things that are not there. Those workspaces are onboarded by the go-live
+   * wizard and the dashboard checklist instead. A mode-neutral tour is its own piece of work.
    */
   public async maybeAutoStart(): Promise<void> {
     await this.load();

@@ -31,6 +31,7 @@ import { TASK_STATUSES, calculateWorkingTimeMs } from '../../../../../../libs/co
 import type { ReorderTasksType } from '../../../../../../libs/common/src';
 import { NotFoundError } from '../../errors/app-errors';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
+import { type SlaPolicy, settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
 
 export class TasksController extends BaseController<'tasks', TasksRepo> {
   private mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
@@ -109,33 +110,16 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
   }
 
   /** Working-hours SLA config for this tenant, with the same fallbacks used tenant-wide. */
-  private async loadSlaConfig(tenant_id: string): Promise<{
-    taskSlaHours: number;
-    workingDays: number[];
-    workingHoursStart: string;
-    workingHoursEnd: string;
-  }> {
+  private async loadSlaConfig(tenant_id: string): Promise<SlaPolicy> {
     const settingsRows = await new SettingsRepo().getAllForTenant(tenant_id);
-    const settingsMap = settingsRows.reduce<Record<string, unknown>>((acc, row) => {
-      acc[row.key] = row.value;
-      return acc;
-    }, {});
-
-    const workingDaysStr = String(settingsMap['sla.working_days'] ?? '1,2,3,4,5');
-    return {
-      taskSlaHours: Number(settingsMap['sla.tasks_hours'] ?? 24),
-      workingDays: workingDaysStr
-        .split(',')
-        .map((s) => Number(s.trim()))
-        .filter((n) => !isNaN(n)),
-      workingHoursStart: String(settingsMap['sla.working_hours_start'] ?? '09:00'),
-      workingHoursEnd: String(settingsMap['sla.working_hours_end'] ?? '17:00'),
-    };
+    return slaPolicyFrom(settingsMapFrom(settingsRows));
   }
 
   /** Live count of open tasks past the working-hours SLA target — the sidebar badge (spec §4). */
   public async countSlaBreaches(auth: IAuthKeyPayload): Promise<number> {
-    const { taskSlaHours, workingDays, workingHoursStart, workingHoursEnd } = await this.loadSlaConfig(auth.tenant_id);
+    const { taskSlaHours, workingDays, workingHoursStart, workingHoursEnd, timeZone } = await this.loadSlaConfig(
+      auth.tenant_id,
+    );
     const taskSlaMs = taskSlaHours * 60 * 60 * 1000;
     const now = new Date();
 
@@ -147,6 +131,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
         workingDays,
         workingHoursStart,
         workingHoursEnd,
+        timeZone,
       );
       return workingMs > taskSlaMs ? count + 1 : count;
     }, 0);

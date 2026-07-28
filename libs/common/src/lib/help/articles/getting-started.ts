@@ -273,7 +273,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
       {
         kind: 'list',
         items: [
-          'Toggle light or dark theme with the sun/moon button in the top bar. Administrators can set the workspace default under **Workspace → Appearance**.',
+          'Toggle light or dark theme with the sun/moon button in the top bar, or pick Light/Dark/System in **Settings** (avatar menu → Settings). Administrators set the starting theme for everyone under **Workspace → Organization**; once you pick your own, it stays yours.',
           'The arrows button in the top bar switches full-screen mode on and off when you want the grid to use every pixel.',
         ],
       },

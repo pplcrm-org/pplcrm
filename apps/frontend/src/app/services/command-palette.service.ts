@@ -88,7 +88,7 @@ export class CommandPaletteService {
       label: 'Open settings',
       icon: 'cog-6-tooth',
       keywords: 'preferences account',
-      run: () => this.go('/settings'),
+      run: () => this.go('/settings/notifications'),
     },
   ];
 

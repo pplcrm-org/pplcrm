@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 
-import type { Transaction } from 'kysely';
+import type { Kysely, Transaction } from 'kysely';
 
 import type {
   AddDeliveryRequestType,
@@ -53,6 +53,42 @@ interface RouteParamsSnapshot {
   avgSpeedKmh: number;
   includeReturnLeg: boolean;
   drivers: number | null;
+}
+
+/**
+ * Workspace planning defaults (`deliveries.route_defaults`) — what the Plan routes page starts
+ * from before an organizer touches anything. Editable from Workspace → Deliveries; the start
+ * address is additionally remembered from the last commit.
+ */
+export interface RouteDefaults extends RouteParamsSnapshot {
+  start_address: string | null;
+}
+
+export const ROUTE_DEFAULTS: RouteDefaults = {
+  start_address: null,
+  serviceMinutes: SERVICE_MINUTES_PER_STOP,
+  avgSpeedKmh: AVG_SPEED_KMH,
+  includeReturnLeg: false,
+  drivers: null,
+};
+
+/** Read stored defaults defensively — the value is free-form jsonb, not a validated column. */
+function routeDefaultsFrom(raw: unknown): RouteDefaults {
+  const obj = typeof raw === 'string' ? safeParse(raw) : raw;
+  const rec = (obj ?? {}) as Record<string, unknown>;
+  const positive = (value: unknown, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+
+  return {
+    start_address: typeof rec['start_address'] === 'string' && rec['start_address'] ? rec['start_address'] : null,
+    serviceMinutes:
+      typeof rec['serviceMinutes'] === 'number' && rec['serviceMinutes'] >= 0
+        ? rec['serviceMinutes']
+        : ROUTE_DEFAULTS.serviceMinutes,
+    avgSpeedKmh: positive(rec['avgSpeedKmh'], ROUTE_DEFAULTS.avgSpeedKmh),
+    includeReturnLeg: rec['includeReturnLeg'] === true,
+    drivers: positive(rec['drivers'], 0) || null,
+  };
 }
 
 function resolveParams(input: PlanDeliveriesType): PlanParams {
@@ -429,15 +465,22 @@ export class DeliveriesController {
     });
   }
 
-  public async getRouteDefaults(tenant: string): Promise<{ start_address: string | null }> {
+  public async getRouteDefaults(tenant: string): Promise<RouteDefaults> {
     const row = await this.routesRepo.db
       .selectFrom('settings')
       .select('value')
       .where('tenant_id', '=', tenant)
       .where('key', '=', ROUTE_DEFAULTS_SETTING_KEY)
       .executeTakeFirst();
-    const value = row?.value as { start_address?: string } | null | undefined;
-    return { start_address: value?.start_address ?? null };
+    return routeDefaultsFrom(row?.value);
+  }
+
+  /** Workspace → Deliveries. Replaces the planning knobs; the remembered start address survives. */
+  public async setRouteDefaults(auth: IAuthKeyPayload, input: Partial<RouteDefaults>): Promise<RouteDefaults> {
+    const current = await this.getRouteDefaults(auth.tenant_id);
+    const next = routeDefaultsFrom({ ...current, ...input });
+    await this.writeRouteDefaults(this.routesRepo.db, auth, next);
+    return next;
   }
 
   private async saveRouteDefaults(
@@ -445,7 +488,18 @@ export class DeliveriesController {
     auth: IAuthKeyPayload,
     value: { start_address: string },
   ): Promise<void> {
-    await trx
+    // Merge, never replace: a commit only knows the start address, and overwriting the whole
+    // value here would silently reset the planning defaults an admin configured.
+    const current = await this.getRouteDefaults(auth.tenant_id);
+    await this.writeRouteDefaults(trx, auth, { ...current, ...value });
+  }
+
+  private async writeRouteDefaults(
+    db: Kysely<Models> | Transaction<Models>,
+    auth: IAuthKeyPayload,
+    value: RouteDefaults,
+  ): Promise<void> {
+    await db
       .insertInto('settings')
       .values({
         tenant_id: auth.tenant_id,

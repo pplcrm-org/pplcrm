@@ -1,13 +1,25 @@
 import { createHash, createHmac, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'crypto';
 import { createSigner } from 'fast-jwt';
 import type { QueryResult, Transaction } from 'kysely';
-import { RESERVED_SUBDOMAINS, hasSettledPlan, slugifyHandle } from '../../../../../../libs/common/src';
+import {
+  DEFAULT_ORG_MODE,
+  MODULE_VISIBILITY_SETTINGS_KEY,
+  ORG_MODE_SEEDS_DEMO,
+  ORG_MODE_SETTINGS_KEY,
+  RESERVED_SUBDOMAINS,
+  hasSettledPlan,
+  isOrgMode,
+  parseModuleOverrides,
+  slugifyHandle,
+} from '../../../../../../libs/common/src';
 import { signedFileDownloadUrl } from '../../lib/signed-download';
 
 import type {
   IAuthKeyPayload,
   INow,
   InviteAuthUserType,
+  ModuleId,
+  OrgMode,
   UpdateAuthUserType,
   getAllOptionsType,
   signInInputType,
@@ -505,6 +517,8 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       let tenant_demo_mode_at: Date | null = null;
       let tenant_plan_selected = false;
       let tenant_slug: string | null = null;
+      let tenant_org_mode: OrgMode = DEFAULT_ORG_MODE;
+      let tenant_module_overrides: Partial<Record<ModuleId, boolean>> = {};
       if (auth.tenant_id) {
         const tenant = await this.getRepo()
           .db.selectFrom('tenants')
@@ -520,6 +534,23 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         tenant_demo_mode_at = tenant?.demo_mode_at ?? null;
         tenant_plan_selected = hasSettledPlan(tenant?.subscription_status);
         tenant_slug = tenant?.slug ?? null;
+
+        // Organization mode rides on the session so the sidebar can label itself before
+        // the settings snapshot loads (which no page requests at boot). Both keys in one
+        // read; either being absent is normal — every workspace predating modes has neither.
+        const modeRows = await this.getRepo()
+          .db.selectFrom('settings')
+          .select(['key', 'value'])
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('key', 'in', [ORG_MODE_SETTINGS_KEY, MODULE_VISIBILITY_SETTINGS_KEY])
+          .execute();
+        for (const row of modeRows) {
+          if (row.key === ORG_MODE_SETTINGS_KEY && isOrgMode(row.value)) {
+            tenant_org_mode = row.value;
+          } else if (row.key === MODULE_VISIBILITY_SETTINGS_KEY) {
+            tenant_module_overrides = parseModuleOverrides(row.value);
+          }
+        }
       }
 
       return {
@@ -532,6 +563,8 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         tenant_demo_mode_at,
         tenant_plan_selected,
         tenant_slug,
+        tenant_org_mode,
+        tenant_module_overrides,
       };
     } catch (err) {
       throw new InternalError('Something went wrong, please try again', undefined, { cause: err });
@@ -1478,6 +1511,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
 
   public async signUp(input: signUpInputType) {
     const email = input.email.toLowerCase();
+    // Zod defaults this, but signUp is also reachable from tests and internal callers that
+    // build the input by hand — fall back rather than seeding an undefined mode.
+    const orgMode: OrgMode = isOrgMode(input.mode) ? input.mode : DEFAULT_ORG_MODE;
     let token: { auth_token: string; refresh_token: string; refresh_expires_at: Date | null } = {
       auth_token: '',
       refresh_token: '',
@@ -1544,6 +1580,16 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
               createdby_id: user.id,
               updatedby_id: user.id,
             },
+            {
+              tenant_id,
+              // `settings.value` is jsonb: a bare string is not valid JSON, so this has to
+              // go in as `"office"`, not `office`. The `false` above works only because a
+              // JSON boolean and a JS boolean serialize identically.
+              key: ORG_MODE_SETTINGS_KEY,
+              value: JSON.stringify(orgMode),
+              createdby_id: user.id,
+              updatedby_id: user.id,
+            },
           ])
           .execute();
 
@@ -1568,21 +1614,30 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
 
         // Starter tags/issues and forms survive exit-demo; the demo dataset does
         // not — see modules/demo. Tags first: the demo seeder attaches to them by name.
-        await seedStarterTags({ tenant_id, user_id: userId }, trx);
-        const starterForms = await seedStarterForms({ tenant_id, user_id: userId, campaign_id: campaign.id }, trx);
+        await seedStarterTags({ tenant_id, user_id: userId, mode: orgMode }, trx);
+        const starterForms = await seedStarterForms(
+          { tenant_id, user_id: userId, campaign_id: campaign.id, mode: orgMode },
+          trx,
+        );
         // Built-in lists (§8) — product-owned, so they are seeded here rather
         // than with the demo data and survive exiting demo mode.
         await ensureSystemLists({ tenant_id, user_id: userId, campaign_id: String(campaign.id) }, trx);
-        await seedDemoData(
-          {
-            tenant_id,
-            user_id: userId,
-            campaign_id: String(campaign.id),
-            placeholder_household_id: String(placeholderHousehold.id),
-            forms: starterForms,
-          },
-          trx,
-        );
+        // The demo dataset is a fictional municipal campaign, so it is only seeded for the
+        // modes whose starter vocabulary it matches (it attaches to those tags by name and
+        // those forms by slug). Other modes start clean — `demo_mode_at` stays null, which
+        // is already what GoLiveService.demoDone reads.
+        if (ORG_MODE_SEEDS_DEMO[orgMode]) {
+          await seedDemoData(
+            {
+              tenant_id,
+              user_id: userId,
+              campaign_id: String(campaign.id),
+              placeholder_household_id: String(placeholderHousehold.id),
+              forms: starterForms,
+            },
+            trx,
+          );
+        }
         // Queue the built-ins' first membership refresh AFTER the demo people
         // exist (and in the same transaction — transactional outbox), so the
         // Lists page shows real counts on first visit instead of two zeroes.
@@ -2482,7 +2537,7 @@ ${waitlistNote}
       export_ready: true,
       export_ready_in_app: true,
       import_summary: true,
-      import_summary_in_app: true,
+      companion_approval_sms: true,
     };
 
     const rawPreferences = (record['profile'] as Record<string, unknown>)?.['preferences'] ?? record['preferences'];

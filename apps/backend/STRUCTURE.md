@@ -25,6 +25,7 @@ apps/
           2026-07-28-turf-multiple-canvassers.ts
           2026-07-28-x-tenant-approval.ts
           2026-07-28-z-canvass-volunteer-roam.ts
+          2026-07-28-zz-companion-join-codes.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -107,6 +108,7 @@ apps/
           secret-crypto.ts
           signed-download.ts
           signin-attempts.ts
+          sla-policy.ts
           slug.ts
           storage-key.ts
           storage.service.ts
@@ -182,8 +184,10 @@ apps/
             trpc.router.ts
           companion-access/
             repositories/
+              approval-tokens.repo.ts
               companion-sessions.repo.ts
               companion-volunteers.repo.ts
+              join-codes.repo.ts
             routes/
               companion-public.route.ts
             controller.ts

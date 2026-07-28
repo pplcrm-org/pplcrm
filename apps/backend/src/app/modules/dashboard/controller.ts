@@ -3,6 +3,7 @@ import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth
 import { sql } from 'kysely';
 import { calculateWorkingTimeMs, TASK_OPEN_STATUSES } from '../../../../../../libs/common/src';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
+import { settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
 
 export class DashboardController {
   private get db() {
@@ -15,20 +16,8 @@ export class DashboardController {
     // Fetch SLA settings
     const settingsRepo = new SettingsRepo();
     const settingsRows = await settingsRepo.getAllForTenant(tenant_id);
-    const settingsMap = settingsRows.reduce<Record<string, unknown>>((acc, row) => {
-      acc[row.key] = row.value;
-      return acc;
-    }, {});
-
-    const taskSlaHours = Number(settingsMap['sla.tasks_hours'] ?? 24);
-    const emailSlaHours = Number(settingsMap['sla.emails_hours'] ?? 24);
-    const workingDaysStr = String(settingsMap['sla.working_days'] ?? '1,2,3,4,5');
-    const workingDays = workingDaysStr
-      .split(',')
-      .map((s) => Number(s.trim()))
-      .filter((n) => !isNaN(n));
-    const workingHoursStart = String(settingsMap['sla.working_hours_start'] ?? '09:00');
-    const workingHoursEnd = String(settingsMap['sla.working_hours_end'] ?? '17:00');
+    const sla = slaPolicyFrom(settingsMapFrom(settingsRows));
+    const { taskSlaHours, emailSlaHours, workingDays, workingHoursStart, workingHoursEnd, timeZone } = sla;
 
     const taskSlaMs = taskSlaHours * 60 * 60 * 1000;
     const emailSlaMs = emailSlaHours * 60 * 60 * 1000;
@@ -256,6 +245,7 @@ export class DashboardController {
           workingDays,
           workingHoursStart,
           workingHoursEnd,
+          timeZone,
         );
         if (workingTimeMs > emailSlaMs && !firstResponseTime) {
           if (assignedUser) {
@@ -289,6 +279,7 @@ export class DashboardController {
           workingDays,
           workingHoursStart,
           workingHoursEnd,
+          timeZone,
         );
         if (workingTimeMs > taskSlaMs) {
           const assignedUser = (task.assigned_to && userStatsMap[task.assigned_to]) || null;
@@ -351,6 +342,7 @@ export class DashboardController {
         workingDays,
         workingHoursStart,
         workingHoursEnd,
+        timeZone,
       );
       firstResponseDueHours = Math.max(0, (emailSlaMs - workedMs) / (1000 * 60 * 60));
     }
@@ -449,10 +441,10 @@ export class DashboardController {
       breachedTasksList: [],
       taskSlaHours,
       emailSlaHours,
-      emailSlaWarningThreshold: Number(settingsMap['sla.email_warning_threshold'] ?? 1),
-      emailSlaCriticalThreshold: Number(settingsMap['sla.email_critical_threshold'] ?? 4),
-      taskSlaWarningThreshold: Number(settingsMap['sla.task_warning_threshold'] ?? 1),
-      taskSlaCriticalThreshold: Number(settingsMap['sla.task_critical_threshold'] ?? 4),
+      emailSlaWarningThreshold: sla.emailWarningThreshold,
+      emailSlaCriticalThreshold: sla.emailCriticalThreshold,
+      taskSlaWarningThreshold: sla.taskWarningThreshold,
+      taskSlaCriticalThreshold: sla.taskCriticalThreshold,
     };
   }
 
@@ -464,19 +456,9 @@ export class DashboardController {
     // Fetch SLA settings
     const settingsRepo = new SettingsRepo();
     const settingsRows = await settingsRepo.getAllForTenant(tenant_id);
-    const settingsMap = settingsRows.reduce<Record<string, unknown>>((acc, row) => {
-      acc[row.key] = row.value;
-      return acc;
-    }, {});
-
-    const emailSlaHours = Number(settingsMap['sla.emails_hours'] ?? 24);
-    const workingDaysStr = String(settingsMap['sla.working_days'] ?? '1,2,3,4,5');
-    const workingDays = workingDaysStr
-      .split(',')
-      .map((s) => Number(s.trim()))
-      .filter((n) => !isNaN(n));
-    const workingHoursStart = String(settingsMap['sla.working_hours_start'] ?? '09:00');
-    const workingHoursEnd = String(settingsMap['sla.working_hours_end'] ?? '17:00');
+    const { emailSlaHours, workingDays, workingHoursStart, workingHoursEnd, timeZone } = slaPolicyFrom(
+      settingsMapFrom(settingsRows),
+    );
 
     const emailSlaMs = emailSlaHours * 60 * 60 * 1000;
 
@@ -582,6 +564,7 @@ export class DashboardController {
         workingDays,
         workingHoursStart,
         workingHoursEnd,
+        timeZone,
       );
 
       if (workingTimeMs > emailSlaMs && !firstResponseTime) {
@@ -618,19 +601,9 @@ export class DashboardController {
     // Fetch SLA settings
     const settingsRepo = new SettingsRepo();
     const settingsRows = await settingsRepo.getAllForTenant(tenant_id);
-    const settingsMap = settingsRows.reduce<Record<string, unknown>>((acc, row) => {
-      acc[row.key] = row.value;
-      return acc;
-    }, {});
-
-    const taskSlaHours = Number(settingsMap['sla.tasks_hours'] ?? 24);
-    const workingDaysStr = String(settingsMap['sla.working_days'] ?? '1,2,3,4,5');
-    const workingDays = workingDaysStr
-      .split(',')
-      .map((s) => Number(s.trim()))
-      .filter((n) => !isNaN(n));
-    const workingHoursStart = String(settingsMap['sla.working_hours_start'] ?? '09:00');
-    const workingHoursEnd = String(settingsMap['sla.working_hours_end'] ?? '17:00');
+    const { taskSlaHours, workingDays, workingHoursStart, workingHoursEnd, timeZone } = slaPolicyFrom(
+      settingsMapFrom(settingsRows),
+    );
 
     const taskSlaMs = taskSlaHours * 60 * 60 * 1000;
 
@@ -672,6 +645,7 @@ export class DashboardController {
         workingDays,
         workingHoursStart,
         workingHoursEnd,
+        timeZone,
       );
       if (workingTimeMs > taskSlaMs) {
         const assigneeName = task.assigned_to ? userMap.get(task.assigned_to) || null : null;

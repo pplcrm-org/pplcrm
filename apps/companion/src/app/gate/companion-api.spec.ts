@@ -57,4 +57,47 @@ describe('CompanionSessionService.getAccess', () => {
     fetchMock.mockRejectedValue(new TypeError('network down'));
     await expect(service.getAccess('turf', 'tok-12345678')).resolves.toEqual({ state: 'unreachable' });
   });
+
+  it('sends no token for the session kind — the session header is the whole request', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }));
+    await service.getAccess('session', null);
+    const url = String(fetchMock.mock.calls[0]?.[0]);
+    expect(url).toContain('kind=session');
+    expect(url).not.toContain('token=');
+  });
+});
+
+describe('CompanionSessionService join + approve', () => {
+  let service: CompanionSessionService;
+  let fetchMock: FetchMock;
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
+    vi.stubGlobal('fetch', fetchMock);
+    service = new CompanionSessionService();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns the one-shot claim a QR join verifies with', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ masked: 'p•••@example.com', channel: 'email', claim: 'claim-123' }));
+    const result = await service.joinStart({ code: 'MAPLE4KQ', first_name: 'Priya', email: 'priya@example.com' });
+    expect(result.claim).toBe('claim-123');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('/api/companion/join/start');
+  });
+
+  it('surfaces the uniform refusal rather than inventing its own message', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'That code is not accepting new volunteers.' }, 404));
+    await expect(
+      service.joinStart({ code: 'NOTACODE', first_name: 'Priya', email: 'priya@example.com' }),
+    ).rejects.toThrow(/not accepting new volunteers/);
+  });
+
+  it('treats an unreachable approval link as dead rather than throwing at the admin', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'nope' }, 500));
+    await expect(service.getApproval('tok')).resolves.toEqual({ state: 'dead' });
+  });
 });

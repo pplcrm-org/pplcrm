@@ -21,7 +21,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'notifications', text: 'Notification preferences' },
       {
         kind: 'p',
-        text: 'Notification preferences live in **Settings** (avatar menu → Settings), not on the Profile page. Choose, per event, whether you are alerted by email and in-app: mentions in comments, tasks assigned to you, tasks due, contacts assigned to you, finished exports, and import summaries. Every switch applies instantly. Administrators set workspace defaults, but your choices there are yours. See [Settings and configuration](/help/settings).',
+        text: 'Notification preferences live in **Settings** (avatar menu → Settings), not on the Profile page. Choose, per event, whether you are alerted by email and in-app: mentions in comments, tasks assigned to you, tasks due, contacts assigned to you, emails assigned to you, finished exports, and import summaries. Every switch applies instantly — there is nothing to save. These are yours alone; there is no workspace-wide notification default. See [Settings and configuration](/help/settings).',
       },
       {
         kind: 'callout',
@@ -132,8 +132,8 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       {
         kind: 'list',
         items: [
-          '**Notifications**: a per-event matrix of email and in-app switches (mentions, task assigned, tasks due, person assigned, export ready, import summary). Each toggle saves as you flip it.',
-          '**Appearance**: Theme is Light, Dark, or System (follows your device’s setting), applied live.',
+          '**Notifications**: a per-event matrix of email and in-app switches (mentions, task assigned, tasks due, person assigned, email assigned, export ready, import summary). Each toggle saves as you flip it. Import summaries arrive by email only. There is also one text-message alert — when a volunteer you invited is waiting for approval. It is on by default: an unapproved volunteer is stuck at a door until someone lets them in, so this is the one worth interrupting you for. Turn it off here if you would rather not be texted; you still get the email and the bell either way, and we never text you without a mobile number on your profile.',
+          '**Theme**: Light, Dark, or System (follows your device’s setting), applied live. This is yours alone: an administrator changing the workspace default theme never overrides a theme you picked.',
           '**Passkeys**: the devices that can sign you in; add one with your device prompt, or remove one you no longer trust.',
         ],
       },
@@ -145,14 +145,16 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       {
         kind: 'list',
         items: [
-          '**Organization**: your name, contact details, and mailing address.',
+          '**Organization**: your name, contact details, and mailing address, plus the settings everyone sees the effect of — **time zone**, **currency**, **date format**, and the **default theme** for people who have not picked their own. Time zone is the one worth setting first: it decides what “9am” means for service levels and working hours, and which day a date belongs to across the app. Currency is used for donations, pledges, and event pricing — both what a donor is charged and what you see.',
           '**Campaigns**: your permanent office context and any election campaigns — create and archive them, switch which one you (as an admin) are working in, and read how user assignment works. See [Campaigns and contexts](/help/campaigns-contexts).',
           '**Teams & access**: default role for invitations and the MFA requirement.',
+          '**Data & duplicates**: maintenance for the address matching behind duplicate detection. Recomputing address fingerprints is worth doing if your addresses were imported oddly and duplicates are being missed; it is available once a month.',
           '**Communications**: default from-name and from-address (verified senders only), reply-to, the newsletter footer disclaimer, and double opt-in for web-form subscribers.',
           '**Email sync**: connect your email provider so incoming and outgoing email syncs into your pplCRM inbox.',
           '**Domain verification**: the DNS records (SPF, DKIM, DMARC) that let you send email from your own domain.',
           '**Service levels**: response-time targets for email and tasks, working days and hours, and the warning/critical thresholds behind the dashboard status.',
           '**Donations**: donation limit, residency restrictions, tax credit tiers, and your Stripe connection.',
+          '**Deliveries**: the planning defaults the Plan routes page starts from — minutes per stop, average driving speed, how many drivers, and whether the drive back to the start counts. Organizers can still override any of them for a single plan without changing the defaults.',
           '**App**: how the volunteer-facing apps behave, including whether volunteer route links expire after 30 days. Expiry is the secure default (a forwarded or long-lost link goes dead on its own), but you can turn it off if your delivery routes run longer. Volunteers still verify a code and need a one-time approval either way.',
           '**Storage**: your plan quota, live usage, and the files taking up the most space.',
           '**Billing**: your plan, live usage, and payment details.',

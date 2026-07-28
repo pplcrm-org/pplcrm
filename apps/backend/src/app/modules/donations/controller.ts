@@ -1,4 +1,5 @@
 import { TRPCError } from '@trpc/server';
+import { toStripeCurrency, toWorkspaceCurrency } from '@common';
 import { env } from '../../../env';
 import { BadRequestError, PreconditionFailedError } from '../../errors/app-errors';
 import { getStripe, isMockMode } from '../../lib/stripe-platform-client';
@@ -173,6 +174,15 @@ export class DonationsController extends BaseController<'donations', DonationsRe
   private async getSettingVal(tenantId: string, key: string): Promise<any> {
     const row = await this.settingsRepo.getByKey({ tenant_id: tenantId, key });
     return row?.value;
+  }
+
+  /**
+   * The workspace's transaction currency, lowercased for Stripe. Falls back to the default
+   * rather than throwing: a workspace that never opened Settings still has to be able to
+   * take a gift, and CAD is what every charge was hardcoded to before this setting existed.
+   */
+  private async resolveStripeCurrency(tenantId: string): Promise<string> {
+    return toStripeCurrency(toWorkspaceCurrency(await this.getSettingVal(tenantId, 'organization.currency')));
   }
 
   public calculateTaxCredit(
@@ -363,7 +373,11 @@ export class DonationsController extends BaseController<'donations', DonationsRe
 
     // Connect gate: fails closed unless onboarding is complete (mock mode passes with no account).
     const accountId = await assertStripeConnectReady(auth.tenant_id);
-    const processor = new StripeDonationProcessor({ accountId, feePercent: env.donationsPlatformFeePercent });
+    const processor = new StripeDonationProcessor({
+      accountId,
+      feePercent: env.donationsPlatformFeePercent,
+      currency: await this.resolveStripeCurrency(auth.tenant_id),
+    });
     return processor.createOneTimeCheckout({
       tenantId: auth.tenant_id,
       userId: auth.user_id,
@@ -431,13 +445,14 @@ export class DonationsController extends BaseController<'donations', DonationsRe
 
     // Create a one-off price for this amount (monthly) — a Connect direct charge on the tenant's
     // account; the platform fee on recurring gifts is percent-only (application_fee_percent).
+    const currency = await this.resolveStripeCurrency(auth.tenant_id);
     const session = await getStripe().checkout.sessions.create(
       {
         payment_method_types: ['card'],
         line_items: [
           {
             price_data: {
-              currency: 'cad',
+              currency,
               product_data: { name: 'Monthly Campaign Donation' },
               unit_amount: monthlyAmountCents,
               recurring: { interval: 'month' },

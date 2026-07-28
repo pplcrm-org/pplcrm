@@ -30,3 +30,40 @@ export async function volunteerLinksExpire(
   // Anything other than an explicit "off" means the secure default: links expire.
   return !(row?.value === false || row?.value === 'false');
 }
+
+/** Hard ceiling on a turf link's life, whatever the campaign says. */
+export const MAX_ASSIGNMENT_TTL_DAYS = 30;
+
+/**
+ * When a canvassing turf link stops working.
+ *
+ * The campaign's end date wins when it is sooner (spec §2: "end of the canvass window"),
+ * otherwise the ceiling applies.
+ *
+ * SECURITY (M5): this used to return null — "never expires" — whenever the campaign had
+ * no end date, which is the common case for an ongoing office context. A bearer token
+ * that never expires is a permanent credential sitting in someone's SMS history.
+ *
+ * Lives here rather than on CanvassingController because three callers need it now:
+ * assigning a turf, a volunteer self-claiming one, and the companion-access layer
+ * placing a QR joiner on the turf their code named. The last of those cannot import
+ * the canvassing controller — it already imports this module's controller back.
+ */
+export async function turfAssignmentExpiry(
+  db: Kysely<Models> | Transaction<Models>,
+  tenantId: string,
+  campaignId: string,
+): Promise<Date> {
+  const ceiling = new Date(Date.now() + MAX_ASSIGNMENT_TTL_DAYS * 24 * 60 * 60 * 1000);
+  if (!campaignId) return ceiling;
+  const campaign = await db
+    .selectFrom('campaigns')
+    .select(['enddate'])
+    .where('tenant_id', '=', tenantId)
+    .where('id', '=', campaignId)
+    .executeTakeFirst();
+  if (!campaign?.enddate) return ceiling;
+  const end = new Date(`${campaign.enddate}T23:59:59`);
+  if (Number.isNaN(end.getTime()) || end <= new Date()) return ceiling;
+  return end < ceiling ? end : ceiling;
+}

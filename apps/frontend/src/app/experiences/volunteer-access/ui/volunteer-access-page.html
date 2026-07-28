@@ -1,11 +1,15 @@
 <div class="mx-auto flex w-full max-w-[980px] flex-col gap-5 p-4">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Volunteer access" [totalSentence]="loaded() ? pendingSentence() : null"></pc-grid-header>
+  <pc-grid-header title="Approvals" [totalSentence]="loaded() ? pendingSentence() : null"></pc-grid-header>
 
   <p class="max-w-prose text-xs text-base-content/60">
     Companion links are personal. A volunteer opening their turf or route link first verifies a code sent to their email
     or phone on file, then needs your approval (once, for all their assignments). Revoke anytime.
   </p>
+
+  <!-- The front door for people who aren't in the database yet. Above the table on
+       purpose: getting volunteers IN comes before administering the ones you have. -->
+  <pc-join-code-panel></pc-join-code-panel>
 
   <pc-table [loading]="loading.visible()" [columns]="7">
     <ng-container pcTableHead>

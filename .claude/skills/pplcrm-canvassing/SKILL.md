@@ -117,6 +117,57 @@ assignment there is nothing to infer from and the picker is empty.
 Client offline note: every queued op carries the `turf_id` it was recorded on, and
 `sendableBatch()` stops at a turf change. Without that, a queue recorded on one turf
 would drain against whichever turf happened to be open when the connection returned.
+The queue itself is keyed **per device** (`pc-canvass-queue`), not per token — a
+volunteer can arrive on `/t/:token` or on `/canvass` and must find the same unsynced
+results either way; the old per-token key is adopted once on load and then retired.
+
+### Signing up a canvasser who isn't in the CRM (QR join)
+
+`campaign_join_codes` is the front door for strangers: an admin shows a QR (or the
+8-char code) from **Join by QR** on `/volunteer-access`, or **Show join QR** in a turf's
+row menu. A turf-scoped code puts the whole group on that turf; an unscoped one drops
+them on the picker above. The volunteer scans, gives a name and one contact, verifies a
+code, and waits for the same one-time approval every other volunteer waits for — the
+trust model does not move, only the paperwork moves earlier.
+
+Two things worth knowing from the canvassing side:
+
+- The turf assignment is created at **approval**, not at scan (`placeOnJoinCodeTurf`
+  inside `approveVolunteer`), so a declined stranger never held one.
+- Approval can also happen from a text message (`/a/:token`) when the inviter opted in.
+
+Everything else — the code lifecycle, the enumeration guards, the person match-or-create
+rules — lives in `pplcrm-companion-access`. Read it before touching `joinStart`.
+
+### Street segments and live refresh
+
+`CompanionHousehold` carries `street` + `street_num` **alongside** the flattened `address`
+(the payload used to throw the parts away). From those, `deriveSegments()` in
+`canvass-derive.ts` groups a turf's doors into `CanvassSegment`s — pure, no DOM, tested in
+`canvass-derive.spec.ts` like every other derivation here. Rules worth not re-deriving:
+
+- Streets key on `trim().toLowerCase()` with runs of whitespace collapsed, so `Alder St`
+  and `alder  st` are one street, but the **first spelling seen is what displays** —
+  normalizing what a volunteer reads would misstate the data.
+- Doors with no street land in ONE bucket (`UNKNOWN_SEGMENT_KEY = ''`), not one each.
+- Segments sort by `minWalkOrder`, never alphabetically. Walk order is the order the turf
+  was cut in and the only one that means anything on foot.
+- `segmentKeyOf(h)` is exported so grouping and filtering cannot diverge.
+
+The scope lives on the store (`segmentKey`, null = whole turf) rather than in the list
+component, so the list and the map can never show different scopes. `scopedHouseholds()`
+**falls back to the whole turf when the scoped street no longer exists** (a list refresh
+dropped it) — an empty screen would blame the volunteer for something the turf did.
+`stats()` stays turf-wide on purpose; only `nextDoorId()` follows the scope. The picker
+(`canvass-segment-picker.ts`) is a plain conditional panel, **never** the focus-based
+DaisyUI `.dropdown` (§4 — that bug has shipped twice).
+
+**Live refresh**: `CanvassStore.refresh()` re-pulls the turf every 60s while the walk list
+is open and replaces ONLY the server payload — `localOps` replay on top, so nothing queued
+or optimistic is lost and re-applying an op the server already has is a no-op. It is
+silent on failure (a poll that missed one tick is not a doorstep interruption) and the
+narrated "Updated just now" line is what tells the volunteer how fresh the numbers are.
+It posts to `/api/canvass/turf/:turfId`, not the link, so it works after a QR join too.
 
 ## The cutting engine (`modules/canvassing/lib/cutting-engine.ts`)
 

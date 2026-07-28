@@ -235,9 +235,23 @@ export function normForm(rawFields: unknown): FormField[] {
   return fields;
 }
 
-/** Build the initial field list for a newly created form of the given template type. */
-export function fieldsForTemplate(type: FormType): FormField[] {
-  return normForm(FORM_TEMPLATES[type].fields.map((f) => ({ ...f })));
+/**
+ * Build the initial field list for a newly created form of the given template type.
+ *
+ * `campaignIssues` seeds the survey's issue checklist from the campaign's own issue list
+ * (`campaigns.canvass_issues`, edited from Canvassing or Workspace → Campaigns) so a campaign
+ * states its priorities once instead of re-typing them per surface. The template literal is the
+ * fallback for a campaign that has not set any. Per-form options stay editable afterwards.
+ */
+export function fieldsForTemplate(type: FormType, campaignIssues?: readonly string[]): FormField[] {
+  const issues = (campaignIssues ?? []).map((issue) => issue.trim()).filter(Boolean);
+
+  return normForm(
+    FORM_TEMPLATES[type].fields.map((f) => {
+      if (f.key !== 'issues' || issues.length === 0) return { ...f };
+      return { ...f, options: [...issues] };
+    }),
+  );
 }
 
 export const CreateFormObj = z.object({

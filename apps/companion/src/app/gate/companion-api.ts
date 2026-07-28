@@ -1,10 +1,14 @@
 import { Injectable, signal } from '@angular/core';
 
 import type {
+  CompanionAccessKind,
   CompanionAccessPayload,
-  CompanionLinkKind,
+  CompanionApprovalPayload,
+  CompanionJoinStartResult,
+  CompanionJoinStartType,
   CompanionVerifyChannel,
   CompanionVerifyConfirmResult,
+  CompanionVerifyKind,
 } from '@common';
 
 /**
@@ -90,8 +94,9 @@ export class CompanionSessionService {
    * the transient 'unreachable' state so the gate can retry instead of showing
    * the dead-link screen.
    */
-  public async getAccess(kind: CompanionLinkKind, token: string): Promise<CompanionAccessResult> {
-    const params = new URLSearchParams({ kind, token });
+  public async getAccess(kind: CompanionAccessKind, token: string | null): Promise<CompanionAccessResult> {
+    // 'session' carries no token — the X-Companion-Session header is the whole request.
+    const params = new URLSearchParams(token ? { kind, token } : { kind });
     try {
       const res = await fetch(`/api/companion/access?${params}`, { headers: this.headers() });
       if (!res.ok) return { state: 'unreachable' };
@@ -99,6 +104,28 @@ export class CompanionSessionService {
     } catch {
       return { state: 'unreachable' };
     }
+  }
+
+  /**
+   * Introduce yourself after scanning a join QR.
+   *
+   * Returns a one-shot `claim` that stands in for the capability link this path never
+   * had — the code names an organization, the claim names the person we just matched or
+   * created. Verification then runs exactly as it does for a link.
+   */
+  public joinStart(input: CompanionJoinStartType): Promise<CompanionJoinStartResult> {
+    return post<CompanionJoinStartResult>('/api/companion/join/start', input);
+  }
+
+  /** What an admin sees before tapping approve, straight from an SMS with no session. */
+  public async getApproval(token: string): Promise<CompanionApprovalPayload> {
+    const res = await fetch(`/api/companion/approve/${encodeURIComponent(token)}`);
+    if (!res.ok) return { state: 'dead' };
+    return (await res.json()) as CompanionApprovalPayload;
+  }
+
+  public actOnApproval(token: string, decision: 'approve' | 'decline'): Promise<CompanionApprovalPayload> {
+    return post<CompanionApprovalPayload>(`/api/companion/approve/${encodeURIComponent(token)}`, { decision });
   }
 
   /** Headers to attach to every companion data request. */
@@ -113,7 +140,7 @@ export class CompanionSessionService {
   }
 
   public async verifyConfirm(
-    kind: CompanionLinkKind,
+    kind: CompanionVerifyKind,
     token: string,
     code: string,
   ): Promise<CompanionVerifyConfirmResult> {
@@ -123,7 +150,7 @@ export class CompanionSessionService {
   }
 
   public async verifyStart(
-    kind: CompanionLinkKind,
+    kind: CompanionVerifyKind,
     token: string,
     channel: CompanionVerifyChannel,
   ): Promise<{ masked: string }> {

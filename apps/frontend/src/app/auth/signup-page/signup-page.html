@@ -34,6 +34,28 @@
     >
     }
 
+    <!-- Organization type. Sets the wording and the starting module set; everything stays
+         changeable later in Workspace -> Modules, so this is a head start, not a commitment. -->
+    <fieldset class="flex flex-col gap-1.5">
+      <legend class="label-text-alt pb-1.5 text-neutral-300">What kind of organization is this?</legend>
+      <div class="grid grid-cols-2 gap-1.5">
+        @for (m of modes; track m) {
+        <button
+          type="button"
+          class="rounded-lg border px-2.5 py-2 text-left transition-colors"
+          [class.border-primary]="signUpData().mode === m"
+          [class.bg-primary/10]="signUpData().mode === m"
+          [class.border-neutral-600]="signUpData().mode !== m"
+          [attr.aria-pressed]="signUpData().mode === m"
+          (click)="selectMode(m)"
+        >
+          <span class="block text-xs font-semibold text-neutral-100">{{ modeLabels[m] }}</span>
+          <span class="mt-0.5 block text-[11px] leading-snug text-neutral-400">{{ modeDescriptions[m] }}</span>
+        </button>
+        }
+      </div>
+    </fieldset>
+
     <label class="input w-full validator">
       <pc-icon [size]="4" name="at-symbol" />
       <input

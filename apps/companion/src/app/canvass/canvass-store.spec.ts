@@ -8,7 +8,10 @@ import { CanvassStore } from './canvass-store';
 
 const TOKEN = 'tok-abc';
 const TURF_ID = '4';
-const QUEUE_KEY = `pc-canvass-queue:${TOKEN}`;
+/** Per-device, not per-token: a volunteer can arrive on /t/:token or on /canvass and
+ *  must find the same unsynced queue either way. */
+const QUEUE_KEY = 'pc-canvass-queue';
+const LEGACY_QUEUE_KEY = `pc-canvass-queue:${TOKEN}`;
 
 function turfPayload(): CompanionTurfPayload {
   return {
@@ -26,6 +29,8 @@ function turfPayload(): CompanionTurfPayload {
         id: '10',
         walk_order: 1,
         address: '218 Alder St',
+        street: 'Alder St',
+        street_num: '218',
         lat: null,
         lng: null,
         dnc: false,
@@ -36,7 +41,9 @@ function turfPayload(): CompanionTurfPayload {
       {
         id: '11',
         walk_order: 2,
-        address: '220 Alder St',
+        address: '220 Scott Blvd',
+        street: 'Scott Blvd',
+        street_num: '220',
         lat: null,
         lng: null,
         dnc: false,
@@ -462,6 +469,113 @@ describe('CanvassStore', () => {
       expect(store.queue()).toHaveLength(0);
       expect(store.householdById('10')?.door_outcome).toBeNull();
       expect(store.view()).toEqual({ kind: 'landing' });
+    });
+  });
+
+  describe('queue key migration', () => {
+    it('adopts a queue written under the old per-token key', async () => {
+      const op = {
+        op_id: 'legacy-1',
+        recorded_at: new Date().toISOString(),
+        type: 'door_outcome',
+        payload: { household_id: '10', outcome: 'no_answer' },
+      };
+      localStorage.setItem(LEGACY_QUEUE_KEY, JSON.stringify([{ op, label: 'Nobody home · 218 Alder St' }]));
+      fetchMock.mockResolvedValue(jsonResponse(turfPayload()));
+
+      await store.load(TOKEN);
+
+      // Picked up, not stranded — a deploy must never eat an offline shift.
+      expect(store.queue().some((e) => e.op.op_id === 'legacy-1')).toBe(true);
+      expect(localStorage.getItem(LEGACY_QUEUE_KEY)).toBeNull();
+    });
+  });
+
+  describe('street scope', () => {
+    it('narrows the list to one street while turf-wide stats stay turf-wide', async () => {
+      await store.load(TOKEN);
+      expect(store.scopedHouseholds()).toHaveLength(2);
+
+      const alder = store.segments().find((seg) => seg.street === 'Alder St');
+      store.segmentKey.set(alder?.key ?? null);
+
+      expect(store.scopedHouseholds().map((h) => h.id)).toEqual(['10']);
+      expect(store.activeSegment()?.street).toBe('Alder St');
+      // The progress bar answers "how is the TURF doing" — narrowing must not shrink it.
+      expect(store.stats().doors_total).toBe(2);
+    });
+
+    it('moves the next-door ring to the next door on the scoped street', async () => {
+      await store.load(TOKEN);
+      expect(store.nextDoorId()).toBe('10');
+
+      const scott = store.segments().find((seg) => seg.street === 'Scott Blvd');
+      store.segmentKey.set(scott?.key ?? null);
+      expect(store.nextDoorId()).toBe('11');
+    });
+
+    it('falls back to the whole turf when the scoped street is gone', async () => {
+      await store.load(TOKEN);
+      store.segmentKey.set('a street that left with a list refresh');
+      // An empty list would blame the volunteer for something the turf did.
+      expect(store.scopedHouseholds()).toHaveLength(2);
+      expect(store.activeSegment()).toBeNull();
+    });
+
+    it('drops the scope when the volunteer switches turfs', async () => {
+      await store.load(TOKEN);
+      store.segmentKey.set(store.segments()[0]?.key ?? null);
+      await store.switchTurf(TURF_ID);
+      expect(store.segmentKey()).toBeNull();
+    });
+  });
+
+  describe('live refresh', () => {
+    it('replaces the server payload while keeping queued ops and their overlay', async () => {
+      await store.load(TOKEN);
+      // Hold the queue so the op is still pending when the refresh lands.
+      store.setWorkOffline(true);
+      store.doorOutcome('10', 'refused');
+      await flushMicrotasks();
+      expect(store.queue()).toHaveLength(1);
+
+      await store.refresh();
+      await flushMicrotasks();
+
+      expect(store.queue()).toHaveLength(1);
+      // The optimistic overlay survives a payload swap — it is replayed, not merged in.
+      expect(store.households().find((h) => h.id === '10')?.door_outcome).toBe('refused');
+      expect(store.lastRefreshedAt()).toBeInstanceOf(Date);
+    });
+
+    it('posts to the turf endpoint, not the link, so it works after a QR join too', async () => {
+      await store.load(TOKEN);
+      fetchMock.mockClear();
+      await store.refresh();
+      expect(fetchMock).toHaveBeenCalledWith(`/api/canvass/turf/${TURF_ID}`, expect.anything());
+    });
+
+    it('stays silent on a failed tick rather than interrupting a doorstep', async () => {
+      await store.load(TOKEN);
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500));
+      await store.refresh();
+      expect(store.loadError()).toBeNull();
+      expect(store.payload()).not.toBeNull();
+    });
+
+    it('re-gates on 401/403 — a revoked volunteer must not keep polling', async () => {
+      await store.load(TOKEN);
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'no' }, 403));
+      await store.refresh();
+      expect(store.sessionExpired()).toBe(true);
+    });
+
+    it('does nothing while offline', async () => {
+      await store.load(TOKEN);
+      store.online.set(false);
+      fetchMock.mockClear();
+      await store.refresh();
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 });

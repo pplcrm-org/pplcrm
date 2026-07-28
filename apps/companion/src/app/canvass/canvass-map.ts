@@ -24,6 +24,13 @@ import { CanvassStore } from './canvass-store';
           {{ store.payload()?.campaign_name }}
         </p>
         <h1 class="text-xl font-bold">{{ store.payload()?.turf_name }} on the map</h1>
+        <!-- The map follows the walk list's scope; saying so beats a map that quietly
+             shows fewer pins than the volunteer remembers (§2). -->
+        @if (store.activeSegment(); as segment) {
+          <p class="text-xs text-base-content/70">
+            Showing {{ segment.street }} · {{ segment.doors }} of {{ store.stats().doors_total }} doors in this turf
+          </p>
+        }
       </header>
 
       <div class="h-[55vh] overflow-hidden rounded-lg border border-base-300">
@@ -59,7 +66,7 @@ export class CanvassMap {
 
   protected readonly markers = computed<PcMapMarker[]>(() =>
     this.store
-      .households()
+      .scopedHouseholds()
       .filter((h) => h.lat != null && h.lng != null)
       .map(
         (h): PcMapMarker => ({
@@ -73,7 +80,7 @@ export class CanvassMap {
   );
 
   protected readonly unmappedCount = computed(
-    () => this.store.households().filter((h) => h.lat == null || h.lng == null).length,
+    () => this.store.scopedHouseholds().filter((h) => h.lat == null || h.lng == null).length,
   );
 
   protected unmappedMessage(): string {

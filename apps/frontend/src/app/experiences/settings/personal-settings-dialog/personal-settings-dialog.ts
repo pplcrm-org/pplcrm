@@ -9,61 +9,89 @@ import { ThemePreference, ThemeService } from '../../../layout/theme/theme-servi
 import { PasskeySettingsComponent } from '../security/passkey-settings';
 
 interface NotifRow {
-  emailKey: string;
+  /** Stable row identity — the email key where there is one, else the channel key. */
+  key: string;
+  emailKey?: string;
   helper: string;
-  inAppKey: string;
+  inAppKey?: string;
+  /** Text message. Only one row has it, and it is the only opt-in preference here. */
+  smsKey?: string;
   label: string;
+  /** Whether an absent stored value means on. Everything is opt-out except SMS. */
+  defaultOn: boolean;
 }
 
 const NOTIF_ROWS: NotifRow[] = [
   {
+    key: 'mention_in_comment',
     label: 'Mentioned in comment',
     helper: 'When someone mentions you in a thread',
     emailKey: 'mention_in_comment',
     inAppKey: 'mention_in_comment_in_app',
+    defaultOn: true,
   },
   {
+    key: 'task_assigned',
     label: 'Task assigned',
     helper: 'When a task is assigned to you',
     emailKey: 'task_assigned',
     inAppKey: 'task_assigned_in_app',
+    defaultOn: true,
   },
   {
+    key: 'task_due',
     label: 'Task due today / overdue',
     helper: 'Daily reminder of active tasks due',
     emailKey: 'task_due',
     inAppKey: 'task_due_in_app',
+    defaultOn: true,
   },
   {
+    key: 'person_assigned',
     label: 'Person assigned',
     helper: 'When contact ownership is assigned to you',
     emailKey: 'person_assigned',
     inAppKey: 'person_assigned_in_app',
+    defaultOn: true,
   },
   {
+    key: 'email_assigned',
     label: 'Email assigned',
     helper: 'When an inbox conversation is assigned to you',
     emailKey: 'email_assigned',
     inAppKey: 'email_assigned_in_app',
+    defaultOn: true,
   },
   {
+    key: 'export_ready',
     label: 'Export ready',
     helper: 'Download link when a CSV export finishes',
     emailKey: 'export_ready',
     inAppKey: 'export_ready_in_app',
+    defaultOn: true,
   },
   {
+    key: 'import_summary',
     label: 'Import summary',
     helper: 'Completion stats after a spreadsheet import',
     emailKey: 'import_summary',
-    inAppKey: 'import_summary_in_app',
+    defaultOn: true,
+  },
+  // The only text-message row. Email and in-app alerts for this event always fire, so those
+  // two cells stay empty rather than showing a toggle that would do nothing.
+  {
+    key: 'companion_approval_sms',
+    label: 'Volunteer waiting for approval',
+    helper: 'Text me when someone I invited is waiting to be approved',
+    smsKey: 'companion_approval_sms',
+    defaultOn: true,
   },
 ];
 
 /**
  * Personal Settings popup (§5a) — instant apply, no Save/Reset. Everything here is
- * scoped to the signed-in user: notification matrix, appearance (theme + density),
- * and passkeys. Reuses the notification-preferences model and PasskeySettings.
+ * scoped to the signed-in user: notification matrix, theme, and passkeys. Tenant-wide
+ * appearance defaults (theme, date format) live in Workspace → Organization instead.
  */
 @Component({
   selector: 'pc-personal-settings-dialog',
@@ -112,12 +140,13 @@ export class PersonalSettingsDialog {
     });
   }
 
-  protected isOn(key: string): boolean {
-    return this.prefs()[key] ?? true;
+  /** `defaultOn` comes from the row, because not every preference here is opt-out. */
+  protected isOn(key: string, defaultOn = true): boolean {
+    return this.prefs()[key] ?? defaultOn;
   }
 
-  protected toggle(key: string): void {
-    this.prefs.update((p) => ({ ...p, [key]: !(p[key] ?? true) }));
+  protected toggle(key: string, defaultOn = true): void {
+    this.prefs.update((p) => ({ ...p, [key]: !(p[key] ?? defaultOn) }));
     void this.persistNotifications();
   }
 
@@ -140,9 +169,11 @@ export class PersonalSettingsDialog {
       this.user.set(detail);
       const p = detail.notification_preferences ?? {};
       const next: Record<string, boolean> = {};
+      const stored = p as Record<string, boolean | undefined>;
       for (const row of NOTIF_ROWS) {
-        next[row.emailKey] = (p as Record<string, boolean | undefined>)[row.emailKey] ?? true;
-        next[row.inAppKey] = (p as Record<string, boolean | undefined>)[row.inAppKey] ?? true;
+        for (const key of [row.emailKey, row.inAppKey, row.smsKey]) {
+          if (key) next[key] = stored[key] ?? row.defaultOn;
+        }
       }
       this.prefs.set(next);
     } catch (err) {
@@ -169,7 +200,7 @@ export class PersonalSettingsDialog {
         export_ready: p['export_ready'] ?? true,
         export_ready_in_app: p['export_ready_in_app'] ?? true,
         import_summary: p['import_summary'] ?? true,
-        import_summary_in_app: p['import_summary_in_app'] ?? true,
+        companion_approval_sms: p['companion_approval_sms'] ?? true,
       },
     };
     try {

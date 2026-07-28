@@ -138,9 +138,11 @@ describe('DonationsGridComponent', () => {
   });
 
   it('should format currency amounts from cents', () => {
-    expect(component['formatCurrency'](150000)).toBe('$1,500.00');
-    expect(component['formatCurrency'](null)).toBe('$0.00');
-    expect(component['formatCurrency'](undefined)).toBe('$0.00');
+    // Amounts render in the workspace currency (Workspace → Organization), which defaults to
+    // CAD. They used to be hardcoded to USD while Stripe was charged in CAD.
+    expect(component['formatCurrency'](150000)).toBe('CA$1,500.00');
+    expect(component['formatCurrency'](null)).toBe('CA$0.00');
+    expect(component['formatCurrency'](undefined)).toBe('CA$0.00');
   });
 
   it('should format valid dates', () => {

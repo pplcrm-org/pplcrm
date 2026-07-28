@@ -270,6 +270,7 @@ export {
   UpdateDeliveryRequestObj,
   SetDeliveryRequestStatusObj,
   PlanDeliveriesObj,
+  SetRouteDefaultsObj,
   CommitDeliveriesObj,
   UpdateDeliveryRouteObj,
   AssignVolunteerObj,
@@ -298,22 +299,45 @@ export {
   CompanionAccessQueryObj,
   CompanionVerifyStartObj,
   CompanionVerifyConfirmObj,
+  CompanionJoinStartObj,
+  CompanionApprovalDecisionObj,
   COMPANION_LINK_KINDS,
+  COMPANION_ACCESS_KINDS,
+  COMPANION_VERIFY_KINDS,
   COMPANION_VERIFY_CHANNELS,
   COMPANION_VOLUNTEER_STATUSES,
   COMPANION_ACCESS_STATES,
+  AddJoinCodeObj,
+  UpdateJoinCodeObj,
+  JOIN_CODE_ALPHABET,
+  JOIN_CODE_LENGTH,
+  JOIN_CODE_STATUSES,
 } from './lib/schema';
 
 export type {
   CompanionLinkKind,
+  CompanionAccessKind,
+  CompanionVerifyKind,
   CompanionVerifyChannel,
   CompanionVolunteerStatus,
   CompanionAccessState,
   CompanionContact,
   CompanionAccessPayload,
   CompanionVerifyConfirmResult,
+  CompanionJoinStartType,
+  CompanionJoinStartResult,
+  CompanionApprovalDecisionType,
+  CompanionApprovalPayload,
   CompanionVolunteerRow,
 } from './lib/schemas/companion-access.schema';
+
+export type {
+  AddJoinCodeType,
+  UpdateJoinCodeType,
+  JoinCodeRow,
+  JoinCodeQr,
+  JoinCodeStatus,
+} from './lib/schemas/join-codes.schema';
 
 export type {
   CampaignKind,
@@ -330,6 +354,25 @@ export type { GridColumnFilter, GridFilterModel } from './lib/schemas/core.schem
 export { DEFAULT_LINK_SUBDOMAIN, MAX_DNS_LABEL_LENGTH, isValidDnsLabel, normalizeDnsLabel } from './lib/dns-label';
 export type { SystemListKey, SystemListDef } from './lib/system-lists';
 export { SYSTEM_LIST_KEYS, SYSTEM_LISTS, systemListDefinition } from './lib/system-lists';
+
+export type { OrgMode, TermKey, ModuleId } from './lib/org-mode';
+export {
+  DEFAULT_ORG_MODE,
+  MODULE_VISIBILITY_SETTINGS_KEY,
+  OPTIONAL_MODULES,
+  ORG_MODES,
+  ORG_MODE_DESCRIPTIONS,
+  ORG_MODE_LABELS,
+  ORG_MODE_MODULE_DEFAULTS,
+  ORG_MODE_SEEDS_DEMO,
+  ORG_MODE_SETTINGS_KEY,
+  ORG_MODE_TERMS,
+  TERM_KEYS,
+  isModuleEnabled,
+  isOrgMode,
+  parseModuleOverrides,
+  termFor,
+} from './lib/org-mode';
 
 export type { InteractionType, LogInteractionType } from './lib/schemas/activity.schema';
 
@@ -370,6 +413,7 @@ export type {
   UpdateDeliveryRequestType,
   SetDeliveryRequestStatusType,
   PlanDeliveriesType,
+  SetRouteDefaultsType,
   CommitDeliveriesType,
   UpdateDeliveryRouteType,
   AssignVolunteerType,
@@ -396,7 +440,18 @@ export {
   extractPublicIdFromSlug,
   buildPersonSlug,
 } from './lib/public-id';
-export { calculateWorkingTimeMs } from './lib/sla';
+export { DEFAULT_TIMEZONE, calculateWorkingTimeMs, isValidTimeZone, timeZoneOffsetString } from './lib/sla';
+export {
+  DEFAULT_CURRENCY,
+  WORKSPACE_CURRENCIES,
+  WORKSPACE_CURRENCY_LABELS,
+  workspaceCurrencyForCountry,
+  formatMoney,
+  isWorkspaceCurrency,
+  toStripeCurrency,
+  toWorkspaceCurrency,
+} from './lib/money';
+export type { WorkspaceCurrency } from './lib/money';
 
 export {
   AddNewsletterTemplateObj,

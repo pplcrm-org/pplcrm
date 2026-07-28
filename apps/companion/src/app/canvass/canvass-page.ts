@@ -38,7 +38,7 @@ type TabId = 'list' | 'map' | 'me';
     Icon,
   ],
   template: `
-    <pc-companion-gate kind="turf" [token]="token()" (ready)="onReady()">
+    <pc-companion-gate [kind]="token() ? 'turf' : 'session'" [token]="token() ?? null" (ready)="onReady()">
       <!-- Outside the payload guard on purpose: the picker is how a volunteer recovers
            when the turf they arrived on is gone, so it must render with no turf loaded. -->
       @if (store.view().kind === 'picker') {
@@ -122,8 +122,12 @@ type TabId = 'list' | 'map' | 'me';
   `,
 })
 export class CanvassPage {
-  /** Route param — the capability token from /t/:token. */
-  public readonly token = input.required<string>();
+  /**
+   * Route param from /t/:token. Absent on /canvass, where the device session identifies
+   * the volunteer instead — the door a QR joiner comes through, since their turf link is
+   * hashed and can never be handed back to them.
+   */
+  public readonly token = input<string | undefined>(undefined);
 
   protected readonly store = inject(CanvassStore);
 
@@ -148,7 +152,7 @@ export class CanvassPage {
   }
 
   protected onReady(): void {
-    void this.store.load(this.token());
+    void this.open();
   }
 
   protected openPicker(): void {
@@ -161,6 +165,12 @@ export class CanvassPage {
   }
 
   protected retry(): void {
-    void this.store.load(this.token());
+    void this.open();
+  }
+
+  /** Link-first when there is a link, session-first otherwise. */
+  private open(): Promise<void> {
+    const token = this.token();
+    return token ? this.store.load(token) : this.store.bootstrapFromSession();
   }
 }

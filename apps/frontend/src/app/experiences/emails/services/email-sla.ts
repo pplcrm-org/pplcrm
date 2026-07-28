@@ -23,6 +23,9 @@ export interface SlaInputs {
   workingHoursStart: string | null | undefined;
   /** '1,2,3,4,5' — day numbers, 0=Sun … 6=Sat. */
   workingDays: string | null | undefined;
+  /** Workspace IANA zone (`organization.timezone`); without it the pill would use the
+   *  viewer's browser zone and disagree with the server-computed dashboard breach counts. */
+  timeZone?: string | null | undefined;
 }
 
 function parseWorkingDays(raw: string | null | undefined): number[] {
@@ -58,7 +61,8 @@ export function computeEmailSla(inputs: SlaInputs, now: Date = new Date()): SlaP
   const start = inputs.workingHoursStart || '09:00';
   const end = inputs.workingHoursEnd || '17:00';
 
-  const elapsedHours = calculateWorkingTimeMs(received, now, workingDays, start, end) / MS_PER_HOUR;
+  const elapsedHours =
+    calculateWorkingTimeMs(received, now, workingDays, start, end, inputs.timeZone ?? undefined) / MS_PER_HOUR;
   const remaining = target - elapsedHours;
   const targetLabel = Math.round(target);
 

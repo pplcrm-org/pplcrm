@@ -32,7 +32,7 @@ import { DuplicatesRouter } from './duplicates/trpc.router';
 import { CampaignsRouter } from './campaigns/trpc.router';
 import { CanvassingRouter } from './canvassing/trpc.router';
 import { DeliveriesRouter } from './deliveries/trpc.router';
-import { CompanionAccessRouter } from './companion-access/trpc.router';
+import { CompanionAccessRouter, JoinCodesRouter } from './companion-access/trpc.router';
 import { DemoRouter } from './demo/trpc.router';
 import { BugReportsRouter } from './bug-reports/trpc.router';
 
@@ -74,6 +74,7 @@ export const trpcRouter = router({
   canvassing: CanvassingRouter,
   deliveries: DeliveriesRouter,
   companionAccess: CompanionAccessRouter,
+  joinCodes: JoinCodesRouter,
   demo: DemoRouter,
   bugReports: BugReportsRouter,
 });

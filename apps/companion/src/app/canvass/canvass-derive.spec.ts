@@ -5,6 +5,7 @@ import type { CompanionHousehold, CompanionOpType, CompanionPerson, CompanionSur
 import {
   applyLocalOps,
   conversations,
+  deriveSegments,
   doorStatus,
   doorStatusLabel,
   isAttempted,
@@ -12,7 +13,9 @@ import {
   meStats,
   nextDoor,
   opPersonId,
+  segmentKeyOf,
   supportConsensus,
+  UNKNOWN_SEGMENT_KEY,
 } from './canvass-derive';
 
 function prefill(overrides: Partial<CompanionSurveyPrefill> = {}): CompanionSurveyPrefill {
@@ -36,6 +39,8 @@ function household(overrides: Partial<CompanionHousehold> = {}): CompanionHouseh
     id: '10',
     walk_order: 1,
     address: '218 Alder St',
+    street: 'Alder St',
+    street_num: '218',
     lat: null,
     lng: null,
     dnc: false,
@@ -370,5 +375,68 @@ describe('applyLocalOps', () => {
     const out = applyLocalOps(input, [{ op }, { op: sameSet }]);
     expect(out[0].door_outcome).toBe('refused');
     expect(input[0].door_outcome).toBeNull();
+  });
+});
+
+describe('deriveSegments', () => {
+  it("groups doors by street and reports each street's own progress", () => {
+    const segments = deriveSegments([
+      household({ id: '1', walk_order: 1, street: 'Alder St' }),
+      household({ id: '2', walk_order: 2, street: 'Alder St', door_outcome: 'no_answer' }),
+      household({ id: '3', walk_order: 3, street: 'Scott Blvd' }),
+    ]);
+    expect(segments.map((s) => s.street)).toEqual(['Alder St', 'Scott Blvd']);
+    expect(segments[0]).toMatchObject({ doors: 2, attempted: 1, minWalkOrder: 1 });
+    expect(segments[1]).toMatchObject({ doors: 1, attempted: 0, minWalkOrder: 3 });
+  });
+
+  it('treats spelling and spacing differences as one street but shows the first spelling', () => {
+    const segments = deriveSegments([
+      household({ id: '1', walk_order: 1, street: 'Alder St' }),
+      household({ id: '2', walk_order: 2, street: '  alder   st ' }),
+    ]);
+    expect(segments).toHaveLength(1);
+    // Normalizing the key is fine; normalizing what the volunteer reads would not be.
+    expect(segments[0]?.street).toBe('Alder St');
+    expect(segments[0]?.doors).toBe(2);
+  });
+
+  it('puts every door with no street into one bucket, not one bucket each', () => {
+    const segments = deriveSegments([
+      household({ id: '1', walk_order: 1, street: null }),
+      household({ id: '2', walk_order: 2, street: '   ' }),
+    ]);
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toMatchObject({ key: UNKNOWN_SEGMENT_KEY, street: 'No street on file', doors: 2 });
+  });
+
+  it('sorts by walk order, not alphabetically — walk order is the only order that means anything on foot', () => {
+    const segments = deriveSegments([
+      household({ id: '1', walk_order: 9, street: 'Alder St' }),
+      household({ id: '2', walk_order: 2, street: 'Zenith Way' }),
+    ]);
+    expect(segments.map((s) => s.street)).toEqual(['Zenith Way', 'Alder St']);
+  });
+
+  it('averages only the geocoded doors, and reports no centroid when none are', () => {
+    const withGeo = deriveSegments([
+      household({ id: '1', walk_order: 1, street: 'Alder St', lat: 10, lng: 20 }),
+      household({ id: '2', walk_order: 2, street: 'Alder St', lat: 12, lng: 24 }),
+      household({ id: '3', walk_order: 3, street: 'Alder St', lat: null, lng: null }),
+    ]);
+    expect(withGeo[0]?.centroid).toEqual({ lat: 11, lng: 22 });
+
+    const withoutGeo = deriveSegments([household({ id: '1', walk_order: 1, street: 'Alder St' })]);
+    expect(withoutGeo[0]?.centroid).toBeNull();
+  });
+
+  it('agrees with segmentKeyOf, so grouping and filtering can never diverge', () => {
+    const doors = [
+      household({ id: '1', walk_order: 1, street: 'Alder St' }),
+      household({ id: '2', walk_order: 2, street: 'ALDER ST' }),
+      household({ id: '3', walk_order: 3, street: 'Scott Blvd' }),
+    ];
+    const [alder] = deriveSegments(doors);
+    expect(doors.filter((h) => segmentKeyOf(h) === alder?.key)).toHaveLength(2);
   });
 });

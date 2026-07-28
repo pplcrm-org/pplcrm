@@ -20,6 +20,7 @@ import { CommandPalette } from '../command-palette/command-palette';
 import { KeyboardShortcutsHelp } from '../keyboard-shortcuts/keyboard-shortcuts-help';
 import { ReportBugDialog } from '../report-bug/report-bug-dialog';
 import { SetupReturnBar } from '../setup-return-bar';
+import { ModuleOffBar } from '../module-off-bar';
 import { Tour } from '../tour/tour';
 import { TourService } from '../tour/tour.service';
 import { KeyboardShortcutsService } from '../../services/keyboard-shortcuts.service';
@@ -38,6 +39,7 @@ import { ConnectivityService } from '../../services/connectivity.service';
     CommandPalette,
     ReportBugDialog,
     SetupReturnBar,
+    ModuleOffBar,
     Tour,
   ],
   templateUrl: './dashboard.html',

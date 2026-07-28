@@ -70,6 +70,7 @@ describe('SettingsPage', () => {
         export_ready_in_app: true,
         import_summary: true,
         import_summary_in_app: true,
+        companion_approval_sms: false,
       },
     };
 
@@ -220,67 +221,23 @@ describe('SettingsPage', () => {
     expect(snapshotSignalValue()['organization.name']).toBe('Acme Corp V2');
   });
 
-  it('should build notification section state with fields from config', () => {
-    const notifSection = component['sectionStates'].find((s) => s.config.id === 'notifications');
-    expect(notifSection).toBeTruthy();
-    expect(notifSection?.fields.length).toBeGreaterThan(1);
-
-    const groups = component['getNotificationGroups'](notifSection!);
-    expect(groups.length).toBe(7); // 7 categories of notification preferences
-    expect(groups[0].emailField).toBeTruthy();
-    expect(groups[0].inAppField).toBeTruthy();
+  it('no longer carries personal sections — those moved to the avatar-menu dialog', () => {
+    // Notifications and passkeys are the dialog's job; appearance's two keys are tenant
+    // defaults and moved into Workspace → Organization. A section here that renders nowhere
+    // is exactly how the unreachable 'data' block happened.
+    const ids = component['sectionStates'].map((state) => state.config.id);
+    expect(ids).not.toContain('notifications');
+    expect(ids).not.toContain('appearance');
+    expect(component['visibleSections'].length).toBe(component['sectionStates'].length);
   });
 
-  it('should load user notification preferences and populate fields correctly', async () => {
-    const updatedUser = {
-      id: '123',
-      email: 'john@example.com',
-      first_name: 'John',
-      last_name: 'Doe',
-      notification_preferences: {
-        mention_in_comment: false,
-        mention_in_comment_in_app: true,
-        task_assigned: false,
-        task_assigned_in_app: false,
-        task_due: true,
-        task_due_in_app: false,
-        person_assigned: true,
-        person_assigned_in_app: true,
-        export_ready: false,
-        export_ready_in_app: true,
-        import_summary: false,
-        import_summary_in_app: false,
-      },
-    };
-    mockUserService.getProfileById.mockResolvedValueOnce(updatedUser);
-
-    await component['loadUserPrefs']();
-
-    const notifSection = component['sectionStates'].find((s) => s.config.id === 'notifications');
-    expect(notifSection).toBeTruthy();
-    const payload = notifSection?.payload();
-
-    expect(payload?.['notifications_mention_in_comment']).toBe(false);
-    expect(payload?.['notifications_mention_in_comment_in_app']).toBe(true);
-    expect(payload?.['notifications_task_assigned']).toBe(false);
-    expect(payload?.['notifications_task_assigned_in_app']).toBe(false);
-  });
-
-  it('should initialize correctly under settings mode', async () => {
-    const mockRoute = TestBed.inject(ActivatedRoute);
-    mockRoute.snapshot.data = { mode: 'settings' };
-
-    const newFixture = TestBed.createComponent(SettingsPage);
-    const newComponent = newFixture.componentInstance;
-    newFixture.detectChanges();
-    await newFixture.whenStable();
-    newFixture.detectChanges();
-
-    expect(newComponent['currentMode']).toBe('settings');
-    expect(newComponent['visibleSections'].length).toBe(2);
-    expect(newComponent['visibleSections'][0].config.id).toBe('notifications');
-    expect(newComponent['visibleSections'][1].config.id).toBe('appearance');
-    expect(newComponent['selectedSectionId']()).toBe('notifications');
+  it('keeps the tenant appearance defaults on the Organization section', () => {
+    const organization = component['sectionStates'].find((s) => s.config.id === 'organization');
+    const keys = organization?.fields.map((f) => f.config.key) ?? [];
+    expect(keys).toContain('appearance.theme');
+    expect(keys).toContain('appearance.date_format');
+    expect(keys).toContain('organization.timezone');
+    expect(keys).toContain('organization.currency');
   });
 
   it('should initialize correctly under billing mode', async () => {

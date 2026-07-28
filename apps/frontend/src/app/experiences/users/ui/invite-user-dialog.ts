@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, input, output, signal, viewChild } from '@angular/core';
 import { email, form, required } from '@angular/forms/signals';
-import { planDisplayName } from '@common';
+import { type AuthRole, DEFAULT_AUTH_ROLE, isAuthRole, planDisplayName } from '@common';
 
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -19,7 +19,8 @@ export interface SeatUsage {
   seatsUsed: number;
 }
 
-const DEFAULT_ROLE = 'user';
+/** Matches the role the backend falls back to when no default is configured. */
+const DEFAULT_ROLE: AuthRole = DEFAULT_AUTH_ROLE;
 
 /**
  * "Invite a user" dialog — the only way to add a staff login. Collects email, first and last
@@ -110,7 +111,7 @@ export class InviteUserDialog {
         email: raw.email.trim(),
         first_name: raw.first_name.trim(),
         last_name: raw.last_name.trim(),
-        role: raw.role || null,
+        role: raw.role,
         campaign_id: this.roleIsCampaignScoped() && raw.campaign_id ? raw.campaign_id : null,
       });
       this.alerts.showSuccess(`Invitation sent to ${raw.email.trim()}`);
@@ -128,8 +129,10 @@ export class InviteUserDialog {
   private async prefillDefaultRole(): Promise<void> {
     try {
       await this.settings.load();
-      const defaultRole = this.settings.getValue<string>('access.default_role');
-      if (defaultRole) {
+      const defaultRole = this.settings.getValue<string>('access.default_role')?.trim();
+      // Only honour a recognised role — mirrors the backend guard in AuthController.inviteUser.
+      // An unknown value would select nothing in the picker and then be sent as the role.
+      if (isAuthRole(defaultRole)) {
         this.payload.update((p) => ({ ...p, role: defaultRole }));
       }
     } catch {

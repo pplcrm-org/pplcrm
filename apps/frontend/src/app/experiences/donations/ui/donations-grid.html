@@ -28,7 +28,7 @@
       <div class="stat p-4">
         <div class="stat-title pc-eyebrow">Total Raised</div>
         <div class="stat-value text-xl font-extrabold text-primary sm:text-2xl mt-1 tabular-nums">
-          {{ totalRaised() | currency:'USD':'symbol':'1.2-2' }}
+          {{ formatUnits(totalRaised()) }}
         </div>
         <div class="stat-desc text-[10px] text-base-content/40 mt-1">
           all time · {{ totalGiftCount() }} {{ totalGiftCount() === 1 ? 'gift' : 'gifts' }}
@@ -40,7 +40,7 @@
       <div class="stat p-4">
         <div class="stat-title pc-eyebrow">This Month</div>
         <div class="stat-value text-xl font-extrabold text-base-content sm:text-2xl mt-1 tabular-nums">
-          {{ thisMonthTotal() | currency:'USD':'symbol':'1.2-2' }}
+          {{ formatUnits(thisMonthTotal()) }}
         </div>
         <div class="stat-desc text-[10px] mt-1">
           @if (monthOverMonthDelta() !== null) {
@@ -58,7 +58,7 @@
       <div class="stat p-4">
         <div class="stat-title pc-eyebrow">Average Gift</div>
         <div class="stat-value text-xl font-extrabold text-base-content sm:text-2xl mt-1 tabular-nums">
-          {{ averageGift() | currency:'USD':'symbol':'1.2-2' }}
+          {{ formatUnits(averageGift()) }}
         </div>
         <div class="stat-desc text-[10px] text-base-content/40 mt-1">across {{ thisMonthCount() }} gifts</div>
       </div>

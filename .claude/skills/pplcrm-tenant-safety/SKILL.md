@@ -223,6 +223,28 @@ The pattern: a table is safe to allow-list only if its natural key is **globally
 tenant-derived** (email, session hash, the tenant id itself). If the table has a `tenant_id`
 column and queries key on it, it does not belong on the list.
 
+### Bearer-credential lookups: intentional, per-method, NOT allow-listed
+
+A handful of repo methods resolve a **bearer credential to its tenant** and so cannot be
+tenant-scoped — the credential is what establishes the scope. These are deliberately _not_ on
+`ignoreTables` (that would silence the whole table); each is a single documented method, and
+every downstream read/write is scoped by the `tenant_id` it returns. The full set:
+
+| Method                                    | Credential                                                            |
+| ----------------------------------------- | --------------------------------------------------------------------- |
+| `CompanionSessionsRepo.findByTokenHash`   | sha256 of the device session token                                    |
+| `DeliveryRoutesRepo.findByTokenHash`      | sha256 of the `/r/:token` share link                                  |
+| `TurfAssignmentsRepo.resolveByToken`      | sha256 of the `/t/:token` capability link                             |
+| `JoinCodesRepo.resolveByCode`             | the 8-char QR join code (`campaign_join_codes.code`, UNIQUE globally) |
+| `ApprovalTokensRepo.resolveByToken`       | sha256 of an approve-by-text link                                     |
+| `CompanionVolunteersRepo.findByJoinClaim` | sha256 of the one-shot QR-join claim                                  |
+
+Adding a new one is the same review as adding an allow-list entry: the key must be globally
+unique (a partial unique index counts), high-entropy or rate-limited, and the method must
+return `tenant_id` for everything after it to scope by. Note the lint rule only tracks chains
+starting at `selectFrom`/`updateTable`/`deleteFrom`, so a `BaseRepository.getSelect()` chain
+like these never trips it — the discipline here is human, not mechanical.
+
 ### Cautionary tale: three tables used to be on this list and shouldn't have been
 
 Until 2026-07-04 the list also carried `tags`, `ms_oauth_tokens`, and `google_oauth_tokens` — and

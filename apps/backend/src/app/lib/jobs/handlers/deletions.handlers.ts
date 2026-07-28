@@ -27,9 +27,11 @@ const mailService = new TransactionalEmailService({ defaultAudience: 'account' }
 export const TENANT_SCOPED_TABLES = [
   'background_jobs',
   'bug_reports',
+  'campaign_join_codes',
   'campaign_person_facts',
   'campaign_subscriptions',
   'companies',
+  'companion_approval_tokens',
   'companion_ops',
   'companion_sessions',
   'companion_volunteers',

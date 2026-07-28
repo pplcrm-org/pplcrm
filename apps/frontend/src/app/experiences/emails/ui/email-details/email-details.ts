@@ -38,6 +38,7 @@ export class EmailDetails {
       workingDays: this.settingsSvc.getValue<string>('sla.working_days', '1,2,3,4,5'),
       workingHoursStart: this.settingsSvc.getValue<string>('sla.working_hours_start', '09:00'),
       workingHoursEnd: this.settingsSvc.getValue<string>('sla.working_hours_end', '17:00'),
+      timeZone: this.settingsSvc.getValue<string>('organization.timezone'),
     });
   });
 

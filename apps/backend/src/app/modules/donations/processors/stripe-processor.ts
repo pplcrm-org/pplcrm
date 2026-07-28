@@ -1,3 +1,4 @@
+import { DEFAULT_CURRENCY, toStripeCurrency } from '@common';
 import { env } from '../../../../env';
 import { getStripe, isMockMode } from '../../../lib/stripe-platform-client';
 
@@ -18,7 +19,23 @@ export interface OneTimeCheckoutParams {
  * Mock mode keys off the platform client (same `MockKey` convention as billing).
  */
 export class StripeDonationProcessor {
-  constructor(private readonly config: { accountId: string | undefined; feePercent: number }) {}
+  constructor(
+    private readonly config: {
+      accountId: string | undefined;
+      feePercent: number;
+      /** Workspace transaction currency (`organization.currency`), lowercased for Stripe. */
+      currency?: string;
+    },
+  ) {}
+
+  /**
+   * Never let an absent config value reach Stripe as `currency: undefined` — that is a rejected
+   * charge (or worse, a silently mis-denominated one). Falls back to what donations were
+   * hardcoded to before `organization.currency` existed.
+   */
+  private get currency(): string {
+    return this.config.currency || toStripeCurrency(DEFAULT_CURRENCY);
+  }
 
   public async createOneTimeCheckout(params: OneTimeCheckoutParams): Promise<{ url: string | null }> {
     const { tenantId, userId, personId, amountCents, address, customUrls } = params;
@@ -45,7 +62,7 @@ export class StripeDonationProcessor {
         line_items: [
           {
             price_data: {
-              currency: 'cad',
+              currency: this.currency,
               product_data: { name: 'Campaign Donation' },
               unit_amount: amountCents,
             },

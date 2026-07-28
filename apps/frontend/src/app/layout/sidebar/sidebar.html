@@ -5,7 +5,7 @@
     [class.animate-up]="nav.justPinned"
     [class.tooltip]="isEffectivelyNarrow()"
     [class.tooltip-right]="isEffectivelyNarrow()"
-    [attr.data-tip]="isEffectivelyNarrow() ? nav.name : null"
+    [attr.data-tip]="isEffectivelyNarrow() ? label(nav) : null"
     (click)="this.closeMobile()"
     [pcTourAnchor]="tourAnchorFor(nav)"
     [routerLink]="nav.route"
@@ -17,7 +17,7 @@
       class="indicator whitespace-nowrap pl-2 text-[13px] tracking-[0.03em] max-sm:pl-3 max-sm:text-base"
       [class.invisible]="isEffectivelyNarrow()"
     >
-      {{ nav.name }} @if (nav.indicator) {
+      {{ label(nav) }} @if (nav.indicator) {
       <span class="indicator-item status status-primary"></span>
       } @if (nav.badgeCount) {
       <span
@@ -84,7 +84,7 @@
       <span class="flex-1 min-w-0">
         @if (isEffectivelyNarrow()) {
         <hr class="text-neutral my-2 w-6" />
-        } @else { {{ item.name }} }
+        } @else { {{ label(item) }} }
       </span>
       @if (item.children?.length) {
       <pc-swap
