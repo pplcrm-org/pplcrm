@@ -1,4 +1,4 @@
-import { inject, Service } from '@angular/core';
+import { Injector, inject, Service } from '@angular/core';
 import { Router } from '@angular/router';
 import { JSendServerError } from '../../../../../libs/common/src';
 import { TRPCClientError } from '@trpc/client';
@@ -20,10 +20,21 @@ const SIGNOUT_QUIET_MS = 3000;
 @Service()
 export class ErrorService {
   private readonly alerts = inject(AlertService);
-  private readonly router = inject(Router);
+  private readonly injector = inject(Injector);
   private readonly tokenSvc = inject(TokenService);
 
   private lastRedirect = 0;
+
+  /**
+   * Resolved lazily, never in a field initializer: `GlobalErrorHandler` (and therefore this
+   * service) is constructed while the application injector is still initializing, ahead of the
+   * Router, and the tRPC stack that the Router's own dependencies reach reaches back here
+   * (TRPCService → ErrorService). Injecting it eagerly risks a boot-time NG0200; by the time
+   * anything calls `handle()` the Router exists.
+   */
+  private get router(): Router {
+    return this.injector.get(Router);
+  }
 
   public handle(error: unknown): void {
     console.error('ErrorService.handle:', error);

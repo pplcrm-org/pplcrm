@@ -1,5 +1,5 @@
 import type { RouterStateSnapshot } from '@angular/router';
-import { Injectable, effect, inject, signal } from '@angular/core';
+import { Injectable, Injector, effect, inject, signal } from '@angular/core';
 import { Title } from '@angular/platform-browser';
 import { TitleStrategy } from '@angular/router';
 
@@ -94,8 +94,18 @@ export class TabTitleService {
 @Injectable({ providedIn: 'root' })
 export class AppTitleStrategy extends TitleStrategy {
   private readonly tabTitle = inject(TabTitleService);
-  private readonly orgMode = inject(OrgModeService);
+  private readonly injector = inject(Injector);
   private readonly segmentItems = buildSegmentItemMap(SidebarItems);
+
+  /**
+   * Resolved lazily, never in a field initializer. The Router builds its TitleStrategy while it is
+   * itself being constructed, and OrgModeService reaches back to the Router through the auth stack —
+   * OrgModeService → AuthService → TRPCService → Router — so an eager injection here is a boot-time
+   * NG0200. Titles are only derived during a navigation, by which point the graph is settled.
+   */
+  private get orgMode(): OrgModeService {
+    return this.injector.get(OrgModeService);
+  }
 
   public override updateTitle(snapshot: RouterStateSnapshot): void {
     const explicit = this.buildTitle(snapshot);
