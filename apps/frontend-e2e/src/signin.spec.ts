@@ -159,7 +159,7 @@ test.describe('Authentication', () => {
   test.describe('Sign-up navigation', () => {
     test('links to sign-up from the email step', async ({ page }) => {
       await page.goto('/signin');
-      await page.getByRole('link', { name: 'SIGN UP' }).click();
+      await page.getByRole('link', { name: 'Create an account' }).click();
       await expect(page).toHaveURL(/\/signup/);
     });
   });

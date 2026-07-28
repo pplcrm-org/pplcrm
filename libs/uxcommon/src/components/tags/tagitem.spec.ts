@@ -28,7 +28,7 @@ describe('TagItem', () => {
 
   it('emits click with the raw name when the label is clicked', () => {
     const spy = vi.fn();
-    component.click.subscribe(spy);
+    component.tagClicked.subscribe(spy);
 
     fixture.debugElement.query(By.css('.tag-label')).nativeElement.click();
 
@@ -39,7 +39,7 @@ describe('TagItem', () => {
     fixture.componentRef.setInput('canDelete', true);
     fixture.detectChanges();
     const spy = vi.fn();
-    component.close.subscribe(spy);
+    component.tagClosed.subscribe(spy);
 
     fixture.debugElement.query(By.css('.tag-remove')).nativeElement.click();
 
