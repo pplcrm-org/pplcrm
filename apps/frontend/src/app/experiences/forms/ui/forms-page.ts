@@ -9,6 +9,7 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 import { Table } from '@uxcommon/components/table/table';
+import { PcTabOption, TabBar } from '@uxcommon/components/tabs/tabs';
 import { Icon } from '@icons/icon';
 import { ListsService } from '@experiences/lists/services/lists-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -112,6 +113,7 @@ const BUILDER_CARDS: readonly BuilderCard[] = [
     NgTemplateOutlet,
     DatePipe,
     Table,
+    TabBar,
     GridHeaderComponent,
     EmptyState,
     ModalShell,
@@ -168,6 +170,13 @@ export class FormsPageComponent implements OnInit {
   );
 
   protected readonly selected = computed(() => this.forms().find((f) => f.id === this.selectedId()) ?? null);
+
+  /** The preview pane's two surfaces, with the response count on the label ("numbers before clicks"). */
+  protected readonly previewTabs = computed<PcTabOption[]>(() => [
+    { id: 'form', label: 'Form' },
+    { id: 'responses', label: 'Responses', badge: this.selected()?.submission_count ?? 0 },
+  ]);
+
   protected readonly activeForms = computed(() => this.forms().filter((f) => f.status !== 'archived'));
   protected readonly archivedForms = computed(() => this.forms().filter((f) => f.status === 'archived'));
 
@@ -270,6 +279,11 @@ export class FormsPageComponent implements OnInit {
   protected setTab(tab: 'form' | 'responses'): void {
     this.tab.set(tab);
     if (tab === 'responses') void this.loadSubmissions();
+  }
+
+  /** Tab-bar ids arrive as plain strings; narrow before touching the typed signal. */
+  protected setTabById(id: string): void {
+    this.setTab(id === 'responses' ? 'responses' : 'form');
   }
 
   protected enterEdit(): void {
