@@ -34,6 +34,16 @@ const CLOCK_TICK_MS = 30_000;
         </button>
       </div>
 
+      <div class="rounded-lg border border-base-300 bg-base-100 p-4">
+        <p class="text-xs text-base-content/60">Doors you logged this shift</p>
+        <p class="text-2xl font-bold tabular-nums">{{ store.myDoorCount() }}</p>
+        <p class="mt-1 text-xs text-base-content/60">{{ shiftFootnote() }}</p>
+      </div>
+
+      <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">
+        This turf, everyone together
+      </p>
+
       <div class="grid grid-cols-2 gap-2">
         <div class="rounded-lg border border-base-300 bg-base-100 p-3">
           <p class="text-xs text-base-content/60">Doors attempted</p>
@@ -54,7 +64,9 @@ const CLOCK_TICK_MS = 30_000;
       </div>
 
       <div class="rounded-lg border border-base-300 bg-base-100 p-4">
-        <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">Top issues heard</p>
+        <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">
+          Top issues heard on this turf
+        </p>
         @if (stats().top_issues.length > 0) {
           <ul class="mt-2 flex flex-col gap-1.5">
             @for (item of topIssues(); track item.issue) {
@@ -119,6 +131,19 @@ export class CanvassMe {
 
   protected readonly stats = computed(() => this.store.stats());
   protected readonly topIssues = computed(() => this.stats().top_issues.slice(0, 5));
+
+  /**
+   * Several volunteers can walk one turf, and the turf payload carries all of their
+   * knocks. Saying so keeps the big number above from reading as the turf's total —
+   * and stops the turf's totals below from reading as this volunteer's own work.
+   */
+  protected readonly shiftFootnote = computed(() => {
+    const mine = this.store.myDoorCount();
+    const turf = this.stats().doors_attempted;
+    if (mine === 0) return 'Nothing logged from this phone yet.';
+    if (turf > mine) return `${turf} doors attempted on this turf in total, including other canvassers.`;
+    return 'Counted from this phone, so results logged elsewhere are not included.';
+  });
 
   /** Ticks so "Last synced N min ago" stays honest while the tab sits open. */
   private readonly now = signal(Date.now());

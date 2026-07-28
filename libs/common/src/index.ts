@@ -109,6 +109,7 @@ export type {
   UpdateTurfType,
   CutTurfsType,
   AssignTurfType,
+  RemoveCanvasserType,
   FieldReportRangeType,
   LogKnockType,
 } from './lib/models';
@@ -244,6 +245,7 @@ export {
   UpdateTurfObj,
   CutTurfsObj,
   AssignTurfObj,
+  RemoveCanvasserObj,
   FieldReportRangeObj,
   LogKnockObj,
   TURF_STATUSES,
@@ -358,6 +360,8 @@ export type {
   CompanionPerson,
   CompanionDoorOutcome,
   CompanionHousehold,
+  CompanionTurfChoice,
+  CompanionTurfChoices,
   CompanionTurfPayload,
   UpdateCompanionSettingsType,
 } from './lib/schemas/canvassing.schema';
@@ -547,3 +551,5 @@ export type { HelpRouteTarget } from './lib/help/help-links';
 export { classifyHelpRoute } from './lib/help/help-links';
 
 export { blockToMarkdown, articleToMarkdown } from './lib/help/help-markdown';
+
+export { haversineKm, type LatLng } from './lib/geo/haversine';

@@ -7,19 +7,20 @@
     or phone on file, then needs your approval (once, for all their assignments). Revoke anytime.
   </p>
 
-  <pc-table [loading]="loading.visible()" [columns]="6">
+  <pc-table [loading]="loading.visible()" [columns]="7">
     <ng-container pcTableHead>
       <th>Volunteer</th>
       <th>Contact</th>
       <th>Status</th>
       <th>Verified</th>
       <th>Approved</th>
+      <th>Turf access</th>
       <th class="w-32"></th>
     </ng-container>
 
     @if (loaded() && rows().length === 0) {
     <tr>
-      <td colspan="6" class="px-6 py-14 text-center">
+      <td colspan="7" class="px-6 py-14 text-center">
         <div class="flex flex-col items-center gap-3">
           <pc-icon name="identification" [size]="8" class="text-base-content/30"></pc-icon>
           <p class="text-sm text-base-content/60">
@@ -38,6 +39,25 @@
       <td class="text-base-content/70">{{ verifiedLine(row) }}</td>
       <td class="text-base-content/70">
         @if (row.approved_by_name && row.approved_at) { {{ row.approved_by_name }} } @else { — }
+      </td>
+      <td>
+        <!-- Three-state on purpose: "follows the workspace" is a real, distinct answer,
+             not the absence of one. Only meaningful once they can actually get in. -->
+        @if (row.status === 'approved') {
+        <select
+          class="select select-bordered select-xs w-40 cursor-pointer"
+          [attr.aria-label]="'Turf access for ' + displayName(row)"
+          [disabled]="busyId() === row.id"
+          [value]="roamValue(row)"
+          (change)="onRoamChange(row, $event)"
+        >
+          @for (opt of roamOptions; track opt.value) {
+          <option [value]="opt.value">{{ opt.label }}</option>
+          }
+        </select>
+        } @else {
+        <span class="text-xs text-base-content/40">—</span>
+        }
       </td>
       <td class="text-right">
         @switch (row.status) { @case ('verified') {

@@ -14,7 +14,11 @@ companion data request:
   a volunteer who verified a one-time code sent to their email/SMS on file AND has
   been approved once by an admin.
 
-## Data model (migration `2026-07-12-companion-apps.ts`)
+## Data model
+
+The companion tables live in the squashed baseline (`_migrations/schema.sql`), not in a
+dated migration — the old `2026-07-12-companion-apps.ts` no longer exists. New columns
+need a new dated file (see `pplcrm-migrations`).
 
 | Table                  | What it is                                                                                                                                                                                  |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -59,8 +63,21 @@ Throws `UnauthorizedError` (no/invalid/mismatched session → gate re-verifies) 
 client — the gate needs them to render the right state; keep uniform 404 for dead
 tokens.
 
+**The other direction**: `resolveSession(sessionToken)` answers "who is this?" with no
+capability link at all, returning `{ tenant_id, volunteer_id, person_id, can_roam }`.
+It exists because turf tokens are hashed and can never be handed back out, so a
+volunteer switching turfs has no link to present — the session is the credential, and
+an active `turf_assignments` row is the per-turf authorization on top of it. Same
+refusals as the guard (`UnauthorizedError` for a dead session, `ForbiddenError` for
+unapproved). **Add surfaces alongside `requireSession`, never by loosening it** — every
+existing `/t/:token` and `/r/:token` caller depends on its link-first check.
+
+`companion_volunteers.can_roam` (boolean, nullable) overrides the workspace
+`app.canvass_volunteer_roam` setting for one person; null inherits. See
+`pplcrm-canvassing` → "Session-first access, and roaming".
+
 Admin tRPC (`companionAccess` router): `getAll`, `pendingCount`, `approve(id)`,
-`revoke(id)` (admin/owner only; revoke cascades to every session). Mutations are
+`revoke(id)`, `setRoam(id, can_roam)` (admin/owner only; revoke cascades to every session). Mutations are
 plan-gated via `planFeatureGate('companions')` — Movement-only, matching the two
 companion surfaces (turf assignments and delivery routes are both Movement-gated, so
 approvals below Movement would be a dead end); reads stay open. Staff-side volunteer

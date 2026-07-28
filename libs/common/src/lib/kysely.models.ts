@@ -451,6 +451,8 @@ interface CompanionVolunteers {
   approved_by: string | null;
   approved_at: Timestamp | null;
   revoked_at: Timestamp | null;
+  /** Per-volunteer roam override; null = inherit `app.canvass_volunteer_roam`. */
+  can_roam: boolean | null;
   createdby_id: string | null;
   updatedby_id: string | null;
   created_at: Generated<Timestamp>;

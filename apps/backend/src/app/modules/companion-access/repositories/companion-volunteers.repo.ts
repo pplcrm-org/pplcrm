@@ -14,6 +14,8 @@ export interface CompanionVolunteer {
   verify_attempts: number;
   verify_channel: string | null;
   verified_at: Date | null;
+  /** Per-volunteer roam override; null = inherit the workspace roam setting. */
+  can_roam: boolean | null;
 }
 
 export class CompanionVolunteersRepo extends BaseRepository<'companion_volunteers'> {
@@ -178,6 +180,7 @@ export class CompanionVolunteersRepo extends BaseRepository<'companion_volunteer
         'companion_volunteers.verified_at',
         'companion_volunteers.approved_at',
         'companion_volunteers.created_at',
+        'companion_volunteers.can_roam',
         'persons.first_name',
         'persons.last_name',
         'persons.email',
@@ -200,6 +203,7 @@ export class CompanionVolunteersRepo extends BaseRepository<'companion_volunteer
       verify_channel: (r.verify_channel ?? null) as CompanionVolunteerRow['verify_channel'],
       verified_at: r.verified_at ? new Date(String(r.verified_at)).toISOString() : null,
       approved_at: r.approved_at ? new Date(String(r.approved_at)).toISOString() : null,
+      can_roam: r.can_roam == null ? null : Boolean(r.can_roam),
       approved_by_name: r.approver_first_name ? `${r.approver_first_name} ${r.approver_last_name ?? ''}`.trim() : null,
       created_at: new Date(String(r.created_at)).toISOString(),
     }));
@@ -226,6 +230,19 @@ export class CompanionVolunteersRepo extends BaseRepository<'companion_volunteer
       verify_attempts: Number(row['verify_attempts'] ?? 0),
       verify_channel: row['verify_channel'] == null ? null : String(row['verify_channel']),
       verified_at: row['verified_at'] ? new Date(String(row['verified_at'])) : null,
+      can_roam: row['can_roam'] == null ? null : Boolean(row['can_roam']),
     };
+  }
+
+  /** Set or clear this volunteer's roam override (null = follow the workspace setting). */
+  public async setCanRoam(
+    input: { tenant_id: string; id: string; can_roam: boolean | null; user_id: string },
+    trx?: Transaction<Models>,
+  ): Promise<void> {
+    await this.getUpdate(trx)
+      .set({ can_roam: input.can_roam, updatedby_id: input.user_id, updated_at: new Date() })
+      .where('tenant_id', '=', input.tenant_id)
+      .where('id', '=', input.id)
+      .execute();
   }
 }

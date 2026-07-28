@@ -18,6 +18,8 @@ interface Seed {
   householdIds: string[];
   /** The volunteer the Companion link is assigned to (not a list member). */
   volunteerPersonId: string;
+  /** A second volunteer, for the group-canvassing tests. */
+  volunteer2PersonId: string;
   /** Residents of householdIds[0], for person-level survey tests. */
   residentIds: string[];
 }
@@ -138,6 +140,22 @@ async function seed(db: Db, opts: { geocoded: number; ungeocoded: number }): Pro
     })
     .execute();
 
+  // A second volunteer, so a turf can be walked by more than one person.
+  const volunteer2PersonId = rand();
+  await db
+    .insertInto('persons')
+    .values({
+      id: volunteer2PersonId,
+      tenant_id: tenantId,
+      household_id: volunteerHouseholdId,
+      first_name: 'Riya',
+      last_name: 'Volunteer',
+      email: 'riya@example.com',
+      createdby_id: userId,
+      updatedby_id: userId,
+    })
+    .execute();
+
   // Two residents at the first door, for person-level survey tests.
   const residentIds: string[] = [];
   for (const [first, last] of [
@@ -160,7 +178,7 @@ async function seed(db: Db, opts: { geocoded: number; ungeocoded: number }): Pro
       .execute();
   }
 
-  return { tenantId, userId, campaignId, listId, householdIds, volunteerPersonId, residentIds };
+  return { tenantId, userId, campaignId, listId, householdIds, volunteerPersonId, volunteer2PersonId, residentIds };
 }
 
 /**
@@ -199,8 +217,36 @@ async function mintApprovedSession(db: Db, tenantId: string, personId: string, u
   return raw;
 }
 
+/** Set the workspace roam policy the way the Settings page would. */
+async function setRoamPolicy(db: Db, tenantId: string, userId: string, value: 'assigned' | 'campaign'): Promise<void> {
+  // settings.value is jsonb, so the string has to arrive JSON-encoded ("campaign", not campaign).
+  const json = JSON.stringify(value);
+  await db
+    .insertInto('settings')
+    .values({
+      tenant_id: tenantId,
+      key: 'app.canvass_volunteer_roam',
+      value: json,
+      createdby_id: userId,
+      updatedby_id: userId,
+    })
+    .onConflict((oc) => oc.columns(['tenant_id', 'key']).doUpdateSet({ value: json }))
+    .execute();
+}
+
+/** The per-volunteer override; null hands them back to the workspace setting. */
+async function setVolunteerRoam(db: Db, tenantId: string, personId: string, canRoam: boolean | null): Promise<void> {
+  await db
+    .updateTable('companion_volunteers')
+    .set({ can_roam: canRoam })
+    .where('tenant_id', '=', tenantId)
+    .where('person_id', '=', personId)
+    .execute();
+}
+
 async function cleanup(db: Db, tenantId: string): Promise<void> {
   await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('companion_ops').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('companion_sessions').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('companion_volunteers').where('tenant_id', '=', tenantId).execute();
@@ -256,13 +302,250 @@ describe('CanvassingController', () => {
     expect(turfs.length).toBe(res.created);
     for (const t of turfs) {
       expect(t.status).toBe('draft');
-      expect(t.team_id).toBeNull();
+      expect(t.canvassers).toEqual([]);
       expect(t.door_count).toBeGreaterThan(0);
       expect(['W1', 'W2', null]).toContain(t.ward);
     }
     // Every geocoded door placed exactly once across turfs.
     const total = turfs.reduce((n, t) => n + t.door_count, 0);
     expect(total).toBe(40);
+  });
+
+  it('puts several volunteers on one turf, each with their own working link', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    // Turfs never cross a ward, so the cut yields more than one; hold on to the
+    // shape before assigning so the roster can be shown not to disturb it.
+    const before = await controller.getTurfs(auth);
+    const [turf] = before;
+    if (!turf) throw new Error('expected a turf');
+
+    const first = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const second = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteer2PersonId,
+    });
+
+    // The second assignment must NOT evict the first — that was the old behavior.
+    const sessionA = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    const sessionB = await mintApprovedSession(db, s.tenantId, s.volunteer2PersonId, s.userId);
+    const payloadA = await controller.getCompanionTurf(first.token, sessionA);
+    const payloadB = await controller.getCompanionTurf(second.token, sessionB);
+    expect(payloadA.canvasser_name).toBe('Sam Volunteer');
+    expect(payloadB.canvasser_name).toBe('Riya Volunteer');
+    // Both walk the same doors.
+    expect(payloadA.households.length).toBe(payloadB.households.length);
+
+    const roster = await controller.getTurfCanvassers(auth, turf.id);
+    expect(roster.map((c) => c.name).sort()).toEqual(['Riya Volunteer', 'Sam Volunteer']);
+
+    const after = await controller.getTurfs(auth);
+    const listed = after.find((t) => t.id === turf.id);
+    expect(listed?.canvassers.length).toBe(2);
+    expect(listed?.has_link).toBe(true);
+    // Two volunteers on a turf must not fan the list out into a row per volunteer,
+    // nor multiply the door count hanging off it.
+    expect(after.length).toBe(before.length);
+    expect(listed?.door_count).toBe(turf.door_count);
+  });
+
+  it('removes one canvasser without disturbing the rest of the roster', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const [turf] = await controller.getTurfs(auth);
+    if (!turf) throw new Error('expected a turf');
+
+    const stays = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const goes = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteer2PersonId,
+    });
+
+    await controller.removeVolunteerFromTurf(auth, {
+      turf_id: turf.id,
+      volunteer_person_id: s.volunteer2PersonId,
+    });
+
+    const staysSession = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    const goesSession = await mintApprovedSession(db, s.tenantId, s.volunteer2PersonId, s.userId);
+    // The one who stayed is unaffected; the removed one's link is dead.
+    await expect(controller.getCompanionTurf(stays.token, staysSession)).resolves.toBeTruthy();
+    await expect(controller.getCompanionTurf(goes.token, goesSession)).rejects.toThrow();
+
+    const roster = await controller.getTurfCanvassers(auth, turf.id);
+    expect(roster.map((c) => c.name)).toEqual(['Sam Volunteer']);
+
+    // Removing someone who is not on the turf is a clear error, not a silent no-op.
+    await expect(
+      controller.removeVolunteerFromTurf(auth, { turf_id: turf.id, volunteer_person_id: s.volunteer2PersonId }),
+    ).rejects.toThrow();
+  });
+
+  it('reports a turf with nobody on it as draft rather than claiming it is assigned', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const [turf] = await controller.getTurfs(auth);
+    if (!turf) throw new Error('expected a turf');
+
+    await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    expect((await controller.getTurfs(auth))[0]?.status).toBe('assigned');
+
+    await controller.removeVolunteerFromTurf(auth, {
+      turf_id: turf.id,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const after = (await controller.getTurfs(auth))[0];
+    expect(after?.status).toBe('draft');
+    expect(after?.has_link).toBe(false);
+  });
+
+  it('re-assigning the same volunteer rotates their link instead of adding a second one', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const [turf] = await controller.getTurfs(auth);
+    if (!turf) throw new Error('expected a turf');
+
+    const original = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const reissued = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    expect(reissued.token).not.toBe(original.token);
+
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    await expect(controller.getCompanionTurf(original.token, session)).rejects.toThrow();
+    await expect(controller.getCompanionTurf(reissued.token, session)).resolves.toBeTruthy();
+    expect(await controller.getTurfCanvassers(auth, turf.id)).toHaveLength(1);
+  });
+
+  it('lets a volunteer switch to another turf they are on, without any link', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 20 });
+    const turfs = await controller.getTurfs(auth);
+    const [first, second] = turfs;
+    if (!first || !second) throw new Error('expected two turfs');
+
+    for (const t of [first, second]) {
+      await controller.assignTurf(auth, {
+        turf_id: t.id,
+        team_id: null,
+        volunteer_person_id: s.volunteerPersonId,
+      });
+    }
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+
+    const choices = await controller.getMyTurfs(session);
+    expect(choices.mine.map((t) => t.turf_id).sort()).toEqual([first.id, second.id].sort());
+
+    // Session + turf id is enough — the tokens are hashed and never handed back.
+    const payload = await controller.getCompanionTurfBySession(session, second.id);
+    expect(payload.turf_id).toBe(second.id);
+    expect(payload.turf_name).toBe(second.name);
+  });
+
+  it('refuses a session-first request for a turf the volunteer is not on', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 20 });
+    const turfs = await controller.getTurfs(auth);
+    const [mine, theirs] = turfs;
+    if (!mine || !theirs) throw new Error('expected two turfs');
+
+    await controller.assignTurf(auth, {
+      turf_id: mine.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+
+    await expect(controller.getCompanionTurfBySession(session, theirs.id)).rejects.toThrow();
+    await expect(controller.postCompanionResultsBySession(session, theirs.id, [])).rejects.toThrow();
+  });
+
+  it('offers claimable turfs and self-claims one when the workspace allows roaming', async () => {
+    await setRoamPolicy(db, s.tenantId, s.userId, 'campaign');
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 20 });
+    const turfs = await controller.getTurfs(auth);
+    const [start, target] = turfs;
+    if (!start || !target) throw new Error('expected two turfs');
+
+    // One assignment first: roaming widens a volunteer's reach within campaigns they
+    // already work in, it does not place them into a campaign from nothing.
+    await controller.assignTurf(auth, {
+      turf_id: start.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+
+    const before = await controller.getMyTurfs(session);
+    expect(before.may_roam).toBe(true);
+    expect(before.available.map((t) => t.turf_id)).toContain(target.id);
+
+    await controller.claimTurf(session, target.id);
+    const after = await controller.getMyTurfs(session);
+    expect(after.mine.map((t) => t.turf_id).sort()).toEqual([start.id, target.id].sort());
+    // Claiming twice is not an error — a double tap on a slow connection is not a failure.
+    await expect(controller.claimTurf(session, target.id)).resolves.toEqual({ turf_id: target.id });
+    expect(await controller.getTurfCanvassers(auth, target.id)).toHaveLength(1);
+  });
+
+  it('refuses self-claim server-side when the workspace assigns turfs by hand', async () => {
+    await setRoamPolicy(db, s.tenantId, s.userId, 'assigned');
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 20 });
+    const turfs = await controller.getTurfs(auth);
+    const [start, target] = turfs;
+    if (!start || !target) throw new Error('expected two turfs');
+
+    await controller.assignTurf(auth, {
+      turf_id: start.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+
+    const choices = await controller.getMyTurfs(session);
+    expect(choices.may_roam).toBe(false);
+    // Not merely hidden from the picker — the endpoint refuses.
+    expect(choices.available).toEqual([]);
+    await expect(controller.claimTurf(session, target.id)).rejects.toThrow();
+  });
+
+  it('lets a per-volunteer override beat the workspace roam setting, both ways', async () => {
+    await setRoamPolicy(db, s.tenantId, s.userId, 'assigned');
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 20 });
+    const turfs = await controller.getTurfs(auth);
+    const [start, target] = turfs;
+    if (!start || !target) throw new Error('expected two turfs');
+
+    await controller.assignTurf(auth, {
+      turf_id: start.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+
+    // Trusted individually, inside a workspace that otherwise assigns by hand.
+    await setVolunteerRoam(db, s.tenantId, s.volunteerPersonId, true);
+    expect((await controller.getMyTurfs(session)).may_roam).toBe(true);
+    await expect(controller.claimTurf(session, target.id)).resolves.toEqual({ turf_id: target.id });
+
+    // And the reverse: pinned individually inside a roaming workspace.
+    await setRoamPolicy(db, s.tenantId, s.userId, 'campaign');
+    await setVolunteerRoam(db, s.tenantId, s.volunteerPersonId, false);
+    expect((await controller.getMyTurfs(session)).may_roam).toBe(false);
   });
 
   it('assigns a turf to a volunteer, exposes the spec-§3 payload to a verified session, and syncs results', async () => {

@@ -31,6 +31,9 @@ type CoverageStatus = Coverage['doors'][number]['status'];
 type CoverageView = 'map' | 'ward';
 
 /** Door-dot colours on the coverage map: talked → knocked-no-answer → not yet. */
+/** Names shown inline on a turf row before the rest collapse into a "+N" count. */
+const MAX_CANVASSER_CHIPS = 2;
+
 const COVERAGE_VARIANT: Record<CoverageStatus, PcMapVariant> = {
   conversation: 'success',
   attempted: 'warning',
@@ -254,29 +257,33 @@ export class CanvassingPage implements OnInit {
     }
   }
 
-  /** Assignment is personal now — open the pick-a-volunteer dialog (plan §5 B1). */
+  /** Open the canvasser roster for this turf (plan §5 B1). */
   protected assign(t: TurfListItem): void {
     this.assignTarget.set(t);
   }
 
-  /**
-   * Re-issue the volunteer link.
-   *
-   * The raw token is no longer stored server-side (it is hashed, like delivery routes),
-   * so an existing link cannot be re-displayed — re-assigning mints a fresh one and
-   * copies it. Same rule the deliveries page already follows.
-   */
-  protected async copyLink(t: TurfListItem): Promise<void> {
-    this.assign(t);
+  protected visibleCanvassers(t: TurfListItem): TurfListItem['canvassers'] {
+    return t.canvassers.slice(0, MAX_CANVASSER_CHIPS);
   }
 
+  protected extraCanvassers(t: TurfListItem): number {
+    return Math.max(0, t.canvassers.length - MAX_CANVASSER_CHIPS);
+  }
+
+  /**
+   * One volunteer was added. The roster dialog stays open — volunteers are usually
+   * added several at a time — so this only announces the link and does not close it.
+   */
   protected async onAssigned(res: { token: string; sent: { email: boolean; sms: boolean } }): Promise<void> {
-    this.assignTarget.set(null);
     const phrase = volunteerLinkSentPhrase(res.sent);
-    await this.copyCompanionLink(res.token, phrase ? `Volunteer assigned — ${phrase}. Link also copied.` : undefined);
+    await this.copyCompanionLink(res.token, phrase ? `Canvasser added — ${phrase}. Link also copied.` : undefined);
     if (!phrase) {
       this.alerts.showWarn('They have no email or mobile on file — paste them the copied link yourself');
     }
+  }
+
+  protected async onRosterClosed(): Promise<void> {
+    this.assignTarget.set(null);
     await this.loadTurfs();
   }
 

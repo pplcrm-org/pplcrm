@@ -7,11 +7,15 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { CanvassStore } from './canvass-store';
 
 const TOKEN = 'tok-abc';
+const TURF_ID = '4';
 const QUEUE_KEY = `pc-canvass-queue:${TOKEN}`;
 
 function turfPayload(): CompanionTurfPayload {
   return {
     campaign_name: 'Vote Rivera',
+    // Results post against the turf id, not the link token: a volunteer can switch
+    // turfs mid-shift and every queued op has to go back where it was recorded.
+    turf_id: TURF_ID,
     turf_name: 'Turf 4',
     canvasser_name: 'Jordan Rivera',
     script: '',

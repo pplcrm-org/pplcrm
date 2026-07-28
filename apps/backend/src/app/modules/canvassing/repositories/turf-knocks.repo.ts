@@ -230,9 +230,24 @@ export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
       ])
       .execute();
 
+    // One team per turf, deliberately via a DISTINCT ON subquery rather than a plain
+    // join on turf_assignments. A turf accumulates one row per assignment ever made
+    // (revoked ones are kept for history) and can now hold several active volunteers
+    // at once, so joining the table directly multiplies every knock by the number of
+    // assignment rows on its turf — the counts below would silently inflate.
     const byTeamRows = await this.getSelect(trx)
-      .leftJoin('turf_assignments as ta', (join) =>
-        join.onRef('ta.turf_id', '=', 'turf_knocks.turf_id').on('ta.tenant_id', '=', tenant_id),
+      .leftJoin(
+        (eb) =>
+          eb
+            .selectFrom('turf_assignments')
+            .select(['turf_id', 'team_id'])
+            .distinctOn('turf_id')
+            .where('tenant_id', '=', tenant_id)
+            .where('status', '=', 'active')
+            .orderBy('turf_id')
+            .orderBy('assigned_at', 'desc')
+            .as('ta'),
+        (join) => join.onRef('ta.turf_id', '=', 'turf_knocks.turf_id'),
       )
       .leftJoin('teams', 'teams.id', 'ta.team_id')
       .where('turf_knocks.tenant_id', '=', tenant_id)

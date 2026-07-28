@@ -18,11 +18,14 @@ type ListFilter = 'all' | 'remaining' | 'visited';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="flex flex-col gap-4 p-4">
-      <header class="flex flex-col gap-0.5">
-        <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">
-          {{ store.payload()?.campaign_name }}
-        </p>
-        <h1 class="text-xl font-bold">{{ store.payload()?.turf_name }}</h1>
+      <header class="flex items-start justify-between gap-3">
+        <div class="flex min-w-0 flex-col gap-0.5">
+          <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">
+            {{ store.payload()?.campaign_name }}
+          </p>
+          <h1 class="truncate text-xl font-bold">{{ store.payload()?.turf_name }}</h1>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm shrink-0" (click)="openPicker()">Switch turf</button>
       </header>
 
       <div class="rounded-lg border border-base-300 bg-base-100 p-4">
@@ -159,6 +162,10 @@ export class CanvassList {
 
   protected open(householdId: string): void {
     this.store.view.set({ kind: 'household', household_id: householdId });
+  }
+
+  protected openPicker(): void {
+    this.store.view.set({ kind: 'picker' });
   }
 
   protected residentNames(h: CompanionHousehold): string {

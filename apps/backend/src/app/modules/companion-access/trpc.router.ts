@@ -23,4 +23,8 @@ export const CompanionAccessRouter = router({
   revoke: adminOrOwnerProcedure
     .input(z.object({ id: idSchema }))
     .mutation(({ ctx, input }) => controller.revokeVolunteer(ctx.auth, input.id)),
+  // Per-volunteer override for the workspace roam setting; null = follow the workspace.
+  setRoam: adminOrOwnerProcedure
+    .input(z.object({ id: idSchema, can_roam: z.boolean().nullable() }))
+    .mutation(({ ctx, input }) => controller.setVolunteerRoam(ctx.auth, input.id, input.can_roam)),
 });

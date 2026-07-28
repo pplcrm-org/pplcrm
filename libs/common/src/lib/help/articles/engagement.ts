@@ -290,10 +290,14 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         title: 'Only located doors get cut',
         text: 'A turf is built from households the app has geocoded. Addresses still being located are reported in the preview and join a turf once they resolve. Nothing is silently dropped.',
       },
-      { kind: 'h2', id: 'assign', text: 'Assign turfs to volunteers' },
+      { kind: 'h2', id: 'assign', text: 'Put canvassers on a turf' },
       {
         kind: 'p',
-        text: '**Assign** opens a picker: choose the person the turf belongs to, and the app mints their personal Companion link, **sends it to them automatically** by email and text (whichever contacts their [person record](/people) has on file), and copies it to your clipboard as a backup. Links are personal on purpose: the volunteer proves it’s them with a one-time code sent to the same email or mobile, and a brand-new volunteer needs a one-time admin approval on the Volunteer access page before the turf loads. Keep a turf in sync with its list any time with **Refresh from list**. It pulls in new matching doors without ever losing knock history.',
+        text: '**Add canvassers** opens the turf’s roster. Search for people and add as many as you like at once, because a turf holds a whole group walking it together, not one person. Everyone you add gets their own personal Companion link, **sent to them automatically** by email and text (whichever contacts their [person record](/people) has on file). Links are personal on purpose: each volunteer proves it’s them with a one-time code sent to their own email or mobile, and a brand-new volunteer needs a one-time admin approval on the Volunteer access page before the turf loads. Remove someone from the roster and their link stops working immediately, while everyone else keeps walking and the doors they already knocked stay credited to them. Keep a turf in sync with its list any time with **Refresh from list**. It pulls in new matching doors without ever losing knock history.',
+      },
+      {
+        kind: 'p',
+        text: 'By default a canvasser can also pick their own turf. Once they’re on at least one turf in a campaign, the Companion shows them every other turf in that campaign — nearest first if they let the phone share its location — so they can start on an unclaimed one or join a turf someone else is already walking, and switch between turfs mid-shift without you sending anything. If you would rather place every canvasser by hand, set **Which turfs a canvasser can see** to “Only turfs you assign them” in Settings → Companion Apps. You can also override it for one person from the Volunteer access page.',
       },
       {
         kind: 'callout',

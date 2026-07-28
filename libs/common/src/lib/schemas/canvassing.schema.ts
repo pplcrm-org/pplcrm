@@ -84,6 +84,15 @@ export const AssignTurfObj = z.object({
   volunteer_person_id: idSchema,
 });
 
+/**
+ * Take one volunteer off a turf. Scoped to the person rather than the turf because
+ * a turf can hold several canvassers, and removing one must leave the rest walking.
+ */
+export const RemoveCanvasserObj = z.object({
+  turf_id: idSchema,
+  volunteer_person_id: idSchema,
+});
+
 export const FieldReportRangeObj = z.object({
   range: z.enum(['today', 'yesterday', 'week', 'month', 'campaign', 'custom']).default('week'),
   from: z.string().datetime().nullable().optional(),
@@ -238,8 +247,34 @@ export interface CompanionHousehold {
   people: CompanionPerson[];
 }
 
+/** One turf offered in the companion's picker. */
+export interface CompanionTurfChoice {
+  turf_id: string;
+  name: string;
+  ward: string | null;
+  doors: number;
+  attempted: number;
+  /** Volunteers already walking it — joining a busy turf is the group-canvass case. */
+  canvassers: number;
+  centroid_lat: number | null;
+  centroid_lng: number | null;
+}
+
+export interface CompanionTurfChoices {
+  /** Whether this volunteer may self-claim; decides if `available` is shown at all. */
+  may_roam: boolean;
+  mine: CompanionTurfChoice[];
+  available: CompanionTurfChoice[];
+}
+
 export interface CompanionTurfPayload {
   campaign_name: string;
+  /**
+   * Which turf this is. The companion posts results against it once the device has a
+   * session, so switching turfs never needs another capability link (turf tokens are
+   * hashed and can't be handed back out).
+   */
+  turf_id: string;
   turf_name: string;
   /** Whose name results save under — the assignment's volunteer. */
   canvasser_name: string;

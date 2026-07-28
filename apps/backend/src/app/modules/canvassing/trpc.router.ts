@@ -5,6 +5,7 @@ import {
   AssignTurfObj,
   CutTurfsObj,
   FieldReportRangeObj,
+  RemoveCanvasserObj,
   UpdateCompanionSettingsObj,
   UpdateTurfObj,
   idSchema,
@@ -44,6 +45,13 @@ export const CanvassingRouter = router({
     .mutation(({ ctx, input }) => controller.updateTurf(ctx.auth, input.id, input.data)),
   assign: authProcedure.input(AssignTurfObj).mutation(({ ctx, input }) => controller.assignTurf(ctx.auth, input)),
   retire: authProcedure.input(idSchema).mutation(({ ctx, input }) => controller.retireTurf(ctx.auth, input)),
+
+  // Turf roster: several volunteers can walk one turf, so membership is add/remove
+  // rather than a single swap.
+  getCanvassers: authProcedure.input(idSchema).query(({ ctx, input }) => controller.getTurfCanvassers(ctx.auth, input)),
+  removeCanvasser: authProcedure
+    .input(RemoveCanvasserObj)
+    .mutation(({ ctx, input }) => controller.removeVolunteerFromTurf(ctx.auth, input)),
 
   // Companion survey vocabulary (issues chips + door script), campaign-scoped.
   getCompanionSettings: authProcedure

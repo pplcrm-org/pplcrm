@@ -26,4 +26,9 @@ export class VolunteerAccessService extends TRPCService<'companion_volunteers'> 
   public revoke(id: string): Promise<void> {
     return this.api.companionAccess.revoke.mutate({ id }) as Promise<void>;
   }
+
+  /** null = follow the workspace `app.canvass_volunteer_roam` setting. */
+  public setRoam(id: string, canRoam: boolean | null): Promise<void> {
+    return this.api.companionAccess.setRoam.mutate({ id, can_roam: canRoam }) as Promise<void>;
+  }
 }

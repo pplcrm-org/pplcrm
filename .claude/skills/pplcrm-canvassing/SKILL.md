@@ -53,7 +53,70 @@ stores only the true lifecycle (`draft`/`active`/`retired`); the display status
 (`draft`|`assigned`|`in_field`|`complete`|`retired`) is computed in
 `CanvassingController.displayStatus` from stored status + knock activity + door
 count. `attempted` = `COUNT(DISTINCT household_id)`; `in_field` = a knock within
-`IN_FIELD_WINDOW_MS` (6h).
+`IN_FIELD_WINDOW_MS` (6h). An `active` turf with an **empty roster** derives back to
+`draft` rather than `assigned` — volunteers can be removed one at a time, and saying
+"assigned" with nobody on it would be a lie.
+
+### Several volunteers per turf (group canvassing)
+
+A turf holds **any number of active `turf_assignments`**, one per volunteer, each
+with its own token. Two rules make that safe, and breaking either is a real bug:
+
+- `assignTurf` calls `assignments.revokeForVolunteer` (this volunteer only), **never
+  `revokeForTurf`** — that retires _everyone_ and is correct only for `retireTurf`.
+  Re-assigning the same person still rotates their token (the raw value is hashed and
+  can never be re-displayed). Enforced by the partial unique index
+  `uq_turf_assignments_active_volunteer` on `(tenant_id, turf_id,
+volunteer_person_id) WHERE status = 'active'`.
+- **Never join `turf_assignments` directly onto a query that aggregates.** A turf has
+  one row per assignment ever made (revoked ones are kept), so joining fans each turf
+  out and silently multiplies door counts and knock totals. `TurfsRepo.getTurfs` does
+  not join it at all — the roster comes from `TurfAssignmentsRepo.canvassersByTurf` as
+  a second query — and the field report's by-team roll-up uses a `DISTINCT ON (turf_id)`
+  subquery over _active_ assignments.
+
+`TurfListItem` therefore carries `canvassers: TurfCanvasser[]` and `has_link`, not a
+single `team_id`/`team_name`. Per-knock attribution already worked: `turf_knocks`
+stores `canvasser_name`, and the field report groups by it.
+
+Companion side: the turf payload carries **everyone's** knocks, so turf-wide totals
+must not be shown back to one volunteer as their own work. `CanvassStore` keeps a
+separate `myDoorCount` (household ids this device logged, persisted under
+`pc-canvass-mydoors:<turf_id>`, cleared on end-shift) and the Me tab labels the two
+apart.
+
+### Session-first access, and roaming
+
+The capability link **bootstraps a device; it is not the ongoing credential.** Turf
+tokens are hashed (2026-07-27 migration), so the turfs a volunteer already holds can
+never be listed back to them as links — which is why switching turfs needs a second
+door in. That door is the device session:
+
+- `CompanionAccessController.resolveSession(sessionToken)` — a sibling to
+  `requireSession`, answering "who is this?" instead of "may they open this link?".
+  It returns `{ tenant_id, volunteer_id, person_id, can_roam }`. **Do not change
+  `requireSession`** — `/t/:token` and `/r/:token` keep their link-first check.
+- Two independent checks authorize a session-first request: the session says who they
+  are (and that an admin approved them), and an **active `turf_assignments` row** says
+  they belong on that turf (`assignmentForSession`). Roaming governs who may _create_
+  an assignment, never who may read one they do not have.
+- Routes: `GET /api/canvass/my-turfs`, `POST /api/canvass/claim`,
+  `GET /api/canvass/turf/:turfId`, `POST /api/canvass/turf/:turfId/results`. The
+  link-first `/t/:token` pair still exists and still works; the companion uses the
+  session-first pair for everything after the first load.
+- `CompanionTurfPayload.turf_id` exists so the client knows what to post against.
+
+**Roam policy** (`lib/canvass-roam-policy.ts`, setting `app.canvass_volunteer_roam`):
+`campaign` (**the default, for existing tenants too**) lets an approved volunteer
+browse and self-claim any unretired turf in a campaign **they already work in**;
+`assigned` restricts them to turfs staff placed them on. `companion_volunteers.can_roam`
+overrides per volunteer (null = inherit) so one person can be pinned or trusted without
+moving the workspace. Roaming never bootstraps a volunteer into a campaign — with no
+assignment there is nothing to infer from and the picker is empty.
+
+Client offline note: every queued op carries the `turf_id` it was recorded on, and
+`sendableBatch()` stops at a turf change. Without that, a queue recorded on one turf
+would drain against whichever turf happened to be open when the connection returned.
 
 ## The cutting engine (`modules/canvassing/lib/cutting-engine.ts`)
 
@@ -107,8 +170,10 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   (`survey`, `person_result`, `door_outcome`, `clear_outcome`, `person_create`),
   each claimed in the `companion_ops` ledger (`ON CONFLICT DO NOTHING`) and applied
   in its own transaction; acks are `applied | duplicate | rejected` per op, and a
-  `person_create` ack returns the real id to swap for the client temp id. The
-  legacy `POST /knock` single-op endpoint remains for compatibility.
+  `person_create` ack returns the real id to swap for the client temp id. Those two
+  are the **only** routes on `canvass-public.route.ts` — the old `POST /knock`
+  single-op endpoint is gone (`LogKnockObj` survives in the schema with no call
+  sites). Staff-side roster reads/writes go over tRPC, not this public route.
 - **Survey side-effects** (all inside the op's transaction,
   `controller.applySurveySideEffects`): support/turnout →
   `campaign_person_facts` (supporter→strong, non_supporter→against,
@@ -143,9 +208,13 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   come from `TurfHouseholdsRepo.getCoverageRows` (`CoverageDoorRow`).
 - `ui/cut-turfs-dialog.ts` — universe select (reuses `ListsService.getAllWithCounts`),
   presets, live preview.
-- `ui/assign-turf-dialog.ts` — assignment is personal: pick the volunteer person
-  (search by name; they need an email/mobile on file for verification), mint the
-  token, copy `/t/:token`. `AssignTurfObj` requires `volunteer_person_id`.
+- `ui/assign-turf-dialog.ts` — the **canvasser roster** for a turf. A turf holds as
+  many volunteers as you put on it (a group walking it together is the normal case),
+  so this is add/remove, not a swap: existing canvassers each with a remove action,
+  plus a multi-select search to add several at once. Assignment is still personal —
+  each volunteer gets their own token and verifies against their own email/mobile —
+  so `AssignTurfObj` still requires `volunteer_person_id`, and each add is a separate
+  `assign` call. `canvassing.getCanvassers` / `removeCanvasser` back the roster.
   **Assignment also auto-sends the link**: `assignTurf` enqueues an email and/or
   SMS to the volunteer's contacts inside the same transaction
   (`lib/mail/volunteer-link-notify.ts`, URL base `env.companionUrl` /

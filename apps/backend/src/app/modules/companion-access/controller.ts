@@ -52,6 +52,15 @@ interface ResolvedLink {
   organizer_id: string;
 }
 
+/** Who a device session belongs to, resolved without any capability link. */
+export interface ResolvedCompanionSession {
+  tenant_id: string;
+  volunteer_id: string;
+  person_id: string;
+  /** Per-volunteer roam override; null = inherit the workspace setting. */
+  can_roam: boolean | null;
+}
+
 interface PersonContacts {
   first_name: string | null;
   email: string | null;
@@ -306,6 +315,43 @@ export class CompanionAccessController {
     await this.sessionsRepo.touchLastUsed({ tenant_id: link.tenant_id, id: session.id });
   }
 
+  /**
+   * Identify the volunteer from their device session alone, with no capability link.
+   *
+   * `requireSession` answers "may the holder of this session open THIS link?" — it
+   * needs a link to check against. Surfaces that exist before a link does (picking a
+   * turf, switching turfs) need the other direction: "who is this, and what tenant
+   * are they in?" The session row already carries `tenant_id` and `volunteer_id`, so
+   * this is a lookup, not a new trust model — approval remains the trust decision and
+   * an unapproved volunteer is still refused.
+   *
+   * Deliberately a sibling rather than a change to `requireSession`: every existing
+   * `/t/:token` and `/r/:token` caller keeps its link-first check untouched.
+   */
+  public async resolveSession(sessionToken: string | null | undefined): Promise<ResolvedCompanionSession> {
+    if (!sessionToken) throw new UnauthorizedError('Verification required.');
+
+    const session = await this.sessionsRepo.findByTokenHash(hashToken(sessionToken));
+    if (!session) throw new UnauthorizedError('Verification required.');
+    if (session.revoked_at || session.expires_at < new Date()) throw new UnauthorizedError('Verification required.');
+
+    const volunteer = await this.volunteersRepo.findById({
+      tenant_id: session.tenant_id,
+      id: session.volunteer_id,
+    });
+    if (!volunteer) throw new UnauthorizedError('Verification required.');
+    if (volunteer.status !== 'approved') throw new ForbiddenError('Waiting for organizer approval.');
+
+    await this.sessionsRepo.touchLastUsed({ tenant_id: session.tenant_id, id: session.id });
+
+    return {
+      tenant_id: session.tenant_id,
+      volunteer_id: volunteer.id,
+      person_id: volunteer.person_id,
+      can_roam: volunteer.can_roam ?? null,
+    };
+  }
+
   // ---------------------------------------------------------------- admin API
 
   public async getAllVolunteers(tenant_id: string): Promise<CompanionVolunteerRow[]> {
@@ -329,6 +375,41 @@ export class CompanionAccessController {
           entity: 'companion_volunteers',
           entity_id: id,
           metadata: { action: 'volunteer_approved', message: 'Approved companion app access' },
+        },
+        trx,
+      );
+    });
+  }
+
+  /**
+   * Pin one volunteer to their assigned turfs, or trust one to roam, without moving the
+   * workspace setting. `null` hands them back to whatever the workspace says.
+   */
+  public async setVolunteerRoam(auth: IAuthKeyPayload, id: string, canRoam: boolean | null): Promise<void> {
+    const volunteer = await this.volunteersRepo.findById({ tenant_id: auth.tenant_id, id });
+    if (!volunteer) throw new NotFoundError('Volunteer not found.');
+    await this.volunteersRepo.transaction().execute(async (trx) => {
+      await this.volunteersRepo.setCanRoam(
+        { tenant_id: auth.tenant_id, id, can_roam: canRoam, user_id: auth.user_id },
+        trx,
+      );
+      await this.activityRepo.log(
+        {
+          tenant_id: auth.tenant_id,
+          user_id: auth.user_id,
+          activity: 'update',
+          entity: 'companion_volunteers',
+          entity_id: id,
+          metadata: {
+            action: 'volunteer_roam_changed',
+            can_roam: canRoam,
+            message:
+              canRoam == null
+                ? 'Turf access follows the workspace setting'
+                : canRoam
+                  ? 'Allowed to pick their own turfs'
+                  : 'Limited to assigned turfs',
+          },
         },
         trx,
       );
