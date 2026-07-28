@@ -34,6 +34,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
+        text: 'Three tabs sit at the top. **All** is the whole ledger, led by the total you have raised to date — every gift, including the monthly installments (they carry a **Monthly** chip). **One-time** narrows it to single gifts, so the month-over-month numbers are not moved by recurring money. **Monthly pledges** is the recurring commitments themselves.',
+      },
+      {
+        kind: 'p',
         text: 'Most gifts arrive on their own through a fundraising page. For cash, a check, or a bank transfer collected offline, click **Record donation** at the top of the Donations page: pick the donor, enter the amount, and choose a method (Card, Check, Cash, or Bank transfer). A receipt goes out automatically. Configure the sender and template in Workspace settings → Donations.',
       },
       {

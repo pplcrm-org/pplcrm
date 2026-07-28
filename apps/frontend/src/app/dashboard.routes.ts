@@ -257,7 +257,12 @@ export const dashboardRoutes: Routes = [
       {
         path: '',
         loadComponent: () => import('./experiences/donations/ui/donations-grid').then((m) => m.DonationsGridComponent),
-        data: { shouldReuse: true, key: 'donationsgridroot' },
+        data: { shouldReuse: true, key: 'donationsgridroot', scope: 'all' },
+      },
+      {
+        path: 'one-time',
+        loadComponent: () => import('./experiences/donations/ui/donations-grid').then((m) => m.DonationsGridComponent),
+        data: { shouldReuse: true, key: 'donationsgridonetime', breadcrumb: 'One-time', scope: 'one-time' },
       },
       {
         path: 'pledges',

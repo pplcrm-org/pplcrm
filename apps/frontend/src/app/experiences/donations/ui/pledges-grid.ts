@@ -3,11 +3,12 @@ import { RouterLink } from '@angular/router';
 import { TitleCasePipe } from '@angular/common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
-import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
+import { TabBar } from '@uxcommon/components/tabs/tabs';
 import { Table } from '@uxcommon/components/table/table';
 import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
 import { DonationsService } from '../../../services/api/donations-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { DONATION_TABS } from './donation-tabs';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
 @Component({
@@ -20,11 +21,8 @@ export class PledgesGridComponent implements OnInit {
   private readonly alertSvc = inject(AlertService);
   private readonly dialogs = inject(ConfirmDialogService);
 
-  /** One-time / Monthly pledges are sibling pages — route-linked pills, same bar on both. */
-  protected readonly donationTabs: PcTabOption[] = [
-    { id: 'one-time', label: 'One-time', route: '/donations', exact: true },
-    { id: 'pledges', label: 'Monthly pledges', route: '/donations/pledges' },
-  ];
+  /** All / One-time / Monthly pledges are sibling pages — route-linked pills, same bar on each. */
+  protected readonly donationTabs = DONATION_TABS;
 
   protected readonly pledges = signal<any[]>([]);
   protected readonly _loading = createLoadingGate();
