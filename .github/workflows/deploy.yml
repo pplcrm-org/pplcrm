@@ -114,7 +114,9 @@ jobs:
   # (least-privilege split: the runtime role has no DDL rights). A failed migration fails this job
   # and blocks the deploy — the old revision keeps serving the old schema. Schema-ahead-of-code
   # during the brief migrate→deploy window is safe: migrations are additive (expand/contract).
-  # SHARED_SECRET is a placeholder — env.ts requires it, but the migration path never reads it.
+  # Runs migrate-cli.ts, not the server entrypoint: it reads DB_* straight from the environment and
+  # never imports env.ts, whose production guard would demand SHARED_SECRET/OAUTH_TOKEN_ENC_KEY/
+  # STRIPE_SECRET_KEY — secrets a migration never uses and that this job therefore never holds.
   migrate:
     needs: image
     runs-on: ubuntu-latest
@@ -134,8 +136,7 @@ jobs:
           DB_USER: ${{ secrets.PROD_DB_MIGRATION_USER }}
           DB_PASSWORD: ${{ secrets.PROD_DB_MIGRATION_PASSWORD }}
           DB_SSL: 'true'
-          SHARED_SECRET: ci-migrate-placeholder
-        run: npx tsx apps/backend/src/app/kyselyinit.ts
+        run: npx tsx apps/backend/src/app/migrate-cli.ts
 
   deploy:
     needs: migrate

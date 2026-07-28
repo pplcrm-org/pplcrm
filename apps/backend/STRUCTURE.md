@@ -124,6 +124,8 @@ apps/
           volunteer-link-policy.ts
           volunteer-link-resend-limit.ts
           webauthn-challenges.ts
+        migrations/
+          run-migrations.ts
         modules/
           activity/
             controller.ts
@@ -412,6 +414,7 @@ apps/
           fastify-jsend.ts
         kyselyinit.ts
         logger.ts
+        migrate-cli.ts
         routes.ts
       test-setup/
         global-setup.ts

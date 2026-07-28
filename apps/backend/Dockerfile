@@ -8,7 +8,7 @@
 # instance to start (the DB queue makes scaling out safe later via SELECT ... FOR UPDATE SKIP LOCKED).
 #
 # Migrations are NOT run here. They run as a separate deploy step as the `pplcrm_owner` role, via
-# `npx tsx apps/backend/src/app/kyselyinit.ts` over the source tree (the migrator imports the .ts
+# `npx tsx apps/backend/src/app/migrate-cli.ts` over the source tree (the migrator imports the .ts
 # migration files). This image sets MIGRATE_ON_BOOT=false and carries no migration files.
 
 ##############################

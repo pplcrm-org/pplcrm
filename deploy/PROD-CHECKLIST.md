@@ -200,7 +200,7 @@ GitHub Actions (for the CI pipeline in `.github/workflows/deploy.yml`):
   - [ ] `npx nx run-many -t build -p backend frontend companion website --configuration=production` (with `VITE_GOOGLE_MAPS_API_KEY`).
   - [ ] Build & push images: `apps/backend/Dockerfile` → GHCR `backend` (and `deploy/Caddy.Dockerfile` → GHCR
         `edge` **only if** you keep an `app.`/`go.` VM — §0).
-  - [ ] **Migrate** as owner: `npx tsx apps/backend/src/app/kyselyinit.ts` with `DB_MIGRATION_*` env (from repo root).
+  - [ ] **Migrate** as owner: `npx tsx apps/backend/src/app/migrate-cli.ts` with `DB_MIGRATION_*` env (from repo root).
   - [ ] `az containerapp update` `pplcrm-api` to the new image tag; `app.`/`go.` edge (if kept):
         `az vm run-command invoke` (docker pull + restart) — §0.
   - [ ] `wrangler pages deploy dist/apps/website --project-name=<CF_PAGES_PROJECT>`.
