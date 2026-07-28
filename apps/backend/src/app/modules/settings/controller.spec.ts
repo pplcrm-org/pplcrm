@@ -51,6 +51,7 @@ async function cleanTenant(db: any, tenantId: string) {
   await db.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
   await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('workspace_api_keys').where('tenant_id', '=', tenantId).execute();
   // Activity rows reference authusers, so they have to go first — any controller method under
   // test that logs activity would otherwise break teardown for the whole file.
   await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
@@ -456,5 +457,101 @@ describe('SettingsController Integration', () => {
     await expect(householdsController.recomputeAddressFingerprints(tenantId)).rejects.toThrow(
       /Address fingerprints can only be recomputed once a month/,
     );
+  });
+
+  describe('workspace API keys', () => {
+    /** API access is Grassroots+ (GATED_FEATURES.api); the baseline seed is Free. */
+    async function entitle(id: string) {
+      await db.updateTable('tenants').set({ subscription_plan: 'grassroots' }).where('id', '=', id).execute();
+    }
+
+    it('should refuse to issue a key on the Free plan', async () => {
+      const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+      await expect(controller.createApiKey(auth)).rejects.toThrow(/plan/i);
+      expect(await controller.listApiKeys(auth)).toEqual([]);
+    });
+
+    it('should return the raw key exactly once, then only a preview', async () => {
+      await entitle(tenantId);
+      const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+      const created = await controller.createApiKey(auth);
+      expect(created.key).toMatch(/\S/);
+      expect(created.slot).toBe(1);
+
+      const [stored] = await controller.listApiKeys(auth);
+      // The preview is a prefix, never the key — anything else means the key is retrievable twice.
+      expect(stored.preview).toBe(created.preview);
+      expect(stored.preview).not.toBe(created.key);
+      expect(created.key).toContain(created.preview);
+      expect(stored.lastUsedAt).toBeNull();
+    });
+
+    it('should hold two keys at once so a rotation can overlap, and refuse a third', async () => {
+      await entitle(tenantId);
+      const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+      const first = await controller.createApiKey(auth);
+      const second = await controller.createApiKey(auth);
+
+      // The whole point: issuing the second key must NOT invalidate the first, or rotation is
+      // still an outage.
+      expect(second.key).not.toBe(first.key);
+      expect([first.slot, second.slot].sort()).toEqual([1, 2]);
+      expect((await controller.listApiKeys(auth)).length).toBe(2);
+
+      await expect(controller.createApiKey(auth)).rejects.toThrow(/Revoke one/i);
+    });
+
+    it('should free the slot on revoke so a replacement can be issued', async () => {
+      await entitle(tenantId);
+      const auth = { tenant_id: tenantId, user_id: userId } as any;
+
+      await controller.createApiKey(auth);
+      const second = await controller.createApiKey(auth);
+      await controller.revokeApiKey(auth, 1);
+
+      const remaining = await controller.listApiKeys(auth);
+      expect(remaining.length).toBe(1);
+      expect(remaining[0].preview).toBe(second.preview);
+
+      const replacement = await controller.createApiKey(auth);
+      expect(replacement.slot).toBe(1);
+    });
+
+    it('should let a downgraded tenant still list and revoke keys it can no longer use', async () => {
+      await entitle(tenantId);
+      const auth = { tenant_id: tenantId, user_id: userId } as any;
+      await controller.createApiKey(auth);
+
+      await db.updateTable('tenants').set({ subscription_plan: 'free' }).where('id', '=', tenantId).execute();
+
+      // Taking a credential out of service must never require an upgrade.
+      expect((await controller.listApiKeys(auth)).length).toBe(1);
+      await controller.revokeApiKey(auth, 1);
+      expect(await controller.listApiKeys(auth)).toEqual([]);
+    });
+
+    it('should not let one tenant revoke another tenant key', async () => {
+      const victim = await createTestSeed(db);
+      try {
+        await entitle(tenantId);
+        await entitle(victim.tenantId);
+        const victimAuth = { tenant_id: victim.tenantId, user_id: victim.userId } as any;
+        const attackerAuth = { tenant_id: tenantId, user_id: userId } as any;
+
+        const victimKey = await controller.createApiKey(victimAuth);
+        await controller.createApiKey(attackerAuth);
+        // Same slot number, different tenant — revoke is keyed on both.
+        await controller.revokeApiKey(attackerAuth, 1);
+
+        const survivors = await controller.listApiKeys(victimAuth);
+        expect(survivors.length).toBe(1);
+        expect(survivors[0].preview).toBe(victimKey.preview);
+      } finally {
+        await cleanTenant(db, victim.tenantId);
+      }
+    });
   });
 });

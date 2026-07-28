@@ -104,7 +104,14 @@
             @if (tags().length > 0) {
             <pc-tags [tags]="tags()" type="tag" [readonly]="true" [canDelete]="false" [compact]="true"></pc-tags>
             } @else {
-            <span class="text-xs text-base-content/40">No tags assigned</span>
+            <button
+              type="button"
+              class="text-left text-xs text-primary hover:underline"
+              (click)="editPerson()"
+              i18n="PersonView|Tags empty-state guided link@@person.tags.emptyLink"
+            >
+              No tags yet. Add one to group them
+            </button>
             }
           </div>
           <div>
@@ -163,7 +170,21 @@
         <pc-tab-panel id="emails" [activeTab]="activeTab()">
           <div class="flex flex-col gap-4">
             @if (activityData().emails.length === 0) {
-            <div class="text-center py-10 text-base-content/40">No direct email correspondence recorded</div>
+            <pc-empty-state
+              [bordered]="false"
+              icon="envelope"
+              i18n-title="PersonView|Emails empty state@@person.emails.empty"
+              title="No email with this person yet"
+              i18n-hint="PersonView|Emails empty hint@@person.emails.emptyHint"
+              hint="Mail to or from their address shows up here automatically."
+            >
+              <a
+                class="btn btn-outline btn-secondary btn-sm mt-1"
+                [routerLink]="['/inbox']"
+                i18n="@@person.emails.emptyCta"
+                >Open the inbox</a
+              >
+            </pc-empty-state>
             } @else {
             <div class="flex flex-col gap-3">
               @for (mail of activityData().emails; track mail.id) {
@@ -265,7 +286,21 @@
         <pc-tab-panel id="volunteer" [activeTab]="activeTab()">
           <div class="flex flex-col gap-4">
             @if (volunteerHistory().length === 0) {
-            <div class="text-center py-10 text-base-content/40">No shift records found for this person</div>
+            <pc-empty-state
+              [bordered]="false"
+              icon="calendar"
+              i18n-title="PersonView|Volunteer empty state@@person.volunteer.empty"
+              title="No shifts yet"
+              i18n-hint="PersonView|Volunteer empty hint@@person.volunteer.emptyHint"
+              hint="Shifts they sign up for or are assigned to appear here."
+            >
+              <a
+                class="btn btn-outline btn-secondary btn-sm mt-1"
+                [routerLink]="['/shifts']"
+                i18n="@@person.volunteer.emptyCta"
+                >Browse shifts</a
+              >
+            </pc-empty-state>
             } @else {
             <div class="overflow-x-auto border border-base-300 rounded-lg bg-base-100 p-2 shadow-sm">
               <table class="table pc-table w-full">
@@ -287,7 +322,7 @@
                       <pc-status-badge [type]="getShiftStatusType(shift.status)"> {{ shift.status }} </pc-status-badge>
                     </td>
                     <td class="font-mono">{{ shift.hours_worked || '--' }}</td>
-                    <td class="font-light">{{ shift.notes || '--' }}</td>
+                    <td class="">{{ shift.notes || '--' }}</td>
                   </tr>
                   }
                 </tbody>
@@ -333,11 +368,22 @@
               </button>
             </div>
             } @if (donationHistory().length === 0) {
-            <div
-              class="text-center py-10 text-base-content/40 bg-base-100 rounded-xl border border-dashed border-base-200"
+            <pc-empty-state
+              icon="banknotes"
+              i18n-title="PersonView|Donations empty state@@person.donations.empty"
+              title="No donations yet"
+              i18n-hint="PersonView|Donations empty hint@@person.donations.emptyHint"
+              hint="Record a gift you took offline, or wait for their first online donation."
             >
-              No donations recorded yet for this person.
-            </div>
+              <button
+                type="button"
+                class="btn btn-outline btn-secondary btn-sm mt-1"
+                (click)="openCollectDonation()"
+                i18n="@@person.donations.emptyCta"
+              >
+                Record a donation
+              </button>
+            </pc-empty-state>
             } @else {
             <div class="overflow-x-auto pc-panel">
               <table class="table pc-table w-full">
@@ -386,7 +432,14 @@
         <pc-tab-panel id="events" [activeTab]="activeTab()">
           <div class="flex flex-col gap-4">
             @if (eventHistory().length === 0) {
-            <div class="text-center py-10 text-base-content/40">No event registrations found for this person.</div>
+            <pc-empty-state
+              [bordered]="false"
+              icon="ticket"
+              i18n-title="PersonView|Events empty state@@person.events.empty"
+              title="Not registered for any events"
+              i18n-hint="PersonView|Events empty hint@@person.events.emptyHint"
+              hint="Registrations appear here as soon as they sign up for one."
+            ></pc-empty-state>
             } @else {
             <div class="overflow-x-auto border border-base-300 rounded-lg bg-base-100 p-2 shadow-sm">
               <table class="table pc-table w-full">
@@ -408,7 +461,7 @@
                       </a>
                     </td>
                     <td>{{ reg.start_time | date:'mediumDate' }}</td>
-                    <td class="font-light">{{ reg.ticket_type_name || '—' }}</td>
+                    <td class="">{{ reg.ticket_type_name || '—' }}</td>
                     <td>
                       <pc-status-badge [type]="getEventStatusType(reg.status)">{{ reg.status }}</pc-status-badge>
                     </td>

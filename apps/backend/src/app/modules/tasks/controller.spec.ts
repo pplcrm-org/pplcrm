@@ -17,6 +17,9 @@ describe('TasksController Notifications', () => {
    * The in-app push is gated on the assignee's `task_assigned_in_app` preference, so the
    * controller looks the assignee up before notifying. Stub that lookup (email: null keeps
    * the email branch out of these tests).
+   *
+   * The same stub also satisfies `assertAssigneeInTenant`, which runs first on every write
+   * and would otherwise reach the real database with these fake non-numeric ids.
    */
   function stubAssigneeLookup(preferences: unknown): void {
     const qb: any = {
@@ -108,10 +111,59 @@ describe('TasksController Notifications', () => {
     const _getSpy = vi.spyOn(controller, 'getOneById').mockResolvedValue(mockExistingTask as any);
     const _updateSpy = vi.spyOn(controller, 'update').mockResolvedValue(mockUpdatedTask as any);
     const pushSpy = vi.spyOn(NotificationsRepo.prototype, 'pushNotification');
+    stubAssigneeLookup(null);
 
     await controller.updateTask('task-1', updatePayload, auth);
 
     expect(pushSpy).not.toHaveBeenCalled();
+  });
+
+  // tasks.assigned_to references authusers(id) without tenant_id, so Postgres alone will store a
+  // cross-tenant assignee. The controller has to refuse one before the write.
+  describe('cross-tenant assignee', () => {
+    /** Same shape as stubAssigneeLookup, but the assignee is not a member of this tenant. */
+    function stubNoSuchMember(): void {
+      const qb: any = {
+        leftJoin: vi.fn(() => qb),
+        select: vi.fn(() => qb),
+        where: vi.fn(() => qb),
+        executeTakeFirst: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.spyOn(controller as any, 'getRepo').mockReturnValue({ db: { selectFrom: vi.fn(() => qb) } });
+    }
+
+    it('addTask refuses an assignee outside the tenant, without writing', async () => {
+      const auth = { tenant_id: 'tenant-1', user_id: 'user-1' } as any;
+      const addSpy = vi.spyOn(controller, 'add');
+      stubNoSuchMember();
+
+      await expect(controller.addTask({ name: 'T', assigned_to: 'outsider' } as any, auth)).rejects.toThrow(
+        /not a member of this workspace/i,
+      );
+      expect(addSpy).not.toHaveBeenCalled();
+    });
+
+    it('updateTask refuses an assignee outside the tenant, without writing', async () => {
+      const auth = { tenant_id: 'tenant-1', user_id: 'user-1' } as any;
+      const updateSpy = vi.spyOn(controller, 'update');
+      stubNoSuchMember();
+
+      await expect(controller.updateTask('task-1', { assigned_to: 'outsider' } as any, auth)).rejects.toThrow(
+        /not a member of this workspace/i,
+      );
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it('allows clearing the assignee (null is "unassigned", not a member check)', async () => {
+      const auth = { tenant_id: 'tenant-1', user_id: 'user-1' } as any;
+      stubNoSuchMember();
+      vi.spyOn(controller, 'getOneById').mockResolvedValue({ id: 'task-1', assigned_to: 'user-2' } as any);
+      const updateSpy = vi.spyOn(controller, 'update').mockResolvedValue({ id: 'task-1' } as any);
+
+      await controller.updateTask('task-1', { assigned_to: null } as any, auth);
+
+      expect(updateSpy).toHaveBeenCalled();
+    });
   });
 });
 

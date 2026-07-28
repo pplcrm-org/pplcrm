@@ -4,31 +4,56 @@ import type { LogInstantExportInputType, QueueExportInputType } from '../../../.
 import { ExportsRepo } from './repositories/exports.repo';
 import { StorageService } from '../../lib/storage.service';
 import { logger } from '../../logger';
+import { EXPORT_ENTITY_TABLE } from './export-tables';
+import { isPrivilegedRole } from '../../../../../../libs/common/src';
+import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
 
-const ENTITY_LABEL_MAP: Record<string, string> = {
-  persons: 'persons',
-  households: 'households',
-  companies: 'companies',
-  tags: 'tags',
-  issues: 'tags',
-  tasks: 'tasks',
-  lists: 'lists',
-  newsletters: 'marketing_emails',
-  teams: 'teams',
-  users: 'authusers',
-  volunteer: 'volunteer_events',
-  forms: 'web_forms',
-  workflows: 'workflows',
-};
+/** Exports a tenant may have waiting at once. Matches the worker's per-tenant in-flight
+ *  cap (job-claim.ts), so a deeper queue would only ever wait anyway. */
+const MAX_PENDING_EXPORTS = 3;
+/** Exports a tenant may queue per hour, however fast they drain. */
+const EXPORTS_PER_HOUR = 30;
+const HOUR_MS = 60 * 60 * 1000;
 
 export class ExportsController {
   private readonly repo = new ExportsRepo();
+
+  /** Refuse a new export when the tenant already has a queue waiting, or has queued too
+   *  many this hour. */
+  private async assertExportCapacity(tenantId: string): Promise<void> {
+    const pending = await this.repo.db
+      .selectFrom('data_exports')
+      .select((eb) => eb.fn.countAll().as('cnt'))
+      .where('tenant_id', '=', tenantId)
+      .where('status', 'in', ['pending', 'processing'])
+      .executeTakeFirst();
+
+    if (Number(pending?.cnt ?? 0) >= MAX_PENDING_EXPORTS) {
+      throw new TRPCError({
+        code: 'TOO_MANY_REQUESTS',
+        message: `You already have ${MAX_PENDING_EXPORTS} exports in progress. Wait for one to finish before starting another.`,
+      });
+    }
+
+    await checkDurableRateLimit(
+      `queueExport:${tenantId}`,
+      EXPORTS_PER_HOUR,
+      HOUR_MS,
+      'You have queued a lot of exports in the last hour. Try again shortly.',
+    );
+  }
 
   public async queueExport(input: QueueExportInputType, auth: IAuthKeyPayload) {
     const entityKey = input.entity?.trim();
     if (!entityKey) {
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'entity is required' });
     }
+
+    // SECURITY (H6): each export streams a full table to blob storage and then sends an
+    // email, and nothing capped how many could be queued. Looping this mutation gave
+    // unbounded queue depth, unbounded storage (export blobs are not counted against the
+    // files quota), and an email fan-out. Bound the queue and the rate.
+    await this.assertExportCapacity(auth.tenant_id);
 
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -58,7 +83,7 @@ export class ExportsController {
           tenant_id: auth.tenant_id,
           user_id: auth.user_id,
           entity: entityKey,
-          table: ENTITY_LABEL_MAP[entityKey] ?? entityKey,
+          table: EXPORT_ENTITY_TABLE[entityKey] ?? entityKey,
           options: input.options ?? {},
           columns,
           file_name: fileName,
@@ -151,6 +176,13 @@ export class ExportsController {
     const row = await this.repo.getById(id, auth.tenant_id);
     if (!row) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Export not found' });
+    }
+
+    // SECURITY (M14): scoped by tenant but not by owner, so any editor could delete a
+    // colleague's queued or finished export. An export is the requester's — it contains
+    // the data they chose to extract, under their name.
+    if (row.user_id != null && String(row.user_id) !== String(auth.user_id) && !isPrivilegedRole(auth.role)) {
+      throw new TRPCError({ code: 'FORBIDDEN', message: 'You can only delete your own exports.' });
     }
 
     await this.repo.delete(id, auth.tenant_id);

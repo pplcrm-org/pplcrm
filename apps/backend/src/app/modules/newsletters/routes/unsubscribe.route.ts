@@ -5,6 +5,7 @@ import { BaseRepository } from '../../../lib/base.repo';
 import { checkRateLimit } from '../../../lib/rate-limiter';
 import { logger } from '../../../logger';
 import { decodeUnsubscribeToken } from '../unsubscribe-token';
+import { publicOrgName } from '../../../lib/public-tenant';
 
 const db = new BaseRepository('campaign_subscriptions').db;
 
@@ -45,9 +46,45 @@ const PAGE_HEAD = `<meta charset="utf-8">
     p { color: #475569; line-height: 1.6; margin: 0 0 20px; }
     button { font-size: 15px; font-weight: 600; color: #fff; background: #dc2626; border: 0;
              border-radius: 8px; padding: 12px 24px; cursor: pointer; }
+    .org { display: flex; align-items: center; justify-content: center; gap: 8px;
+           margin: 0 0 20px; padding: 0 0 16px; border-bottom: 1px solid #e2e8f0; }
+    .avatar { display: inline-flex; align-items: center; justify-content: center;
+              width: 28px; height: 28px; border-radius: 999px; background: #0ea5e9;
+              color: #fff; font-size: 12px; font-weight: 700; letter-spacing: .02em; }
+    .orgname { font-size: 14px; font-weight: 600; color: #1e293b; }
   </style>`;
 
-function resultPage(title: string, message: string): string {
+/**
+ * The organisation's name, shown on every page below.
+ *
+ * A recipient clicking "unsubscribe" in mail from "Amira for Ward 7" used to land on an anonymous
+ * grey card that named nobody — which reads like a phishing page and is a poor moment to lose
+ * their trust. The public form pages already identify the org this way (public-form.ts).
+ * Best-effort: a lookup failure must never block an unsubscribe.
+ */
+async function orgNameFor(tenantId: string): Promise<string | null> {
+  try {
+    return await publicOrgName(tenantId);
+  } catch (err) {
+    logger.warn({ err, tenantId }, 'Could not resolve the org name for the unsubscribe page');
+    return null;
+  }
+}
+
+/** Org identity block: shown above the card's heading when we know who sent the mail. */
+function orgHeader(orgName: string | null): string {
+  if (!orgName) return '';
+  const initials =
+    orgName
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join('') || 'PC';
+  return `<div class="org"><span class="avatar">${escapeHtml(initials)}</span><span class="orgname">${escapeHtml(orgName)}</span></div>`;
+}
+
+function resultPage(title: string, message: string, orgName: string | null = null): string {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -56,6 +93,7 @@ function resultPage(title: string, message: string): string {
 </head>
 <body>
   <div class="card">
+    ${orgHeader(orgName)}
     <h1>${escapeHtml(title)}</h1>
     <p>${escapeHtml(message)}</p>
   </div>
@@ -66,17 +104,20 @@ function resultPage(title: string, message: string): string {
 // GET is safe/idempotent: it must NOT unsubscribe (mail scanners and link prefetchers — Outlook
 // SafeLinks, antivirus — issue GETs on links in email bodies, which would silently unsubscribe a
 // recipient who never clicked). It renders a one-button form that POSTs back to the same token URL.
-function confirmPromptPage(email: string, actionPath: string): string {
+function confirmPromptPage(email: string, actionPath: string, orgName: string | null): string {
   return `<!DOCTYPE html>
 <html>
 <head>
   ${PAGE_HEAD}
-  <title>Unsubscribe</title>
+  <title>${orgName ? escapeHtml(orgName) + ' · Unsubscribe' : 'Unsubscribe'}</title>
 </head>
 <body>
   <div class="card">
+    ${orgHeader(orgName)}
     <h1>Unsubscribe</h1>
-    <p>Click below to stop receiving emails at ${escapeHtml(email)} from this organization.</p>
+    <p>
+      Stop sending email to <strong>${escapeHtml(email)}</strong>${orgName ? ` from ${escapeHtml(orgName)}` : ''}.
+    </p>
     <form method="POST" action="${escapeHtml(actionPath)}">
       <button type="submit">Unsubscribe</button>
     </form>
@@ -105,7 +146,10 @@ const unsubscribeRoute: FastifyPluginCallback = (fastify, _opts, done) => {
         .send(resultPage('Link not valid', 'This unsubscribe link is not valid.'));
     }
 
-    return reply.code(200).type('text/html').send(confirmPromptPage(payload.email, request.url));
+    return reply
+      .code(200)
+      .type('text/html')
+      .send(confirmPromptPage(payload.email, request.url, await orgNameFor(payload.tenantId)));
   });
 
   fastify.post<{ Params: { token: string } }>('/:token', async (request, reply) => {
@@ -137,11 +181,21 @@ const unsubscribeRoute: FastifyPluginCallback = (fastify, _opts, done) => {
         : '[unsubscribe] Automation-email unsubscribe processed (all campaigns)',
     );
 
+    // Resolved after the write, never before it: the unsubscribe is the thing that must not fail,
+    // and this only decorates the confirmation.
+    const orgName = await orgNameFor(payload.tenantId);
+
     return reply
       .code(200)
       .type('text/html')
       .send(
-        resultPage("You're unsubscribed", `${payload.email} will no longer receive emails from this organization.`),
+        resultPage(
+          "You're unsubscribed",
+          orgName
+            ? `${payload.email} will no longer receive emails from ${orgName}.`
+            : `${payload.email} will no longer receive emails from this organization.`,
+          orgName,
+        ),
       );
   });
 

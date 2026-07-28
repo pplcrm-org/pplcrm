@@ -30,9 +30,10 @@ import type {
   TypeTenantId,
 } from '../../../../../libs/common/src/lib/kysely.models';
 import type { GridColumnFilter } from '../../../../../libs/common/src';
+import { MAX_PAGE_SIZE } from '../../../../../libs/common/src';
 import { Pool } from 'pg';
 import { env } from '../../env';
-import { currentTenantId } from './tenant-context';
+import { currentTenantId, pinnedCampaignId } from './tenant-context';
 import Cursor from 'pg-cursor';
 
 // S-1 (schema review 2026-07-06 §6): the tenant id is a bigint stored as a
@@ -40,6 +41,9 @@ import Cursor from 'pg-cursor';
 // a bound parameter (never string-interpolated), but still validate here so a
 // corrupt context can never smuggle SQL or a non-numeric GUC into the session.
 const TENANT_ID_PATTERN = /^\d+$/;
+
+/** How deeply the advanced-filter rule builder may nest groups before we refuse the payload. */
+const MAX_FILTER_DEPTH = 10;
 
 /**
  * Tables whose rows belong to exactly one campaign context (Campaigns §15).
@@ -192,6 +196,10 @@ export class BaseRepository<T extends keyof Models> {
     if (this.table !== 'tenants') {
       query = query.where('tenant_id' as ReferenceExpression<Models, T>, '=', input.tenant_id);
     }
+    const campaignId = this.campaignPin();
+    if (campaignId) {
+      query = query.where('campaign_id' as ReferenceExpression<Models, T>, '=', campaignId);
+    }
     const result = await query.executeTakeFirst();
 
     return Number(result?.numDeletedRows ?? 0) > 0;
@@ -247,15 +255,34 @@ export class BaseRepository<T extends keyof Models> {
   }
 
   /**
-   * Campaigns §15 — the active-context filter. Returns the campaign id to scope
-   * by when (a) the caller passed one and (b) this table's rows belong to
-   * exactly one campaign. Shared rolodex tables (persons, households, …) are
-   * never scoped here.
+   * Campaigns §15 — the active-context filter. Returns the campaign id to scope by,
+   * when this table's rows belong to exactly one campaign. Shared rolodex tables
+   * (persons, households, …) are never scoped here.
+   *
+   * SECURITY: the caller's server-derived pin wins over anything in `options`. Scoping
+   * used to depend entirely on the client passing `campaignId`, so a pinned Editor who
+   * omitted it read every campaign in the tenant. A pinned caller cannot widen past
+   * their assignment; an unpinned one (admin/owner, background job) may still narrow
+   * by passing the option. A disagreeing option is rejected upstream in `isAuthed`.
    */
   protected campaignScope(options?: QueryParams<T>): string | null {
-    const campaignId = (options as { campaignId?: string } | undefined)?.campaignId;
-    if (!campaignId) return null;
-    return CAMPAIGN_SCOPED_TABLES.has(String(this.table)) ? campaignId : null;
+    if (!CAMPAIGN_SCOPED_TABLES.has(String(this.table))) return null;
+    const requested = (options as { campaignId?: string } | undefined)?.campaignId;
+    const campaignId = pinnedCampaignId() ?? (requested ? String(requested) : null);
+    return campaignId || null;
+  }
+
+  /**
+   * The campaign pin to apply to a by-id read/write, or null when unpinned.
+   *
+   * By-id procedures carry no campaign key, so the middleware guard never fires on
+   * them — without this, a campaign-pinned Editor could fetch, update, or delete
+   * another campaign's row simply by knowing its id (e.g. sending another campaign's
+   * newsletter). Tenant scoping alone does not catch it; both rows are in-tenant.
+   */
+  protected campaignPin(): string | null {
+    if (!CAMPAIGN_SCOPED_TABLES.has(String(this.table))) return null;
+    return pinnedCampaignId();
   }
 
   public async getAllWithCounts(
@@ -335,6 +362,10 @@ export class BaseRepository<T extends keyof Models> {
     if (this.table !== 'tenants') {
       query = query.where('tenant_id' as ReferenceExpression<Models, T>, '=', input.tenant_id);
     }
+    const campaignId = this.campaignPin();
+    if (campaignId) {
+      query = query.where('campaign_id' as ReferenceExpression<Models, T>, '=', campaignId);
+    }
     return query.executeTakeFirst();
   }
 
@@ -375,6 +406,10 @@ export class BaseRepository<T extends keyof Models> {
     if (this.table !== 'tenants') {
       query = query.where('tenant_id' as ReferenceExpression<Models, T>, '=', input.tenant_id);
     }
+    const campaignId = this.campaignPin();
+    if (campaignId) {
+      query = query.where('campaign_id' as ReferenceExpression<Models, T>, '=', campaignId);
+    }
     return query.returningAll().executeTakeFirst();
   }
 
@@ -399,7 +434,11 @@ export class BaseRepository<T extends keyof Models> {
     const derivedLimit = !hasLimit && typeof endRow === 'number' ? Math.max(0, endRow - (startRow ?? 0)) : undefined;
     const derivedOffset = !hasOffset && typeof startRow === 'number' ? startRow : undefined;
 
-    const finalLimit = hasLimit ? options?.limit : derivedLimit;
+    // A request that derives no limit at all used to select every row in the tenant into memory.
+    // MAX_PAGE_SIZE is the backstop for that case only — an explicit limit from a trusted caller
+    // (e.g. the inline CSV export, which deliberately asks for 50k+1 so it can refuse rather than
+    // truncate) still wins, and untrusted input is already bounded by getAllOptions.
+    const finalLimit = hasLimit ? options?.limit : (derivedLimit ?? MAX_PAGE_SIZE);
     const finalOffset = hasOffset ? options?.offset : derivedOffset;
 
     query = typeof finalLimit === 'number' ? query.limit(finalLimit) : query;
@@ -679,7 +718,15 @@ export class BaseRepository<T extends keyof Models> {
     eb: any,
     group: QueryBuilderGroupNode,
     columnMapping: Record<string, { col: string; isCast?: boolean }>,
+    depth = 0,
   ): any {
+    // The rule builder nests groups, and this walks them recursively. The UI never goes more
+    // than a couple of levels deep, so anything past this is a hand-crafted payload trying to
+    // blow the stack — refuse it rather than recursing.
+    if (depth > MAX_FILTER_DEPTH) {
+      throw new Error(`Advanced filter is nested more than ${MAX_FILTER_DEPTH} levels deep.`);
+    }
+
     if (!group.rules || group.rules.length === 0) {
       return null;
     }
@@ -699,7 +746,7 @@ export class BaseRepository<T extends keyof Models> {
           const mappedOp = node.op === 'eq' ? 'equals' : node.op === 'neq' ? 'notEquals' : node.op;
           return this.buildRuleExpression(eb, mapping.col, !!mapping.isCast, mappedOp, node.value);
         } else {
-          return this.buildGroupExpression(eb, node, columnMapping);
+          return this.buildGroupExpression(eb, node, columnMapping, depth + 1);
         }
       })
       .filter(Boolean);

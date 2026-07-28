@@ -51,18 +51,22 @@ export class FilesService extends AbstractAPIService<'files', any> {
   public async getUploadUrl(
     filename: string,
     mimeType?: string | null,
-  ): Promise<{ uploadUrl: string; storageKey: string }> {
+  ): Promise<{ uploadUrl: string; uploadHandle: string }> {
     return (await this.api.files.getUploadUrl.query({ filename, mimeType })) as {
       uploadUrl: string;
-      storageKey: string;
+      uploadHandle: string;
     };
   }
 
+  /**
+   * `uploadHandle` is the opaque token returned by getUploadUrl — the storage key is
+   * derived from it server-side, so the client never names the blob it registers.
+   * Size is likewise measured server-side and is not sent.
+   */
   public async registerFile(data: {
     filename: string;
     mimeType?: string | null;
-    sizeBytes?: number | null;
-    storageKey: string;
+    uploadHandle: string;
     sha256Hex?: string | null;
     entityType?: string | null;
     entityId?: string | null;
@@ -94,7 +98,7 @@ export class FilesService extends AbstractAPIService<'files', any> {
   }
 
   public async uploadFileDirectly(file: File, entity?: { entityType: string; entityId: string }): Promise<any> {
-    const { uploadUrl, storageKey } = await this.getUploadUrl(file.name, file.type);
+    const { uploadUrl, uploadHandle } = await this.getUploadUrl(file.name, file.type);
 
     const sha256Hex = await this.computeSha256(file);
 
@@ -114,8 +118,7 @@ export class FilesService extends AbstractAPIService<'files', any> {
     return await this.registerFile({
       filename: file.name,
       mimeType: file.type || null,
-      sizeBytes: file.size,
-      storageKey,
+      uploadHandle,
       sha256Hex,
       entityType: entity?.entityType || null,
       entityId: entity?.entityId || null,

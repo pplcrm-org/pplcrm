@@ -42,6 +42,7 @@ import {
 // Context available for future slices/controllers (not yet used here)
 // import { GridContextService } from './state/grid-context.service';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { DateFormatService } from '../../services/date-format.service';
@@ -103,6 +104,7 @@ import { RecordNavigationService } from '@frontend/services/record-navigation.se
   selector: 'pc-datagrid',
   imports: [
     Icon,
+    EmptyState,
     DataGridToolbarComponent,
     DataGridFilterPanelComponent,
     Tags,
@@ -509,6 +511,22 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
   public nounFor(n: number): string {
     return n === 1 ? this.entityNoun : this.entityNounPlural;
   }
+
+  /**
+   * The no-data empty state's copy and create action, derived from the same entityNoun the
+   * toolbar's create button uses so the two can never disagree ("New person" in both places).
+   * Falls back to generic wording when a grid config sets no noun.
+   */
+  public readonly hasEntityNoun = this.entityNoun !== 'row';
+  public readonly emptyStateTitle = computed(() =>
+    this.hasEntityNoun ? `No ${this.entityNounPlural} yet` : 'Nothing here yet',
+  );
+  public readonly emptyStateHint = computed(() =>
+    this.hasEntityNoun
+      ? `Your ${this.entityNounPlural} will appear here once you add the first one.`
+      : 'Records will appear here once you add the first one.',
+  );
+  public readonly addLabel = computed(() => (this.hasEntityNoun ? `New ${this.entityNoun}` : 'New'));
 
   // Bulk "Add tag" — an inline field in the bulk action bar (§2).
   public readonly bulkTagOpen = signal(false);

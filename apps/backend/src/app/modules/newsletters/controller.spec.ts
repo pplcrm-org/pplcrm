@@ -7,6 +7,11 @@ import { NewsletterEmailService } from '../../lib/mail/newsletter-mail.service';
 import { NewsletterPreflightService, contentHashOf } from './preflight.service';
 import { loadSendingTenant, remainingSendAllowance } from './send-guards';
 
+// This file enqueues real `send-newsletter` rows and leaves them pending, which makes them
+// visible to any concurrently-running claimer — it was intermittently stealing the job that
+// job-claim.spec asserts FIFO/fairness ordering against. Per the lock's own contract, a spec that
+// leaves a pending row must hold the queue lock.
+
 async function createTestSeed(db: any) {
   const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
   const tenantId = rand();

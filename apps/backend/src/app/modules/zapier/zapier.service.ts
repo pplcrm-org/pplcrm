@@ -2,6 +2,7 @@ import type { Kysely } from 'kysely';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { BaseRepository } from '../../lib/base.repo';
 import { logger } from '../../logger';
+import { assertSafeOutboundUrl, resolveSafeOutboundHost } from '../../lib/outbound-url-guard';
 
 export type ZapierEventType =
   | 'person_created'
@@ -74,6 +75,10 @@ export class ZapierService {
   }
 
   async subscribe(tenant_id: string, event_type: ZapierEventType, webhook_url: string): Promise<void> {
+    // SSRF (H1): the backend POSTs to this URL from inside the Azure network, so a
+    // tenant could otherwise aim it at the cloud metadata endpoint or a loopback port.
+    // Rejected here for a clear error; re-checked at request time against DNS rebinding.
+    assertSafeOutboundUrl(webhook_url);
     await this.db
       .insertInto('zapier_subscriptions')
       .values({ tenant_id, event_type, webhook_url })
@@ -99,19 +104,25 @@ export class ZapierService {
 
     for (const sub of subs) {
       try {
+        // Re-resolve immediately before the request: a hostname that was public when
+        // subscribed can be re-pointed at an internal address afterwards.
+        await resolveSafeOutboundHost(sub.webhook_url);
         const response = await fetch(sub.webhook_url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data),
+          // Never follow a redirect — a public URL that 302s to 169.254.169.254 would
+          // otherwise walk straight past the checks above.
+          redirect: 'manual',
           signal: AbortSignal.timeout(15000),
         });
         if (!response.ok) {
-          logger.error(`[ZapierTrigger] POST to ${sub.webhook_url} failed with status ${response.status}`);
+          // The URL is a bearer secret (anyone holding a Zapier/Make hook URL can post to
+          // it), so log the tenant and event, never the target. See finding M9.
+          logger.error({ tenant_id, event_type, status: response.status }, '[ZapierTrigger] POST failed');
         }
       } catch (err: unknown) {
-        logger.error(
-          `[ZapierTrigger] POST to ${sub.webhook_url} error: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.error({ tenant_id, event_type, err }, '[ZapierTrigger] POST error');
       }
     }
   }

@@ -3,6 +3,7 @@ import type { Transaction } from 'kysely';
 import { z } from 'zod';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { fingerprintFull, fingerprintStreet } from '../../lib/address-normalize';
+import { hashToken } from '../../lib/token-hash';
 import { hashPassword } from '../../lib/password-hash';
 import { backfillPersonPublicIds } from '../../lib/person-public-id';
 import { legMinutes, roadKm } from '../../lib/routing/geo';
@@ -509,6 +510,9 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         assigned_to,
         is_favourite: e.is_favourite ?? false,
         created_at: daysAgo(e.daysAgo),
+        // The inbox sorts on date_sent, so demo mail has to carry the same backdated timestamp
+        // as created_at or every seeded message stacks up at "now".
+        date_sent: daysAgo(e.daysAgo),
       })
       .returning('id')
       .executeTakeFirstOrThrow();
@@ -580,7 +584,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
           ...audit,
           turf_id,
           team_id: String(team.id),
-          token: randomBytes(24).toString('base64url'),
+          token_hash: hashToken(randomBytes(24).toString('base64url')),
           status: 'active',
           assigned_at: daysAgo(2),
         })

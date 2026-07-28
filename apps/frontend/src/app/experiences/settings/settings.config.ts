@@ -110,6 +110,19 @@ export const SETTINGS_SECTIONS: SettingsSectionConfig[] = [
         helper:
           'Links expire for security: if a route link is forwarded on or turns up on a lost phone months later, it no longer works, and volunteers aren’t confused by stale routes reappearing. Anyone opening a link still verifies a one-time code and needs your one-time approval, so turning expiry off is safe if your deliveries run longer than 30 days and you’re tired of re-sending links. Existing links follow whatever this is set to right now, and you can always revoke a single route’s link from its ⋯ menu.',
       },
+      {
+        key: 'app.canvass_volunteer_roam',
+        label: 'Which turfs a canvasser can see',
+        type: 'select',
+        defaultValue: 'campaign',
+        fullWidth: true,
+        options: [
+          { label: 'Any turf in their campaign — they pick their own', value: 'campaign' },
+          { label: 'Only turfs you assign them', value: 'assigned' },
+        ],
+        helper:
+          'This decides what an approved canvasser can see, not just what you hand them. On “any turf in their campaign” they get a turf picker in the app: they can start on an unclaimed turf, join one someone else is already walking, and switch between turfs mid-shift without you sending a new link. They never leave the campaigns you have already placed them in, and they still need your one-time approval first. Choose “only turfs you assign them” if you would rather place every canvasser by hand. You can override this for one person from Volunteer access.',
+      },
     ],
   },
   {

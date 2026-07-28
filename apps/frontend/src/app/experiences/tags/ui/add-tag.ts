@@ -25,13 +25,11 @@ function randomHexColor(): string {
   template: `<pc-modal-shell #dlg title="New tag" icon="add-label" [boxClass]="'max-w-md'" [dismissible]="false">
     <form id="add-tag-form" (submit)="add($event)" class="flex flex-col gap-4" novalidate>
       <div class="flex flex-col gap-2">
-        <label i18n class="label text-sm font-light">
-          Enter a unique tag name (and optionally, give it a description)
-        </label>
+        <label i18n class="label text-sm"> Enter a unique tag name (and optionally, give it a description) </label>
         <pc-input placeholder="Tag Name" i18n-placeholder [formField]="form.name"></pc-input>
         <pc-input placeholder="Optional description" i18n-placeholder [formField]="form.description"></pc-input>
         <div class="flex items-center gap-2">
-          <label i18n class="label-text font-light text-sm">Colour</label>
+          <label i18n class="label-text text-sm">Colour</label>
           <input class="input input-bordered input-sm w-24" type="color" [formField]="form.color" />
           @if (form.color().invalid() && form.color().touched()) {
             <span i18n class="text-error text-xs">Use a value like #3366ff</span>

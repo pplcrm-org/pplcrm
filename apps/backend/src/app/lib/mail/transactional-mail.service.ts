@@ -4,7 +4,9 @@ import { env } from '../../../env';
 import { InternalError } from '../../errors/app-errors';
 import { logger } from '../../logger';
 import { BaseRepository } from '../base.repo';
+import { escapeHtml, type TrustedHtml } from '../html-escape';
 import { LOGO_CID, LOGO_PNG_BASE64 } from './logo-asset';
+import { assertTenantMaySendTransactional, type MailAudience } from './transactional-send-guard';
 
 export interface MailAttachment {
   name: string;
@@ -16,8 +18,21 @@ export interface SendMailOptions {
   to: string;
   subject: string;
   text: string;
-  html: string;
+  /**
+   * Body markup. Prefer building this with the `html` tagged template (lib/html-escape),
+   * which escapes interpolations by default — these messages carry tenant-controlled
+   * strings and go out over the platform's own signed domain.
+   */
+  html: string | TrustedHtml;
   tenant_id?: string | null;
+  /**
+   * Who the message is for — decides whether the anti-abuse gate applies. See MailAudience.
+   *
+   * Defaults to 'contact' (the most restricted) ON PURPOSE: a new call site that forgets to
+   * classify itself gets gated rather than becoming an ungated relay. Mark account/security
+   * mail 'account' explicitly so it is never withheld.
+   */
+  audience?: MailAudience;
   /** Extra attachments (sendMail only — enqueueMail payloads must stay small). */
   attachments?: MailAttachment[];
   /** Adds a "choose what you're notified about" footer link to /settings/notifications.
@@ -30,6 +45,16 @@ export class TransactionalEmailService {
   // Full RFC 5322 From with a display name — a bare address lets clients show the
   // Postmark sender-signature name instead of the product name.
   private from = `"${env.postmarkFromName}" <${env.postmarkFromEmail}>`;
+  private defaultAudience: MailAudience;
+
+  /**
+   * @param options.defaultAudience audience for calls that don't set one. Modules that send
+   *   exclusively one kind of mail declare it here instead of repeating it at every call.
+   *   Omitted = 'contact', the most restricted — so forgetting to classify fails safe.
+   */
+  constructor(options?: { defaultAudience?: MailAudience }) {
+    this.defaultAudience = options?.defaultAudience ?? 'contact';
+  }
 
   private wrapInTemplate(title: string, contentHtml: string, notificationSettingsLink?: boolean): string {
     const settingsLinkHtml = notificationSettingsLink
@@ -41,7 +66,7 @@ export class TransactionalEmailService {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
   <style>
     body {
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -192,7 +217,13 @@ export class TransactionalEmailService {
   }
 
   public async sendMail(options: SendMailOptions): Promise<void> {
-    const wrappedHtml = this.wrapInTemplate(options.subject, options.html, options.notificationSettingsLink);
+    // Anti-abuse gate. Defaults to the most restricted audience so an unclassified caller
+    // is gated rather than silently becoming a relay (finding C5).
+    const audience = options.audience ?? this.defaultAudience;
+    await assertTenantMaySendTransactional(options.tenant_id, audience);
+    this.logMissingAttribution(options, audience);
+
+    const wrappedHtml = this.wrapInTemplate(options.subject, String(options.html), options.notificationSettingsLink);
     const text = options.notificationSettingsLink
       ? `${options.text}\n\nChoose what you're notified about: ${env.appUrl}/settings/notifications`
       : options.text;
@@ -234,7 +265,10 @@ export class TransactionalEmailService {
               ContentType: a.contentType,
             })),
           ],
-          // Round-trips to the bounce/complaint webhook so suppressions can be tenant-scoped.
+          // Round-trips to the bounce/complaint webhook so suppressions can be tenant-scoped
+          // AND so the bounce/complaint tripwires can attribute a spike to the tenant that
+          // caused it. Without it, abuse through this pipe is invisible to the entire
+          // anti-abuse layer — see logMissingAttribution below.
           ...(options.tenant_id ? { Metadata: { tenant_id: String(options.tenant_id) } } : {}),
         }),
       });
@@ -246,6 +280,22 @@ export class TransactionalEmailService {
     } catch (error) {
       throw new InternalError('Failed to send transactional email', undefined, { cause: error });
     }
+  }
+
+  /**
+   * Flag audience-facing mail sent without a tenant_id.
+   *
+   * Postmark round-trips `Metadata.tenant_id` to the bounce/complaint webhook, which is how
+   * a suppression gets tenant-scoped and how the tripwires know whose sending to pause.
+   * Mail sent without it degrades the platform's shared reputation with nothing attributing
+   * it — which is exactly how the relay in finding C5 stayed invisible.
+   */
+  private logMissingAttribution(options: SendMailOptions, audience: MailAudience): void {
+    if (options.tenant_id || audience === 'account') return;
+    logger.warn(
+      { subject: options.subject, audience },
+      'Transactional mail sent without tenant_id — bounces and complaints cannot be attributed',
+    );
   }
 
   public async enqueueMail(options: SendMailOptions, trx?: Transaction<Models> | Kysely<Models>): Promise<void> {
@@ -264,8 +314,9 @@ export class TransactionalEmailService {
           to: options.to,
           subject: options.subject,
           text: options.text,
-          html: options.html,
+          html: String(options.html),
           tenant_id: options.tenant_id ?? null,
+          audience: options.audience ?? this.defaultAudience,
           notificationSettingsLink: options.notificationSettingsLink ?? null,
         }),
         run_at: new Date(),

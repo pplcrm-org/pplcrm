@@ -2,7 +2,9 @@
   <!-- Trail (Deliveries / Routes) renders in the navbar; keep an accessible heading only. -->
   <div class="flex flex-wrap items-center justify-end gap-3">
     <h1 class="sr-only">Routes</h1>
-    <pc-deliveries-nav class="mr-auto" />
+    <!-- Surface switch (Requests / Routes) — the underline tab row, sharing this band with the
+         page action the way the People grid's tabs share theirs with the grid toolbar. -->
+    <pc-deliveries-nav class="flex-1" />
     <a class="btn btn-primary btn-sm" routerLink="/deliveries/plan">
       <pc-icon name="map-pin" [size]="4"></pc-icon> Plan routes
     </a>

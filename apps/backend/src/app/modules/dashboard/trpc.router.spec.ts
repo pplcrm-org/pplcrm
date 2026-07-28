@@ -29,7 +29,13 @@ describe('DashboardRouter', () => {
     } as any);
     const result = await caller.getStats();
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' });
+    expect(spy).toHaveBeenCalledWith({
+      tenant_id: '1',
+      user_id: '1',
+      session_id: 's1',
+      role: 'owner',
+      campaign_id: null,
+    });
     expect(result).toEqual(mockStats);
   });
 
@@ -48,7 +54,7 @@ describe('DashboardRouter', () => {
     const result = await caller.getBreachedEmails({ page: 1, limit: 20 });
 
     expect(spy).toHaveBeenCalledWith(
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
       { page: 1, limit: 20 },
     );
     expect(result).toEqual(mockResult);
@@ -72,7 +78,7 @@ describe('DashboardRouter', () => {
     const result = await caller.getBreachedTasks({ page: 2, limit: 5 });
 
     expect(spy).toHaveBeenCalledWith(
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
       { page: 2, limit: 5 },
     );
     expect(result).toEqual(mockResult);

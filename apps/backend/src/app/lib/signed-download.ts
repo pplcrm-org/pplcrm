@@ -4,9 +4,13 @@ import { UnauthorizedError } from '../errors/app-errors';
 
 const DOWNLOAD_SCOPE = 'file-download';
 const EMAIL_ATTACHMENT_SCOPE = 'email-attachment';
+const UPLOAD_SCOPE = 'file-upload';
 // Long enough that cached user lists keep rendering avatars, short enough
 // that a URL leaked from history or logs goes stale quickly.
 const DOWNLOAD_URL_TTL = '24h';
+// Matches the write-SAS lifetime in StorageService.generateWriteSasUrl — once the
+// SAS is dead the handle is useless anyway.
+const UPLOAD_HANDLE_TTL = '15m';
 
 interface SignedDownloadPayload {
   scope: typeof DOWNLOAD_SCOPE;
@@ -20,8 +24,53 @@ interface SignedEmailAttachmentPayload {
   tenant_id: string;
 }
 
+interface SignedUploadPayload {
+  scope: typeof UPLOAD_SCOPE;
+  storage_key: string;
+  tenant_id: string;
+}
+
 const signer = createSigner({ algorithm: 'HS256', key: env.sharedSecret, expiresIn: DOWNLOAD_URL_TTL });
 const verifier = createVerifier({ algorithms: ['HS256'], key: env.sharedSecret, ignoreExpiration: false });
+const uploadSigner = createSigner({ algorithm: 'HS256', key: env.sharedSecret, expiresIn: UPLOAD_HANDLE_TTL });
+
+/**
+ * Mint an opaque handle for a storage key the server just derived, to be handed
+ * back on `files.registerFile`.
+ *
+ * SECURITY: the client must never supply a storage key directly. `registerFile`
+ * scopes the DB row it creates by tenant, but the *blob* it points at is whatever
+ * key the row carries — so accepting a client key let any tenant register (and
+ * then download or delete) another tenant's blob. Round-tripping a signed handle
+ * keeps the key server-derived end to end, and the signature makes the tenant
+ * binding structural rather than a validation a later refactor can drop.
+ */
+export function signUploadHandle(storageKey: string, tenantId: string): string {
+  return uploadSigner({ scope: UPLOAD_SCOPE, storage_key: String(storageKey), tenant_id: String(tenantId) });
+}
+
+/**
+ * Verify an upload handle and return the storage key it was minted for. Throws
+ * UnauthorizedError unless the handle is intact, unexpired, and bound to this tenant.
+ */
+export function verifyUploadHandle(handle: string, tenantId: string): string {
+  let payload: unknown;
+  try {
+    payload = verifier(handle);
+  } catch (err) {
+    throw new UnauthorizedError('Unauthorized: Invalid or expired upload handle', undefined, { cause: err });
+  }
+  const parsed = payload as Partial<SignedUploadPayload> | null;
+  if (
+    !parsed ||
+    parsed.scope !== UPLOAD_SCOPE ||
+    !parsed.storage_key ||
+    String(parsed.tenant_id) !== String(tenantId)
+  ) {
+    throw new UnauthorizedError('Unauthorized: Invalid upload handle');
+  }
+  return String(parsed.storage_key);
+}
 
 /**
  * Build a relative download URL carrying a short-lived token scoped to a

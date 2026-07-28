@@ -14,8 +14,15 @@
     }
   </pc-grid-header>
 
-  <!-- Tabs: Imports N / Exports N (the standard pill tab bar) -->
-  <pc-tab-bar class="mb-4" [tabs]="historyTabs()" [activeTab]="tab()" (activeTabChange)="switchTab($event)" />
+  <!-- Surface switch: Imports N / Exports N — the underline tab row the People grid uses -->
+  <pc-tab-bar
+    class="mb-4"
+    [tabs]="historyTabs()"
+    [activeTab]="tab()"
+    (activeTabChange)="switchTab($event)"
+    variant="underline"
+    label="Import and export history"
+  />
 
   <!-- ============ IMPORTS TAB ============ -->
   @if (tab() === 'imports') {
@@ -121,6 +128,10 @@
             <button
               type="button"
               class="btn btn-sm btn-circle btn-ghost text-error"
+              aria-label="Delete this import"
+              i18n-aria-label="@@imports.delete.ariaLabel"
+              title="Delete this import"
+              i18n-title="@@imports.delete.title"
               (click)="openDeleteDialog(item, deleteDialog)"
               [disabled]="deleting()"
             >

@@ -20,7 +20,7 @@ import { TenantsRepo } from '../auth/repositories/tenants.repo';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import { WorkflowsController } from '../workflows/controller';
 import { WebhookEventsRepo } from './repositories/webhook-events.repo';
-import { getStripe, isMockMode, stripe } from '../../lib/stripe-platform-client';
+import { assertMockModeAllowed, getStripe, isMockMode, stripe } from '../../lib/stripe-platform-client';
 import { syncSubscriptionQuantity } from './subscription-sync';
 import { countEmailableSubscribers, getPlanLimits } from './usage-limits';
 
@@ -156,6 +156,56 @@ export class BillingController {
 
   private getFrontendUrl(): string {
     return env.appUrl.replace(/\/+$/, '');
+  }
+
+  /**
+   * What would actually stop working if this workspace moved to Free — counts, not opinions.
+   *
+   * The billing page uses this to warn before a downgrade, because the Free-plan consequences are
+   * invisible from inside the app: a published form keeps looking published while its submissions
+   * are refused, and an API key keeps being displayed while it no longer resolves. A campaign
+   * would otherwise discover it from a drop in signups days later.
+   *
+   * Only counts things that STOP FUNCTIONING, not everything that becomes read-only. Losing the
+   * ability to edit a list is an inconvenience you find out about the moment you try; a form that
+   * silently stops collecting names is not.
+   */
+  public async getDowngradeImpact(auth: { tenant_id: string }): Promise<{
+    activeAutomations: number;
+    apiKeys: number;
+    publishedForms: number;
+  }> {
+    const db = tenantsRepo.db;
+    const countOf = async (rows: Promise<{ n: string | number | bigint } | undefined>): Promise<number> =>
+      Number((await rows)?.n ?? 0);
+
+    const [publishedForms, apiKeys, activeAutomations] = await Promise.all([
+      countOf(
+        db
+          .selectFrom('web_forms')
+          .select((eb) => eb.fn.countAll<string>().as('n'))
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('status', '=', 'published')
+          .executeTakeFirst(),
+      ),
+      countOf(
+        db
+          .selectFrom('workspace_api_keys')
+          .select((eb) => eb.fn.countAll<string>().as('n'))
+          .where('tenant_id', '=', auth.tenant_id)
+          .executeTakeFirst(),
+      ),
+      countOf(
+        db
+          .selectFrom('workflows')
+          .select((eb) => eb.fn.countAll<string>().as('n'))
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('status', '=', 'active')
+          .executeTakeFirst(),
+      ),
+    ]);
+
+    return { activeAutomations, apiKeys, publishedForms };
   }
 
   public async getBillingDetails(auth: { tenant_id: string }) {
@@ -617,7 +667,7 @@ export class BillingController {
               }
             }
 
-            const mailService = new TransactionalEmailService();
+            const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
             const amountPaid = invoice.amount_paid / 100;
             const pdfUrl = invoice.hosted_invoice_url || '';
 
@@ -705,7 +755,7 @@ export class BillingController {
               }
             }
 
-            const mailService = new TransactionalEmailService();
+            const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
             const billingPageUrl = `${env.appUrl}/workspace/billing`;
             const amountDue = (invoice.amount_due || 0) / 100;
             await mailService.sendMail({
@@ -785,9 +835,11 @@ export class BillingController {
     quantity = 1,
     interval: BillingInterval = 'month',
   ) {
-    if (!isMockMode) {
-      throw new Error('This helper is only available in local Mock Mode');
-    }
+    // Money-touching mock paths need an EXPLICIT opt-in (env.ts). Gating on `isMockMode`
+    // alone meant "the Stripe key is absent" — so a prod deploy whose Stripe secretref
+    // failed to resolve let any owner write themselves the top plan, with no Stripe
+    // subscription behind it and no sync path to correct it.
+    assertMockModeAllowed();
 
     const expiry = new Date();
     if (interval === 'year') {
@@ -821,9 +873,7 @@ export class BillingController {
   }
 
   public async cancelMockPlan(auth: { tenant_id: string }) {
-    if (!isMockMode) {
-      throw new Error('This helper is only available in local Mock Mode');
-    }
+    assertMockModeAllowed();
 
     await tenantsRepo.update({
       tenant_id: auth.tenant_id,
@@ -883,7 +933,7 @@ export class BillingController {
       const mockPrefix = isMock ? '[MOCK] ' : '';
       const fmt = (n: number): string => (Number.isFinite(n) ? n.toLocaleString() : 'Unlimited');
 
-      const mailService = new TransactionalEmailService();
+      const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
       const planLabel = planName.charAt(0).toUpperCase() + planName.slice(1);
       await mailService.sendMail({
         to: admin.email,

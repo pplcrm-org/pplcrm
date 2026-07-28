@@ -5,6 +5,7 @@ import type {
   AssignTurfType,
   CutTurfsType,
   FieldReportRangeType,
+  RemoveCanvasserType,
   UpdateCompanionSettingsType,
   UpdateTurfType,
 } from '../../../../../../../libs/common/src';
@@ -13,6 +14,7 @@ import { TRPCService } from '../../../services/api/trpc-service';
 import type { RouterOutputs } from '../../../services/api/trpc-types';
 
 export type TurfListItem = RouterOutputs['canvassing']['getTurfs'][number];
+export type TurfCanvasser = RouterOutputs['canvassing']['getCanvassers'][number];
 export type FieldSummary = RouterOutputs['canvassing']['getFieldSummary'];
 export type InFieldToday = RouterOutputs['canvassing']['getInFieldToday'];
 export type FieldReport = RouterOutputs['canvassing']['getFieldReport'];
@@ -55,6 +57,14 @@ export class CanvassingService extends TRPCService<unknown> {
 
   public assign(input: AssignTurfType): Promise<{ token: string; sent: { email: boolean; sms: boolean } }> {
     return this.api.canvassing.assign.mutate(input);
+  }
+
+  public getCanvassers(turfId: string): Promise<TurfCanvasser[]> {
+    return this.api.canvassing.getCanvassers.query(turfId);
+  }
+
+  public removeCanvasser(input: RemoveCanvasserType): Promise<void> {
+    return this.api.canvassing.removeCanvasser.mutate(input).then(() => undefined);
   }
 
   public getCompanionSettings(): Promise<RouterOutputs['canvassing']['getCompanionSettings']> {

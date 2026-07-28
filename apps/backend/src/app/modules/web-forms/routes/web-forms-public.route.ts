@@ -7,6 +7,14 @@ import formBody from '@fastify/formbody';
 import { resolveTenantById, resolveTenantFromRequest } from '../../../lib/public-tenant';
 import { checkKeyedSubmissionRateLimit, tenantIdFromOptionalApiKey } from '../../../lib/validate-api-key';
 import { env } from '../../../../env';
+import { checkRateLimit } from '../../../lib/rate-limiter';
+
+/** Per-IP ceiling on the read-only public pages (form config, donation page). Generous:
+ *  a refresh or a slow page with several assets must never trip it. */
+const PUBLIC_PAGE_MAX = 60;
+const PUBLIC_PAGE_WINDOW_MS = 60 * 1000;
+/** The mock-donation confirmation can WRITE, so it gets a tighter ceiling. */
+const PUBLIC_WRITE_MAX = 10;
 
 const webFormsController = new WebFormsController();
 const donationsController = new DonationsController();
@@ -46,7 +54,7 @@ const SUCCESS_HTML = `
   <title>Submission Successful</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-gradient: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
@@ -86,7 +94,7 @@ const SUCCESS_HTML = `
 
     body {
       font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-weight: 300;
+      font-weight: 400;
       background: var(--bg-gradient);
       color: var(--text-primary);
       min-height: 100vh;
@@ -254,7 +262,7 @@ const errorHtml = (message: string) => `
   <title>Submission Error</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-gradient: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
@@ -294,7 +302,7 @@ const errorHtml = (message: string) => `
 
     body {
       font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-weight: 300;
+      font-weight: 400;
       background: var(--bg-gradient);
       color: var(--text-primary);
       min-height: 100vh;
@@ -468,6 +476,9 @@ const webFormsPublicRoute: FastifyPluginCallback = (fastify, _, done) => {
       user_id?: string;
     };
   }>('/success', async (req, reply) => {
+    // Unauthenticated and it can WRITE a donation row in mock mode, so it is throttled
+    // harder than the read-only pages (finding M3).
+    checkRateLimit(`public-donation-success:${req.ip}`, PUBLIC_WRITE_MAX, PUBLIC_PAGE_WINDOW_MS);
     const { checkout_session_id, is_mock, person_id, amount_cents, province, country, tenant_id, user_id } = req.query;
     // Mock-donation confirmation is a local/dev convenience only. This endpoint is
     // unauthenticated and every parameter (tenant_id, person_id, amount) is
@@ -502,6 +513,12 @@ const webFormsPublicRoute: FastifyPluginCallback = (fastify, _, done) => {
   fastify.get<{ Params: { slug: string } }>('/f/:slug', async (req, reply) => {
     const { slug } = req.params;
     try {
+      // Throttled like every sibling public surface (finding M3): this resolves a tenant
+      // from the subdomain and then looks up the form, so it was an unauthenticated way to
+      // make the backend do two DB queries per request. Generous enough that a refresh
+      // never trips it.
+      checkRateLimit(`public-form-config:${req.ip}`, PUBLIC_PAGE_MAX, PUBLIC_PAGE_WINDOW_MS);
+
       const tenant = await resolveTenantFromRequest(req);
       if (!tenant) {
         return reply.status(404).send({ error: 'Form not found.' });
@@ -520,6 +537,8 @@ const webFormsPublicRoute: FastifyPluginCallback = (fastify, _, done) => {
   fastify.get<{ Params: { slug: string } }>('/d/:slug', async (req, reply) => {
     const { slug } = req.params;
     try {
+      checkRateLimit(`public-donation-page:${req.ip}`, PUBLIC_PAGE_MAX, PUBLIC_PAGE_WINDOW_MS);
+
       const tenant = await resolveTenantFromRequest(req);
       const form = tenant ? await webFormsController.getDonationFormPublic(tenant.id, String(slug)) : undefined;
       if (!tenant || !form || form.status !== 'published') {
@@ -651,7 +670,7 @@ const renderFormHtml = (
   <title>${escapeHtml(formName)}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-gradient: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
@@ -699,7 +718,7 @@ const renderFormHtml = (
 
     body {
       font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-weight: 300;
+      font-weight: 400;
       background: var(--bg-gradient);
       color: var(--text-primary);
       min-height: 100vh;

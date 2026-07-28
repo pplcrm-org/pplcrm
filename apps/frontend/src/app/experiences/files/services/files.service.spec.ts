@@ -54,7 +54,7 @@ describe('FilesService', () => {
   });
 
   it('should request an upload URL for a file', async () => {
-    mockApi.files.getUploadUrl.query.mockResolvedValue({ uploadUrl: 'https://blob/upload', storageKey: 'key-1' });
+    mockApi.files.getUploadUrl.query.mockResolvedValue({ uploadUrl: 'https://blob/upload', uploadHandle: 'handle-1' });
 
     const result = await service.getUploadUrl('report.pdf', 'application/pdf');
 
@@ -62,7 +62,7 @@ describe('FilesService', () => {
       filename: 'report.pdf',
       mimeType: 'application/pdf',
     });
-    expect(result).toEqual({ uploadUrl: 'https://blob/upload', storageKey: 'key-1' });
+    expect(result).toEqual({ uploadUrl: 'https://blob/upload', uploadHandle: 'handle-1' });
   });
 
   it('should register an uploaded file record', async () => {
@@ -71,23 +71,21 @@ describe('FilesService', () => {
     const result = await service.registerFile({
       filename: 'a.txt',
       mimeType: 'text/plain',
-      sizeBytes: 5,
-      storageKey: 'key-9',
+      uploadHandle: 'handle-9',
       sha256Hex: 'deadbeef',
     });
 
     expect(mockApi.files.registerFile.mutate).toHaveBeenCalledWith({
       filename: 'a.txt',
       mimeType: 'text/plain',
-      sizeBytes: 5,
-      storageKey: 'key-9',
+      uploadHandle: 'handle-9',
       sha256Hex: 'deadbeef',
     });
     expect(result).toEqual({ id: 'f9' });
   });
 
   it('should hash, upload, and register a file end-to-end via uploadFileDirectly', async () => {
-    mockApi.files.getUploadUrl.query.mockResolvedValue({ uploadUrl: 'https://blob/upload', storageKey: 'key-1' });
+    mockApi.files.getUploadUrl.query.mockResolvedValue({ uploadUrl: 'https://blob/upload', uploadHandle: 'handle-1' });
     mockApi.files.registerFile.mutate.mockResolvedValue({ id: 'f10', filename: 'hello.txt' });
 
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
@@ -108,8 +106,7 @@ describe('FilesService', () => {
       expect.objectContaining({
         filename: 'hello.txt',
         mimeType: 'text/plain',
-        sizeBytes: file.size,
-        storageKey: 'key-1',
+        uploadHandle: 'handle-1',
       }),
     );
     // sha256Hex should have been computed as a lower-case hex string
@@ -119,7 +116,7 @@ describe('FilesService', () => {
   });
 
   it('should throw when the direct upload to blob storage fails', async () => {
-    mockApi.files.getUploadUrl.query.mockResolvedValue({ uploadUrl: 'https://blob/upload', storageKey: 'key-1' });
+    mockApi.files.getUploadUrl.query.mockResolvedValue({ uploadUrl: 'https://blob/upload', uploadHandle: 'handle-1' });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }));
 
     const file = createFakeFile('data', 'fail.txt', 'text/plain');

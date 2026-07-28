@@ -61,8 +61,17 @@ async function createSeed(): Promise<Seed> {
   const tenantSlug = `spec${tenantId}`;
   const otherTenantSlug = `spec${otherTenantId}`;
 
-  await db.insertInto('tenants').values({ id: tenantId, name: 'Spec Tenant', slug: tenantSlug }).execute();
-  await db.insertInto('tenants').values({ id: otherTenantId, name: 'Other Tenant', slug: otherTenantSlug }).execute();
+  // Forms are Grassroots+ (GATED_FEATURES.forms) and submitFormPublic enforces it, so a Free
+  // tenant's published form refuses submissions. These specs exercise the submission path itself,
+  // not the gate — the gate has its own coverage below.
+  await db
+    .insertInto('tenants')
+    .values({ id: tenantId, name: 'Spec Tenant', slug: tenantSlug, subscription_plan: 'grassroots' })
+    .execute();
+  await db
+    .insertInto('tenants')
+    .values({ id: otherTenantId, name: 'Other Tenant', slug: otherTenantSlug, subscription_plan: 'grassroots' })
+    .execute();
 
   await db
     .insertInto('settings')

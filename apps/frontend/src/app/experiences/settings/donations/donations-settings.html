@@ -228,7 +228,13 @@
               (change)="togglePeriodActive(period)"
               title="Enable/disable period"
             />
-            <button type="button" class="btn btn-xs btn-ghost text-error" (click)="deletePeriod(period)">
+            <button
+              type="button"
+              class="btn btn-xs btn-ghost text-error"
+              aria-label="Delete this donation period"
+              title="Delete this donation period"
+              (click)="deletePeriod(period)"
+            >
               <pc-icon name="trash" [size]="3"></pc-icon>
             </button>
           </div>

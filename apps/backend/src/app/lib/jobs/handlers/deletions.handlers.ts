@@ -6,7 +6,7 @@ import { TransactionalEmailService } from '../../mail/transactional-mail.service
 import { CRON_JOBS } from '../cron-registry';
 import { scheduleNextRun } from '../reschedule';
 
-const mailService = new TransactionalEmailService();
+const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
 
 /**
  * Every tenant-scoped table, ordered children-before-parents, that a full tenant wipe must clear.

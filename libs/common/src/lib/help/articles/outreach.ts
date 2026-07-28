@@ -199,7 +199,7 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'plan-features', text: 'Plan-gated features' },
       {
         kind: 'p',
-        text: 'Some features are enforced by plan: forms, donations, automations, lists and volunteer management (teams and events) need **Grassroots** or higher; canvassing, deliveries and companion volunteer access need **Movement**. See your options under [Workspace → Billing](/workspace/billing).',
+        text: 'Some features are enforced by plan: forms, donations, automations, lists, volunteer management (teams and events) and API access (including Zapier) need **Grassroots** or higher; canvassing, deliveries and companion volunteer access need **Movement**. See your options under [Workspace → Billing](/workspace/billing).',
       },
     ],
   },

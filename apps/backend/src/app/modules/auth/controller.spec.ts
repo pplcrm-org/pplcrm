@@ -131,7 +131,7 @@ describe('AuthController', () => {
     await expect(controller.currentUser({} as any)).rejects.toThrow(UnauthorizedError);
 
     await cleanup(db, owner.id, owner.tenant_id);
-  });
+  }, 30000);
 
   it('should enforce the plan seat cap on inviteUser', async () => {
     const owner = await signUpOwner(controller, db);
@@ -162,7 +162,7 @@ describe('AuthController', () => {
     ).rejects.toThrow(ForbiddenError);
 
     await cleanup(db, owner.id, owner.tenant_id);
-  });
+  }, 30000);
 
   it('should enforce visibility rules on getUserById and throw NotFoundError for a missing user', async () => {
     const owner = await signUpOwner(controller, db);
@@ -582,6 +582,77 @@ describe('AuthController', () => {
 
     await cleanup(db, owner.id, owner.tenant_id);
   });
+
+  // SECURITY REGRESSION (C2) — every guard in updateUser used to test `role === 'user'`.
+  // `authusers.role` was nullable and inviteUser inserted NULL when the tenant had no
+  // access.default_role, so an unroled account passed all of them: it could edit any user
+  // in the tenant and promote a confederate to owner. The guards now ask isPrivilegedRole,
+  // and the role column is NOT NULL so the state cannot recur.
+  it('should refuse privilege escalation from an unprivileged or unroled caller', async () => {
+    const owner = await signUpOwner(controller, db);
+    const attacker = await controller.inviteUser(authFor(owner), {
+      email: `attacker-${rand()}@example.com`,
+      first_name: 'Attacker',
+      role: 'user',
+    });
+    // Invited with NO role — the exact path that used to insert NULL. It must land a
+    // real role, and it doubles as the escalation target below.
+    const confederate = await controller.inviteUser(authFor(owner), {
+      email: `confederate-${rand()}@example.com`,
+      first_name: 'Confederate',
+    });
+    const invitedRow = await db
+      .selectFrom('authusers')
+      .select('role')
+      .where('id', '=', confederate.id)
+      .executeTakeFirst();
+    expect(invitedRow.role).toBe('user');
+
+    // The original exploit, from both an Editor and a (now impossible) null role.
+    for (const callerRole of ['user', null]) {
+      const attackerAuth = {
+        tenant_id: String(owner.tenant_id),
+        user_id: String(attacker.id),
+        session_id: 's',
+        role: callerRole,
+      };
+
+      await expect(controller.updateUser(attackerAuth, String(confederate.id), { role: 'owner' })).rejects.toThrow(
+        ForbiddenError,
+      );
+
+      // ...and they cannot edit another user at all.
+      await expect(
+        controller.updateUser(attackerAuth, String(confederate.id), { first_name: 'Renamed' }),
+      ).rejects.toThrow(ForbiddenError);
+    }
+
+    const untouched = await db
+      .selectFrom('authusers')
+      .select(['role', 'first_name'])
+      .where('id', '=', confederate.id)
+      .executeTakeFirst();
+    expect(untouched.role).toBe('user');
+    expect(untouched.first_name).toBe('Confederate');
+
+    // Inviting is likewise admin/owner-only, for an unroled caller too.
+    for (const callerRole of ['user', null]) {
+      await expect(
+        controller.inviteUser(
+          { tenant_id: String(owner.tenant_id), user_id: String(attacker.id), session_id: 's', role: callerRole },
+          { email: `nope-${rand()}@example.com`, first_name: 'Nope', role: 'owner' },
+        ),
+      ).rejects.toThrow(ForbiddenError);
+    }
+
+    // A role can never be cleared back to null.
+    await expect(
+      controller.updateUser(authFor(owner), String(confederate.id), { role: null as never }),
+    ).rejects.toThrow(BadRequestError);
+
+    await cleanup(db, owner.id, owner.tenant_id);
+    // Several invites, each Argon2id-hashing a temp password, exceed the 5s default.
+  }, 60000);
 
   it('should deactivate and reactivate a user, blocking sign-in while deactivated', async () => {
     const owner = await signUpOwner(controller, db);

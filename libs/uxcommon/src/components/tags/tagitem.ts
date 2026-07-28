@@ -14,7 +14,7 @@ import { Icon } from '@icons/icon';
   >
     <span
       (click)="emitClick()"
-      class="tag-label cursor-pointer font-light pr-1"
+      class="tag-label cursor-pointer pr-1"
       [class.pr-2]="!canDelete()"
       [style.color]="textColor()"
     >
@@ -39,8 +39,11 @@ export class TagItem {
   });
   protected readonly textColor = computed(() => this.computeTextColor(this.background()));
 
-  public readonly click = output<string>();
-  public readonly close = output<string>();
+  // Named `tagClicked`/`tagClosed`, not `click`/`close`: an output that shadows a native DOM
+  // event makes `(click)` on the host ambiguous — the consumer can no longer tell whether they
+  // are binding the component's output or the real DOM event (@angular-eslint/no-output-native).
+  public readonly tagClicked = output<string>();
+  public readonly tagClosed = output<string>();
 
   public canDelete = input<boolean>(true);
   public color = input<string | null | undefined>(null);
@@ -49,11 +52,11 @@ export class TagItem {
   public name = input.required<string>();
 
   public emitClick() {
-    this.click.emit(this.name());
+    this.tagClicked.emit(this.name());
   }
 
   public emitClose() {
-    this.close.emit(this.name());
+    this.tagClosed.emit(this.name());
   }
 
   private computeTextColor(hex: string | null): string | null {

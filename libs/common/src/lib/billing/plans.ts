@@ -12,8 +12,10 @@
  *    stair-stepping between tiers — the old model jumped a customer 3.4× (Starter $29 →
  *    Representative $99) the moment they crossed one subscriber count. `representative` is
  *    retired. Feature split (revised 2026-07-14): newsletters are table stakes on EVERY plan
- *    including Free; forms, donations, automations, lists (segments) and volunteer management
- *    (teams & events) are the paid step-up (Grassroots and up); the field-ops surface — both
+ *    including Free; forms, donations, automations, lists (segments), volunteer management
+ *    (teams & events) and API access & integrations (added 2026-07-27 — a free workspace with a
+ *    scriptable write endpoint is the cheapest way to bulk-load a junk list into shared sending
+ *    infrastructure) are the paid step-up (Grassroots and up); the field-ops surface — both
  *    companion apps (canvassing & deliveries), companion volunteer access & monitoring, yard
  *    signs, turf cutting, walk lists & routes, field reports, route optimization — is
  *    Movement-only.
@@ -227,7 +229,7 @@ export const PLANS: readonly PlanDef[] = [
       'Shared inbox, people CRM & CSV import/export',
       'Newsletters, templates, scheduling & dynamic content',
       'AI deliverability check on every newsletter',
-      'Custom reports, role-based access & 300+ integrations',
+      'Custom reports & role-based access',
       'Community support',
     ],
   },
@@ -251,6 +253,7 @@ export const PLANS: readonly PlanDef[] = [
       '5 staff seats · 10 GB storage',
       'Forms & donations',
       'Automations & lists (segments)',
+      'API access & 300+ integrations',
       'Volunteer management (teams & events)',
       'Email support',
     ],
@@ -467,6 +470,11 @@ const PLAN_RANK: Record<PlanKey, number> = { free: 0, grassroots: 1, movement: 2
  */
 export const GATED_FEATURES = {
   forms: { minPlan: 'grassroots', label: 'Forms' },
+  // API access covers every keyed surface (Zapier, server-side form/RSVP/signup submits) AND
+  // key issuance. Paid-only since 2026-07-27: a free workspace with a scriptable write endpoint
+  // is the cheapest way to bulk-load a junk list into shared sending infrastructure, and the
+  // per-tenant keyed rate limit is deliberately generous for real integrations.
+  api: { minPlan: 'grassroots', label: 'API access & integrations' },
   donations: { minPlan: 'grassroots', label: 'Donations' },
   automations: { minPlan: 'grassroots', label: 'Automations' },
   lists: { minPlan: 'grassroots', label: 'Lists (segments)' },
@@ -550,7 +558,6 @@ export const FEATURE_MATRIX: readonly FeatureMatrixGroup[] = [
       { label: 'Dynamic content', values: { free: true, grassroots: true, movement: true } },
       { label: 'Custom reports', values: { free: true, grassroots: true, movement: true } },
       { label: 'Role-based access', values: { free: true, grassroots: true, movement: true } },
-      { label: '300+ integrations', values: { free: true, grassroots: true, movement: true } },
       { label: 'Demo workspace', values: { free: true, grassroots: true, movement: true } },
     ],
   },
@@ -559,6 +566,7 @@ export const FEATURE_MATRIX: readonly FeatureMatrixGroup[] = [
     rows: [
       { label: 'Forms', values: { free: false, grassroots: true, movement: true } },
       { label: 'Donations', values: { free: false, grassroots: true, movement: true } },
+      { label: 'API access & 300+ integrations', values: { free: false, grassroots: true, movement: true } },
       { label: 'Automations', values: { free: false, grassroots: true, movement: true } },
       { label: 'Lists (segments)', values: { free: false, grassroots: true, movement: true } },
       {

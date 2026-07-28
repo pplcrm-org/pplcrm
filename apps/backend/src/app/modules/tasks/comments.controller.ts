@@ -3,8 +3,6 @@ import { BaseController } from '../../lib/base.controller';
 import type { Transaction } from 'kysely';
 import type { OperationDataType, Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { TaskCommentsRepo } from './repositories/task-comments.repo';
-import { processMentions } from '../../lib/mail/mentions-util';
-import { logger } from '../../logger';
 
 export class TaskCommentsController extends BaseController<'task_comments', TaskCommentsRepo> {
   constructor() {
@@ -34,10 +32,26 @@ export class TaskCommentsController extends BaseController<'task_comments', Task
         );
       }
 
-      const commentLink = `${env.appUrl}/tasks/${row.task_id}`;
-      processMentions(this.getRepo().db, String(row.tenant_id), row.comment, commentLink, String(actorId)).catch(
-        (err) => logger.error({ err }, 'Failed to process task comment mentions'),
-      );
+      // Queued, not detached: processMentions sends SMTP, and a fire-and-forget promise lost
+      // every in-flight mention on shutdown. When the caller supplied a transaction the job row
+      // is written inside it, so a rolled-back comment can never leave a ghost notification.
+      await (trx ?? this.getRepo().db)
+        .insertInto('background_jobs')
+        .values({
+          tenant_id: String(row.tenant_id),
+          queue: 'default',
+          status: 'pending',
+          payload: JSON.stringify({
+            type: 'process_mentions',
+            tenant_id: String(row.tenant_id),
+            commentText: row.comment,
+            commentLink: `${env.appUrl}/tasks/${row.task_id}`,
+            authorId: String(actorId),
+          }),
+          run_at: new Date(),
+          max_attempts: 3,
+        })
+        .execute();
     }
     return comment;
   }

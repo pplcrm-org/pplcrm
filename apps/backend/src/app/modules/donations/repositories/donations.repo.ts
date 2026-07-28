@@ -81,6 +81,9 @@ export class DonationsRepo extends BaseRepository<'donations'> {
         'donations.id',
         'donations.tenant_id',
         'donations.person_id',
+        // Non-null on the installments of a monthly pledge — how the Donations page splits its
+        // "All" tab from the one-time-only tab.
+        'donations.pledge_id',
         'donations.amount',
         'donations.status',
         'donations.stripe_session_id',

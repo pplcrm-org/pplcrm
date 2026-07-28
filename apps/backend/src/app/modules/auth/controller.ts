@@ -36,13 +36,21 @@ import {
 import { BaseController } from '../../lib/base.controller';
 import type { QueryParams } from '../../lib/base.repo';
 import { COMMON_PASSWORDS } from '../../lib/common-passwords';
+import { escapeHtml } from '../../lib/html-escape';
 import { getPwnedCount } from '../../lib/hibp';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
-import { TourStateObj, type TourStateType } from '../../../../../../libs/common/src';
+import {
+  DEFAULT_AUTH_ROLE,
+  TourStateObj,
+  isAuthRole,
+  isPrivilegedRole,
+  type TourStateType,
+} from '../../../../../../libs/common/src';
 import { getPlanLimits } from '../billing/usage-limits';
 import { isDisposableEmail } from '../../lib/mail/disposable-email-domains';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { hashPassword, verifyPasswordConstantTime } from '../../lib/password-hash';
+import { assertSignInAttemptsRemaining, clearSignInAttempts, recordFailedSignIn } from '../../lib/signin-attempts';
 import { StorageService } from '../../lib/storage.service';
 import { tombstoneAuthUser } from '../../lib/tombstone-user';
 import { generateToken, hashToken } from '../../lib/token-hash';
@@ -51,6 +59,12 @@ import { EmailRepo } from '../emails/repositories/email.repo';
 import { PersonsRepo } from '../persons/repositories/persons.repo';
 import { UserProfiles } from '../userprofiles/repositories/userprofiles.repo';
 import { seedStarterForms, seedStarterTags } from './onboarding-seed';
+import {
+  assertTenantApprovedForSignIn,
+  initialApprovalStatus,
+  mintApprovalToken,
+  type NewTenantApproval,
+} from './tenant-approval';
 import { ensureSystemLists, queueSystemListRefreshes } from '../lists/system-lists';
 import { DEMO_MODE_INVITES_BLOCKED_MESSAGE, assertNotDemoMode } from '../demo/demo-guard';
 import { seedDemoData } from '../demo/demo-seed';
@@ -58,12 +72,16 @@ import { AuthUsersRepo } from './repositories/authusers.repo';
 import { SessionsRepo } from './repositories/sessions.repo';
 import { TenantsRepo } from './repositories/tenants.repo';
 
+/** How long a scheduled-deletion cancellation link stays valid. Comfortably longer than
+ *  the deletion grace period, so the link never dies before the window it belongs to. */
+const DELETION_CANCEL_TOKEN_TTL_MS = 45 * 24 * 60 * 60 * 1000;
+
 export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
   private static readonly AVATAR_ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
   private static readonly AVATAR_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
 
   private emailsRepo: EmailRepo = new EmailRepo();
-  private mailService = new TransactionalEmailService();
+  private mailService = new TransactionalEmailService({ defaultAudience: 'account' });
   private personsRepo: PersonsRepo = new PersonsRepo();
   private profiles: UserProfiles = new UserProfiles();
   private sessions: SessionsRepo = new SessionsRepo();
@@ -349,7 +367,8 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         .updateTable('authusers')
         .set({
           email: previousEmail,
-          role: authUser.previous_role,
+          // previous_role is nullable; never restore a null role (see DEFAULT_AUTH_ROLE).
+          role: isAuthRole(authUser.previous_role) ? authUser.previous_role : DEFAULT_AUTH_ROLE,
           verified: true,
           previous_email: null,
           previous_role: null,
@@ -405,10 +424,19 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
   }
 
   public async cancelTenantDeletionByToken(tenantId: string, token: string) {
-    const expectedToken = this.makeDeletionCancelToken(tenantId);
+    const [expiresMs, mac] = token.split('.');
+    if (!expiresMs || !mac || !/^\d+$/.test(expiresMs)) {
+      throw new BadRequestError('Invalid or expired cancellation link.');
+    }
+    // Verify the signature over the SAME expiry the caller presented, then check that
+    // expiry — so a tampered timestamp fails the MAC and a genuine but stale one fails here.
+    const expectedToken = this.makeDeletionCancelToken(tenantId, new Date(Number(expiresMs)));
     const expected = Buffer.from(expectedToken);
     const provided = Buffer.from(token.length === expected.length ? token : expectedToken); // same length for safe compare
     if (token.length !== expectedToken.length || !timingSafeEqual(expected, provided)) {
+      throw new BadRequestError('Invalid or expired cancellation link.');
+    }
+    if (Number(expiresMs) < Date.now()) {
       throw new BadRequestError('Invalid or expired cancellation link.');
     }
 
@@ -477,7 +505,6 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       let tenant_demo_mode_at: Date | null = null;
       let tenant_plan_selected = false;
       let tenant_slug: string | null = null;
-      let workspace_api_key_preview: { preview: string; createdAt: string; lastUsedAt: string | null } | null = null;
       if (auth.tenant_id) {
         const tenant = await this.getRepo()
           .db.selectFrom('tenants')
@@ -493,19 +520,6 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         tenant_demo_mode_at = tenant?.demo_mode_at ?? null;
         tenant_plan_selected = hasSettledPlan(tenant?.subscription_status);
         tenant_slug = tenant?.slug ?? null;
-
-        // Fetch API key preview
-        const workspaceApiKeysRepo = (await import('../settings/repositories/workspace-api-keys.repo'))
-          .WorkspaceApiKeysRepo;
-        const apiKeyRepo = new workspaceApiKeysRepo();
-        const apiKey = await apiKeyRepo.getByTenantId(auth.tenant_id);
-        if (apiKey) {
-          workspace_api_key_preview = {
-            preview: apiKey.key_preview,
-            createdAt: apiKey.created_at.toISOString(),
-            lastUsedAt: apiKey.last_used_at?.toISOString() ?? null,
-          };
-        }
       }
 
       return {
@@ -518,7 +532,6 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         tenant_demo_mode_at,
         tenant_plan_selected,
         tenant_slug,
-        workspace_api_key_preview,
       };
     } catch (err) {
       throw new InternalError('Something went wrong, please try again', undefined, { cause: err });
@@ -788,7 +801,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     // Demo teammates are seeded; real invites unlock with a plan (see demo-guard).
     await assertNotDemoMode(this.getRepo().db, auth.tenant_id, DEMO_MODE_INVITES_BLOCKED_MESSAGE);
     const callerRole = auth.role;
-    if (callerRole === 'user') {
+    // Deny by default: only admins and owners invite. Testing for `=== 'user'` let a
+    // null-role account through, which is more access than an Editor has.
+    if (!isPrivilegedRole(callerRole)) {
       throw new ForbiddenError('You do not have permission to invite users.');
     }
     if (callerRole === 'admin' && input.role === 'owner') {
@@ -827,12 +842,17 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       }
     }
 
-    // Fall back to the tenant's configured default invite role when the caller didn't specify one.
-    let role = input.role ?? null;
+    // Fall back to the tenant's configured default invite role when the caller didn't specify
+    // one, and to the least-privileged working role when the tenant has not configured one.
+    // A null role must never reach the database — see DEFAULT_AUTH_ROLE.
+    let role: string = input.role ?? '';
     if (!role) {
       const defaultRole = await this.getTenantSetting(auth.tenant_id, 'access.default_role');
-      if (typeof defaultRole === 'string' && defaultRole.trim()) role = defaultRole.trim();
+      // Only honour a recognised role; an unknown setting value would land a role that
+      // no permission check accounts for.
+      if (isAuthRole(defaultRole?.toString().trim())) role = String(defaultRole).trim();
     }
+    if (!role) role = DEFAULT_AUTH_ROLE;
     if (callerRole === 'admin' && role === 'owner') {
       throw new ForbiddenError('Admins cannot invite users with the Owner role.');
     }
@@ -909,8 +929,20 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     return this.sanitizeUser({ ...created, last_name: input.last_name });
   }
 
-  public makeDeletionCancelToken(tenantId: string): string {
-    return createHmac('sha256', env.sharedSecret).update(`cancel-deletion:${tenantId}`).digest('hex');
+  /**
+   * Mint the "undo the scheduled deletion" link token.
+   *
+   * SECURITY (M5): this used to be a bare HMAC of the tenant id — deterministic and
+   * therefore PERMANENT. One leaked cancellation email (a forwarded message, a shared
+   * inbox, a mail archive) was a capability to un-delete that account forever, and the
+   * procedure that consumes it is unauthenticated. The expiry is now inside the signed
+   * payload, so the link stops working on its own.
+   */
+  public makeDeletionCancelToken(tenantId: string, expiresAt?: Date): string {
+    const expiry = expiresAt ?? new Date(Date.now() + DELETION_CANCEL_TOKEN_TTL_MS);
+    const expiresMs = String(expiry.getTime());
+    const mac = createHmac('sha256', env.sharedSecret).update(`cancel-deletion:${tenantId}:${expiresMs}`).digest('hex');
+    return `${expiresMs}.${mac}`;
   }
 
   public async pauseTenant(auth: IAuthKeyPayload) {
@@ -1313,7 +1345,18 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
   }
 
   public async signIn(input: signInInputType, ipAddress?: string, userAgent?: string) {
-    const user = await this.getUserByEmailOrNull(input.email.toLowerCase());
+    const email = input.email.toLowerCase();
+
+    // SECURITY (M1): the only sign-in limit was per-IP, so a botnet spreading attempts
+    // across addresses faced no ceiling at all against one known email. This counter is
+    // keyed on the ACCOUNT and is durable (shared across replicas, survives deploys).
+    //
+    // The check runs before the lookup and the message is the generic sign-in error, so
+    // "locked" and "wrong password" stay indistinguishable — a lockout that announces
+    // itself is an enumeration oracle in its own right.
+    const priorFailures = await assertSignInAttemptsRemaining(email);
+
+    const user = await this.getUserByEmailOrNull(email);
 
     // Always run a password verification — against a dummy hash when the account does not exist —
     // so a non-existent email and a wrong password cost the same and fail with the same 401. This
@@ -1321,8 +1364,13 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     // returned faster (no argon2), distinguishing registered emails despite the generic message.
     const valid = await verifyPasswordConstantTime(input.password, user?.password);
     if (!user || !valid) {
+      await recordFailedSignIn(email);
       throw new UnauthorizedError();
     }
+
+    // A correct password clears the counter, so an ordinary user who mistypes a few times
+    // then succeeds is never left locked out.
+    await clearSignInAttempts(email, priorFailures);
 
     // Checked before the verified/deletion branches: a deactivated account must not receive
     // "verify your email" guidance, and signing in must NOT auto-restore it (that shortcut is
@@ -1406,6 +1454,11 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       // Paused accounts (user-initiated) allow login so the owner can reactivate from settings
     }
 
+    // Closed beta: last check before a session exists, so an unapproved workspace never holds
+    // a token. Runs after the credential checks so it cannot be used to probe which
+    // organizations have signed up.
+    await assertTenantApprovedForSignIn(user.tenant_id ? String(user.tenant_id) : null);
+
     return this.createTokens({
       user_id: String(user.id),
       tenant_id: String(user.tenant_id),
@@ -1431,6 +1484,12 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       refresh_expires_at: null,
     };
 
+    // Closed beta: the workspace is built in full but held until pplCRM ops approves it
+    // (see modules/auth/tenant-approval.ts). While it is pending, signUp deliberately
+    // returns no session — the account exists, but nothing can sign into it yet.
+    const approval = { status: initialApprovalStatus(), ...mintApprovalToken() };
+    const approvalPending = approval.status === 'pending';
+
     // Anti-abuse: throwaway inboxes are the raw material of spam accounts. A real org signs up
     // with a mailbox it keeps; verification links also die with a temporary inbox anyway.
     if (isDisposableEmail(email)) {
@@ -1445,7 +1504,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       const password = await hashPassword(input.password);
 
       await this.tenants.transaction().execute(async (trx) => {
-        const tenant_id = await this.createTenant(trx, input.organization);
+        const tenant_id = await this.createTenant(trx, input.organization, approval);
         const user = await this.createUser(trx, tenant_id, password, email, input);
         const userId = String(user.id);
         const profile = await this.createProfile(trx, user.id, tenant_id, user.id);
@@ -1531,33 +1590,56 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
 
         const codeObj = await this.getRepo().addPasswordResetCode(user.id, trx);
         const verificationCode = codeObj?.password_reset_code;
+        // Verification is still worth doing while the workspace waits: by the time ops
+        // approves, the address is already confirmed and the owner can sign straight in.
+        const waitlistNote = approvalPending
+          ? `<p>pplCRM is in beta, so new workspaces are reviewed before they open. Verify your address now and we will email you as soon as yours is ready.</p>`
+          : '';
         await this.mailService.enqueueMail(
           {
             to: email,
             tenant_id,
             subject: 'Welcome to pplCRM! Verify your email address',
-            text: `Welcome to pplCRM! We need to verify your email address so you can use your pplCRM account. Verify it using this link: ${env.appUrl}/verify-email?code=${verificationCode}`,
+            text: `Welcome to pplCRM! We need to verify your email address so you can use your pplCRM account. Verify it using this link: ${env.appUrl}/verify-email?code=${verificationCode}${
+              approvalPending
+                ? '\n\npplCRM is in beta, so new workspaces are reviewed before they open. We will email you as soon as yours is ready.'
+                : ''
+            }`,
             html: `<h2>Verify your email address</h2>
 <p>Welcome to pplCRM! We need to verify your email address so you can use your pplCRM account. Click the button below to verify it:</p>
 <div class="btn-container">
   <a href="${env.appUrl}/verify-email?code=${verificationCode}" class="btn">Verify email address</a>
 </div>
+${waitlistNote}
 <p class="warning">For security, this link expires in 24 hours.</p>`,
           },
           trx,
         );
 
-        token = await this.createTokens(
-          {
-            user_id: profile.id,
-            tenant_id: user.tenant_id,
-            name: user.first_name,
-          },
-          trx,
-        );
+        if (approvalPending) {
+          // Enqueued in the same transaction as the tenant (transactional outbox): ops must
+          // never get an approve link for a signup that rolled back, and a signup must never
+          // land with nobody told to look at it.
+          await this.enqueueTenantApprovalRequest(trx, {
+            tenant_id,
+            token: approval.token,
+            organization: input.organization,
+            first_name: input.first_name,
+            email,
+          });
+        } else {
+          token = await this.createTokens(
+            {
+              user_id: profile.id,
+              tenant_id: user.tenant_id,
+              name: user.first_name,
+            },
+            trx,
+          );
+        }
       });
 
-      return token;
+      return { ...token, approval_pending: approvalPending };
     } catch (err) {
       if (err instanceof AppError) throw err;
       throw new InternalError('Something went wrong, please try again', undefined, { cause: err });
@@ -1568,7 +1650,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     const userId = String(id);
     const callerRole = auth.role;
 
-    if (callerRole === 'user' && userId !== auth.user_id) {
+    // Deny by default — anyone who is not an admin/owner may only edit themselves.
+    // This previously tested `=== 'user'`, so a null-role account could edit anyone.
+    if (!isPrivilegedRole(callerRole) && userId !== auth.user_id) {
       throw new ForbiddenError('You do not have permission to update other users.');
     }
 
@@ -1588,10 +1672,15 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       throw new BadRequestError('Deactivated accounts keep their role. Reactivate the account first.');
     }
 
-    if (callerRole === 'user') {
-      if (isRoleChange) {
-        throw new ForbiddenError('You do not have permission to change roles.');
-      }
+    // Deny by default — granting privilege is an admin/owner decision.
+    if (isRoleChange && !isPrivilegedRole(callerRole)) {
+      throw new ForbiddenError('You do not have permission to change roles.');
+    }
+
+    // A role, once set, must stay a real role: clearing it back to null would
+    // reintroduce the account that no permission check accounts for.
+    if (data.role !== undefined && !isAuthRole(data.role)) {
+      throw new BadRequestError('Choose a valid role.');
     }
 
     if (callerRole === 'admin') {
@@ -1635,7 +1724,8 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     }
     if (data.first_name !== undefined) row['first_name'] = data.first_name;
     if (data.last_name !== undefined) row['last_name'] = data.last_name ?? '';
-    if (data.role !== undefined) row['role'] = data.role ?? null;
+    // Validated as a real role above — never coalesce to null here.
+    if (data.role !== undefined) row['role'] = data.role;
     // Campaigns §15 — campaign assignment is an admin/owner decision; users never
     // reassign themselves (that would be self-service context switching).
     if (data.campaign_id !== undefined) {
@@ -1937,6 +2027,10 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       // Paused accounts (user-initiated) allow login so the owner can reactivate from settings
     }
 
+    // Same beta gate as signIn — 2FA is the second half of a sign-in, and this is where that
+    // path actually mints the session.
+    await assertTenantApprovedForSignIn(user.tenant_id ? String(user.tenant_id) : null);
+
     return this.createTokens({
       user_id: String(user.id),
       tenant_id: String(user.tenant_id),
@@ -1976,7 +2070,8 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         // Email change confirmation: restore role and clear pending state.
         // Invalidate all existing sessions — an old-email session token
         // should not remain valid after the address has been changed.
-        updateData['role'] = user.previous_role;
+        // previous_role is nullable; never restore a null role (see DEFAULT_AUTH_ROLE).
+        updateData['role'] = isAuthRole(user.previous_role) ? user.previous_role : DEFAULT_AUTH_ROLE;
         updateData['previous_email'] = null;
         updateData['previous_role'] = null;
         await trx.deleteFrom('sessions').where('user_id', '=', user.id).execute();
@@ -2049,9 +2144,17 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     return profile;
   }
 
-  private async createTenant(trx: Transaction<Models>, name: string) {
+  private async createTenant(trx: Transaction<Models>, name: string, approval: NewTenantApproval) {
     const slug = await this.generateTenantSlug(trx, name);
-    const row = { name, slug } as OperationDataType<'tenants', 'insert'>;
+    const row = {
+      name,
+      slug,
+      approval_status: approval.status,
+      approval_requested_at: new Date(),
+      // Only a workspace that still needs a decision carries a live ops link.
+      approval_token_hash: approval.status === 'pending' ? approval.tokenHash : null,
+      approved_at: approval.status === 'approved' ? new Date() : null,
+    } as OperationDataType<'tenants', 'insert'>;
     const tenantAddResult = await this.tenants.add({ row }, trx);
     if (!tenantAddResult) {
       throw new InternalError('Something went wrong, please try again');
@@ -2178,6 +2281,49 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     } catch (err) {
       throw new InternalError('Something went wrong, please try again', undefined, { cause: err });
     }
+  }
+
+  /**
+   * Tell pplCRM ops that a workspace is waiting to be let into the beta.
+   *
+   * Goes to the ops inbox, not to a tenant, so it carries no `tenant_id` and is classified
+   * 'account': it must never be withheld by the audience send-guard, and a bounce on our own
+   * inbox must not be attributed to (and pause) the tenant it happens to be about.
+   *
+   * Everything interpolated here — org name, first name, email — is attacker-chosen, so it is
+   * escaped. The one link is GET-only and merely renders the decision page; approving is a
+   * POST from that page, so a mail scanner prefetching the link cannot approve anyone.
+   */
+  private async enqueueTenantApprovalRequest(
+    trx: Transaction<Models>,
+    opts: { tenant_id: string; token: string; organization: string; first_name: string; email: string },
+  ) {
+    const reviewUrl = `${env.apiUrl}/api/tenant-approval/${opts.token}`;
+    const org = escapeHtml(opts.organization);
+    const name = escapeHtml(opts.first_name);
+    const mail = escapeHtml(opts.email);
+
+    await this.mailService.enqueueMail(
+      {
+        to: env.opsAlertEmail ?? env.postmarkFromEmail,
+        audience: 'account',
+        subject: `pplCRM beta signup: ${opts.organization}`,
+        text: `A new workspace is waiting for beta approval.\n\nOrganization: ${opts.organization}\nName: ${opts.first_name}\nEmail: ${opts.email}\nTenant: ${opts.tenant_id}\n\nApprove or decline: ${reviewUrl}`,
+        html: `<h2>New beta signup</h2>
+<p>A new workspace signed up and is waiting for approval. Nobody can sign into it until you decide.</p>
+<p>
+  <strong>Organization:</strong> ${org}<br />
+  <strong>Name:</strong> ${name}<br />
+  <strong>Email:</strong> ${mail}<br />
+  <strong>Tenant:</strong> ${escapeHtml(opts.tenant_id)}
+</p>
+<div class="btn-container">
+  <a href="${reviewUrl}" class="btn">Review this signup</a>
+</div>
+<p class="warning">This link works once. Approving emails the owner that their workspace is ready.</p>`,
+      },
+      trx,
+    );
   }
 
   /** The invitation email — initial invite and admin resend share the copy. */

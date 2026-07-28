@@ -11,6 +11,7 @@ import { createLoadingGate } from '@uxcommon/loading-gate';
 import { TagsService } from '@experiences/tags/services/tags-service';
 import { AddTagDialog } from './add-tag';
 import { TagAdminActions, type TagAdminRow } from './tag-admin-actions';
+import { TagsIssuesNav } from './tags-issues-nav';
 
 const UNUSED_DAYS = 90;
 const UNUSED_MS = UNUSED_DAYS * 24 * 60 * 60 * 1000;
@@ -23,7 +24,7 @@ const UNUSED_MS = UNUSED_DAYS * 24 * 60 * 60 * 1000;
  */
 @Component({
   selector: 'pc-tags-admin',
-  imports: [Icon, RouterLink, TagItem, AddTagDialog, Table, RowActions, GridHeaderComponent],
+  imports: [Icon, RouterLink, TagItem, AddTagDialog, Table, RowActions, GridHeaderComponent, TagsIssuesNav],
   templateUrl: './tags-admin.html',
 })
 export class TagsAdmin implements OnInit {

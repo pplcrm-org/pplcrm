@@ -15,6 +15,12 @@ import { trpcRouter } from './app/modules/trpc';
 import { createContext } from './context';
 import { env } from './env';
 
+/**
+ * Webhook paths whose body must reach the handler unparsed, because the signature is
+ * computed over the exact bytes. Exact matches only — see the content-type parser below.
+ */
+const RAW_BODY_WEBHOOK_PATHS = new Set(['/api/billing/webhook', '/api/donations/webhook', '/api/newsletters/webhook']);
+
 export class FastifyServer {
   private readonly server;
 
@@ -40,6 +46,11 @@ export class FastifyServer {
         maxParamLength: 1024,
       },
       exposeHeadRoutes: false,
+      // Explicit rather than inherited (finding M2). Fastify's default happens to be 1 MiB,
+      // and CSV imports were bounded only by that accident — `rows` arrays carry no .max(),
+      // so raising this for any unrelated reason would silently open an unbounded import.
+      // Keep the two facts together: if this grows, cap the import arrays first.
+      bodyLimit: 1 * 1024 * 1024,
     });
 
     // Report unhandled route errors to Sentry (no-op when SENTRY_DSN is unset — see instrument.ts).
@@ -68,17 +79,23 @@ export class FastifyServer {
     this.server.register(multipart, {
       limits: {
         fileSize: 50 * 1024 * 1024, // 50MB
+        // Bound the shape of the upload too, not just each file's size: without these a
+        // single request could carry thousands of parts and be parsed before any handler
+        // sees it (finding M2).
+        files: 10,
+        fields: 50,
+        parts: 100,
       },
     });
     this.server.register(jsendPlugin);
 
     // Register a content type parser for application/json that keeps raw body if path is webhook
     this.server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
-      if (
-        req.url.includes('/billing/webhook') ||
-        req.url.includes('/donations/webhook') ||
-        req.url.includes('/newsletters/webhook')
-      ) {
+      // Match the PATH exactly. This used to be `req.url.includes(...)`, so any request
+      // whose URL merely contained the string (a query parameter, a longer path) skipped
+      // JSON parsing and was handed the raw body (finding M13).
+      const path = req.url.split('?')[0]?.replace(/\/+$/, '') ?? '';
+      if (RAW_BODY_WEBHOOK_PATHS.has(path)) {
         done(null, body);
       } else {
         try {

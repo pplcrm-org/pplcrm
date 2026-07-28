@@ -116,6 +116,7 @@ apps/
               yard-sign-standing.ts
           donations/
             ui/
+              donation-tabs.ts
               donations-grid.html
               donations-grid.ts
               pledges-grid.html
@@ -366,6 +367,7 @@ apps/
               tag-palette.service.ts
               tags-admin.html
               tags-admin.ts
+              tags-issues-nav.ts
               tags.ts
           tasks/
             services/
@@ -473,6 +475,7 @@ apps/
           bug-report-dialog.service.ts
           campaign-context.service.ts
           command-palette.service.ts
+          connectivity.service.ts
           error.service.ts
           fullscreen.service.ts
           global-error-handler.ts
@@ -547,6 +550,7 @@ apps/
             resolve-avatar.pipe.ts
           services/
             date-format.service.ts
+          public-page-meta.ts
           public-pages.ts
         app.config.ts
         app.routes.ts
@@ -555,6 +559,7 @@ apps/
         environment-token.ts
       assets/
         .gitkeep
+        bg.webp
       environments/
         environment.prod.ts
         environment.ts

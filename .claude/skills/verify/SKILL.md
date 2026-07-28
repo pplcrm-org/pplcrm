@@ -39,12 +39,30 @@ await page.addInitScript(() => {
    same timestamp as the email so a later run can reconstruct it.
 2. Signup lands on `/signin?verificationPending=true` — email verification blocks sign-in.
    Flip it in the dev DB (table is `authusers`, not `users`):
+
    ```bash
    psql -h localhost -U pplcrm_owner -d pplcrm \
      -c "UPDATE authusers SET verified = true WHERE email = '<the throwaway email>';"
    ```
+
    DB settings live in repo-root `.env.development` (`DB_NAME=pplcrm`, local trust auth).
    (Signup sometimes auto-signs-in straight to the dashboard instead — handle both.)
+
+   **Trap — closed-beta approval gate**: new tenants land in `approval_status = 'pending'`
+   and **no sign-in path will issue a session** (password, 2FA, and passkey all refuse).
+   Signup redirects to `/signin?approvalPending=true` and shows a "Waiting for approval"
+   panel instead of the password box. Two ways past it, both fine for a drive:
+   - Set `AUTO_APPROVE_TENANTS=true` in the backend's environment before starting the dev
+     server, so signups are approved on creation. This is the intended dev setting.
+   - Or approve the tenant you just made:
+     ```bash
+     psql -h localhost -U pplcrm_owner -d pplcrm \
+       -c "UPDATE tenants SET approval_status = 'approved', approved_at = now(), \
+           approval_token_hash = NULL WHERE id = <n>;"
+     ```
+     Reused throwaway tenants from earlier runs are already approved, so this only bites on a
+     fresh signup. See `apps/backend/src/app/modules/auth/tenant-approval.ts`.
+
 3. **Sign-in is two-step**: fill email → click **Continue** → password field appears →
    click **Sign in**. When the email is remembered, the password step shows immediately —
    check for an existing `input[type="password"]` before hunting for the email field.

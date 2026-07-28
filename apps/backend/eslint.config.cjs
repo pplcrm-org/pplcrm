@@ -62,7 +62,13 @@ module.exports = [
           // made user_id nullable, so "keyed by user_id" no longer held — these hold OAuth
           // secrets and must be tenant-scoped). Adding a table here is a security decision:
           // prove every current and future query on it is safe cross-tenant, not just quiet.
-          ignoreTables: ['authusers', 'sessions', 'tenants'],
+          //
+          // Added 2026-07-27: `rate_limits` — abuse counters, not tenant data. Its keys are
+          // opaque, caller-namespaced strings covering pre-auth subjects (an IP, an email
+          // address) as well as tenants, so there is no tenant_id to scope by and the limiter
+          // deliberately runs outside any tenant context. Every row is write-only-ish state
+          // that expires; none of it is readable business data.
+          ignoreTables: ['authusers', 'sessions', 'tenants', 'rate_limits'],
         },
       ],
     },

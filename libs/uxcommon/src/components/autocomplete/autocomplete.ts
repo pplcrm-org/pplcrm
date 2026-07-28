@@ -21,7 +21,7 @@ import { debounce } from '../../../../common/src';
       />
     </div>
     @if (matches().length && !hideAutoComplete()) {
-      <ul class="w-full rounded-none bordered card shadow-lg text-gray-500 font-light">
+      <ul class="w-full rounded-none bordered card shadow-lg text-base-content/60">
         @for (match of matches(); track match) {
           <li class="tet-xs cursor-pointer hover:bg-gray-200 pl-4" (click)="reset(match)">
             {{ match.charAt(0).toUpperCase() + match.slice(1) }}

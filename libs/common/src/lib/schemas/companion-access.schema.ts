@@ -93,4 +93,10 @@ export interface CompanionVolunteerRow {
   approved_at: string | null;
   approved_by_name: string | null;
   created_at: string;
+  /**
+   * Per-volunteer override for `app.canvass_volunteer_roam`; null = follow the
+   * workspace setting. Lets one person be pinned to their assigned turfs (or trusted
+   * to roam) without changing the policy for everyone.
+   */
+  can_roam: boolean | null;
 }

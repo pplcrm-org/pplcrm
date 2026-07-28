@@ -156,7 +156,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
           '**App**: how the volunteer-facing apps behave, including whether volunteer route links expire after 30 days. Expiry is the secure default (a forwarded or long-lost link goes dead on its own), but you can turn it off if your delivery routes run longer. Volunteers still verify a code and need a one-time approval either way.',
           '**Storage**: your plan quota, live usage, and the files taking up the most space.',
           '**Billing**: your plan, live usage, and payment details.',
-          '**API keys**: the workspace API key for server-side integrations (submitting forms, RSVPs, and volunteer signups from your own backend, or connecting Zapier). Shown once at generation; regenerating invalidates the old key.',
+          '**API keys**: workspace API keys for server-side integrations (submitting forms, RSVPs, and volunteer signups from your own backend, or connecting Zapier). Grassroots and above. Each key is shown once, at creation. A workspace can hold two at once so you can rotate without downtime; revoking one takes effect immediately.',
           '**Account**: pause your organization account, or permanently delete it and all its data.',
         ],
       },
@@ -169,7 +169,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         kind: 'list',
         items: [
           '**Free**: $0 forever. Up to 1,000 emailable subscribers, 2,000 emails a month, 2 staff seats, and 1 GB of storage. Includes the full people CRM and newsletters. No companion volunteers.',
-          '**Grassroots**: starts at $29 a month for up to 1,000 emailable subscribers, then rises in steps as your list grows, up to $359 a month at its 100,000-subscriber ceiling. Adds web forms, donations, automations, lists, and volunteer management (teams and events).',
+          '**Grassroots**: starts at $29 a month for up to 1,000 emailable subscribers, then rises in steps as your list grows, up to $359 a month at its 100,000-subscriber ceiling. Adds web forms, donations, automations, lists, volunteer management (teams and events), and API access with 300+ integrations.',
           '**Movement**: starts at $55 a month for up to 1,000 emailable subscribers, then rises in steps up to $665 a month at its 200,000-subscriber ceiling. Adds the canvassing and deliveries companion apps with unlimited companion volunteers: turf cutting, walk lists and routes, field reports, yard signs, and route optimization, plus priority support.',
           '**Enterprise**: for federations, parties, and multi-office operations with custom needs. Pricing is negotiated directly. Reach out from the [Billing](/workspace/billing) page.',
         ],

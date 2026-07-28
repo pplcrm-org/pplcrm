@@ -47,6 +47,9 @@ function renewAuthToken() {
   // The refresh token arrives via the HttpOnly cookie, not the body (SECURITY-REVIEW 2.1). Rotate
   // it, hand back only the new access token, and re-set the refreshed cookie.
   return publicProcedure.mutation(async ({ ctx }) => {
+    // Was entirely unthrottled (finding M8). Generous — a legitimate client refreshes a
+    // few times an hour — but not unbounded.
+    checkRateLimit(`${ctx.req?.ip ?? 'unknown'}:renewAuthToken`, 60, MIN15);
     const refreshToken = getRefreshTokenFromCookie(ctx.req);
     const result = await controller.renewAuthToken(refreshToken);
     setRefreshCookie(ctx.res, result.refresh_token, result.refresh_expires_at);
@@ -68,6 +71,10 @@ function sendPasswordResetEmail() {
     .mutation(({ input, ctx }) => {
       const ip = ctx.req?.ip ?? 'unknown';
       checkRateLimit(`${ip}:sendPasswordResetEmail`, 3, HOUR1);
+      // Per-EMAIL as well as per-IP (finding M8): the IP limit alone let an attacker
+      // rotating source addresses mail-bomb one victim. resendVerificationEmail already
+      // limited both axes; this one did not.
+      checkRateLimit(`email:${input.email.toLowerCase()}:sendPasswordResetEmail`, 3, HOUR1);
       return controller.sendPasswordResetEmail(input.email);
     });
 }
@@ -196,10 +203,22 @@ function signOut() {
 function signUp() {
   return publicProcedure.input(signUpInputObj).mutation(async ({ input, ctx }) => {
     const ip = ctx.req?.ip ?? 'unknown';
+    // ACCEPTED RISK (finding M7): signUp answers "this email already has an account",
+    // which is an enumeration oracle. Kept deliberately — silently accepting a duplicate
+    // signup, or refusing without saying why, is worse for someone who simply forgot they
+    // had an account. What is not acceptable is sweeping the oracle across a list, so the
+    // per-IP limit is joined by a per-address one.
+    checkRateLimit(`email:${input.email.toLowerCase()}:signUp`, 3, HOUR1);
     checkRateLimit(`${ip}:signUp`, 5, HOUR1);
     const result = await controller.signUp(input);
+    // Closed beta: a workspace awaiting approval gets no session at all, so there is no
+    // refresh cookie to set and no auth token to hand back — just the flag the signup page
+    // uses to send the user to the waitlist screen.
+    if (result.approval_pending) {
+      return { auth_token: '', approval_pending: true };
+    }
     setRefreshCookie(ctx.res, result.refresh_token, result.refresh_expires_at);
-    return { auth_token: result.auth_token };
+    return { auth_token: result.auth_token, approval_pending: false };
   });
 }
 
@@ -247,12 +266,21 @@ function verifyPasskeyRegistration() {
 }
 
 function passkeyAuthenticationOptions() {
-  return publicProcedure.query(() => passkeyController.getAuthenticationOptions());
+  return publicProcedure.query(({ ctx }) => {
+    // Mints a WebAuthn challenge; was unthrottled (finding M8).
+    checkRateLimit(`${ctx.req?.ip ?? 'unknown'}:passkeyAuthOptions`, 30, MIN15);
+    return passkeyController.getAuthenticationOptions();
+  });
 }
 
 function checkEmail() {
   return publicProcedure.input(z.object({ email: z.string().trim().email() })).query(({ input, ctx }) => {
     const ip = ctx.req?.ip ?? 'unknown';
+    // ACCEPTED RISK (finding M7): a `true` here reveals that the address exists AND has a
+    // passkey (an unknown address and a password-only account both return false). The
+    // sign-in page needs it to offer passkey authentication. Bounded on both axes so it
+    // cannot be swept across a list.
+    checkRateLimit(`email:${input.email.toLowerCase()}:checkEmail`, 10, MIN15);
     checkRateLimit(`${ip}:checkEmail`, 20, MIN15);
     return passkeyController.checkEmailPasskeys(input.email);
   });

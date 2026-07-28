@@ -62,17 +62,54 @@ export const oldAdvancedFilterModelSchema = z.object({
   ),
 });
 
+/**
+ * Hard ceiling on how many rows one list request may ask for, and the default the repo applies
+ * when a request derives no limit at all. Without this, `getAll` with no paging fields selected
+ * every row in the tenant into memory — a request-sized denial of service on any large tenant.
+ * Generous on purpose: real grid pages are in the tens, and the largest legitimate consumer
+ * (an inline CSV export) sets its own explicit limit and refuses past 50k rather than truncating.
+ */
+export const MAX_PAGE_SIZE = 5000;
+
+/**
+ * Ceiling on a bulk-action id list (delete these, archive those, assign this tag to them).
+ * These become `where('id', 'in', ids)`, so an unbounded array is both a huge query and, for
+ * destructive actions, an unbounded amount of work behind one request. 2000 matches the cap
+ * already used by the duplicate-email check and is far above any real selection.
+ */
+export const MAX_BULK_IDS = 2000;
+
+/**
+ * Rows accepted in one CSV/bulk import call (finding M2).
+ *
+ * Imports were bounded only by Fastify's default 1 MiB body limit — an accident, not a
+ * decision, so raising that limit for any unrelated reason would silently have opened an
+ * unbounded import. This states the real intent; the UI chunks larger files.
+ */
+export const MAX_IMPORT_ROWS = 5000;
+
+/** A row index/count: a non-negative integer, never a float or a negative that reaches Postgres. */
+const rowCountSchema = z.number().int().min(0).max(MAX_PAGE_SIZE);
+/**
+ * An offset can legitimately exceed one page's worth of rows, so it is bounded separately —
+ * but it is still bounded (finding M13). Unbounded, `offset: 999999999` reached Postgres as
+ * a deep OFFSET scan the planner must walk row by row. Ten million rows is far past any real
+ * tenant's grid and still cheap to refuse.
+ */
+const MAX_ROW_OFFSET = 10_000_000;
+const rowOffsetSchema = z.number().int().min(0).max(MAX_ROW_OFFSET);
+
 export const getAllOptions = z
   .object({
     searchStr: z.string().optional(),
-    startRow: z.number().optional(),
-    endRow: z.number().optional(),
+    startRow: rowOffsetSchema.optional(),
+    endRow: rowOffsetSchema.optional(),
     sortModel: z.array(sortModelItem).optional(),
     filterModel: z.record(z.string(), z.unknown()).optional(),
     includeArchived: z.boolean().optional(),
     columns: z.array(z.string()).optional(),
-    limit: z.number().optional(),
-    offset: z.number().optional(),
+    limit: rowCountSchema.optional(),
+    offset: rowOffsetSchema.optional(),
     orderBy: z.array(z.string()).optional(),
     groupBy: z.array(z.string()).optional(),
     tags: z.array(z.string()).optional(),

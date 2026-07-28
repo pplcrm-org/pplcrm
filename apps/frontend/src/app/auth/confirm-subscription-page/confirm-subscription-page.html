@@ -10,7 +10,7 @@
       <pc-icon [size]="6" name="check-circle" />
     </div>
     <div class="space-y-2">
-      <h2 class="text-xl font-bold tracking-tight text-neutral-100">Subscription Confirmed!</h2>
+      <h2 class="text-xl font-bold tracking-tight text-neutral-100">Subscription confirmed</h2>
       <p class="text-sm text-neutral-300">
         Thank you for confirming. You will now receive our newsletters. You can close this window.
       </p>
@@ -22,16 +22,9 @@
       <pc-icon [size]="6" name="exclamation-circle" />
     </div>
     <div class="space-y-2">
-      <h2 class="text-xl font-bold tracking-tight text-neutral-100">Confirmation Failed</h2>
+      <h2 class="text-xl font-bold tracking-tight text-neutral-100">Confirmation failed</h2>
       <p class="text-sm text-neutral-300">{{ errorMessage() || 'The confirmation link expired or is invalid.' }}</p>
     </div>
   </div>
   } } }
-
-  <div class="text-center text-xs mt-6 border-t border-neutral-800 pt-4">
-    <span class="text-neutral-400">
-      Copyright © 2026
-      <a href="" class="link link-hover">PplCRM</a>
-    </span>
-  </div>
 </pc-auth-layout>

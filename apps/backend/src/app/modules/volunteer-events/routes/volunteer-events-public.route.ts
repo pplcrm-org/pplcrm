@@ -4,8 +4,14 @@ import { TRPCError } from '@trpc/server';
 import { VolunteerEventsController } from '../controller';
 import { resolveTenantById, resolveTenantFromRequest } from '../../../lib/public-tenant';
 import { checkKeyedSubmissionRateLimit, tenantIdFromOptionalApiKey } from '../../../lib/validate-api-key';
+import { checkRateLimit } from '../../../lib/rate-limiter';
+import { AppError } from '../../../errors/app-errors';
 
 const ctrl = new VolunteerEventsController();
+
+/** Read-only config fetches: high enough that a human refreshing never notices. */
+const PUBLIC_READ_MAX = 60;
+const PUBLIC_READ_WINDOW_MS = 60_000;
 
 function getStatusFromError(err: unknown): number {
   if (err instanceof TRPCError) {
@@ -24,6 +30,9 @@ function getStatusFromError(err: unknown): number {
         return 500;
     }
   }
+  // AppError carries `status`; Fastify/HTTP errors carry `statusCode`. Reading only the latter
+  // reported a thrown TooManyRequestsError as a 500.
+  if (err instanceof AppError) return err.status;
   const statusCode = (err as { statusCode?: unknown })?.statusCode;
   return typeof statusCode === 'number' ? statusCode : 500;
 }
@@ -38,6 +47,7 @@ const volunteerEventsPublicRoute: FastifyPluginCallback = (fastify, _, done) => 
   // Upcoming public volunteer events for the tenant's /volunteer listing page.
   fastify.get('/org', async (req: FastifyRequest, reply) => {
     try {
+      checkRateLimit(`public-volunteer-listing:${req.ip}`, PUBLIC_READ_MAX, PUBLIC_READ_WINDOW_MS);
       const tenant = await resolveTenantFromRequest(req);
       if (!tenant) {
         return reply.status(404).send({ error: 'Organization not found.' });
@@ -54,6 +64,7 @@ const volunteerEventsPublicRoute: FastifyPluginCallback = (fastify, _, done) => 
   fastify.get('/v/:slug', async (req: FastifyRequest<{ Params: { slug: string } }>, reply) => {
     const { slug } = req.params;
     try {
+      checkRateLimit(`public-volunteer-event:${req.ip}`, PUBLIC_READ_MAX, PUBLIC_READ_WINDOW_MS);
       const tenant = await resolveTenantFromRequest(req);
       if (!tenant) {
         return reply.status(404).send({ error: 'Event not found.' });

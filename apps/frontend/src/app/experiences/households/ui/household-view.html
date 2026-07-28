@@ -80,7 +80,7 @@
           >
             <pc-icon name="map-pin" [size]="8" class="mb-1 text-base-content/20"></pc-icon>
             <h4 class="text-sm font-semibold text-base-content/60">No pin yet</h4>
-            <p class="max-w-[220px] text-xs font-light leading-snug">
+            <p class="max-w-[220px] text-xs leading-snug">
               The map pin appears once the address verifies. It geocodes in the background.
             </p>
           </div>
@@ -109,7 +109,7 @@
           </div>
           <div class="flex flex-col gap-1 py-2 last:pb-0">
             <dt class="text-base-content/50">Grouping</dt>
-            <dd class="text-sm font-light leading-relaxed text-base-content/70">
+            <dd class="text-sm leading-relaxed text-base-content/70">
               By address: edit a member’s address and the household follows.
             </dd>
           </div>
@@ -135,7 +135,7 @@
       <pc-card>
         <h3 class="mb-2 block pc-eyebrow">Door notes</h3>
         @if (h.notes) {
-        <p class="whitespace-pre-line text-sm font-light leading-relaxed text-base-content/80">{{ h.notes }}</p>
+        <p class="whitespace-pre-line text-sm leading-relaxed text-base-content/80">{{ h.notes }}</p>
         } @else {
         <pc-empty-state
           icon="document-text"

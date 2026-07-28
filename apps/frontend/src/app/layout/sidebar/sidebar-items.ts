@@ -2,6 +2,12 @@ import type { PcIconNameType } from '@icons/icons.index';
 
 export interface ISidebarItem {
   adminOnly?: boolean;
+  /**
+   * Sibling routes that also light this entry, for a section whose halves are separate
+   * top-level routes rather than one route's children (Tags & issues = `/tags` + `/issues`).
+   * Matched the same way as `route` — exactly, or as a path prefix.
+   */
+  alsoActiveFor?: string[];
   /** Live numeric badge (e.g. Tasks' SLA-breach count, Duplicates' queue size). Populated at
    * runtime by Sidebar's `applyBadges` — never part of the static SidebarItems data below. */
   badgeCount?: number | null;
@@ -32,13 +38,19 @@ export interface ISidebarItem {
  * deeper routes keep their section lit (/people/123 keeps People active); `pathMatchExact`
  * items (Dashboard) must match exactly. Query string and fragment are ignored.
  */
-export function isSidebarRouteActive(url: string, nav: Pick<ISidebarItem, 'pathMatchExact' | 'route'>): boolean {
+export function isSidebarRouteActive(
+  url: string,
+  nav: Pick<ISidebarItem, 'alsoActiveFor' | 'pathMatchExact' | 'route'>,
+): boolean {
   const route = nav.route;
   if (!route) return false;
   const extrasIndex = url.search(/[?#]/);
   const path = extrasIndex === -1 ? url : url.slice(0, extrasIndex);
-  if (nav.pathMatchExact || route === '/') return path === route;
-  return path === route || path.startsWith(`${route}/`);
+  const matches = (candidate: string): boolean =>
+    nav.pathMatchExact || candidate === '/'
+      ? path === candidate
+      : path === candidate || path.startsWith(`${candidate}/`);
+  return matches(route) || (nav.alsoActiveFor?.some(matches) ?? false);
 }
 
 // Sidebar IA follows the North Star module map (spec §0). Section order and
@@ -190,10 +202,18 @@ export const SidebarItems: ISidebarItem[] = [
     type: 'subheading',
     children: [
       {
+        // One entry, two halves of the shared vocabulary: the Tags and Issues pages carry a
+        // `pc-tags-issues-nav` tab row between them, so /issues keeps this entry lit.
+        name: 'Tags & issues',
+        route: '/tags',
+        alsoActiveFor: ['/issues'],
+        icon: 'label',
+      },
+      {
         // Wave 1E (spec §17): History page with Imports/Exports tabs, plus the
         // CSV import wizard at /imports/new. Exports' standalone entry folded
         // in here — see the redirect in dashboard.routes.ts.
-        name: 'Import / export',
+        name: 'Import & export',
         route: '/imports',
         icon: 'arrows-up-down-tray',
       },
@@ -204,16 +224,6 @@ export const SidebarItems: ISidebarItem[] = [
         shortcut: 'd',
         // Badge = merge-queue size (spec §9.3), via the tenant-scoped `duplicates.countQueue`
         // query. Count is fetched and applied in Sidebar (sidebar.ts) — see `badgeCount`.
-      },
-      {
-        name: 'Tags',
-        route: '/tags',
-        icon: 'label',
-      },
-      {
-        name: 'Issues',
-        route: '/issues',
-        icon: 'chat-bubble-bottom-center-text',
       },
     ],
   },

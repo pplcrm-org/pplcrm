@@ -6,6 +6,7 @@ import {
   emailSchema,
   getAllOptions,
   idSchema,
+  MAX_PAGE_SIZE,
   nameSchema,
   notesSchema,
   nullableEmailSchema,
@@ -143,5 +144,30 @@ describe('getAllOptions', () => {
 
   it('rejects malformed sort entries', () => {
     expect(getAllOptions.safeParse({ sortModel: [{ colId: 'name', sort: 'sideways' }] }).success).toBe(false);
+  });
+
+  // These four fields reach Kysely's .limit()/.offset() directly. Unbounded, a request could
+  // pull every row in the tenant into memory; unvalidated, a negative or a float reaches Postgres
+  // and errors out as a 500 rather than a 400.
+  describe('pagination bounds', () => {
+    it('accepts a realistic page', () => {
+      expect(getAllOptions.safeParse({ limit: 25, offset: 100 }).success).toBe(true);
+    });
+
+    it('rejects a limit above MAX_PAGE_SIZE', () => {
+      expect(getAllOptions.safeParse({ limit: MAX_PAGE_SIZE }).success).toBe(true);
+      expect(getAllOptions.safeParse({ limit: MAX_PAGE_SIZE + 1 }).success).toBe(false);
+    });
+
+    it('rejects negative and fractional row counts', () => {
+      for (const field of ['limit', 'offset', 'startRow', 'endRow'] as const) {
+        expect(getAllOptions.safeParse({ [field]: -1 }).success).toBe(false);
+        expect(getAllOptions.safeParse({ [field]: 1.5 }).success).toBe(false);
+      }
+    });
+
+    it('still allows a large offset, which is not a memory bound', () => {
+      expect(getAllOptions.safeParse({ offset: MAX_PAGE_SIZE * 10 }).success).toBe(true);
+    });
   });
 });

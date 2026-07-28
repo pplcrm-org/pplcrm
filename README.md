@@ -6,25 +6,36 @@
 
 ## 🧰 Tech Stack
 
-| Layer         | Tools                                                   |
-| ------------- | ------------------------------------------------------- |
-| Frontend      | Angular 22, Tailwind CSS v4, DaisyUI v5, AG Grid        |
-| Backend       | Fastify 5, tRPC, Kysely ORM, PostgreSQL                 |
-| Auth          | JWT via `fast-jwt`, refresh tokens, session tracking    |
-| Styling       | Tailwind CSS, DaisyUI, SCSS                             |
-| Emails        | Postmark for transactional and Sendgrid for newsletters |
-| Build Tooling | Nx Monorepo, Esbuild, SWC                               |
-| Testing       | Jest (unit), Playwright (e2e)                           |
+| Layer         | Tools                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| Frontend      | Angular 22 (zoneless, signals), Tailwind CSS v4, DaisyUI v5, a house-built `pc-datagrid`    |
+| Backend       | Fastify 5, tRPC, Kysely, PostgreSQL (row-level security)                                    |
+| Auth          | JWT via `fast-jwt`, refresh tokens, passkeys, session tracking                              |
+| Styling       | Tailwind CSS v4 — configured in CSS; there is no `tailwind.config.js` — plus DaisyUI        |
+| Emails        | Postmark for transactional (pplCRM → users), SendGrid for newsletters (tenant → supporters) |
+| Build Tooling | Nx monorepo, esbuild                                                                        |
+| Testing       | Vitest (unit + integration), Playwright (e2e)                                               |
+| Hosting       | Azure Container Apps (API) + Cloudflare Pages/Workers (web, edge)                           |
 
 ---
 
 ## 🗂️ Repository Structure
 
-- `apps/backend/` – Fastify API server with controllers, repositories, migrations, and routers.
-- `apps/frontend/` – Angular 22 SPA (standalone components & signals) styled with Tailwind CSS and DaisyUI.
-- `common/` – Shared TypeScript/Zod definitions and Kysely database models.
-- `docs/` – Project documentation including [Common UX Elements](docs/UX_COMMON.md) and [Feature Components](docs/COMPONENTS.md).
-- Root configs (`package.json`, `nx.json`, `tsconfig.base.json`) define dependencies, build targets, and TypeScript settings.
+Four deployables:
+
+- `apps/backend/` – Fastify API server: modules (controllers, repositories, routers), migrations, background-job worker.
+- `apps/frontend/` – the desktop CRM. Angular 22 SPA, standalone components and signals. Also serves the public form/event pages.
+- `apps/companion/` – the mobile volunteer apps (canvassing `/t/:token`, deliveries `/r/:token`). REST-only, no tRPC, works offline.
+- `apps/website/` – the marketing site (SSR), including the public docs and legal pages.
+
+Shared libraries:
+
+- `libs/common/` – shared TypeScript/Zod schemas and the Kysely database models. Import as `@common`.
+- `libs/uxcommon/` – generic shared UI controls and the DaisyUI theme. Import as `@uxcommon/*`.
+
+Never use relative paths across a package boundary; the aliases in `tsconfig.base.json` exist for
+this. Other docs: [Common UX Elements](docs/UX_COMMON.md), [Feature Components](docs/COMPONENTS.md),
+and the task-specific skills in `.claude/skills/`.
 
 ---
 
@@ -32,7 +43,7 @@
 
 - `main.ts` boots a `FastifyServer` instance (`fastify.server.ts`) that registers REST routes and mounts tRPC.
 - Controllers (`controllers/`) host business logic; repositories (`repositories/`) implement CRUD with Kysely.
-- Authentication uses `fast-jwt` for access/refresh tokens, `bcrypt` for password hashing, and session tracking.
+- Authentication uses `fast-jwt` for access/refresh tokens, **argon2** for password hashing, passkeys, and session tracking.
 - API is exposed via both tRPC routers and REST routes, organized by domain under `apps/backend/src/app/modules`.
 
 ---
@@ -41,7 +52,7 @@
 
 - Standalone Angular 22 components (`app.ts`, `app.routes.ts`) using signals and reactive forms.
 - `services/api/` provides tRPC client setup, token storage, and search utilities.
-- Feature modules in `components/` (persons, households, tags, etc.) with grids, detail pages, and services.
+- Feature modules live in `experiences/` (persons, households, tags, campaigns, canvassing, …), each with its grid, detail pages, and services.
 - Reusable UI elements live in `layout/` and `uxcommon/`, which now groups shared
   Angular pieces into `components/`, `directives/`, `pipes/`, and `services/`.
 
@@ -87,22 +98,32 @@ If you are setting up the project for the very first time, please follow the ste
 ## 🧪 Testing & Linting
 
 ```bash
-nx test backend
-nx test frontend
+npx nx run-many -t test -p frontend backend common uxcommon companion website
+npx nx e2e frontend-e2e
 
-nx e2e frontend-e2e
-
-nx lint backend
-nx lint frontend
+# Both lint passes are required and enforce DISJOINT rule sets — a green run of one
+# says nothing about the other. See .claude/skills/pplcrm-quality-gate.
+npx nx run-many -t lint -p frontend backend common uxcommon companion website
+npx eslint <changed-files> --report-unused-disable-directives-severity=off
 npx prettier --write .
 ```
+
+Backend specs run against a real PostgreSQL database (`*_test`), which the Vitest global setup
+migrates and truncates. Some share the queue and take an advisory lock — see
+`apps/backend/src/app/lib/test-utils/exclusive-db-lock.ts`.
 
 ---
 
 ## 📦 Deployment
 
-- Builds output to `dist/apps/backend`.
-- Deploy via Docker, PM2, or systemd behind a reverse proxy like Nginx or Caddy.
+Deployment is automated by `.github/workflows/deploy.yml`; there is nothing to run by hand.
+
+- Every PR runs `verify.yml` (lint → test → build → e2e); `main` is gated by the same workflow.
+- The API ships as a container image to **Azure Container Apps**, with database migrations run as
+  a job that gates the deploy.
+- The marketing site and the CRM ship to **Cloudflare Pages**; the edge routing (`go.pplcrm.com`,
+  `*.pplforms.com`) is Cloudflare Workers.
+- Builds output to `dist/apps/<project>`.
 
 ---
 

@@ -30,6 +30,7 @@ import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 import { Tags } from '@experiences/tags/ui/tags';
 import { injectRecordNavigation } from '@frontend/services/record-navigation.service';
 import { getUserErrorMessage } from '@frontend/services/api/user-message';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
 @Component({
   selector: 'pc-person-view',
@@ -51,6 +52,7 @@ import { getUserErrorMessage } from '@frontend/services/api/user-message';
     PersonCampaignFacts,
     PersonConnections,
     ModalShell,
+    EmptyState,
   ],
   templateUrl: './person-view.html',
 })

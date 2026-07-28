@@ -3,6 +3,7 @@ import type { AnyQB } from '../../../lib/base.repo';
 import { sql } from 'kysely';
 
 import type { Models, OperationDataType, TypeTenantId } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { MAX_PAGE_SIZE } from '../../../../../../../libs/common/src';
 import { isBlankAddress, isIncompleteAddress } from '../../../lib/address-normalize';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
@@ -385,8 +386,14 @@ export class HouseholdRepo extends BaseRepository<'households'> {
           return acc.orderBy(col as ReferenceExpression<Models, 'households'>, sort.sort);
         }, qb),
       )
-      .$if(typeof options.startRow === 'number' && typeof options.endRow === 'number', (qb) =>
-        qb.offset(options.startRow ?? 0).limit((options.endRow ?? 100) - (options.startRow ?? 0)),
+      // Always bounded. This row carries two correlated subqueries and a jsonb_agg of members,
+      // so an unpaged request (the old behaviour when startRow/endRow were absent) built that
+      // for every household in the tenant.
+      .offset(options.startRow ?? 0)
+      .limit(
+        typeof options.startRow === 'number' && typeof options.endRow === 'number'
+          ? Math.min(Math.max(0, options.endRow - options.startRow), MAX_PAGE_SIZE)
+          : MAX_PAGE_SIZE,
       )
       .execute();
 

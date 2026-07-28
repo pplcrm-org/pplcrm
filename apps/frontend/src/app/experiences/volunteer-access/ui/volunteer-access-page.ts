@@ -71,6 +71,36 @@ export class VolunteerAccessPage implements OnInit {
     return [row.email, row.mobile].filter(Boolean).join(' · ') || '—';
   }
 
+  /** Overrides the workspace roam setting for one person; 'default' hands them back to it. */
+  protected readonly roamOptions = [
+    { label: 'Workspace default', value: 'default' },
+    { label: 'Any turf in campaign', value: 'roam' },
+    { label: 'Only assigned turfs', value: 'assigned' },
+  ];
+
+  protected roamValue(row: CompanionVolunteerRow): string {
+    if (row.can_roam == null) return 'default';
+    return row.can_roam ? 'roam' : 'assigned';
+  }
+
+  protected async onRoamChange(row: CompanionVolunteerRow, event: Event): Promise<void> {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement)) return;
+    const canRoam = target.value === 'default' ? null : target.value === 'roam';
+    this.busyId.set(row.id);
+    try {
+      await this.svc.setRoam(row.id, canRoam);
+      this.alerts.showSuccess(`Updated turf access for ${this.displayName(row)}`);
+      this.flash(row.id);
+      await this.refresh();
+    } catch {
+      this.alerts.showError('Could not change turf access. Try again');
+      await this.refresh();
+    } finally {
+      this.busyId.set(null);
+    }
+  }
+
   protected displayName(row: CompanionVolunteerRow): string {
     return [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Unnamed volunteer';
   }

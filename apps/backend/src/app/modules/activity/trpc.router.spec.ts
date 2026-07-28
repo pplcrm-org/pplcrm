@@ -30,7 +30,7 @@ describe('ActivityRouter', () => {
     const result = await caller.getFeed({ searchStr: 'foo' });
 
     expect(spy).toHaveBeenCalledWith(
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
       { searchStr: 'foo' },
     );
     expect(result).toEqual(mockFeed);
@@ -75,7 +75,7 @@ describe('ActivityRouter', () => {
 
     expect(spy).toHaveBeenCalledWith(
       { tenant_id: '1', fileName: 'export.csv' },
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
     );
     expect(result).toEqual(mockResponse);
   });

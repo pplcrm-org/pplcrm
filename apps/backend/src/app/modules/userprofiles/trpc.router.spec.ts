@@ -26,14 +26,24 @@ describe('UserProfilesRouter', () => {
     mockAuthDb();
   });
 
-  it('should call getOneById on the controller with valid numeric ID', async () => {
-    const mockProfile = { id: '2', last_name: 'Smith' };
+  it('should call getOneById on the controller for the caller’s own profile', async () => {
+    const mockProfile = { id: '1', last_name: 'Smith' };
     const spy = vi.spyOn(UserProfilesController.prototype, 'getOneById').mockResolvedValue(mockProfile as any);
 
-    const result = await caller().getById('2');
+    // The caller is user_id '1', so this is their own profile.
+    const result = await caller().getById('1');
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', id: '2' });
+    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', id: '1' });
     expect(result).toEqual(mockProfile);
+  });
+
+  // SECURITY REGRESSION (M14) — this returned any tenant user's full profile row,
+  // including their stored `preferences`, to any authenticated caller (viewers included).
+  it('should refuse to return another user’s profile', async () => {
+    const spy = vi.spyOn(UserProfilesController.prototype, 'getOneById').mockResolvedValue({} as any);
+
+    await expect(caller().getById('2')).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('should reject a non-numeric profile id', async () => {

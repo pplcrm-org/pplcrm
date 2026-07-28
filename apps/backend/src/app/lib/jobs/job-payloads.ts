@@ -127,6 +127,9 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     text: z.string().nullish(),
     html: z.string().nullish(),
     tenant_id: idSchema.nullish(),
+    // Optional: rows enqueued before the anti-abuse gate landed carry no audience, and a
+    // required check would fail them at claim time. Missing = the restricted default.
+    audience: z.enum(['account', 'staff', 'contact']).nullish(),
     notificationSettingsLink: z.boolean().nullish(),
   }),
   z.object({
@@ -139,8 +142,23 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     email: z.string(),
     firstName: z.string().nullish(),
     confirmUrl: z.string(),
+    // The enqueue site already sends this; it was simply not declared, so the handler
+    // could not attribute the message to a tenant (see the C5 attribution note).
+    // Optional so rows enqueued before this landed still parse at claim time.
+    tenantId: idSchema.nullish(),
   }),
   z.object({ type: z.literal('check_due_tasks') }),
+  // @mentions in a task/email comment -> in-app notification + email, per mentioned user's
+  // preferences. Queued rather than run inline: processMentions sends SMTP, so awaiting it would
+  // put mail latency on the comment request, and firing it detached lost every mention still in
+  // flight when the process shut down.
+  z.object({
+    type: z.literal('process_mentions'),
+    tenant_id: idSchema,
+    commentText: z.string(),
+    commentLink: z.string(),
+    authorId: idSchema,
+  }),
   // Ops watchdog: cron that digests failed jobs/webhooks + queue backlog to the ops email and
   // writes the dead-man heartbeat behind GET /healthz/worker.
   z.object({ type: z.literal('ops_watchdog') }),

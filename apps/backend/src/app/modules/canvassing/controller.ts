@@ -7,6 +7,8 @@ import type {
   CompanionPerson,
   CompanionSurveyPrefill,
   CompanionSurveyType,
+  CompanionTurfChoice,
+  CompanionTurfChoices,
   CompanionTurfPayload,
   CutTurfsType,
   FieldReportRangeType,
@@ -19,8 +21,10 @@ import type {
 } from '../../../../../../libs/common/src';
 
 import { env } from '../../../env';
-import { BadRequestError, NotFoundError } from '../../errors/app-errors';
+import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resend-limit';
+import { BadRequestError, ForbiddenError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
+import { volunteerMayRoam } from '../../lib/canvass-roam-policy';
 import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
 import { publicOrgName } from '../../lib/public-tenant';
 import { CampaignPersonFactsRepo } from '../campaigns/repositories/campaign-person-facts.repo';
@@ -37,7 +41,7 @@ import {
   type DoorPoint,
 } from './lib/cutting-engine';
 import { TurfHouseholdsRepo, type CoverageDoorRow } from './repositories/turf-households.repo';
-import { TurfAssignmentsRepo, generateTurfToken } from './repositories/turf-assignments.repo';
+import { type TurfCanvasser, TurfAssignmentsRepo, generateTurfToken } from './repositories/turf-assignments.repo';
 import { TurfKnocksRepo, type FieldReport, type ResponseMix } from './repositories/turf-knocks.repo';
 import { TurfsRepo, type TurfRow } from './repositories/turfs.repo';
 
@@ -73,10 +77,24 @@ export interface TurfListItem {
   door_count: number;
   attempted: number;
   conversations: number;
-  team_id: string | null;
-  team_name: string | null;
-  token: string | null;
+  /** Everyone currently walking this turf. Several volunteers can share one turf. */
+  canvassers: TurfCanvasser[];
+  /** Whether any active companion link exists. The raw token is never returned (M5). */
+  has_link: boolean;
   last_activity_at: string | null;
+}
+
+/**
+ * What a companion data request has been authorized against, whether it arrived with a
+ * capability link or a device session. Structurally the useful subset of a resolved
+ * assignment, so both paths feed the same payload/ops code.
+ */
+interface CompanionContext {
+  tenant_id: string;
+  turf_id: string;
+  volunteer_person_id: string | null;
+  created_by: string;
+  expires_at: Date | null;
 }
 
 export interface FieldSummary {
@@ -135,6 +153,10 @@ const IN_FIELD_WINDOW_MS = 6 * 60 * 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const COMPANION_SOURCE = 'companion';
 
+/** Hard ceiling on a canvass companion link, matching the deliveries share-token TTL.
+ *  Re-assigning mints a fresh link, so this is not a limit on a real campaign. */
+const MAX_ASSIGNMENT_TTL_DAYS = 30;
+
 export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   private readonly turfHouseholds = new TurfHouseholdsRepo();
   private readonly assignments = new TurfAssignmentsRepo();
@@ -156,18 +178,20 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   // ------------------------------------------------------------- reads ------
 
   public async getTurfs(auth: IAuthKeyPayload): Promise<TurfListItem[]> {
-    const [rows, progress] = await Promise.all([
+    const [rows, progress, canvassers] = await Promise.all([
       this.turfsRepo().getTurfs(auth.tenant_id),
       this.knocks.getProgressByTenant(auth.tenant_id),
+      this.assignments.canvassersByTurf({ tenant_id: auth.tenant_id }),
     ]);
     return rows.map((r) => {
       const p = progress.get(r.id);
       const attempted = p?.attempted ?? 0;
       const lastAt = p?.last_knock_at ?? null;
+      const roster = canvassers.get(r.id) ?? [];
       return {
         id: r.id,
         name: r.name,
-        status: this.displayStatus(r, attempted, lastAt),
+        status: this.displayStatus(r, attempted, lastAt, roster.length > 0),
         list_id: r.list_id,
         list_name: r.list_name,
         ward: r.ward,
@@ -176,9 +200,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         door_count: r.door_count,
         attempted,
         conversations: p?.conversations ?? 0,
-        team_id: r.team_id,
-        team_name: r.team_name,
-        token: r.token,
+        canvassers: roster,
+        has_link: roster.length > 0,
         last_activity_at: lastAt ? lastAt.toISOString() : null,
       };
     });
@@ -403,8 +426,18 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     await this.turfsRepo()
       .transaction()
       .execute(async (trx) => {
-        await this.assignments.revokeForTurf(
-          { tenant_id: auth.tenant_id, turf_id: input.turf_id, user_id: auth.user_id },
+        // Retire only THIS volunteer's previous link on this turf, not everyone's:
+        // several volunteers can walk one turf together, so assigning a second
+        // person must add them to the roster rather than evict the first.
+        // Re-assigning the same person still rotates their token, because the raw
+        // value is hashed and cannot be re-displayed.
+        await this.assignments.revokeForVolunteer(
+          {
+            tenant_id: auth.tenant_id,
+            turf_id: input.turf_id,
+            volunteer_person_id: volunteerPersonId,
+            user_id: auth.user_id,
+          },
           trx,
         );
         await this.assignments.create(
@@ -428,6 +461,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           trx,
         );
         // Assignment sends the personal link — same transaction, so a rollback sends nothing.
+        // Capped like the deliveries re-send (H3): repeated assign/unassign of the same turf
+        // would otherwise be an unlimited SMS bomber aimed at the person's number.
+        await assertVolunteerLinkResendAllowed(auth.tenant_id, input.turf_id, person.mobile);
         sent = await notifyVolunteerOfLink(
           {
             tenant_id: auth.tenant_id,
@@ -457,21 +493,80 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     return { token, sent };
   }
 
+  /** The active roster for one turf — who is walking it right now. */
+  public async getTurfCanvassers(auth: IAuthKeyPayload, turfId: string): Promise<TurfCanvasser[]> {
+    const turf = await this.turfsRepo().getTurfCore({ tenant_id: auth.tenant_id, id: turfId });
+    if (!turf) throw new NotFoundError('Turf not found');
+    const byTurf = await this.assignments.canvassersByTurf({ tenant_id: auth.tenant_id, turf_id: turfId });
+    return byTurf.get(turfId) ?? [];
+  }
+
+  /**
+   * Take one volunteer off a turf, leaving the rest of the roster walking it.
+   *
+   * Their link stops resolving immediately. Knocks they already synced stay — the
+   * work happened, and `turf_knocks.canvasser_name` keeps crediting them.
+   */
+  public async removeVolunteerFromTurf(
+    auth: IAuthKeyPayload,
+    input: { turf_id: string; volunteer_person_id: string },
+  ): Promise<void> {
+    const turf = await this.turfsRepo().getTurfCore({ tenant_id: auth.tenant_id, id: input.turf_id });
+    if (!turf) throw new NotFoundError('Turf not found');
+
+    const roster = await this.assignments.canvassersByTurf({
+      tenant_id: auth.tenant_id,
+      turf_id: input.turf_id,
+    });
+    const onTurf = (roster.get(input.turf_id) ?? []).some((c) => c.person_id === input.volunteer_person_id);
+    if (!onTurf) throw new NotFoundError('That volunteer is not on this turf.');
+
+    await this.assignments.revokeForVolunteer({
+      tenant_id: auth.tenant_id,
+      turf_id: input.turf_id,
+      volunteer_person_id: input.volunteer_person_id,
+      user_id: auth.user_id,
+    });
+
+    await this.userActivity.log({
+      tenant_id: auth.tenant_id,
+      user_id: auth.user_id,
+      activity: 'update',
+      entity: 'turf',
+      entity_id: input.turf_id,
+      metadata: {
+        action: 'canvasser_removed',
+        volunteer_person_id: input.volunteer_person_id,
+        message: 'Removed a canvasser from the turf',
+      },
+    });
+  }
+
   /**
    * Link expiry = the campaign's end date when one exists (spec §2: "end of the
    * canvass window"), otherwise no hard expiry (revocation still applies).
    */
-  private async assignmentExpiry(tenant_id: string, campaign_id: string): Promise<Date | null> {
-    if (!campaign_id) return null;
+  /**
+   * When the volunteer's capability link stops working.
+   *
+   * SECURITY (M5): this returned null — meaning "never expires" — whenever the campaign
+   * had no end date, which is the common case for an ongoing office context. A bearer
+   * token that never expires is a permanent credential sitting in someone's SMS history.
+   * A campaign end date still wins when it is sooner; otherwise the link gets a ceiling.
+   */
+  private async assignmentExpiry(tenant_id: string, campaign_id: string): Promise<Date> {
+    const ceiling = new Date(Date.now() + MAX_ASSIGNMENT_TTL_DAYS * 24 * 60 * 60 * 1000);
+    if (!campaign_id) return ceiling;
     const campaign = await this.knocks.db
       .selectFrom('campaigns')
       .select(['enddate'])
       .where('tenant_id', '=', tenant_id)
       .where('id', '=', campaign_id)
       .executeTakeFirst();
-    if (!campaign?.enddate) return null;
+    if (!campaign?.enddate) return ceiling;
     const end = new Date(`${campaign.enddate}T23:59:59`);
-    return Number.isNaN(end.getTime()) || end <= new Date() ? null : end;
+    if (Number.isNaN(end.getTime()) || end <= new Date()) return ceiling;
+    return end < ceiling ? end : ceiling;
   }
 
   public async retireTurf(auth: IAuthKeyPayload, turfId: string): Promise<void> {
@@ -546,6 +641,22 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       tenant_id: assignment.tenant_id,
       volunteer_person_id: assignment.volunteer_person_id,
     });
+    return this.companionTurfPayload(assignment);
+  }
+
+  /**
+   * The same payload, reached by device session + turf id instead of a capability link.
+   *
+   * This is what lets a volunteer switch turfs. Turf tokens are hashed, so the ones they
+   * already hold can never be listed back to them — handing out links is a one-way door.
+   * Session-first sidesteps that: the session proves who they are, and an active
+   * assignment on the turf proves they belong on it.
+   */
+  public async getCompanionTurfBySession(sessionToken: string | null, turfId: string): Promise<CompanionTurfPayload> {
+    return this.companionTurfPayload(await this.assignmentForSession(sessionToken, turfId));
+  }
+
+  private async companionTurfPayload(assignment: CompanionContext): Promise<CompanionTurfPayload> {
     const tenant_id = assignment.tenant_id;
     const turf_id = assignment.turf_id;
 
@@ -610,6 +721,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
     return {
       campaign_name: campaign.name,
+      turf_id,
       turf_name: String(turf.name),
       canvasser_name: canvasserName,
       script: campaign.script,
@@ -617,6 +729,142 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       expires_at: assignment.expires_at ? assignment.expires_at.toISOString() : null,
       households,
     };
+  }
+
+  /**
+   * What this volunteer can walk: the turfs they are on, plus — only when they may
+   * roam — the unclaimed rest of their campaign.
+   *
+   * Occupied turfs are NOT filtered out of `available`. Joining a turf someone is
+   * already on is the group-canvassing case, so each carries its canvasser count and
+   * the volunteer decides.
+   */
+  public async getMyTurfs(sessionToken: string | null): Promise<CompanionTurfChoices> {
+    const session = await this.companionAccess.resolveSession(sessionToken);
+    const tenant_id = session.tenant_id;
+
+    const [mineIds, rows, progress, canvassers, mayRoam] = await Promise.all([
+      this.assignments.activeTurfIdsForVolunteer({ tenant_id, volunteer_person_id: session.person_id }),
+      this.turfsRepo().getTurfs(tenant_id),
+      this.knocks.getProgressByTenant(tenant_id),
+      this.assignments.canvassersByTurf({ tenant_id }),
+      volunteerMayRoam(this.knocks.db, { tenant_id, can_roam: session.can_roam }),
+    ]);
+
+    const mineSet = new Set(mineIds);
+    // A roaming volunteer stays inside the campaigns they already work in. With no
+    // assignment yet there is nothing to infer from, so the picker is empty until an
+    // organizer places them once — roaming widens a volunteer's reach, it does not
+    // bootstrap it.
+    const myCampaigns = new Set(rows.filter((r) => mineSet.has(r.id)).map((r) => String(r.campaign_id ?? '')));
+
+    const toChoice = (r: (typeof rows)[number]): CompanionTurfChoice => {
+      const p = progress.get(r.id);
+      return {
+        turf_id: r.id,
+        name: r.name,
+        ward: r.ward,
+        doors: r.door_count,
+        attempted: p?.attempted ?? 0,
+        canvassers: (canvassers.get(r.id) ?? []).length,
+        centroid_lat: r.centroid_lat,
+        centroid_lng: r.centroid_lng,
+      };
+    };
+
+    return {
+      may_roam: mayRoam,
+      mine: rows.filter((r) => mineSet.has(r.id)).map(toChoice),
+      available: mayRoam
+        ? rows
+            .filter((r) => !mineSet.has(r.id) && r.status !== 'retired')
+            .filter((r) => myCampaigns.has(String(r.campaign_id ?? '')))
+            .map(toChoice)
+        : [],
+    };
+  }
+
+  /**
+   * Self-claim a turf. Mints this volunteer's own assignment exactly as an organizer
+   * would, so everything downstream is identical to being placed by hand.
+   *
+   * Refused when the volunteer may not roam — enforced here, not merely hidden in the
+   * picker, because the endpoint is reachable directly.
+   */
+  public async claimTurf(sessionToken: string | null, turfId: string): Promise<{ turf_id: string }> {
+    const session = await this.companionAccess.resolveSession(sessionToken);
+    const tenant_id = session.tenant_id;
+
+    const existing = await this.assignments.findActiveForVolunteer({
+      tenant_id,
+      turf_id: turfId,
+      volunteer_person_id: session.person_id,
+    });
+    // Already on it — return success rather than an error. Two taps on a slow
+    // connection should not read as a failure.
+    if (existing) return { turf_id: turfId };
+
+    if (!(await volunteerMayRoam(this.knocks.db, { tenant_id, can_roam: session.can_roam }))) {
+      throw new ForbiddenError('Your organizer assigns turfs for this campaign.');
+    }
+
+    const turf = await this.turfsRepo().getTurfCore({ tenant_id, id: turfId });
+    if (!turf) throw new NotFoundError('Turf not found');
+    if (turf.status === 'retired') throw new BadRequestError('That turf has been retired.');
+
+    // Same campaign guard as the picker, so a guessed turf id cannot reach further
+    // than the list would have offered.
+    const mineIds = await this.assignments.activeTurfIdsForVolunteer({
+      tenant_id,
+      volunteer_person_id: session.person_id,
+    });
+    const all = await this.turfsRepo().getTurfs(tenant_id);
+    const myCampaigns = new Set(all.filter((r) => mineIds.includes(r.id)).map((r) => String(r.campaign_id ?? '')));
+    if (!myCampaigns.has(String(turf.campaign_id ?? ''))) {
+      throw new ForbiddenError('That turf belongs to another campaign.');
+    }
+
+    // A volunteer has no CRM account, so the responsible actor is the staff member who
+    // cut the turf — the same honest-attribution rule synced knocks follow (§22.7).
+    // Metadata records who actually did it and through what.
+    const actor = turf.createdby_id;
+    const token = generateTurfToken();
+    const expiresAt = await this.assignmentExpiry(tenant_id, String(turf.campaign_id ?? ''));
+    await this.assignments.transaction().execute(async (trx) => {
+      await this.assignments.create(
+        {
+          tenant_id,
+          turf_id: turfId,
+          team_id: null,
+          token,
+          user_id: actor,
+          volunteer_person_id: session.person_id,
+          expires_at: expiresAt,
+        },
+        trx,
+      );
+      await this.turfsRepo().update(
+        { tenant_id, id: turfId, row: { status: 'active', updatedby_id: actor, updated_at: new Date() } },
+        trx,
+      );
+    });
+
+    const volunteerName = await this.personFirstLast(tenant_id, session.person_id);
+    await this.userActivity.log({
+      tenant_id,
+      user_id: actor,
+      activity: 'assign',
+      entity: 'turf',
+      entity_id: turfId,
+      metadata: {
+        action: 'turf_self_claimed',
+        volunteer_person_id: session.person_id,
+        message: `${volunteerName} started on this turf`,
+        via: 'Canvass Companion',
+      },
+    });
+
+    return { turf_id: turfId };
   }
 
   /**
@@ -635,6 +883,22 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       tenant_id: assignment.tenant_id,
       volunteer_person_id: assignment.volunteer_person_id,
     });
+    return this.applyCompanionOps(assignment, ops);
+  }
+
+  /** Sync results for a turf reached by session + turf id (see `getCompanionTurfBySession`). */
+  public async postCompanionResultsBySession(
+    sessionToken: string | null,
+    turfId: string,
+    ops: CompanionOpType[],
+  ): Promise<{ acks: CompanionOpAck[] }> {
+    return this.applyCompanionOps(await this.assignmentForSession(sessionToken, turfId), ops);
+  }
+
+  private async applyCompanionOps(
+    assignment: CompanionContext,
+    ops: CompanionOpType[],
+  ): Promise<{ acks: CompanionOpAck[] }> {
     const tenant_id = assignment.tenant_id;
     const turf_id = assignment.turf_id;
 
@@ -966,6 +1230,27 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     return assignment;
   }
 
+  /**
+   * Authorize a session-first request against one turf.
+   *
+   * Two independent checks, and both matter: the session says who they are (and that an
+   * admin approved them), the active assignment says they belong on this turf. Roaming
+   * changes who may CREATE an assignment — never who may read one they do not have.
+   */
+  private async assignmentForSession(sessionToken: string | null, turfId: string): Promise<CompanionContext> {
+    const session = await this.companionAccess.resolveSession(sessionToken);
+    const mine = await this.assignments.findActiveForVolunteer({
+      tenant_id: session.tenant_id,
+      turf_id: turfId,
+      volunteer_person_id: session.person_id,
+    });
+    if (!mine) throw new NotFoundError('You are not on this turf.');
+    if (mine.expires_at && mine.expires_at < new Date()) {
+      throw new NotFoundError('This canvassing link is invalid or has been retired.');
+    }
+    return mine;
+  }
+
   /** A person op must target a resident of that door — a token can't reach further. */
   private async assertPersonInHousehold(
     trx: Transaction<Models>,
@@ -1173,7 +1458,12 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
   // ----------------------------------------------------------- helpers ------
 
-  private displayStatus(row: TurfRow, attempted: number, lastAt: Date | null): TurfDisplayStatus {
+  private displayStatus(
+    row: TurfRow,
+    attempted: number,
+    lastAt: Date | null,
+    hasCanvassers: boolean,
+  ): TurfDisplayStatus {
     switch (row.status) {
       case 'retired':
         return 'retired';
@@ -1182,7 +1472,11 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       case 'active': {
         if (row.door_count > 0 && attempted >= row.door_count) return 'complete';
         if (lastAt && Date.now() - lastAt.getTime() <= IN_FIELD_WINDOW_MS) return 'in_field';
-        return 'assigned';
+        // Volunteers can be removed from the roster one at a time, so an 'active'
+        // turf can end up with nobody on it. Reading that back as "assigned" would
+        // claim someone is walking it. Derive the truth from the roster instead of
+        // writing turfs.status on every removal.
+        return hasCanvassers ? 'assigned' : 'draft';
       }
       default: {
         // Any unexpected stored status is treated as assigned rather than thrown,

@@ -1,4 +1,4 @@
-import { folderIdSchema, idSchema, regularFolderIdSchema } from '../../../../../../libs/common/src';
+import { folderIdSchema, idSchema, regularFolderIdSchema, MAX_BULK_IDS } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 
 import { authProcedure, router } from '../../../trpc';
@@ -57,7 +57,12 @@ function deleteEmail() {
 
 function deleteEmails() {
   return authProcedure
-    .input(z.array(idSchema).min(1, 'At least one ID is required'))
+    .input(
+      z
+        .array(idSchema)
+        .min(1, 'At least one ID is required')
+        .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+    )
     .mutation(({ input, ctx }) => emails.deleteMany(ctx.auth.tenant_id, input, ctx.auth.user_id, ctx.auth.role));
 }
 
@@ -154,7 +159,7 @@ function hasAttachment() {
 
 function hasAttachmentByEmailIds() {
   return authProcedure
-    .input(z.array(idSchema))
+    .input(z.array(idSchema).max(MAX_BULK_IDS, 'Too many items selected for one action'))
     .query(({ input, ctx }) =>
       emails.hasAttachmentByEmailIds(ctx.auth.tenant_id, input, ctx.auth.user_id, ctx.auth.role),
     );
@@ -162,7 +167,7 @@ function hasAttachmentByEmailIds() {
 
 function restoreFromTrash() {
   return authProcedure
-    .input(z.array(idSchema))
+    .input(z.array(idSchema).max(MAX_BULK_IDS, 'Too many items selected for one action'))
     .mutation(({ input, ctx }) => emails.restoreFromTrash(ctx.auth.tenant_id, input, ctx.auth.user_id, ctx.auth.role));
 }
 

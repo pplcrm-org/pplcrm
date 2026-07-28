@@ -2,6 +2,7 @@ import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastif
 
 import { CompanionResultsObj } from '../../../../../../../libs/common/src';
 import { CanvassingController } from '../controller';
+import { isRateLimited } from '../../../lib/rate-limiter';
 
 /**
  * Public Canvass Companion API (§13.4 / COMPANION-APPS-PLAN.md §5 B3) — the
@@ -21,17 +22,9 @@ const controller = new CanvassingController();
 // Per-IP fixed-window rate limit (same shape as deliveries-public.route.ts).
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 120;
-const hits = new Map<string, { count: number; resetAt: number }>();
-
+/** Delegates to the shared limiter so these counters are swept instead of growing forever. */
 function rateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = hits.get(ip);
-  if (!entry || entry.resetAt < now) {
-    hits.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return false;
-  }
-  entry.count += 1;
-  return entry.count > RATE_MAX;
+  return isRateLimited(`canvass-public:${ip}`, RATE_MAX, RATE_WINDOW_MS);
 }
 
 /** Narrow an unknown thrown value to an HTTP status without leaking internals. */
@@ -78,6 +71,70 @@ const canvassPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     if (!parsed.success) return reply.status(400).send({ error: 'Invalid results payload.' });
     try {
       const result = await controller.postCompanionResults(String(token), sessionTokenOf(req), parsed.data.ops);
+      return reply.status(200).send(result);
+    } catch (err: unknown) {
+      fastify.log.error(err);
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to record these results.') });
+    }
+  });
+
+  // ---- session-first (no capability link) ----------------------------------
+  // The link bootstraps the device; from there the session identifies the volunteer
+  // and the turf id names the work. Turf tokens are hashed, so the turfs a volunteer
+  // already holds can never be listed back to them as links — these routes are how
+  // switching turfs is possible at all.
+
+  // Which turfs this volunteer can walk, and (when roaming is allowed) claim.
+  fastify.get('/my-turfs', async (req: FastifyRequest, reply: FastifyReply) => {
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    try {
+      return reply.status(200).send(await controller.getMyTurfs(sessionTokenOf(req)));
+    } catch (err: unknown) {
+      fastify.log.error(err);
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to load your turfs.') });
+    }
+  });
+
+  // Self-claim. Refused server-side when the volunteer may not roam — the picker
+  // hiding the option is a courtesy, not the control.
+  fastify.post('/claim', async (req: FastifyRequest, reply: FastifyReply) => {
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    const body = req.body as { turf_id?: unknown } | null;
+    const turfId = body?.turf_id;
+    if (typeof turfId !== 'string' || !turfId.trim()) {
+      return reply.status(400).send({ error: 'Pick a turf to start on.' });
+    }
+    try {
+      return reply.status(200).send(await controller.claimTurf(sessionTokenOf(req), turfId.trim()));
+    } catch (err: unknown) {
+      fastify.log.error(err);
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to start on that turf.') });
+    }
+  });
+
+  fastify.get('/turf/:turfId', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { turfId } = req.params as { turfId: string };
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    try {
+      const turf = await controller.getCompanionTurfBySession(sessionTokenOf(req), String(turfId));
+      return reply.status(200).send(turf);
+    } catch (err: unknown) {
+      fastify.log.error(err);
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to load this turf.') });
+    }
+  });
+
+  fastify.post('/turf/:turfId/results', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { turfId } = req.params as { turfId: string };
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    const parsed = CompanionResultsObj.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid results payload.' });
+    try {
+      const result = await controller.postCompanionResultsBySession(
+        sessionTokenOf(req),
+        String(turfId),
+        parsed.data.ops,
+      );
       return reply.status(200).send(result);
     } catch (err: unknown) {
       fastify.log.error(err);

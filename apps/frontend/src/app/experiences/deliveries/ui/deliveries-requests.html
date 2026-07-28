@@ -3,7 +3,9 @@
   <div class="flex flex-wrap items-center justify-end gap-3">
     <!-- Visible title lives in the navbar breadcrumb; keep an accessible heading only. -->
     <h1 class="sr-only">Delivery requests</h1>
-    <pc-deliveries-nav class="mr-auto" />
+    <!-- Surface switch (Requests / Routes) — the underline tab row, sharing this band with the
+         page action the way the People grid's tabs share theirs with the grid toolbar. -->
+    <pc-deliveries-nav class="flex-1" />
     <div class="flex items-center gap-2">
       <span
         class="tooltip-left"
@@ -18,7 +20,7 @@
     </div>
   </div>
 
-  <!-- Tabs with live counts (the standard pill tab bar) -->
+  <!-- Status filters for this surface, with live counts (the standard pill tab bar) -->
   <pc-tab-bar [tabs]="tabOptions()" [activeTab]="activeTab()" (activeTabChange)="setTab($event)" />
 
   <!-- Bulk selection bar -->

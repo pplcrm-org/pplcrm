@@ -20,6 +20,7 @@ import type {
 } from '../../../../../../libs/common/src';
 
 import { env } from '../../../env';
+import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resend-limit';
 import { BadRequestError, ConflictError, NotFoundError } from '../../errors/app-errors';
 import { geocodeAddress } from '../../lib/gis/geocode-address';
 import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
@@ -600,6 +601,12 @@ export class DeliveriesController {
       .where('id', '=', String(route.volunteer_person_id))
       .executeTakeFirst();
     if (!person) throw new BadRequestError('The assigned volunteer no longer exists. Assign another volunteer.');
+
+    // SECURITY (H3): this sends an SMS to whatever number is on the person record, with a
+    // tenant-authored org name as the prefix, and was previously unlimited — so it doubled
+    // as an SMS bomber aimed at any number, billed to the platform's Twilio account. Capped
+    // per route AND per destination number, mirroring the phone-verification limiter.
+    await assertVolunteerLinkResendAllowed(auth.tenant_id, routeId, person.mobile);
 
     const rawToken = randomBytes(32).toString('base64url');
     const url = `${env.companionUrl}/r/${rawToken}`;

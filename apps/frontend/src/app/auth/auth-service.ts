@@ -153,9 +153,20 @@ export class AuthService extends TRPCService<'authusers'> {
     return apiReturn;
   }
 
-  public async signUp(input: signUpInputType) {
-    const token = await this.api.auth.signUp.mutate(input);
-    return this.updateTokensAndGetCurrentUser(token);
+  /**
+   * Create a workspace.
+   *
+   * During the closed beta the backend holds new workspaces for approval and deliberately
+   * issues no session, so there is nothing to sign in with: `approvalPending` is returned and
+   * the caller sends the user to the waitlist screen instead of the dashboard.
+   */
+  public async signUp(input: signUpInputType): Promise<{ user: IAuthUser | null; approvalPending: boolean }> {
+    const result = await this.api.auth.signUp.mutate(input);
+    if ((result as { approval_pending?: boolean }).approval_pending) {
+      return { user: null, approvalPending: true };
+    }
+    const user = await this.updateTokensAndGetCurrentUser(result);
+    return { user: user as IAuthUser | null, approvalPending: false };
   }
 
   public verifyEmail(input: { code: string }): Promise<{ success: boolean }> {

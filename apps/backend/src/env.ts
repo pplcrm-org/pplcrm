@@ -84,8 +84,21 @@ const envSchema = z.object({
   // bounce/complaint webhooks. The webhook rejects requests without it.
   POSTMARK_WEBHOOK_TOKEN: z.string().optional(),
   // Where the ops watchdog cron emails its failed-jobs/backlog digest (via Postmark, directly —
-  // not through the job queue). Unset = digest is logged but not emailed.
+  // not through the job queue). Unset = digest is logged but not emailed. Also where the beta
+  // signup approve/decline mail goes (falling back to POSTMARK_FROM_EMAIL).
   OPS_ALERT_EMAIL: z.string().email().optional(),
+  // Beta gate: new tenants land in `approval_status = 'pending'` and cannot be signed into until
+  // pplCRM ops approves them. Setting this to 'true' auto-approves on signup instead, which is
+  // what local dev and the test suite want (nobody is there to click the ops link).
+  //
+  // An EXPLICIT opt-in, never merely "NODE_ENV !== production": an unset NODE_ENV must not
+  // silently open a gate whose whole job is to keep strangers out (same rule as
+  // ALLOW_MOCK_PAYMENTS below). The gate on the sign-in side is unconditional — this only
+  // decides the status a brand-new tenant starts in.
+  AUTO_APPROVE_TENANTS: z
+    .string()
+    .optional()
+    .transform((val) => val === 'true'),
   // Sentry error tracking. Unset = Sentry disabled entirely (no startup cost, no traffic).
   // NOTE: instrument.ts reads this from process.env directly (it must run before this file's
   // parse); it is declared here so the schema stays the single inventory of backend config.
@@ -150,16 +163,88 @@ const envSchema = z.object({
   OAUTH_TOKEN_ENC_KEY: z.string().optional(),
 });
 
-/** Coerce TRUST_PROXY into the shape Fastify's `trustProxy` option accepts. */
+/**
+ * Coerce TRUST_PROXY into the shape Fastify's `trustProxy` option accepts.
+ *
+ * This is a security setting, not a convenience one. We always deploy behind a proxy (Cloudflare
+ * -> Azure Container Apps), so with `trustProxy: false` every request reports the proxy's address
+ * as `req.ip` — which collapses every per-IP rate limit in the app (sign-in attempts, public form
+ * submissions, companion token endpoints) into one shared bucket. Silently defaulting to `false`
+ * in production is therefore a failure, not a safe fallback: refuse to boot instead.
+ */
 function parseTrustProxy(raw: string): boolean | number | string {
   const value = raw.trim();
-  if (value === '' || value.toLowerCase() === 'false') return false;
+
+  if (value === '' || value.toLowerCase() === 'false') {
+    if (process.env['NODE_ENV'] === 'production') {
+      throw new Error(
+        'TRUST_PROXY must be set in production (e.g. TRUST_PROXY=1 for a single proxy hop). ' +
+          'Without it every per-IP rate limit keys on the proxy address instead of the client.',
+      );
+    }
+    return false;
+  }
   if (value.toLowerCase() === 'true') return true;
   if (/^\d+$/.test(value)) return Number(value);
   return value;
 }
 
+/**
+ * Minimum length for a secret that signs or encrypts something. Not a strength
+ * measure — just a floor that catches a placeholder or a truncated secretref.
+ */
+const MIN_SECRET_LENGTH = 32;
+
+/**
+ * Refuse to boot in production when a security-relevant credential is missing or
+ * obviously a placeholder.
+ *
+ * This exists because the failure mode of an unresolved secret is *silent degradation*,
+ * not an error, and that has already bitten twice:
+ *
+ *  - An unset STRIPE_SECRET_KEY puts billing into "mock mode" (`stripe === null`), which
+ *    is what `activateMockPlan` used to gate on — so a typo'd secretref let any tenant
+ *    owner self-grant the top plan (finding C3).
+ *  - An unset OAUTH_TOKEN_ENC_KEY makes `encryptSecret()` a pass-through, storing every
+ *    tenant's Gmail/Graph refresh token in cleartext with no warning (finding H5).
+ *
+ * A deploy that cannot reach its secrets must fail loudly rather than come up degraded.
+ * Mirrors the long-standing TRUST_PROXY guard above.
+ */
+function assertProductionSecrets(parsed: z.infer<typeof envSchema>): void {
+  if (process.env['NODE_ENV'] !== 'production') return;
+
+  const problems: string[] = [];
+
+  if (parsed.SHARED_SECRET.trim().length < MIN_SECRET_LENGTH) {
+    problems.push(
+      `SHARED_SECRET must be at least ${MIN_SECRET_LENGTH} characters — it signs session JWTs and scoped download tokens.`,
+    );
+  }
+  if (!parsed.OAUTH_TOKEN_ENC_KEY || parsed.OAUTH_TOKEN_ENC_KEY.trim().length < MIN_SECRET_LENGTH) {
+    problems.push(
+      `OAUTH_TOKEN_ENC_KEY must be set (at least ${MIN_SECRET_LENGTH} characters) — without it mailbox OAuth tokens are stored as plaintext.`,
+    );
+  }
+  if (!parsed.STRIPE_SECRET_KEY?.trim() || parsed.STRIPE_SECRET_KEY.includes('MockKey')) {
+    problems.push('STRIPE_SECRET_KEY must be set to a real key — an unset key silently enables billing mock mode.');
+  }
+  if (parsed.ALLOW_MOCK_PAYMENTS) {
+    problems.push('ALLOW_MOCK_PAYMENTS must never be set in production — it accepts forged payment data.');
+  }
+  if (parsed.ALLOW_MOCK_DOMAIN_VERIFICATION) {
+    problems.push(
+      'ALLOW_MOCK_DOMAIN_VERIFICATION must never be set in production — it marks sending domains verified without checking.',
+    );
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`Refusing to start in production with an insecure configuration:\n  - ${problems.join('\n  - ')}`);
+  }
+}
+
 const parsedEnv = envSchema.parse(process.env);
+assertProductionSecrets(parsedEnv);
 
 export const env = {
   host: parsedEnv.HOST,
@@ -221,6 +306,7 @@ export const env = {
   sendgridSharedSendingDomain: parsedEnv.SENDGRID_SHARED_SENDING_DOMAIN,
   postmarkWebhookToken: parsedEnv.POSTMARK_WEBHOOK_TOKEN,
   opsAlertEmail: parsedEnv.OPS_ALERT_EMAIL,
+  autoApproveTenants: parsedEnv.AUTO_APPROVE_TENANTS,
   sentryDsn: parsedEnv.SENTRY_DSN,
   anthropicApiKey: parsedEnv.ANTHROPIC_API_KEY,
   anthropicModel: parsedEnv.ANTHROPIC_MODEL,

@@ -1,3 +1,4 @@
+import { hashToken } from '../../lib/token-hash';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { IAuthKeyPayload } from '@common';
@@ -104,7 +105,8 @@ async function seed(db: Db, opts?: { email?: string | null; mobile?: string | nu
     .values({
       tenant_id: tenantId,
       turf_id: turfId,
-      token,
+      // Tokens are stored hashed now (M5) — the raw value is only ever in the volunteer's link.
+      token_hash: hashToken(token),
       status: 'active',
       volunteer_person_id: personId,
       createdby_id: organizerId,

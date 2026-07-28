@@ -16,6 +16,15 @@ apps/
       app/
         _migrations/
           0001_baseline.ts
+          2026-07-26-list-name-unique.ts
+          2026-07-26-sort-indexes-hot-lists.ts
+          2026-07-27-workspace-api-keys-two-slots.ts
+          2026-07-27-x-authusers-role-not-null.ts
+          2026-07-27-y-rate-limits.ts
+          2026-07-27-z-turf-assignment-token-hash.ts
+          2026-07-28-turf-multiple-canvassers.ts
+          2026-07-28-x-tenant-approval.ts
+          2026-07-28-z-canvass-volunteer-roam.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -60,6 +69,7 @@ apps/
             sendgrid-whitelabel.service.ts
             shared-sending-domain.ts
             transactional-mail.service.ts
+            transactional-send-guard.ts
             volunteer-link-notify.ts
           routing/
             geo.ts
@@ -76,14 +86,18 @@ apps/
           auth-util.ts
           base.controller.ts
           base.repo.ts
+          canvass-roam-policy.ts
           common-passwords.ts
           crud-router.ts
           csv-stream.ts
           csv.ts
           download-headers.ts
+          durable-rate-limiter.ts
           fastify.types.ts
           hibp.ts
+          html-escape.ts
           oauth-state.ts
+          outbound-url-guard.ts
           password-hash.ts
           person-public-id.ts
           profile-preferences.ts
@@ -92,15 +106,20 @@ apps/
           rest-auth.ts
           secret-crypto.ts
           signed-download.ts
+          signin-attempts.ts
           slug.ts
+          storage-key.ts
           storage.service.ts
           stripe-platform-client.ts
           tenant-context.ts
+          tenant-members.ts
           token-hash.ts
           tombstone-user.ts
+          upload-content-types.ts
           user-activity.repo.ts
           validate-api-key.ts
           volunteer-link-policy.ts
+          volunteer-link-resend-limit.ts
           webauthn-challenges.ts
         modules/
           activity/
@@ -111,11 +130,14 @@ apps/
               authusers.repo.ts
               sessions.repo.ts
               tenants.repo.ts
+            routes/
+              tenant-approval.route.ts
             auth-cookie.ts
             auth-tokens.ts
             controller.ts
             onboarding-seed.ts
             passkey.controller.ts
+            tenant-approval.ts
             trpc.router.ts
           billing/
             repositories/
@@ -166,6 +188,7 @@ apps/
               companion-public.route.ts
             controller.ts
             trpc.router.ts
+            verification-code-hash.ts
           dashboard/
             controller.ts
             trpc.router.ts
@@ -233,6 +256,7 @@ apps/
             routes/
               exports-download.route.ts
             controller.ts
+            export-tables.ts
             trpc.router.ts
           files/
             repositories/

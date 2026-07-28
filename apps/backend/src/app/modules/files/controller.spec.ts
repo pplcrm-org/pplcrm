@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IAuthKeyPayload } from '@common';
 import { FilesController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
+import { signUploadHandle } from '../../lib/signed-download';
 
 vi.mock('../../lib/storage.service', () => {
   class StorageService {
@@ -19,6 +20,9 @@ vi.mock('../../lib/storage.service', () => {
     }
     public async delete(): Promise<void> {
       return undefined;
+    }
+    public async getSizeBytes(): Promise<number | null> {
+      return 0;
     }
   }
   return { StorageService };
@@ -58,6 +62,15 @@ describe('FilesController', () => {
       .execute();
   });
 
+  /** Mint the handle getUploadUrl would have returned for this key. */
+  const handleFor = (key: string): string => signUploadHandle(key, tenantId);
+
+  /** Stub the size storage reports back for the next registerFile call(s). */
+  const stubSize = (...sizes: number[]): void => {
+    const spy = vi.spyOn(StorageService.prototype, 'getSizeBytes');
+    for (const size of sizes) spy.mockResolvedValueOnce(size);
+  };
+
   afterEach(async () => {
     await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('files').where('tenant_id', '=', tenantId).execute();
@@ -70,8 +83,7 @@ describe('FilesController', () => {
       {
         filename: 'report.pdf',
         mimeType: 'application/pdf',
-        sizeBytes: 1024,
-        storageKey: `uploads/${tenantId}/report.pdf`,
+        uploadHandle: handleFor(`uploads/${tenantId}/report.pdf`),
         sha256Hex: 'abc123',
       },
       auth,
@@ -89,7 +101,7 @@ describe('FilesController', () => {
     const first = await controller.registerFile(
       {
         filename: 'first.pdf',
-        storageKey: `uploads/${tenantId}/first.pdf`,
+        uploadHandle: handleFor(`uploads/${tenantId}/first.pdf`),
         sha256Hex: 'duplicate-hash',
       },
       auth,
@@ -98,7 +110,7 @@ describe('FilesController', () => {
     const second = await controller.registerFile(
       {
         filename: 'second-copy.pdf',
-        storageKey: `uploads/${tenantId}/second-copy.pdf`,
+        uploadHandle: handleFor(`uploads/${tenantId}/second-copy.pdf`),
         sha256Hex: 'duplicate-hash',
       },
       auth,
@@ -128,8 +140,8 @@ describe('FilesController', () => {
   });
 
   it('lists files with the uploader name attached', async () => {
-    await controller.registerFile({ filename: 'a.csv', storageKey: `uploads/${tenantId}/a.csv` }, auth);
-    await controller.registerFile({ filename: 'b.csv', storageKey: `uploads/${tenantId}/b.csv` }, auth);
+    await controller.registerFile({ filename: 'a.csv', uploadHandle: handleFor(`uploads/${tenantId}/a.csv`) }, auth);
+    await controller.registerFile({ filename: 'b.csv', uploadHandle: handleFor(`uploads/${tenantId}/b.csv`) }, auth);
 
     const result = await controller.getAllFiles(auth, {});
     expect(result.count).toBe(2);
@@ -144,7 +156,7 @@ describe('FilesController', () => {
   it('deletes a file from the database and removes its blob from storage', async () => {
     const deleteSpy = vi.spyOn(StorageService.prototype, 'delete').mockResolvedValue(undefined);
     const file = await controller.registerFile(
-      { filename: 'to-delete.pdf', storageKey: `uploads/${tenantId}/to-delete.pdf` },
+      { filename: 'to-delete.pdf', uploadHandle: handleFor(`uploads/${tenantId}/to-delete.pdf`) },
       auth,
     );
 
@@ -159,8 +171,14 @@ describe('FilesController', () => {
 
   it('deletes multiple files and reports true if at least one succeeded', async () => {
     vi.spyOn(StorageService.prototype, 'delete').mockResolvedValue(undefined);
-    const fileA = await controller.registerFile({ filename: 'a.pdf', storageKey: `uploads/${tenantId}/a.pdf` }, auth);
-    const fileB = await controller.registerFile({ filename: 'b.pdf', storageKey: `uploads/${tenantId}/b.pdf` }, auth);
+    const fileA = await controller.registerFile(
+      { filename: 'a.pdf', uploadHandle: handleFor(`uploads/${tenantId}/a.pdf`) },
+      auth,
+    );
+    const fileB = await controller.registerFile(
+      { filename: 'b.pdf', uploadHandle: handleFor(`uploads/${tenantId}/b.pdf`) },
+      auth,
+    );
 
     const result = await controller.deleteMany(tenantId, [String(fileA.id), String(fileB.id), '999999999'], userId);
 
@@ -178,13 +196,16 @@ describe('FilesController', () => {
     await controller.registerFile(
       {
         filename: 'linked.pdf',
-        storageKey: `uploads/${tenantId}/linked.pdf`,
+        uploadHandle: handleFor(`uploads/${tenantId}/linked.pdf`),
         entityType: 'newsletter',
         entityId: '123',
       },
       auth,
     );
-    await controller.registerFile({ filename: 'unlinked.pdf', storageKey: `uploads/${tenantId}/unlinked.pdf` }, auth);
+    await controller.registerFile(
+      { filename: 'unlinked.pdf', uploadHandle: handleFor(`uploads/${tenantId}/unlinked.pdf`) },
+      auth,
+    );
 
     const scoped = await controller.getAllFiles(auth, { entityType: 'newsletter', entityId: '123' });
     expect(scoped.count).toBe(1);
@@ -197,14 +218,14 @@ describe('FilesController', () => {
   it('refuses an upload that would exceed the plan storage quota and cleans up the blob', async () => {
     const deleteSpy = vi.spyOn(StorageService.prototype, 'delete').mockResolvedValue(undefined);
     const GB = 1024 * 1024 * 1024;
+    stubSize(2 * GB);
 
     // The default (Free) plan quota is 1 GB — a 2 GB upload blows past it.
     await expect(
       controller.registerFile(
         {
           filename: 'huge.zip',
-          sizeBytes: 2 * GB,
-          storageKey: `uploads/${tenantId}/huge.zip`,
+          uploadHandle: handleFor(`uploads/${tenantId}/huge.zip`),
           sha256Hex: 'huge-hash',
         },
         auth,
@@ -215,6 +236,74 @@ describe('FilesController', () => {
     expect(deleteSpy).toHaveBeenCalledWith(`uploads/${tenantId}/huge.zip`);
     const rows = await db.selectFrom('files').selectAll().where('tenant_id', '=', tenantId).execute();
     expect(rows).toHaveLength(0);
+  });
+
+  // SECURITY REGRESSION (H2) — the quota used to trust a client-declared `sizeBytes`, and
+  // the check was wrapped in `if (sizeBytes > 0)`, so declaring 0 skipped it entirely.
+  // Size now comes from the blob itself, which the client cannot influence.
+  it('enforces the quota from the blob size in storage, not a client-declared size', async () => {
+    const deleteSpy = vi.spyOn(StorageService.prototype, 'delete').mockResolvedValue(undefined);
+    const GB = 1024 * 1024 * 1024;
+    // Storage reports the truth: 2 GB against a 1 GB Free-plan quota.
+    stubSize(2 * GB);
+
+    await expect(
+      controller.registerFile(
+        // No size is accepted from the caller at all — this is the whole payload.
+        { filename: 'sneaky.zip', uploadHandle: handleFor(`uploads/${tenantId}/sneaky.zip`) },
+        auth,
+      ),
+    ).rejects.toThrow(/storage quota/i);
+
+    expect(deleteSpy).toHaveBeenCalledWith(`uploads/${tenantId}/sneaky.zip`);
+    const rows = await db.selectFrom('files').selectAll().where('tenant_id', '=', tenantId).execute();
+    expect(rows).toHaveLength(0);
+  });
+
+  it('records the size storage reports, so usage accounting cannot be understated', async () => {
+    stubSize(4096);
+    const file = await controller.registerFile(
+      { filename: 'real.pdf', uploadHandle: handleFor(`uploads/${tenantId}/real.pdf`) },
+      auth,
+    );
+
+    expect(Number(file.size_bytes)).toBe(4096);
+  });
+
+  // SECURITY REGRESSION (C1) — registerFile used to take `storageKey` straight from the
+  // client. Because the download/delete routes scope the DB *row* by tenant but then
+  // dereference whatever key that row carries, a forged key was a cross-tenant blob read
+  // and delete. The key is now re-derived from a signed, tenant-bound handle.
+  describe('upload handle (cross-tenant blob access)', () => {
+    it('refuses a handle minted for another tenant', async () => {
+      const otherTenantId = rand();
+      const foreignHandle = signUploadHandle(`exports/${otherTenantId}/secrets.csv`, otherTenantId);
+
+      await expect(
+        controller.registerFile({ filename: 'secrets.csv', uploadHandle: foreignHandle }, auth),
+      ).rejects.toThrow(/upload handle/i);
+
+      const rows = await db.selectFrom('files').selectAll().where('tenant_id', '=', tenantId).execute();
+      expect(rows).toHaveLength(0);
+    });
+
+    it('refuses a forged handle that was never signed', async () => {
+      await expect(
+        controller.registerFile({ filename: 'secrets.csv', uploadHandle: `exports/${rand()}/secrets.csv` }, auth),
+      ).rejects.toThrow(/upload handle/i);
+    });
+
+    it('stores the key from the handle, ignoring any filename the client sends', async () => {
+      const key = `uploads/${tenantId}/abc_real.pdf`;
+      const file = await controller.registerFile(
+        { filename: '../../../etc/passwd', uploadHandle: handleFor(key) },
+        auth,
+      );
+
+      expect(file.storage_key).toBe(key);
+      // Traversal is reduced to a single safe path component before it is stored.
+      expect(file.filename).toBe('passwd');
+    });
   });
 
   it('summarizes storage usage with quota and largest files, labeling entity-linked files', async () => {
@@ -243,18 +332,18 @@ describe('FilesController', () => {
       .returning('id')
       .executeTakeFirstOrThrow();
 
+    stubSize(5000, 10);
     await controller.registerFile(
       {
         filename: 'gala-photos.zip',
-        sizeBytes: 5000,
-        storageKey: `uploads/${tenantId}/gala-photos.zip`,
+        uploadHandle: handleFor(`uploads/${tenantId}/gala-photos.zip`),
         entityType: 'newsletter',
         entityId: String(newsletter.id),
       },
       auth,
     );
     await controller.registerFile(
-      { filename: 'small.txt', sizeBytes: 10, storageKey: `uploads/${tenantId}/small.txt` },
+      { filename: 'small.txt', uploadHandle: handleFor(`uploads/${tenantId}/small.txt`) },
       auth,
     );
 

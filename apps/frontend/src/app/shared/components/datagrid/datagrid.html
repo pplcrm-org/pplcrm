@@ -561,22 +561,16 @@
         </tr>
         } } @if (hasLoaded() && hasActiveFilters() && !visibleTableRows().length) {
         <tr>
-          <td
-            [attr.colspan]="leafHeaders().length + (enableSelection() ? 1 : 0)"
-            class="py-16 text-center text-base-content/40"
-          >
-            <div class="flex flex-col items-center gap-3">
-              <pc-icon name="funnel" [size]="12" class="opacity-40"></pc-icon>
-              <span
-                class="text-base font-medium"
-                i18n="Datagrid|Heading when filter returned no results@@datagrid.filterEmptyState.heading"
-                >No results match your filters</span
-              >
-              <span
-                class="text-sm opacity-70"
-                i18n="Datagrid|Instruction when filters return no results@@datagrid.filterEmptyState.instruction"
-                >Try clearing or adjusting your filters</span
-              >
+          <td [attr.colspan]="leafHeaders().length + (enableSelection() ? 1 : 0)">
+            <!-- `bordered` off: the table shell already frames this (see pc-empty-state). -->
+            <pc-empty-state
+              [bordered]="false"
+              icon="funnel"
+              i18n-title="Datagrid|Heading when filter returned no results@@datagrid.filterEmptyState.heading"
+              title="No results match your filters"
+              i18n-hint="Datagrid|Instruction when filters return no results@@datagrid.filterEmptyState.instruction"
+              hint="Try clearing or adjusting your filters"
+            >
               <button
                 type="button"
                 class="btn btn-outline btn-secondary btn-sm mt-1"
@@ -585,27 +579,26 @@
               >
                 Clear all filters
               </button>
-            </div>
+            </pc-empty-state>
           </td>
         </tr>
         } @else if (isEmptyState()) {
         <tr>
-          <td
-            [attr.colspan]="leafHeaders().length + (enableSelection() ? 1 : 0)"
-            class="py-16 text-center text-base-content/40"
-          >
-            <div class="flex flex-col items-center gap-3">
-              <span
-                class="text-base font-medium"
-                i18n="Datagrid|Heading when table has no data@@datagrid.emptyState.heading"
-                >Nothing here yet</span
-              >
-              <span
-                class="text-sm opacity-70"
-                i18n="Datagrid|Instruction to add first record@@datagrid.emptyState.instruction"
-                >Create your first record with the New button above</span
-              >
-            </div>
+          <td [attr.colspan]="leafHeaders().length + (enableSelection() ? 1 : 0)">
+            <!--
+              A brand-new tenant's very first screen on every grid page. Design §3 requires an
+              empty state to END IN AN ACTION, not point at another control ("use the New button
+              above") — so the create action is offered right here, labelled from the grid's own
+              entityNoun exactly like the toolbar button. Grids with no addRoute simply omit it.
+            -->
+            <pc-empty-state [bordered]="false" icon="inbox" [title]="emptyStateTitle()" [hint]="emptyStateHint()">
+              @if (addRoute()) {
+              <button type="button" class="btn btn-primary btn-sm mt-1 gap-1.5" (click)="doAdd()">
+                <pc-icon [name]="plusIcon()" [size]="4"></pc-icon>
+                <span>{{ addLabel() }}</span>
+              </button>
+              }
+            </pc-empty-state>
           </td>
         </tr>
         } @for (r of visibleTableRows(); let i = $index; track r.id) {
@@ -799,7 +792,7 @@
               >
               } @else {
               <span
-                class="cursor-pointer font-light text-base-content/55 underline decoration-base-content/20 underline-offset-[3px]"
+                class="cursor-pointer text-base-content/55 underline decoration-base-content/20 underline-offset-[3px]"
                 i18n="Datagrid|Fallback label for a record with no name@@datagrid.rows.unnamed"
                 >Unnamed person</span
               >
@@ -877,7 +870,7 @@
       </div>
       <div class="join whitespace-nowrap">
         <button
-          class="btn btn-sm font-light join-item btn-ghost"
+          class="btn btn-sm join-item btn-ghost"
           [title]="canPrev() ? firstPageTitle : onFirstPageTitle"
           [disabled]="!canPrev()"
           (click)="firstPage()"
@@ -885,7 +878,7 @@
           <pc-icon name="chevron-double-left" [size]="4"></pc-icon>
         </button>
         <button
-          class="btn btn-sm font-light join-item btn-ghost"
+          class="btn btn-sm join-item btn-ghost"
           [title]="canPrev() ? prevPageTitle : onFirstPageTitle"
           [disabled]="!canPrev()"
           (click)="prevPage()"
@@ -893,7 +886,7 @@
           <pc-icon name="chevron-left" [size]="4"></pc-icon>
         </button>
         <button
-          class="btn btn-sm font-light join-item btn-ghost"
+          class="btn btn-sm join-item btn-ghost"
           [title]="canNext() ? nextPageTitle : onLastPageTitle"
           [disabled]="!canNext()"
           (click)="nextPage()"
@@ -901,7 +894,7 @@
           <pc-icon name="chevron-right" [size]="4"></pc-icon>
         </button>
         <button
-          class="btn btn-sm font-light join-item btn-ghost"
+          class="btn btn-sm join-item btn-ghost"
           [title]="canNext() ? lastPageTitle : onLastPageTitle"
           [disabled]="!canNext()"
           (click)="lastPage()"

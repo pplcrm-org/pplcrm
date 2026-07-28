@@ -91,7 +91,11 @@ body {
 }
 
 .bg-image {
-  background-image: url('assets/bg.jpg');
+  /* The auth card's text is near-white and its only contrast comes from this
+     photo, so the colour is the safety net: if the image is slow, blocked, or
+     missing, the form still has a dark ground instead of white-on-white. */
+  background-color: #1f2a37;
+  background-image: url('assets/bg.webp');
   background-size: cover; /* scale to cover entire container */
   background-position: center; /* keep it centered */
   background-repeat: no-repeat; /* prevent tiling */
@@ -712,4 +716,102 @@ body {
 .pc-tour-pip--on {
   width: 14px;
   background: var(--color-primary);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Print
+   ──────────────────────────────────────────────────────────────────────────
+   Nothing in the product was printable. For a canvassing tool that matters
+   more than it sounds: organizers print walk lists, event rosters and
+   donation receipts, and every one of them came out wrapped in the full app
+   chrome — sidebar, navbar, toolbars, toasts — with the actual content
+   squeezed into a scrolling box that clipped at one page.
+
+   The rule is: print the record, not the application. Anything that is
+   navigation, an action, or a transient overlay is dropped; the content
+   region stops being a scroll box and is allowed to flow across pages.
+
+   Add `pc-no-print` to hide something in print, `pc-print-only` to reveal
+   something only in print. */
+@media print {
+  /* Ink and contrast: the app's surfaces are tinted, printers are not. */
+  :root,
+  [data-theme] {
+    background: #fff !important;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  /* Chrome that has no meaning on paper. */
+  pc-sidebar,
+  pc-navbar,
+  pc-alerts,
+  pc-setup-return-bar,
+  pc-dg-toolbar,
+  pc-grid-header .btn,
+  .pc-no-print,
+  .drawer-side,
+  .modal-backdrop,
+  .tooltip::before,
+  .tooltip::after,
+  nav,
+  .btn,
+  .join,
+  progress,
+  [role='status'],
+  [role='alert'] {
+    display: none !important;
+  }
+
+  .pc-print-only {
+    display: revert !important;
+  }
+
+  /* The shell pins everything inside a full-height scroll box, which on paper
+     means "one page and the rest is lost". Let content flow instead. */
+  html,
+  body,
+  #main-content,
+  .drawer,
+  .drawer-content,
+  .overflow-y-auto,
+  .overflow-x-auto,
+  .overflow-hidden {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  /* Keep rows and cards intact across a page break where the browser allows. */
+  tr,
+  .pc-panel,
+  .card {
+    break-inside: avoid;
+  }
+  thead {
+    display: table-header-group; /* repeat column headers on every page */
+  }
+
+  /* Flatten decoration that costs toner and adds nothing. */
+  .shadow,
+  .shadow-sm,
+  .shadow-md,
+  .shadow-lg,
+  .shadow-xl {
+    box-shadow: none !important;
+  }
+
+  /* A link's destination is invisible on paper unless we say it. Internal
+     app links are excluded — a bare /persons/123 helps nobody. */
+  a[href^='http']::after {
+    content: ' (' attr(href) ')';
+    font-size: 0.85em;
+    word-break: break-all;
+  }
+
+  @page {
+    margin: 12mm;
+  }
 }

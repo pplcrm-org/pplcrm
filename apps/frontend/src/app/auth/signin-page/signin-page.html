@@ -43,8 +43,9 @@
       </div>
     </div>
   </form>
-  <div class="pt-4 text-center">
-    <a routerLink="/signup" class="link link-hover text-neutral-100">SIGN UP</a>
+  <div class="text-neutral-100 pt-4 text-center">
+    New to pplCRM?
+    <a routerLink="/signup" class="link link-hover font-medium">Create an account</a>
   </div>
   } @case ('passkey') {
   <div class="flex flex-col items-center text-center gap-5 py-4">
@@ -89,12 +90,46 @@
       </button>
     </div>
   </div>
-  } @case ('password') { @if (verificationPending()) {
+  } @case ('password') { @if (approvalPending()) {
+  <!--
+    Closed beta: the workspace exists but has not been let in yet, so the password form below is
+    hidden rather than left there to fail. Informational tone (sky, not amber): nothing is broken
+    and there is nothing for the user to fix, so this narrates the wait instead of raising an
+    alarm. It ends with a real next step rather than a dead end.
+  -->
+  <div class="alert text-sm mb-4 bg-sky-950/40 border-sky-500/40 text-sky-100">
+    <div class="flex flex-col gap-2 w-full">
+      <div class="flex items-center gap-2 font-semibold">
+        <pc-icon name="clock" [size]="5"></pc-icon>
+        <span>Waiting for approval</span>
+      </div>
+      <p class="text-xs text-sky-100/80">{{ approvalPendingMessage }}</p>
+      @if (pendingEmail()) {
+      <p class="text-xs text-sky-100/80">
+        We will write to <strong class="text-sky-50">{{ pendingEmail() }}</strong> as soon as your workspace is open.
+      </p>
+      }
+      <!--
+        Always leave a way through. This panel can be reached from a bookmarked
+        ?approvalPending=true URL, which would otherwise still be showing long after the
+        workspace was opened.
+      -->
+      <div class="flex flex-wrap gap-2 mt-1">
+        <button type="button" class="btn btn-xs btn-outline btn-info" (click)="dismissApprovalNotice()">
+          Try signing in
+        </button>
+        <a href="mailto:hello@pplcrm.com?subject=pplCRM beta access" class="btn btn-xs btn-ghost text-sky-100">
+          Ask about your workspace
+        </a>
+      </div>
+    </div>
+  </div>
+  } @else if (verificationPending()) {
   <div class="alert alert-warning text-sm mb-4 bg-amber-950/40 border-amber-500/40 text-amber-200">
     <div class="flex flex-col gap-2 w-full">
       <div class="flex items-center gap-2 font-semibold">
         <pc-icon name="exclamation-circle" [size]="5"></pc-icon>
-        <span>Verification Pending</span>
+        <span>Verification pending</span>
       </div>
       <p class="text-xs text-amber-200/80">
         A verification link was sent to <strong class="text-amber-100">{{ pendingEmail() }}</strong>. Please check your
@@ -121,7 +156,7 @@
     </button>
   </div>
 
-  @if (!verificationPending()) {
+  @if (!verificationPending() && !approvalPending()) {
   <label class="label text-neutral-100">Enter your password</label>
   <form (submit)="signIn($event)" novalidate>
     <div class="space-y-3">
@@ -157,7 +192,7 @@
         <button type="submit" class="btn btn-primary w-full" [disabled]="isLoading() || rateLimitSecondsLeft() > 0">
           @if (isLoading()) {
           <span class="loading loading-spinner loading-lg text-primary"></span>
-          } @else { SIGN IN }
+          } @else { Sign in }
         </button>
       </div>
     </div>
@@ -181,7 +216,7 @@
         <button type="submit" class="btn btn-primary w-full" [disabled]="isLoading() || rateLimitSecondsLeft() > 0">
           @if (isLoading()) {
           <span class="loading loading-spinner loading-lg text-primary"></span>
-          } @else { VERIFY }
+          } @else { Verify code }
         </button>
       </div>
 
@@ -218,11 +253,4 @@
     </div>
   </div>
   } }
-
-  <div class="text-neutral-200 text-center text-xs pt-2">
-    <span>
-      Copyright © 2024
-      <a href="" rel="" target="_blank" title="PplCRM" class="link link-hover">PplCRM</a>
-    </span>
-  </div>
 </pc-auth-layout>

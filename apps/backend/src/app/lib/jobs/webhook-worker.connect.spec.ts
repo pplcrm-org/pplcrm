@@ -40,10 +40,34 @@ async function seedTenantWithAdmin(): Promise<{ tenantId: string; userId: string
   return { tenantId, userId };
 }
 
+/** A person needs a household (household_id is NOT NULL); both need a creator. */
+async function seedPerson(tenantId: string, userId: string): Promise<string> {
+  const household = await db
+    .insertInto('households')
+    .values({ tenant_id: tenantId, createdby_id: userId, updatedby_id: userId })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const person = await db
+    .insertInto('persons')
+    .values({
+      tenant_id: tenantId,
+      household_id: household.id,
+      first_name: 'Donor',
+      createdby_id: userId,
+      updatedby_id: userId,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  return String(person.id);
+}
+
 async function cleanTenant(tenantId: string): Promise<void> {
   await db.updateTable('tenants').set({ admin_id: null }).where('id', '=', tenantId).execute();
   await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('donations').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
 }
@@ -201,6 +225,108 @@ describe('WebhookEventWorker — Stripe Connect dispatch', () => {
 
     expect(platform.applicationFeeRefund).toHaveBeenCalledWith('fee_abc');
     expect(await eventStatus(eventId)).toBe('processed');
+  });
+
+  // Regression: a Checkout Session's `metadata` is written by whoever created the session, so a
+  // tenant with their own connected account could point `metadata.tenantId` at a victim and have
+  // the donation land in the victim's financial records. The only trustworthy owner is the
+  // webhook row's tenant_id, resolved at ingest from `event.account`.
+  describe('forged checkout metadata', () => {
+    let victim: { tenantId: string; userId: string };
+    let victimPersonId: string;
+
+    beforeEach(async () => {
+      victim = await seedTenantWithAdmin();
+      victimPersonId = await seedPerson(victim.tenantId, victim.userId);
+    });
+
+    afterEach(async () => {
+      await cleanTenant(victim.tenantId);
+    });
+
+    it('refuses a one-time donation whose metadata claims another tenant', async () => {
+      // Event arrives on the ATTACKER's connected account (tenantId), but claims the victim.
+      const eventId = await enqueueEvent(tenantId, {
+        id: 'evt_forged_onetime',
+        type: 'checkout.session.completed',
+        account: 'acct_attacker',
+        data: {
+          object: {
+            id: 'cs_forged_1',
+            payment_intent: 'pi_forged_1',
+            metadata: {
+              tenantId: victim.tenantId,
+              personId: victimPersonId,
+              amount: '10000',
+              isRecurring: 'false',
+            },
+          },
+        },
+      });
+
+      await (worker as any).processNextEvent(eventId);
+
+      const donations = await db.selectFrom('donations').selectAll().where('tenant_id', '=', victim.tenantId).execute();
+      expect(donations).toHaveLength(0);
+      // The handler threw, so the event is retried rather than acknowledged.
+      expect(await eventStatus(eventId)).not.toBe('processed');
+    });
+
+    it('refuses a recurring checkout whose metadata claims another tenant', async () => {
+      const eventId = await enqueueEvent(tenantId, {
+        id: 'evt_forged_recurring',
+        type: 'checkout.session.completed',
+        account: 'acct_attacker',
+        data: {
+          object: {
+            id: 'cs_forged_2',
+            subscription: 'sub_forged_1',
+            metadata: {
+              tenantId: victim.tenantId,
+              personId: victimPersonId,
+              monthlyAmount: '2500',
+              isRecurring: 'true',
+            },
+          },
+        },
+      });
+
+      await (worker as any).processNextEvent(eventId);
+
+      const pledges = await db
+        .selectFrom('donation_pledges')
+        .selectAll()
+        .where('tenant_id', '=', victim.tenantId)
+        .execute();
+      expect(pledges).toHaveLength(0);
+      expect(await eventStatus(eventId)).not.toBe('processed');
+    });
+
+    it('refuses a person id belonging to another tenant even when the tenant matches', async () => {
+      const eventId = await enqueueEvent(tenantId, {
+        id: 'evt_foreign_person',
+        type: 'checkout.session.completed',
+        account: 'acct_w1',
+        data: {
+          object: {
+            id: 'cs_foreign_person',
+            payment_intent: 'pi_foreign_person',
+            metadata: {
+              tenantId,
+              personId: victimPersonId, // belongs to the victim, not to `tenantId`
+              amount: '10000',
+              isRecurring: 'false',
+            },
+          },
+        },
+      });
+
+      await (worker as any).processNextEvent(eventId);
+
+      const donations = await db.selectFrom('donations').selectAll().where('tenant_id', '=', tenantId).execute();
+      expect(donations).toHaveLength(0);
+      expect(await eventStatus(eventId)).not.toBe('processed');
+    });
   });
 
   it('a partial refund leaves the application fee untouched', async () => {

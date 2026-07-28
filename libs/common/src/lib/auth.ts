@@ -11,6 +11,13 @@ export interface IAuthKeyPayload {
 
   role?: string | null;
 
+  /**
+   * Campaigns §15 — the campaign this caller is pinned to, resolved server-side from
+   * their assignment. Null means they may work across campaigns (admin/owner). Set by
+   * the `isAuthed` middleware; never taken from request input.
+   */
+  campaign_id?: string | null;
+
   source?: string;
 }
 
@@ -122,6 +129,28 @@ export interface IToken {
 export const GENERIC_SIGNIN_ERROR = 'Please check your email and password and try again.';
 
 /**
+ * Machine-readable marker on the 403 thrown when a tenant is not approved for the beta.
+ * Rides along on the tRPC error's `data` (AppError.data is forwarded by the error
+ * formatter), so the sign-in page can render the waitlist panel instead of sniffing the
+ * message text.
+ */
+export const TENANT_PENDING_APPROVAL_REASON = 'TENANT_PENDING_APPROVAL';
+
+/**
+ * What someone whose workspace has not been let into the beta sees when they try to sign
+ * in. Shared by the backend (the thrown 403) and the frontend panel so the copy is written
+ * once.
+ *
+ * Deliberately identical for 'pending' and 'declined': during a closed beta the honest
+ * answer to both is "not yet, we're full" — and a distinct "you were rejected" message
+ * would be a worse experience for no benefit, since ops can still approve later.
+ */
+export const TENANT_PENDING_APPROVAL_MESSAGE =
+  'Your account is waiting for approval. pplCRM is in beta and we already have as many beta ' +
+  'workspaces as we can support well, so we are letting new ones in gradually. Yours is on the ' +
+  'list, and we will email you the moment there is room.';
+
+/**
  * Product names for the stored role values — the working role 'user' is shown as
  * "Editor" everywhere (Users list, user page, Profile). Shared so the label never drifts.
  */
@@ -134,6 +163,34 @@ export const AUTH_ROLE_LABELS: Record<string, string> = {
 
 export function authRoleLabel(role: string | null | undefined): string {
   return role ? (AUTH_ROLE_LABELS[role] ?? role) : '—';
+}
+
+/** Every role an account may hold, most privileged first. */
+export const AUTH_ROLES = ['owner', 'admin', 'user', 'viewer'] as const;
+
+export type AuthRole = (typeof AUTH_ROLES)[number];
+
+/**
+ * The role an account gets when none was chosen.
+ *
+ * SECURITY: never leave a role unset. `authusers.role` is nullable for historical
+ * reasons, and permission checks written as "deny if role === 'user'" silently pass
+ * for a null role — which made an unroled invitee more privileged than an Editor.
+ * Checks must ask {@link isPrivilegedRole}, and writes must land a real role.
+ */
+export const DEFAULT_AUTH_ROLE: AuthRole = 'user';
+
+export function isAuthRole(role: unknown): role is AuthRole {
+  return typeof role === 'string' && (AUTH_ROLES as readonly string[]).includes(role);
+}
+
+/**
+ * True only for roles that may administer a workspace (invite, change roles, assign
+ * campaigns, manage billing). Fails closed: anything unrecognised or absent is not
+ * privileged.
+ */
+export function isPrivilegedRole(role: string | null | undefined): boolean {
+  return role === 'owner' || role === 'admin';
 }
 
 export type signInInputType = z.infer<typeof signInInputObj>;

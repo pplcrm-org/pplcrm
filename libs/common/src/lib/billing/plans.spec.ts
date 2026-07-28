@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { GatedFeature } from './plans';
 import {
   annualPriceForQuantity,
   bracketForQuantity,
@@ -15,6 +16,7 @@ import {
   priceForQuantity,
   priceLabelAt,
   subscriberCapForQuantity,
+  FEATURE_MATRIX,
   GATED_FEATURES,
   PLANS_BY_KEY,
   PURCHASABLE_PLAN_KEYS,
@@ -202,11 +204,86 @@ describe('planAllowsFeature', () => {
     expect(planAllowsFeature('starter', 'forms')).toBe(false); // renamed key → free
   });
 
-  it('mirrors the FEATURE_MATRIX split for every gated feature', () => {
-    for (const feature of Object.keys(GATED_FEATURES) as (keyof typeof GATED_FEATURES)[]) {
+  it('is self-consistent: every gated feature unlocks at its own minPlan and not on free', () => {
+    for (const feature of Object.keys(GATED_FEATURES) as GatedFeature[]) {
       const { minPlan } = GATED_FEATURES[feature];
       expect(planAllowsFeature(minPlan, feature)).toBe(true);
       expect(planAllowsFeature('free', feature)).toBe(false); // nothing gated is free-tier
+    }
+  });
+});
+
+/**
+ * FEATURE_MATRIX drives the marketing site's comparison table; GATED_FEATURES is what the backend
+ * actually enforces. They are two hand-synced lists (see the comment on FEATURE_MATRIX), and when
+ * they drift the site makes a promise the code refuses to keep.
+ *
+ * That is not hypothetical. Until 2026-07-27 the matrix advertised "300+ integrations" as
+ * `free: true` while the API had no gate at all, and Forms was enforced at `grassroots` — the site
+ * and the server disagreed in both directions at once. The test that was supposed to catch this
+ * ("mirrors the FEATURE_MATRIX split for every gated feature") never read FEATURE_MATRIX: it
+ * compared `planAllowsFeature` to GATED_FEATURES, which is that function's own definition, so it
+ * was tautologically green. Worse than no test — the row looked covered.
+ *
+ * This is the real check. The label map is hand-written (matrix rows are marketing prose, not
+ * feature keys), but it is exhaustively verified in both directions below, so a new gated feature
+ * or a renamed row fails here rather than silently going unchecked.
+ */
+describe('FEATURE_MATRIX ↔ GATED_FEATURES', () => {
+  /** Every matrix row that describes a gated feature, by the feature that gates it. */
+  const ROWS_BY_FEATURE: Record<GatedFeature, readonly string[]> = {
+    forms: ['Forms'],
+    donations: ['Donations'],
+    api: ['API access & 300+ integrations'],
+    automations: ['Automations'],
+    lists: ['Lists (segments)'],
+    volunteers: ['Volunteer management (teams & events)'],
+    canvassing: ['Canvassing companion app', 'Turf cutting', 'Walk lists & routes', 'Field reports'],
+    deliveries: ['Deliveries companion app', 'Yard sign requests', 'Route optimization', 'Delivery monitoring'],
+    companions: ['Companion volunteer access & monitoring'],
+  };
+
+  const allRows = FEATURE_MATRIX.flatMap((group) => group.rows);
+  const rowByLabel = new Map(allRows.map((row) => [row.label, row]));
+
+  it('maps every gated feature to at least one matrix row', () => {
+    // Adding a GATED_FEATURES entry without a matrix row means the site never mentions a
+    // restriction the server enforces — a customer discovers it by hitting a 403.
+    for (const feature of Object.keys(GATED_FEATURES) as GatedFeature[]) {
+      expect(ROWS_BY_FEATURE[feature]?.length ?? 0).toBeGreaterThan(0);
+    }
+  });
+
+  it('references only labels that actually exist in the matrix', () => {
+    // Catches a renamed row, which would otherwise make the check below silently vacuous.
+    for (const labels of Object.values(ROWS_BY_FEATURE)) {
+      for (const label of labels) {
+        expect(rowByLabel.has(label), `no FEATURE_MATRIX row labelled "${label}"`).toBe(true);
+      }
+    }
+  });
+
+  it('advertises exactly what the backend enforces, per plan', () => {
+    for (const [feature, labels] of Object.entries(ROWS_BY_FEATURE) as [GatedFeature, readonly string[]][]) {
+      for (const label of labels) {
+        const row = rowByLabel.get(label);
+        if (!row) throw new Error(`no FEATURE_MATRIX row labelled "${label}"`);
+
+        for (const plan of ['free', 'grassroots', 'movement'] as const) {
+          expect(row.values[plan], `"${label}" on ${plan}`).toBe(planAllowsFeature(plan, feature));
+        }
+      }
+    }
+  });
+
+  it('does not claim any ungated row is unavailable on a plan it is actually on', () => {
+    // The inverse drift: a row showing ✗ for a feature nothing gates. Boolean-valued rows only —
+    // string cells ("Up to 1,000", "2 seats") are quantities, not availability.
+    const gatedLabels = new Set(Object.values(ROWS_BY_FEATURE).flat());
+    for (const row of allRows) {
+      if (gatedLabels.has(row.label)) continue;
+      if (typeof row.values.free !== 'boolean') continue;
+      expect(row.values.free, `"${row.label}" is shown as paid-only but nothing gates it`).toBe(true);
     }
   });
 });

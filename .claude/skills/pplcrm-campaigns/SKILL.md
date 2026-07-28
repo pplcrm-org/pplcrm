@@ -69,6 +69,17 @@ The single choke point is `NewslettersController.buildRecipientQuery` — change
 - Frontend: `CampaignContextService` (`services/campaign-context.service.ts`) holds the
   `activeCampaignId` signal (for non-admins the backend pins it to their assignment). Scoped
   services stamp `campaignId` into getAll options and `campaign_id` into add payloads.
+- **Scope is server-derived, not client-supplied (changed 2026-07-27, audit finding C4).** The
+  `isAuthed` middleware resolves the caller's pin (their assignment, or the office context) for
+  everyone who is not an admin/owner and binds it to the async context
+  (`lib/tenant-context.ts` -> `pinnedCampaignId()`). `BaseRepository` consults that pin **first**,
+  and applies it to `getAll`, `getOneById`, `update` and `deleteMany`. Consequences:
+  - Omitting `campaignId` no longer disables scoping — it narrows to the caller's own campaign.
+    (It used to return every campaign's rows.)
+  - By-id procedures are scoped too, even though they carry no campaign key. A pinned Editor can
+    no longer fetch, update, delete, or **send** another campaign's record by knowing its id.
+  - A client-supplied `campaignId` that disagrees with the pin is still refused by the middleware,
+    which also fails closed on a campaign key whose shape it cannot compare (it runs pre-Zod).
 - Backend reads: `options.campaignId` filters generically in `BaseRepository.getAll` for tables in
   `CAMPAIGN_SCOPED_TABLES` (base.repo.ts) — `newsletters`, `donations`, `donation_pledges`,
   `donation_periods`, `web_forms`, `lists`, `events`, `turfs`, `delivery_requests`,

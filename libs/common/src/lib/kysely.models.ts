@@ -96,6 +96,7 @@ export interface Models {
   background_jobs: BackgroundJobs;
   webhook_events: WebhookEvents;
   ops_heartbeats: OpsHeartbeats;
+  rate_limits: RateLimits;
   data_exports: DataExports;
   potential_duplicates: PotentialDuplicates;
   dismissed_duplicate_groups: DismissedDuplicateGroups;
@@ -420,7 +421,9 @@ interface TurfHouseholds extends JunctionRecordType {
 interface TurfAssignments extends RecordType {
   turf_id: string;
   team_id: string | null;
-  token: string;
+  /** SHA-256 of the bearer token. The raw value is never stored — see migration
+   *  2026-07-27-z-turf-assignment-token-hash. */
+  token_hash: string;
   status: string;
   assigned_at: Timestamp;
   /** The person this link belongs to — the companion access layer verifies against them. */
@@ -448,6 +451,8 @@ interface CompanionVolunteers {
   approved_by: string | null;
   approved_at: Timestamp | null;
   revoked_at: Timestamp | null;
+  /** Per-volunteer roam override; null = inherit `app.canvass_volunteer_roam`. */
+  can_roam: boolean | null;
   createdby_id: string | null;
   updatedby_id: string | null;
   created_at: Generated<Timestamp>;
@@ -744,6 +749,14 @@ interface Tenants extends Omit<RecordType, 'createdby_id'>, AddressType {
   paused_at: Timestamp | null;
   /** Demo mode: set while the seeded test-drive data is present; NULL = exited/never. */
   demo_mode_at: Timestamp | null;
+  /** Beta gate: 'pending' until pplCRM ops approves the account, then 'approved' (or 'declined').
+   * Anything other than 'approved' blocks every sign-in path — see modules/auth/tenant-approval.ts. */
+  approval_status: Generated<'pending' | 'approved' | 'declined'>;
+  approval_requested_at: Timestamp | null;
+  approved_at: Timestamp | null;
+  declined_at: Timestamp | null;
+  /** SHA-256 of the single-use token in the ops approve/decline link; NULLed once ops decides. */
+  approval_token_hash: string | null;
   /** Automated anti-abuse pause (hard-bounce tripwire): blocks newsletter sending only.
    * Distinct from the user-initiated `paused_at` and the sign-in-blocking `suspended_at`. */
   sending_paused_at: Timestamp | null;
@@ -762,6 +775,8 @@ interface WorkspaceApiKeys {
   tenant_id: string;
   key_hash: string;
   key_preview: string;
+  /** 1 or 2 — a tenant may hold two live keys so a rotation can overlap. Unique per tenant. */
+  slot: Generated<number>;
   created_at: Generated<Timestamp>;
   last_used_at: Timestamp | null;
 }
@@ -779,6 +794,14 @@ interface Emails extends RecordType {
   is_favourite: boolean;
   deleted_at: Timestamp | null;
   status: EmailStatus | null;
+  /**
+   * When the message is dated — denormalized from `email_headers.date_sent`, falling back to this
+   * row's own `created_at`. It exists so the inbox can sort on one indexed column; sorting by
+   * `coalesce(email_headers.date_sent, emails.created_at)` across a join was unindexable and made
+   * every page load a full fetch plus external sort. Writers must keep it in step with the header
+   * row (see the 2026-07-26 sort-indexes-hot-lists migration).
+   */
+  date_sent: Timestamp;
 }
 
 interface Newsletters extends RecordType {
@@ -1087,6 +1110,18 @@ export interface OpsHeartbeats {
   name: string;
   beat_at: Generated<Timestamp>;
   details: Json | null;
+}
+
+/**
+ * Global (non-tenant) fixed-window counters for the durable rate limiter
+ * (lib/durable-rate-limiter.ts). `key` is an opaque, caller-namespaced string that may
+ * identify a tenant, an IP, or an email address, so there is no tenant_id to scope by —
+ * see the `rate_limits` entry in the no-unscoped-db-query allow-list.
+ */
+export interface RateLimits {
+  key: string;
+  window_start: Timestamp;
+  count: Generated<number>;
 }
 
 export interface WebhookEvents {

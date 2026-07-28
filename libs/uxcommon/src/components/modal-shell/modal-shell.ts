@@ -62,8 +62,10 @@ export class ModalShell {
       if (open === undefined) return;
       const dlg = this.dlgRef().nativeElement;
       try {
-        if (open && !dlg.open) dlg.showModal();
-        else if (!open && dlg.open) dlg.close();
+        if (open && !dlg.open) {
+          dlg.showModal();
+          this.focusFirstField(dlg);
+        } else if (!open && dlg.open) dlg.close();
       } catch {
         /* dialog not connected yet — the next effect run settles it */
       }
@@ -77,7 +79,30 @@ export class ModalShell {
 
   public show(): void {
     const dlg = this.dlgRef().nativeElement;
-    if (!dlg.open) dlg.showModal();
+    if (!dlg.open) {
+      dlg.showModal();
+      this.focusFirstField(dlg);
+    }
+  }
+
+  /**
+   * Put initial focus on the dialog's first real control, not on Close.
+   *
+   * The close (X) button precedes <ng-content /> in DOM order, so `showModal()` — which focuses
+   * the first tabbable descendant — landed on "Close" for every form dialog in the app. A keyboard
+   * or screen-reader user opened a form already focused on the way out of it.
+   *
+   * Anything explicitly marked `autofocus` wins; otherwise the first enabled field. If a dialog
+   * has no fields at all (a pure confirmation), focus stays where the browser put it.
+   */
+  private focusFirstField(dlg: HTMLDialogElement): void {
+    const explicit = dlg.querySelector<HTMLElement>('[autofocus]');
+    const target =
+      explicit ??
+      dlg.querySelector<HTMLElement>(
+        'input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled])',
+      );
+    target?.focus();
   }
 
   protected onCancel(e: Event): void {

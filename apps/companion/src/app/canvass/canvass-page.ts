@@ -10,6 +10,7 @@ import { CanvassMap } from './canvass-map';
 import { CanvassMe } from './canvass-me';
 import { CanvassStore } from './canvass-store';
 import { CanvassSurvey } from './canvass-survey';
+import { CanvassTurfPicker } from './canvass-turf-picker';
 
 import type { PcIconNameType } from '@icons/icons.index';
 
@@ -25,15 +26,36 @@ type TabId = 'list' | 'map' | 'me';
   selector: 'pc-canvass-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
   providers: [CanvassStore],
-  imports: [CompanionGate, CanvassHousehold, CanvassLanding, CanvassList, CanvassMap, CanvassMe, CanvassSurvey, Icon],
+  imports: [
+    CompanionGate,
+    CanvassHousehold,
+    CanvassLanding,
+    CanvassList,
+    CanvassMap,
+    CanvassMe,
+    CanvassSurvey,
+    CanvassTurfPicker,
+    Icon,
+  ],
   template: `
     <pc-companion-gate kind="turf" [token]="token()" (ready)="onReady()">
-      @if (store.loadError()) {
+      <!-- Outside the payload guard on purpose: the picker is how a volunteer recovers
+           when the turf they arrived on is gone, so it must render with no turf loaded. -->
+      @if (store.view().kind === 'picker') {
+        <div class="mx-auto flex min-h-screen w-full max-w-md flex-col">
+          <pc-canvass-turf-picker></pc-canvass-turf-picker>
+        </div>
+      } @else if (store.loadError() && !store.payload()) {
         <div class="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
           <pc-icon name="exclamation-triangle" [size]="8" class="text-warning"></pc-icon>
           <h1 class="text-lg font-semibold">Couldn't load your turf</h1>
           <p class="text-base-content/70">{{ store.loadError() }}</p>
           <button type="button" class="btn btn-primary" (click)="retry()">Try again</button>
+          <!-- A turf can be handed to someone else mid-shift. Ending at a dead end would
+               be the wrong answer when they may well be on other turfs. -->
+          <button type="button" class="btn btn-outline btn-secondary" (click)="openPicker()">
+            Choose another turf
+          </button>
         </div>
       } @else if (!store.payload()) {
         <div class="flex min-h-screen items-center justify-center">
@@ -127,6 +149,11 @@ export class CanvassPage {
 
   protected onReady(): void {
     void this.store.load(this.token());
+  }
+
+  protected openPicker(): void {
+    this.store.loadError.set(null);
+    this.store.view.set({ kind: 'picker' });
   }
 
   protected openTab(tab: TabId): void {

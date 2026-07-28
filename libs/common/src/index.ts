@@ -9,7 +9,20 @@ export type {
   signUpInputType,
 } from './lib/auth';
 
-export { AUTH_ROLE_LABELS, GENERIC_SIGNIN_ERROR, authRoleLabel, signInInputObj, signUpInputObj } from './lib/auth';
+export {
+  AUTH_ROLES,
+  AUTH_ROLE_LABELS,
+  DEFAULT_AUTH_ROLE,
+  GENERIC_SIGNIN_ERROR,
+  TENANT_PENDING_APPROVAL_MESSAGE,
+  TENANT_PENDING_APPROVAL_REASON,
+  authRoleLabel,
+  isAuthRole,
+  isPrivilegedRole,
+  signInInputObj,
+  signUpInputObj,
+} from './lib/auth';
+export type { AuthRole } from './lib/auth';
 
 export type {
   INow,
@@ -96,6 +109,7 @@ export type {
   UpdateTurfType,
   CutTurfsType,
   AssignTurfType,
+  RemoveCanvasserType,
   FieldReportRangeType,
   LogKnockType,
 } from './lib/models';
@@ -159,6 +173,9 @@ export {
   UpdateTaskObj,
   sortModelItem,
   getAllOptions,
+  MAX_PAGE_SIZE,
+  MAX_BULK_IDS,
+  MAX_IMPORT_ROWS,
   exportCsvInput,
   exportCsvResponse,
   queueExportInput,
@@ -228,6 +245,7 @@ export {
   UpdateTurfObj,
   CutTurfsObj,
   AssignTurfObj,
+  RemoveCanvasserObj,
   FieldReportRangeObj,
   LogKnockObj,
   TURF_STATUSES,
@@ -342,6 +360,8 @@ export type {
   CompanionPerson,
   CompanionDoorOutcome,
   CompanionHousehold,
+  CompanionTurfChoice,
+  CompanionTurfChoices,
   CompanionTurfPayload,
   UpdateCompanionSettingsType,
 } from './lib/schemas/canvassing.schema';
@@ -531,3 +551,5 @@ export type { HelpRouteTarget } from './lib/help/help-links';
 export { classifyHelpRoute } from './lib/help/help-links';
 
 export { blockToMarkdown, articleToMarkdown } from './lib/help/help-markdown';
+
+export { haversineKm, type LatLng } from './lib/geo/haversine';

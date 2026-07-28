@@ -29,7 +29,13 @@ describe('BillingRouter', () => {
     } as any);
     const result = await caller.getDetails();
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' });
+    expect(spy).toHaveBeenCalledWith({
+      tenant_id: '1',
+      user_id: '1',
+      session_id: 's1',
+      role: 'owner',
+      campaign_id: null,
+    });
     expect(result).toEqual(mockDetails);
   });
 
@@ -50,7 +56,13 @@ describe('BillingRouter', () => {
     } as any);
     const result = await caller.getUsage();
 
-    expect(spy).toHaveBeenCalledWith({ tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' });
+    expect(spy).toHaveBeenCalledWith({
+      tenant_id: '1',
+      user_id: '1',
+      session_id: 's1',
+      role: 'owner',
+      campaign_id: null,
+    });
     expect(result).toEqual(mockUsage);
   });
 
@@ -65,7 +77,7 @@ describe('BillingRouter', () => {
     const result = await caller.createCheckout({ plan: 'grassroots' });
 
     expect(spy).toHaveBeenCalledWith(
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
       'grassroots',
       'month', // interval defaults to monthly when omitted
     );
@@ -83,7 +95,7 @@ describe('BillingRouter', () => {
     await caller.createCheckout({ plan: 'movement', interval: 'year' });
 
     expect(spy).toHaveBeenCalledWith(
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
       'movement',
       'year',
     );
@@ -147,7 +159,7 @@ describe('BillingRouter', () => {
 
     await caller.activateMockPlan({ plan: 'grassroots', quantity: 3 });
     expect(activateSpy).toHaveBeenCalledWith(
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
       'grassroots',
       3,
       'month',
@@ -155,7 +167,7 @@ describe('BillingRouter', () => {
 
     await caller.activateMockPlan({ plan: 'grassroots', quantity: 3, interval: 'year' });
     expect(activateSpy).toHaveBeenLastCalledWith(
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
       'grassroots',
       3,
       'year',
@@ -176,7 +188,7 @@ describe('BillingRouter', () => {
 
     await caller.activateMockPlan({ plan: 'movement' });
     expect(activateSpy).toHaveBeenCalledWith(
-      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner' },
+      { tenant_id: '1', user_id: '1', session_id: 's1', role: 'owner', campaign_id: null },
       'movement',
       undefined,
       'month',

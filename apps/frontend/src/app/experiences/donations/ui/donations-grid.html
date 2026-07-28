@@ -22,8 +22,20 @@
   <progress class="progress w-full text-primary mb-6"></progress>
   }
 
-  <!-- Stats Grid (Fig. 15: THIS MONTH, AVERAGE GIFT, monthly-donor, receipt-status) -->
-  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+  <!-- Stats Grid (Fig. 15: TOTAL RAISED, THIS MONTH, AVERAGE GIFT, monthly-donor, receipt-status) -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">
+    <div class="stats border border-base-200 bg-base-100 shadow-sm">
+      <div class="stat p-4">
+        <div class="stat-title pc-eyebrow">Total Raised</div>
+        <div class="stat-value text-xl font-extrabold text-primary sm:text-2xl mt-1 tabular-nums">
+          {{ totalRaised() | currency:'USD':'symbol':'1.2-2' }}
+        </div>
+        <div class="stat-desc text-[10px] text-base-content/40 mt-1">
+          all time · {{ totalGiftCount() }} {{ totalGiftCount() === 1 ? 'gift' : 'gifts' }}
+        </div>
+      </div>
+    </div>
+
     <div class="stats border border-base-200 bg-base-100 shadow-sm">
       <div class="stat p-4">
         <div class="stat-title pc-eyebrow">This Month</div>
@@ -95,7 +107,15 @@
       </td>
       <td class="text-right font-bold text-base-content tabular-nums">{{ formatCurrency(d.amount) }}</td>
       <td>
-        <span class="badge badge-ghost text-xs font-semibold px-2.5 py-1 capitalize">{{ methodLabel(d.method) }}</span>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="badge badge-ghost text-xs font-semibold px-2.5 py-1 capitalize"
+            >{{ methodLabel(d.method) }}</span
+          >
+          <!-- An installment of a monthly pledge, so the All tab does not read as all one-time gifts. -->
+          @if (d.pledge_id) {
+          <span class="badge badge-outline badge-primary text-xs font-semibold px-2.5 py-1">Monthly</span>
+          }
+        </div>
       </td>
       <td class="text-xs text-base-content/75 tabular-nums">{{ formatDate(d.created_at) }}</td>
       <td>

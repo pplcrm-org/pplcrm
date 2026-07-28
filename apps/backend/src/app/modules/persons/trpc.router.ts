@@ -4,6 +4,8 @@ import {
   exportCsvResponse,
   getAllOptions,
   idSchema,
+  MAX_BULK_IDS,
+  MAX_IMPORT_ROWS,
 } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
@@ -50,9 +52,12 @@ function deleteOne() {
 }
 
 const deleteManyInput = z.union([
-  z.array(idSchema).min(1, 'At least one ID is required'),
+  z.array(idSchema).min(1, 'At least one ID is required').max(MAX_BULK_IDS, 'Too many items selected for one action'),
   z.object({
-    ids: z.array(idSchema).min(1, 'At least one ID is required'),
+    ids: z
+      .array(idSchema)
+      .min(1, 'At least one ID is required')
+      .max(MAX_BULK_IDS, 'Too many items selected for one action'),
     force: z.boolean().optional(),
   }),
 ]);
@@ -193,7 +198,7 @@ function importMany() {
   });
 
   const Input = z.object({
-    rows: z.array(ImportRow),
+    rows: z.array(ImportRow).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
     tags: z.array(z.string().trim().min(1, 'Tag cannot be empty').max(50, 'Tag too long')).optional(),
     skipped: z.number().int().nonnegative().optional(),
     file_name: z.string().trim().min(1).max(255).optional(),

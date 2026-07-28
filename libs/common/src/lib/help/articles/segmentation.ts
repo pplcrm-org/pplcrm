@@ -31,7 +31,7 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'manage', text: 'Manage the vocabulary (administrators)' },
       {
         kind: 'p',
-        text: 'Administrators curate the shared vocabulary under [Tags](/tags) and [Issues](/issues) in the Data section. Both pages open with a sentence naming the whole vocabulary: how many tags/issues exist, how many applications, and (on Tags) how many have not been used in 90 days.',
+        text: 'Administrators curate the shared vocabulary under [Tags & issues](/tags) in the Data section. One entry, two tabs: [Tags](/tags) and [Issues](/issues). Each tab opens with a sentence naming the whole vocabulary: how many tags or issues exist, how many applications, and (on Tags) how many have not been used in 90 days.',
       },
       {
         kind: 'list',
@@ -44,7 +44,7 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The [Issues](/issues) page additionally ranks by interest with a trend (new applications in the last 30 days) and a top ward, since issues exist to tell the policy team what people care about, not to describe who someone is, which is what tags are for.',
+        text: 'The [Issues](/issues) tab additionally ranks by interest with a trend (new applications in the last 30 days) and a top ward, since issues exist to tell the policy team what people care about, not to describe who someone is, which is what tags are for.',
       },
       {
         kind: 'callout',

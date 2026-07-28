@@ -66,21 +66,21 @@ const HEROES: Record<Audience, Hero> = {
     sub: 'A shared inbox, tasks with due dates, and an activity log that remembers every touch. Casework that survives staff turnover and election cycles.',
     url: 'app.pplcrm.com/inbox',
     kind: 'inbox',
-    img: 'assets/site-shots/01-shot.png',
+    img: 'assets/site-shots/01-shot.webp',
   },
   camp: {
     h1: 'Built for the people who knock and win campaigns.',
     sub: 'Turf cutting, live field reports, donations and yard-sign routes. A campaign HQ that keeps score.',
     url: 'app.pplcrm.com/canvassing',
     kind: 'canvassing',
-    img: 'assets/site-shots/02-shot.png',
+    img: 'assets/site-shots/02-shot.webp',
   },
   np: {
     h1: 'Donors, volunteers and neighbours. One list.',
     sub: 'Stop reconciling three spreadsheets. Gifts, drives and newsletters live on one person’s record.',
     url: 'app.pplcrm.com/donations',
     kind: 'donations',
-    img: 'assets/site-shots/03-shot.png',
+    img: 'assets/site-shots/03-shot.webp',
   },
 };
 

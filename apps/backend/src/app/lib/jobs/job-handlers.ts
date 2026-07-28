@@ -23,6 +23,7 @@ import {
 } from './handlers/newsletter.handlers';
 import {
   handleCheckDueTasks,
+  handleProcessMentions,
   handleSendEventRegistrationConfirmation,
   handleSendEventReminder,
   handleSendFormNotifications,
@@ -126,6 +127,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'check_due_tasks':
       await handleCheckDueTasks(db);
+      break;
+    case 'process_mentions':
+      await handleProcessMentions(job, db);
       break;
     case 'ops_watchdog':
       await handleOpsWatchdog(db);

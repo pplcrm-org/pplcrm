@@ -22,6 +22,7 @@ import type { QueryParams } from '../../lib/base.repo';
 import { NotificationsRepo } from '../notifications/repositories/notifications.repo';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { notificationEnabled } from '../../lib/profile-preferences';
+import { assertAssigneeInTenant, findAssigneeForNotification } from '../../lib/tenant-members';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
 import { StorageService } from '../../lib/storage.service';
 import { TRPCError } from '@trpc/server';
@@ -32,13 +33,17 @@ import { NotFoundError } from '../../errors/app-errors';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 
 export class TasksController extends BaseController<'tasks', TasksRepo> {
-  private mailService = new TransactionalEmailService();
+  private mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
 
   constructor() {
     super(new TasksRepo());
   }
 
   public async addTask(payload: AddTaskType, auth: IAuthKeyPayload) {
+    // The FK on tasks.assigned_to is not composite with tenant_id, so nothing else stops a
+    // cross-tenant assignee being stored (see lib/tenant-members).
+    await assertAssigneeInTenant(this.getRepo().db, auth.tenant_id, payload.assigned_to);
+
     const row = {
       name: payload.name,
       details: payload.details,
@@ -59,12 +64,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     if (task && payload.assigned_to) {
       try {
         const assignedTo = payload.assigned_to;
-        const assignee = await this.getRepo()
-          .db.selectFrom('authusers')
-          .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
-          .select(['authusers.email', 'authusers.first_name', 'profiles.preferences as profile_preferences'])
-          .where('authusers.id', '=', assignedTo)
-          .executeTakeFirst();
+        const assignee = await findAssigneeForNotification(this.getRepo().db, auth.tenant_id, assignedTo);
         if (assignee) {
           if (notificationEnabled(assignee.profile_preferences, 'task_assigned_in_app')) {
             const notificationsRepo = new NotificationsRepo();
@@ -173,6 +173,8 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
   }
 
   public async updateTask(id: string, row: UpdateTaskType, auth: IAuthKeyPayload) {
+    await assertAssigneeInTenant(this.getRepo().db, auth.tenant_id, row.assigned_to);
+
     const existingTask = (await this.getOneById({ tenant_id: auth.tenant_id, id })) as
       | Selectable<Models['tasks']>
       | undefined;
@@ -182,12 +184,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     if (updated && row.assigned_to && row.assigned_to !== existingTask?.assigned_to) {
       try {
         const assignedTo = row.assigned_to;
-        const assignee = await this.getRepo()
-          .db.selectFrom('authusers')
-          .leftJoin('profiles', 'profiles.auth_id', 'authusers.id')
-          .select(['authusers.email', 'authusers.first_name', 'profiles.preferences as profile_preferences'])
-          .where('authusers.id', '=', assignedTo)
-          .executeTakeFirst();
+        const assignee = await findAssigneeForNotification(this.getRepo().db, auth.tenant_id, assignedTo);
         if (assignee) {
           if (notificationEnabled(assignee.profile_preferences, 'task_assigned_in_app')) {
             const notificationsRepo = new NotificationsRepo();

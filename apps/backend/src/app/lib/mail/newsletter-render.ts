@@ -1,3 +1,5 @@
+import { sanitizeHtml } from './sanitize-util';
+
 /**
  * Pure, I/O-free render transforms applied to newsletter content at send time. Kept side-effect free
  * so they can be unit-tested in isolation (see newsletter-render.spec.ts). The send handler
@@ -84,9 +86,22 @@ export function injectPreheader(html: string, previewText: string | null | undef
   return preheader + html;
 }
 
-/** Composes the send-time HTML transforms: strip block data, rewrite images, inject preheader. */
+/**
+ * Composes the send-time HTML transforms: sanitize, strip block data, rewrite images,
+ * inject preheader.
+ *
+ * SECURITY (finding M4): the sanitize step was missing, which made this path asymmetric
+ * with the mailbox-compose path (modules/emails/controller.ts), where tenant HTML IS
+ * sanitized. A compromised or malicious editor account could put arbitrary markup —
+ * scripts, tracking beacons, credential-harvesting forms — into a newsletter and have it
+ * sent from the tenant's own verified, DKIM-signed domain to its whole audience.
+ *
+ * Sanitizing before the other transforms means they only ever operate on markup that has
+ * already survived the allow-list.
+ */
 export function renderNewsletterHtml(html: string, options: { baseUrl: string; previewText?: string | null }): string {
-  let out = stripEditorBlockData(html);
+  let out = sanitizeHtml(html);
+  out = stripEditorBlockData(out);
   out = rewriteRelativeImageUrls(out, options.baseUrl);
   out = injectPreheader(out, options.previewText);
   return out;

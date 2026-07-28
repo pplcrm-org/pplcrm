@@ -3,38 +3,18 @@
   @if (selected(); as form) {
   <div class="pc-panel">
     <!-- Actions row -->
+    @if (isDonationForm(form)) {
+    <!-- Donation forms don't write form_submissions, so there's no Responses tab; donors land in
+         the Donations ledger. Editing keeps its Stripe-backed fundraising editor. -->
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-base-200 px-5 py-4">
-      @if (isDonationForm(form)) {
-      <!-- Donation forms don't write form_submissions, so there's no Responses tab; donors land in
-           the Donations ledger. Editing keeps its Stripe-backed fundraising editor. -->
       <span class="pc-eyebrow">Donation form</span>
       <button class="btn btn-primary btn-sm gap-1.5" (click)="openDonationEditor()" type="button">
         <pc-icon name="pencil-square" [size]="4"></pc-icon>
         Edit donation form
       </button>
-      } @else {
-      <div class="join">
-        <button
-          class="btn join-item btn-sm"
-          [class.bg-base-100]="tab() === 'form'"
-          [class.text-neutral-500]="tab() !== 'form'"
-          (click)="setTab('form')"
-          type="button"
-        >
-          Form
-        </button>
-        <button
-          class="btn join-item btn-sm"
-          [class.bg-base-100]="tab() === 'responses'"
-          [class.text-neutral-500]="tab() !== 'responses'"
-          (click)="setTab('responses')"
-          type="button"
-        >
-          Responses
-          <span class="badge badge-sm badge-ghost tabular-nums">{{ form.submission_count }}</span>
-        </button>
-      </div>
-
+    </div>
+    } @else {
+    <div class="flex flex-wrap items-center justify-end gap-3 border-b border-base-200 px-5 py-4">
       <div class="flex items-center gap-2">
         @if (showEdit) {
         <button class="btn btn-ghost btn-sm gap-1" (click)="enterEdit()" type="button">
@@ -55,8 +35,8 @@
         </button>
         } }
       </div>
-      }
     </div>
+    }
 
     <!-- Public link row -->
     <div class="flex items-center gap-3 bg-base-200/60 px-5 py-3">
@@ -109,6 +89,20 @@
     } @else if (form.status === 'archived') {
     <div class="border-b border-base-200 bg-base-200 px-5 py-2.5 text-xs text-base-content/70">
       Archived: the public link shows a closed notice. Restore to edit or publish again.
+    </div>
+    }
+
+    <!-- Surface switch (Form / Responses) — the same underline tab row the People grid uses;
+         donation forms have no responses, so they get no row. -->
+    @if (!isDonationForm(form)) {
+    <div class="px-5 pt-3">
+      <pc-tab-bar
+        [tabs]="previewTabs()"
+        [activeTab]="tab()"
+        (activeTabChange)="setTabById($event)"
+        variant="underline"
+        label="Form and responses"
+      />
     </div>
     }
 

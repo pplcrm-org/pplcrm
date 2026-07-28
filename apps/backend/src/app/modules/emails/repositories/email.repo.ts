@@ -94,8 +94,9 @@ export class EmailRepo extends BaseRepository<'emails'> {
             sql`lower(p_sender.email) = lower(emails.from_email) or lower(p_sender.email2) = lower(emails.from_email)`,
           ),
       )
+      // `date_sent` now comes from selectAll('emails') — it is denormalized onto the row and kept
+      // in step with the header, so selecting eh.date_sent as well would duplicate the alias.
       .selectAll('emails')
-      .select('eh.date_sent as date_sent')
       .select('p_sender.first_name as sender_first_name')
       .select('p_sender.last_name as sender_last_name')
       // numeric count (coalesced to 0)
@@ -116,7 +117,10 @@ export class EmailRepo extends BaseRepository<'emails'> {
       .where('emails.tenant_id', '=', tenant_id)
       .where('emails.campaign_id', '=', campaign_id)
       .where((eb) => whereForFolder(eb))
-      .orderBy(sql`coalesce(eh.date_sent, emails.created_at)`, 'desc')
+      // One indexed column on one table (idx_emails_inbox_sort, added by the 2026-07-26 sort-indexes migration). This was
+      // `coalesce(eh.date_sent, emails.created_at)` — a COALESCE across a join, which no index
+      // can serve, so every page load fetched the tenant's whole mailbox and sorted it externally.
+      .orderBy('emails.date_sent', 'desc')
       // Paging tiebreaker: timestamps collide (bulk syncs land whole batches with
       // identical date_sent), and without a unique sort key limit/offset pages can
       // repeat or skip rows. `emails.id` makes the order total and stable.

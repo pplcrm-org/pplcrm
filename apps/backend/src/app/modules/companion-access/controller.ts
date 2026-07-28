@@ -2,6 +2,9 @@ import { randomInt } from 'node:crypto';
 
 import type { Transaction } from 'kysely';
 
+import { hashVerificationCode, verificationCodeMatches } from './verification-code-hash';
+import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
+
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import type {
   CompanionAccessPayload,
@@ -35,6 +38,10 @@ const VERIFY_START_LIMIT = 3; // sends per token per window
 const VERIFY_START_WINDOW_MS = 15 * 60 * 1000;
 const VERIFY_CONFIRM_LIMIT = 15; // confirms per token per window (attempt lockout is per code)
 const VERIFY_CONFIRM_WINDOW_MS = 15 * 60 * 1000;
+/** Ceiling on code sends per volunteer link per day — bounds the indefinite SMS drip the
+ *  per-window limit alone allowed (finding M6). Far above any real "resend it" loop. */
+const VERIFY_SENDS_PER_DAY = 20;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** What a capability link resolves to, whichever app it belongs to. */
 interface ResolvedLink {
@@ -43,6 +50,15 @@ interface ResolvedLink {
   volunteer_person_id: string | null;
   /** The staff account behind the link — actor for activity attribution. */
   organizer_id: string;
+}
+
+/** Who a device session belongs to, resolved without any capability link. */
+export interface ResolvedCompanionSession {
+  tenant_id: string;
+  volunteer_id: string;
+  person_id: string;
+  /** Per-volunteer roam override; null = inherit the workspace setting. */
+  can_roam: boolean | null;
 }
 
 interface PersonContacts {
@@ -62,7 +78,7 @@ interface PersonContacts {
  */
 export class CompanionAccessController {
   private activityRepo = new UserActivityRepo();
-  private mailService = new TransactionalEmailService();
+  private mailService = new TransactionalEmailService({ defaultAudience: 'account' });
   private notificationsRepo = new NotificationsRepo();
   private routesRepo = new DeliveryRoutesRepo();
   private sessionsRepo = new CompanionSessionsRepo();
@@ -129,6 +145,21 @@ export class CompanionAccessController {
       throw new ForbiddenError('This organization is temporarily unavailable. Please contact your organizer.');
     }
 
+    // NOT gated on sending_paused_at, deliberately: a hard-bounce pause halts newsletters
+    // but must not strand volunteers already in the field — only a full suspension (abuse
+    // review) closes this path. See the spec that pins this behaviour.
+    //
+    // The abuse the pause would otherwise have covered (finding M6) is cost, not content:
+    // whoever holds a link could drip 3 SMS every 15 minutes indefinitely, ~288/day, on the
+    // platform's Twilio account. A per-token daily ceiling bounds that without touching the
+    // legitimate "I didn't get the code, resend" loop.
+    await checkDurableRateLimit(
+      `companionVerifyStart:day:${link.tenant_id}:${link.volunteer_person_id}`,
+      VERIFY_SENDS_PER_DAY,
+      DAY_MS,
+      'Too many verification codes have been sent for this link today. Contact your organizer.',
+    );
+
     const person = await this.personContacts(link.tenant_id, link.volunteer_person_id);
     if (!person) throw new NotFoundError('This link is not active.');
 
@@ -148,7 +179,7 @@ export class CompanionAccessController {
         {
           tenant_id: link.tenant_id,
           id: volunteer.id,
-          code_hash: hashToken(code),
+          code_hash: hashVerificationCode(volunteer.id, code),
           expires_at: new Date(Date.now() + CODE_TTL_MS),
           channel,
         },
@@ -207,7 +238,8 @@ export class CompanionAccessController {
       await this.volunteersRepo.clearVerifyCode({ tenant_id: link.tenant_id, id: volunteer.id });
       throw new BadRequestError('Too many attempts. Request a new code.');
     }
-    if (hashToken(code) !== volunteer.verify_code_hash) {
+    // Constant-time, and keyed+bound to this volunteer — see verification-code-hash.
+    if (!verificationCodeMatches(volunteer.id, code, volunteer.verify_code_hash)) {
       await this.volunteersRepo.bumpVerifyAttempts({ tenant_id: link.tenant_id, id: volunteer.id });
       throw new BadRequestError("That code didn't match. Check it and try again.");
     }
@@ -283,6 +315,43 @@ export class CompanionAccessController {
     await this.sessionsRepo.touchLastUsed({ tenant_id: link.tenant_id, id: session.id });
   }
 
+  /**
+   * Identify the volunteer from their device session alone, with no capability link.
+   *
+   * `requireSession` answers "may the holder of this session open THIS link?" — it
+   * needs a link to check against. Surfaces that exist before a link does (picking a
+   * turf, switching turfs) need the other direction: "who is this, and what tenant
+   * are they in?" The session row already carries `tenant_id` and `volunteer_id`, so
+   * this is a lookup, not a new trust model — approval remains the trust decision and
+   * an unapproved volunteer is still refused.
+   *
+   * Deliberately a sibling rather than a change to `requireSession`: every existing
+   * `/t/:token` and `/r/:token` caller keeps its link-first check untouched.
+   */
+  public async resolveSession(sessionToken: string | null | undefined): Promise<ResolvedCompanionSession> {
+    if (!sessionToken) throw new UnauthorizedError('Verification required.');
+
+    const session = await this.sessionsRepo.findByTokenHash(hashToken(sessionToken));
+    if (!session) throw new UnauthorizedError('Verification required.');
+    if (session.revoked_at || session.expires_at < new Date()) throw new UnauthorizedError('Verification required.');
+
+    const volunteer = await this.volunteersRepo.findById({
+      tenant_id: session.tenant_id,
+      id: session.volunteer_id,
+    });
+    if (!volunteer) throw new UnauthorizedError('Verification required.');
+    if (volunteer.status !== 'approved') throw new ForbiddenError('Waiting for organizer approval.');
+
+    await this.sessionsRepo.touchLastUsed({ tenant_id: session.tenant_id, id: session.id });
+
+    return {
+      tenant_id: session.tenant_id,
+      volunteer_id: volunteer.id,
+      person_id: volunteer.person_id,
+      can_roam: volunteer.can_roam ?? null,
+    };
+  }
+
   // ---------------------------------------------------------------- admin API
 
   public async getAllVolunteers(tenant_id: string): Promise<CompanionVolunteerRow[]> {
@@ -306,6 +375,41 @@ export class CompanionAccessController {
           entity: 'companion_volunteers',
           entity_id: id,
           metadata: { action: 'volunteer_approved', message: 'Approved companion app access' },
+        },
+        trx,
+      );
+    });
+  }
+
+  /**
+   * Pin one volunteer to their assigned turfs, or trust one to roam, without moving the
+   * workspace setting. `null` hands them back to whatever the workspace says.
+   */
+  public async setVolunteerRoam(auth: IAuthKeyPayload, id: string, canRoam: boolean | null): Promise<void> {
+    const volunteer = await this.volunteersRepo.findById({ tenant_id: auth.tenant_id, id });
+    if (!volunteer) throw new NotFoundError('Volunteer not found.');
+    await this.volunteersRepo.transaction().execute(async (trx) => {
+      await this.volunteersRepo.setCanRoam(
+        { tenant_id: auth.tenant_id, id, can_roam: canRoam, user_id: auth.user_id },
+        trx,
+      );
+      await this.activityRepo.log(
+        {
+          tenant_id: auth.tenant_id,
+          user_id: auth.user_id,
+          activity: 'update',
+          entity: 'companion_volunteers',
+          entity_id: id,
+          metadata: {
+            action: 'volunteer_roam_changed',
+            can_roam: canRoam,
+            message:
+              canRoam == null
+                ? 'Turf access follows the workspace setting'
+                : canRoam
+                  ? 'Allowed to pick their own turfs'
+                  : 'Limited to assigned turfs',
+          },
         },
         trx,
       );
@@ -402,6 +506,7 @@ export class CompanionAccessController {
         {
           to: admin.email,
           subject: `${volunteerName} is waiting for companion app approval`,
+          audience: 'staff',
           text: `${volunteerName} verified their contact and is waiting for approval to use their volunteer link. Approve them at ${approveUrl}`,
           html: `<h2>Volunteer waiting for approval</h2><p>${volunteerName} verified their contact and is waiting for approval to use their volunteer link.</p><div class="btn-container"><a class="btn" href="${approveUrl}">Review in pplCRM</a></div>`,
           tenant_id: link.tenant_id,

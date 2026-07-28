@@ -29,8 +29,8 @@ interface TagView {
             [color]="tag.color"
             [canDelete]="canDelete()"
             [compact]="true"
-            (click)="clicked(tag.name)"
-            (close)="closed(tag.name)"
+            (tagClicked)="clicked(tag.name)"
+            (tagClosed)="closed(tag.name)"
           ></pc-tagitem>
         }
       </pc-autocomplete>
@@ -43,8 +43,8 @@ interface TagView {
             [color]="tag.color"
             [canDelete]="canDelete()"
             [compact]="compact()"
-            (click)="clicked(tag.name)"
-            (close)="closed(tag.name)"
+            (tagClicked)="clicked(tag.name)"
+            (tagClosed)="closed(tag.name)"
           ></pc-tagitem>
         }
         @if (limit() !== undefined && !expanded() && tags().length > limit()!) {

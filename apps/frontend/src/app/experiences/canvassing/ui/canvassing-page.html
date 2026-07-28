@@ -22,8 +22,15 @@
     </div>
   </div>
 
-  <!-- Tabs (the standard pill tab bar) -->
-  <pc-tab-bar class="mb-4" [tabs]="pageTabs" [activeTab]="tab()" (activeTabChange)="selectTab($event)" />
+  <!-- Surface switch (turfs / field report) — the underline tab row the People grid uses -->
+  <pc-tab-bar
+    class="mb-4"
+    [tabs]="pageTabs"
+    [activeTab]="tab()"
+    (activeTabChange)="selectTab($event)"
+    variant="underline"
+    label="Canvassing views"
+  />
 
   @if (tab() === 'turfs') {
   <!-- In the field today -->
@@ -101,7 +108,7 @@
           <tr class="text-xs uppercase text-base-content/50">
             <th>Turf</th>
             <th>Size</th>
-            <th>Team</th>
+            <th>Canvassers</th>
             <th>Progress</th>
             <th>Last activity</th>
             <th></th>
@@ -121,10 +128,23 @@
             </td>
             <td class="whitespace-nowrap">{{ t.door_count }} doors</td>
             <td>
-              @if (t.team_name) {
-              <span>{{ t.team_name }}</span>
+              @if (t.canvassers.length > 0) {
+              <button
+                type="button"
+                class="flex cursor-pointer flex-wrap items-center gap-1 text-left"
+                [attr.aria-label]="'Manage the ' + t.canvassers.length + ' canvassers on ' + t.name"
+                (click)="assign(t)"
+              >
+                @for (c of visibleCanvassers(t); track c.person_id) {
+                <span class="badge badge-ghost badge-sm">{{ c.name }}</span>
+                } @if (extraCanvassers(t) > 0) {
+                <span class="text-xs text-base-content/60">+{{ extraCanvassers(t) }}</span>
+                }
+              </button>
               } @else {
-              <button type="button" class="btn btn-ghost btn-xs border-dashed" (click)="assign(t)">Assign</button>
+              <button type="button" class="btn btn-ghost btn-xs cursor-pointer border-dashed" (click)="assign(t)">
+                Add canvassers
+              </button>
               }
             </td>
             <td class="min-w-40">
@@ -149,10 +169,9 @@
               <pc-row-actions [label]="'Actions for ' + t.name">
                 <li>
                   <button type="button" (click)="assign(t)">
-                    {{ t.token ? 'Change volunteer' : 'Assign volunteer' }}
+                    {{ t.has_link ? 'Manage canvassers' : 'Add canvassers' }}
                   </button>
                 </li>
-                <li><button type="button" (click)="copyLink(t)">Copy volunteer link</button></li>
                 <li><button type="button" (click)="refresh(t)">Refresh from list</button></li>
                 <li>
                   <button type="button" class="text-error" (click)="retire(t)">Retire turf</button>
@@ -419,7 +438,7 @@
   <pc-assign-turf-dialog
     [turfId]="target.id"
     [turfName]="target.name"
-    (cancelled)="assignTarget.set(null)"
+    (closed)="onRosterClosed()"
     (assigned)="onAssigned($event)"
   />
   } @if (settingsOpen()) {

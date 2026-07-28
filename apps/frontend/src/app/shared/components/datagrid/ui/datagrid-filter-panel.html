@@ -5,7 +5,14 @@
     <div class="shrink-0">
       <div class="flex items-center justify-between mb-2">
         <h3 class="text-lg font-semibold">Filters</h3>
-        <button class="btn btn-ghost btn-sm px-2" (click)="closePanel.emit()">
+        <button
+          class="btn btn-ghost btn-sm px-2"
+          aria-label="Close the filter panel"
+          i18n-aria-label="@@datagrid.filterPanel.close.ariaLabel"
+          title="Close filters"
+          i18n-title="@@datagrid.filterPanel.close.title"
+          (click)="closePanel.emit()"
+        >
           <pc-icon name="chevron-right"></pc-icon>
         </button>
       </div>

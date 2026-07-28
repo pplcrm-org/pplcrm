@@ -6,6 +6,7 @@ import {
   CompanionVerifyStartObj,
 } from '../../../../../../../libs/common/src';
 import { CompanionAccessController } from '../controller';
+import { isRateLimited } from '../../../lib/rate-limiter';
 
 /**
  * Public companion access API (COMPANION-APPS-PLAN.md §4 A2) — the verify +
@@ -20,17 +21,9 @@ const controller = new CompanionAccessController();
 // Per-IP fixed-window rate limit (same shape as deliveries-public.route.ts).
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 60;
-const hits = new Map<string, { count: number; resetAt: number }>();
-
+/** Delegates to the shared limiter so these counters are swept instead of growing forever. */
 function rateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = hits.get(ip);
-  if (!entry || entry.resetAt < now) {
-    hits.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return false;
-  }
-  entry.count += 1;
-  return entry.count > RATE_MAX;
+  return isRateLimited(`companion-public:${ip}`, RATE_MAX, RATE_WINDOW_MS);
 }
 
 function statusOf(err: unknown): number {

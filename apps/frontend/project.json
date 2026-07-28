@@ -22,7 +22,15 @@
         "index": "apps/frontend/src/index.html",
         "browser": "apps/frontend/src/main.ts",
         "tsConfig": "apps/frontend/tsconfig.app.json",
-        "assets": ["apps/frontend/src/favicon.ico", "apps/frontend/src/assets"],
+        "assets": [
+          "apps/frontend/src/favicon.ico",
+          {
+            "glob": "**/*",
+            "input": "apps/frontend/src/assets",
+            "output": "assets",
+            "ignore": ["bg.webp"]
+          }
+        ],
         "styles": ["apps/frontend/src/styles.css"],
         "scripts": [],
         "polyfills": ["@angular/localize/init"],

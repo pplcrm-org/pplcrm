@@ -21,7 +21,7 @@ import type { Models } from '../../../../../../libs/common/src/lib/kysely.models
 import { env } from '../../../env';
 import { PreconditionFailedError } from '../../errors/app-errors';
 import { logger } from '../../logger';
-import { checkRateLimit } from '../../lib/rate-limiter';
+import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
 import { htmlToPlainText } from '../../lib/mail/newsletter-render';
 
 /**
@@ -201,6 +201,20 @@ export class NewsletterPreflightService {
 
     const findings: PreflightFinding[] = lintNewsletterContent({ subject, html, plainText: input.plainText });
 
+    // The limiter runs FIRST, before either outbound call. It used to sit between them,
+    // which left the Postmark spamcheck fetch entirely uncapped (finding H4).
+    if (opts.rateLimitAi && env.anthropicApiKey) {
+      // Durable, cross-instance counter: the in-memory limiter reset on every deploy and
+      // multiplied by the replica count, which is not an acceptable ceiling on a paid
+      // per-call API that any authenticated tenant can reach.
+      await checkDurableRateLimit(
+        `newsletterPreflightAi:${tenantId}`,
+        AI_CHECKS_PER_HOUR,
+        HOUR_MS,
+        'You have run too many content checks in the last hour. Try again shortly.',
+      );
+    }
+
     let spamAssassinScore: number | null = null;
     if (opts.includeSpamAssassin) {
       spamAssassinScore = await this.spamAssassinScore(subject, html);
@@ -210,9 +224,6 @@ export class NewsletterPreflightService {
       }
     }
 
-    if (opts.rateLimitAi && env.anthropicApiKey) {
-      checkRateLimit(`newsletterPreflightAi:${tenantId}`, AI_CHECKS_PER_HOUR, HOUR_MS);
-    }
     const ai = await this.aiReview(subject, bodyText, linkHostsOf(html));
     if (ai) findings.push(...buildAiFindings(ai));
 

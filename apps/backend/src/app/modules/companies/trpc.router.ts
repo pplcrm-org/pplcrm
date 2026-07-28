@@ -1,4 +1,4 @@
-import { idSchema, CompanyInputObj } from '../../../../../../libs/common/src';
+import { idSchema, CompanyInputObj, MAX_IMPORT_ROWS } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
 import { CompaniesController } from './controller';
@@ -37,7 +37,7 @@ export const CompaniesRouter = router({
   import: authProcedure
     .input(
       z.object({
-        rows: z.array(CompanyInputSchema),
+        rows: z.array(CompanyInputSchema).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
         skipped: z.number().int().nonnegative().optional(),
         file_name: z.string().trim().min(1).max(255).optional(),
         source_csv: z.string().max(10_000_000).optional(),

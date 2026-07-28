@@ -58,7 +58,7 @@
           <pc-status-badge type="neutral">Not enriched</pc-status-badge>
           }
         </div>
-        <p class="text-sm font-light leading-relaxed text-base-content/65">
+        <p class="text-sm leading-relaxed text-base-content/65">
           Runs as a background job. A Places text search finds the business, then place details fill website, phone,
           industry and description <em>where they are blank</em>. Fields you typed are never overwritten.
         </p>
@@ -79,9 +79,17 @@
       <pc-card>
         <h3 class="pc-eyebrow mb-2 block">Internal notes</h3>
         @if (c.notes) {
-        <p class="whitespace-pre-line text-sm font-light leading-relaxed text-base-content/80">{{ c.notes }}</p>
+        <p class="whitespace-pre-line text-sm leading-relaxed text-base-content/80">{{ c.notes }}</p>
         } @else {
-        <p class="text-sm italic text-base-content/40">No internal notes recorded.</p>
+        <!-- Guided, not decorative: an empty field ends in the action that fills it (§3). -->
+        <button
+          type="button"
+          class="text-left text-sm text-primary hover:underline"
+          (click)="editCompany()"
+          i18n="CompanyView|Notes empty-state guided link@@company.notes.emptyLink"
+        >
+          No notes yet. Add what your team should know
+        </button>
         }
       </pc-card>
     </div>
@@ -108,9 +116,17 @@
 
         <pc-tab-panel id="about" [activeTab]="activeTab()">
           @if (c.description) {
-          <p class="whitespace-pre-line text-sm font-light leading-relaxed text-base-content/80">{{ c.description }}</p>
+          <p class="whitespace-pre-line text-sm leading-relaxed text-base-content/80">{{ c.description }}</p>
           } @else {
-          <p class="text-sm italic text-base-content/40">No description recorded. Re-check Google to fill it in.</p>
+          <button
+            type="button"
+            class="text-left text-sm text-primary hover:underline"
+            [disabled]="enriching()"
+            (click)="enrichCompany()"
+            i18n="CompanyView|Description empty-state guided link@@company.description.emptyLink"
+          >
+            No description yet. Check Google for one
+          </button>
           }
         </pc-tab-panel>
       </pc-tabs>

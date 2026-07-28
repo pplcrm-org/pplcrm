@@ -3,6 +3,7 @@ import { ActivatedRoute } from '@angular/router';
 import { FormField } from '../../../../../../../libs/common/src';
 
 import { apiBase, tenantQuery } from '../../../shared/public-pages';
+import { PublicPageMeta } from '../../../shared/public-page-meta';
 
 interface PublicForm {
   id: string;
@@ -151,6 +152,7 @@ export class PublicFormComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
 
   protected readonly state = signal<PageState>('loading');
+  private readonly pageMeta = inject(PublicPageMeta);
   protected readonly orgName = signal('Our organization');
   protected readonly form = signal<PublicForm | null>(null);
   protected readonly errors = signal<Record<string, string>>({});
@@ -173,12 +175,14 @@ export class PublicFormComponent implements OnInit {
     const slug = this.route.snapshot.paramMap.get('slug');
     if (!slug) {
       this.state.set('notfound');
+      this.pageMeta.setNotFound('form');
       return;
     }
     try {
       const res = await fetch(`${apiBase()}/api/forms/f/${encodeURIComponent(slug)}${tenantQuery()}`);
       if (res.status === 404) {
         this.state.set('notfound');
+        this.pageMeta.setNotFound('form');
         return;
       }
       const data = await res.json();
@@ -189,8 +193,11 @@ export class PublicFormComponent implements OnInit {
       } else {
         this.state.set('closed');
       }
+      // Tab title and share card, now that the org and form names are known.
+      this.pageMeta.set(this.form()?.name ?? '', this.orgName(), this.form()?.description ?? undefined);
     } catch {
       this.state.set('notfound');
+      this.pageMeta.setNotFound('form');
     }
   }
 

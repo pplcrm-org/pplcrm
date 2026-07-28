@@ -16,9 +16,8 @@ export interface TurfRow {
   centroid_lng: number | null;
   updated_at: Date | null;
   door_count: number;
-  team_id: string | null;
-  team_name: string | null;
-  token: string | null;
+  /** Scopes what a roaming volunteer may claim — they never leave their own campaign. */
+  campaign_id: string | null;
 }
 
 export class TurfsRepo extends BaseRepository<'turfs'> {
@@ -31,12 +30,12 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
    * Door counts are merged from a separate grouped query to keep this row-per-turf.
    */
   public async getTurfs(tenant_id: string, trx?: Transaction<Models>): Promise<TurfRow[]> {
+    // NOTE: deliberately does NOT join turf_assignments. A turf can hold several
+    // active assignments (a group walking it together), and joining them here fans
+    // each turf out into one row per volunteer, silently multiplying door counts.
+    // The roster is fetched separately by TurfAssignmentsRepo.canvassersByTurf.
     const rows = await this.getSelect(trx)
       .leftJoin('lists', 'lists.id', 'turfs.list_id')
-      .leftJoin('turf_assignments as ta', (join) =>
-        join.onRef('ta.turf_id', '=', 'turfs.id').on('ta.tenant_id', '=', tenant_id).on('ta.status', '=', 'active'),
-      )
-      .leftJoin('teams', 'teams.id', 'ta.team_id')
       .where('turfs.tenant_id', '=', tenant_id)
       .orderBy('turfs.id')
       .select([
@@ -50,9 +49,7 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
         'turfs.centroid_lat as centroid_lat',
         'turfs.centroid_lng as centroid_lng',
         'turfs.updated_at as updated_at',
-        'ta.team_id as team_id',
-        'teams.name as team_name',
-        'ta.token as token',
+        'turfs.campaign_id as campaign_id',
       ])
       .execute();
 
@@ -70,9 +67,7 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       centroid_lng: r.centroid_lng == null ? null : Number(r.centroid_lng),
       updated_at: r.updated_at ? new Date(String(r.updated_at)) : null,
       door_count: counts.get(String(r.id)) ?? 0,
-      team_id: r.team_id == null ? null : String(r.team_id),
-      team_name: r.team_name ? String(r.team_name) : null,
-      token: r.token ? String(r.token) : null,
+      campaign_id: r.campaign_id == null ? null : String(r.campaign_id),
     }));
   }
 
@@ -87,9 +82,12 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     list_id: string | null;
     ward: string | null;
     campaign_id: string | null;
+    /** Staff account that cut the turf — the responsible actor for volunteer-driven
+     *  activity, which has no CRM user of its own (§22.7: never a fabricated user). */
+    createdby_id: string;
   } | null> {
     const row = await this.getSelect(trx)
-      .select(['id', 'name', 'status', 'list_id', 'ward', 'campaign_id'])
+      .select(['id', 'name', 'status', 'list_id', 'ward', 'campaign_id', 'createdby_id'])
       .where('tenant_id', '=', input.tenant_id)
       .where('id', '=', input.id)
       .executeTakeFirst();
@@ -101,6 +99,7 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       list_id: row.list_id == null ? null : String(row.list_id),
       ward: row.ward == null ? null : String(row.ward),
       campaign_id: row.campaign_id == null ? null : String(row.campaign_id),
+      createdby_id: String(row.createdby_id),
     };
   }
 

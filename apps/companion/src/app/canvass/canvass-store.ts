@@ -6,6 +6,7 @@ import type {
   CompanionOpAck,
   CompanionOpType,
   CompanionPersonResult,
+  CompanionTurfChoices,
   CompanionTurfPayload,
   KnockResponse,
 } from '@common';
@@ -34,12 +35,24 @@ export type CanvassView =
   | { kind: 'list' }
   | { kind: 'map' }
   | { kind: 'me' }
+  /** Choose which turf to walk: the ones they are on, plus claimable ones if allowed. */
+  | { kind: 'picker' }
   | { kind: 'household'; household_id: string }
   | { kind: 'survey'; household_id: string; person_id: string | null };
 
 /** A locally recorded op plus its human queue label ("Alice Door · 218 Alder St"). */
 export interface QueuedOp extends LocalOp {
   label: string;
+  /**
+   * The turf this op was recorded on.
+   *
+   * A volunteer can switch turfs mid-shift while results are still queued offline.
+   * Without stamping the turf here, a queue recorded on Maple would drain against
+   * whatever turf happens to be open when the connection returns — and the server
+   * would reject every op as "not part of this turf". Stamped, each batch goes back
+   * to where it came from. Optional so a queue persisted by an older build still loads.
+   */
+  turf_id?: string;
 }
 
 /** Everything the survey view collects; maps 1:1 onto the survey op payload. */
@@ -62,12 +75,22 @@ interface LastAction {
 }
 
 const QUEUE_KEY_PREFIX = 'pc-canvass-queue:';
+/**
+ * Doors THIS device logged this shift.
+ *
+ * Kept separately from the queue because the queue empties as results sync, while
+ * "what you personally did today" must survive syncing. It matters now that several
+ * volunteers can walk one turf at once: the turf payload carries everyone's knocks,
+ * so turf-wide totals would otherwise be shown back to one volunteer as their own.
+ */
+const MY_DOORS_KEY_PREFIX = 'pc-canvass-mydoors:';
 
 function isQueuedOp(value: unknown): value is QueuedOp {
   if (value == null || typeof value !== 'object') return false;
-  const candidate = value as { label?: unknown; op?: unknown; temp_person_id?: unknown };
+  const candidate = value as { label?: unknown; op?: unknown; temp_person_id?: unknown; turf_id?: unknown };
   if (typeof candidate.label !== 'string') return false;
   if (candidate.temp_person_id !== undefined && typeof candidate.temp_person_id !== 'string') return false;
+  if (candidate.turf_id !== undefined && typeof candidate.turf_id !== 'string') return false;
   return CompanionOpObj.safeParse(candidate.op).success;
 }
 
@@ -94,6 +117,8 @@ export class CanvassStore {
   /** All ops recorded this session (queued + acked) — the optimistic overlay source. */
   private readonly localOps = signal<QueuedOp[]>([]);
   private readonly lastAction = signal<LastAction | null>(null);
+  /** Household ids this device recorded something for this shift; survives syncing. */
+  private readonly myDoorIds = signal<ReadonlySet<string>>(new Set<string>());
   /**
    * Op ids of the POST batch currently in flight. They are still in `queue`
    * (only an ack removes them), but the server may already have applied them,
@@ -106,7 +131,10 @@ export class CanvassStore {
     const payload = this.payload();
     return payload ? applyLocalOps(payload.households, this.localOps()) : [];
   });
+  /** Turf-wide stats — these include every canvasser's work, not just this device's. */
   public readonly stats = computed(() => meStats(this.households()));
+  /** Doors this volunteer logged on this device this shift. */
+  public readonly myDoorCount = computed(() => this.myDoorIds().size);
   public readonly nextDoorId = computed(() => nextDoor(this.households())?.id ?? null);
   /**
    * Undo is offered for door outcomes (inverse op) or while the op is still
@@ -158,10 +186,91 @@ export class CanvassStore {
         return;
       }
       this.payload.set((await res.json()) as CompanionTurfPayload);
+      // After the payload, because the tally is keyed by turf id.
+      this.restoreMyDoors();
       void this.flush();
     } catch {
       this.loadError.set('Could not load your turf. Check your connection and try again.');
       if (this.queue().length > 0) this.syncStatus.set('offline');
+    }
+  }
+
+  /**
+   * Which turfs this volunteer can walk, and — when their organizer allows roaming —
+   * which they can start on. Returns null when the list can't be reached, so the
+   * picker can say so rather than claiming there are no turfs.
+   */
+  public async fetchTurfChoices(): Promise<CompanionTurfChoices | null> {
+    try {
+      const res = await fetch('/api/canvass/my-turfs', { headers: this.session.headers() });
+      if (res.status === 401 || res.status === 403) {
+        this.expireSession();
+        return null;
+      }
+      if (!res.ok) return null;
+      return (await res.json()) as CompanionTurfChoices;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Open another turf this volunteer is already on.
+   *
+   * Queued results are NOT flushed first and do not need to be: every op carries the
+   * turf it was recorded on, so an offline queue keeps draining to the right place
+   * after the switch.
+   */
+  public async switchTurf(turfId: string): Promise<boolean> {
+    this.loadError.set(null);
+    try {
+      const res = await fetch(`/api/canvass/turf/${encodeURIComponent(turfId)}`, {
+        headers: this.session.headers(),
+      });
+      if (res.status === 401 || res.status === 403) {
+        this.expireSession();
+        return false;
+      }
+      if (!res.ok) {
+        this.loadError.set('Could not open that turf. Check your connection and try again.');
+        return false;
+      }
+      this.payload.set((await res.json()) as CompanionTurfPayload);
+      this.restoreMyDoors();
+      this.view.set({ kind: 'list' });
+      void this.flush();
+      return true;
+    } catch {
+      this.loadError.set('Could not open that turf. Check your connection and try again.');
+      return false;
+    }
+  }
+
+  /** Start on a turf nobody assigned them. Returns the error message on refusal. */
+  public async claimTurf(turfId: string): Promise<string | null> {
+    try {
+      const res = await fetch('/api/canvass/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.session.headers() },
+        body: JSON.stringify({ turf_id: turfId }),
+      });
+      if (res.status === 401 || res.status === 403) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        // 403 here is "not allowed to roam", which the gate must not treat as a dead
+        // session — only 401 sends them back through verification.
+        if (res.status === 401) {
+          this.expireSession();
+          return null;
+        }
+        return body?.error ?? 'Your organizer assigns turfs for this campaign.';
+      }
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        return body?.error ?? 'Could not start on that turf.';
+      }
+      return (await this.switchTurf(turfId)) ? null : 'Could not open that turf.';
+    } catch {
+      return 'Could not start on that turf. Check your connection.';
     }
   }
 
@@ -304,7 +413,13 @@ export class CanvassStore {
         // Mark the batch in-flight so undo can't remove an op the server may
         // be applying right now (canUndo/undo consult this set).
         this.inFlightOpIds.set(new Set(batch.map((entry) => entry.op.op_id)));
-        const res = await fetch(`/api/canvass/t/${encodeURIComponent(this.token)}/results`, {
+        // Post to the turf the batch was recorded on, not the one currently open.
+        const batchTurfId = batch[0]?.turf_id ?? this.payload()?.turf_id;
+        if (!batchTurfId) {
+          this.syncStatus.set('error');
+          return;
+        }
+        const res = await fetch(`/api/canvass/turf/${encodeURIComponent(batchTurfId)}/results`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...this.session.headers() },
           body: JSON.stringify({ ops: batch.map((entry) => entry.op) }),
@@ -343,11 +458,13 @@ export class CanvassStore {
   public endShift(): void {
     try {
       localStorage.removeItem(this.storageKey());
+      localStorage.removeItem(this.myDoorsKey());
     } catch {
       // Storage unavailable — the in-memory clear below still applies.
     }
     this.queue.set([]);
     this.localOps.set([]);
+    this.myDoorIds.set(new Set<string>());
     this.lastAction.set(null);
     this.workOffline.set(false);
     this.syncStatus.set('idle');
@@ -409,12 +526,49 @@ export class CanvassStore {
   }
 
   private record(op: CompanionOpType, label: string, tempPersonId?: string): void {
-    const entry: QueuedOp = tempPersonId == null ? { op, label } : { op, label, temp_person_id: tempPersonId };
-    this.lastAction.set({ op_id: op.op_id, type: op.type, household_id: String(op.payload.household_id) });
+    const turfId = this.payload()?.turf_id;
+    const entry: QueuedOp = {
+      op,
+      label,
+      ...(tempPersonId == null ? {} : { temp_person_id: tempPersonId }),
+      ...(turfId == null ? {} : { turf_id: turfId }),
+    };
+    const householdId = String(op.payload.household_id);
+    this.lastAction.set({ op_id: op.op_id, type: op.type, household_id: householdId });
     this.localOps.update((l) => [...l, entry]);
     this.queue.update((q) => [...q, entry]);
+    this.markMyDoor(householdId);
     this.persistQueue();
     void this.flush();
+  }
+
+  private markMyDoor(householdId: string): void {
+    if (this.myDoorIds().has(householdId)) return;
+    const next = new Set(this.myDoorIds());
+    next.add(householdId);
+    this.myDoorIds.set(next);
+    try {
+      localStorage.setItem(this.myDoorsKey(), JSON.stringify([...next]));
+    } catch {
+      // Storage full/blocked — the tally still holds for this visit.
+    }
+  }
+
+  /** Keyed by turf, not by token: switching turfs must not carry the tally across. */
+  private myDoorsKey(): string {
+    return `${MY_DOORS_KEY_PREFIX}${this.payload()?.turf_id ?? this.token}`;
+  }
+
+  private restoreMyDoors(): void {
+    try {
+      const raw = localStorage.getItem(this.myDoorsKey());
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      this.myDoorIds.set(new Set(parsed.filter((v): v is string => typeof v === 'string')));
+    } catch {
+      // Corrupt/blocked storage — start the tally fresh rather than crash.
+    }
   }
 
   private restoreQueue(): void {
@@ -431,11 +585,21 @@ export class CanvassStore {
     }
   }
 
+  /**
+   * The next batch to send: entries from the head of the queue that share one turf and
+   * sit before any unacked temp person id.
+   *
+   * Stopping at a turf change matters — each batch posts to one turf's endpoint, and a
+   * queue can span turfs after a mid-shift switch. The next flush picks up the rest.
+   */
   private sendableBatch(): QueuedOp[] {
     const out: QueuedOp[] = [];
+    let turfId: string | undefined;
     for (const entry of this.queue()) {
       const personId = opPersonId(entry.op);
       if (personId != null && isTempPersonId(personId)) break;
+      if (out.length === 0) turfId = entry.turf_id;
+      else if (entry.turf_id !== turfId) break;
       out.push(entry);
     }
     return out;

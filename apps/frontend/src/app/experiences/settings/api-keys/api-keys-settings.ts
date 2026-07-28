@@ -2,430 +2,235 @@ import { DatePipe } from '@angular/common';
 import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 import { createLoadingGate } from '@uxcommon/loading-gate';
-import { AuthService } from '../../../auth/auth-service';
+
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { SettingsService } from '../services/settings-service';
 
+/** What the workspace can safely be told about one of its keys: never the key itself. */
 interface ApiKeyInfo {
+  createdAt: Date | string;
+  lastUsedAt: Date | string | null;
   preview: string;
-  createdAt: string;
-  lastUsedAt: string | null;
+  slot: number;
 }
 
+/** Mirrors MAX_KEYS_PER_TENANT on the server, where the database constraint actually enforces it. */
+const MAX_KEYS = 2;
+
+/**
+ * Workspace API key settings.
+ *
+ * The section title and blurb come from the settings shell (settings-page.ts, id 'api-keys'), so
+ * this renders the keys and nothing else.
+ *
+ * Two keys, not one, because rotation used to be strictly destructive: the old "Regenerate"
+ * replaced the key in place, so every integration broke the instant it was clicked and stayed
+ * broken until someone pasted the new value everywhere. With two slots the flow is the standard
+ * overlap — create the second key, move integrations across, revoke the first — and no request
+ * ever fails. That is why there is no regenerate button any more; it was the outage.
+ */
 @Component({
   selector: 'pc-api-keys-settings',
-  imports: [Icon, DatePipe],
+  imports: [Icon, DatePipe, EmptyState],
   template: `
-    <div class="api-keys-container">
-      @if (!loaded()) {
-        <div class="skeleton"></div>
-      } @else {
-        <div class="settings-section">
-          <div class="section-header">
-            <h3>Workspace API Key</h3>
-            <p class="description">
-              One key for server-side integrations: submit form responses, event RSVPs, and volunteer signups from your
-              own backend, or connect Zapier. Keep it secret — never embed it in a public web page.
-            </p>
-          </div>
-
-          @if (keyInfo()) {
-            <div class="key-info-card">
-              <div class="key-display">
-                <div class="key-label">Current Key</div>
-                <div class="key-value">
-                  <code>{{ keyInfo()!.preview }}***</code>
+    @if (!loaded()) {
+      <div class="skeleton h-48 w-full max-w-2xl"></div>
+    } @else {
+      <div class="flex max-w-2xl flex-col gap-4">
+        @if (keys().length) {
+          @for (key of keys(); track key.slot) {
+            <div class="rounded-box border-base-300 bg-base-100 border p-5">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <div class="text-xs font-medium opacity-60">Key {{ key.slot }}</div>
+                  <code class="bg-base-200 mt-1.5 inline-block rounded px-2.5 py-1.5 font-mono text-xs break-all">
+                    {{ key.preview }}***
+                  </code>
                 </div>
-              </div>
-
-              <div class="key-metadata">
-                <div class="metadata-item">
-                  <span class="label">Created</span>
-                  <span class="value">
-                    {{ keyInfo()!.createdAt | date: 'MMM d, y' }}
-                  </span>
-                </div>
-                @if (keyInfo()!.lastUsedAt) {
-                  <div class="metadata-item">
-                    <span class="label">Last used</span>
-                    <span class="value">
-                      {{ keyInfo()!.lastUsedAt | date: 'MMM d, y · h:mm a' }}
-                    </span>
-                  </div>
-                }
-              </div>
-
-              <div class="actions">
-                <button (click)="onRegenerateKey()" [disabled]="regenerating()" class="btn btn-secondary">
-                  <pc-icon name="arrow-path" [size]="4"></pc-icon>
-                  {{ regenerating() ? 'Regenerating...' : 'Regenerate Key' }}
+                <button
+                  type="button"
+                  class="btn btn-sm btn-ghost text-error"
+                  [disabled]="busy()"
+                  (click)="onRevoke(key)"
+                  [attr.aria-label]="'Revoke key ' + key.slot"
+                >
+                  <pc-icon name="trash-forever" [size]="4" />
+                  Revoke
                 </button>
               </div>
-            </div>
 
-            @if (showNewKey()) {
-              <div class="new-key-banner">
-                <div class="banner-content">
-                  <pc-icon name="exclamation-circle" [size]="5"></pc-icon>
-                  <div class="banner-text">
-                    <p class="banner-title">Save your new API key</p>
-                    <p class="banner-message">
-                      This is the only time your key will be displayed. Store it securely — you won't be able to
-                      retrieve it again.
-                    </p>
-                  </div>
+              <dl class="border-base-300 mt-4 flex flex-col gap-2 border-t pt-4 text-xs">
+                <div class="flex justify-between gap-4">
+                  <dt class="opacity-60">Created</dt>
+                  <dd class="font-medium">{{ key.createdAt | date: 'MMM d, y' }}</dd>
                 </div>
-                <div class="key-box">
-                  <div class="key-display-new">
-                    <code>{{ newKey() }}</code>
-                  </div>
-                  <button (click)="onCopyKey()" class="btn-copy">
-                    <pc-icon name="document-duplicate" [size]="4"></pc-icon>
+                <div class="flex justify-between gap-4">
+                  <dt class="opacity-60">Last used</dt>
+                  <dd class="font-medium">
+                    @if (key.lastUsedAt) {
+                      {{ key.lastUsedAt | date: 'MMM d, y · h:mm a' }}
+                    } @else {
+                      <!-- The single most useful fact when deciding which half of a rotation is safe to revoke. -->
+                      <span class="opacity-60">Never</span>
+                    }
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          }
+
+          @if (newKey(); as raw) {
+            <div role="alert" class="alert alert-warning items-start text-left">
+              <pc-icon name="exclamation-triangle" [size]="5" />
+              <div class="flex min-w-0 flex-col gap-2">
+                <div>
+                  <p class="text-xs font-semibold">Save your new API key</p>
+                  <p class="mt-0.5 text-xs opacity-80">
+                    This is the only time it will be shown. Store it somewhere safe — it cannot be retrieved again.
+                  </p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <code class="bg-base-100 text-base-content rounded px-2.5 py-1.5 font-mono text-xs break-all">
+                    {{ raw }}
+                  </code>
+                  <button type="button" class="btn btn-xs" (click)="onCopy()">
+                    <pc-icon name="document-duplicate" [size]="4" />
                     Copy
                   </button>
                 </div>
               </div>
-            }
-          } @else {
-            <div class="empty-key-card">
-              <p>No API key generated yet.</p>
-              <button (click)="onGenerateKey()" [disabled]="generating()" class="btn btn-primary">
-                <pc-icon name="plus" [size]="4"></pc-icon>
-                {{ generating() ? 'Generating...' : 'Generate API Key' }}
-              </button>
             </div>
           }
-        </div>
-      }
-    </div>
-  `,
-  styles: `
-    .api-keys-container {
-      max-width: 600px;
-    }
 
-    .settings-section {
-      display: flex;
-      flex-direction: column;
-      gap: 24px;
-    }
+          @if (canCreate()) {
+            <div class="flex flex-wrap items-center gap-3">
+              <button type="button" class="btn btn-sm btn-secondary" [disabled]="busy()" (click)="onCreate()">
+                <pc-icon name="plus" [size]="4" />
+                {{ creating() ? 'Creating…' : 'Add a second key' }}
+              </button>
+              <span class="text-xs opacity-60">
+                To rotate without downtime: add a second key, move your integrations onto it, then revoke the old one.
+              </span>
+            </div>
+          } @else {
+            <p class="text-xs opacity-60">
+              A workspace can hold {{ maxKeys }} keys. Revoke one to make room for a replacement.
+            </p>
+          }
 
-    .section-header {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .section-header h3 {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 600;
-      color: hsl(var(--base-content));
-    }
-
-    .description {
-      margin: 0;
-      font-size: 14px;
-      color: hsl(var(--base-content) / 0.7);
-    }
-
-    .key-info-card {
-      border: 1px solid hsl(var(--base-300));
-      border-radius: 8px;
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      background: hsl(var(--base-100));
-    }
-
-    .key-display {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .key-label {
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: hsl(var(--base-content) / 0.6);
-    }
-
-    .key-value code {
-      font-family: 'Courier New', monospace;
-      font-size: 14px;
-      padding: 8px 12px;
-      background: hsl(var(--base-200));
-      border-radius: 4px;
-      word-break: break-all;
-      color: hsl(var(--base-content));
-    }
-
-    .key-metadata {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      padding: 12px 0;
-      border-top: 1px solid hsl(var(--base-300));
-      border-bottom: 1px solid hsl(var(--base-300));
-    }
-
-    .metadata-item {
-      display: flex;
-      justify-content: space-between;
-      font-size: 14px;
-    }
-
-    .metadata-item .label {
-      color: hsl(var(--base-content) / 0.6);
-    }
-
-    .metadata-item .value {
-      font-weight: 500;
-      color: hsl(var(--base-content));
-    }
-
-    .actions {
-      display: flex;
-      gap: 12px;
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 16px;
-      font-size: 14px;
-      font-weight: 500;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-
-    .btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-
-    .btn-primary {
-      background: hsl(var(--primary));
-      color: hsl(var(--primary-content));
-    }
-
-    .btn-primary:hover:not(:disabled) {
-      background: hsl(var(--primary) / 0.9);
-    }
-
-    .btn-secondary {
-      background: hsl(var(--base-200));
-      color: hsl(var(--base-content));
-    }
-
-    .btn-secondary:hover:not(:disabled) {
-      background: hsl(var(--base-300));
-    }
-
-    .empty-key-card {
-      border: 2px dashed hsl(var(--base-300));
-      border-radius: 8px;
-      padding: 40px 20px;
-      text-align: center;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      align-items: center;
-    }
-
-    .empty-key-card p {
-      margin: 0;
-      color: hsl(var(--base-content) / 0.7);
-      font-size: 14px;
-    }
-
-    .new-key-banner {
-      border: 1px solid hsl(var(--warning) / 0.3);
-      background: hsl(var(--warning) / 0.05);
-      border-radius: 8px;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
-
-    .banner-content {
-      display: flex;
-      gap: 12px;
-    }
-
-    .banner-content pc-icon {
-      color: hsl(var(--warning));
-      flex-shrink: 0;
-    }
-
-    .banner-text {
-      flex: 1;
-    }
-
-    .banner-title {
-      margin: 0;
-      font-size: 14px;
-      font-weight: 600;
-      color: hsl(var(--base-content));
-    }
-
-    .banner-message {
-      margin: 4px 0 0 0;
-      font-size: 13px;
-      color: hsl(var(--base-content) / 0.7);
-      line-height: 1.4;
-    }
-
-    .key-box {
-      display: flex;
-      gap: 12px;
-      align-items: center;
-    }
-
-    .key-display-new {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .key-display-new code {
-      font-family: 'Courier New', monospace;
-      font-size: 13px;
-      padding: 12px;
-      background: hsl(var(--base-100));
-      border: 1px solid hsl(var(--base-300));
-      border-radius: 4px;
-      display: block;
-      word-break: break-all;
-      color: hsl(var(--base-content));
-    }
-
-    .btn-copy {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 10px 12px;
-      background: hsl(var(--base-200));
-      color: hsl(var(--base-content));
-      border: none;
-      border-radius: 4px;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      flex-shrink: 0;
-    }
-
-    .btn-copy:hover {
-      background: hsl(var(--base-300));
-    }
-
-    .skeleton {
-      height: 200px;
-      background: hsl(var(--base-200));
-      border-radius: 8px;
-      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-    }
-
-    @keyframes pulse {
-      0%,
-      100% {
-        opacity: 1;
-      }
-      50% {
-        opacity: 0.5;
-      }
+          <p class="text-xs opacity-60">
+            Treat these like passwords. They belong on your own server — never in a public web page.
+          </p>
+        } @else {
+          <pc-empty-state
+            icon="lock-closed"
+            title="No API keys yet"
+            hint="Create one to submit form responses, event RSVPs and volunteer signups from your own backend, or to connect Zapier."
+          >
+            <button type="button" class="btn btn-sm btn-primary" [disabled]="busy()" (click)="onCreate()">
+              <pc-icon name="plus" [size]="4" />
+              {{ creating() ? 'Creating…' : 'Create key' }}
+            </button>
+          </pc-empty-state>
+        }
+      </div>
     }
   `,
 })
 export class ApiKeysSettingsComponent implements OnInit {
-  private readonly settingsSvc = inject(SettingsService);
-  private readonly authSvc = inject(AuthService);
   private readonly alerts = inject(AlertService);
   private readonly dialogs = inject(ConfirmDialogService);
+  private readonly settingsSvc = inject(SettingsService);
 
   private readonly _loading = createLoadingGate();
+
+  protected readonly creating = signal(false);
+  protected readonly keys = signal<ApiKeyInfo[]>([]);
   protected readonly loaded = this._loading.loaded;
-
-  protected readonly generating = signal(false);
-  protected readonly regenerating = signal(false);
-  protected readonly showNewKey = signal(false);
+  protected readonly maxKeys = MAX_KEYS;
+  /** The raw key, held only for as long as the page is open — see the banner above. */
   protected readonly newKey = signal('');
+  protected readonly revoking = signal(false);
 
-  protected readonly keyInfo = computed<ApiKeyInfo | null>(() => {
-    const user = this.authSvc.getUser();
-    return (user as any)?.workspace_api_key_preview || null;
-  });
+  protected readonly canCreate = computed(() => this.keys().length < MAX_KEYS);
 
-  ngOnInit() {
-    const end = this._loading.begin();
-    // Settings are typically pre-loaded by the settings page, so just mark loaded
-    end();
+  public ngOnInit(): void {
+    void this.refresh();
   }
 
-  protected onGenerateKey() {
-    this.generating.set(true);
-    this.settingsSvc
-      .generateApiKey()
-      .then((result: any) => {
-        this.newKey.set(result.key);
-        this.showNewKey.set(true);
-        this.alerts.showSuccess('API key generated successfully');
-        // Refresh user data to show the new preview
-        void this.authSvc.getCurrentUser();
-      })
-      .catch((err: any) => {
-        this.alerts.showError('Failed to generate API key: ' + (err.message || String(err)));
-      })
-      .finally(() => {
-        this.generating.set(false);
-      });
+  protected busy(): boolean {
+    return this.creating() || this.revoking();
   }
 
-  protected onRegenerateKey() {
-    void this.dialogs
-      .confirm({
-        title: 'Regenerate API Key',
-        message:
-          'Your current API key will stop working immediately. Make sure all integrations are updated with the new key.',
-        variant: 'danger',
-        confirmText: 'Regenerate',
-      })
-      .then((confirmed: any) => {
-        if (!confirmed) return;
-
-        this.regenerating.set(true);
-        this.settingsSvc
-          .regenerateApiKey()
-          .then((result: any) => {
-            this.newKey.set(result.key);
-            this.showNewKey.set(true);
-            this.alerts.showSuccess('API key regenerated successfully');
-            // Refresh user data to show the new preview
-            void this.authSvc.getCurrentUser();
-          })
-          .catch((err: any) => {
-            this.alerts.showError('Failed to regenerate API key: ' + (err.message || String(err)));
-          })
-          .finally(() => {
-            this.regenerating.set(false);
-          });
-      });
-  }
-
-  protected onCopyKey() {
+  protected async onCopy(): Promise<void> {
     const key = this.newKey();
     if (!key) return;
 
-    void navigator.clipboard.writeText(key).then(() => {
+    try {
+      await navigator.clipboard.writeText(key);
       this.alerts.showSuccess('API key copied to clipboard');
+    } catch {
+      // Clipboard access can be denied outright; the key is on screen either way.
+      this.alerts.showError('Could not copy the key — select it and copy manually');
+    }
+  }
+
+  protected async onCreate(): Promise<void> {
+    this.creating.set(true);
+    try {
+      const result = await this.settingsSvc.createApiKey();
+      this.newKey.set(result.key);
+      this.alerts.showSuccess('API key created');
+      await this.refresh();
+    } catch {
+      // Swallowed on purpose: the tRPC error link (trpc-service.ts) has already shown the server's
+      // message, which is more specific than anything we could add here — "API access requires the
+      // Grassroots plan" beats "Could not create the API key". Re-toasting produced two alerts for
+      // one failure. Caught rather than left to reject so it does not surface a third time as an
+      // unhandled rejection.
+    } finally {
+      this.creating.set(false);
+    }
+  }
+
+  protected async onRevoke(key: ApiKeyInfo): Promise<void> {
+    // Name the risk precisely: revoking the key nothing has ever called is safe, revoking one in
+    // active service is an outage. The component knows which is which, so it should say so.
+    const stillInUse = key.lastUsedAt != null;
+    const confirmed = await this.dialogs.confirm({
+      title: `Revoke key ${key.slot}?`,
+      message: stillInUse
+        ? 'This key has been used recently and stops working immediately. Anything still calling the API with it — including Zapier — will fail. Move those integrations onto your other key first.'
+        : 'This key has never been used, so revoking it should not affect anything. It stops working immediately and cannot be recovered.',
+      variant: 'danger',
+      confirmText: 'Revoke',
     });
+    if (!confirmed) return;
+
+    this.revoking.set(true);
+    try {
+      await this.settingsSvc.revokeApiKey(key.slot);
+      this.newKey.set('');
+      this.alerts.showSuccess('API key revoked');
+      await this.refresh();
+    } catch {
+      // See onCreate: the tRPC error link already toasted the server's message.
+    } finally {
+      this.revoking.set(false);
+    }
+  }
+
+  private async refresh(): Promise<void> {
+    const end = this._loading.begin();
+    try {
+      this.keys.set(await this.settingsSvc.listApiKeys());
+    } catch {
+      // See onCreate: the tRPC error link already toasted. The panel falls back to the empty
+      // state, which is honest — we genuinely do not know what keys exist.
+    } finally {
+      end();
+    }
   }
 }

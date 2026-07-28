@@ -16,6 +16,10 @@ export const BillingRouter = router({
    * overhaul plan. */
   getUsage: adminOrOwnerProcedure.query(({ ctx }) => controller.getUsage(ctx.auth)),
 
+  /** Counts of what stops working on Free (published forms, API keys, active automations), so the
+   * billing page can warn before a downgrade rather than after signups quietly stop arriving. */
+  getDowngradeImpact: adminOrOwnerProcedure.query(({ ctx }) => controller.getDowngradeImpact(ctx.auth)),
+
   createCheckout: adminOrOwnerProcedure
     .input(z.object({ plan: z.enum(PURCHASABLE_PLAN_KEYS), interval: z.enum(BILLING_INTERVALS).default('month') }))
     .mutation(({ ctx, input }) => controller.createCheckoutSession(ctx.auth, input.plan, input.interval)),

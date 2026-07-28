@@ -7,6 +7,8 @@ import {
   exportCsvResponse,
   getAllOptions,
   idSchema,
+  MAX_BULK_IDS,
+  MAX_IMPORT_ROWS,
 } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 
@@ -25,16 +27,18 @@ export const TasksRouter = router({
   import: authProcedure
     .input(
       z.object({
-        rows: z.array(
-          z.object({
-            name: z.string().trim().min(1, 'Task name is required').max(200, 'Task name is too long'),
-            details: z.string().trim().max(10000).optional().nullable(),
-            status: z.string().trim().max(50).optional().nullable(),
-            priority: z.string().trim().max(50).optional().nullable(),
-            due_at: z.string().trim().max(50).optional().nullable(),
-            assigned_to: z.string().trim().max(50).optional().nullable(),
-          }),
-        ),
+        rows: z
+          .array(
+            z.object({
+              name: z.string().trim().min(1, 'Task name is required').max(200, 'Task name is too long'),
+              details: z.string().trim().max(10000).optional().nullable(),
+              status: z.string().trim().max(50).optional().nullable(),
+              priority: z.string().trim().max(50).optional().nullable(),
+              due_at: z.string().trim().max(50).optional().nullable(),
+              assigned_to: z.string().trim().max(50).optional().nullable(),
+            }),
+          )
+          .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
         skipped: z.number().int().nonnegative().optional(),
         file_name: z.string().trim().min(1).max(255).optional(),
         source_csv: z.string().max(10_000_000).optional(),
@@ -52,7 +56,12 @@ export const TasksRouter = router({
     .input(idSchema)
     .mutation(({ input, ctx }) => tasks.delete(ctx.auth.tenant_id, input, ctx.auth.user_id)),
   deleteMany: authProcedure
-    .input(z.array(idSchema).min(1, 'At least one ID is required'))
+    .input(
+      z
+        .array(idSchema)
+        .min(1, 'At least one ID is required')
+        .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+    )
     .mutation(({ input, ctx }) => tasks.deleteMany(ctx.auth.tenant_id, input)),
   getAll: authProcedure.input(getAllOptions).query(({ input, ctx }) => tasks.getAllTasks(ctx.auth, input)),
   getArchived: authProcedure.input(getAllOptions).query(({ input, ctx }) => tasks.getArchivedTasks(ctx.auth, input)),

@@ -1,4 +1,10 @@
+<!--
+  aria-live on the container, not the toast: the region has to exist in the DOM before a toast is
+  inserted into it, or assistive tech has nothing to observe and the announcement is missed.
+-->
 <div
+  aria-live="polite"
+  aria-atomic="false"
   class="pointer-events-none z-50 flex w-full flex-col items-center gap-2 px-4"
   [class.absolute]="!isPositionRelative()"
   [class.left-0]="!isPositionRelative()"
@@ -9,8 +15,13 @@
   <div
     class="pointer-events-auto relative flex max-w-[520px] cursor-pointer items-start gap-3 overflow-hidden rounded-[12px] border border-base-300 bg-base-100 py-3 pl-4 pr-3.5 shadow-[0_8px_30px_rgba(0,0,0,.16)]"
     role="alert"
+    tabindex="0"
+    [attr.aria-label]="'Dismiss notification: ' + alert.text"
     *pcAnimateIf="alert.visible; enter: getEnterAnim(); exit: getExitAnim()"
     (click)="dismiss(alert.id)"
+    (keydown.enter)="dismiss(alert.id)"
+    (keydown.space)="dismiss(alert.id); $event.preventDefault()"
+    (keydown.escape)="dismiss(alert.id)"
   >
     <span aria-hidden="true" class="absolute inset-y-0 left-0 w-[5px] {{ barToneClass(alert.type) }}"></span>
     <span
@@ -19,9 +30,7 @@
     >
       <pc-icon [name]="icon(alert.type)" [size]="4" class="{{ toneClass(alert.type) }}"></pc-icon>
     </span>
-    <div class="line-clamp-3 text-[12.5px] leading-[1.45] text-base-content [overflow-wrap:anywhere]">
-      {{ alert.text }}
-    </div>
+    <div class="line-clamp-3 text-xs leading-[1.45] text-base-content [overflow-wrap:anywhere]">{{ alert.text }}</div>
     @if (alert.count() > 1) {
     <span
       class="mt-px shrink-0 rounded-full bg-base-content/10 px-[7px] py-px text-[10.5px] font-semibold tabular-nums text-base-content"

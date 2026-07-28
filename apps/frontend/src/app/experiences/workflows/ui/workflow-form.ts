@@ -42,6 +42,7 @@ import {
   triggerCardMeta,
 } from '../models/automations.model';
 import { AUTOMATION_RECIPES, type AutomationRecipe } from '../models/automation-recipes';
+import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
 interface OptionRow {
   id: string;
@@ -168,6 +169,9 @@ export class WorkflowFormComponent implements OnInit {
   protected readonly form = form(this.payload, (p) => {
     validateStandardSchema(p, AddWorkflowObj);
   });
+
+  /** Narrates "Unsaved changes · N fields" and powers canDeactivate below. */
+  protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
 
   protected readonly tabs = computed<PcTabOption[]>(() => [
     { id: 'sequence', label: 'Sequence designer' },
@@ -418,15 +422,22 @@ export class WorkflowFormComponent implements OnInit {
   }
 
   // ── Save / delete ──────────────────────────────────────────────────────────
-  protected async save(done?: (() => void) | Event): Promise<void> {
+  /**
+   * @param done called instead of navigating, so the leave guard can save without fighting the
+   * router (it is already mid-navigation).
+   * @returns whether the write landed — the guard needs it to decide whether to let the
+   * navigation through or keep the user on the form with their edits.
+   */
+  protected async save(done?: (() => void) | Event): Promise<boolean> {
     if (done instanceof Event) done.preventDefault();
-    if (this.saving()) return;
+    if (this.saving()) return false;
     this.form().markAsTouched();
     if (!this.form().valid()) {
       this.alertSvc.showError('Please give the automation a name.');
-      return;
+      return false;
     }
 
+    let saved = false;
     this.saving.set(true);
     try {
       await submit(this.form, {
@@ -451,6 +462,7 @@ export class WorkflowFormComponent implements OnInit {
               await this.workflowsSvc.saveSteps(newId, stepPayload);
               this.workflowsSvc.triggerRefresh();
               this.alertSvc.showSuccess('Automation created');
+              saved = true;
               if (typeof done === 'function') done();
               else void this.router.navigate(['/automations', newId]);
             } else {
@@ -461,6 +473,7 @@ export class WorkflowFormComponent implements OnInit {
               }
               this.workflowsSvc.triggerRefresh();
               this.alertSvc.showSuccess('Automation saved');
+              saved = true;
               if (typeof done === 'function') done();
               else void this.loadRuns();
             }
@@ -477,6 +490,18 @@ export class WorkflowFormComponent implements OnInit {
     } finally {
       this.saving.set(false);
     }
+    return saved;
+  }
+
+  /**
+   * A 599-line multi-step editor with no guard: a stray click discarded the whole automation.
+   * The step list lives outside the form payload, so `stepsDirty()` is tracked alongside it.
+   */
+  public canDeactivate(): Promise<boolean> {
+    return this.unsavedChanges.confirmDiscardIfDirty(this.payload().name || 'this automation', () =>
+      // Pass a no-op `done` so the guard-time save reports back instead of navigating.
+      this.save(() => undefined),
+    );
   }
 
   protected async deleteWorkflow(): Promise<void> {

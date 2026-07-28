@@ -3,6 +3,7 @@ import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } 
 import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { apiBase, tenantQuery } from '../../../shared/public-pages';
+import { PublicPageMeta } from '../../../shared/public-page-meta';
 
 /**
  * Which public surface this page instance serves. Event RSVPs (/e/:slug, events table) and
@@ -267,6 +268,7 @@ export class PublicEventComponent implements OnInit {
   protected readonly countryOptions = COUNTRY_OPTIONS;
 
   protected readonly state = signal<PageState>('loading');
+  private readonly pageMeta = inject(PublicPageMeta);
   protected readonly orgName = signal('Our organization');
   protected readonly event = signal<PublicEventInfo | null>(null);
   protected readonly tickets = signal<PublicTicket[]>([]);
@@ -371,12 +373,14 @@ export class PublicEventComponent implements OnInit {
     const slug = this.route.snapshot.paramMap.get('slug');
     if (!slug) {
       this.state.set('notfound');
+      this.pageMeta.setNotFound('event');
       return;
     }
     try {
       const res = await fetch(this.configUrl(slug));
       if (!res.ok) {
         this.state.set('notfound');
+        this.pageMeta.setNotFound('event');
         return;
       }
       const data = await res.json();
@@ -387,8 +391,11 @@ export class PublicEventComponent implements OnInit {
       this.isFull.set(!!data.isFull);
       this.remaining.set(typeof data.remaining === 'number' ? data.remaining : null);
       this.state.set('open');
+      // Tab title and share card, now that the org and event names are known.
+      this.pageMeta.set(this.event()?.name ?? '', this.orgName(), this.event()?.description ?? undefined);
     } catch {
       this.state.set('notfound');
+      this.pageMeta.setNotFound('event');
     }
   }
 

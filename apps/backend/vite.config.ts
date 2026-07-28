@@ -38,6 +38,11 @@ export default defineConfig(() => ({
       DB_PORT: process.env['DB_PORT'] ?? '5432',
       DB_HOST: process.env['DB_HOST'] ?? 'localhost',
       DB_SSL: process.env['DB_SSL'] ?? 'false',
+      // The closed-beta gate holds new tenants until pplCRM ops clicks an emailed link; nobody
+      // is there to click it in a test run, so signUp auto-approves here. The gate on the
+      // sign-in side is unconditional either way, so the specs that exercise it just set
+      // `approval_status` on the tenant directly (see tenant-approval.spec.ts).
+      AUTO_APPROVE_TENANTS: 'true',
     },
     include: ['{src,tests}/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
     reporters: ['default'],

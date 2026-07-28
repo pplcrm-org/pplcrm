@@ -4,8 +4,14 @@ import { TRPCError } from '@trpc/server';
 import { EventsController } from '../controller';
 import { resolveTenantById, resolveTenantFromRequest } from '../../../lib/public-tenant';
 import { checkKeyedSubmissionRateLimit, tenantIdFromOptionalApiKey } from '../../../lib/validate-api-key';
+import { checkRateLimit } from '../../../lib/rate-limiter';
+import { AppError } from '../../../errors/app-errors';
 
 const ctrl = new EventsController();
+
+/** Read-only config fetch: high enough that a human refreshing never notices, low enough to scrape. */
+const PUBLIC_EVENT_CONFIG_MAX = 60;
+const PUBLIC_EVENT_CONFIG_WINDOW_MS = 60_000;
 
 function getStatusFromError(err: unknown): number {
   if (err instanceof TRPCError) {
@@ -24,6 +30,9 @@ function getStatusFromError(err: unknown): number {
         return 500;
     }
   }
+  // AppError carries `status`; Fastify/HTTP errors carry `statusCode`. Reading only the latter
+  // reported a thrown TooManyRequestsError as a 500.
+  if (err instanceof AppError) return err.status;
   const statusCode = (err as { statusCode?: unknown })?.statusCode;
   return typeof statusCode === 'number' ? statusCode : 500;
 }
@@ -39,6 +48,11 @@ const eventsPublicRoute: FastifyPluginCallback = (fastify, _, done) => {
   fastify.get<{ Params: { slug: string } }>('/e/:slug', async (req, reply) => {
     const { slug } = req.params;
     try {
+      // Every other public surface throttles; this one resolves a tenant from the subdomain and
+      // runs an event + tickets + live-capacity query, so it was the one unthrottled way to make
+      // the backend do real work anonymously. Generous enough that a page refresh never trips it.
+      checkRateLimit(`public-event-config:${req.ip}`, PUBLIC_EVENT_CONFIG_MAX, PUBLIC_EVENT_CONFIG_WINDOW_MS);
+
       const tenant = await resolveTenantFromRequest(req);
       if (!tenant) {
         return reply.status(404).send({ error: 'Event not found.' });

@@ -34,6 +34,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
+        text: 'Three tabs sit at the top. **All** is the whole ledger, led by the total you have raised to date — every gift, including the monthly installments (they carry a **Monthly** chip). **One-time** narrows it to single gifts, so the month-over-month numbers are not moved by recurring money. **Monthly pledges** is the recurring commitments themselves.',
+      },
+      {
+        kind: 'p',
         text: 'Most gifts arrive on their own through a fundraising page. For cash, a check, or a bank transfer collected offline, click **Record donation** at the top of the Donations page: pick the donor, enter the amount, and choose a method (Card, Check, Cash, or Bank transfer). A receipt goes out automatically. Configure the sender and template in Workspace settings → Donations.',
       },
       {
@@ -213,19 +217,25 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Submitting from your own server or backend instead? Generate a **workspace API key** (Workspace settings → **API keys**) and send it as an `Authorization: Bearer` header. The key identifies your workspace on its own — no `?t=` needed — and lifts the anonymous per-visitor rate limit in favor of a per-workspace one built for batch traffic. The same key authenticates Zapier and the event RSVP and volunteer signup endpoints.',
+        text: 'Submitting from your own server or backend instead? Create a **workspace API key** (Workspace settings → **API keys**) and send it as an `Authorization: Bearer` header. The key identifies your workspace on its own — no `?t=` needed — and lifts the anonymous per-visitor rate limit in favor of a per-workspace one built for batch traffic. The same key authenticates Zapier and the event RSVP and volunteer signup endpoints. API access is available on **Grassroots** and above.',
       },
       {
         kind: 'callout',
         tone: 'warning',
         title: 'Never put the API key in a public page',
-        text: 'The key is a secret — anyone who has it can write into your workspace. Browser-side forms don’t need it (the public endpoint works keyless); the key belongs only in server-side code. If it ever leaks, regenerate it in Workspace settings → API keys, which invalidates the old key instantly.',
+        text: 'The key is a secret — anyone who has it can write into your workspace. Browser-side forms don’t need it (the public endpoint works keyless); the key belongs only in server-side code. If it ever leaks, **Revoke** it in Workspace settings → API keys: it stops working instantly. A workspace can hold **two keys at once**, which is how you rotate without downtime — add a second key, move your integrations onto it, then revoke the first. Each key shows when it was last used, so you can tell which one is still in service before you revoke anything.',
       },
       {
         kind: 'callout',
         tone: 'tip',
         title: 'Archive, don’t delete',
         text: 'A form with responses can be archived. Its public link shows a friendly closed notice and every record keeps pointing at it. Restore brings it back as a draft. Only an untouched draft with zero responses can be deleted outright.',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'Forms need a paid plan — including forms already published',
+        text: 'Forms are available on **Grassroots** and above. If your workspace moves to the Free plan, published forms stop accepting submissions: anyone opening one on your website sees an error. Nothing is deleted — your forms and every response you have already collected stay exactly as they are, and everything resumes the moment you upgrade again. The Billing page warns you about this, and tells you how many published forms are affected, before the change goes through.',
       },
       {
         kind: 'callout',
@@ -280,10 +290,14 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         title: 'Only located doors get cut',
         text: 'A turf is built from households the app has geocoded. Addresses still being located are reported in the preview and join a turf once they resolve. Nothing is silently dropped.',
       },
-      { kind: 'h2', id: 'assign', text: 'Assign turfs to volunteers' },
+      { kind: 'h2', id: 'assign', text: 'Put canvassers on a turf' },
       {
         kind: 'p',
-        text: '**Assign** opens a picker: choose the person the turf belongs to, and the app mints their personal Companion link, **sends it to them automatically** by email and text (whichever contacts their [person record](/people) has on file), and copies it to your clipboard as a backup. Links are personal on purpose: the volunteer proves it’s them with a one-time code sent to the same email or mobile, and a brand-new volunteer needs a one-time admin approval on the Volunteer access page before the turf loads. Keep a turf in sync with its list any time with **Refresh from list**. It pulls in new matching doors without ever losing knock history.',
+        text: '**Add canvassers** opens the turf’s roster. Search for people and add as many as you like at once, because a turf holds a whole group walking it together, not one person. Everyone you add gets their own personal Companion link, **sent to them automatically** by email and text (whichever contacts their [person record](/people) has on file). Links are personal on purpose: each volunteer proves it’s them with a one-time code sent to their own email or mobile, and a brand-new volunteer needs a one-time admin approval on the Volunteer access page before the turf loads. Remove someone from the roster and their link stops working immediately, while everyone else keeps walking and the doors they already knocked stay credited to them. Keep a turf in sync with its list any time with **Refresh from list**. It pulls in new matching doors without ever losing knock history.',
+      },
+      {
+        kind: 'p',
+        text: 'By default a canvasser can also pick their own turf. Once they’re on at least one turf in a campaign, the Companion shows them every other turf in that campaign — nearest first if they let the phone share its location — so they can start on an unclaimed one or join a turf someone else is already walking, and switch between turfs mid-shift without you sending anything. If you would rather place every canvasser by hand, set **Which turfs a canvasser can see** to “Only turfs you assign them” in Settings → Companion Apps. You can also override it for one person from the Volunteer access page.',
       },
       {
         kind: 'callout',

@@ -71,7 +71,7 @@
       i18n-data-tip="@@navbar.search.tooltip"
     >
       <pc-icon
-        class="hover:text-primary text-base-400 cursor-pointer"
+        class="hover:text-primary text-base-content/60 cursor-pointer"
         (click)="showSearchBar()"
         name="magnifying-glass"
       ></pc-icon>
@@ -80,7 +80,7 @@
     <!-- Fullscreen + pin have no use on a phone (no fullscreen API, sidebar pins
          are a desktop affordance) — hidden below sm -->
     <pc-swap
-      class="hover:text-primary text-base-400 cursor-pointer max-sm:hidden"
+      class="hover:text-primary text-base-content/60 cursor-pointer max-sm:hidden"
       swapOnIcon="arrows-pointing-out"
       swapOffIcon="arrows-pointing-in"
       [checked]="!isFullScreenMode()"
@@ -123,7 +123,7 @@
         aria-label="Notifications"
         i18n-aria-label="@@navbar.notifications.ariaLabel"
       >
-        <pc-icon class="hover:text-primary text-base-400 cursor-pointer" name="bell" />
+        <pc-icon class="hover:text-primary text-base-content/60 cursor-pointer" name="bell" />
         @if (unreadCount() > 0) {
         <span class="absolute top-2 right-2 w-2 h-2 bg-primary rounded-full ring-2 ring-base-100"></span>
         }
@@ -169,12 +169,9 @@
             (scroll)="onScroll($event)"
           >
             @if (notifications().length === 0) {
-            <div class="flex flex-col items-center justify-center py-8 text-base-400">
+            <div class="flex flex-col items-center justify-center py-8 text-base-content/60">
               <pc-icon name="bell" [size]="6" class="opacity-20 mb-2"></pc-icon>
-              <p
-                class="text-xs font-light"
-                i18n="Navbar|Message when there are no notifications@@navbar.notifications.empty"
-              >
+              <p class="text-xs" i18n="Navbar|Message when there are no notifications@@navbar.notifications.empty">
                 All caught up!
               </p>
             </div>
@@ -209,9 +206,11 @@
               <div class="flex-1 min-w-0">
                 <div class="flex justify-between items-start gap-1">
                   <p class="text-xs font-semibold truncate" [class.text-primary]="!notif.read">{{ notif.title }}</p>
-                  <span class="text-[10px] text-base-400 whitespace-nowrap"> {{ formatTime(notif.created_at) }} </span>
+                  <span class="text-[10px] text-base-content/60 whitespace-nowrap">
+                    {{ formatTime(notif.created_at) }}
+                  </span>
                 </div>
-                <p class="text-xs text-base-400 font-light mt-0.5 line-clamp-2">{{ notif.message }}</p>
+                <p class="text-xs text-base-content/70 mt-0.5 line-clamp-2">{{ notif.message }}</p>
               </div>
 
               <!-- Unread dot indicator (static — nothing loops but a working spinner, §7) -->
@@ -266,7 +265,7 @@
         popover
         [id]="profileMenuId"
         [style.position-anchor]="profileMenuAnchor"
-        class="dropdown dropdown-end pc-dropdown-sheet menu menu-md bg-base-100 sm:rounded-box sm:mt-3 sm:w-44 cursor-pointer font-light shadow px-0 mx-0"
+        class="dropdown dropdown-end pc-dropdown-sheet menu menu-md bg-base-100 sm:rounded-box sm:mt-3 sm:w-44 cursor-pointer shadow px-0 mx-0"
         (click)="closeSheet($event)"
       >
         <li class="hover:text-primary">

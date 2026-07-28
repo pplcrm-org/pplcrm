@@ -1,4 +1,10 @@
-import { UpdateHouseholdsObj, idSchema } from '../../../../../../libs/common/src';
+import {
+  UpdateHouseholdsObj,
+  getAllOptions,
+  idSchema,
+  MAX_BULK_IDS,
+  MAX_IMPORT_ROWS,
+} from '../../../../../../libs/common/src';
 
 import { z } from 'zod';
 
@@ -20,20 +26,22 @@ export const HouseholdsRouter = router({
   import: authProcedure
     .input(
       z.object({
-        rows: z.array(
-          z.object({
-            street_num: z.string().trim().max(50).optional().nullable(),
-            apt: z.string().trim().max(50).optional().nullable(),
-            street1: z.string().trim().max(200).optional().nullable(),
-            street2: z.string().trim().max(200).optional().nullable(),
-            city: z.string().trim().max(100).optional().nullable(),
-            state: z.string().trim().max(100).optional().nullable(),
-            zip: z.string().trim().max(20).optional().nullable(),
-            country: z.string().trim().max(100).optional().nullable(),
-            home_phone: z.string().trim().max(50).optional().nullable(),
-            notes: z.string().trim().max(10000).optional().nullable(),
-          }),
-        ),
+        rows: z
+          .array(
+            z.object({
+              street_num: z.string().trim().max(50).optional().nullable(),
+              apt: z.string().trim().max(50).optional().nullable(),
+              street1: z.string().trim().max(200).optional().nullable(),
+              street2: z.string().trim().max(200).optional().nullable(),
+              city: z.string().trim().max(100).optional().nullable(),
+              state: z.string().trim().max(100).optional().nullable(),
+              zip: z.string().trim().max(20).optional().nullable(),
+              country: z.string().trim().max(100).optional().nullable(),
+              home_phone: z.string().trim().max(50).optional().nullable(),
+              notes: z.string().trim().max(10000).optional().nullable(),
+            }),
+          )
+          .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
         tags: z.array(z.string().trim().min(1).max(50)).optional(),
         skipped: z.number().int().nonnegative().optional(),
         file_name: z.string().trim().min(1).max(255).optional(),
@@ -46,7 +54,12 @@ export const HouseholdsRouter = router({
     }),
 
   deleteMany: authProcedure
-    .input(z.array(idSchema).min(1, 'At least one ID is required'))
+    .input(
+      z
+        .array(idSchema)
+        .min(1, 'At least one ID is required')
+        .max(MAX_BULK_IDS, 'Too many items selected for one action'),
+    )
     .mutation(({ input, ctx }) => households.deleteManyForTenant(ctx.auth, input)),
 
   attachTag: authProcedure
@@ -79,8 +92,10 @@ export const HouseholdsRouter = router({
       return households.getTags(id, ctx.auth, type);
     }),
 
+  // `z.any()` here let entirely unvalidated input reach the query builder — including
+  // `advancedFilterModel`, which getAllOptions otherwise validates through queryBuilderNodeSchema.
   getAllWithPeopleCount: authProcedure
-    .input(z.any().optional())
+    .input(getAllOptions)
     .query(({ input, ctx }) => households.getAllWithPeopleCount(ctx.auth, input)),
 
   getPeopleCount: authProcedure.input(idSchema).query(({ input, ctx }) => households.getPeopleCount(input, ctx.auth)),

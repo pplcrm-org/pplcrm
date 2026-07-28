@@ -1,14 +1,15 @@
 import { Component, inject, signal, computed, OnInit, viewChild } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { CurrencyPipe } from '@angular/common';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
-import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
+import { TabBar } from '@uxcommon/components/tabs/tabs';
 import { Table } from '@uxcommon/components/table/table';
 import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
 import { DONATION_METHOD_LABELS, type DonationMethod } from '../../../../../../../libs/common/src';
 import { DonationsService } from '../../../services/api/donations-service';
+import { DONATION_TABS, type DonationsScope } from './donation-tabs';
 import { RecordDonationDialog } from './record-donation-dialog';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
@@ -30,14 +31,16 @@ const RECENT_GIFTS_LIMIT = 8;
 export class DonationsGridComponent implements OnInit {
   private readonly donationsSvc = inject(DonationsService);
   private readonly alertSvc = inject(AlertService);
+  private readonly route = inject(ActivatedRoute);
 
   private readonly recordDialog = viewChild.required(RecordDonationDialog);
 
-  /** One-time / Monthly pledges are sibling pages — route-linked pills, same bar on both. */
-  protected readonly donationTabs: PcTabOption[] = [
-    { id: 'one-time', label: 'One-time', route: '/donations', exact: true },
-    { id: 'pledges', label: 'Monthly pledges', route: '/donations/pledges' },
-  ];
+  /** All / One-time / Monthly pledges are sibling pages — route-linked pills, same bar on each. */
+  protected readonly donationTabs = DONATION_TABS;
+
+  /** Which tab rendered this instance. Each route has its own reuse key, so the snapshot
+   * value is fixed for the lifetime of the component — no need to track route changes. */
+  protected readonly scope: DonationsScope = this.route.snapshot.data['scope'] === 'one-time' ? 'one-time' : 'all';
 
   protected readonly donations = signal<DonationRow[]>([]);
   protected readonly pledges = signal<PledgeRow[]>([]);
@@ -46,7 +49,17 @@ export class DonationsGridComponent implements OnInit {
    * "new rows flash in" pattern (row-saved-flash, datagrid.css). */
   protected readonly highlightId = signal<string | null>(null);
 
-  private readonly succeeded = computed(() => this.donations().filter((d) => d.status === 'succeeded'));
+  /** Gifts this tab is accountable for: every successful one, minus the pledge installments
+   * when the One-time tab is asking (a `pledge_id` means the gift is one of a monthly series). */
+  private readonly succeeded = computed(() => {
+    const gifts = this.donations().filter((d) => d.status === 'succeeded');
+    return this.scope === 'one-time' ? gifts.filter((d) => d.pledge_id == null) : gifts;
+  });
+
+  /** Every dollar this tab has ever received — the All tab's headline number. */
+  protected readonly totalRaised = computed(
+    () => this.succeeded().reduce((sum, d) => sum + Number(d.amount || 0), 0) / 100,
+  );
 
   private readonly thisMonthGifts = computed(() => this.succeeded().filter((d) => this.isInMonth(d.created_at, 0)));
   private readonly lastMonthGifts = computed(() => this.succeeded().filter((d) => this.isInMonth(d.created_at, -1)));
@@ -75,13 +88,18 @@ export class DonationsGridComponent implements OnInit {
 
   protected readonly receiptsSentThisMonth = computed(() => this.thisMonthGifts().filter((d) => d.receipt_sent).length);
 
+  /** The All tab answers "how much have we raised?" for good — the one-time tab stays on the
+   * month, which is the number that moves there. */
   protected readonly headerSentence = computed(() => {
-    const total = this.thisMonthTotal();
-    const count = this.thisMonthCount();
+    const allTime = this.scope === 'all';
+    const total = allTime ? this.totalRaised() : this.thisMonthTotal();
+    const count = allTime ? this.totalGiftCount() : this.thisMonthCount();
     const formattedTotal = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(total);
-    return count > 0
-      ? `${formattedTotal} raised this month across ${count} ${count === 1 ? 'gift' : 'gifts'}`
-      : 'No gifts recorded yet this month';
+    const gifts = `${count} ${count === 1 ? 'gift' : 'gifts'}`;
+    if (count === 0) return allTime ? 'No donations recorded yet' : 'No gifts recorded yet this month';
+    return allTime
+      ? `${formattedTotal} raised in total across ${gifts}`
+      : `${formattedTotal} raised this month across ${gifts}`;
   });
 
   protected readonly recentGifts = computed(() => this.succeeded().slice(0, RECENT_GIFTS_LIMIT));

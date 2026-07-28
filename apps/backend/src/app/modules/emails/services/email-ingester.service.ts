@@ -437,6 +437,9 @@ export class EmailIngesterService {
           is_favourite: false,
           deleted_at: null,
           status: 'open',
+          // Denormalized sort key — mirrors the email_headers.date_sent written below so the
+          // inbox can sort on one indexed column instead of a COALESCE across a join.
+          date_sent: email.dateSent,
           createdby_id: requestedBy,
           updatedby_id: requestedBy,
         })
