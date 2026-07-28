@@ -202,10 +202,18 @@ export const SidebarItems: ISidebarItem[] = [
     type: 'subheading',
     children: [
       {
+        // One entry, two halves of the shared vocabulary: the Tags and Issues pages carry a
+        // `pc-tags-issues-nav` tab row between them, so /issues keeps this entry lit.
+        name: 'Tags & issues',
+        route: '/tags',
+        alsoActiveFor: ['/issues'],
+        icon: 'label',
+      },
+      {
         // Wave 1E (spec §17): History page with Imports/Exports tabs, plus the
         // CSV import wizard at /imports/new. Exports' standalone entry folded
         // in here — see the redirect in dashboard.routes.ts.
-        name: 'Import / export',
+        name: 'Import & export',
         route: '/imports',
         icon: 'arrows-up-down-tray',
       },
@@ -216,14 +224,6 @@ export const SidebarItems: ISidebarItem[] = [
         shortcut: 'd',
         // Badge = merge-queue size (spec §9.3), via the tenant-scoped `duplicates.countQueue`
         // query. Count is fetched and applied in Sidebar (sidebar.ts) — see `badgeCount`.
-      },
-      {
-        // One entry, two halves of the shared vocabulary: the Tags and Issues pages carry a
-        // `pc-tags-issues-nav` tab row between them, so /issues keeps this entry lit.
-        name: 'Tags & issues',
-        route: '/tags',
-        alsoActiveFor: ['/issues'],
-        icon: 'label',
       },
     ],
   },

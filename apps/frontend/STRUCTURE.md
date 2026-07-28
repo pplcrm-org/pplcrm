@@ -116,6 +116,7 @@ apps/
               yard-sign-standing.ts
           donations/
             ui/
+              donation-tabs.ts
               donations-grid.html
               donations-grid.ts
               pledges-grid.html
@@ -366,6 +367,7 @@ apps/
               tag-palette.service.ts
               tags-admin.html
               tags-admin.ts
+              tags-issues-nav.ts
               tags.ts
           tasks/
             services/
