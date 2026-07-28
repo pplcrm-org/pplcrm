@@ -4,12 +4,17 @@ import { NavigationEnd, Router, RouterLink } from '@angular/router';
 import { filter, map } from 'rxjs';
 import { Icon } from '@icons/icon';
 
+import type { ModuleId } from '@common';
+
 import { OrgModeService } from '../services/org-mode.service';
 import { SidebarItems, sidebarLabel, type ISidebarItem } from './sidebar/sidebar-items';
 
+/** A sidebar entry known to own an optional module and to be routable. */
+type ModuleNavItem = ISidebarItem & { moduleId: ModuleId; route: string };
+
 /** Every entry that belongs to an optional module, flattened once. */
-const MODULE_ITEMS: readonly ISidebarItem[] = SidebarItems.flatMap((item) => [item, ...(item.children ?? [])]).filter(
-  (item) => !!item.moduleId && !!item.route,
+const MODULE_ITEMS: readonly ModuleNavItem[] = SidebarItems.flatMap((item) => [item, ...(item.children ?? [])]).filter(
+  (item): item is ModuleNavItem => !!item.moduleId && !!item.route,
 );
 
 /**
@@ -57,12 +62,11 @@ export class ModuleOffBar {
   );
 
   /** The optional-module entry owning the current URL, when its module is off. */
-  protected readonly offItem = computed<ISidebarItem | null>(() => {
+  protected readonly offItem = computed<ModuleNavItem | null>(() => {
     const path = (this.currentUrl().split(/[?#]/)[0] ?? '').replace(/\/$/, '');
     const enabled = this.orgMode.enabledModules();
-    const match = MODULE_ITEMS.find((item) => item.route && (path === item.route || path.startsWith(`${item.route}/`)));
-    // `moduleId` is non-null for everything in MODULE_ITEMS — see the filter above.
-    return match && !enabled.has(match.moduleId!) ? match : null;
+    const match = MODULE_ITEMS.find((item) => path === item.route || path.startsWith(`${item.route}/`));
+    return match && !enabled.has(match.moduleId) ? match : null;
   });
 
   protected label(item: ISidebarItem): string {

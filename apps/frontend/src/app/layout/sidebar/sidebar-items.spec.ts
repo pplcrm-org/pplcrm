@@ -94,9 +94,9 @@ describe('SidebarItems', () => {
 
     it('words the mode-sensitive entries from the table', () => {
       const canvassing = all.find((item) => item.moduleId === 'canvassing');
-      expect(canvassing).toBeDefined();
-      expect(sidebarLabel(canvassing!, ORG_MODE_TERMS.campaign)).toBe('Canvassing');
-      expect(sidebarLabel(canvassing!, ORG_MODE_TERMS.church)).toBe('Visitation');
+      if (!canvassing) throw new Error('no sidebar entry owns the canvassing module');
+      expect(sidebarLabel(canvassing, ORG_MODE_TERMS.campaign)).toBe('Canvassing');
+      expect(sidebarLabel(canvassing, ORG_MODE_TERMS.church)).toBe('Visitation');
     });
   });
 });

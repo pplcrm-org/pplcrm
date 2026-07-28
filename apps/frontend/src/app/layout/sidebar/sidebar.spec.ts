@@ -2,6 +2,8 @@ import type { ComponentFixture } from '@angular/core/testing';
 import { TestBed } from '@angular/core/testing';
 import { Sidebar } from './sidebar';
 import { SidebarService } from './sidebar-service';
+import { SidebarItems, type ISidebarItem } from './sidebar-items';
+import { SettingsService } from '@experiences/settings/services/settings-service';
 import { AuthService } from '../../auth/auth-service';
 import { TasksService } from '@experiences/tasks/services/tasks-service';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -132,5 +134,65 @@ describe('Sidebar Component', () => {
   it('should toggle the drawer state', () => {
     component['toggleDrawer']();
     expect(mockSidebarSvc.toggleDrawer).toHaveBeenCalled();
+  });
+
+  /**
+   * Module visibility. A module a mode leaves off is HIDDEN, never dropped — the route stays
+   * resolvable and the `g` chord keeps working, because "off" is a default the user can undo,
+   * not a permission.
+   */
+  describe('organization mode', () => {
+    function buildWith(mode: string, overrides: Record<string, boolean> = {}): Sidebar {
+      TestBed.resetTestingModule();
+      setLargeScreen(false);
+      const user = signal({ role: 'admin', tenant_org_mode: mode, tenant_module_overrides: overrides });
+      TestBed.configureTestingModule({
+        imports: [Sidebar],
+        providers: [
+          { provide: SidebarService, useValue: { ...mockSidebarSvc, getItems: () => signal(SidebarItems) } },
+          { provide: AuthService, useValue: { getUser: () => user(), getUserSignal: () => user } },
+          { provide: TasksService, useValue: mockTasksSvc },
+          { provide: SettingsService, useValue: { snapshotSignal: signal({}), upsert: vi.fn() } },
+          provideRouter([]),
+        ],
+      });
+      return TestBed.createComponent(Sidebar).componentInstance;
+    }
+
+    function find(cmp: Sidebar, name: string) {
+      const items = (cmp as any).items() as ISidebarItem[];
+      return items.flatMap((i) => (i.children ? [i, ...i.children] : [i])).find((i) => i.name === name);
+    }
+
+    it('hides canvassing and deliveries in church mode', () => {
+      const cmp = buildWith('church');
+      expect(find(cmp, 'Canvassing')?.hidden).toBe(true);
+      expect(find(cmp, 'Deliveries')?.hidden).toBe(true);
+    });
+
+    it('keeps them visible in campaign mode', () => {
+      const cmp = buildWith('campaign');
+      expect(find(cmp, 'Canvassing')?.hidden).toBeFalsy();
+      expect(find(cmp, 'Deliveries')?.hidden).toBeFalsy();
+    });
+
+    it('lets an explicit override re-show a module the mode turned off', () => {
+      const cmp = buildWith('church', { canvassing: true });
+      expect(find(cmp, 'Canvassing')?.hidden).toBeFalsy();
+    });
+
+    it('never hides an entry that belongs to no optional module', () => {
+      const cmp = buildWith('church');
+      expect(find(cmp, 'Teams')?.hidden).toBeFalsy();
+      expect(find(cmp, 'People')?.hidden).toBeFalsy();
+    });
+
+    it('words the mode-sensitive entries from the term table', () => {
+      const cmp = buildWith('church');
+      const canvassing = find(cmp, 'Canvassing');
+      expect(canvassing).toBeDefined();
+      expect((cmp as any).label(canvassing)).toBe('Visitation');
+      expect((cmp as any).label(find(cmp, 'Donations'))).toBe('Giving');
+    });
   });
 });
