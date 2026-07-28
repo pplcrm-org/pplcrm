@@ -22,8 +22,15 @@
     </div>
   </div>
 
-  <!-- Tabs (the standard pill tab bar) -->
-  <pc-tab-bar class="mb-4" [tabs]="pageTabs" [activeTab]="tab()" (activeTabChange)="selectTab($event)" />
+  <!-- Surface switch (turfs / field report) — the underline tab row the People grid uses -->
+  <pc-tab-bar
+    class="mb-4"
+    [tabs]="pageTabs"
+    [activeTab]="tab()"
+    (activeTabChange)="selectTab($event)"
+    variant="underline"
+    label="Canvassing views"
+  />
 
   @if (tab() === 'turfs') {
   <!-- In the field today -->

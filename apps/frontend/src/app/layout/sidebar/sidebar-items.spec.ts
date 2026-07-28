@@ -93,4 +93,24 @@ describe('isSidebarRouteActive', () => {
   it('is never active without a route', () => {
     expect(isSidebarRouteActive('/people', { route: undefined })).toBe(false);
   });
+
+  // Tags & issues is one entry over two sibling top-level routes; /issues must keep it lit.
+  it('stays lit on a sibling route listed in alsoActiveFor', () => {
+    const vocabulary: Pick<ISidebarItem, 'alsoActiveFor' | 'pathMatchExact' | 'route'> = {
+      route: '/tags',
+      alsoActiveFor: ['/issues'],
+    };
+    expect(isSidebarRouteActive('/tags', vocabulary)).toBe(true);
+    expect(isSidebarRouteActive('/issues', vocabulary)).toBe(true);
+    expect(isSidebarRouteActive('/issues/42', vocabulary)).toBe(true);
+    expect(isSidebarRouteActive('/issuesx', vocabulary)).toBe(false);
+    expect(isSidebarRouteActive('/lists', vocabulary)).toBe(false);
+  });
+
+  it('lights the real Tags & issues entry on both of its routes', () => {
+    const entry = flatten(SidebarItems).find((item) => item.name === 'Tags & issues');
+    expect(entry, 'the merged Tags & issues sidebar entry is missing').toBeTruthy();
+    expect(entry && isSidebarRouteActive('/tags', entry)).toBe(true);
+    expect(entry && isSidebarRouteActive('/issues', entry)).toBe(true);
+  });
 });

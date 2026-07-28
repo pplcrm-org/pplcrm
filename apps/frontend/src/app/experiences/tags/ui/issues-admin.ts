@@ -12,6 +12,7 @@ import { TagsService } from '@experiences/tags/services/tags-service';
 import { AddIssueDialog } from './add-issue';
 import { TagAdminActions, type TagAdminRow } from './tag-admin-actions';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+import { TagsIssuesNav } from './tags-issues-nav';
 
 /**
  * §9.2 Issues admin (spec Fig. 11). Ranked table with a proportional interest bar and a trend
@@ -19,10 +20,23 @@ import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
  * conceptually separate everywhere (see `pplcrm-design-principles` §5) because issues power
  * issue-based filtering/targeting, tags power general categorization. Never merge the two
  * concepts even though the plumbing is shared. Each row's chip uses its own `color`.
+ *
+ * The two pages share one "Tags & issues" sidebar entry and a `pc-tags-issues-nav` tab row:
+ * that is navigation grouping only. The lists, routes, dialogs and vocabularies stay separate.
  */
 @Component({
   selector: 'pc-issues-admin',
-  imports: [EmptyState, Icon, RouterLink, TagItem, AddIssueDialog, Table, RowActions, GridHeaderComponent],
+  imports: [
+    EmptyState,
+    Icon,
+    RouterLink,
+    TagItem,
+    AddIssueDialog,
+    Table,
+    RowActions,
+    GridHeaderComponent,
+    TagsIssuesNav,
+  ],
   templateUrl: './issues-admin.html',
 })
 export class IssuesAdmin implements OnInit {
