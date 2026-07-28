@@ -230,6 +230,12 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     return n.toLocaleString('en-US');
   }
 
+  /** The single place this page hands the browser to Stripe. Extracted only so tests can observe
+   * the handoff: jsdom makes `window.location` unforgeable, so it cannot be stubbed in place. */
+  protected redirectTo(url: string): void {
+    window.location.href = url;
+  }
+
   protected onSliderInput(event: Event): void {
     const index = (event.target as HTMLInputElement).valueAsNumber;
     if (!Number.isNaN(index)) this.sliderIndex.set(index);
@@ -323,7 +329,7 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     try {
       const res = await this.api.billing.createCheckout.mutate({ plan: planKey, interval: this.billingInterval() });
       if (res?.url) {
-        window.location.href = res.url;
+        this.redirectTo(res.url);
       } else {
         throw new Error('No redirect URL returned from billing engine.');
       }
@@ -422,7 +428,7 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     try {
       const res = await this.api.billing.createPortal.mutate();
       if (res?.url) {
-        window.location.href = res.url;
+        this.redirectTo(res.url);
       } else {
         throw new Error('No redirect URL returned from billing portal.');
       }

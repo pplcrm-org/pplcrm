@@ -74,6 +74,27 @@ const result = await caller.update({ id: '1', data: { assigned_to: '3' } });
 
 `as any` casts are intentionally allowed in specs — the root ESLint config turns off `no-explicit-any` for `**/*.spec.ts`. That exemption is spec-only; the promise rules below are **not** exempted.
 
+**Never write `// eslint-disable-next-line @typescript-eslint/no-explicit-any` in a frontend spec.** It is redundant (the rule is already off there) and it is a hard **error** under `nx lint frontend`: that project's config doesn't register the rule at all, so the directive fails with `Definition for rule '…' was not found`. The plain `eslint` the pre-commit hook runs accepts it, so this passes the hook and breaks `nx lint` — the mirror image of the gap described below, and a reason to run both. Just write the `any`.
+
+### Components that extend `TRPCService`
+
+Some components (e.g. `experiences/settings/billing/billing-settings.ts`) call tRPC directly instead of going through a service. `api` is built in the `TRPCService` constructor, so it can't be swapped via `providers:` — assign it on the instance, and do it **before the first `detectChanges()`**, because that's when `ngOnInit` fires its first queries:
+
+```ts
+const fixture = TestBed.createComponent(BillingSettingsComponent);
+(fixture.componentInstance as any).api = mockApi; // ← before detectChanges
+fixture.detectChanges();
+await fixture.whenStable();
+```
+
+The base class also injects `Router`, `ErrorService` and `TokenService`; providing a mock `Router` is usually enough (the other two resolve fine on their own).
+
+### `window.location` cannot be stubbed in jsdom
+
+Both `window.location` and `Location.prototype.href` are non-configurable in the jsdom we run, so `Object.defineProperty`, `vi.spyOn(window, 'location', 'get')` and `vi.stubGlobal('location', …)` all throw `Cannot redefine property`. Assigning `location.href` doesn't throw, but it never changes the value and prints a `Not implemented: navigation` stack per test.
+
+So code that redirects the browser needs a one-line seam to be testable — see `redirectTo()` in `billing-settings.ts`, which both the Stripe Checkout and portal handoffs go through, and which the spec replaces with `vi.spyOn(component as any, 'redirectTo')`.
+
 ### The async-callback gotcha (this is where specs break the commit)
 
 Specs are full of callbacks passed into void-return slots (`mockImplementation`, event handlers, array callbacks). Passing an `async`/Promise-returning function there trips `@typescript-eslint/no-misused-promises`. **The fix that this repo already uses**: give the callback an explicit `: void` return and do the work synchronously. Real example from `apps/backend/src/app/modules/auth/trpc.router.spec.ts`:

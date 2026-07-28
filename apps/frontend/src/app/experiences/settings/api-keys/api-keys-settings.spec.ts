@@ -18,11 +18,11 @@ const KEY_TWO = {
 describe('ApiKeysSettingsComponent', () => {
   let component: ApiKeysSettingsComponent;
   let fixture: ComponentFixture<ApiKeysSettingsComponent>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand-rolled test doubles
+  // Hand-rolled test doubles. `any` needs no disable comment here: the root config turns
+  // `no-explicit-any` off for **/*.spec.ts, and `nx lint frontend` does not even register the
+  // rule — so naming it in a disable directive is itself the error.
   let mockSettingsSvc: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand-rolled test doubles
   let mockAlertSvc: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand-rolled test doubles
   let mockDialogSvc: any;
 
   async function build(keys: unknown[] = []): Promise<void> {
@@ -58,7 +58,6 @@ describe('ApiKeysSettingsComponent', () => {
   });
 
   /** The component's protected surface, reachable in a spec without loosening its real modifiers. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- protected members are the unit under test
   const api = (): any => component as any;
 
   it('loads existing keys on init', async () => {
