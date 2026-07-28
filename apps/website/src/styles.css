@@ -10,9 +10,9 @@
    line #e7e5e4, base-200 #f8f8f8, base-50 #fbfbfc, warning/success chips). */
 @import '../../../libs/uxcommon/src/styles/themes.css';
 
-/* The one marketing-only color: the dark navy used for the hero, footer and
-   CTA bands. Registered as a Tailwind theme color so `bg-navy` / `text-navy`
-   (and opacity modifiers) are generated. */
+/* The one marketing-only color: the dark navy used for the closing CTA bands
+   and the phone/device mocks. Registered as a Tailwind theme color so
+   `bg-navy` / `text-navy` (and opacity modifiers) are generated. */
 @theme {
   --color-navy: #0e182b;
 }
@@ -43,6 +43,101 @@ body {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: color-mix(in srgb, var(--color-base-content) 45%, transparent);
+}
+
+/* The home page's daylight canvas — a bright, open surface rather than a dark
+   band, because the first screen a non-technical visitor sees should feel
+   welcoming, and dark-ink-on-light is what the product itself looks like.
+
+   It is a decorative layer rather than a section background so it can sit
+   *behind the sticky header too*: a white nav bar above a tinted hero cuts a
+   hard line across the top of the page. `z-index: -1` puts it under all page
+   content but above the page background (the home page host is `relative`
+   with no stacking context, so it stays inside the page).
+
+   Every layer fades to transparent rather than to a solid color, so the exact
+   height never shows as an edge — the canvas has simply dissolved by the time
+   the product screenshot starts. Colors are mixed from the shared theme
+   tokens, so the hero follows the palette instead of pinning its own hexes. */
+.hero-canvas {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  z-index: -1;
+  height: 42rem;
+  pointer-events: none;
+  background-image:
+    radial-gradient(
+      ellipse 62rem 26rem at 50% 16%,
+      color-mix(in srgb, var(--color-primary) 22%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      ellipse 44rem 22rem at 88% 22%,
+      color-mix(in srgb, var(--color-secondary) 16%, transparent),
+      transparent 72%
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-primary) 9%, transparent),
+      color-mix(in srgb, var(--color-primary) 4%, transparent) 52%,
+      transparent
+    );
+}
+
+@media (min-width: 640px) {
+  .hero-canvas {
+    height: 54rem;
+  }
+}
+
+/* The fine dot grid over that wash — texture near the top of the page, masked
+   away well before the screenshot so the product image sits on clean white. */
+.hero-canvas::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--color-base-content) 11%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+  -webkit-mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.7), transparent 62%);
+  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.7), transparent 62%);
+}
+
+/* The home header sits on that canvas, so at the top of the page it is fully
+   transparent and only fades in its frosted backing once the visitor scrolls;
+   otherwise a white bar would cut the line the canvas exists to avoid. The
+   fade is a scroll-driven CSS animation — no listener, no JS. Browsers without
+   `animation-timeline` (and anyone who asked for reduced motion) keep the
+   frosted backing at rest, which is the safe fallback: the nav stays legible
+   either way. */
+.hero-bar {
+  background-color: color-mix(in srgb, var(--color-base-100) 72%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: scroll()) {
+    .hero-bar {
+      animation: hero-bar-settle linear both;
+      animation-timeline: scroll(root block);
+      animation-range: 0 6rem;
+    }
+  }
+}
+
+@keyframes hero-bar-settle {
+  from {
+    background-color: transparent;
+    backdrop-filter: blur(0);
+  }
+  to {
+    background-color: color-mix(in srgb, var(--color-base-100) 72%, transparent);
+    backdrop-filter: blur(12px);
+  }
 }
 
 /* Same eyebrow on the dark navy bands (white ink instead of base-content). */

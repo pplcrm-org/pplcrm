@@ -1,4 +1,4 @@
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import type { CurrencyCode } from '@common';
 
 import { CurrencyService } from './currency.service';
@@ -6,8 +6,7 @@ import { CurrencyService } from './currency.service';
 /**
  * Currency picker for the site header. Lets a visitor override the auto-detected display currency;
  * the choice persists (see {@link CurrencyService}). A DaisyUI `dropdown` — platform-first, no
- * custom widget. Two looks (`onDark` for the navy hero header, solid otherwise) to match
- * {@link SiteHeader}'s variants.
+ * custom widget.
  */
 @Component({
   selector: 'pc-currency-switcher',
@@ -16,7 +15,7 @@ import { CurrencyService } from './currency.service';
       <button
         type="button"
         tabindex="0"
-        [class]="triggerClass()"
+        class="flex items-center gap-1.5 rounded-field border border-line px-2.5 py-1.5 text-[13px] font-medium text-base-content hover:border-primary hover:text-primary"
         [attr.aria-label]="'Change currency, currently ' + active().label"
       >
         <svg
@@ -67,18 +66,10 @@ import { CurrencyService } from './currency.service';
   `,
 })
 export class CurrencySwitcher {
-  public readonly onDark = input<boolean>(false);
-
   private readonly currency = inject(CurrencyService);
 
   protected readonly options = this.currency.options;
   protected readonly active = this.currency.active;
-
-  protected readonly triggerClass = computed<string>(() =>
-    this.onDark()
-      ? 'flex items-center gap-1.5 rounded-field border border-white/30 px-2.5 py-1.5 text-[13px] font-medium text-white/85 hover:bg-white/10'
-      : 'flex items-center gap-1.5 rounded-field border border-line px-2.5 py-1.5 text-[13px] font-medium text-base-content hover:border-primary hover:text-primary',
-  );
 
   protected select(code: CurrencyCode, event: Event): void {
     this.currency.setCurrency(code);

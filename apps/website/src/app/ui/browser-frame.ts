@@ -11,7 +11,7 @@ import { Component, input } from '@angular/core';
   selector: 'pc-browser-frame',
   template: `
     <div
-      class="mx-auto w-full max-w-[880px] overflow-hidden rounded-xl border border-line bg-base-100 shadow-[0_24px_70px_rgba(3,10,22,.45)]"
+      class="mx-auto w-full max-w-[880px] overflow-hidden rounded-xl border border-line bg-base-100 shadow-[0_2px_6px_rgba(15,23,42,.06),0_24px_60px_-18px_rgba(15,23,42,.28)]"
     >
       <div class="flex items-center gap-2 border-b border-line bg-base-200 px-3.5 py-2.5">
         <span class="h-2.5 w-2.5 rounded-full bg-base-300"></span>

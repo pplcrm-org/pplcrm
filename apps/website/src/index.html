@@ -72,7 +72,11 @@
     </script>
   </head>
 
-  <body class="min-h-full bg-base-100 text-base-content">
+  <!-- The page surface is DaisyUI's `[data-theme]` background on <html> above, which the browser
+       paints as the viewport canvas. Body deliberately stays transparent: an opaque background
+       here would cover the home page's `.hero-canvas`, the decorative layer that lets the hero's
+       tint run behind the sticky header. -->
+  <body class="min-h-full text-base-content">
     <pc-website-root>
       <div class="flex min-h-screen items-center justify-center">
         <span class="loading loading-spinner loading-md opacity-40" aria-label="Loading"></span>

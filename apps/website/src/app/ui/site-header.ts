@@ -10,9 +10,11 @@ import { SiteLogo } from './site-logo';
 type HeaderVariant = 'over-hero' | 'solid';
 
 /**
- * Site header. Two looks from one component:
- *  - `over-hero`  transparent bar with light text, sits on the navy hero (Home)
- *  - `solid`      white bar with a hairline border and dark text (FAQ, stubs)
+ * Site header. Two looks from one component, both with dark text now that the
+ * home hero is light:
+ *  - `over-hero`  frosted, borderless bar that lets the hero's tint show
+ *                 through, so the header reads as part of the hero (Home)
+ *  - `solid`      white bar with a hairline border (FAQ, pricing, stubs)
  * Below `md` the nav collapses behind a hamburger toggle.
  */
 @Component({
@@ -22,20 +24,20 @@ type HeaderVariant = 'over-hero' | 'solid';
     <header [class]="barClass()">
       <div class="site-wrap flex items-center justify-between gap-4 px-5 py-3.5 sm:px-8">
         <a routerLink="/" class="flex items-center" aria-label="pplCRM home">
-          <pc-site-logo [onDark]="onDark()" />
+          <pc-site-logo />
         </a>
 
         <!-- Desktop nav -->
         <nav class="hidden items-center gap-5 text-[13.5px] font-medium lg:flex xl:gap-6">
-          <pc-audience-menu [onDark]="onDark()" />
+          <pc-audience-menu />
           @for (link of nav; track link.path) {
-            <a [routerLink]="link.path" [class]="linkClass()">{{ link.label }}</a>
+            <a [routerLink]="link.path" class="text-base-content hover:text-primary">{{ link.label }}</a>
           }
-          <pc-currency-switcher [onDark]="onDark()" />
+          <pc-currency-switcher />
           @if (signedIn()) {
             <a [href]="dashboardUrl" class="btn btn-primary btn-sm rounded-field font-semibold">Dashboard</a>
           } @else {
-            <a [href]="loginUrl" [class]="loginBtnClass()">Log in</a>
+            <a [href]="loginUrl" class="btn btn-outline btn-sm rounded-field">Log in</a>
             <a [href]="signupUrl" class="btn btn-primary btn-sm rounded-field font-semibold">Start free</a>
           }
         </nav>
@@ -44,7 +46,6 @@ type HeaderVariant = 'over-hero' | 'solid';
         <button
           type="button"
           class="btn btn-square btn-ghost btn-sm lg:hidden"
-          [class.text-white]="onDark()"
           [attr.aria-expanded]="open()"
           aria-label="Toggle menu"
           (click)="open.set(!open())"
@@ -107,19 +108,14 @@ export class SiteHeader {
   protected readonly signedIn = this.auth.signedIn;
   protected readonly open = signal(false);
 
-  protected readonly onDark = computed<boolean>(() => this.variant() === 'over-hero');
-
-  protected readonly barClass = computed<string>(() =>
-    this.onDark() ? 'sticky top-0 z-50 bg-navy' : 'sticky top-0 z-50 border-b border-line bg-base-100',
-  );
-
-  protected readonly linkClass = computed<string>(() =>
-    this.onDark() ? 'text-white/85 hover:text-white' : 'text-base-content hover:text-primary',
-  );
-
-  protected readonly loginBtnClass = computed<string>(() =>
-    this.onDark()
-      ? 'rounded-field border border-white/35 px-4 py-2 font-semibold text-white hover:bg-white/10'
-      : 'btn btn-outline btn-sm rounded-field',
-  );
+  /**
+   * Over the hero the bar rides the hero canvas and fades its frosted backing in on scroll
+   * (the `.hero-bar` rule in styles.css); everywhere else it is a white bar with a hairline
+   * rule. An open mobile menu forces the backing on regardless, so the panel and the bar it
+   * hangs from read as one opaque surface.
+   */
+  protected readonly barClass = computed<string>(() => {
+    if (this.variant() !== 'over-hero') return 'sticky top-0 z-50 border-b border-line bg-base-100/90 backdrop-blur-md';
+    return this.open() ? 'sticky top-0 z-50 bg-base-100' : 'sticky top-0 z-50 hero-bar';
+  });
 }

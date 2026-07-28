@@ -1,15 +1,23 @@
+<!-- The hero's daylight background, painted behind the header as well as the hero
+     itself so the sticky bar does not cut a line across the top of the page. -->
+<div class="hero-canvas" aria-hidden="true"></div>
+
 <pc-site-header variant="over-hero" />
 
 <!-- ============================ HERO ============================ -->
-<section class="bg-navy px-5 pb-12 pt-10 text-center sm:px-8 sm:pb-16 sm:pt-14">
+<section class="px-5 pb-14 pt-10 text-center sm:px-8 sm:pb-20 sm:pt-14">
   <div class="flex flex-wrap items-center justify-center gap-3">
-    <span class="w-full text-center text-[12.5px] font-medium text-white/60">I'm a…</span>
-    <div class="flex flex-wrap justify-center gap-1 rounded-lg bg-white/12 p-1">
+    <span class="w-full text-center text-[12.5px] font-medium text-base-content/50">I'm a…</span>
+    <div class="flex flex-wrap justify-center gap-1 rounded-xl border border-line bg-base-200/80 p-1 backdrop-blur-sm">
       @for (a of audiences; track a.id) {
       <button
         type="button"
-        class="rounded-md px-3.5 py-2 text-[13px] font-semibold transition-colors"
-        [class]="aud === a.id ? 'bg-white text-navy' : 'bg-transparent text-white/80 hover:text-white'"
+        class="rounded-lg px-3.5 py-2 text-[13px] font-semibold transition-colors"
+        [class]="
+          aud === a.id
+            ? 'bg-base-100 text-base-content shadow-[0_1px_2px_rgba(15,23,42,.10)]'
+            : 'bg-transparent text-base-content/55 hover:text-base-content'
+        "
         (click)="pick(a.id)"
       >
         {{ a.label }}
@@ -19,12 +27,10 @@
   </div>
 
   <div class="mx-auto mt-9 max-w-[780px]">
-    <h1
-      class="text-balance text-[clamp(2.125rem,5.5vw,3.125rem)] font-bold leading-[1.1] tracking-[-0.02em] text-white"
-    >
+    <h1 class="text-balance text-[clamp(2.125rem,5.5vw,3.125rem)] font-bold leading-[1.1] tracking-[-0.02em]">
       {{ hero.h1 }}
     </h1>
-    <p class="mx-auto mt-5 max-w-[580px] text-[17.5px] leading-relaxed text-white/75">{{ hero.sub }}</p>
+    <p class="mx-auto mt-5 max-w-[580px] text-[17.5px] leading-relaxed text-base-content/65">{{ hero.sub }}</p>
   </div>
 
   <div class="mt-11">

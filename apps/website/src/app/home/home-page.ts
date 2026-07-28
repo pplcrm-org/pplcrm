@@ -24,6 +24,10 @@ interface Qa {
   selector: 'pc-home-page',
   imports: [RouterLink, SiteHeader, SiteFooter, BrowserFrame, SiteIcon, Constellation],
   templateUrl: './home-page.html',
+  // The hero canvas is absolutely positioned against this host; `relative` with no
+  // z-index keeps it a containing block without opening a stacking context, so the
+  // canvas's negative z-index still lands under the page content.
+  host: { class: 'relative block' },
 })
 export class HomePage {
   private readonly seo = inject(SeoService);

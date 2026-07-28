@@ -1,4 +1,4 @@
-import { Component, computed, input } from '@angular/core';
+import { Component } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
 import { AUDIENCE_NAV } from './site-nav';
@@ -11,15 +11,19 @@ import { AUDIENCE_NAV } from './site-nav';
  * audience did not fit — collapsing them into one trigger takes the row from five links to three
  * and leaves room for more verticals later.
  *
- * A DaisyUI `dropdown`, matching {@link CurrencySwitcher} — platform-first, no custom widget, and
- * two looks (`onDark` over the navy hero) to match {@link SiteHeader}'s variants.
+ * A DaisyUI `dropdown`, matching {@link CurrencySwitcher} — platform-first, no custom widget.
  */
 @Component({
   selector: 'pc-audience-menu',
   imports: [RouterLink],
   template: `
     <div class="dropdown">
-      <button type="button" tabindex="0" [class]="triggerClass()" aria-label="Who pplCRM is for">
+      <button
+        type="button"
+        tabindex="0"
+        class="flex items-center gap-1 text-[13.5px] font-medium text-base-content hover:text-primary"
+        aria-label="Who pplCRM is for"
+      >
         <span>Who it's for</span>
         <svg
           viewBox="0 0 24 24"
@@ -47,15 +51,7 @@ import { AUDIENCE_NAV } from './site-nav';
   `,
 })
 export class AudienceMenu {
-  public readonly onDark = input<boolean>(false);
-
   protected readonly audiences = AUDIENCE_NAV;
-
-  protected readonly triggerClass = computed<string>(() =>
-    this.onDark()
-      ? 'flex items-center gap-1 text-[13.5px] font-medium text-white/85 hover:text-white'
-      : 'flex items-center gap-1 text-[13.5px] font-medium text-base-content hover:text-primary',
-  );
 
   protected close(event: Event): void {
     // DaisyUI dropdowns close on blur; drop focus so the menu dismisses after a pick.
