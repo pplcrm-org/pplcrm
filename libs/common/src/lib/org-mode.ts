@@ -163,6 +163,23 @@ export function parseModuleOverrides(value: unknown): Partial<Record<ModuleId, b
  * starter tags BY NAME and its sample submissions to starter forms BY SLUG (and
  * `demo-seed.ts` silently skips a slug it can't match). Gating both on the same
  * boolean makes that coupling correct by construction rather than by convention.
+ *
+ * INTENDED END STATE: every mode seeds a demo dataset, so this table goes all-true and
+ * then stops earning its keep as a flag. The marketing site and the help centre already
+ * state the universal claim ("Every new workspace starts in demo mode"), so the copy is
+ * waiting on the code, not the reverse.
+ *
+ * It is NOT all-true yet because there is only one dataset and it is a fictional
+ * municipal campaign: riding-association notes, lawn-sign tags, ward-bounded turfs, an
+ * issues survey. Seeding that into a church workspace would contradict the very
+ * vocabulary ORG_MODE_TERMS exists to set. Flipping a mode to `true` therefore requires,
+ * together:
+ *   1. a mode-appropriate dataset in `modules/demo/`, whose tags/issues/form slugs are all
+ *      seeded for that mode (see the onboarding-seed spec — the seeder skips misses SILENTLY);
+ *   2. the campaign-only starter tags/forms decoupled from this flag, or the new dataset
+ *      written to need them;
+ *   3. tour stops that hold up (`tour-stops.ts` navigates to /canvassing and anchors
+ *      `nav-canvassing`, which nonprofit and church mode hide by default).
  */
 export const ORG_MODE_SEEDS_DEMO: Record<OrgMode, boolean> = {
   office: true,

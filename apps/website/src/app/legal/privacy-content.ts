@@ -20,7 +20,7 @@ export const PRIVACY_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'pplCRM (“we”, “us”) is a relationship platform for constituency offices, campaigns and non-profits, operated from Canada. This policy covers the marketing site (pplcrm.com), the application (app.pplcrm.com and api.pplcrm.com), the volunteer companion apps (go.pplcrm.com), and the public pages organizations publish through us (their pages on pplforms.com). You can reach us about anything in this policy at hello@pplcrm.com.',
+      text: 'pplCRM (“we”, “us”) is a relationship platform for constituency offices, campaigns, non-profits and churches, operated from Canada. This policy covers the marketing site (pplcrm.com), the application (app.pplcrm.com and api.pplcrm.com), the volunteer companion apps (go.pplcrm.com), and the public pages organizations publish through us (their pages on pplforms.com). You can reach us about anything in this policy at hello@pplcrm.com.',
     },
     {
       kind: 'p',
@@ -218,7 +218,7 @@ export const PRIVACY_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'If a constituency office, campaign or non-profit that uses pplCRM holds your information, that organization decides why and how it is used, and your request is theirs to answer: contact them directly to access, correct or delete your record, or to opt out of contact. Every newsletter sent through pplCRM carries the sender’s name, postal address and a working unsubscribe link, and unsubscribes are honored automatically across all future sends. If you contact us instead, we will forward your request to the organization and help them fulfill it.',
+      text: 'If a constituency office, campaign, non-profit or church that uses pplCRM holds your information, that organization decides why and how it is used, and your request is theirs to answer: contact them directly to access, correct or delete your record, or to opt out of contact. Every newsletter sent through pplCRM carries the sender’s name, postal address and a working unsubscribe link, and unsubscribes are honored automatically across all future sends. If you contact us instead, we will forward your request to the organization and help them fulfill it.',
     },
     {
       kind: 'h2',

@@ -11,7 +11,9 @@
       "cache": true,
       "inputs": [
         "{workspaceRoot}/apps/website/tools/generate-help-static.ts",
-        "{workspaceRoot}/libs/common/src/lib/help/**/*.ts"
+        "{workspaceRoot}/libs/common/src/lib/help/**/*.ts",
+        "{workspaceRoot}/apps/website/src/app/home/audience-content.ts",
+        "{workspaceRoot}/apps/website/src/assets/site-shots/**"
       ],
       "outputs": ["{workspaceRoot}/apps/website/src/generated"],
       "options": {

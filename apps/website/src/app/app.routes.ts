@@ -45,7 +45,7 @@ export const appRoutes: Route[] = [
     path: 'for/campaigns',
     title: 'For campaigns — pplCRM',
     data: {
-      audience: 'camp',
+      audience: 'campaign',
       description:
         'A campaign HQ that keeps score — turf cutting, live field reports, donations and ' +
         'yard-sign routes on one shared list. Free to start with sample data.',
@@ -56,10 +56,21 @@ export const appRoutes: Route[] = [
     path: 'for/nonprofits',
     title: 'For non-profits — pplCRM',
     data: {
-      audience: 'np',
+      audience: 'nonprofit',
       description:
         'Donors, volunteers and neighbours on one list. Gifts, drives and newsletters live on ' +
         "every person's record, so you stop reconciling three spreadsheets.",
+    },
+    loadComponent: () => import('./home/home-page').then((m) => m.HomePage),
+  },
+  {
+    path: 'for/churches',
+    title: 'For churches — pplCRM',
+    data: {
+      audience: 'church',
+      description:
+        'Members, visitors and volunteers on one list. Giving, groups and follow-up visits all ' +
+        "live on the family's record. Free to start, no card.",
     },
     loadComponent: () => import('./home/home-page').then((m) => m.HomePage),
   },
@@ -69,7 +80,7 @@ export const appRoutes: Route[] = [
     data: {
       description:
         'See how one people-first list compares to the usual spreadsheet-and-point-tools stack ' +
-        'for constituent, campaign and non-profit work.',
+        'for constituency office, campaign, non-profit and church work.',
     },
     loadComponent: () => import('./compare/compare-page').then((m) => m.ComparePage),
   },

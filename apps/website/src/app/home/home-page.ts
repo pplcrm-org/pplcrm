@@ -1,9 +1,9 @@
-import { Component, computed, inject, signal } from '@angular/core';
-import { ActivatedRoute, RouterLink } from '@angular/router';
-import { PLANS, startingPriceUsd } from '@common';
+import { Component, inject } from '@angular/core';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ORG_MODES, PLANS, isOrgMode, startingPriceUsd } from '@common';
 import type { PlanDef } from '@common';
 
-import { AppPreview, type PreviewKind } from '../ui/app-preview';
+import { AUDIENCE_CONTENT, type Audience, type Feature } from './audience-content';
 import { BrowserFrame } from '../ui/browser-frame';
 import { Constellation } from '../ui/constellation';
 import { CurrencyService } from '../ui/currency.service';
@@ -11,136 +11,82 @@ import { SeoService } from '../ui/seo';
 import { SiteFooter } from '../ui/site-footer';
 import { SiteHeader } from '../ui/site-header';
 import { SiteIcon } from '../ui/site-icon';
-import { SIGNUP_URL } from '../ui/site-nav';
+import { audiencePath, signupUrlFor } from '../ui/site-nav';
 
 import { environment } from '../../environments/environment';
-
-const AUDIENCE_IDS = ['office', 'camp', 'np'] as const;
-type Audience = (typeof AUDIENCE_IDS)[number];
-
-function isAudience(value: unknown): value is Audience {
-  return AUDIENCE_IDS.some((id) => id === value);
-}
-
-interface Hero {
-  readonly h1: string;
-  readonly sub: string;
-  readonly url: string;
-  readonly kind: PreviewKind;
-  /** Real product screenshot; when absent the <pc-app-preview> mock is shown. */
-  readonly img?: string;
-}
-
-interface AudienceOption {
-  readonly id: Audience;
-  readonly label: string;
-}
-
-interface Step {
-  readonly n: string;
-  readonly title: string;
-  readonly body: string;
-}
-
-interface Feature {
-  readonly icon: string;
-  readonly title: string;
-  readonly body: string;
-}
 
 interface Qa {
   readonly q: string;
   readonly a: string;
 }
 
-interface Door {
-  readonly addr: string;
-  readonly who: string;
-  readonly chip: string;
-  readonly chipClass: string;
-}
-
-const HEROES: Record<Audience, Hero> = {
-  office: {
-    h1: 'Every case answered. Every constituent remembered.',
-    sub: 'A shared inbox, tasks with due dates, and an activity log that remembers every touch. Casework that survives staff turnover and election cycles.',
-    url: 'app.pplcrm.com/inbox',
-    kind: 'inbox',
-    img: 'assets/site-shots/01-shot.webp',
-  },
-  camp: {
-    h1: 'Built for the people who knock and win campaigns.',
-    sub: 'Turf cutting, live field reports, donations and yard-sign routes. A campaign HQ that keeps score.',
-    url: 'app.pplcrm.com/canvassing',
-    kind: 'canvassing',
-    img: 'assets/site-shots/02-shot.webp',
-  },
-  np: {
-    h1: 'Donors, volunteers and neighbours. One list.',
-    sub: 'Stop reconciling three spreadsheets. Gifts, drives and newsletters live on one person’s record.',
-    url: 'app.pplcrm.com/donations',
-    kind: 'donations',
-    img: 'assets/site-shots/03-shot.webp',
-  },
-};
-
 @Component({
   selector: 'pc-home-page',
-  imports: [RouterLink, SiteHeader, SiteFooter, BrowserFrame, AppPreview, SiteIcon, Constellation],
+  imports: [RouterLink, SiteHeader, SiteFooter, BrowserFrame, SiteIcon, Constellation],
   templateUrl: './home-page.html',
 })
 export class HomePage {
-  protected readonly signupUrl = SIGNUP_URL;
-
   private readonly seo = inject(SeoService);
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+
+  /**
+   * The audience this page is rendering for.
+   *
+   * The /for/… routes supply it in route data (see app.routes.ts); `/` has none and reads as the
+   * default. Taken from the snapshot rather than the observable because each /for/… path is its
+   * own route config, so switching audience re-creates the component — which is exactly what
+   * makes `pick()` able to navigate.
+   */
+  protected readonly aud: Audience = ((value: unknown): Audience => (isOrgMode(value) ? value : 'office'))(
+    inject(ActivatedRoute).snapshot.data['audience'],
+  );
+
+  protected readonly copy = AUDIENCE_CONTENT[this.aud];
+  protected readonly hero = this.copy.hero;
+  protected readonly steps = this.copy.steps;
+  protected readonly features = this.copy.features;
+  protected readonly companionFeatures = this.copy.companionFeatures;
+  protected readonly field = this.copy.field;
+  protected readonly doors = this.copy.field.doors;
+  protected readonly closing = this.copy.closing;
+
+  /** Carries the audience into signup so the visitor is not asked the same question twice. */
+  protected readonly audienceSignupUrl = signupUrlFor(this.aud);
+
+  /** Singular labels for the hero's "I'm a…" picker; the nav uses the plural forms. */
+  protected readonly audiences: readonly { id: Audience; label: string }[] = ORG_MODES.map((id) => ({
+    id,
+    label: AUDIENCE_CONTENT[id].pickerLabel,
+  }));
 
   constructor() {
-    // SoftwareApplication rich-result data for the landing page. The free tier
-    // ($0) is the checkable, drift-safe offer to advertise here.
+    // SoftwareApplication rich-result data, described for THIS audience. Emitting the same
+    // three-vertical blurb on all four URLs made them read as near-duplicates to a crawler.
     this.seo.setJsonLd('software', {
       '@context': 'https://schema.org',
       '@type': 'SoftwareApplication',
       name: 'pplCRM',
       applicationCategory: 'BusinessApplication',
       operatingSystem: 'Web, iOS, Android',
-      url: environment.siteUrl,
-      description:
-        'A people-first CRM for constituency offices, campaigns and non-profits: one shared list ' +
-        'for constituents, voters, donors and volunteers, with a shared inbox, canvassing, ' +
-        'donations, newsletters and field apps.',
+      url: `${environment.siteUrl}${this.route.snapshot.data['audience'] ? audiencePath(this.aud) : ''}`,
+      description: this.copy.jsonLdDescription,
       offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD', description: 'Free plan' },
     });
   }
 
-  /** The /for/… routes render this page with their audience preselected (see app.routes.ts). */
-  private readonly routeAudience: unknown = inject(ActivatedRoute).snapshot.data['audience'];
-
-  protected readonly aud = signal<Audience>(isAudience(this.routeAudience) ? this.routeAudience : 'office');
-  protected readonly hero = computed<Hero>(() => HEROES[this.aud()]);
-
-  protected readonly audiences: readonly AudienceOption[] = [
-    { id: 'office', label: 'Constituency office' },
-    { id: 'camp', label: 'Campaign' },
-    { id: 'np', label: 'Non-profit' },
-  ];
-
-  protected readonly steps: readonly Step[] = [
-    {
-      n: '1',
-      title: 'Create your free workspace',
-      body: 'Sign up and land in a ready-made demo workspace: sample people and households, a live inbox, cut turfs and a donor ledger. No card.',
-    },
-    {
-      n: '2',
-      title: 'Try everything on sample data',
-      body: 'Triage a case, cut a turf, send a test newsletter, record a donation. Nothing is locked, and nothing you break is real.',
-    },
-    {
-      n: '3',
-      title: 'Import your list when it clicks',
-      body: 'Bring your spreadsheet. Duplicates merge automatically and the sample data steps aside.',
-    },
-  ];
+  /**
+   * Switching audience navigates rather than just setting a signal.
+   *
+   * The old local-only toggle left the URL, <title>, meta description and canonical on the
+   * previous audience while the body showed another — and now that the body copy varies too,
+   * that mismatch would be the whole page. Navigating re-runs SeoTitleStrategy and makes the
+   * choice shareable. Every /for/… page is prerendered, so this is a static fetch.
+   */
+  protected pick(id: Audience): void {
+    if (id === this.aud) return;
+    void this.router.navigate([audiencePath(id)]);
+  }
 
   /** The three comparative claims in the "Why pplCRM" band — each one names a real alternative and beats it. */
   protected readonly whyPillars: readonly Feature[] = [
@@ -158,39 +104,6 @@ export class HomePage {
       icon: 'paper-airplane',
       title: 'Email that lands',
       body: 'On big email platforms your newsletter shares a sending reputation with thousands of strangers, including the spammers. Here you send from your own verified domain, so the reputation you build is yours alone. Warm-up limits and abuse guardrails keep spammers off the platform entirely.',
-    },
-  ];
-
-  protected readonly features: readonly Feature[] = [
-    {
-      icon: 'users',
-      title: 'People & households',
-      body: 'The Ramos family is one door, two voters and a sign request, and the system knows it.',
-    },
-    {
-      icon: 'inbox',
-      title: 'A shared inbox & tasks',
-      body: 'Connect Gmail or Outlook and mail flows both ways. Every message gets an owner and a due date, so nobody writes to your office twice about the same pothole.',
-    },
-    {
-      icon: 'megaphone',
-      title: 'Newsletters that land',
-      body: 'Write once, send to the 1,284 people it’s actually for. An AI deliverability check scores every send before it leaves, so spam-filter surprises get caught while they’re still fixable.',
-    },
-    {
-      icon: 'map-pin',
-      title: 'Doors & the field',
-      body: 'Cut turfs in the office; the crew sees them on their phones. Every knock syncs back live.',
-    },
-    {
-      icon: 'currency-dollar',
-      title: 'Donations, gratefully',
-      body: '611 donors, each one thanked on time. Pledges, receipts and totals without a second spreadsheet.',
-    },
-    {
-      icon: 'arrow-up-tray',
-      title: 'Your spreadsheet, welcomed',
-      body: 'Bring the whole messy spreadsheet; duplicates merge on the way in. If you ever leave, everything leaves with you: plain-CSV export, on every plan.',
     },
   ];
 
@@ -213,7 +126,7 @@ export class HomePage {
     {
       icon: 'rectangle-stack',
       title: 'One list, every campaign',
-      body: 'Run this race and the next from one shared rolodex. Each campaign keeps its own supporters, mail and turf; admins decide who works in which campaign, and the whole workspace follows.',
+      body: 'Run this season and the next from one shared rolodex. Each campaign keeps its own supporters, mail and routes; admins decide who works in which, and the whole workspace follows.',
     },
   ];
 
@@ -232,25 +145,7 @@ export class HomePage {
     {
       icon: 'presentation-chart-line',
       title: 'Every touch sharpens the map',
-      body: 'Knocks, notes, gifts and RSVPs each add a datapoint. The longer you organize, the smarter your network gets.',
-    },
-  ];
-
-  protected readonly companionFeatures: readonly Feature[] = [
-    {
-      icon: 'map-pin',
-      title: 'Canvass companion',
-      body: 'Door lists by turf, offline-first, one tap to log a conversation. Knocks land in the field report live.',
-    },
-    {
-      icon: 'ticket',
-      title: 'Yard sign routes',
-      body: 'Every sign request becomes a stop on a route. Mark it placed and roll on.',
-    },
-    {
-      icon: 'house-modern',
-      title: 'Deliveries',
-      body: 'Leaflets, hampers and meeting notices become routes with per-street progress for volunteer drivers.',
+      body: 'Visits, notes, gifts and RSVPs each add a datapoint. The longer you organize, the smarter your network gets.',
     },
   ];
 
@@ -274,7 +169,7 @@ export class HomePage {
     },
     {
       q: 'What is the demo workspace?',
-      a: 'A complete sample workspace for a fictional campaign: realistic people and households, donors, a live inbox and cut turfs. Try every feature without touching real data.',
+      a: 'A ready-made sample workspace — realistic people and households, donors and a live inbox — so you can try every feature without touching real data. Every new workspace gets one, matched to the kind of organization you sign up as.',
     },
     {
       q: 'Can I import my existing list?',
@@ -301,26 +196,4 @@ export class HomePage {
       a: 'Three plans: Free forever, Grassroots from $29/month and Movement from $55/month — or pay annually and get 2 months free. The price scales with your emailable subscribers, never your total contacts, so you can store your whole list for free and only pay for who you email.',
     },
   ];
-
-  protected readonly doors: readonly Door[] = [
-    {
-      addr: '214 Alder St',
-      who: 'Elena & Marco Ramos',
-      chip: 'Supporter',
-      chipClass: 'bg-success/20 text-success-content',
-    },
-    { addr: '218 Alder St', who: 'Wei & Lily Chen', chip: 'Mixed', chipClass: 'bg-info/15 text-[#0e4e6e]' },
-    { addr: '222 Alder St', who: 'Denise Cole', chip: 'Not home', chipClass: 'bg-warning/40 text-warning-content' },
-    {
-      addr: '226 Alder St',
-      who: 'Priya Natarajan',
-      chip: 'Remaining',
-      chipClass: 'bg-base-300/60 text-base-content/60',
-    },
-    { addr: '230 Alder St', who: 'Marcus Lee', chip: 'Remaining', chipClass: 'bg-base-300/60 text-base-content/60' },
-  ];
-
-  protected pick(id: Audience): void {
-    this.aud.set(id);
-  }
 }

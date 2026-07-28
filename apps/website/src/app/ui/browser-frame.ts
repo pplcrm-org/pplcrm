@@ -5,7 +5,7 @@ import { Component, input } from '@angular/core';
  * projected mock UI. Pass `imageSrc` to show a real screenshot, or project
  * content for a live HTML mock:
  *
- *   <pc-browser-frame url="app.pplcrm.com/inbox"><pc-app-preview /></pc-browser-frame>
+ *   <pc-browser-frame url="app.pplcrm.com/inbox" imageSrc="assets/site-shots/01-shot.webp" />
  */
 @Component({
   selector: 'pc-browser-frame',

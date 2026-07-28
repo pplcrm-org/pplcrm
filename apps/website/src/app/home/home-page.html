@@ -3,13 +3,13 @@
 <!-- ============================ HERO ============================ -->
 <section class="bg-navy px-5 pb-12 pt-10 text-center sm:px-8 sm:pb-16 sm:pt-14">
   <div class="flex flex-wrap items-center justify-center gap-3">
-    <span class="w-full text-center text-[12.5px] font-medium text-white/60">I'm with a</span>
-    <div class="flex gap-1 rounded-lg bg-white/12 p-1">
+    <span class="w-full text-center text-[12.5px] font-medium text-white/60">I'm a…</span>
+    <div class="flex flex-wrap justify-center gap-1 rounded-lg bg-white/12 p-1">
       @for (a of audiences; track a.id) {
       <button
         type="button"
         class="rounded-md px-3.5 py-2 text-[13px] font-semibold transition-colors"
-        [class]="aud() === a.id ? 'bg-white text-navy' : 'bg-transparent text-white/80 hover:text-white'"
+        [class]="aud === a.id ? 'bg-white text-navy' : 'bg-transparent text-white/80 hover:text-white'"
         (click)="pick(a.id)"
       >
         {{ a.label }}
@@ -22,19 +22,13 @@
     <h1
       class="text-balance text-[clamp(2.125rem,5.5vw,3.125rem)] font-bold leading-[1.1] tracking-[-0.02em] text-white"
     >
-      {{ hero().h1 }}
+      {{ hero.h1 }}
     </h1>
-    <p class="mx-auto mt-5 max-w-[580px] text-[17.5px] leading-relaxed text-white/75">{{ hero().sub }}</p>
+    <p class="mx-auto mt-5 max-w-[580px] text-[17.5px] leading-relaxed text-white/75">{{ hero.sub }}</p>
   </div>
 
   <div class="mt-11">
-    @if (hero().img; as img) {
-    <pc-browser-frame [url]="hero().url" [imageSrc]="img" [imageAlt]="hero().h1" />
-    } @else {
-    <pc-browser-frame [url]="hero().url">
-      <pc-app-preview [kind]="hero().kind" />
-    </pc-browser-frame>
-    }
+    <pc-browser-frame [url]="hero.url" [imageSrc]="hero.img" [imageAlt]="hero.h1" />
   </div>
 </section>
 
@@ -197,14 +191,14 @@
       <div class="relative flex h-[500px] flex-col overflow-hidden rounded-[34px] bg-base-200">
         <span class="absolute left-1/2 top-2.5 h-5 w-20 -translate-x-1/2 rounded-full bg-navy"></span>
         <div class="bg-base-100 px-5 pb-2.5 pt-8">
-          <div class="text-[9px] font-semibold uppercase tracking-[0.08em] text-primary">Demo campaign · Turf 12</div>
-          <div class="mt-0.5 text-[19px] font-bold tracking-[-0.01em]">Maple Heights</div>
-          <div class="mt-0.5 text-[10.5px] text-base-content/50">14 doors · 21 voters</div>
+          <div class="text-[9px] font-semibold uppercase tracking-[0.08em] text-primary">{{ field.context }}</div>
+          <div class="mt-0.5 text-[19px] font-bold tracking-[-0.01em]">{{ field.place }}</div>
+          <div class="mt-0.5 text-[10.5px] text-base-content/50">{{ field.meta }}</div>
           <div class="mt-2.5 h-1.5 overflow-hidden rounded-full bg-base-300">
-            <div class="h-full w-[43%] bg-primary"></div>
+            <div class="h-full bg-primary" [class]="field.progressClass"></div>
           </div>
           <div class="mt-1.5 flex justify-between text-[10px] tabular-nums text-base-content/55">
-            <span>6 of 14 doors attempted</span><span>5 conversations</span>
+            <span>{{ field.progressNote }}</span><span>{{ field.conversations }}</span>
           </div>
         </div>
         <div class="flex flex-1 flex-col gap-1.5 overflow-hidden px-3 py-3">
@@ -276,15 +270,10 @@
 
 <!-- =========================== CLOSING CTA =========================== -->
 <section class="bg-navy px-5 py-14 text-center sm:px-8 sm:py-16">
-  <h2 class="text-[clamp(1.5rem,4vw,1.75rem)] font-bold tracking-[-0.01em] text-white">
-    Try everything before you trust us with a single name.
-  </h2>
-  <p class="mx-auto mt-3.5 max-w-[560px] text-[15px] leading-relaxed text-white/75">
-    Your free workspace opens with sample people, households, turfs and a live inbox already in it. Cut a turf, send a
-    test newsletter, break things. When it clicks, import your real list. No card, no time limit.
-  </p>
+  <h2 class="text-[clamp(1.5rem,4vw,1.75rem)] font-bold tracking-[-0.01em] text-white">{{ closing.h2 }}</h2>
+  <p class="mx-auto mt-3.5 max-w-[560px] text-[15px] leading-relaxed text-white/75">{{ closing.body }}</p>
   <div class="mt-6">
-    <a [href]="signupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">
+    <a [href]="audienceSignupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">
       Start free with sample data
     </a>
   </div>

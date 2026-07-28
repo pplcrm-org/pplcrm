@@ -51,7 +51,7 @@ export class FaqPage {
         },
         {
           q: 'What is the demo workspace?',
-          a: 'A complete sample workspace for a fictional local campaign: realistic people and households, donors, a live inbox and cut turfs. It exists so you can try every feature, including the destructive ones, without touching real data.',
+          a: 'A complete sample workspace for a fictional organization like yours: realistic people and households, donors, a live inbox and the work in progress your team would actually be doing. It exists so you can try every feature, including the destructive ones, without touching real data.',
         },
         {
           q: 'Do I need training to get started?',

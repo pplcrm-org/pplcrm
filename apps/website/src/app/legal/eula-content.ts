@@ -106,7 +106,7 @@ export const EULA_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'We built pplCRM for legitimate community, political and non-profit work. You agree not to use it to:',
+      text: 'We built pplCRM for legitimate community, political, non-profit and faith-community work. You agree not to use it to:',
     },
     {
       kind: 'list',

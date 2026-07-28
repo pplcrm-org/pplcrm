@@ -20,10 +20,12 @@
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 
 import type { HelpArticle } from '@common';
 import { HELP_ARTICLES, HELP_CATEGORIES, articleToMarkdown } from '@common';
+
+import { AUDIENCE_CONTENT } from '../src/app/home/audience-content';
 
 /**
  * The marketing site's own public origin, used to build absolute URLs.
@@ -44,6 +46,7 @@ const MARKETING_PATHS: readonly string[] = [
   'for/offices',
   'for/campaigns',
   'for/nonprofits',
+  'for/churches',
   'compare',
   'pricing',
   'about',
@@ -55,6 +58,7 @@ const MARKETING_PATHS: readonly string[] = [
 ];
 
 const scriptDir: string = dirname(fileURLToPath(import.meta.url));
+const SRC_DIR: string = resolve(scriptDir, '../src');
 const OUT_DIR: string = resolve(scriptDir, '../src/generated');
 const DOCS_DIR: string = join(OUT_DIR, 'docs');
 
@@ -99,9 +103,9 @@ function buildLlmsTxt(): string {
   const lines: string[] = [
     '# pplCRM',
     '',
-    '> pplCRM is a CRM for constituency offices, campaigns, and non-profits — one list for ' +
-      'constituents, voters, donors, and volunteers, with newsletters, canvassing, deliveries, ' +
-      'events, donations, and forms built in.',
+    '> pplCRM is a CRM for constituency offices, campaigns, non-profits, and churches — one list ' +
+      'for constituents, voters, donors, members, and volunteers, with newsletters, canvassing, ' +
+      'deliveries, events, donations, and forms built in.',
     '',
     '## Docs',
     '',
@@ -175,7 +179,49 @@ function buildRobotsTxt(): string {
   ].join('\n');
 }
 
+/**
+ * Every audience hero must have its screenshot on disk.
+ *
+ * There is no mock fallback any more (the old <pc-app-preview> was deleted once every hero had a
+ * real shot), so a missing or renamed file renders as a broken image on a landing page — and the
+ * website has no tests to catch it. Failing the build is the cheap substitute.
+ */
+async function assertHeroAssets(): Promise<void> {
+  const missing: string[] = [];
+  const placeholders: string[] = [];
+  for (const [audience, copy] of Object.entries(AUDIENCE_CONTENT)) {
+    const path = resolve(SRC_DIR, copy.hero.img);
+    try {
+      await access(path);
+    } catch {
+      missing.push(`${audience} → ${copy.hero.img}`);
+      continue;
+    }
+    if (copy.hero.imgIsPlaceholder) {
+      placeholders.push(`${audience} → ${copy.hero.img}`);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing hero screenshot(s):\n  ${missing.join('\n  ')}\n` +
+        'Capture the shot from a workspace in that organization mode and commit it to ' +
+        'apps/website/src/assets/site-shots/.',
+    );
+  }
+  // A borrowed shot passes the existence check, so say so loudly on every build rather than
+  // letting a landing page ship showing another audience's product.
+  if (placeholders.length > 0) {
+    console.warn(
+      `[generate-help-static] WARNING — placeholder hero screenshot(s), NOT FIT TO SHIP:\n  ${placeholders.join(
+        '\n  ',
+      )}\nClear the imgIsPlaceholder flag once the real shot is committed.`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
+  await assertHeroAssets();
+
   // Rebuild from scratch so removed articles don't leave stale .md files.
   await rm(OUT_DIR, { recursive: true, force: true });
   await mkdir(DOCS_DIR, { recursive: true });

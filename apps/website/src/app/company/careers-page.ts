@@ -43,7 +43,7 @@ export class CareersPage {
     {
       icon: 'globe-americas',
       title: 'Consequential users',
-      body: 'The people who use pplCRM run constituency offices, local campaigns and non-profits. When the product is good, real communities are served better. That is the point.',
+      body: 'The people who use pplCRM run constituency offices, local campaigns, non-profits and churches. When the product is good, real communities are served better. That is the point.',
     },
   ];
 }

@@ -2,7 +2,7 @@ import { Component } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
 import { SiteLogo } from './site-logo';
-import { SIGNUP_URL } from './site-nav';
+import { AUDIENCE_NAV, SIGNUP_URL } from './site-nav';
 
 interface FooterLink {
   readonly label: string;
@@ -36,7 +36,7 @@ const CONTACT_EMAIL = 'hello@pplcrm.com';
           <div class="col-span-2 sm:col-span-3 lg:col-span-1">
             <pc-site-logo />
             <p class="mt-3 max-w-[200px] text-[12.5px] leading-relaxed text-base-content/50">
-              One list for constituents, voters, donors and volunteers. Your people are not our product.
+              One list for constituents, voters, donors, members and volunteers. Your people are not our product.
             </p>
             <a class="mt-3.5 block text-[12.5px] text-base-content/60 hover:text-primary" [href]="mailto">{{
               email
@@ -88,11 +88,9 @@ export class SiteFooter {
     },
     {
       heading: 'Industries',
-      links: [
-        { label: 'Constituency offices', path: '/for/offices' },
-        { label: 'Campaigns', path: '/for/campaigns' },
-        { label: 'Non-profits', path: '/for/nonprofits' },
-      ],
+      // Derived, not a second literal: this column used to be a hand-maintained copy of the
+      // header's audience list, so the two could drift apart silently.
+      links: AUDIENCE_NAV.map((item) => ({ label: item.label, path: item.path })),
     },
     {
       heading: 'Resources',

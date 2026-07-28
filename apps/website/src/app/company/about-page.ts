@@ -50,7 +50,7 @@ export class AboutPage {
     {
       icon: 'currency-dollar',
       title: 'Priced for real budgets',
-      body: 'Constituency offices, local campaigns and small non-profits do not have enterprise budgets. Unlimited contacts on every plan; you pay only for features and email subscribers.',
+      body: 'Constituency offices, local campaigns, small non-profits and churches do not have enterprise budgets. Unlimited contacts on every plan; you pay only for features and email subscribers.',
     },
     {
       icon: 'arrow-down-tray',
