@@ -124,12 +124,13 @@ delete. Covered by _"reuses an identical blob instead of uploading it twice"_.
 ## Where things are stored
 
 `emails.preview` is **not** a body snippet — it is the dedupe key, `google:<id>` / `ms:<id>`. All
-provider reconciliation and the materializer's provider detection key off it.
-
-> ⚠ The inbox list template renders `{{ email.preview }}` as the snippet under the subject, and
-> nothing maps anything else into it — so synced mail currently displays its raw dedupe key. The
-> demo seeder writes human snippet text into the same column, which hides the bug in a fresh
-> workspace. `emails` has no snippet column; adding one is the fix.
+provider reconciliation and the materializer's provider detection key off it. **Never render it.**
+The user-facing snippet is `emails.preview_text`, added by
+`2026-07-28-zzzz-emails-preview-text.ts` and written by every path that creates a message
+(`previewTextFrom(extractBodyText(html))`). Until that migration the inbox list bound
+`{{ email.preview }}`, so synced mail displayed `google:18f3a…` under every subject — masked in
+demo workspaces because the seeder wrote snippet text into the dedupe column. Two columns, two
+jobs; keep them apart.
 
 `emails.date_sent` is a **denormalized copy** of `email_headers.date_sent` (falling back to the
 row's own `created_at`), added by the 2026-07-26 sort-indexes-hot-lists migration so the inbox can
@@ -138,14 +139,24 @@ sort on one indexed column. Writers must keep the two in step. The sweep still j
 
 ### Demo mail
 
-`modules/demo/demo-seed.ts` writes the same shape by hand rather than going through the ingester,
-so the two can drift. It deliberately matches on the parts that matter: bodies stay inline with a
-`body_text` extract (they are a few hundred bytes, far under `INLINE_BODY_MAX_BYTES`), and
-attachments are seeded **materialized** — real blob, real `files` row — because demo mail has no
-provider message behind it, so a deferred row could never be resolved and would 404 forever.
-`files` is not reached by the emails cascade, so the manifest tracks the ids and `deleteDemoData`
-returns the blob keys for the caller to purge after commit. Payloads are built, not bundled
-(`demo-attachment-assets.ts`). It does **not** write an `email_headers` row.
+`modules/demo/demo-seed.ts` writes this shape by hand rather than going through the ingester, so
+the two can drift. It matches on the parts that matter:
+
+- Bodies stay **inline** with a `body_text` extract — a few hundred bytes each, far under
+  `INLINE_BODY_MAX_BYTES`, so nothing belongs in blob storage and none is written.
+- `preview` is **null** (no provider owns demo mail); the snippet goes in `preview_text`.
+- An `email_headers` row is written with a `<…@demo.invalid>` Message-ID. That reserved domain is
+  load-bearing: demo mail is untagged, and the ingester **adopts** an untagged local message whose
+  Message-ID matches a synced one. A domain no provider can emit means a real sync can never
+  swallow a demo message.
+- Attachments are seeded **metadata-only** (`file_id` null, `remote_ref = 'demo:<asset key>'`) and
+  a `materialize_demo_attachments` job is queued in the same transaction. The job builds the
+  payloads (`demo-attachment-assets.ts` — built, never bundled), uploads, links `files` rows, and
+  appends their ids to the seed manifest. Do **not** move those uploads back into signup: blob I/O
+  there adds latency to every signup, turns a storage outage into a signup failure, and strands
+  blobs on rollback. It also hung three unrelated spec files that do not stub `StorageService`.
+- `files` is not reached by the emails cascade, so exit-demo deletes the manifest-tracked ids and
+  `deleteDemoData` returns the blob keys for the caller to purge **after** commit.
 
 ## Tests
 

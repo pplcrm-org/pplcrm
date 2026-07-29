@@ -2,7 +2,7 @@ import { DecimalPipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
 import { form, submit, required, email, minLength, FormField } from '@angular/forms/signals';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { ORG_MODES, ORG_MODE_LABELS, isOrgMode, type OrgMode } from '../../../../../../libs/common/src';
+import { ORG_MODES, ORG_MODE_LABELS, isOrgMode, type OrgMode } from '@common';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';

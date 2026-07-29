@@ -45,6 +45,7 @@ apps/
               automation-mail.handlers.ts
               billing.handlers.ts
               deletions.handlers.ts
+              demo.handlers.ts
               export.handlers.ts
               import-verification.ts
               import.handlers.ts
