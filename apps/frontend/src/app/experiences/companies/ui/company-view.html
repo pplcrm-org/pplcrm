@@ -4,7 +4,7 @@
   [eyebrow]="'Company'"
   [avatarText]="initials()"
   [crumbs]="crumbs()"
-  [isLoading]="isLoading()"
+  [isLoading]="isLoading() && !company()"
   [hasRecord]="!initialized() || !!company()"
   [showDelete]="true"
   [deleteText]="'Delete company'"

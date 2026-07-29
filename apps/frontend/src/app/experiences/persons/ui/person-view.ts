@@ -80,6 +80,14 @@ export class PersonView {
   protected readonly isLoading = this._loading.visible;
   protected readonly initialized = signal(false);
 
+  /**
+   * True while the per-tab payloads (emails, donations, shifts, events, tags)
+   * are in flight for the CURRENT person. The record itself paints as soon as
+   * `getById` lands, so the tabs need their own signal: without it they would
+   * claim "No donations yet" about a person whose donations are still loading.
+   */
+  protected readonly sectionsLoading = signal(false);
+
   protected readonly person = signal<any | null>(null);
 
   private readonly usersResource = resource({
@@ -170,6 +178,11 @@ export class PersonView {
   // Status chip beside the name (§3), derived honestly: an active monthly pledge
   // outranks one-off gifts; "Donor" is DERIVED from donation history (§15), not a tag.
   protected readonly statusChip = computed<string | null>(() => {
+    // The standing below is derived from data that lands after the record does
+    // (pledges, donations, tags). Show nothing rather than a chip we'd have to
+    // correct a moment later — a "Volunteer" that flips to "Monthly donor" reads
+    // as a glitch.
+    if (this.sectionsLoading()) return null;
     if (this.hasActivePledge()) return 'Monthly donor';
     if (this.donationHistory().length > 0) return 'Donor';
     // Volunteer/staff standing is first-class person status now (§15), not a tag.
@@ -287,62 +300,78 @@ export class PersonView {
     const isCurrent = this._requestGuard.begin();
     const end = this._loading.begin();
     try {
-      // 1. Load person details
+      // 1. The record itself. The previous person stays on screen until this
+      //    lands, so nothing below it may still be describing them once it does.
       const personData = await this.personsSvc.getById(id);
       if (!isCurrent()) return;
+      this.resetSections();
       this.person.set(personData);
       this.showSlugUrl(personData);
 
-      // 2. Load tags and issues
-      const tagList = await this.personsSvc.getTags(id, 'tag');
+      // 2. Everything the tabs need, in parallel. These used to be nine more
+      //    serial round trips inside the same loading gate, which on a real
+      //    network outlasted the gate's 300ms delay — so the page painted the
+      //    new record and then blanked itself to a progress bar mid-navigation.
+      await Promise.all([
+        this.section(
+          'tags',
+          () => this.personsSvc.getTags(id, 'tag'),
+          (v) => this.tags.set(v),
+          isCurrent,
+        ),
+        this.section(
+          'issues',
+          () => this.personsSvc.getTags(id, 'issue'),
+          (v) => this.issues.set(v),
+          isCurrent,
+        ),
+        this.section(
+          'volunteer details',
+          () => this.volunteerSvc.getHistoryForPerson(id),
+          (v) => this.volunteerHistory.set(v || []),
+          isCurrent,
+        ),
+        this.section(
+          'donation stats',
+          () => this.donationsSvc.getStats(id),
+          (v) => this.donationStats.set(v),
+          isCurrent,
+        ),
+        this.section(
+          'donation history',
+          () => this.donationsSvc.getHistory(id),
+          (v) => this.donationHistory.set(v || []),
+          isCurrent,
+        ),
+        // Powers the "Monthly donor" chip.
+        this.section(
+          'pledges',
+          () => this.donationsSvc.getPersonPledges(id),
+          (v) => this.hasActivePledge.set((v || []).some((p: any) => String(p.status).toLowerCase() === 'active')),
+          isCurrent,
+        ),
+        this.section(
+          'event history',
+          () => this.eventsSvc.getHistoryForPerson(id),
+          (v) => this.eventHistory.set(v || []),
+          isCurrent,
+        ),
+        // Connections: count only for the tab badge — the list loads inside the tab.
+        this.section(
+          'connection count',
+          () => this.connectionsSvc.countForPerson(id),
+          (v) => this.connectionCount.set(v),
+          isCurrent,
+        ),
+        this.section(
+          'activity log',
+          () => this.personsSvc.getActivity(id),
+          (v) => this.activityData.set(v || { emails: [], newsletters: [] }),
+          isCurrent,
+        ),
+      ]);
       if (!isCurrent()) return;
-      this.tags.set(tagList);
-      const issueList = await this.personsSvc.getTags(id, 'issue');
-      if (!isCurrent()) return;
-      this.issues.set(issueList);
-
-      // 3. Load volunteer history
-      try {
-        const history = await this.volunteerSvc.getHistoryForPerson(id);
-        if (!isCurrent()) return;
-        this.volunteerHistory.set(history || []);
-      } catch (err) {
-        console.error('Failed to load volunteer details', err);
-      }
-
-      // 4. Load donations stats, history and active-pledge status (for the "Monthly donor" chip)
-      try {
-        this.showAllDonations.set(false);
-        const stats = await this.donationsSvc.getStats(id);
-        if (!isCurrent()) return;
-        this.donationStats.set(stats);
-        const history = await this.donationsSvc.getHistory(id);
-        if (!isCurrent()) return;
-        this.donationHistory.set(history || []);
-        const pledges = await this.donationsSvc.getPersonPledges(id);
-        if (!isCurrent()) return;
-        this.hasActivePledge.set((pledges || []).some((p: any) => String(p.status).toLowerCase() === 'active'));
-      } catch (err) {
-        console.error('Failed to load donations history', err);
-      }
-
-      // 5. Load event history
-      try {
-        const history = await this.eventsSvc.getHistoryForPerson(id);
-        if (!isCurrent()) return;
-        this.eventHistory.set(history || []);
-      } catch (err) {
-        console.error('Failed to load event history', err);
-      }
-
-      // 6. Load connection count (tab badge — full list loads lazily inside the tab)
-      try {
-        const count = await this.connectionsSvc.countForPerson(id);
-        if (!isCurrent()) return;
-        this.connectionCount.set(count);
-      } catch (err) {
-        console.error('Failed to load connection count', err);
-      }
+      this.sectionsLoading.set(false);
 
       // Check query params for Stripe Checkout success redirects
       const params = this.route.snapshot.queryParams;
@@ -380,21 +409,49 @@ export class PersonView {
           console.error('Failed to record mock donation:', err);
         }
       }
-
-      // 5. Load interactions (emails + newsletters)
-      try {
-        const activity = await this.personsSvc.getActivity(id);
-        if (!isCurrent()) return;
-        this.activityData.set(activity || { emails: [], newsletters: [] });
-      } catch (err) {
-        console.error('Failed to load activity log', err);
-      }
     } catch (err) {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the person. Please try again.'));
     } finally {
       end();
       this.initialized.set(true);
     }
+  }
+
+  /**
+   * One secondary fetch: applies its result only if this load is still the
+   * current one, and never lets its own failure cancel a sibling's.
+   */
+  private async section<T>(
+    label: string,
+    fetch: () => Promise<T>,
+    apply: (value: T) => void,
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    try {
+      const value = await fetch();
+      if (!isCurrent()) return;
+      apply(value);
+    } catch (err) {
+      console.error(`Failed to load ${label}`, err);
+    }
+  }
+
+  /**
+   * Drop the previous record's per-tab data the moment a new record lands, so a
+   * person is never shown above someone else's donations, shifts or emails.
+   */
+  private resetSections(): void {
+    this.sectionsLoading.set(true);
+    this.tags.set([]);
+    this.issues.set([]);
+    this.volunteerHistory.set([]);
+    this.donationStats.set(null);
+    this.donationHistory.set([]);
+    this.hasActivePledge.set(false);
+    this.showAllDonations.set(false);
+    this.eventHistory.set([]);
+    this.connectionCount.set(0);
+    this.activityData.set({ emails: [], newsletters: [] });
   }
 
   /** Refresh the activity feed after a logged interaction. */

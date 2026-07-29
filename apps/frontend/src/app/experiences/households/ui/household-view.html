@@ -3,7 +3,7 @@
   [subtitle]="subtitle()"
   [eyebrow]="'Household'"
   [crumbs]="crumbs()"
-  [isLoading]="isLoading()"
+  [isLoading]="isLoading() && !household()"
   [hasRecord]="!initialized() || !!household()"
   [showActions]="!!(household() && !household()?.is_placeholder)"
   [showDelete]="true"

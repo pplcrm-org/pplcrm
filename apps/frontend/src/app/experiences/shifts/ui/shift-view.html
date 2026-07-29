@@ -2,7 +2,7 @@
   [title]="event()?.name || 'Volunteer event'"
   [eyebrow]="'Volunteer event'"
   [crumbs]="crumbs()"
-  [isLoading]="isLoading()"
+  [isLoading]="isLoading() && !event()"
   [hasRecord]="!initialized() || !!event()"
   [showDelete]="true"
   [deleteText]="'Delete event'"

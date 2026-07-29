@@ -2,7 +2,7 @@
   [title]="formRecord()?.name || 'Form'"
   [eyebrow]="'Form'"
   [crumbs]="crumbs()"
-  [isLoading]="isLoading()"
+  [isLoading]="isLoading() && !formRecord()"
   [hasRecord]="!initialized() || !!formRecord()"
   [showDelete]="true"
   [deleteText]="'Delete form'"

@@ -2,7 +2,7 @@
   [title]="team()?.name || 'Team'"
   [eyebrow]="'Team'"
   [crumbs]="crumbs()"
-  [isLoading]="isLoading()"
+  [isLoading]="isLoading() && !team()"
   [hasRecord]="!initialized() || !!team()"
   [showDelete]="true"
   [deleteText]="'Delete team'"

@@ -2,7 +2,7 @@
   [title]="name() || 'Campaign'"
   [eyebrow]="isOffice() ? 'Office context' : 'Election campaign'"
   [crumbs]="crumbs()"
-  [isLoading]="isLoading()"
+  [isLoading]="isLoading() && !campaign()"
   [hasRecord]="!initialized() || !!campaign()"
   [showDelete]="false"
   [showActions]="!isArchived()"
