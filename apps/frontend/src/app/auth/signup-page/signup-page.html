@@ -35,26 +35,23 @@
     }
 
     <!-- Organization type. Sets the wording and the starting module set; everything stays
-         changeable later in Workspace -> Modules, so this is a head start, not a commitment. -->
-    <fieldset class="flex flex-col gap-1.5">
-      <legend class="label-text-alt pb-1.5 text-neutral-300">What kind of organization is this?</legend>
-      <div class="grid grid-cols-2 gap-1.5">
+         changeable later in Workspace -> Modules, so this is a head start, not a commitment.
+         A select rather than a card grid: it carries the same visual weight as the input rows
+         around it, which is the weight this reversible answer actually deserves.
+         `ms-0 ps-0` undoes DaisyUI's negative start margin on `.select > select`, which is sized
+         to fill the whole shell and would otherwise paint its opaque background over the icon. -->
+    <label class="select w-full" [class.select-error]="submitAttempted() && !modeChosen()">
+      <pc-icon [size]="4" name="house-modern" />
+      <select class="ms-0 ps-0" [class.text-base-content/50]="!modeChosen()" (change)="onModeChange($event)">
+        <option value="" disabled [selected]="!modeChosen()">What kind of organization is this?</option>
         @for (m of modes; track m) {
-        <button
-          type="button"
-          class="rounded-lg border px-2.5 py-2 text-left transition-colors"
-          [class.border-primary]="signUpData().mode === m"
-          [class.bg-primary/10]="signUpData().mode === m"
-          [class.border-neutral-600]="signUpData().mode !== m"
-          [attr.aria-pressed]="signUpData().mode === m"
-          (click)="selectMode(m)"
-        >
-          <span class="block text-xs font-semibold text-neutral-100">{{ modeLabels[m] }}</span>
-          <span class="mt-0.5 block text-[11px] leading-snug text-neutral-400">{{ modeDescriptions[m] }}</span>
-        </button>
+        <option [value]="m" [selected]="m === signUpData().mode">{{ modeLabels[m] }}</option>
         }
-      </div>
-    </fieldset>
+      </select>
+    </label>
+    @if (submitAttempted() && !modeChosen()) {
+    <span class="label-text-alt text-error -my-2 pb-2">Please choose what kind of organization this is</span>
+    }
 
     <label class="input w-full validator">
       <pc-icon [size]="4" name="at-symbol" />
@@ -71,6 +68,8 @@
     <span class="label-text-alt text-warning -my-2 pb-2">Please enter a valid email</span>
     }
 
+    <!-- The 8-character counter rides inside the field rather than on a line of its own: it is
+         feedback about this input, and a whole row for four characters is rent it can't pay. -->
     <label class="input w-full validator">
       <pc-icon [size]="4" name="lock-closed" />
       <input
@@ -80,6 +79,13 @@
         class="grow w-full"
         autocomplete="new-password"
       />
+      <span
+        class="label-text-alt text-xs tabular-nums opacity-60"
+        [class.text-warning]="passwordLength() > 0 && passwordLength() < 8"
+        [class.text-success]="passwordLength() >= 8"
+        [class.opacity-100]="passwordLength() > 0"
+        >{{ passwordLength() }}/8</span
+      >
     </label>
 
     @if (passwordInBreach(password)) {
@@ -88,15 +94,6 @@
       <span class="font-bold">{{ passwordBreachNumber(password) | number: '1.0-0' }}</span>
       data breaches before. You should select a different password.</span
     >
-    } @else {
-    <span
-      class="label-text-alt -my-2 text-neutral-200 pb-2 pr-1 text-right"
-      [class.text-warning]="
-              (password.value().length || 0) > 0 && (password.value().length || 0) < 8
-            "
-      [class.text-success]="(password.value().length || 0) >= 8"
-      >{{ password.value().length || 0 }}/8</span
-    >
     }
 
     <button type="submit" class="btn btn-primary" [disabled]="isLoading()">
@@ -104,7 +101,7 @@
       <span class="loading loading-spinner loading-lg text-primary"></span>
       } @else { JOIN → }
     </button>
-    <span class="label-text-alt -my-2 pb-2 text-center text-neutral-100"
+    <span class="label-text-alt -my-2 pb-2 text-center text-neutral-100 text-xs"
       >By joining, you agree to the
       <a href="https://pplcrm.com/eula" target="_blank" rel="noopener" class="link hover:text-neutral-300">EULA</a>
       and
@@ -114,6 +111,6 @@
     >
   </form>
   <span class="label-text py-3 text-center text-neutral-100"
-    >Already have an account? <a routerLink="/signin" class="link hover:text-neutral-300">Sign In</a>.</span
+    >Already have an account? <a routerLink="/signin" class="font-bold hover:underline">Sign In</a>.</span
   >
 </pc-auth-layout>

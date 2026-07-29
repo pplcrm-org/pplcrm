@@ -51,6 +51,28 @@ describe('SignUpPage', () => {
     expect(mockAuthSvc.signUp).not.toHaveBeenCalled();
   });
 
+  // The org type seeds starter tags, forms and the demo dataset inside the signup transaction,
+  // so it has to be answered before the transaction runs — there is no fixing it afterwards.
+  it('should block join when every other field is filled but no org type was chosen', async () => {
+    component['signUpData'].set({
+      organization: 'Acme Corp',
+      email: 'test@example.com',
+      password: 'validPassword123',
+      first_name: 'John',
+      middle_names: '',
+      last_name: 'Doe',
+      terms: 'true',
+      mode: null,
+    });
+    fixture.detectChanges();
+
+    await component.join();
+
+    expect(mockAlertSvc.showError).toHaveBeenCalledWith('Please choose what kind of organization this is.');
+    expect(mockAuthSvc.signUp).not.toHaveBeenCalled();
+    expect(component['submitAttempted']()).toBe(true);
+  });
+
   it('should submit form and redirect to signin with verificationPending when valid', async () => {
     mockAuthSvc.signUp.mockResolvedValue({
       user: { first_name: 'John', email: 'test@example.com' },
@@ -68,6 +90,7 @@ describe('SignUpPage', () => {
       middle_names: '',
       last_name: 'Doe',
       terms: 'true',
+      mode: 'campaign',
     });
 
     fixture.detectChanges();
@@ -83,6 +106,7 @@ describe('SignUpPage', () => {
       middle_names: '',
       last_name: 'Doe',
       terms: 'true',
+      mode: 'campaign',
     });
     expect(navigateSpy).toHaveBeenCalledWith(['/signin'], {
       queryParams: { verificationPending: 'true', email: 'test@example.com' },
@@ -100,6 +124,7 @@ describe('SignUpPage', () => {
       middle_names: '',
       last_name: '',
       terms: '',
+      mode: 'campaign',
     });
 
     fixture.detectChanges();
@@ -120,6 +145,7 @@ describe('SignUpPage', () => {
       middle_names: '',
       last_name: '',
       terms: '',
+      mode: 'campaign',
     });
 
     fixture.detectChanges();
@@ -145,6 +171,7 @@ describe('SignUpPage', () => {
       middle_names: '',
       last_name: 'Doe',
       terms: 'true',
+      mode: 'campaign',
     });
 
     fixture.detectChanges();
@@ -171,6 +198,7 @@ describe('SignUpPage', () => {
       middle_names: '',
       last_name: 'Doe',
       terms: 'true',
+      mode: 'campaign',
     });
 
     fixture.detectChanges();
@@ -191,6 +219,7 @@ describe('SignUpPage', () => {
       middle_names: '',
       last_name: 'Doe',
       terms: 'true',
+      mode: 'campaign',
     });
     fixture.detectChanges();
 

@@ -31,7 +31,8 @@
 textarea::placeholder,
 label.input input::placeholder,
 label.input textarea::placeholder,
-label.input pc-icon {
+label.input pc-icon,
+label.select pc-icon {
   color: var(--color-placeholder);
 }
 
@@ -623,12 +624,15 @@ body {
 :focus:not(:focus-visible) {
   outline: none;
 }
-/* Fields wrapped in a DaisyUI `.input` shell (pc-input, the tags combobox) surface the focus
-   ring on the wrapper via `.input:focus-within`. The unlayered rule above would otherwise also
-   paint a second primary ring on the inner control, so suppress it there — DaisyUI's own
-   (layered) suppression can't win against the unlayered rule above. */
+/* Fields wrapped in a DaisyUI `.input` or `.select` shell (pc-input, the tags combobox, the
+   signup org-type picker) surface the focus ring on the wrapper via `:focus-within`. The
+   unlayered rule above would otherwise also paint a second primary ring on the inner control,
+   so suppress it there — DaisyUI's own (layered) suppression can't win against the unlayered
+   rule above. */
 .input :where(input, textarea, select):focus,
-.input :where(input, textarea, select):focus-visible {
+.input :where(input, textarea, select):focus-visible,
+.select :where(select):focus,
+.select :where(select):focus-visible {
   outline: none;
 }
 

@@ -37,12 +37,12 @@ export function isOrgMode(value: unknown): value is OrgMode {
 
 export const ORG_MODE_LABELS: Record<OrgMode, string> = {
   office: 'Constituency office',
-  campaign: 'Campaign',
+  campaign: 'Political campaign',
   nonprofit: 'Non-profit',
   church: 'Church',
 };
 
-/** Second line on the picker cards — what the mode changes, in the user's terms. */
+/** Second line on the Workspace -> Modules picker cards — what the mode changes, in the user's terms. */
 export const ORG_MODE_DESCRIPTIONS: Record<OrgMode, string> = {
   office: 'Casework, constituents, and year-round outreach.',
   campaign: 'Doors, turfs, sign drops, and election-day pushes.',
