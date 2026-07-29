@@ -110,7 +110,7 @@ describe('ImportWizard', () => {
   }
 
   async function uploadSampleFile(): Promise<void> {
-    await uploadFile('First Name,Email\nAmira,amira@example.com\nZee,zee@example.com\n');
+    await uploadFile('First Name,Email\nAmira,amira@example.com\nDana,dana@example.com\n');
   }
 
   async function flushAsync(): Promise<void> {
@@ -167,7 +167,7 @@ describe('ImportWizard', () => {
 
     expect(component['mappedRows']()).toEqual([
       { first_name: 'Amira', email: 'amira@example.com' },
-      { first_name: 'Zee', email: 'zee@example.com' },
+      { first_name: 'Dana', email: 'dana@example.com' },
     ]);
   });
 
@@ -216,7 +216,7 @@ describe('ImportWizard', () => {
       expect.objectContaining({
         rows: [
           { first_name: 'Amira', email: 'amira@example.com' },
-          { first_name: 'Zee', email: 'zee@example.com' },
+          { first_name: 'Dana', email: 'dana@example.com' },
         ],
         duplicate_decision: 'merge',
       }),

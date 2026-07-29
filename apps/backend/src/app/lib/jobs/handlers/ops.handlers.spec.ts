@@ -220,8 +220,8 @@ describe('handleSendBugReportEmail', () => {
   }
 
   const reporterRow = {
-    email: 'zee@example.com',
-    first_name: 'Zee',
+    email: 'dana@example.com',
+    first_name: 'Dana',
     last_name: 'Tester',
     role: 'admin',
     campaign_id: null,
@@ -247,7 +247,7 @@ describe('handleSendBugReportEmail', () => {
     expect(mail.to).toBe('ops@test');
     expect(mail.subject).toBe('pplCRM bug report BR-42 (tenant 7)');
     expect(mail.text).toContain('The save button does nothing');
-    expect(mail.text).toContain('Zee Tester <zee@example.com>');
+    expect(mail.text).toContain('Dana Tester <dana@example.com>');
     expect(mail.text).toContain('Acme Campaign');
     expect(mail.text).toContain('Screenshot: none');
     expect(mail.attachments).toEqual([]);

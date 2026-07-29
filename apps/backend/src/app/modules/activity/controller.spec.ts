@@ -20,7 +20,7 @@ describe('ActivityController', () => {
     const auth = { tenant_id: 'tenant-1', user_id: 'user-1' } as any;
     const options = { startRow: 0, endRow: 25 };
     const mockFeedResult = {
-      rows: [{ id: '1', activity: 'create', entity: 'person', first_name: 'Zee', last_name: '' }],
+      rows: [{ id: '1', activity: 'create', entity: 'person', first_name: 'Dana', last_name: '' }],
       count: 1,
     };
 
@@ -90,7 +90,7 @@ describe('ActivityController', () => {
   });
 
   it('should queue activity export as a background job and return processing status', async () => {
-    const auth = { tenant_id: 'tenant-1', user_id: 'user-1', name: 'Zee' } as any;
+    const auth = { tenant_id: 'tenant-1', user_id: 'user-1', name: 'Dana' } as any;
     const input = {
       tenant_id: 'tenant-1',
       options: { userId: 'user-1' },

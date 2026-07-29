@@ -7,8 +7,8 @@ describe('DashboardController Closed Emails Attribution', () => {
   const db = (BaseRepository as any)._db;
   const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
   let tenantId: string;
-  let user1Id: string; // Zee (closer)
-  let user2Id: string; // Zeeshan (assignee)
+  let user1Id: string; // Dana (closer)
+  let user2Id: string; // Priya (assignee)
   let campaignId: string;
   let emailId: string;
 
@@ -35,10 +35,10 @@ describe('DashboardController Closed Emails Attribution', () => {
         {
           id: user1Id,
           tenant_id: tenantId,
-          email: `zee-${user1Id}@example.com`,
+          email: `dana-${user1Id}@example.com`,
           password: 'password',
-          first_name: 'Zee',
-          last_name: 'Hamid',
+          first_name: 'Dana',
+          last_name: 'Okonkwo',
           verified: true,
           createdby_id: user1Id,
           updatedby_id: user1Id,
@@ -46,9 +46,9 @@ describe('DashboardController Closed Emails Attribution', () => {
         {
           id: user2Id,
           tenant_id: tenantId,
-          email: `zeeshan-${user2Id}@example.com`,
+          email: `priya-${user2Id}@example.com`,
           password: 'password',
-          first_name: 'Zeeshan',
+          first_name: 'Priya',
           last_name: 'Ali',
           verified: true,
           createdby_id: user2Id,
@@ -70,7 +70,7 @@ describe('DashboardController Closed Emails Attribution', () => {
       })
       .execute();
 
-    // 4. Email in Inbox (folder_id '11'), assigned to Zeeshan (user2Id), but closed
+    // 4. Email in Inbox (folder_id '11'), assigned to Priya (user2Id), but closed
     await db
       .insertInto('emails')
       .values({
@@ -90,7 +90,7 @@ describe('DashboardController Closed Emails Attribution', () => {
       })
       .execute();
 
-    // 5. Activity log recording that Zee (user1Id) closed the email
+    // 5. Activity log recording that Dana (user1Id) closed the email
     await db
       .insertInto('user_activity')
       .values({
@@ -113,23 +113,23 @@ describe('DashboardController Closed Emails Attribution', () => {
     await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
   });
 
-  it('should attribute closed emails to the actual closer user (Zee) instead of the assignee (Zeeshan)', async () => {
-    const auth = { tenant_id: tenantId, user_id: user1Id, name: 'Zee' } as any;
+  it('should attribute closed emails to the actual closer user (Dana) instead of the assignee (Priya)', async () => {
+    const auth = { tenant_id: tenantId, user_id: user1Id, name: 'Dana' } as any;
     const stats = await controller.getStats(auth);
 
-    // Verify emailsClosed list has Zee (user1Id) credited, and not Zeeshan
-    const zeeClosed = stats.emailsClosed.find((u: any) => String(u.user_id) === user1Id);
-    const zeeshanClosed = stats.emailsClosed.find((u: any) => String(u.user_id) === user2Id);
+    // Verify emailsClosed list has Dana (user1Id) credited, and not Priya
+    const closerClosed = stats.emailsClosed.find((u: any) => String(u.user_id) === user1Id);
+    const assigneeClosed = stats.emailsClosed.find((u: any) => String(u.user_id) === user2Id);
 
-    expect(zeeClosed).toBeDefined();
-    expect(zeeClosed?.count).toBe(1);
-    expect(zeeshanClosed).toBeUndefined();
+    expect(closerClosed).toBeDefined();
+    expect(closerClosed?.count).toBe(1);
+    expect(assigneeClosed).toBeUndefined();
 
     // Verify userStats array has the correct counts
-    const zeeStats = stats.userStats.find((u: any) => String(u.user_id) === user1Id);
-    const zeeshanStats = stats.userStats.find((u: any) => String(u.user_id) === user2Id);
+    const closerStats = stats.userStats.find((u: any) => String(u.user_id) === user1Id);
+    const assigneeStats = stats.userStats.find((u: any) => String(u.user_id) === user2Id);
 
-    expect(zeeStats?.closedCount).toBe(1);
-    expect(zeeshanStats?.closedCount).toBe(0);
+    expect(closerStats?.closedCount).toBe(1);
+    expect(assigneeStats?.closedCount).toBe(0);
   });
 });

@@ -293,7 +293,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
     hero: {
       h1: 'Donors, volunteers and neighbours. One list.',
       sub: 'Stop reconciling three spreadsheets. Gifts, drives and newsletters live on one person’s record.',
-      url: 'app.pplcrm.com/donations',
+      url: 'app.pplcrm.com/people/ruth-abbott',
       img: 'assets/site-shots/03-shot.webp',
     },
     steps: [
@@ -374,15 +374,10 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
     hero: {
       h1: 'Know every family by name.',
       sub: 'Members, visitors and volunteers on one list. Giving, groups and follow-up visits all live on the family’s record.',
-      // PLACEHOLDER. Final values once 04-shot.webp (a church-mode People grid) is captured:
-      //   url: 'app.pplcrm.com/people',  img: 'assets/site-shots/04-shot.webp'
-      // Borrowing the non-profit donations shot until then, with `url` pointed at it so the
-      // browser frame does not caption a giving ledger as /people. It is the closest match —
-      // but its sidebar is the pre-org-mode IA (Canvassing/Donations, not Visitation/Giving),
-      // which is exactly the vocabulary claim the church page makes. Do not ship it live.
-      url: 'app.pplcrm.com/donations',
-      img: 'assets/site-shots/03-shot.webp',
-      imgIsPlaceholder: true,
+      // Households, not People: "know every family by name" is a claim about the household being
+      // the unit, and the grid shows exactly that — the Haddads as four members on one row.
+      url: 'app.pplcrm.com/households',
+      img: 'assets/site-shots/04-shot.webp',
     },
     steps: [
       {

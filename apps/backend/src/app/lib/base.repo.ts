@@ -528,7 +528,7 @@ export class BaseRepository<T extends keyof Models> {
     // Allow users to type * as a wildcard character; normalize to SQL %.
     // The operator's own wrapping (startsWith → trailing %, contains → both, etc.)
     // is always applied on top — Postgres collapses consecutive %% automatically,
-    // so 'zee*' with contains becomes '%zee%%' → effectively '%zee%'.
+    // so 'dana*' with contains becomes '%dana%%' → effectively '%dana%'.
     const normalized = String(val).replace(/\*/g, '%');
 
     switch (op) {
