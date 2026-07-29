@@ -62,8 +62,13 @@ export class CutTurfsDialog implements OnInit {
       const rows = Array.isArray(res) ? res : (res.rows ?? []);
       this.universes.set(
         rows.map((r: Record<string, unknown>) => {
+          // lists.getAllWithCounts collapses its people_count/household_count
+          // aggregates into a single `list_size` before returning (it picks the
+          // one matching lists.object) — reading the raw aggregate names here
+          // gave every universe a count of 0. Fallbacks cover the raw shape.
           const object = String(r['object'] ?? 'people');
-          const count = object === 'people' ? Number(r['people_count'] ?? 0) : Number(r['household_count'] ?? 0);
+          const rawCount = object === 'people' ? r['people_count'] : r['household_count'];
+          const count = Number(r['list_size'] ?? rawCount ?? 0);
           return {
             id: String(r['id']),
             name: String(r['name'] ?? 'List'),
