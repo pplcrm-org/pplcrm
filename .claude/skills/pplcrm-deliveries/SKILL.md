@@ -138,7 +138,13 @@ because otherwise the routes list is only reachable by opening a single route fr
 grid's Route column. The **routes list rows** carry the same inline affordances as the route detail:
 an inline dashed **Assign** button in the Volunteer cell when unassigned, and a trailing `⋯`
 overflow (assign/change volunteer via the shared `assign-volunteer-dialog.ts`, copy volunteer link,
-resend link to volunteer, cancel route, delete route) — mirrors the canvassing turf table. "Open in Google Maps" builds a
+resend link to volunteer, cancel route, delete route) — mirrors the canvassing turf table. The route
+detail carries a **Route map card** between the header and the stops: `<pc-map>` with a start pin
+(`info`) plus one **numbered** pin per located stop tinted by stop status, and the visit order as a
+single **dotted** `polylines` path (dotted because the engine measures straight-line distance, not
+roads — do not make it solid). Ungeocoded stops can't be drawn, so `unlocatedNote()` says how many
+are missing and a route with none located shows a `pc-empty-state` instead of an empty map. **"Open
+in Google Maps"** is the map card's action (it used to sit in the header actions row) and builds a
 `maps/dir/?api=1&origin=…&waypoints=…&destination=…` URL from stop coords (route detail only — the
 list row has no stop coords). Sidebar: **Deliveries** in FIELD (`sidebar-items.ts`, icon `map-pin`) with a live
 ready-count badge wired in `sidebar.ts` (`deliveries.getReadyCount`, mirrors the Tasks/Duplicates

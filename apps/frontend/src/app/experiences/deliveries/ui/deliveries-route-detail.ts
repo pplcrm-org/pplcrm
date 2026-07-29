@@ -17,6 +17,9 @@ import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { BreadcrumbsService } from '@uxcommon/components/breadcrumbs/breadcrumbs.service';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+import { PcMap } from '@uxcommon/components/map/map';
+import type { PcLatLng, PcMapMarker, PcMapPolyline, PcMapVariant } from '@uxcommon/components/map/map-types';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
 import type { PcStatusType } from '@uxcommon/components/status-badge/status-badge';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
@@ -52,6 +55,8 @@ const ROUTE_TONE: Record<string, PcStatusType> = {
     StatusBadge,
     Icon,
     DatePipe,
+    EmptyState,
+    PcMap,
     RecordActivities,
     AssignVolunteerDialog,
     CdkDropList,
@@ -80,7 +85,77 @@ export class DeliveriesRouteDetail {
   protected readonly deliveredCount = computed(
     () => this.detail()?.stops.filter((s) => s.status === 'delivered').length ?? 0,
   );
+  protected readonly skippedCount = computed(
+    () => this.detail()?.stops.filter((s) => s.status === 'skipped').length ?? 0,
+  );
+  protected readonly pendingCount = computed(
+    () => this.detail()?.stops.filter((s) => s.status === 'pending').length ?? 0,
+  );
   protected readonly totalStops = computed(() => this.detail()?.stops.length ?? 0);
+
+  /**
+   * Only stops whose household has been geocoded can honestly appear on the map.
+   * Narrowing here (rather than casting `lat`/`lng`) keeps the marker inputs
+   * plain `PcLatLng` values.
+   */
+  private readonly mapStops = computed<{ stop: DeliveryRouteStop; position: PcLatLng }[]>(() => {
+    const out: { stop: DeliveryRouteStop; position: PcLatLng }[] = [];
+    for (const stop of this.detail()?.stops ?? []) {
+      const { lat, lng } = stop;
+      if (lat == null || lng == null) continue;
+      out.push({ stop, position: { lat, lng } });
+    }
+    return out;
+  });
+
+  protected readonly hasMap = computed(() => this.mapStops().length > 0);
+
+  /** Stops missing from the map are narrated, never silently dropped (design §2). */
+  protected readonly unlocatedNote = computed<string | null>(() => {
+    const missing = this.totalStops() - this.mapStops().length;
+    if (missing === 0) return null;
+    return missing === 1
+      ? "1 stop isn't on the map yet. Its household address still needs to be located."
+      : `${missing} stops aren't on the map yet. Their household addresses still need to be located.`;
+  });
+
+  /** Start pin (info) plus one numbered pin per located stop, tinted by its status. */
+  protected readonly mapMarkers = computed<PcMapMarker<DeliveryRouteStop | null>[]>(() => {
+    const d = this.detail();
+    if (!d) return [];
+    const start: PcMapMarker<DeliveryRouteStop | null> = {
+      position: { lat: d.start_lat, lng: d.start_lng },
+      variant: 'info',
+      tooltip: `Start: ${d.start_address}`,
+      payload: null,
+    };
+    return [
+      start,
+      ...this.mapStops().map(({ stop, position }) => ({
+        position,
+        variant: this.pinVariant(stop.status),
+        label: String(stop.seq),
+        tooltip: `${stop.seq}. ${stop.address}`,
+        id: stop.id,
+        payload: stop,
+      })),
+    ];
+  });
+
+  /** The visit order as a dotted path from the start address. Dotted because we plan order, not roads. */
+  protected readonly mapRoute = computed<PcMapPolyline[]>(() => {
+    const d = this.detail();
+    const stops = this.mapStops();
+    if (!d || stops.length === 0) return [];
+    return [
+      {
+        path: [{ lat: d.start_lat, lng: d.start_lng }, ...stops.map((s) => s.position)],
+        variant: 'primary',
+        dashed: true,
+      },
+    ];
+  });
+
   protected readonly canDelete = computed(() => {
     const s = this.detail()?.status;
     return s === 'draft' || s === 'assigned';
@@ -375,6 +450,13 @@ export class DeliveriesRouteDetail {
     } catch (err) {
       this.alerts.showError(err instanceof Error ? err.message : 'Could not update the stop');
     }
+  }
+
+  /** Same state→colour map as the stop chips, in map-variant terms. */
+  private pinVariant(status: string): PcMapVariant {
+    if (status === 'delivered') return 'success';
+    if (status === 'skipped') return 'warning';
+    return 'primary';
   }
 
   protected stopTone(status: string): PcStatusType {

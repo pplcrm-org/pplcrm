@@ -47,6 +47,58 @@ function fakeDetail() {
   };
 }
 
+describe('DeliveriesRouteDetail — route map inputs', () => {
+  let component: DeliveriesRouteDetail;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [DeliveriesRouteDetail],
+      providers: [
+        { provide: DeliveriesRoutesService, useValue: { getById: vi.fn().mockResolvedValue(fakeDetail()) } },
+        { provide: AlertService, useValue: { showError: vi.fn(), showSuccess: vi.fn() } },
+        { provide: BreadcrumbsService, useValue: { setCrumbs: vi.fn() } },
+        { provide: ConfirmDialogService, useValue: { confirm: vi.fn(), choose: vi.fn() } },
+        { provide: Router, useValue: { navigate: vi.fn() } },
+      ],
+    })
+      .overrideComponent(DeliveriesRouteDetail, { set: { template: '', imports: [] } })
+      .compileComponents();
+
+    const fixture = TestBed.createComponent(DeliveriesRouteDetail);
+    component = fixture.componentInstance;
+    fixture.componentRef.setInput('id', 'r1');
+    fixture.detectChanges();
+    await fixture.whenStable();
+  });
+
+  it('builds a start pin plus one numbered pin per located stop, tinted by status', () => {
+    const markers = component['mapMarkers']();
+    expect(markers).toHaveLength(4);
+    expect(markers[0]).toMatchObject({ variant: 'info', tooltip: 'Start: 1 Start St' });
+    expect(markers.slice(1).map((m) => m.label)).toEqual(['1', '2', '3']);
+    // Stop b is delivered; the other two are still pending.
+    expect(markers.slice(1).map((m) => m.variant)).toEqual(['primary', 'success', 'primary']);
+  });
+
+  it('draws the visit order as one dotted path starting at the start address', () => {
+    const lines = component['mapRoute']();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.dashed).toBe(true);
+    expect(lines[0]?.path).toHaveLength(4); // start + 3 located stops
+    expect(lines[0]?.path[0]).toEqual({ lat: 45, lng: -75 });
+  });
+
+  it('narrates ungeocoded stops instead of silently dropping them', () => {
+    const detail = fakeDetail();
+    detail.stops = [{ ...detail.stops[0]!, lat: null as unknown as number, lng: null as unknown as number }];
+    component['detail'].set(detail as any);
+
+    expect(component['hasMap']()).toBe(false);
+    expect(component['mapRoute']()).toEqual([]);
+    expect(component['unlocatedNote']()).toContain("1 stop isn't on the map yet");
+  });
+});
+
 describe('DeliveriesRouteDetail — drag-to-reorder stops', () => {
   let component: DeliveriesRouteDetail;
   let fixture: ComponentFixture<DeliveriesRouteDetail>;

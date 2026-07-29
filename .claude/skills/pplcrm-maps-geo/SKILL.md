@@ -15,10 +15,15 @@ Geocoding for the voter file, and the maps deep-link for door/route navigation.
 binding contract in `docs/spec/pc-map-usage.md`. Do **not** hand-roll a
 `new google.maps.Map(...)` in a component — use `<pc-map>`.
 
-- Inputs: `markers`, `polygons`, `center`, `zoom`, `fitBounds`, `interactive`,
-  `deepLink`, `mapId`, `ariaLabel`. Value types (`PcMapMarker`, `PcMapPolygon`,
-  `PcLatLng`, `PcMapVariant`) come from `@uxcommon/components/map/map-types` and
-  carry **no** Google SDK types, so you can build inputs in a plain `computed()`.
+- Inputs: `markers`, `polygons`, `polylines`, `center`, `zoom`, `fitBounds`,
+  `interactive`, `deepLink`, `mapId`, `ariaLabel`. Value types (`PcMapMarker`,
+  `PcMapPolygon`, `PcMapPolyline`, `PcLatLng`, `PcMapVariant`) come from
+  `@uxcommon/components/map/map-types` and carry **no** Google SDK types, so you
+  can build inputs in a plain `computed()`.
+- A marker's optional `label` (1–2 chars) draws inside the pin — that's how a
+  delivery route numbers its stops. `polylines` are **open paths** and default to
+  `dashed: true`: a route line shows the visit order we computed, not a road path
+  we didn't. Don't switch one to solid to make it look tidier.
 - Outputs: `markerClicked`, `polygonClicked` — each echoes the item's `payload`.
 - Give it a height (`class="block h-48"`); it has a `min-h-40` floor.
 - Marker/polygon colours resolve from DaisyUI `--color-*` tokens at runtime and

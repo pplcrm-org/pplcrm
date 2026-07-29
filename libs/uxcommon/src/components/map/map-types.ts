@@ -25,6 +25,23 @@ export interface PcMapMarker<T = unknown> {
   position: PcLatLng;
   variant?: PcMapVariant;
   tooltip?: string;
+  /** Short text drawn inside the pin (a stop number, 1–2 characters). Omit for a plain dot. */
+  label?: string;
+  id?: string;
+  payload?: T;
+}
+
+/**
+ * One open path (a delivery route's visit order). Deliberately separate from
+ * `PcMapPolygon`: a route is a line, not an area, and it is drawn `dashed` by
+ * default because our estimate is straight-line distance, not a road path — a
+ * solid line would claim turn-by-turn accuracy we don't have.
+ */
+export interface PcMapPolyline<T = unknown> {
+  path: PcLatLng[];
+  variant?: PcMapVariant;
+  /** `true` (the default for routes) renders a dotted line — an approximate order, not a road path. */
+  dashed?: boolean;
   id?: string;
   payload?: T;
 }

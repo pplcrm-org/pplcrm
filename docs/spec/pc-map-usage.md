@@ -37,22 +37,23 @@ So component tests provide **no** `Loader` and assert the placeholder — see
 
 Inputs:
 
-| Input         | Type               | Default         | Notes                                                |
-| ------------- | ------------------ | --------------- | ---------------------------------------------------- |
-| `markers`     | `PcMapMarker[]`    | `[]`            | `{ position, variant?, tooltip?, id?, payload? }`    |
-| `polygons`    | `PcMapPolygon[]`   | `[]`            | `{ path, variant?, label?, dashed?, id?, payload? }` |
-| `center`      | `PcLatLng \| null` | `null`          | Explicit centre; disables auto-fit                   |
-| `zoom`        | `number`           | `14`            | Used with `center`                                   |
-| `fitBounds`   | `boolean`          | `true`          | Auto-fit to content when no `center`                 |
-| `interactive` | `boolean`          | `true`          | `false` = fully static (§6 card)                     |
-| `deepLink`    | `boolean`          | `false`         | Map/marker click opens the Google Maps app           |
-| `mapId`       | `string`           | `'DEMO_MAP_ID'` | Cloud Map ID for dark tiles                          |
-| `ariaLabel`   | `string`           | `'Map'`         | Placeholder/aria label                               |
+| Input         | Type               | Default         | Notes                                                                                    |
+| ------------- | ------------------ | --------------- | ---------------------------------------------------------------------------------------- |
+| `markers`     | `PcMapMarker[]`    | `[]`            | `{ position, variant?, tooltip?, label?, id?, payload? }` — `label` numbers the pin      |
+| `polygons`    | `PcMapPolygon[]`   | `[]`            | `{ path, variant?, label?, dashed?, id?, payload? }`                                     |
+| `polylines`   | `PcMapPolyline[]`  | `[]`            | `{ path, variant?, dashed?, id?, payload? }` — an open path; `dashed` defaults to `true` |
+| `center`      | `PcLatLng \| null` | `null`          | Explicit centre; disables auto-fit                                                       |
+| `zoom`        | `number`           | `14`            | Used with `center`                                                                       |
+| `fitBounds`   | `boolean`          | `true`          | Auto-fit to content when no `center`                                                     |
+| `interactive` | `boolean`          | `true`          | `false` = fully static (§6 card)                                                         |
+| `deepLink`    | `boolean`          | `false`         | Map/marker click opens the Google Maps app                                               |
+| `mapId`       | `string`           | `'DEMO_MAP_ID'` | Cloud Map ID for dark tiles                                                              |
+| `ariaLabel`   | `string`           | `'Map'`         | Placeholder/aria label                                                                   |
 
 Outputs: `markerClicked: PcMapMarker`, `polygonClicked: PcMapPolygon` (each
 carries its `payload` back).
 
-## Three consumption patterns
+## Consumption patterns
 
 ### 1. Household static card (§6)
 
@@ -114,6 +115,31 @@ doors = computed<PcMapMarker<Door>[]>(() =>
   })),
 );
 ```
+
+### 4. A delivery route: numbered pins + the visit order (§14)
+
+Start pin, one numbered pin per stop tinted by its status, and the order as a
+**dotted** polyline. Dotted on purpose: `planRoutes` measures straight-line
+distance × a winding factor, so a solid line would claim a road path we never
+computed. Pair it with an "Open in Google Maps" button for real turn-by-turn
+(live: `deliveries-route-detail.html`).
+
+```html
+<pc-map
+  class="block h-72 w-full overflow-hidden rounded-lg"
+  [markers]="mapMarkers()"
+  [polylines]="mapRoute()"
+  ariaLabel="Delivery route map"
+/>
+```
+
+```ts
+// One dotted path: start address first, then the located stops in seq order.
+mapRoute = computed<PcMapPolyline[]>(() => [{ path: [start, ...locatedStops], variant: 'primary', dashed: true }]);
+```
+
+Stops the geocoder hasn't located can't be drawn — **say how many are missing**
+rather than silently shortening the route (design §2).
 
 > **Sizing:** `<pc-map>` fills its host; give it a height (`class="block h-48"`,
 > a grid cell, or a wrapper with a set height). It has a `min-h-40` floor.

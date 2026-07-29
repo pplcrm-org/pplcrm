@@ -71,9 +71,6 @@
         <pc-icon name="user-plus" [size]="4"></pc-icon> Assign a volunteer to share
       </button>
       }
-      <button type="button" class="btn btn-ghost btn-sm" (click)="openInGoogleMaps()">
-        <pc-icon name="map-pin" [size]="4"></pc-icon> Open in Google Maps
-      </button>
       <div class="dropdown dropdown-end ml-auto">
         <button type="button" tabindex="0" class="btn btn-ghost btn-sm btn-square" aria-label="More actions">
           <pc-icon name="ellipsis-vertical" [size]="4"></pc-icon>
@@ -105,6 +102,51 @@
         </ul>
       </div>
     </div>
+  </div>
+
+  <!-- Route map: the visit order in place, plus the hand-off to Google Maps for driving -->
+  <div class="flex flex-col gap-3 pc-panel p-5">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="pc-eyebrow">Route map</p>
+      @if (hasMap()) {
+      <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="openInGoogleMaps()">
+        <pc-icon name="map-pin" [size]="4"></pc-icon> Open in Google Maps
+      </button>
+      }
+    </div>
+
+    @if (hasMap()) {
+    <pc-map
+      class="block h-72 w-full overflow-hidden rounded-lg"
+      [markers]="mapMarkers()"
+      [polylines]="mapRoute()"
+      ariaLabel="Delivery route map"
+    ></pc-map>
+
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-base-content/60">
+      <span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-info"></span> Start</span>
+      @if (pendingCount() > 0) {
+      <span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-primary"></span> To deliver</span>
+      } @if (deliveredCount() > 0) {
+      <span class="flex items-center gap-1.5"><span class="size-2 rounded-full bg-success"></span> Delivered</span>
+      } @if (skippedCount() > 0) {
+      <span class="flex items-center gap-1.5"
+        ><span class="size-2 rounded-full bg-warning"></span> Couldn't deliver</span
+      >
+      }
+      <span class="sm:ml-auto">Dotted line shows the visit order, not the driving path.</span>
+    </div>
+
+    @if (unlocatedNote(); as note) {
+    <p class="text-xs text-base-content/60">{{ note }}</p>
+    } } @else {
+    <pc-empty-state
+      icon="map"
+      title="No stops are on the map yet"
+      hint="Stops appear here once their household addresses are located."
+      [bordered]="false"
+    ></pc-empty-state>
+    }
   </div>
 
   <!-- Stops card -->

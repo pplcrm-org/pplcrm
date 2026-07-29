@@ -1,12 +1,14 @@
 import { Component, ElementRef, effect, inject, input, output, signal, viewChild } from '@angular/core';
 import { Loader } from '@googlemaps/js-api-loader';
 import { Icon } from '../icons/icon';
-import type { PcLatLng, PcMapMarker, PcMapPolygon, PcMapVariant } from './map-types';
+import type { PcLatLng, PcMapMarker, PcMapPolygon, PcMapPolyline, PcMapVariant } from './map-types';
 
 const DEFAULT_ZOOM = 14;
 const DEFAULT_MAP_ID = 'DEMO_MAP_ID';
 const FILL_OPACITY = 0.18;
 const MUTED_OPACITY = 0.55;
+const PIN_PX = 14;
+const LABELLED_PIN_PX = 22;
 
 /**
  * `<pc-map>` — the single Google Maps primitive for the whole app (§13 maps
@@ -19,8 +21,8 @@ const MUTED_OPACITY = 0.55;
  *   network. This mirrors the geocoding mock's degrade-don't-crash approach, so
  *   the app never crashes and never fakes a pin.
  *
- * See `docs/spec/pc-map-usage.md` for the three consumption patterns and the
- * binding input/output contract.
+ * See `docs/spec/pc-map-usage.md` for the consumption patterns and the binding
+ * input/output contract.
  */
 @Component({
   selector: 'pc-map',
@@ -46,6 +48,7 @@ export class PcMap {
 
   public readonly markers = input<PcMapMarker[]>([]);
   public readonly polygons = input<PcMapPolygon[]>([]);
+  public readonly polylines = input<PcMapPolyline[]>([]);
   public readonly center = input<PcLatLng | null>(null);
   public readonly zoom = input<number>(DEFAULT_ZOOM);
   public readonly fitBounds = input<boolean>(true);
@@ -64,6 +67,7 @@ export class PcMap {
   private map: google.maps.Map | null = null;
   private drawnMarkers: google.maps.marker.AdvancedMarkerElement[] = [];
   private drawnPolygons: google.maps.Polygon[] = [];
+  private drawnPolylines: google.maps.Polyline[] = [];
   private themeObserver: MutationObserver | null = null;
 
   protected readonly placeholderLabel = signal('Map unavailable');
@@ -76,10 +80,11 @@ export class PcMap {
     effect(() => {
       const markers = this.markers();
       const polygons = this.polygons();
+      const polylines = this.polylines();
       // Recompute the placeholder caption from current content.
       this.placeholderLabel.set(this.computePlaceholderLabel(markers, polygons));
       if (this.map) {
-        this.redraw(markers, polygons);
+        this.redraw(markers, polygons, polylines);
       }
     });
 
@@ -125,7 +130,7 @@ export class PcMap {
       }
 
       this.observeTheme();
-      this.redraw(this.markers(), this.polygons());
+      this.redraw(this.markers(), this.polygons(), this.polylines());
     } catch {
       // A partial/broken SDK (or an offline draw failure) degrades to the
       // honest placeholder rather than crashing the host page.
@@ -134,32 +139,49 @@ export class PcMap {
     }
   }
 
-  private redraw(markers: PcMapMarker[], polygons: PcMapPolygon[]): void {
+  private redraw(markers: PcMapMarker[], polygons: PcMapPolygon[], polylines: PcMapPolyline[]): void {
     if (!this.map) return;
     this.clearOverlays();
 
     for (const poly of polygons) {
       this.drawPolygon(poly);
     }
+    for (const line of polylines) {
+      this.drawPolyline(line);
+    }
     for (const marker of markers) {
       this.drawMarker(marker);
     }
 
     if (!this.center()) {
-      this.fitToContent(markers, polygons);
+      this.fitToContent(markers, polygons, polylines);
     }
   }
 
   private drawMarker(marker: PcMapMarker): void {
     if (!this.map) return;
     const color = this.resolveColor(marker.variant ?? 'primary');
+    const label = marker.label;
     const pin = document.createElement('div');
-    pin.style.width = '14px';
-    pin.style.height = '14px';
+    const size = label ? LABELLED_PIN_PX : PIN_PX;
+    pin.style.width = `${size}px`;
+    pin.style.height = `${size}px`;
     pin.style.borderRadius = '9999px';
     pin.style.background = color;
     pin.style.border = '2px solid var(--color-base-100, #fff)';
     pin.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
+    if (label) {
+      // A numbered pin reads the visit order straight off the map.
+      pin.textContent = label;
+      pin.style.display = 'flex';
+      pin.style.alignItems = 'center';
+      pin.style.justifyContent = 'center';
+      pin.style.color = 'var(--color-base-100, #fff)';
+      pin.style.fontFamily = 'inherit';
+      pin.style.fontSize = '11px';
+      pin.style.fontWeight = '700';
+      pin.style.lineHeight = '1';
+    }
     if (marker.tooltip) pin.title = marker.tooltip;
 
     const advanced = new google.maps.marker.AdvancedMarkerElement({
@@ -196,7 +218,36 @@ export class PcMap {
     this.drawnPolygons.push(shape);
   }
 
-  private fitToContent(markers: PcMapMarker[], polygons: PcMapPolygon[]): void {
+  /**
+   * An open path (a route's visit order). Dashed by default: the stroke is a
+   * dotted symbol run, not a solid line, because the order is ours but the roads
+   * are Google's — a solid line would imply a driving path we didn't compute.
+   */
+  private drawPolyline(line: PcMapPolyline): void {
+    if (!this.map) return;
+    const color = this.resolveColor(line.variant ?? 'primary');
+    const dashed = line.dashed ?? true;
+    const shape = new google.maps.Polyline({
+      map: this.map,
+      path: line.path,
+      strokeColor: color,
+      strokeWeight: dashed ? 0 : 3,
+      strokeOpacity: dashed ? 0 : 0.9,
+      clickable: false,
+      icons: dashed
+        ? [
+            {
+              icon: { path: 'M 0,-1 0,1', strokeColor: color, strokeOpacity: 0.9, strokeWeight: 3, scale: 1 },
+              offset: '0',
+              repeat: '10px',
+            },
+          ]
+        : undefined,
+    });
+    this.drawnPolylines.push(shape);
+  }
+
+  private fitToContent(markers: PcMapMarker[], polygons: PcMapPolygon[], polylines: PcMapPolyline[]): void {
     if (!this.map || !this.fitBounds()) return;
     const bounds = new google.maps.LatLngBounds();
     let has = false;
@@ -210,8 +261,14 @@ export class PcMap {
         has = true;
       }
     }
+    for (const l of polylines) {
+      for (const pt of l.path) {
+        bounds.extend(pt);
+        has = true;
+      }
+    }
     if (!has) return;
-    const soleMarker = markers.length === 1 && polygons.length === 0 ? markers[0] : undefined;
+    const soleMarker = markers.length === 1 && polygons.length === 0 && polylines.length === 0 ? markers[0] : undefined;
     if (soleMarker) {
       // A single door reads better centred at a street zoom than fit-to-point.
       this.map.setCenter(soleMarker.position);
@@ -224,13 +281,15 @@ export class PcMap {
   private clearOverlays(): void {
     for (const m of this.drawnMarkers) m.map = null;
     for (const p of this.drawnPolygons) p.setMap(null);
+    for (const l of this.drawnPolylines) l.setMap(null);
     this.drawnMarkers = [];
     this.drawnPolygons = [];
+    this.drawnPolylines = [];
   }
 
   private observeTheme(): void {
     if (this.themeObserver || typeof MutationObserver === 'undefined') return;
-    this.themeObserver = new MutationObserver(() => this.redraw(this.markers(), this.polygons()));
+    this.themeObserver = new MutationObserver(() => this.redraw(this.markers(), this.polygons(), this.polylines()));
     this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   }
 
