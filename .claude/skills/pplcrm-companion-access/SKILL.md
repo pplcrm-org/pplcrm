@@ -180,11 +180,17 @@ no token and no text, which is correct: they couldn't approve anyway.
   `JoinPage` (`/j/:code`) is a ~30-line wrapper for exactly that reason. `token` is
   optional (absent for `kind='session'`), and `verifyToken` is the internal swap that
   puts the join claim in the credential slot.
-- **Companion routes** (`app.routes.ts`): `/t/:token`, `/r/:token`, `/j/:code`
-  (QR join), `/a/:token` (`ApprovePage` — approve-by-text, deliberately in the
-  companion app so an SMS opens a thumb-sized page with no sign-in), and `/canvass`
-  (session-first; no URL credential at all). `/canvass` exists because turf tokens are
-  hashed: once someone joins by QR there is no `/t/:token` to hand them.
+- **Companion routes** (`app.routes.ts`): `/` (`HomePage` — type-your-join-code),
+  `/t/:token`, `/r/:token`, `/j/:code` (QR join), `/a/:token` (`ApprovePage` —
+  approve-by-text, deliberately in the companion app so an SMS opens a thumb-sized page
+  with no sign-in), and `/canvass` (session-first; no URL credential at all).
+  `/canvass` exists because turf tokens are hashed: once someone joins by QR there is
+  no `/t/:token` to hand them. The **root must stay a real page**: the CRM's join card
+  prints "Can't scan? Enter this code at `<host>`", so letting `/` fall through to the
+  `**` dead-link catch-all makes the app call its own printed instructions dead.
+  `HomePage` normalizes to `JOIN_CODE_ALPHABET`, pre-checks the code with
+  `getAccess('join', code)` so a typo stays an inline correction, then routes to
+  `/j/:code`.
 - **Admin page** `/volunteer-access`
   (`apps/frontend/src/app/experiences/volunteer-access/`), a pc-table with
   Approve/Revoke; sidebar ADMIN entry with a pendingCount badge (loaded in

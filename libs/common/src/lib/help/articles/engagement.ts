@@ -312,6 +312,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
+        text: 'The eight-character code under the QR is not decoration — it is the way in for the phone whose camera won’t focus. Opening the companion app’s address on its own (**go.pplcrm.com** in production) asks for that code and then runs exactly the same sign-up. Read it out; the field ignores spaces, dashes, and case.',
+      },
+      {
+        kind: 'p',
         text: 'A turf can have its own QR too — **Show join QR** in a turf’s ⋯ menu. Everyone who scans that one lands on that turf, which is how you get a group walking together off one poster. The campaign-wide code on Volunteer access drops people on the turf picker instead. Either way nobody sees a single door until you approve them: **Rotate code** mints a replacement and kills the old one instantly, so anything already printed stops working.',
       },
       { kind: 'h2', id: 'approve-by-text', text: 'Approve from your phone' },
