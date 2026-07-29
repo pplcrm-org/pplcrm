@@ -36,15 +36,18 @@
       <span>200,000</span>
     </div>
 
-    <!-- Monthly / Annual billing toggle -->
+    <!-- Monthly / Annual billing toggle, and the currency these numbers are shown in -->
     <div class="mt-4 flex flex-col items-center gap-2 border-t border-line pt-4">
-      <div role="tablist" class="tabs tabs-boxed tabs-sm">
-        <button role="tab" class="tab" [class.tab-active]="interval() === 'month'" (click)="setInterval('month')">
-          Monthly
-        </button>
-        <button role="tab" class="tab" [class.tab-active]="interval() === 'year'" (click)="setInterval('year')">
-          Annual
-        </button>
+      <div class="flex flex-wrap items-center justify-center gap-3">
+        <div role="tablist" class="tabs tabs-box tabs-sm">
+          <button role="tab" class="tab" [class.tab-active]="interval() === 'month'" (click)="setInterval('month')">
+            Monthly
+          </button>
+          <button role="tab" class="tab" [class.tab-active]="interval() === 'year'" (click)="setInterval('year')">
+            Annual
+          </button>
+        </div>
+        <pc-currency-switcher />
       </div>
       <span class="rounded-full bg-success/12 px-2.5 py-1 text-[11px] font-semibold text-success">
         Annual billing: {{ annualBadge }}

@@ -3,7 +3,6 @@ import { RouterLink } from '@angular/router';
 
 import { AudienceMenu } from './audience-menu';
 import { AuthHint } from './auth-hint';
-import { CurrencySwitcher } from './currency-switcher';
 import { AUDIENCE_NAV, DASHBOARD_URL, LOGIN_URL, PRIMARY_NAV, SIGNUP_URL } from './site-nav';
 import { SiteLogo } from './site-logo';
 
@@ -19,7 +18,7 @@ type HeaderVariant = 'over-hero' | 'solid';
  */
 @Component({
   selector: 'pc-site-header',
-  imports: [RouterLink, SiteLogo, CurrencySwitcher, AudienceMenu],
+  imports: [RouterLink, SiteLogo, AudienceMenu],
   template: `
     <header [class]="barClass()">
       <div class="site-wrap flex items-center justify-between gap-4 px-5 py-3.5 sm:px-8">
@@ -33,7 +32,6 @@ type HeaderVariant = 'over-hero' | 'solid';
           @for (link of nav; track link.path) {
             <a [routerLink]="link.path" class="text-base-content hover:text-primary">{{ link.label }}</a>
           }
-          <pc-currency-switcher />
           @if (signedIn()) {
             <a [href]="dashboardUrl" class="btn btn-primary btn-sm rounded-field font-semibold">Dashboard</a>
           } @else {
@@ -80,9 +78,6 @@ type HeaderVariant = 'over-hero' | 'solid';
             }}</a>
           }
           <div class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
-            <div class="pb-1">
-              <pc-currency-switcher />
-            </div>
             @if (signedIn()) {
               <a [href]="dashboardUrl" class="btn btn-primary btn-sm rounded-field font-semibold">Dashboard</a>
             } @else {

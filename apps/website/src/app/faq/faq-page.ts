@@ -143,7 +143,7 @@ export class FaqPage {
         },
         {
           q: 'Can I see prices in euros, pounds or Canadian dollars?',
-          a: 'Yes. We show estimated prices in your local currency at today’s exchange rate, and you can switch currency from the top of any page. Billing is always in US dollars.',
+          a: 'Yes. We show estimated prices in your local currency at today’s exchange rate, and you can switch currency on the pricing page. Billing is always in US dollars.',
         },
         {
           q: 'What happens when my list grows?',

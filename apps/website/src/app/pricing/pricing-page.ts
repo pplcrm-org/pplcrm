@@ -13,6 +13,7 @@ import {
 import type { BillingInterval, FeatureMatrixGroup, FeatureMatrixRow, PlanDef } from '@common';
 
 import { CurrencyService } from '../ui/currency.service';
+import { CurrencySwitcher } from '../ui/currency-switcher';
 import { SiteFooter } from '../ui/site-footer';
 import { SiteHeader } from '../ui/site-header';
 import { SiteIcon } from '../ui/site-icon';
@@ -51,7 +52,7 @@ const STEP_UP_LABELS: Readonly<Record<string, string>> = {
 
 @Component({
   selector: 'pc-pricing-page',
-  imports: [RouterLink, SiteHeader, SiteFooter, SiteIcon],
+  imports: [RouterLink, SiteHeader, SiteFooter, SiteIcon, CurrencySwitcher],
   templateUrl: './pricing-page.html',
 })
 export class PricingPage {

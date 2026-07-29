@@ -1,12 +1,10 @@
 import { Component, inject } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { ORG_MODES, PLANS, isOrgMode, startingPriceUsd } from '@common';
-import type { PlanDef } from '@common';
+import { ORG_MODES, isOrgMode } from '@common';
 
 import { AUDIENCE_CONTENT, type Audience, type Feature } from './audience-content';
 import { BrowserFrame } from '../ui/browser-frame';
 import { Constellation } from '../ui/constellation';
-import { CurrencyService } from '../ui/currency.service';
 import { SeoService } from '../ui/seo';
 import { SiteFooter } from '../ui/site-footer';
 import { SiteHeader } from '../ui/site-header';
@@ -152,19 +150,6 @@ export class HomePage {
       body: 'Visits, notes, gifts and RSVPs each add a datapoint. The longer you organize, the smarter your network gets.',
     },
   ];
-
-  private readonly currency = inject(CurrencyService);
-
-  /** The three priced teaser cards (Free / Grassroots / Movement); enterprise stays a footnote elsewhere. */
-  protected readonly tiers: readonly PlanDef[] = PLANS.filter((plan) => plan.displayed);
-
-  /** "Starting at" price for a teaser card, in the active display currency ('$0', 'From €65', …). */
-  protected startingPrice(plan: PlanDef): string {
-    const usd = startingPriceUsd(plan);
-    if (usd === null) return 'Custom';
-    if (usd === 0) return this.currency.format(0);
-    return `From ${this.currency.format(usd)}`;
-  }
 
   protected readonly faqs: readonly Qa[] = [
     {

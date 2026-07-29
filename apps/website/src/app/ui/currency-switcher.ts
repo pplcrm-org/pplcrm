@@ -4,9 +4,14 @@ import type { CurrencyCode } from '@common';
 import { CurrencyService } from './currency.service';
 
 /**
- * Currency picker for the site header. Lets a visitor override the auto-detected display currency;
+ * Currency picker for the pricing page. Lets a visitor override the auto-detected display currency;
  * the choice persists (see {@link CurrencyService}). A DaisyUI `dropdown` — platform-first, no
  * custom widget.
+ *
+ * It used to live in the site header on every page, but prices only ever appear on /pricing, so a
+ * globe dropdown in the nav was a permanent control for a single page's concern. Keeping it beside
+ * the subscriber slider also means the currency, the subscriber count and the billing interval —
+ * the three things that decide the number on screen — sit in one card.
  */
 @Component({
   selector: 'pc-currency-switcher',
