@@ -1,5 +1,6 @@
 import { Component, type OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe } from '@angular/common';
+import { Router, RouterLink } from '@angular/router';
 
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -85,6 +86,7 @@ const RANGES: { key: ReportRange; label: string }[] = [
     DatePipe,
     Icon,
     PcMap,
+    RouterLink,
     RowActions,
     TabBar,
     CutTurfsDialog,
@@ -98,6 +100,7 @@ export class CanvassingPage implements OnInit {
   private readonly svc = inject(CanvassingService);
   private readonly alerts = inject(AlertService);
   private readonly dialog = inject(ConfirmDialogService);
+  private readonly router = inject(Router);
 
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
@@ -182,6 +185,12 @@ export class CanvassingPage implements OnInit {
   });
 
   protected readonly hasMap = computed<boolean>(() => this.mapMarkers().length > 0);
+
+  /** A pin on the strip map carries its turf id — clicking it opens that turf. */
+  protected openTurf(marker: PcMapMarker): void {
+    const id = typeof marker.payload === 'string' ? marker.payload : marker.id;
+    if (id) void this.router.navigate(['/canvassing', id]);
+  }
 
   protected variantFor(status: TurfStatus): PcMapVariant {
     return STATUS_VARIANT[status];

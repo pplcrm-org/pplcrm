@@ -309,8 +309,17 @@ export const dashboardRoutes: Routes = [
 
   {
     path: 'canvassing',
-    loadComponent: () => import('./experiences/canvassing/ui/canvassing-page').then((m) => m.CanvassingPage),
     data: { breadcrumb: { term: 'nav.canvassing' } },
+    children: [
+      {
+        path: '',
+        loadComponent: () => import('./experiences/canvassing/ui/canvassing-page').then((m) => m.CanvassingPage),
+      },
+      {
+        path: ':id',
+        loadComponent: () => import('./experiences/canvassing/ui/turf-detail-page').then((m) => m.TurfDetailPage),
+      },
+    ],
   },
 
   {

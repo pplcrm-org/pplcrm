@@ -31,6 +31,28 @@ export interface FieldReport {
   topCanvassers: { name: string; doors: number }[];
 }
 
+/** One door's knock history inside a turf, rolled up for the turf detail page. */
+export interface DoorActivity {
+  attempts: number;
+  conversations: number;
+  last_outcome: string;
+  last_response: string | null;
+  last_canvasser: string | null;
+  last_knocked_at: Date;
+}
+
+/**
+ * What one canvasser did on one turf. Keyed by the name stored on the knock —
+ * `turf_knocks` carries `canvasser_name`, not a volunteer id, so this is the only
+ * attribution the data actually supports (the field report groups the same way).
+ */
+export interface CanvasserWork {
+  name: string;
+  doors: number;
+  conversations: number;
+  last_knock_at: Date | null;
+}
+
 const CONVERSATION = 'conversation';
 
 export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
@@ -185,6 +207,75 @@ export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
     const map = new Map<string, string>();
     for (const r of rows) map.set(String(r.household_id), String(r.last_outcome));
     return map;
+  }
+
+  /**
+   * Every knocked door in one turf, rolled up: how many times it was tried, how
+   * many of those were conversations, and what the most recent visit was. Doors
+   * with no knock simply have no entry — the caller pairs this with the turf's
+   * door list, so absence reads as "not yet knocked".
+   */
+  public async getDoorActivity(
+    input: { tenant_id: string; turf_id: string },
+    trx?: Transaction<Models>,
+  ): Promise<Map<string, DoorActivity>> {
+    const rows = await this.getSelect(trx)
+      .where('tenant_id', '=', input.tenant_id)
+      .where('turf_id', '=', input.turf_id)
+      .groupBy('household_id')
+      .select([
+        'household_id',
+        sql<number>`COUNT(*)`.as('attempts'),
+        sql<number>`COUNT(*) FILTER (WHERE outcome = ${CONVERSATION})`.as('conversations'),
+        sql<string>`(ARRAY_AGG(outcome ORDER BY knocked_at DESC))[1]`.as('last_outcome'),
+        sql<string | null>`(ARRAY_AGG(response ORDER BY knocked_at DESC))[1]`.as('last_response'),
+        sql<string | null>`(ARRAY_AGG(canvasser_name ORDER BY knocked_at DESC))[1]`.as('last_canvasser'),
+        sql<string>`MAX(knocked_at)`.as('last_knocked_at'),
+      ])
+      .execute();
+
+    const map = new Map<string, DoorActivity>();
+    for (const r of rows) {
+      map.set(String(r.household_id), {
+        attempts: Number(r.attempts ?? 0),
+        conversations: Number(r.conversations ?? 0),
+        last_outcome: String(r.last_outcome),
+        last_response: r.last_response == null ? null : String(r.last_response),
+        last_canvasser: r.last_canvasser == null ? null : String(r.last_canvasser),
+        last_knocked_at: new Date(String(r.last_knocked_at)),
+      });
+    }
+    return map;
+  }
+
+  /**
+   * Per-canvasser work on one turf. `doors` counts distinct households so a
+   * volunteer who tried the same door twice isn't credited twice, which is also
+   * how the turf's own progress is derived.
+   */
+  public async getCanvasserWork(
+    input: { tenant_id: string; turf_id: string },
+    trx?: Transaction<Models>,
+  ): Promise<CanvasserWork[]> {
+    const rows = await this.getSelect(trx)
+      .where('tenant_id', '=', input.tenant_id)
+      .where('turf_id', '=', input.turf_id)
+      .where('canvasser_name', 'is not', null)
+      .groupBy('canvasser_name')
+      .select([
+        'canvasser_name as name',
+        sql<number>`COUNT(DISTINCT household_id)`.as('doors'),
+        sql<number>`COUNT(*) FILTER (WHERE outcome = ${CONVERSATION})`.as('conversations'),
+        sql<string>`MAX(knocked_at)`.as('last_knock_at'),
+      ])
+      .execute();
+
+    return rows.map((r) => ({
+      name: String(r.name),
+      doors: Number(r.doors ?? 0),
+      conversations: Number(r.conversations ?? 0),
+      last_knock_at: r.last_knock_at ? new Date(String(r.last_knock_at)) : null,
+    }));
   }
 
   /** Full field-report aggregation over a window, joined to teams via assignments. */

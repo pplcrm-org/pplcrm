@@ -281,6 +281,17 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   universe reads as an all-grey map before the first knock. Aggregation lives in
   `controller.getCoverage` (+ the module-level `convexHull`); the raw per-door rows
   come from `TurfHouseholdsRepo.getCoverageRows` (`CoverageDoorRow`).
+- `ui/turf-detail-page.ts` — **one turf, opened** (route `/canvassing/:id`; the turf
+  name and the strip map's pins link to it). Doors on a map coloured by knock status
+  inside the turf's hull, the roster with per-canvasser doors/conversations, and every
+  door in walk order with residents, last outcome + response, who knocked, and when.
+  Backed by the single `canvassing.getTurfDetail` query (`controller.getTurfDetail` +
+  `TurfsRepo.getTurfRow`, `TurfKnocksRepo.getDoorActivity`/`getCanvasserWork`). Two
+  things to keep true: everything is derived at read time exactly like the list page
+  (no stored counters — §22.6), and per-canvasser work is matched to the roster **by
+  `turf_knocks.canvasser_name`**, because knocks carry a name, not a volunteer id — a
+  volunteer taken off the roster stays listed with `active: false` rather than having
+  their doors disappear. Roster/QR/retire actions reuse the list page's dialogs.
 - `ui/cut-turfs-dialog.ts` — universe select (reuses `ListsService.getAllWithCounts`),
   presets, live preview.
 - `ui/assign-turf-dialog.ts` — the **canvasser roster** for a turf. A turf holds as
@@ -320,7 +331,8 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
 
 - **Filled turf polygons on the _turf strip_** (Turfs & assignments tab) — the
   turf list row only carries the centroid, so that map still pins tinted centroids
-  honestly. The **Coverage** map (Field report tab) _does_ draw per-turf boundaries,
+  honestly (clicking a pin opens the turf, which does draw its hull). The
+  **Coverage** map (Field report tab) _does_ draw per-turf boundaries,
   computing the convex hull of each turf's door coordinates on the fly in
   `getCoverage` — reuse that if you want hulls on the turf strip too.
 - **Sub-ward barrier avoidance** — no highway/rail/water linework in the shipped

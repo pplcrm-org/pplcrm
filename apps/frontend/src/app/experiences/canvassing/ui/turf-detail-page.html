@@ -1,0 +1,277 @@
+@if (detail(); as d) {
+<div class="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4 sm:p-6">
+  <!-- Trail (Canvassing / turf name) renders in the navbar breadcrumb strip. -->
+
+  <!-- Header -->
+  <section class="card border border-base-300 bg-base-100">
+    <div class="card-body gap-4 p-5">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="flex flex-col gap-1">
+          <p class="pc-eyebrow">Turf</p>
+          <div class="flex flex-wrap items-center gap-2">
+            <h1 class="text-2xl font-bold tracking-tight text-base-content">{{ d.name }}</h1>
+            <pc-status-badge [type]="tone(d.status)">{{ statusLabel[d.status] }}</pc-status-badge>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" class="btn btn-primary btn-sm" (click)="rosterOpen.set(true)">
+            <pc-icon name="user-plus" [size]="4" />
+            {{ d.canvassers.length > 0 ? 'Manage canvassers' : 'Add canvassers' }}
+          </button>
+          <button type="button" class="btn btn-ghost btn-sm" (click)="qrOpen.set(true)">Show join QR</button>
+          <button type="button" class="btn btn-ghost btn-sm" (click)="refreshFromList()">
+            <pc-icon name="arrow-path" [size]="4" />
+            Refresh from list
+          </button>
+          @if (d.status !== 'retired') {
+          <button type="button" class="btn btn-ghost btn-sm text-error" (click)="retire()">Retire turf</button>
+          }
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
+        <div>
+          <p class="text-[10.5px] uppercase tracking-[0.06em] text-base-content/50">Campaign</p>
+          <p class="text-base-content/80">{{ d.campaign_name || '—' }}</p>
+        </div>
+        <div>
+          <p class="text-[10.5px] uppercase tracking-[0.06em] text-base-content/50">Ward</p>
+          <p class="text-base-content/80">{{ d.ward || '—' }}</p>
+        </div>
+        <div>
+          <p class="text-[10.5px] uppercase tracking-[0.06em] text-base-content/50">Universe</p>
+          @if (d.list_id) {
+          <a class="text-primary" [routerLink]="['/lists', d.list_id]">{{ d.list_name || 'List' }}</a>
+          } @else {
+          <p class="text-base-content/50">Not from a list</p>
+          }
+        </div>
+        <div>
+          <p class="text-[10.5px] uppercase tracking-[0.06em] text-base-content/50">Last activity</p>
+          <p class="text-base-content/80">
+            {{ d.last_activity_at ? (d.last_activity_at | date: 'MMM d, h:mm a') : 'No knocks yet' }}
+          </p>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-2">
+        <div class="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+          <p class="text-sm">
+            <span class="text-lg font-semibold tabular-nums">{{ d.attempted }}</span>
+            <span class="text-base-content/60"> of {{ d.door_count }} doors attempted</span>
+          </p>
+          <p class="text-sm text-base-content/60">
+            <span class="font-semibold tabular-nums text-base-content">{{ d.conversations }}</span> conversations · {{
+            contactRatePct() }}% contact rate
+          </p>
+        </div>
+        <progress class="progress progress-primary w-full" [value]="progressPct()" max="100"></progress>
+      </div>
+    </div>
+  </section>
+
+  <!-- Where the doors are -->
+  <section class="card border border-base-300 bg-base-100">
+    <div class="card-body gap-2 p-4">
+      @if (markers().length > 0) {
+      <pc-map
+        class="block h-80 w-full rounded-lg"
+        [markers]="markers()"
+        [polygons]="polygons()"
+        [ariaLabel]="d.name + ' door map'"
+      ></pc-map>
+      <div class="flex flex-wrap gap-3 text-xs text-base-content/70">
+        <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-success"></span> Talked</span>
+        <span class="flex items-center gap-1"
+          ><span class="h-2 w-2 rounded-full bg-warning"></span> Knocked, no answer</span
+        >
+        <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-base-300"></span> Not yet</span>
+        <span class="flex items-center gap-1">
+          <span class="inline-block h-2 w-3 rounded-sm border border-dashed border-base-content/40"></span>
+          Turf boundary
+        </span>
+        @if (ungeocoded() > 0) {
+        <span class="text-base-content/50">
+          {{ ungeocoded() }} {{ ungeocoded() === 1 ? 'door has' : 'doors have' }} no coordinates yet — they are in the
+          list below but not on the map.
+        </span>
+        }
+      </div>
+      } @else {
+      <div
+        class="flex h-32 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm text-base-content/50"
+      >
+        None of this turf's doors are geocoded yet, so there is nothing to pin.
+      </div>
+      }
+    </div>
+  </section>
+
+  <!-- Canvassers -->
+  <section class="card border border-base-300 bg-base-100">
+    <div class="flex items-center justify-between p-4 pb-2">
+      <h2 class="text-sm font-semibold">Canvassers</h2>
+      <button type="button" class="link link-primary text-sm" (click)="rosterOpen.set(true)">
+        {{ d.canvassers.length > 0 ? 'Manage' : 'Add canvassers' }}
+      </button>
+    </div>
+    @if (d.canvassers.length > 0) {
+    <div class="overflow-x-auto">
+      <table class="table pc-table">
+        <thead>
+          <tr class="text-xs uppercase text-base-content/50">
+            <th>Canvasser</th>
+            <th>Team</th>
+            <th class="text-right">Doors</th>
+            <th class="text-right">Conversations</th>
+            <th>Last knock</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (c of d.canvassers; track c.name) {
+          <tr>
+            <td>
+              <div class="flex flex-wrap items-center gap-2">
+                @if (c.person_id) {
+                <a class="font-medium text-primary" [routerLink]="['/people', c.person_id]">{{ c.name }}</a>
+                } @else {
+                <span class="font-medium">{{ c.name }}</span>
+                }
+                <!-- Their link was revoked, but the doors they walked are still theirs. -->
+                @if (!c.active) {
+                <span class="badge badge-ghost badge-sm">No longer on this turf</span>
+                }
+              </div>
+              @if (c.assigned_at) {
+              <div class="text-xs text-base-content/50">Added {{ c.assigned_at | date: 'MMM d' }}</div>
+              }
+            </td>
+            <td class="text-base-content/70">{{ c.team_name || '—' }}</td>
+            <td class="text-right tabular-nums">{{ c.doors }}</td>
+            <td class="text-right tabular-nums">{{ c.conversations }}</td>
+            <td class="whitespace-nowrap text-xs text-base-content/60">
+              {{ c.last_knock_at ? (c.last_knock_at | date: 'MMM d, h:mm a') : 'Not started' }}
+            </td>
+          </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <p class="border-t border-base-300 p-3 text-xs text-base-content/60">
+      Doors are credited by the name each volunteer's Companion signs its results with.
+    </p>
+    } @else {
+    <div class="p-8 text-center text-sm text-base-content/60">
+      Nobody is walking this turf yet.
+      <button type="button" class="link link-primary" (click)="rosterOpen.set(true)">Add a canvasser</button>
+      to send them their Companion link.
+    </div>
+    }
+  </section>
+
+  <!-- Doors -->
+  <section class="card border border-base-300 bg-base-100">
+    <div class="flex flex-wrap items-center justify-between gap-2 p-4 pb-2">
+      <h2 class="text-sm font-semibold">Doors</h2>
+      <div role="tablist" class="tabs tabs-box tabs-xs">
+        @for (f of doorFilters; track f.key) {
+        <button role="tab" class="tab" [class.tab-active]="doorFilter() === f.key" (click)="doorFilter.set(f.key)">
+          {{ f.label }} ({{ doorCounts()[f.key] }})
+        </button>
+        }
+      </div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="table pc-table">
+        <thead>
+          <tr class="text-xs uppercase text-base-content/50">
+            <th class="w-12">#</th>
+            <th>Address</th>
+            <th>Who lives here</th>
+            <th>Status</th>
+            <th>Last visit</th>
+            <th>Knocked by</th>
+            <th>When</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (door of doors(); track door.household_id) {
+          <tr>
+            <td class="tabular-nums text-base-content/50">{{ door.walk_order }}</td>
+            <td>
+              <a class="font-medium text-primary" [routerLink]="['/households', door.household_id]"
+                >{{ door.address }}</a
+              >
+            </td>
+            <td>
+              @if (door.residents.length > 0) {
+              <div class="flex flex-wrap gap-1">
+                @for (p of door.residents; track p.id) {
+                <a
+                  class="badge badge-ghost badge-sm"
+                  [class.opacity-60]="p.dnc"
+                  [routerLink]="['/people', p.id]"
+                  [title]="p.dnc ? p.name + ' — do not contact' : p.name"
+                  >{{ p.name }}</a
+                >
+                }
+              </div>
+              } @else {
+              <span class="text-xs text-base-content/50">Nobody on file</span>
+              }
+            </td>
+            <td>
+              <pc-status-badge [type]="doorTone(door.status)">{{ doorLabel[door.status] }}</pc-status-badge>
+            </td>
+            <td class="text-sm text-base-content/70">
+              {{ lastVisitLabel(door) }} @if (door.attempts > 1) {
+              <span class="text-xs text-base-content/50">· {{ door.attempts }} visits</span>
+              }
+            </td>
+            <td class="text-sm text-base-content/70">{{ door.last_canvasser || '—' }}</td>
+            <td class="whitespace-nowrap text-xs text-base-content/60">
+              {{ door.last_knocked_at ? (door.last_knocked_at | date: 'MMM d, h:mm a') : '—' }}
+            </td>
+          </tr>
+          } @empty {
+          <tr>
+            <td colspan="7" class="py-10 text-center text-sm text-base-content/60">
+              @if (doorFilter() === 'all') { This turf has no doors yet. "Refresh from list" pulls in the universe's
+              current members. } @else { No doors in this view. }
+            </td>
+          </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <pc-record-activities [entity]="'turf'" [entityId]="id()" />
+
+  @if (rosterOpen()) {
+  <pc-assign-turf-dialog
+    [turfId]="d.id"
+    [turfName]="d.name"
+    (closed)="onRosterClosed()"
+    (assigned)="onAssigned($event)"
+  />
+  } @if (qrOpen()) {
+  <!-- The group-canvass entry point: everyone who scans this lands on THIS turf. -->
+  <dialog class="modal" [open]="true">
+    <div class="modal-box flex max-w-xl flex-col gap-4">
+      <pc-join-code-panel [turfId]="d.id" [turfName]="d.name" />
+      <div class="modal-action">
+        <button type="button" class="btn btn-ghost btn-sm" (click)="qrOpen.set(false)">Close</button>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop">
+      <button type="button" (click)="qrOpen.set(false)">Close</button>
+    </form>
+  </dialog>
+  }
+</div>
+} @else {
+<div class="flex min-h-[40vh] items-center justify-center">
+  <span class="loading loading-spinner loading-lg text-primary"></span>
+</div>
+}

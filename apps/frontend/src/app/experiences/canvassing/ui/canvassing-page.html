@@ -88,7 +88,13 @@
   <section class="card mb-4 border border-base-300 bg-base-100">
     <div class="card-body p-4">
       @if (hasMap()) {
-      <pc-map class="block h-56 w-full rounded-lg" [markers]="mapMarkers()" ariaLabel="Turf map"></pc-map>
+      <!-- Each pin is its turf: clicking one opens it. -->
+      <pc-map
+        class="block h-56 w-full rounded-lg"
+        [markers]="mapMarkers()"
+        (markerClicked)="openTurf($event)"
+        ariaLabel="Turf map"
+      ></pc-map>
       } @else {
       <div
         class="flex h-32 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm text-base-content/50"
@@ -119,7 +125,7 @@
           <tr>
             <td>
               <div class="flex items-center gap-2">
-                <span class="font-medium text-base-content">{{ t.name }}</span>
+                <a class="font-medium text-primary" [routerLink]="['/canvassing', t.id]">{{ t.name }}</a>
                 <span class="badge badge-sm {{ statusBadge[t.status] }}">{{ statusLabel[t.status] }}</span>
               </div>
               @if (t.list_name) {
@@ -167,6 +173,7 @@
             </td>
             <td class="text-right">
               <pc-row-actions [label]="'Actions for ' + t.name">
+                <li><a [routerLink]="['/canvassing', t.id]">Open turf</a></li>
                 <li>
                   <button type="button" (click)="assign(t)">
                     {{ t.has_link ? 'Manage canvassers' : 'Add canvassers' }}

@@ -55,7 +55,58 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
 
     const counts = await this.doorCounts(tenant_id, trx);
 
-    return rows.map((r) => ({
+    return rows.map((r) => this.toTurfRow(r, counts.get(String(r.id)) ?? 0));
+  }
+
+  /**
+   * One turf as the same row shape the list page renders — the detail page's
+   * header source, so both surfaces derive status and progress identically.
+   */
+  public async getTurfRow(
+    input: { tenant_id: string; id: string },
+    trx?: Transaction<Models>,
+  ): Promise<TurfRow | null> {
+    const row = await this.getSelect(trx)
+      .leftJoin('lists', 'lists.id', 'turfs.list_id')
+      .where('turfs.tenant_id', '=', input.tenant_id)
+      .where('turfs.id', '=', input.id)
+      .select([
+        'turfs.id as id',
+        'turfs.name as name',
+        'turfs.status as status',
+        'turfs.list_id as list_id',
+        'lists.name as list_name',
+        'turfs.ward as ward',
+        'turfs.target_doors as target_doors',
+        'turfs.centroid_lat as centroid_lat',
+        'turfs.centroid_lng as centroid_lng',
+        'turfs.updated_at as updated_at',
+        'turfs.campaign_id as campaign_id',
+      ])
+      .executeTakeFirst();
+    if (!row) return null;
+
+    const counts = await this.doorCounts(input.tenant_id, trx, input.id);
+    return this.toTurfRow(row, counts.get(String(row.id)) ?? 0);
+  }
+
+  private toTurfRow(
+    r: {
+      id: unknown;
+      name: unknown;
+      status: unknown;
+      list_id: unknown;
+      list_name: unknown;
+      ward: unknown;
+      target_doors: unknown;
+      centroid_lat: unknown;
+      centroid_lng: unknown;
+      updated_at: unknown;
+      campaign_id: unknown;
+    },
+    door_count: number,
+  ): TurfRow {
+    return {
       id: String(r.id),
       name: String(r.name),
       status: String(r.status),
@@ -66,9 +117,9 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       centroid_lat: r.centroid_lat == null ? null : Number(r.centroid_lat),
       centroid_lng: r.centroid_lng == null ? null : Number(r.centroid_lng),
       updated_at: r.updated_at ? new Date(String(r.updated_at)) : null,
-      door_count: counts.get(String(r.id)) ?? 0,
+      door_count,
       campaign_id: r.campaign_id == null ? null : String(r.campaign_id),
-    }));
+    };
   }
 
   /** Typed single-turf lookup (getOneById returns a loosely-typed row). */
@@ -107,10 +158,14 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     return trx ?? this.db;
   }
 
-  private async doorCounts(tenant_id: string, trx?: Transaction<Models>): Promise<Map<string, number>> {
-    const rows = await this.conn(trx)
-      .selectFrom('turf_households')
-      .where('tenant_id', '=', tenant_id)
+  private async doorCounts(
+    tenant_id: string,
+    trx?: Transaction<Models>,
+    turf_id?: string,
+  ): Promise<Map<string, number>> {
+    let qb = this.conn(trx).selectFrom('turf_households').where('tenant_id', '=', tenant_id);
+    if (turf_id) qb = qb.where('turf_id', '=', turf_id);
+    const rows = await qb
       .groupBy('turf_id')
       .select(({ fn }) => ['turf_id', fn.count('household_id').as('doors')])
       .execute();

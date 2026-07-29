@@ -37,6 +37,21 @@ export type KnockOutcome = (typeof KNOCK_OUTCOMES)[number];
 export const KNOCK_RESPONSES = ['supporter', 'undecided', 'non_supporter', 'not_voting', 'already_voted'] as const;
 export type KnockResponse = (typeof KNOCK_RESPONSES)[number];
 
+/**
+ * Staff-facing labels for what happened at a door. `cleared` is the append-only
+ * marker a volunteer files when undoing an outcome, so it reads as "reset" rather
+ * than as a visit.
+ */
+export const KNOCK_OUTCOME_LABELS: Record<KnockOutcome, string> = {
+  conversation: 'Talked',
+  no_answer: 'No answer',
+  not_home: 'Not home',
+  moved: 'Moved',
+  refused: 'Refused',
+  inaccessible: "Couldn't reach",
+  cleared: 'Result cleared',
+};
+
 /** Survey labels for the five support options (sentence case, spec §3.5). */
 export const KNOCK_RESPONSE_LABELS: Record<KnockResponse, string> = {
   supporter: 'Supporter',

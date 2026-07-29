@@ -45,7 +45,12 @@ import {
 } from './lib/cutting-engine';
 import { TurfHouseholdsRepo, type CoverageDoorRow } from './repositories/turf-households.repo';
 import { type TurfCanvasser, TurfAssignmentsRepo, generateTurfToken } from './repositories/turf-assignments.repo';
-import { TurfKnocksRepo, type FieldReport, type ResponseMix } from './repositories/turf-knocks.repo';
+import {
+  TurfKnocksRepo,
+  type CanvasserWork,
+  type FieldReport,
+  type ResponseMix,
+} from './repositories/turf-knocks.repo';
 import { TurfSegmentClaimsRepo } from './repositories/turf-segment-claims.repo';
 import { TurfsRepo, type TurfRow } from './repositories/turfs.repo';
 
@@ -151,6 +156,63 @@ export interface Coverage {
   byWard: CoverageWard[];
 }
 
+/** One door on the turf detail page: where it is, who lives there, what happened. */
+export interface TurfDoor {
+  household_id: string;
+  walk_order: number;
+  address: string;
+  lat: number | null;
+  lng: number | null;
+  status: CoverageStatus;
+  attempts: number;
+  last_outcome: string | null;
+  last_response: string | null;
+  last_canvasser: string | null;
+  last_knocked_at: string | null;
+  residents: { id: string; name: string; dnc: boolean }[];
+}
+
+/**
+ * A canvasser as the turf detail page shows them: their roster membership (when
+ * they're still on it) plus the work credited to their name.
+ *
+ * Knocks store `canvasser_name`, not a volunteer id, so work is matched to the
+ * roster by name — and someone taken off the roster keeps their credit here with
+ * `active: false` rather than having their doors vanish from the turf.
+ */
+export interface TurfRosterEntry {
+  assignment_id: string | null;
+  person_id: string | null;
+  name: string;
+  team_name: string | null;
+  assigned_at: string | null;
+  expires_at: string | null;
+  active: boolean;
+  doors: number;
+  conversations: number;
+  last_knock_at: string | null;
+}
+
+export interface TurfDetail {
+  id: string;
+  name: string;
+  status: TurfDisplayStatus;
+  list_id: string | null;
+  list_name: string | null;
+  campaign_name: string;
+  ward: string | null;
+  door_count: number;
+  attempted: number;
+  conversations: number;
+  last_activity_at: string | null;
+  centroid_lat: number | null;
+  centroid_lng: number | null;
+  /** Dashed outline of the turf — the convex hull of its geocoded doors. */
+  boundary: LatLng[];
+  canvassers: TurfRosterEntry[];
+  doors: TurfDoor[];
+}
+
 const UNASSIGNED_WARD = 'Unassigned';
 const MIN_HULL_POINTS = 3;
 
@@ -218,6 +280,124 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         last_activity_at: lastAt ? lastAt.toISOString() : null,
       };
     });
+  }
+
+  /**
+   * One turf, opened: its doors with what happened at each, and the people
+   * walking it with the work credited to them. Everything here is derived at read
+   * time from `turf_knocks` exactly like the list page (§22.6) — the detail view
+   * adds no stored state of its own.
+   */
+  public async getTurfDetail(auth: IAuthKeyPayload, turfId: string): Promise<TurfDetail> {
+    const tenant_id = auth.tenant_id;
+    const row = await this.turfsRepo().getTurfRow({ tenant_id, id: turfId });
+    if (!row) throw new NotFoundError('Turf not found');
+
+    const [doorRows, activity, roster, work, campaign] = await Promise.all([
+      this.turfHouseholds.getDoors({ tenant_id, turf_id: turfId }),
+      this.knocks.getDoorActivity({ tenant_id, turf_id: turfId }),
+      this.assignments.canvassersByTurf({ tenant_id, turf_id: turfId }),
+      this.knocks.getCanvasserWork({ tenant_id, turf_id: turfId }),
+      this.companionCampaign(tenant_id, String(row.campaign_id ?? '')),
+    ]);
+    const residents = await this.peopleByHousehold(
+      tenant_id,
+      doorRows.map((d) => d.household_id),
+    );
+
+    const doors: TurfDoor[] = doorRows.map((d, i) => {
+      const a = activity.get(d.household_id);
+      return {
+        household_id: d.household_id,
+        walk_order: d.walk_order ?? i + 1,
+        address: this.formatAddress(d),
+        lat: d.lat,
+        lng: d.lng,
+        status: a == null ? 'not_yet' : a.conversations > 0 ? 'conversation' : 'attempted',
+        attempts: a?.attempts ?? 0,
+        last_outcome: a?.last_outcome ?? null,
+        last_response: a?.last_response ?? null,
+        last_canvasser: a?.last_canvasser ?? null,
+        last_knocked_at: a ? a.last_knocked_at.toISOString() : null,
+        residents: residents.get(d.household_id) ?? [],
+      };
+    });
+
+    let attempted = 0;
+    let conversations = 0;
+    let lastAt: Date | null = null;
+    for (const a of activity.values()) {
+      attempted += 1;
+      conversations += a.conversations;
+      if (!lastAt || a.last_knocked_at > lastAt) lastAt = a.last_knocked_at;
+    }
+
+    const canvassers = this.rosterWithWork(roster.get(turfId) ?? [], work);
+    const boundary = convexHull(
+      doors.filter((d) => d.lat != null && d.lng != null).map((d) => ({ lat: Number(d.lat), lng: Number(d.lng) })),
+    );
+
+    return {
+      id: row.id,
+      name: row.name,
+      status: this.displayStatus(row, attempted, lastAt, (roster.get(turfId) ?? []).length > 0),
+      list_id: row.list_id,
+      list_name: row.list_name,
+      campaign_name: campaign.name,
+      ward: row.ward,
+      door_count: row.door_count,
+      attempted,
+      conversations,
+      last_activity_at: lastAt ? lastAt.toISOString() : null,
+      centroid_lat: row.centroid_lat,
+      centroid_lng: row.centroid_lng,
+      boundary: boundary.length >= MIN_HULL_POINTS ? boundary : [],
+      canvassers,
+      doors,
+    };
+  }
+
+  /**
+   * Pair the active roster with the work credited to each name, then append the
+   * names that knocked here but are no longer on the roster. Losing your link
+   * doesn't unmake the doors you walked, so those rows stay — marked inactive.
+   */
+  private rosterWithWork(roster: TurfCanvasser[], work: CanvasserWork[]): TurfRosterEntry[] {
+    const key = (name: string): string => name.trim().toLowerCase();
+    const byName = new Map(work.map((w) => [key(w.name), w]));
+
+    const entries: TurfRosterEntry[] = roster.map((c) => {
+      const w = byName.get(key(c.name));
+      byName.delete(key(c.name));
+      return {
+        assignment_id: c.assignment_id,
+        person_id: c.person_id,
+        name: c.name,
+        team_name: c.team_name,
+        assigned_at: c.assigned_at,
+        expires_at: c.expires_at,
+        active: true,
+        doors: w?.doors ?? 0,
+        conversations: w?.conversations ?? 0,
+        last_knock_at: w?.last_knock_at ? w.last_knock_at.toISOString() : null,
+      };
+    });
+
+    for (const w of byName.values()) {
+      entries.push({
+        assignment_id: null,
+        person_id: null,
+        name: w.name,
+        team_name: null,
+        assigned_at: null,
+        expires_at: null,
+        active: false,
+        doors: w.doors,
+        conversations: w.conversations,
+        last_knock_at: w.last_knock_at ? w.last_knock_at.toISOString() : null,
+      });
+    }
+    return entries;
   }
 
   public async getFieldSummary(auth: IAuthKeyPayload): Promise<FieldSummary> {

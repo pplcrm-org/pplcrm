@@ -1104,4 +1104,88 @@ describe('CanvassingController', () => {
       .execute();
     expect(knocks.length).toBe(1);
   });
+
+  it('opens one turf: every door with what happened at it, and the roster with their work', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const [turf] = await controller.getTurfs(auth);
+    if (!turf) throw new Error('expected a turf');
+    const { token } = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    const companion = await controller.getCompanionTurf(token, session);
+    const talked = companion.households[0]!.id;
+    const noAnswer = companion.households[1]!.id;
+
+    await controller.postCompanionResults(token, session, [
+      {
+        op_id: 'det-1',
+        recorded_at: null,
+        type: 'survey',
+        payload: {
+          household_id: talked,
+          person_id: null,
+          support: 'supporter',
+          issues: [],
+          wants_volunteer: false,
+          wants_yard_sign: false,
+          set_dnc: false,
+          subscribe: false,
+        },
+      },
+      {
+        op_id: 'det-2',
+        recorded_at: null,
+        type: 'door_outcome',
+        payload: { household_id: noAnswer, outcome: 'no_answer' },
+      },
+    ]);
+
+    const detail = await controller.getTurfDetail(auth, turf.id);
+
+    // Header numbers are the list page's, derived the same way.
+    expect(detail.name).toBe(turf.name);
+    expect(detail.door_count).toBe(turf.door_count);
+    expect(detail.attempted).toBe(2);
+    expect(detail.conversations).toBe(1);
+    expect(detail.last_activity_at).not.toBeNull();
+
+    // Every door of the turf is listed, in walk order, each with its own status.
+    expect(detail.doors.length).toBe(turf.door_count);
+    expect(detail.doors.map((d) => d.walk_order)).toEqual(
+      [...detail.doors.map((d) => d.walk_order)].sort((a, b) => a - b),
+    );
+    const talkedDoor = detail.doors.find((d) => d.household_id === talked);
+    expect(talkedDoor?.status).toBe('conversation');
+    expect(talkedDoor?.last_outcome).toBe('conversation');
+    expect(talkedDoor?.last_response).toBe('supporter');
+    expect(talkedDoor?.last_canvasser).toBe('Sam Volunteer');
+    expect(talkedDoor?.residents.length).toBeGreaterThan(0);
+    expect(detail.doors.find((d) => d.household_id === noAnswer)?.status).toBe('attempted');
+    expect(detail.doors.filter((d) => d.status === 'not_yet').length).toBe(turf.door_count - 2);
+
+    // The turf is drawn from its own doors.
+    expect(detail.boundary.length).toBeGreaterThanOrEqual(3);
+
+    // The canvasser is credited with the doors they actually walked.
+    expect(detail.canvassers.length).toBe(1);
+    const [canvasser] = detail.canvassers;
+    expect(canvasser?.name).toBe('Sam Volunteer');
+    expect(canvasser?.active).toBe(true);
+    expect(canvasser?.doors).toBe(2);
+    expect(canvasser?.conversations).toBe(1);
+
+    // Taking them off the turf does not unmake the doors they walked.
+    await controller.removeVolunteerFromTurf(auth, {
+      turf_id: turf.id,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const after = await controller.getTurfDetail(auth, turf.id);
+    expect(after.canvassers.length).toBe(1);
+    expect(after.canvassers[0]?.active).toBe(false);
+    expect(after.canvassers[0]?.doors).toBe(2);
+    expect(after.attempted).toBe(2);
+  });
 });

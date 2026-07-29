@@ -290,6 +290,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         title: 'Only located doors get cut',
         text: 'A turf is built from households the app has geocoded. Addresses still being located are reported in the preview and join a turf once they resolve. Nothing is silently dropped.',
       },
+      { kind: 'h2', id: 'open-turf', text: 'Open a turf' },
+      {
+        kind: 'p',
+        text: 'Click a turf’s name — in the list, or its pin on the map — to open it. The turf page is where you see what is actually happening on the ground: a map of its doors (green where a volunteer had a conversation, amber where they knocked and nobody answered, grey where nobody has been yet) inside the turf’s dashed boundary, everyone walking it with the doors and conversations credited to each of them, and then every door in walk order with who lives there, what the last visit recorded, which canvasser recorded it, and when. Filter the door list to talked, knocked-no-answer, or not-yet to see what is left. Addresses link to the household and names to the person, so a doorstep note is one click from the record it belongs to. Managing canvassers, the join QR, refreshing from the list, and retiring the turf are all here too, alongside the turf’s activity log.',
+      },
       { kind: 'h2', id: 'assign', text: 'Put canvassers on a turf' },
       {
         kind: 'p',

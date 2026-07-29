@@ -31,6 +31,9 @@ export const CanvassingRouter = router({
   getFieldSummary: authProcedure.query(({ ctx }) => controller.getFieldSummary(ctx.auth)),
   getInFieldToday: authProcedure.query(({ ctx }) => controller.getInFieldToday(ctx.auth)),
 
+  // One turf, opened: its doors, what happened at each, and who is walking it.
+  getTurfDetail: authProcedure.input(idSchema).query(({ ctx, input }) => controller.getTurfDetail(ctx.auth, input)),
+
   // Cut new turfs.
   previewCut: authProcedure.input(CutTurfsObj).query(({ ctx, input }) => controller.previewCut(ctx.auth, input)),
   cutTurfs: authProcedure.input(CutTurfsObj).mutation(({ ctx, input }) => controller.cutTurfs(ctx.auth, input)),

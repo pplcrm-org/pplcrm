@@ -14,6 +14,9 @@ import { TRPCService } from '../../../services/api/trpc-service';
 import type { RouterOutputs } from '../../../services/api/trpc-types';
 
 export type TurfListItem = RouterOutputs['canvassing']['getTurfs'][number];
+export type TurfDetail = RouterOutputs['canvassing']['getTurfDetail'];
+export type TurfDoor = TurfDetail['doors'][number];
+export type TurfRosterEntry = TurfDetail['canvassers'][number];
 export type TurfCanvasser = RouterOutputs['canvassing']['getCanvassers'][number];
 export type FieldSummary = RouterOutputs['canvassing']['getFieldSummary'];
 export type InFieldToday = RouterOutputs['canvassing']['getInFieldToday'];
@@ -25,6 +28,10 @@ export type CutPreview = RouterOutputs['canvassing']['previewCut'];
 export class CanvassingService extends TRPCService<unknown> {
   public getTurfs(): Promise<TurfListItem[]> {
     return this.api.canvassing.getTurfs.query();
+  }
+
+  public getTurfDetail(turfId: string): Promise<TurfDetail> {
+    return this.api.canvassing.getTurfDetail.query(turfId);
   }
 
   public getFieldSummary(): Promise<FieldSummary> {
