@@ -203,7 +203,7 @@
   <!-- Field report -->
   <section>
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div role="tablist" class="tabs tabs-boxed tabs-sm">
+      <div role="tablist" class="tabs tabs-box tabs-sm">
         @for (r of ranges; track r.key) {
         <button role="tab" class="tab" [class.tab-active]="reportRange() === r.key" (click)="setRange(r.key)">
           {{ r.label }}
@@ -242,7 +242,7 @@
     <div class="card mb-4 border border-base-300 bg-base-100">
       <div class="flex flex-wrap items-center justify-between gap-2 p-4 pb-2">
         <h3 class="text-sm font-semibold">Coverage</h3>
-        <div role="tablist" class="tabs tabs-boxed tabs-xs">
+        <div role="tablist" class="tabs tabs-box tabs-xs">
           <button
             role="tab"
             class="tab"
