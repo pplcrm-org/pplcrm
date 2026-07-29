@@ -1,0 +1,11 @@
+/* Selected rows get a quiet primary wash plus a left edge stripe — the same
+   "primary edge" language the datagrid uses for row emphasis. Built from the
+   theme token via color-mix so it survives the dark theme (design §5). */
+.pc-picker-row {
+  border-left: 2px solid transparent;
+}
+
+.pc-picker-row.is-selected {
+  border-left-color: var(--color-primary);
+  background-color: color-mix(in oklch, var(--color-primary) 8%, transparent);
+}

@@ -61,94 +61,57 @@
     </pc-card>
 
     <!-- Volunteers Section -->
-    <pc-card title="Volunteers" subtitle="Select volunteers who belong to this team.">
-      <div pc-card-actions class="text-sm text-base-content/60">
-        Captain: {{ captainLabel(form.team_captain_id().value() || null) }}
-      </div>
+    <pc-card
+      icon="user-group"
+      title="Volunteers"
+      subtitle="Search your volunteers and tick everyone who belongs to this team."
+    >
+      <pc-entity-picker
+        label="Team volunteers"
+        plural="volunteers"
+        emptyIcon="user-group"
+        emptyTitle="No volunteers to choose from yet"
+        emptyHint="People become pickable here once they have a volunteer status."
+        [options]="volunteerOptions()"
+        [selectedIds]="selectedVolunteerIds()"
+        (selectedIdsChange)="onVolunteersChange($event)"
+      >
+        <a pc-picker-empty-action class="btn btn-outline btn-secondary btn-xs" [routerLink]="['/people']">
+          Go to people
+        </a>
+      </pc-entity-picker>
 
-      <div class="grid gap-4 sm:grid-cols-2">
-        <div class="space-y-2">
-          <label class="text-sm font-medium text-base-content/80" for="volunteer-select">Select Volunteers</label>
-          <select
-            id="volunteer-select"
-            class="select select-bordered h-40 w-full"
-            (change)="onVolunteersChange($event)"
-            multiple
-          >
-            @for (person of people(); track person.id) {
-            <option [value]="person.id" [selected]="isVolunteerSelected(person.id)">{{ person.label }}</option>
-            }
-          </select>
-          <p class="text-xs text-base-content/50">Hold Ctrl/Cmd to select multiple volunteers.</p>
-        </div>
-        <div class="space-y-2">
-          <h3 class="text-sm font-semibold text-base-content/80">Currently Assigned</h3>
-          <div class="max-h-40 overflow-auto rounded border border-base-200">
-            @if (volunteers().length === 0) {
-            <p class="p-3 text-sm text-base-content/50">
-              No volunteers assigned yet. Pick them from the list on the left.
-            </p>
-            } @else {
-            <ul class="divide-y divide-base-200">
-              @for (volunteer of volunteers(); track volunteer.id) {
-              <li class="flex items-center justify-between p-3 text-sm">
-                <div>
-                  <p class="font-medium text-base-content">{{ volunteer.first_name }} {{ volunteer.last_name }}</p>
-                  @if (volunteer.email) {
-                  <p class="text-xs text-base-content/60">{{ volunteer.email }}</p>
-                  }
-                </div>
-              </li>
-              }
-            </ul>
-            }
-          </div>
-        </div>
+      @if (captainMissingFromTeam(); as captain) {
+      <div class="alert alert-warning alert-soft py-2 text-xs">
+        <pc-icon name="information-circle" [size]="4"></pc-icon>
+        <span>{{ captain.label }} is this team's captain but is not on the roster.</span>
+        <button type="button" class="btn btn-outline btn-secondary btn-xs" (click)="addCaptainToTeam()">
+          Add {{ captain.label }}
+        </button>
       </div>
+      }
     </pc-card>
 
     <!-- Assigned target constituent lists section -->
     <pc-card
-      title="Target Constituent Lists"
-      subtitle="Assign lists of people or households this team is responsible for contacting."
+      icon="queue-list"
+      title="Target constituent lists"
+      subtitle="Pick the lists of people or households this team is responsible for contacting."
     >
-      <div class="grid gap-4 sm:grid-cols-2">
-        <div class="space-y-2">
-          <label class="text-sm font-medium text-base-content/80" for="lists-select">Select Target Lists</label>
-          <select
-            id="lists-select"
-            class="select select-bordered h-40 w-full"
-            (change)="onListsChange($event)"
-            multiple
-          >
-            @for (list of availableLists(); track list.id) {
-            <option [value]="list.id" [selected]="isListSelected(list.id)">{{ list.name }} ({{ list.object }})</option>
-            }
-          </select>
-          <p class="text-xs text-base-content/50">Hold Ctrl/Cmd to select multiple lists.</p>
-        </div>
-        <div class="space-y-2">
-          <h3 class="text-sm font-semibold text-base-content/80">Currently Assigned Target Lists</h3>
-          <div class="max-h-40 overflow-auto rounded border border-base-200">
-            @if (assignedLists().length === 0) {
-            <p class="p-3 text-sm text-base-content/50">No lists assigned yet. Pick them from the list on the left.</p>
-            } @else {
-            <ul class="divide-y divide-base-200">
-              @for (list of assignedLists(); track list.id) {
-              <li class="flex items-center justify-between p-3 text-sm">
-                <div>
-                  <p class="font-medium text-base-content">{{ list.name }}</p>
-                  <p class="text-xs text-base-content/60">
-                    {{ list.is_dynamic ? 'Dynamic' : 'Static' }} • Target: {{ list.object }}
-                  </p>
-                </div>
-              </li>
-              }
-            </ul>
-            }
-          </div>
-        </div>
-      </div>
+      <pc-entity-picker
+        label="Target lists"
+        plural="lists"
+        emptyIcon="queue-list"
+        emptyTitle="No lists to assign yet"
+        emptyHint="Build a smart or static list first, then assign it to this team."
+        [options]="listOptions()"
+        [selectedIds]="selectedListIds()"
+        (selectedIdsChange)="onListsChange($event)"
+      >
+        <a pc-picker-empty-action class="btn btn-outline btn-secondary btn-xs" [routerLink]="['/lists']">
+          Go to lists
+        </a>
+      </pc-entity-picker>
     </pc-card>
 
     <!-- Team Tasks Section -->

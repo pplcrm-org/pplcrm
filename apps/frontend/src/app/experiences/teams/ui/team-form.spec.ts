@@ -102,7 +102,53 @@ describe('TeamFormComponent', () => {
       volunteer_ids: ['1'],
       list_ids: [],
     });
-    expect(component['volunteers']()).toEqual(mockTeam.volunteers);
+    expect(component['selectedVolunteerIds']()).toEqual(['1']);
+  });
+
+  it('should reflect a freshly picked volunteer in the selection immediately', async () => {
+    const mockTeam = {
+      id: 'team-123',
+      name: 'Outreach Team',
+      description: 'Community Outreach',
+      team_captain_id: '1',
+      volunteers: [],
+    };
+    mockTeamsSvc.getById.mockResolvedValue(mockTeam);
+
+    await createComponent();
+    fixture.componentRef.setInput('id', 'team-123');
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    // Picking a volunteer must show up in the picker's selection without a save
+    // round-trip — the old right-hand pane read from the server response instead.
+    component['onVolunteersChange'](['2']);
+
+    expect(component['selectedVolunteerIds']()).toEqual(['2']);
+    expect(component['payload']().volunteer_ids).toEqual(['2']);
+  });
+
+  it('should flag a captain who is not on the roster and add them on request', async () => {
+    const mockTeam = {
+      id: 'team-123',
+      name: 'Outreach Team',
+      description: '',
+      team_captain_id: '1',
+      volunteers: [],
+    };
+    mockTeamsSvc.getById.mockResolvedValue(mockTeam);
+
+    await createComponent();
+    fixture.componentRef.setInput('id', 'team-123');
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(component['captainMissingFromTeam']()?.id).toBe('1');
+
+    component['addCaptainToTeam']();
+
+    expect(component['selectedVolunteerIds']()).toEqual(['1']);
+    expect(component['captainMissingFromTeam']()).toBeNull();
   });
 
   it('should initialize empty form in new mode', async () => {

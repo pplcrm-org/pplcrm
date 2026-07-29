@@ -86,6 +86,8 @@ apps/
               companion-settings-dialog.ts
               cut-turfs-dialog.html
               cut-turfs-dialog.ts
+              turf-detail-page.html
+              turf-detail-page.ts
           companies/
             services/
               companies-service.ts
