@@ -293,7 +293,9 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
     hero: {
       h1: 'Donors, volunteers and neighbours. One list.',
       sub: 'Stop reconciling three spreadsheets. Gifts, drives and newsletters live on one person’s record.',
-      url: 'app.pplcrm.com/people/ruth-abbott',
+      // Must name the person actually on screen in 03-shot.webp — the browser frame is chrome
+      // around a real screenshot, so a URL for a different record is a caption that lies.
+      url: 'app.pplcrm.com/people/eleanor-vance',
       img: 'assets/site-shots/03-shot.webp',
     },
     steps: [
