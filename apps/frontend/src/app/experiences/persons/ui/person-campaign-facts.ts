@@ -5,6 +5,7 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Card as PcCard } from '@uxcommon/components/card/card';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import {
+  ORG_MODE_IS_ELECTORAL,
   SUPPORT_LEVELS,
   SUPPORT_LEVEL_LABELS,
   VOTING_STATUSES,
@@ -17,6 +18,7 @@ import {
 import type { SupportLevel, VotingStatus, VolunteerStatus, StaffStatus } from '../../../../../../../libs/common/src';
 
 import { CampaignContextService } from '../../../services/campaign-context.service';
+import { OrgModeService } from '../../../services/org-mode.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { YardSignStanding } from '../../deliveries/ui/yard-sign-standing';
 import {
@@ -28,9 +30,14 @@ import { PersonsService } from '../services/persons-service';
 import { getUserErrorMessage } from '@frontend/services/api/user-message';
 
 /**
- * Campaign standing card (Campaigns §15): this person's support level and voting
- * status in the ACTIVE context, their history across every campaign, and the
- * global do-not-contact override. Unknown = no stored value, on purpose.
+ * Standing card (Campaigns §15): this person's support level and voting status in the ACTIVE
+ * context, their history across every campaign, their volunteer/staff standing, email consent,
+ * and the global do-not-contact override. Unknown = no stored value, on purpose.
+ *
+ * Half of it is electoral and half of it is universal, which is why the card gates BLOCKS rather
+ * than gating itself. A church and a charity have no support level and no voting status — but
+ * they very much have volunteers, and email consent is the most load-bearing control on the page.
+ * Hiding the whole card for them would take the unsubscribe button with it.
  */
 @Component({
   selector: 'pc-person-campaign-facts',
@@ -47,6 +54,21 @@ export class PersonCampaignFacts {
   readonly householdId = input<string | null>(null);
 
   protected readonly context = inject(CampaignContextService);
+  private readonly orgMode = inject(OrgModeService);
+
+  /**
+   * Support level, voting status and the cross-campaign history only mean something to an
+   * organization that runs elections. Keyed on the org TYPE rather than a module toggle: whether
+   * you canvass for votes is not a preference you flip.
+   */
+  protected readonly isElectoral = computed<boolean>(() => ORG_MODE_IS_ELECTORAL[this.orgMode.mode()]);
+
+  /**
+   * Yard signs are the Deliveries feature surfaced on a person, so they follow that module rather
+   * than the org type — a congregation that turns Drop-offs on to run meal boxes gets the control
+   * back, which is the whole point of modes setting defaults instead of hard limits.
+   */
+  protected readonly showYardSign = computed<boolean>(() => this.orgMode.isEnabled('deliveries'));
   private readonly campaignsSvc = inject(CampaignsService);
   private readonly personsSvc = inject(PersonsService);
   private readonly alerts = inject(AlertService);
