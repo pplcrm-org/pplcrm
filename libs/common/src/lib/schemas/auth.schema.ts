@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { AUTH_ROLES } from '../auth';
-import { emailSchema, nameSchema } from './core.schema';
+import { emailSchema, nameSchema, phoneSchema } from './core.schema';
 
 /**
  * A role arriving from a client. Constrained to AUTH_ROLES because an unrecognised role is
@@ -82,6 +82,13 @@ export const UpdateAuthUserObj = z.object({
   first_name: nameSchema('First name').optional(),
   last_name: nameSchema('Last name').nullable().optional(),
   role: authRoleSchema.nullable().optional(),
+  /**
+   * The user's own mobile, stored on their profile. Its only job is being texted: companion
+   * approval alerts and "send the organizer link to my phone". Empty string clears it, and
+   * the backend stores it E.164-normalized (a number we cannot text is refused there rather
+   * than saved to fail silently later).
+   */
+  mobile: phoneSchema('Mobile number'),
   verified: z.boolean().optional(),
   two_factor_enabled: z.boolean().optional(),
   notification_preferences: NotificationPreferencesObj.optional(),

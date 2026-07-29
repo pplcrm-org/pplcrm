@@ -1,4 +1,5 @@
 import { Component, computed, effect, inject, model, output, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 
@@ -95,7 +96,7 @@ const NOTIF_ROWS: NotifRow[] = [
  */
 @Component({
   selector: 'pc-personal-settings-dialog',
-  imports: [Icon, PasskeySettingsComponent],
+  imports: [Icon, RouterLink, PasskeySettingsComponent],
   templateUrl: 'personal-settings-dialog.html',
 })
 export class PersonalSettingsDialog {
@@ -120,6 +121,15 @@ export class PersonalSettingsDialog {
   private loadStarted = false;
   protected readonly prefs = signal<Record<string, boolean>>({});
   protected readonly savedJustNow = signal<boolean>(false);
+
+  /**
+   * The text preference is on but we have no number to send to, so it silently governs nothing.
+   * The profile page owns the number; this only tells the user where to go.
+   */
+  protected readonly needsMobileForSms = computed<boolean>(() => {
+    const smsOn = this.prefs()['companion_approval_sms'] ?? true;
+    return smsOn && !this.user()?.mobile;
+  });
 
   protected readonly initial = computed<string>(() => {
     const u = this.user();

@@ -337,6 +337,44 @@ describe('AuthController Integration', () => {
     await cleanup(db, user.id, user.tenant_id);
   });
 
+  // The mobile is only ever texted (companion approvals, "send the join QR to my phone"), so it is
+  // stored in the shape the sender needs and an un-textable one is refused instead of saved.
+  it('should store the profile mobile E.164-normalized, refuse an un-textable one, and clear on empty', async () => {
+    const { BaseRepository } = await import('../../lib/base.repo');
+    const db = (BaseRepository as any)._db;
+    const { BadRequestError } = await import('../../errors/app-errors');
+
+    const controller = new AuthController();
+    const userEmail = `update-mobile-${Date.now()}@example.com`;
+    await controller.signUp({
+      organization: `Org-Mobile-${Date.now()}`,
+      email: userEmail,
+      password: 'StrongPassword123!',
+      first_name: 'MobileTest',
+    });
+
+    const user = await db.selectFrom('authusers').selectAll().where('email', '=', userEmail).executeTakeFirstOrThrow();
+    const authPayload = { tenant_id: user.tenant_id, user_id: user.id, session_id: 'dummy-session-id' };
+
+    const saved = await controller.updateUser(authPayload, user.id, { mobile: '(613) 555-0142' });
+    expect(saved.mobile).toBe('+16135550142');
+
+    const stored = await db
+      .selectFrom('profiles')
+      .select('mobile')
+      .where('tenant_id', '=', user.tenant_id)
+      .where('auth_id', '=', user.id)
+      .executeTakeFirst();
+    expect(stored?.mobile).toBe('+16135550142');
+
+    await expect(controller.updateUser(authPayload, user.id, { mobile: '555-0142' })).rejects.toThrow(BadRequestError);
+
+    const cleared = await controller.updateUser(authPayload, user.id, { mobile: '' });
+    expect(cleared.mobile).toBeNull();
+
+    await cleanup(db, user.id, user.tenant_id);
+  });
+
   it('should create a default campaign and default settings on sign-up', async () => {
     const { BaseRepository } = await import('../../lib/base.repo');
     const db = (BaseRepository as any)._db;

@@ -141,6 +141,22 @@
                   Email is how you sign in. Changing it sends a confirmation to the new address first.
                 </p>
               </div>
+
+              <!-- Optional, and the hint says exactly what a number here is used for — the only
+                   reason to give us one is being texted, so say who does the texting (§3). -->
+              <div class="md:col-span-2">
+                <pc-input
+                  label="Mobile number (optional)"
+                  type="tel"
+                  placeholder="(613) 555-0142"
+                  [formField]="form.mobile"
+                  autocomplete="tel"
+                ></pc-input>
+                <p class="mt-1 text-xs text-base-content/50">
+                  Only used to text you: volunteers waiting for your approval, and QR sign-up pages you send to
+                  yourself. Never shown to volunteers or contacts.
+                </p>
+              </div>
             </div>
 
             <!-- Dirty state narrated, not implied (§2) -->

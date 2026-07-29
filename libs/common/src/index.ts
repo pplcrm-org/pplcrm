@@ -359,6 +359,7 @@ export type { DncChannel, VolunteerStatus, StaffStatus } from './lib/schemas/per
 export type { GridColumnFilter, GridFilterModel } from './lib/schemas/core.schema';
 
 export { DEFAULT_LINK_SUBDOMAIN, MAX_DNS_LABEL_LENGTH, isValidDnsLabel, normalizeDnsLabel } from './lib/dns-label';
+export { normalizeE164 } from './lib/phone';
 export type { SystemListKey, SystemListDef } from './lib/system-lists';
 export { SYSTEM_LIST_KEYS, SYSTEM_LISTS, systemListDefinition } from './lib/system-lists';
 

@@ -80,6 +80,14 @@
         </div>
         }
       </div>
+      <!-- A text preference that is on with no number on file does nothing. Say so here, next to
+           the switch, and point at the one page that fixes it (§3 guide, don't error). -->
+      @if (needsMobileForSms()) {
+      <p class="mt-1 text-xs text-base-content/55">
+        Text alerts need a mobile number.
+        <a routerLink="/profile" class="link link-primary" (click)="close()">Add one to your profile</a>
+      </p>
+      }
     </div>
 
     <div class="my-4 border-t border-base-200"></div>

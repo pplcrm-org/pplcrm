@@ -62,6 +62,7 @@ import { isDisposableEmail } from '../../lib/mail/disposable-email-domains';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { hashPassword, verifyPasswordConstantTime } from '../../lib/password-hash';
 import { assertSignInAttemptsRemaining, clearSignInAttempts, recordFailedSignIn } from '../../lib/signin-attempts';
+import { normalizeE164 } from '../../lib/sms/phone';
 import { StorageService } from '../../lib/storage.service';
 import { tombstoneAuthUser } from '../../lib/tombstone-user';
 import { generateToken, hashToken } from '../../lib/token-hash';
@@ -1755,6 +1756,23 @@ ${waitlistNote}
       throw new ForbiddenError('Verification status cannot be changed manually.');
     }
 
+    // The mobile exists only to be texted (companion approvals, "send to my phone"), so store it
+    // in the shape the sender needs and refuse one it could never reach — accepting an un-textable
+    // number would just reproduce the "no mobile on file" dead end after saving.
+    let profileData = data;
+    if (data.mobile !== undefined) {
+      const raw = data.mobile?.trim() ?? '';
+      if (raw.length === 0) {
+        profileData = { ...data, mobile: null };
+      } else {
+        const normalized = normalizeE164(raw);
+        if (!normalized) {
+          throw new BadRequestError('Enter a mobile number we can text, including the area code.');
+        }
+        profileData = { ...data, mobile: normalized };
+      }
+    }
+
     const row: Record<string, unknown> = {};
 
     const isOwnEmailChange =
@@ -1893,7 +1911,7 @@ ${waitlistNote}
         });
     }
 
-    await this.syncProfile(auth, userId, data);
+    await this.syncProfile(auth, userId, profileData);
     const profile = (await this.profiles.getOneByAuthId(userId)) as Models['profiles'] | undefined;
     return this.sanitizeUser({ ...updated, profile });
   }
@@ -2557,6 +2575,12 @@ ${waitlistNote}
       last_name: lastName,
       role: record['role'] != null ? String(record['role']) : null,
       campaign_id: record['campaign_id'] != null ? String(record['campaign_id']) : null,
+      // Lives on the profile, not authusers — a flat row (the users list) simply has no mobile.
+      mobile:
+        (((record['profile'] as Record<string, unknown>)?.['mobile'] ?? record['mobile']) as
+          | string
+          | null
+          | undefined) ?? null,
       verified: this.coerceBoolean(record['verified']),
       email_verified: this.coerceBoolean(record['verified']),
       two_factor_enabled: this.coerceBoolean(record['two_factor_enabled']),
@@ -2597,11 +2621,15 @@ ${waitlistNote}
       if (data.last_name !== undefined) {
         row['last_name'] = data.last_name ?? null;
       }
+      // Already E.164-normalized (or nulled) by updateUser — this only persists it.
+      if (data.mobile !== undefined) {
+        row['mobile'] = data.mobile ?? null;
+      }
       if (finalPreferences !== null) {
         row['preferences'] = JSON.stringify(finalPreferences);
       }
 
-      if (data.last_name !== undefined || data.notification_preferences !== undefined) {
+      if (data.last_name !== undefined || data.mobile !== undefined || data.notification_preferences !== undefined) {
         await this.profiles.update({ tenant_id: auth.tenant_id, id: profileId, row });
       }
       return;
@@ -2612,6 +2640,7 @@ ${waitlistNote}
       tenant_id: auth.tenant_id,
       auth_id: authUserId,
       last_name: data.last_name ?? null,
+      mobile: data.mobile ?? null,
       preferences: finalPreferences ? JSON.stringify(finalPreferences) : null,
       createdby_id: auth.user_id,
       updatedby_id: auth.user_id,

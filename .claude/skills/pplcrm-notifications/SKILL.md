@@ -50,7 +50,9 @@ try/catch — a notification failure must never fail the business mutation.
   unconditionally (no preference key, deliberate). It also mints a per-admin
   approve-by-text token and, for the **inviter only**, texts them a one-tap approval
   link when `companion_approval_sms` is on and `profiles.mobile` normalizes.
-- Staff have no phone on `authusers`. `profiles.mobile` is the only staff number, and
+- Staff have no phone on `authusers`. `profiles.mobile` is the only staff number — the user
+  sets it themselves on the **Profile page** (`mobile` on `UpdateAuthUserObj`), stored
+  E.164-normalized because `updateUser` refuses one `normalizeE164` can't reach — and
   the approval SMS above is the **only** staff-facing SMS in the notification system;
   everything else on Twilio goes to companion volunteers (verification codes, assignment
   link delivery via `lib/mail/volunteer-link-notify.ts`) or to ops alerts.

@@ -113,6 +113,11 @@ export interface IAuthUserRecord extends IAuthUser {
   previous_email?: string | null;
   previous_role?: string | null;
   avatar_url?: string | null;
+  /**
+   * The user's own mobile (profiles.mobile), stored E.164-normalized. Only ever used to text
+   * this person: companion approval alerts and the organizer link they send to themselves.
+   */
+  mobile?: string | null;
   notification_preferences?: NotificationPreferencesType;
 }
 

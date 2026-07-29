@@ -158,6 +158,51 @@ describe('ProfilePage', () => {
     expect(component['saving']()).toBe(false);
   });
 
+  it('should load an existing mobile into the form and send an edited one on save', async () => {
+    mockUserSvc.getProfileById.mockResolvedValue({ ...baseUser, mobile: '+16135550142' });
+
+    fixture.detectChanges();
+    await flush();
+
+    expect(component['payload']().mobile).toBe('+16135550142');
+
+    component['payload'].update((p) => ({ ...p, mobile: '(613) 555-0199' }));
+    await component['save']();
+
+    expect(mockUserSvc.updateUserProfile).toHaveBeenCalledWith(
+      'u1',
+      expect.objectContaining({ mobile: '(613) 555-0199' }),
+    );
+  });
+
+  it('should send null when the mobile is cleared', async () => {
+    mockUserSvc.getProfileById.mockResolvedValue({ ...baseUser, mobile: '+16135550142' });
+
+    fixture.detectChanges();
+    await flush();
+
+    component['payload'].update((p) => ({ ...p, mobile: '   ' }));
+    await component['save']();
+
+    expect(mockUserSvc.updateUserProfile).toHaveBeenCalledWith('u1', expect.objectContaining({ mobile: null }));
+  });
+
+  // Same rule as the sender: saving a number we could never text would just reproduce the
+  // "no mobile on file" dead end the field exists to fix.
+  it('should block saving a mobile number that cannot be texted', async () => {
+    fixture.detectChanges();
+    await flush();
+
+    component['payload'].update((p) => ({ ...p, mobile: '555-0142' }));
+    fixture.detectChanges();
+
+    expect(component['form']().invalid()).toBe(true);
+
+    await component['save']();
+
+    expect(mockUserSvc.updateUserProfile).not.toHaveBeenCalled();
+  });
+
   it('should surface an error message when saving fails', async () => {
     mockUserSvc.updateUserProfile.mockRejectedValue(new Error('Email already in use'));
 

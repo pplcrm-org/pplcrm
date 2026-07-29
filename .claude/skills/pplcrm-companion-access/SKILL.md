@@ -132,6 +132,11 @@ Minted by `joinCodes.sendToMyPhone` (admin/owner), which texts **the caller's ow
 volunteers. No mobile on file returns `{status:'no_mobile'}` rather than throwing; the
 panel narrates "add one to your profile" (§3, guide don't error).
 
+`profiles.mobile` is set by the user themselves on the **Profile page** (`experiences/profile`,
+the `mobile` key on `UpdateAuthUserObj` → `AuthController.syncProfile`). It is stored
+E.164-normalized and `updateUser` refuses a number `normalizeE164` can't reach — so anything
+in that column is textable, and the two SMS senders never have to re-validate it.
+
 Containment, all three deliberate: scoped to one `join_code_id` (`decideOnOrganizerPage`
 refuses a `volunteer_id` whose `join_code_id` doesn't match — guessing ids widens
 nothing), 12-hour TTL, and `resolveOrganizerToken` refuses once the code is no longer
@@ -158,7 +163,9 @@ management (teams, volunteer-events) is a separate `volunteers` gate at Grassroo
 `TWILIO_FROM_NUMBER` are unset (dev and tests never need an account), and
 `enqueueSms()` → `background_jobs` type `send-sms` for the outbox. `normalizeE164()`
 is the gatekeeper — a mobile that can't be normalized simply isn't offered as a
-verification channel.
+verification channel. It lives in `@common` (`libs/common/src/lib/phone.ts`) and is
+re-exported from `lib/sms/phone` for every backend caller, so the Profile page's mobile
+field rejects an un-textable number with the exact rule the sender applies.
 
 **Approve-by-text** rides on `notifyAdminsOfPendingVolunteer`, which fires from
 `verifyConfirm` for BOTH front doors (assignment link and QR join) — extending it once

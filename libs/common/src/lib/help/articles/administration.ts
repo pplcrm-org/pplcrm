@@ -6,7 +6,18 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
     category: 'admin',
     title: 'Your profile',
     summary: 'Your photo, your details, and your account facts, plus a snapshot of your own activity.',
-    keywords: ['profile', 'avatar', 'photo', 'account', 'notification preferences', 'personal settings', 'my account'],
+    keywords: [
+      'profile',
+      'avatar',
+      'photo',
+      'account',
+      'notification preferences',
+      'personal settings',
+      'my account',
+      'mobile number',
+      'phone number',
+      'text me',
+    ],
     related: ['users-roles', 'settings', 'getting-around'],
     blocks: [
       {
@@ -17,6 +28,11 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'Upload a photo and crop it right in the app, or remove it to fall back to the default. A real photo makes assignment menus and activity feeds much easier to scan for everyone.',
+      },
+      { kind: 'h2', id: 'mobile', text: 'Mobile number' },
+      {
+        kind: 'p',
+        text: 'The **Profile** card holds your name, the email you sign in with, and an optional **mobile number**. The mobile is only ever used to text *you*: a volunteer waiting for your approval (the one text alert in [Settings](/help/settings)), and the **Send to my phone** button that texts you a QR sign-up page to hold up at a launch. It is never shown to volunteers or contacts, and it is never a sending number for the workspace — that is a separate, verified number under **Workspace → Communications**. Include the area code; a number we could not text is refused rather than saved, because a saved-but-unreachable number would leave you wondering why nothing arrived. Clear the field to stop being texted entirely. Name, email, and mobile save together with **Save changes**; the email change takes effect only after you confirm it from the new address.',
       },
       { kind: 'h2', id: 'notifications', text: 'Notification preferences' },
       {
@@ -132,7 +148,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       {
         kind: 'list',
         items: [
-          '**Notifications**: a per-event matrix of email and in-app switches (mentions, task assigned, tasks due, person assigned, email assigned, export ready, import summary). Each toggle saves as you flip it. Import summaries arrive by email only. There is also one text-message alert — when a volunteer you invited is waiting for approval. It is on by default: an unapproved volunteer is stuck at a door until someone lets them in, so this is the one worth interrupting you for. Turn it off here if you would rather not be texted; you still get the email and the bell either way, and we never text you without a mobile number on your profile.',
+          '**Notifications**: a per-event matrix of email and in-app switches (mentions, task assigned, tasks due, person assigned, email assigned, export ready, import summary). Each toggle saves as you flip it. Import summaries arrive by email only. There is also one text-message alert — when a volunteer you invited is waiting for approval. It is on by default: an unapproved volunteer is stuck at a door until someone lets them in, so this is the one worth interrupting you for. Turn it off here if you would rather not be texted; you still get the email and the bell either way, and we never text you without a mobile number on your profile — add one under **Mobile number** on [your profile](/profile), and Settings will remind you if the text alert is on with no number on file.',
           '**Theme**: Light, Dark, or System (follows your device’s setting), applied live. This is yours alone: an administrator changing the workspace default theme never overrides a theme you picked.',
           '**Passkeys**: the devices that can sign you in; add one with your device prompt, or remove one you no longer trust.',
         ],

@@ -2,12 +2,13 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { createLoadingGate } from '@uxcommon/loading-gate';
-import { form, required, email, disabled, FormField } from '@angular/forms/signals';
+import { form, required, email, disabled, validate, FormField } from '@angular/forms/signals';
 import {
   IAuthUserDetail,
   IUserStatsSnapshot,
   UpdateAuthUserType,
   authRoleLabel,
+  normalizeE164,
 } from '../../../../../../libs/common/src';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
@@ -52,20 +53,31 @@ export class ProfilePage implements OnInit {
   private startX = 0;
   private startY = 0;
 
-  // Deliberate-save card: identity fields only (name/email). Saved on an explicit Save click.
+  // Deliberate-save card: identity fields only (name/email/mobile). Saved on an explicit Save click.
   protected readonly payload = signal({
     email: '',
     first_name: '',
     last_name: '',
+    mobile: '',
   });
 
   protected readonly form = form(this.payload, (p) => {
     required(p.email);
     email(p.email);
     required(p.first_name);
+    // Optional, but if given it has to be textable — the same rule the sender applies, so nobody
+    // saves a number and then still gets told we have no mobile for them (§3 guide, don't error).
+    validate(p.mobile, (ctx) => {
+      const value = (ctx.value() ?? '').trim();
+      if (!value) return null;
+      return normalizeE164(value)
+        ? null
+        : { kind: 'untextable-mobile', message: 'Include the area code, e.g. (613) 555-0142.' };
+    });
     disabled(p.email, () => this.isViewer() || this.saving());
     disabled(p.first_name, () => this.isViewer() || this.saving());
     disabled(p.last_name, () => this.isViewer() || this.saving());
+    disabled(p.mobile, () => this.isViewer() || this.saving());
   });
 
   protected readonly isViewer = computed(() => this.detail()?.role === 'viewer');
@@ -420,6 +432,7 @@ export class ProfilePage implements OnInit {
       email: user.email,
       first_name: user.first_name,
       last_name: user.last_name ?? '',
+      mobile: user.mobile ?? '',
     });
   }
 
@@ -430,10 +443,12 @@ export class ProfilePage implements OnInit {
       return trimmed.length ? trimmed : null;
     };
     // Identity only — notification preferences live in Settings (avatar menu), not here.
+    // The mobile goes up as typed; the backend normalizes it to E.164 before storing.
     return {
       email: raw.email?.trim() ?? '',
       first_name: raw.first_name?.trim() ?? '',
       last_name: normalize(raw.last_name),
+      mobile: normalize(raw.mobile),
     } as UpdateAuthUserType;
   }
 
