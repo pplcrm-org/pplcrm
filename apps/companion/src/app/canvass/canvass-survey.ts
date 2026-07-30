@@ -6,15 +6,26 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
 
 import { CanvassStore } from './canvass-store';
+import { supportLevelLabel } from './canvass-ui';
 
 const EMAIL_SHAPE = /^\S+@\S+\.\S+$/;
+
+/** No-conversation codes and the record corrections, kept apart on purpose — see below. */
+type QuickCode = 'not_home' | 'moved' | 'refused';
 
 /**
  * The survey (spec §3.5) for one person — or the anonymous household-level
  * conversation when the view carries no person. No-conversation codes come
  * first (one tap and out); support level is the one required field, except
- * that a DNC-only save is allowed. Pre-fills from the previous survey when
- * re-opened.
+ * that a DNC-only or seniors-only save is allowed. Pre-fills from the previous
+ * survey when re-opened.
+ *
+ * **Corrections to the file live at the bottom, behind a confirmation.** "Deceased" and
+ * "Error in data" are not reports of a visit — they change the record for everyone, and
+ * deceased additionally stops all contact. Putting them in the top row alongside "Not
+ * home" would put a permanent action one mis-tap away from the most-tapped button on the
+ * screen; putting them at the end, with the name spelled out in the confirmation, costs a
+ * canvasser two seconds on the rare occasion they need them.
  */
 @Component({
   selector: 'pc-canvass-survey',
@@ -29,6 +40,9 @@ const EMAIL_SHAPE = /^\S+@\S+\.\S+$/;
         <div class="min-w-0 flex-1">
           <h1 class="text-lg font-bold">{{ title() }}</h1>
           <p class="text-xs text-base-content/70">{{ address() }}</p>
+          @if (priorLabel(); as prior) {
+            <p class="text-xs text-base-content/70">On file: {{ prior }}</p>
+          }
         </div>
       </header>
 
@@ -36,8 +50,8 @@ const EMAIL_SHAPE = /^\S+@\S+\.\S+$/;
         <div class="flex flex-col gap-2">
           <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">No conversation?</p>
           <div class="grid grid-cols-3 gap-2">
-            @for (option of noConversationOptions; track option.result) {
-              <button type="button" class="btn btn-outline btn-secondary" (click)="recordNoConversation(option.result)">
+            @for (option of quickCodes; track option.result) {
+              <button type="button" class="btn btn-outline btn-primary" (click)="recordNoConversation(option.result)">
                 {{ option.label }}
               </button>
             }
@@ -119,8 +133,25 @@ const EMAIL_SHAPE = /^\S+@\S+\.\S+$/;
             (change)="onToggle('yard_sign', $event)"
           />
         </label>
+        @if (isPerson()) {
+          <label class="flex min-h-11 items-center justify-between gap-3">
+            <span>
+              65 or older
+              <span class="block text-xs text-base-content/60">Only set this if they said so</span>
+            </span>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary"
+              [checked]="senior()"
+              (change)="onToggle('senior', $event)"
+            />
+          </label>
+        }
         <label class="flex min-h-11 items-center justify-between gap-3 text-error">
-          <span>Do not contact</span>
+          <span>
+            Do not contact
+            <span class="block text-xs text-base-content/60">Stops every letter, email and call</span>
+          </span>
           <input type="checkbox" class="toggle toggle-error" [checked]="setDnc()" (change)="onToggle('dnc', $event)" />
         </label>
       </div>
@@ -176,6 +207,56 @@ const EMAIL_SHAPE = /^\S+@\S+\.\S+$/;
       <button type="button" class="btn btn-primary w-full" [disabled]="saveBlocker() !== null" (click)="save()">
         {{ saveBlocker() ?? 'Save & sync' }}
       </button>
+
+      @if (isPerson()) {
+        <!-- Record corrections. Last, quiet, and confirmed — these change the file for
+             everyone, not just what happened at this door today. -->
+        <div class="flex flex-col gap-2 rounded-lg border border-base-300 p-3">
+          <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">
+            Something wrong with this record?
+          </p>
+
+          @if (correction() === null) {
+            <div class="grid grid-cols-2 gap-2">
+              <button type="button" class="btn btn-ghost btn-sm" (click)="correction.set('deceased')">Deceased</button>
+              <button type="button" class="btn btn-ghost btn-sm" (click)="correction.set('data_error')">
+                Error in data
+              </button>
+            </div>
+          } @else if (correction() === 'deceased') {
+            <p class="text-sm">
+              Mark <span class="font-medium">{{ title() }}</span> as deceased? This stops every letter, email and call
+              to them, right away.
+            </p>
+            <div class="flex gap-2">
+              <button type="button" class="btn btn-error btn-sm flex-1" (click)="confirmDeceased()">
+                Yes, mark deceased
+              </button>
+              <button type="button" class="btn btn-ghost btn-sm" (click)="cancelCorrection()">Cancel</button>
+            </div>
+          } @else {
+            <p class="text-sm">What's wrong? An organizer will look at the record and fix it.</p>
+            <textarea
+              class="textarea textarea-bordered min-h-20 w-full"
+              placeholder="Wrong name, wrong unit, nobody by this name here…"
+              aria-label="What is wrong with this record"
+              [value]="errorNote()"
+              (input)="onText('error', $event)"
+            ></textarea>
+            <div class="flex gap-2">
+              <button
+                type="button"
+                class="btn btn-primary btn-sm flex-1"
+                [disabled]="!errorNote().trim()"
+                (click)="confirmDataError()"
+              >
+                {{ errorNote().trim() ? 'Send to the organizer' : 'Say what is wrong' }}
+              </button>
+              <button type="button" class="btn btn-ghost btn-sm" (click)="cancelCorrection()">Cancel</button>
+            </div>
+          }
+        </div>
+      }
     </div>
   `,
 })
@@ -185,7 +266,7 @@ export class CanvassSurvey {
 
   protected readonly responses: readonly KnockResponse[] = KNOCK_RESPONSES;
   protected readonly responseLabels = KNOCK_RESPONSE_LABELS;
-  protected readonly noConversationOptions: { result: 'not_home' | 'moved' | 'refused'; label: string }[] = [
+  protected readonly quickCodes: { result: QuickCode; label: string }[] = [
     { result: 'not_home', label: 'Not home' },
     { result: 'moved', label: 'Moved' },
     { result: 'refused', label: 'Refused' },
@@ -197,10 +278,14 @@ export class CanvassSurvey {
   protected readonly wantsVolunteer = signal(false);
   protected readonly wantsYardSign = signal(false);
   protected readonly setDnc = signal(false);
+  protected readonly senior = signal(false);
   protected readonly phone = signal('');
   protected readonly email = signal('');
   protected readonly subscribe = signal(false);
   protected readonly notes = signal('');
+  /** Which record correction is open, if any. Null = the two buttons. */
+  protected readonly correction = signal<'deceased' | 'data_error' | null>(null);
+  protected readonly errorNote = signal('');
 
   protected readonly householdId = computed(() => {
     const view = this.store.view();
@@ -235,7 +320,7 @@ export class CanvassSurvey {
   /** Why the save is blocked — or null when it can go. Explained-disabled (§3). */
   protected readonly saveBlocker = computed<string | null>(() => {
     if (!this.emailValid()) return 'Fix the email to save';
-    if (this.support() == null && !this.setDnc()) return 'Pick a support level to save';
+    if (this.support() == null && !this.setDnc() && !this.senior()) return 'Pick a support level to save';
     return null;
   });
 
@@ -245,8 +330,12 @@ export class CanvassSurvey {
     const view = this.store.view();
     if (view.kind !== 'survey') return;
     const household = this.store.householdById(view.household_id);
-    const prefill =
-      view.person_id == null ? household?.hh_survey : household?.people.find((p) => p.id === view.person_id)?.survey;
+    const person = view.person_id == null ? null : household?.people.find((p) => p.id === view.person_id);
+    // Age comes off the PERSON, not off a knock: it is a fact about them that any earlier
+    // canvasser may have recorded, and pre-filling it is what makes un-ticking it a
+    // correction rather than a blanket "not a senior" claim about the whole turf.
+    this.senior.set(person?.senior === true);
+    const prefill = view.person_id == null ? household?.hh_survey : person?.survey;
     if (!prefill) return;
     this.support.set(prefill.support);
     this.issues.set([...prefill.issues]);
@@ -262,15 +351,42 @@ export class CanvassSurvey {
     else this.store.view.set({ kind: 'list' });
   }
 
-  protected onText(field: 'phone' | 'email' | 'notes', event: Event): void {
+  protected cancelCorrection(): void {
+    this.correction.set(null);
+    this.errorNote.set('');
+  }
+
+  protected confirmDataError(): void {
+    const householdId = this.householdId();
+    const personId = this.personId();
+    const note = this.errorNote().trim();
+    if (householdId == null || personId == null || !note) return;
+    this.store.personResult(householdId, personId, 'data_error', note);
+    this.alerts.showSuccess('Sent. An organizer will check this record');
+    this.cancelCorrection();
+    this.back();
+  }
+
+  protected confirmDeceased(): void {
+    const householdId = this.householdId();
+    const personId = this.personId();
+    if (householdId == null || personId == null) return;
+    this.store.personResult(householdId, personId, 'deceased');
+    this.alerts.showSuccess('Recorded. They will not be contacted again');
+    this.cancelCorrection();
+    this.back();
+  }
+
+  protected onText(field: 'phone' | 'email' | 'notes' | 'error', event: Event): void {
     const target = event.target;
     if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) return;
     if (field === 'phone') this.phone.set(target.value);
     else if (field === 'email') this.email.set(target.value);
+    else if (field === 'error') this.errorNote.set(target.value);
     else this.notes.set(target.value);
   }
 
-  protected onToggle(field: 'volunteer' | 'yard_sign' | 'dnc' | 'subscribe', event: Event): void {
+  protected onToggle(field: 'volunteer' | 'yard_sign' | 'dnc' | 'senior' | 'subscribe', event: Event): void {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
     const checked = target.checked;
@@ -283,6 +399,9 @@ export class CanvassSurvey {
         break;
       case 'dnc':
         this.setDnc.set(checked);
+        break;
+      case 'senior':
+        this.senior.set(checked);
         break;
       case 'subscribe':
         this.subscribe.set(checked);
@@ -299,12 +418,19 @@ export class CanvassSurvey {
     this.support.set(this.support() === response ? null : response);
   }
 
-  protected recordNoConversation(result: 'not_home' | 'moved' | 'refused'): void {
+  /** What the CRM held coming in — shown only until this walk records its own answer. */
+  protected priorLabel(): string | null {
+    const person = this.person();
+    if (!person || person.survey) return null;
+    return supportLevelLabel(person.support);
+  }
+
+  protected recordNoConversation(result: QuickCode): void {
     const householdId = this.householdId();
     const personId = this.personId();
     if (householdId == null || personId == null) return;
     this.store.personResult(householdId, personId, result);
-    const option = this.noConversationOptions.find((o) => o.result === result);
+    const option = this.quickCodes.find((o) => o.result === result);
     this.alerts.showSuccess(`Marked "${option?.label ?? result}"`);
     this.back();
   }
@@ -319,6 +445,7 @@ export class CanvassSurvey {
       wants_volunteer: isPerson ? this.wantsVolunteer() : false,
       wants_yard_sign: this.wantsYardSign(),
       set_dnc: this.setDnc(),
+      senior: isPerson ? this.senior() : false,
       contact_phone: isPerson && this.phone().trim() ? this.phone().trim() : null,
       contact_email: isPerson && this.email().trim() ? this.email().trim() : null,
       subscribe: isPerson && this.canSubscribe() ? this.subscribe() : false,

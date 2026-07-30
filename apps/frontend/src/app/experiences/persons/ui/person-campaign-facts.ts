@@ -50,6 +50,13 @@ export class PersonCampaignFacts {
   /** Seed values for the global volunteer/staff status selects (§15). */
   readonly volunteerStatus = input<string | null>(null);
   readonly staffStatus = input<string | null>(null);
+  /**
+   * Facts a canvasser can record at a door (§13). Both live here rather than on the edit
+   * form because both are standing rather than contact detail — and `deceased_at` in
+   * particular belongs next to do-not-contact, which it sets.
+   */
+  readonly deceasedAt = input<string | null>(null);
+  readonly senior = input<boolean | null>(null);
   /** The person's household (null = no address) — drives the yard-sign standing control. */
   readonly householdId = input<string | null>(null);
 
@@ -91,6 +98,9 @@ export class PersonCampaignFacts {
   /** Global volunteer/staff standing ('' = not one). Seeded from the person row. */
   protected readonly volunteerSel = signal<string>('');
   protected readonly staffSel = signal<string>('');
+  protected readonly deceased = signal(false);
+  /** '' = never asked, 'true' = 65+, 'false' = under 65. Three states, three values. */
+  protected readonly seniorSel = signal<string>('');
   protected readonly consent = signal<PersonSubscriptionsPayload | null>(null);
 
   protected readonly activeCampaign = this.context.activeCampaign;
@@ -145,6 +155,14 @@ export class PersonCampaignFacts {
     });
     effect(() => {
       this.staffSel.set(this.staffStatus() ?? '');
+    });
+    effect(() => {
+      this.deceased.set(this.deceasedAt() != null);
+    });
+    effect(() => {
+      // '' is "never asked", which is a different answer from "no" — see the migration.
+      const senior = this.senior();
+      this.seniorSel.set(senior == null ? '' : String(senior));
     });
   }
 
@@ -223,6 +241,49 @@ export class PersonCampaignFacts {
     }
   }
 
+  /**
+   * Mark (or un-mark) someone as deceased.
+   *
+   * Marking also sets do-not-contact, in the same call, because the harm this flag exists
+   * to prevent is one more letter — and a flag that records the fact without stopping the
+   * mail would be decoration. Un-marking deliberately does NOT lift the do-not-contact: it
+   * corrects one mistake, and guessing that the suppression was part of the same mistake
+   * is not ours to make.
+   */
+  protected async toggleDeceased(): Promise<void> {
+    const next = !this.deceased();
+    if (next) {
+      const confirmed = await this.dialogs.confirm({
+        title: 'Mark as deceased',
+        message:
+          'This records the date and stops all outreach to this person, in the office and every campaign. Undoing it later restores the record but leaves do-not-contact in place.',
+        variant: 'danger',
+        confirmText: 'Mark as deceased',
+      });
+      if (!confirmed) return;
+    }
+    this.saving.set(true);
+    try {
+      await this.personsSvc.update(this.personId(), {
+        deceased_at: next ? new Date() : null,
+        ...(next ? { do_not_contact: true } : {}),
+      });
+      this.deceased.set(next);
+      if (next) this.doNotContact.set(true);
+      this.alerts.showSuccess(next ? 'Recorded as deceased' : 'Deceased mark removed');
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Could not update this record'));
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  protected async onSeniorChange(event: Event): Promise<void> {
+    const value = (event.target as HTMLSelectElement).value;
+    const next = value === '' ? null : value === 'true';
+    await this.saveGlobalStatus({ senior: next }, this.seniorSel, value, 'age band');
+  }
+
   protected async onVolunteerStatusChange(event: Event): Promise<void> {
     const value = (event.target as HTMLSelectElement).value;
     const next = value === '' ? null : (value as VolunteerStatus);
@@ -241,7 +302,11 @@ export class PersonCampaignFacts {
    * is re-bound to the signal, so we just leave the prior value on failure).
    */
   private async saveGlobalStatus(
-    change: { volunteer_status?: VolunteerStatus | null; staff_status?: StaffStatus | null },
+    change: {
+      volunteer_status?: VolunteerStatus | null;
+      staff_status?: StaffStatus | null;
+      senior?: boolean | null;
+    },
     target: { set(v: string): void },
     value: string,
     label: string,

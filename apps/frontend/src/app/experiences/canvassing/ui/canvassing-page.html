@@ -7,7 +7,7 @@
     helpArticle="canvassing"
     [totalSentence]="headline() || 'No turfs yet'"
   >
-    <button type="button" class="btn btn-ghost btn-sm" (click)="settingsOpen.set(true)">
+    <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="settingsOpen.set(true)">
       <pc-icon name="cog" [size]="4" />
       Survey settings
     </button>
@@ -209,6 +209,9 @@
                   </button>
                 </li>
                 <li>
+                  <button type="button" (click)="rename(t)">Rename turf</button>
+                </li>
+                <li>
                   <button type="button" (click)="qrTarget.set(t)">Show join QR</button>
                 </li>
                 <!-- Only a turf cut from a list can be re-synced with one. Naming the list
@@ -251,7 +254,7 @@
         </button>
         }
       </div>
-      <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="exportReport()">
+      <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="exportReport()">
         <pc-icon name="arrow-down-tray" [size]="4" />
         Export CSV
       </button>

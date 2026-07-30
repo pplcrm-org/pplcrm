@@ -146,6 +146,8 @@
         [dncFlag]="!!person().do_not_contact"
         [volunteerStatus]="person().volunteer_status ?? null"
         [staffStatus]="person().staff_status ?? null"
+        [deceasedAt]="person().deceased_at ?? null"
+        [senior]="person().senior ?? null"
         [householdId]="isPlaceholderHousehold() ? null : householdId()"
       ></pc-person-campaign-facts>
 
@@ -181,7 +183,7 @@
               hint="Mail to or from their address shows up here automatically."
             >
               <a
-                class="btn btn-outline btn-secondary btn-sm mt-1"
+                class="btn btn-outline btn-primary btn-sm mt-1"
                 [routerLink]="['/inbox']"
                 i18n="@@person.emails.emptyCta"
                 >Open the inbox</a
@@ -299,7 +301,7 @@
               hint="Shifts they sign up for or are assigned to appear here."
             >
               <a
-                class="btn btn-outline btn-secondary btn-sm mt-1"
+                class="btn btn-outline btn-primary btn-sm mt-1"
                 [routerLink]="['/shifts']"
                 i18n="@@person.volunteer.emptyCta"
                 >Browse shifts</a
@@ -383,7 +385,7 @@
             >
               <button
                 type="button"
-                class="btn btn-outline btn-secondary btn-sm mt-1"
+                class="btn btn-outline btn-primary btn-sm mt-1"
                 (click)="openCollectDonation()"
                 i18n="@@person.donations.emptyCta"
               >

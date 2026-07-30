@@ -4,15 +4,27 @@ import type { CompanionDoorOutcome, CompanionHousehold, CompanionPerson } from '
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
 
-import { doorStatus, doorStatusLabel } from './canvass-derive';
+import { doorStatus, doorStatusLabel, hasVoted, householdStance, personStance } from './canvass-derive';
 import { CanvassStore } from './canvass-store';
-import { initialsOf, personResultLabel, statusBadgeClass } from './canvass-ui';
+import {
+  initialsOf,
+  personResultLabel,
+  stanceStyle,
+  statusBadgeClass,
+  supportLevelLabel,
+  type StanceStyle,
+} from './canvass-ui';
 
 /**
  * Household detail (spec §3.4): the doorstep screen. Person cards open the
  * survey; the dashed "This household" card covers the no-name conversation;
- * the bottom 3-up records door-level outcomes (tap the active one again to
+ * the bottom grid records door-level outcomes (tap the active one again to
  * clear it). A DNC door blocks recording but still counts toward the turf.
+ *
+ * Every person card leads with **where they stand** — a thumb and a word, from the survey
+ * just logged or from the CRM's prior ID — because that is what decides how the next
+ * thirty seconds go. A yard sign already owed and a ballot already cast sit beside it for
+ * the same reason: both change the ask.
  */
 @Component({
   selector: 'pc-canvass-household',
@@ -22,7 +34,7 @@ import { initialsOf, personResultLabel, statusBadgeClass } from './canvass-ui';
     @if (household(); as h) {
       <div class="flex flex-1 flex-col gap-4 p-4">
         <header class="flex items-start gap-2">
-          <button type="button" class="btn btn-ghost btn-circle" aria-label="Back to the walk list" (click)="back()">
+          <button type="button" class="btn btn-ghost btn-circle" aria-label="Back" (click)="back()">
             <pc-icon name="chevron-left" [size]="5"></pc-icon>
           </button>
           <div class="min-w-0 flex-1">
@@ -36,6 +48,29 @@ import { initialsOf, personResultLabel, statusBadgeClass } from './canvass-ui';
             </p>
           </div>
         </header>
+
+        <!-- What this door is, in one line, before any of the actions. -->
+        @if (doorStance(h); as s) {
+          <div class="flex items-center gap-2 rounded-lg border border-base-300 bg-base-100 p-3" [class]="s.tone">
+            <pc-icon [name]="s.icon" [size]="5"></pc-icon>
+            <p class="text-sm font-medium">{{ s.label }}</p>
+          </div>
+        }
+
+        <div class="flex flex-wrap gap-2">
+          @if (h.yard_sign) {
+            <span class="badge badge-info badge-outline gap-1">
+              <pc-icon name="yard-sign" [size]="4"></pc-icon>
+              Yard sign requested
+            </span>
+          }
+          @if (voted(h)) {
+            <span class="badge badge-success badge-outline gap-1">
+              <pc-icon name="check-circle" [size]="4"></pc-icon>
+              Already voted
+            </span>
+          }
+        </div>
 
         @if (h.dnc) {
           <div
@@ -80,7 +115,7 @@ import { initialsOf, personResultLabel, statusBadgeClass } from './canvass-ui';
           @for (p of h.people; track p.id) {
             <button
               type="button"
-              class="flex w-full items-center gap-3 rounded-lg border border-base-300 bg-base-100 p-3 text-left"
+              class="flex w-full items-start gap-3 rounded-lg border border-base-300 bg-base-100 p-3 text-left"
               [class.opacity-50]="h.dnc || p.dnc"
               [disabled]="h.dnc || p.dnc"
               (click)="openSurvey(p.id)"
@@ -91,14 +126,29 @@ import { initialsOf, personResultLabel, statusBadgeClass } from './canvass-ui';
                 {{ initials(p.name) }}
               </span>
               <span class="min-w-0 flex-1">
-                <span class="block truncate font-medium">{{ p.name }}</span>
+                <span class="flex items-center gap-1.5">
+                  <span class="min-w-0 truncate font-medium" [class.line-through]="p.deceased">{{ p.name }}</span>
+                  @if (stance(p); as s) {
+                    <pc-icon [name]="s.icon" [size]="4" [class]="s.tone" [title]="s.label"></pc-icon>
+                  }
+                </span>
                 <span class="mt-1 flex flex-wrap items-center gap-1.5">
-                  @if (p.dnc) {
+                  @if (p.deceased) {
+                    <span class="badge badge-neutral">Deceased</span>
+                  } @else if (p.dnc) {
                     <span class="badge badge-error">Do not contact</span>
                   } @else if (p.result; as result) {
                     <span [class]="resultChipClass(result)">{{ resultLabel(p) }}</span>
                   } @else {
                     <span class="text-xs font-medium text-primary">Tap to survey</span>
+                  }
+                  <!-- The CRM's prior read, named as prior. Only when this walk hasn't
+                       recorded its own answer — two stances on one card would compete. -->
+                  @if (!p.survey && priorLabel(p); as prior) {
+                    <span class="badge badge-ghost">{{ prior }} on file</span>
+                  }
+                  @if (p.senior) {
+                    <span class="badge badge-ghost">65+</span>
                   }
                   @if (p.survey; as survey) {
                     @for (issue of survey.issues; track issue) {
@@ -117,7 +167,7 @@ import { initialsOf, personResultLabel, statusBadgeClass } from './canvass-ui';
         @if (!h.dnc) {
           <!-- Add someone met at the door — inline, no modal. -->
           @if (!adding()) {
-            <button type="button" class="btn btn-outline btn-secondary w-full border-dashed" (click)="adding.set(true)">
+            <button type="button" class="btn btn-outline btn-primary w-full border-dashed" (click)="adding.set(true)">
               + Add someone at this door
             </button>
           } @else {
@@ -142,9 +192,9 @@ import { initialsOf, personResultLabel, statusBadgeClass } from './canvass-ui';
           <!-- Door-level outcomes. -->
           <div class="mt-auto flex flex-col gap-2 pt-2">
             <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">
-              No answer at the door?
+              No conversation at this door?
             </p>
-            <div class="grid grid-cols-3 gap-2">
+            <div class="grid grid-cols-2 gap-2">
               @for (option of outcomeOptions; track option.outcome) {
                 <button
                   type="button"
@@ -159,6 +209,7 @@ import { initialsOf, personResultLabel, statusBadgeClass } from './canvass-ui';
                 </button>
               }
             </div>
+            <p class="text-xs text-base-content/60">"Moved out" means nobody on this list lives here anymore.</p>
           </div>
         }
       </div>
@@ -177,10 +228,16 @@ export class CanvassHousehold {
   protected readonly adding = signal(false);
   protected readonly newName = signal('');
 
+  /**
+   * Four door codes, in escalating finality: nobody answered, we couldn't get to the door,
+   * they turned us away, nobody lives here. "Moved out" is the one that changes the file
+   * rather than the visit, which is why it is worth its own button rather than a note.
+   */
   protected readonly outcomeOptions: { outcome: CompanionDoorOutcome; label: string; toast: string }[] = [
-    { outcome: 'no_answer', label: 'Nobody home', toast: 'Marked "Not home"' },
+    { outcome: 'no_answer', label: 'Nobody home', toast: 'Marked "Nobody home"' },
     { outcome: 'inaccessible', label: 'Inaccessible', toast: 'Marked "Inaccessible"' },
     { outcome: 'refused', label: 'Refused', toast: 'Marked "Refused"' },
+    { outcome: 'moved', label: 'Moved out', toast: 'Marked "Moved out"' },
   ];
 
   protected readonly household = computed<CompanionHousehold | null>(() => {
@@ -198,8 +255,12 @@ export class CanvassHousehold {
     this.cancelAdd();
   }
 
+  /** Back to the building's unit list when this door is a flat, otherwise the walk list. */
   protected back(): void {
-    this.store.view.set({ kind: 'list' });
+    const h = this.household();
+    const buildingKey = h ? this.buildingKeyFor(h) : null;
+    if (buildingKey) this.store.view.set({ kind: 'building', building_key: buildingKey });
+    else this.store.view.set({ kind: 'list' });
   }
 
   protected cancelAdd(): void {
@@ -213,6 +274,10 @@ export class CanvassHousehold {
 
   protected chipLabel(h: CompanionHousehold): string {
     return doorStatusLabel(doorStatus(h));
+  }
+
+  protected doorStance(h: CompanionHousehold): StanceStyle | null {
+    return stanceStyle(householdStance(h));
   }
 
   protected hhSurveyLabel(h: CompanionHousehold): string {
@@ -247,14 +312,23 @@ export class CanvassHousehold {
     this.store.view.set({ kind: 'survey', household_id: h.id, person_id: personId });
   }
 
+  protected priorLabel(p: CompanionPerson): string | null {
+    return supportLevelLabel(p.support);
+  }
+
   protected resultChipClass(result: CompanionPerson['result']): string {
     if (result === 'canvassed') return 'badge badge-success';
     if (result === 'refused') return 'badge badge-error';
+    if (result === 'data_error') return 'badge badge-neutral';
     return 'badge badge-warning';
   }
 
   protected resultLabel(p: CompanionPerson): string {
     return p.result == null ? '' : personResultLabel(p.result, p.survey?.support ?? null);
+  }
+
+  protected stance(p: CompanionPerson): StanceStyle | null {
+    return stanceStyle(personStance(p));
   }
 
   /** Follow-up toggle chips shown on a surveyed card. */
@@ -270,5 +344,16 @@ export class CanvassHousehold {
     if (survey.subscribe) chips.push({ label: 'Subscribed', cls: 'badge badge-info badge-outline' });
     if (survey.set_dnc) chips.push({ label: 'Do not contact', cls: 'badge badge-error' });
     return chips;
+  }
+
+  protected voted(h: CompanionHousehold): boolean {
+    return hasVoted(h);
+  }
+
+  /** Which building this door belongs to, if it renders as one on the walk list. */
+  private buildingKeyFor(h: CompanionHousehold): string | null {
+    return (
+      this.store.walkEntries().find((e) => e.kind === 'building' && e.units.some((u) => u.id === h.id))?.key ?? null
+    );
   }
 }

@@ -311,6 +311,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'p',
         text: 'Click a turf’s name — in the list, or its pin on the map — to open it. The turf page is where you see what is actually happening on the ground: a map of its doors (green where a volunteer had a conversation, amber where they knocked and nobody answered, grey where nobody has been yet) inside the turf’s dashed boundary, everyone walking it with the doors and conversations credited to each of them, and then every door in walk order with who lives there, what the last visit recorded, which canvasser recorded it, and when. Filter the door list to talked, knocked-no-answer, or not-yet to see what is left. Addresses link to the household and names to the person, so a doorstep note is one click from the record it belongs to. Managing canvassers, the join QR, refreshing from the list, and retiring the turf are all here too, alongside the turf’s activity log.',
       },
+      {
+        kind: 'p',
+        text: 'Turfs arrive from the cutter with generated names, and the first thing worth doing is calling them what your organizers call them. **Rename turf** — in a turf’s ⋯ menu on the list, or the pencil beside the name on the turf page — changes it everywhere at once: canvassers already walking it see the new name the next time their Companion refreshes, and the field report files it under the new name too. Nothing else moves. Its doors, the knocks already logged and every link you have handed out all keep working, and the rename itself is recorded in the turf’s activity log with who did it.',
+      },
       { kind: 'h2', id: 'assign', text: 'Put canvassers on a turf' },
       {
         kind: 'p',

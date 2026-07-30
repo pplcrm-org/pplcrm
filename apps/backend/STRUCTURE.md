@@ -29,6 +29,7 @@ apps/
           2026-07-28-zzz-street-claims-organizer.ts
           2026-07-28-zzzz-emails-preview-text.ts
           2026-07-29-office-mode-differentiation.ts
+          2026-07-30-canvass-person-flags.ts
           schema.sql
         config/
           email-folders.config.ts

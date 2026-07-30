@@ -626,6 +626,16 @@ export interface Persons extends Omit<RecordType, 'createdby_id'> {
   volunteer_status: string | null;
   /** Global staff standing (§15); null = not staff. Retired the staff system tag (2026-07-12). */
   staff_status: string | null;
+  /**
+   * When someone told us this person had died — usually a canvasser at their door. Set
+   * alongside `do_not_contact`, because the harm of one more letter is the point.
+   */
+  deceased_at: Timestamp | null;
+  /**
+   * 65 or older. NULL means nobody has said, which is a different claim from `false`
+   * ("we asked, they are not") — do not collapse the two.
+   */
+  senior: boolean | null;
   household_id: string | null;
   createdby_id: string;
   first_name: string | null;

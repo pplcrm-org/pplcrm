@@ -34,6 +34,9 @@ import {
   TURF_STATUS_TONE,
   refreshFromListExplainer,
   refreshResultMessage,
+  renameResultMessage,
+  renameTurfPrompt,
+  turfRenameIntent,
 } from './turf-vocabulary';
 import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
 import { OrgModeService } from '../../../services/org-mode.service';
@@ -359,6 +362,26 @@ export class CanvassingPage implements OnInit {
       await this.loadTurfs();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');
+    } finally {
+      end();
+    }
+  }
+
+  protected async rename(t: TurfListItem): Promise<void> {
+    const intent = turfRenameIntent(await this.dialog.prompt(renameTurfPrompt(t.name)), t.name);
+    if (intent.kind === 'none') return;
+    if (intent.kind === 'invalid') {
+      this.alerts.showError(intent.reason);
+      return;
+    }
+
+    const end = this._loading.begin();
+    try {
+      await this.svc.updateTurf(t.id, { name: intent.name });
+      this.alerts.showSuccess(renameResultMessage(t.name, intent.name));
+      await this.loadTurfs();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to rename turf.');
     } finally {
       end();
     }

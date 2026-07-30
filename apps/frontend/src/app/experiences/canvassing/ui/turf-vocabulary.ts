@@ -1,3 +1,4 @@
+import type { PromptOptions } from '@uxcommon/components/confirm-dialog.service';
 import type { PcMapVariant } from '@uxcommon/components/map/map-types';
 import type { PcStatusType } from '@uxcommon/components/status-badge/status-badge';
 
@@ -57,6 +58,57 @@ export function refreshFromListExplainer(listName: string): string {
     "Any new address in the list that falls inside this turf's ward is added, and doors that have left the list are " +
     'taken off the turf. Knocks already logged are kept either way, so nothing is lost from the field report.'
   );
+}
+
+/** Mirrors `nameSchema('Name', 120)` on `UpdateTurfObj` — checked here so an over-long
+ *  name is caught in the user's words instead of coming back as a validation error. */
+export const TURF_NAME_MAX_LENGTH = 120;
+
+/**
+ * Rename a turf.
+ *
+ * The name is not decoration: it is what canvassers already walking the turf see in the
+ * Companion and what the field report files it under, so the prompt says where the new
+ * name will turn up rather than only asking for one (§3 guide, don't error). Turfs come
+ * out of the cutter with generated names ("Ward 12 — 3"), and the first thing an organizer
+ * wants is to call them what the neighbourhood calls them.
+ */
+export function renameTurfPrompt(currentName: string): PromptOptions {
+  return {
+    title: 'Rename turf',
+    message:
+      `Canvassers already walking this turf see its name in the Companion, and the field report files it ` +
+      `under that name — both follow the new one straight away. Nothing else changes: its doors, the knocks ` +
+      `already logged and every link that has been handed out all keep working.`,
+    defaultValue: currentName,
+    inputPlaceholder: 'e.g. Ward 12 — north of Elm',
+    confirmText: 'Rename turf',
+  };
+}
+
+/**
+ * What the prompt's answer means. `none` covers cancelled, blank and unchanged — three
+ * different ways of saying "leave it alone", none of which should fire a request.
+ */
+export type TurfRenameIntent =
+  | { kind: 'none' }
+  | { kind: 'invalid'; reason: string }
+  | { kind: 'rename'; name: string };
+
+export function turfRenameIntent(answer: string | null, currentName: string): TurfRenameIntent {
+  const next = (answer ?? '').trim();
+  if (next.length === 0 || next === currentName.trim()) return { kind: 'none' };
+  if (next.length > TURF_NAME_MAX_LENGTH) {
+    return {
+      kind: 'invalid',
+      reason: `A turf name can be at most ${TURF_NAME_MAX_LENGTH} characters. That one is ${next.length}.`,
+    };
+  }
+  return { kind: 'rename', name: next };
+}
+
+export function renameResultMessage(from: string, to: string): string {
+  return `Renamed "${from}" to "${to}". Canvassers see the new name the next time their Companion refreshes.`;
 }
 
 /** What actually changed, in doors rather than row counts. */

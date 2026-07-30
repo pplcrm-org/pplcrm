@@ -157,6 +157,53 @@
     </div>
   </div>
 
+  <!-- Facts a canvasser can record at the door (§13). -->
+  <div class="mt-4 border-t border-base-200 pt-3">
+    <span class="mb-2 block pc-eyebrow" i18n>At the door</span>
+
+    @if (deceased()) {
+    <div class="mb-3 flex items-start gap-2 rounded-lg border border-base-300 bg-base-200/60 px-3 py-2">
+      <pc-icon name="information-circle" [size]="4" class="mt-0.5 shrink-0 text-base-content/60"></pc-icon>
+      <div class="min-w-0 flex-1 space-y-0.5">
+        <p class="text-xs font-semibold" i18n>Reported deceased</p>
+        <p class="text-[11px] leading-snug text-base-content/70" i18n>
+          Recorded {{ deceasedAt() | date: 'mediumDate' }}. All outreach is suppressed.
+        </p>
+      </div>
+      <button type="button" class="btn btn-ghost btn-xs shrink-0" [disabled]="saving()" (click)="toggleDeceased()" i18n>
+        Undo
+      </button>
+    </div>
+    }
+
+    <label class="flex flex-col gap-1">
+      <span class="text-[11px] font-medium text-base-content/60" i18n>Senior (65+)</span>
+      <select
+        class="select select-bordered select-sm w-full"
+        [value]="seniorSel()"
+        [disabled]="saving()"
+        (change)="onSeniorChange($event)"
+      >
+        <!-- "Not recorded" is a real answer, not a placeholder — nobody has asked. -->
+        <option value="" i18n>Not recorded</option>
+        <option value="true" i18n>65 or older</option>
+        <option value="false" i18n>Under 65</option>
+      </select>
+    </label>
+
+    @if (!deceased()) {
+    <button
+      type="button"
+      class="mt-3 text-left text-[11px] text-base-content/45 hover:text-error hover:underline"
+      [disabled]="saving()"
+      (click)="toggleDeceased()"
+      i18n
+    >
+      Told they have died? Mark as deceased
+    </button>
+    }
+  </div>
+
   <!-- Global do-not-contact override -->
   <div class="mt-4 border-t border-base-200 pt-3">
     @if (doNotContact()) {

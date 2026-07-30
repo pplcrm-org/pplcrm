@@ -93,12 +93,12 @@ import { GeoPosition } from './geo-position';
           <div class="flex flex-col items-center gap-2 rounded-lg border border-base-300 bg-base-100 p-6 text-center">
             <pc-icon name="map-pin" [size]="8" />
             <p class="text-base-content/70">Your organizer hasn't sent you a turf yet.</p>
-            <button type="button" class="btn btn-outline btn-secondary" (click)="reload()">Check again</button>
+            <button type="button" class="btn btn-outline btn-primary" (click)="reload()">Check again</button>
           </div>
         }
 
         @if (position.state() === 'prompt' && showsDistance(c)) {
-          <button type="button" class="btn btn-outline btn-secondary w-full" (click)="position.request()">
+          <button type="button" class="btn btn-outline btn-primary w-full" (click)="position.request()">
             Sort by what's closest
           </button>
         } @else if (position.state() === 'denied') {
@@ -113,7 +113,7 @@ import { GeoPosition } from './geo-position';
       } @else {
         <div class="flex flex-col items-center gap-2 rounded-lg border border-base-300 bg-base-100 p-6 text-center">
           <p class="text-base-content/70">Couldn't load your turfs. Check your connection.</p>
-          <button type="button" class="btn btn-outline btn-secondary" (click)="reload()">Try again</button>
+          <button type="button" class="btn btn-outline btn-primary" (click)="reload()">Try again</button>
         </div>
       }
     </div>

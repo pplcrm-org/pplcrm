@@ -1,10 +1,43 @@
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CompanionOpAck, CompanionTurfPayload } from '@common';
+import type { CompanionHousehold, CompanionOpAck, CompanionPerson, CompanionTurfPayload } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 
 import { CanvassStore } from './canvass-store';
+
+/** A resident with every payload field defaulted, so a test states only what it is about. */
+function person(over: Partial<CompanionPerson> & { id: string; name: string }): CompanionPerson {
+  return {
+    last_name: null,
+    dnc: false,
+    support: null,
+    voting_status: null,
+    deceased: false,
+    senior: null,
+    result: null,
+    survey: null,
+    ...over,
+  };
+}
+
+/** Likewise for a door. */
+function door(over: Partial<CompanionHousehold> & { id: string; walk_order: number }): CompanionHousehold {
+  return {
+    address: '',
+    street: null,
+    street_num: null,
+    apt: null,
+    lat: null,
+    lng: null,
+    dnc: false,
+    yard_sign: false,
+    door_outcome: null,
+    hh_survey: null,
+    people: [],
+    ...over,
+  };
+}
 
 const TOKEN = 'tok-abc';
 const TURF_ID = '4';
@@ -25,32 +58,15 @@ function turfPayload(): CompanionTurfPayload {
     issues: ['Roads', 'Housing'],
     expires_at: null,
     households: [
-      {
+      door({
         id: '10',
         walk_order: 1,
         address: '218 Alder St',
         street: 'Alder St',
         street_num: '218',
-        lat: null,
-        lng: null,
-        dnc: false,
-        door_outcome: null,
-        hh_survey: null,
-        people: [{ id: '1', name: 'Alice Door', dnc: false, result: null, survey: null }],
-      },
-      {
-        id: '11',
-        walk_order: 2,
-        address: '220 Scott Blvd',
-        street: 'Scott Blvd',
-        street_num: '220',
-        lat: null,
-        lng: null,
-        dnc: false,
-        door_outcome: null,
-        hh_survey: null,
-        people: [],
-      },
+        people: [person({ id: '1', name: 'Alice Door', last_name: 'Door' })],
+      }),
+      door({ id: '11', walk_order: 2, address: '220 Scott Blvd', street: 'Scott Blvd', street_num: '220' }),
     ],
     segment_claims: [],
   };
@@ -497,16 +513,37 @@ describe('CanvassStore', () => {
   });
 
   describe('street scope', () => {
-    it('narrows the list to one street while turf-wide stats stay turf-wide', async () => {
+    it('opens on the street holding the next open door, not on the whole turf', async () => {
       await store.load(TOKEN);
-      expect(store.scopedHouseholds()).toHaveLength(2);
 
-      const alder = store.segments().find((seg) => seg.street === 'Alder St');
-      store.segmentKey.set(alder?.key ?? null);
-
-      expect(store.scopedHouseholds().map((h) => h.id)).toEqual(['10']);
+      // A turf is a neighbourhood and a shift is a street. Landing on "all doors" made
+      // narrowing the volunteer's first job, so the store does it for them.
       expect(store.activeSegment()?.street).toBe('Alder St');
-      // The progress bar answers "how is the TURF doing" — narrowing must not shrink it.
+      expect(store.scopedHouseholds().map((h) => h.id)).toEqual(['10']);
+      // Turf-wide stats stay turf-wide — the scope answers a different question.
+      expect(store.stats().doors_total).toBe(2);
+    });
+
+    it('does not claim the street it defaulted to', async () => {
+      await store.load(TOKEN);
+      await flushMicrotasks();
+
+      // A claim tells the group "I am standing here". The app guessing on their behalf
+      // would put a volunteer's name on a street nobody has walked to yet.
+      const claims = fetchMock.mock.calls.filter(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'POST' && String(c[0]).endsWith('/segment'),
+      );
+      expect(claims).toHaveLength(0);
+    });
+
+    it('narrows to a street the volunteer picks', async () => {
+      await store.load(TOKEN);
+
+      const scott = store.segments().find((seg) => seg.street === 'Scott Blvd');
+      store.segmentKey.set(scott?.key ?? null);
+
+      expect(store.scopedHouseholds().map((h) => h.id)).toEqual(['11']);
+      expect(store.activeSegment()?.street).toBe('Scott Blvd');
       expect(store.stats().doors_total).toBe(2);
     });
 
@@ -519,6 +556,19 @@ describe('CanvassStore', () => {
       expect(store.nextDoorId()).toBe('11');
     });
 
+    it('leaves a one-street turf alone', async () => {
+      const payload = turfPayload();
+      payload.households[1] = door({ id: '11', walk_order: 2, address: '220 Alder St', street: 'Alder St' });
+      fetchMock.mockResolvedValue(jsonResponse(payload));
+
+      await store.load(TOKEN);
+
+      // Scoping to the only street would say "you are on Alder St" as if that were a
+      // choice, and hide nothing. There is nothing to narrow.
+      expect(store.segmentKey()).toBeNull();
+      expect(store.scopedHouseholds()).toHaveLength(2);
+    });
+
     it('falls back to the whole turf when the scoped street is gone', async () => {
       await store.load(TOKEN);
       store.segmentKey.set('a street that left with a list refresh');
@@ -527,11 +577,77 @@ describe('CanvassStore', () => {
       expect(store.activeSegment()).toBeNull();
     });
 
-    it('drops the scope when the volunteer switches turfs', async () => {
+    it('never carries a scope across turfs', async () => {
       await store.load(TOKEN);
-      store.segmentKey.set(store.segments()[0]?.key ?? null);
+      const scott = store.segments().find((seg) => seg.street === 'Scott Blvd');
+      store.segmentKey.set(scott?.key ?? null);
+
       await store.switchTurf(TURF_ID);
-      expect(store.segmentKey()).toBeNull();
+
+      // The new turf gets its OWN default (the street of its next open door), never the
+      // street that happened to be chosen on the turf being left.
+      expect(store.activeSegment()?.street).toBe('Alder St');
+    });
+  });
+
+  describe('apartment buildings', () => {
+    /** Three units at one address, plus the two ordinary doors from the fixture. */
+    function withBuilding(): CompanionTurfPayload {
+      const payload = turfPayload();
+      payload.households.push(
+        ...['101', '102', '1003'].map((apt, i) =>
+          door({
+            id: `2${i}`,
+            walk_order: 3 + i,
+            address: `58 Huron Ave N, Unit ${apt}`,
+            street: 'Huron Ave N',
+            street_num: '58',
+            apt,
+          }),
+        ),
+      );
+      return payload;
+    }
+
+    it('folds units into one row and keeps the walk order of its first unit', async () => {
+      fetchMock.mockResolvedValue(jsonResponse(withBuilding()));
+      await store.load(TOKEN);
+      store.segmentKey.set(store.segments().find((s) => s.street === 'Huron Ave N')?.key ?? null);
+
+      const entries = store.walkEntries();
+      expect(entries).toHaveLength(1);
+      const only = entries[0];
+      expect(only?.kind).toBe('building');
+      if (only?.kind !== 'building') throw new Error('expected a building');
+      // The shared street address, with the unit stripped off.
+      expect(only.address).toBe('58 Huron Ave N');
+      expect(only.walkOrder).toBe(3);
+      // Numeric where it can be: 1003 sorts after 102, not between 101 and 102.
+      expect(only.units.map((u) => u.apt)).toEqual(['101', '102', '1003']);
+    });
+
+    it('rings the building that holds the next open door', async () => {
+      fetchMock.mockResolvedValue(jsonResponse(withBuilding()));
+      await store.load(TOKEN);
+      store.segmentKey.set(store.segments().find((s) => s.street === 'Huron Ave N')?.key ?? null);
+
+      // The volunteer can only tap the row they can see, so the ring has to land on it.
+      expect(store.nextDoorId()).toBe('20');
+      expect(store.nextEntryKey()).toBe(store.walkEntries()[0]?.key);
+      expect(store.nextEntryKey()).not.toBe('20');
+    });
+
+    it('leaves a lone unit as a plain door', async () => {
+      const payload = turfPayload();
+      payload.households.push(
+        door({ id: '30', walk_order: 3, address: '9 Pine St, Unit 2', street: 'Pine St', street_num: '9', apt: '2' }),
+      );
+      fetchMock.mockResolvedValue(jsonResponse(payload));
+      await store.load(TOKEN);
+      store.segmentKey.set(store.segments().find((s) => s.street === 'Pine St')?.key ?? null);
+
+      // A row that says "1 unit" and opens a list of one is pure ceremony.
+      expect(store.walkEntries().map((e) => e.kind)).toEqual(['door']);
     });
   });
 

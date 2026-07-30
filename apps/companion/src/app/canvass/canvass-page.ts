@@ -3,6 +3,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, input } f
 import { Icon } from '@icons/icon';
 
 import { CompanionGate } from '../gate/companion-gate';
+import { CanvassBuilding } from './canvass-building';
 import { CanvassHousehold } from './canvass-household';
 import { CanvassLanding } from './canvass-landing';
 import { CanvassList } from './canvass-list';
@@ -28,6 +29,7 @@ type TabId = 'list' | 'map' | 'me';
   providers: [CanvassStore],
   imports: [
     CompanionGate,
+    CanvassBuilding,
     CanvassHousehold,
     CanvassLanding,
     CanvassList,
@@ -53,9 +55,7 @@ type TabId = 'list' | 'map' | 'me';
           <button type="button" class="btn btn-primary" (click)="retry()">Try again</button>
           <!-- A turf can be handed to someone else mid-shift. Ending at a dead end would
                be the wrong answer when they may well be on other turfs. -->
-          <button type="button" class="btn btn-outline btn-secondary" (click)="openPicker()">
-            Choose another turf
-          </button>
+          <button type="button" class="btn btn-outline btn-primary" (click)="openPicker()">Choose another turf</button>
         </div>
       } @else if (!store.payload()) {
         <div class="flex min-h-screen items-center justify-center">
@@ -84,6 +84,9 @@ type TabId = 'list' | 'map' | 'me';
             }
             @case ('me') {
               <pc-canvass-me></pc-canvass-me>
+            }
+            @case ('building') {
+              <pc-canvass-building></pc-canvass-building>
             }
             @case ('household') {
               <pc-canvass-household></pc-canvass-household>

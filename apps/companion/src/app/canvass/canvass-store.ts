@@ -17,14 +17,18 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { CompanionSessionService } from '../gate/companion-api';
 import {
   applyLocalOps,
+  buildingKeyOf,
   deriveSegments,
+  deriveWalkEntries,
   isTempPersonId,
   meStats,
   nextDoor,
   opPersonId,
   segmentKeyOf,
+  unitsOf,
   type CanvassSegment,
   type LocalOp,
+  type WalkEntry,
 } from './canvass-derive';
 
 /**
@@ -48,6 +52,8 @@ export type CanvassView =
   | { kind: 'me' }
   /** Choose which turf to walk: the ones they are on, plus claimable ones if allowed. */
   | { kind: 'picker' }
+  /** The units inside one apartment building, opened from its folded walk-list row. */
+  | { kind: 'building'; building_key: string }
   | { kind: 'household'; household_id: string }
   | { kind: 'survey'; household_id: string; person_id: string | null };
 
@@ -73,6 +79,7 @@ export interface SurveyDraft {
   wants_volunteer: boolean;
   wants_yard_sign: boolean;
   set_dnc: boolean;
+  senior: boolean;
   contact_phone: string | null;
   contact_email: string | null;
   subscribe: boolean;
@@ -203,12 +210,29 @@ export class CanvassStore {
     }
     return out;
   });
+  /**
+   * The rows the walk list actually renders: single doors, and apartment buildings folded
+   * back into the address their units share. Scoped like everything else on this screen.
+   */
+  public readonly walkEntries = computed<WalkEntry[]>(() => deriveWalkEntries(this.scopedHouseholds()));
   /** Turf-wide stats — these include every canvasser's work, not just this device's. */
   public readonly stats = computed(() => meStats(this.households()));
   /** Doors this volunteer logged on this device this shift. */
   public readonly myDoorCount = computed(() => this.myDoorIds().size);
   /** Scoped, so narrowing to a street moves the ring to the next door ON that street. */
   public readonly nextDoorId = computed(() => nextDoor(this.scopedHouseholds())?.id ?? null);
+  /**
+   * The walk-list row holding the next open door — a building when that door is a unit
+   * inside one, so the ring lands on the row the volunteer can actually see and tap.
+   */
+  public readonly nextEntryKey = computed<string | null>(() => {
+    const next = nextDoor(this.scopedHouseholds());
+    if (!next) return null;
+    const building = buildingKeyOf(next);
+    if (building == null) return next.id;
+    // A one-unit "building" renders as a plain door, so its key is the household's.
+    return this.walkEntries().some((e) => e.key === building) ? building : next.id;
+  });
   /**
    * Undo is offered for door outcomes (inverse op) or while the op is still
    * queued AND not in the in-flight batch — mid-flight the server may already
@@ -262,6 +286,7 @@ export class CanvassStore {
       this.lastRefreshedAt.set(new Date());
       // After the payload, because the tally is keyed by turf id.
       this.restoreMyDoors();
+      this.applyDefaultScope();
       void this.flush();
     } catch {
       this.loadError.set('Could not load your turf. Check your connection and try again.');
@@ -376,6 +401,7 @@ export class CanvassStore {
       // A street scope belongs to the turf it was chosen on, never to the next one.
       this.segmentKey.set(null);
       this.restoreMyDoors();
+      this.applyDefaultScope();
       this.view.set({ kind: 'list' });
       void this.flush();
       return true;
@@ -431,6 +457,33 @@ export class CanvassStore {
     return this.households().find((h) => h.id === id) ?? null;
   }
 
+  /** The units of one building, in unit order. Empty once the building leaves the turf. */
+  public unitsFor(buildingKey: string): CompanionHousehold[] {
+    return unitsOf(this.households(), buildingKey);
+  }
+
+  /**
+   * Open a turf on one street rather than on all of it.
+   *
+   * A turf is a neighbourhood; a shift is a street. Landing on "all 143 doors" makes the
+   * volunteer's first job be narrowing the list, which is work the app can do — so the
+   * scope starts on the street holding the next unattempted door, and the header says
+   * which street that is. Nothing is hidden: every street, including doors with no street
+   * on file, is one tap away in the picker.
+   *
+   * Deliberately does NOT claim the street. A claim tells the rest of the group "I am
+   * standing here", and the app guessing on their behalf would put a name on a street
+   * nobody has walked to yet. Only an explicit pick claims.
+   */
+  private applyDefaultScope(): void {
+    if (this.segmentKey() != null) return;
+    const segments = this.segments();
+    if (segments.length <= 1) return;
+    const next = nextDoor(this.households());
+    const key = next ? segmentKeyOf(next) : segments[0]?.key;
+    if (key != null) this.segmentKey.set(key);
+  }
+
   // --------------------------------------------------------------- actions --
 
   /** Save a survey for a person (or the door itself when personId is null). */
@@ -446,6 +499,7 @@ export class CanvassStore {
         wants_volunteer: draft.wants_volunteer,
         wants_yard_sign: draft.wants_yard_sign,
         set_dnc: draft.set_dnc,
+        senior: draft.senior,
         contact_phone: draft.contact_phone,
         contact_email: draft.contact_email,
         subscribe: draft.subscribe,
@@ -455,16 +509,27 @@ export class CanvassStore {
     this.record(op, `${this.personLabel(householdId, personId)} · ${this.addressOf(householdId)}`);
   }
 
-  /** One-tap no-conversation code for a person. */
+  /**
+   * One-tap code for a person when there was no survey to record.
+   *
+   * `note` is the volunteer's account of what is wrong with the record, and only
+   * `data_error` collects one — the other codes say everything they mean in one word.
+   */
   public personResult(
     householdId: string,
     personId: string,
     result: Exclude<CompanionPersonResult, 'canvassed'>,
+    note?: string,
   ): void {
     const op: CompanionOpType = {
       ...this.baseOp(),
       type: 'person_result',
-      payload: { household_id: householdId, person_id: personId, result },
+      payload: {
+        household_id: householdId,
+        person_id: personId,
+        result,
+        ...(note?.trim() ? { note: note.trim() } : {}),
+      },
     };
     this.record(op, `${this.personLabel(householdId, personId)} · ${this.addressOf(householdId)}`);
   }
@@ -485,6 +550,7 @@ export class CanvassStore {
       no_answer: 'Nobody home',
       inaccessible: 'Inaccessible',
       refused: 'Refused',
+      moved: 'Moved out',
     };
     const op: CompanionOpType = {
       ...this.baseOp(),

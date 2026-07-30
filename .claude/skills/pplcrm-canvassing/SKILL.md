@@ -291,7 +291,10 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   wraps `api.canvassing.*`. Router: `modules/canvassing/trpc.router.ts`, registered
   as `canvassing:` in `modules/trpc.ts`.
 - `ui/turf-vocabulary.ts` — **the one place the feature's user-facing words live**:
-  the status label/hint/tone/map-variant maps and the refresh copy. Both the list and
+  the status label/hint/tone/map-variant maps, the refresh copy, and the rename copy
+  (`renameTurfPrompt` + `turfRenameIntent`, which folds cancelled/blank/unchanged into
+  one `none` so none of them fires a request, and catches the 120-char limit before the
+  server does). Both the list and
   the detail page read it, so a turf can never read two ways. The labels deliberately
   describe the world rather than the stored lifecycle (`draft` → "Needs canvassers",
   `assigned` → "Links sent", `in_field` → "Knocking now", `complete` → "Every door
@@ -321,6 +324,14 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   `turf_knocks.canvasser_name`**, because knocks carry a name, not a volunteer id — a
   volunteer taken off the roster stays listed with `active: false` rather than having
   their doors disappear. Roster/QR/retire actions reuse the list page's dialogs.
+- **Renaming** is offered from both surfaces — "Rename turf" in the list's ⋯ menu, and the
+  pencil beside the name on the detail page — through `ConfirmDialogService.prompt`, which
+  is the house idiom for a one-field edit (same as the Tags/Issues admin). Nothing else is
+  editable from the UI: `updateTurf` also accepts `status`/`notes`, but the lifecycle moves
+  through `retireTurf` and derived display status, not by hand. The controller resolves the
+  turf first (so an unknown id is a `NotFoundError`, not a silent no-op) and logs a rename
+  to the turf's activity log as `metadata.changes.name.{from,to}` — the shape
+  `record-activities.ts` already renders as "changed name from X to Y".
 - `ui/cut-turfs-dialog.ts` — universe select (reuses `ListsService.getAllWithCounts`),
   presets, live preview.
 - `ui/assign-turf-dialog.ts` — the **canvasser roster** for a turf. A turf holds as

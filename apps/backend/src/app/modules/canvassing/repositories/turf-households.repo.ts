@@ -8,6 +8,8 @@ export interface DoorRow {
   household_id: string;
   street_num: string | null;
   street1: string | null;
+  /** Unit/suite. Present so the Companion can fold a building's doors into one row. */
+  apt: string | null;
   city: string | null;
   state: string | null;
   zip: string | null;
@@ -108,6 +110,7 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
         'households.id as household_id',
         'households.street_num',
         'households.street1',
+        'households.apt',
         'households.city',
         'households.state',
         'households.zip',
@@ -122,6 +125,7 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
       household_id: String(r.household_id),
       street_num: r.street_num ?? null,
       street1: r.street1 ?? null,
+      apt: r.apt ?? null,
       city: r.city ?? null,
       state: r.state ?? null,
       zip: r.zip ?? null,

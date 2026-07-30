@@ -10,6 +10,17 @@
           <p class="pc-eyebrow">Turf</p>
           <div class="flex flex-wrap items-center gap-2">
             <h1 class="text-2xl font-bold tracking-tight text-base-content">{{ d.name }}</h1>
+            <!-- Edit sits next to the thing it edits rather than in the action row, which is
+                 already full of turf-wide operations (design §4, one idiom per job). -->
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs btn-circle"
+              [attr.aria-label]="'Rename ' + d.name"
+              title="Rename turf"
+              (click)="rename()"
+            >
+              <pc-icon name="pencil-square" [size]="4" />
+            </button>
             <span [title]="statusHint[d.status]">
               <pc-status-badge [type]="tone(d.status)">{{ statusLabel[d.status] }}</pc-status-badge>
             </span>

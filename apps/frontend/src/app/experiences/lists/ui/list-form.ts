@@ -388,6 +388,11 @@ export class ListForm implements OnInit {
         choice('voting_status'),
         // A boolean is either set or not — "is not set" would be a lie.
         field('do_not_contact', 'select', BOOLEAN_OPERATORS),
+        // Recorded at the door (§13). `senior` is genuinely tri-state — NULL means nobody
+        // has asked — so it keeps the full operator set, where `deceased` is a date whose
+        // only useful question is whether it is there at all.
+        choice('senior'),
+        field('deceased', 'select', BOOLEAN_OPERATORS),
         text('first_name'),
         text('last_name'),
         text('email'),

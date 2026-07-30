@@ -54,6 +54,8 @@ export const PersonsObj = z.object({
   preferred_contact: z.string().nullable().optional(),
   volunteer_status: z.string().nullable().optional(),
   staff_status: z.string().nullable().optional(),
+  deceased_at: z.string().nullable().optional(),
+  senior: z.boolean().nullable().optional(),
 });
 
 export const UpdateHouseholdsObj = addressSchema.extend({
@@ -83,4 +85,13 @@ export const UpdatePersonsObj = z.object({
   do_not_contact_channels: z.array(z.enum(DNC_CHANNELS)).nullable().optional(),
   volunteer_status: z.enum(VOLUNTEER_STATUSES).nullable().optional(),
   staff_status: z.enum(STAFF_STATUSES).nullable().optional(),
+  /**
+   * Reported dead. A date rather than a boolean because "when did we learn this" is the
+   * question that gets asked when a family complains about a letter. Setting it does NOT
+   * imply do_not_contact here — the canvass path sets both deliberately; a staff edit that
+   * wants the same should say so.
+   */
+  deceased_at: z.coerce.date().nullable().optional(),
+  /** 65 or older. Null = never asked, which is not the same as false. */
+  senior: z.boolean().nullable().optional(),
 });

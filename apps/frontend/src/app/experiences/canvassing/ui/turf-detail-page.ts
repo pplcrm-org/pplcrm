@@ -27,6 +27,9 @@ import {
   TURF_STATUS_TONE,
   refreshFromListExplainer,
   refreshResultMessage,
+  renameResultMessage,
+  renameTurfPrompt,
+  turfRenameIntent,
 } from './turf-vocabulary';
 import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
 import { OrgModeService } from '../../../services/org-mode.service';
@@ -237,6 +240,33 @@ export class TurfDetailPage {
       await this.load();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');
+    } finally {
+      end();
+    }
+  }
+
+  /**
+   * Reloading rather than patching the name in place is deliberate: the breadcrumb trail
+   * and the map polygon's label are both driven off `detail()`, so one reload keeps every
+   * place the name appears in step with the server's copy of it.
+   */
+  protected async rename(): Promise<void> {
+    const d = this.detail();
+    if (!d) return;
+    const intent = turfRenameIntent(await this.confirm.prompt(renameTurfPrompt(d.name)), d.name);
+    if (intent.kind === 'none') return;
+    if (intent.kind === 'invalid') {
+      this.alerts.showError(intent.reason);
+      return;
+    }
+
+    const end = this._loading.begin();
+    try {
+      await this.svc.updateTurf(this.id(), { name: intent.name });
+      this.alerts.showSuccess(renameResultMessage(d.name, intent.name));
+      await this.load();
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to rename turf.');
     } finally {
       end();
     }

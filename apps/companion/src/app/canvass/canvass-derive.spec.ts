@@ -4,17 +4,24 @@ import type { CompanionHousehold, CompanionOpType, CompanionPerson, CompanionSur
 
 import {
   applyLocalOps,
+  buildingKeyOf,
   conversations,
   deriveSegments,
+  deriveWalkEntries,
   doorStatus,
   doorStatusLabel,
+  hasVoted,
+  householdStance,
   isAttempted,
   isTempPersonId,
   meStats,
   nextDoor,
   opPersonId,
+  personStance,
+  residentSummary,
   segmentKeyOf,
   supportConsensus,
+  unitsOf,
   UNKNOWN_SEGMENT_KEY,
 } from './canvass-derive';
 
@@ -31,7 +38,19 @@ function prefill(overrides: Partial<CompanionSurveyPrefill> = {}): CompanionSurv
 }
 
 function person(overrides: Partial<CompanionPerson> = {}): CompanionPerson {
-  return { id: '1', name: 'Alice Door', dnc: false, result: null, survey: null, ...overrides };
+  return {
+    id: '1',
+    name: 'Alice Door',
+    last_name: 'Door',
+    dnc: false,
+    support: null,
+    voting_status: null,
+    deceased: false,
+    senior: null,
+    result: null,
+    survey: null,
+    ...overrides,
+  };
 }
 
 function household(overrides: Partial<CompanionHousehold> = {}): CompanionHousehold {
@@ -41,9 +60,11 @@ function household(overrides: Partial<CompanionHousehold> = {}): CompanionHouseh
     address: '218 Alder St',
     street: 'Alder St',
     street_num: '218',
+    apt: null,
     lat: null,
     lng: null,
     dnc: false,
+    yard_sign: false,
     door_outcome: null,
     hh_survey: null,
     people: [],
@@ -438,5 +459,145 @@ describe('deriveSegments', () => {
     ];
     const [alder] = deriveSegments(doors);
     expect(doors.filter((h) => segmentKeyOf(h) === alder?.key)).toHaveLength(2);
+  });
+});
+
+describe('personStance / householdStance', () => {
+  it('reads the CRM prior ID when this walk has recorded nothing', () => {
+    expect(personStance(person({ support: 'leaning' }))).toBe('supporter');
+    expect(personStance(person({ support: 'neutral' }))).toBe('undecided');
+    expect(personStance(person({ support: 'leaning_against' }))).toBe('non_supporter');
+    expect(personStance(person())).toBeNull();
+  });
+
+  it('lets a survey recorded at the door beat the prior ID', () => {
+    // Newer, and heard first-hand by the person holding the phone.
+    const flipped = person({ support: 'strong', survey: prefill({ support: 'non_supporter' }) });
+    expect(personStance(flipped)).toBe('non_supporter');
+  });
+
+  it('reports mixed rather than picking a side when a door disagrees', () => {
+    const h = household({
+      people: [person({ id: '1', support: 'strong' }), person({ id: '2', support: 'against' })],
+    });
+    // Averaging would put a confident colour on the doors that most need a conversation.
+    expect(householdStance(h)).toBe('mixed');
+  });
+
+  it('is null when nobody has ever said', () => {
+    expect(householdStance(household({ people: [person()] }))).toBeNull();
+  });
+
+  it('counts the anonymous household survey as a voice', () => {
+    expect(householdStance(household({ hh_survey: prefill({ support: 'supporter' }) }))).toBe('supporter');
+    // Turnout facts are not stances, so they cast no vote either way.
+    expect(householdStance(household({ hh_survey: prefill({ support: 'already_voted' }) }))).toBeNull();
+  });
+});
+
+describe('hasVoted', () => {
+  it('is true once anyone at the door has cast a ballot', () => {
+    expect(hasVoted(household({ people: [person({ voting_status: 'voted_advance' })] }))).toBe(true);
+    expect(hasVoted(household({ people: [person({ voting_status: 'voted_eday' })] }))).toBe(true);
+    // "Will vote" is an intention, not a ballot.
+    expect(hasVoted(household({ people: [person({ voting_status: 'will_vote' })] }))).toBe(false);
+    expect(hasVoted(household({ people: [person()] }))).toBe(false);
+  });
+});
+
+describe('residentSummary', () => {
+  it('says a shared surname once', () => {
+    const h = household({
+      people: [
+        person({ id: '1', name: 'Heather Gagnon', last_name: 'Gagnon' }),
+        person({ id: '2', name: 'Ross Gagnon', last_name: 'Gagnon' }),
+      ],
+    });
+    expect(residentSummary(h)).toBe('Heather & Ross Gagnon');
+  });
+
+  it('spells out full names when the surnames differ', () => {
+    const h = household({
+      people: [
+        person({ id: '1', name: 'Heather Gagnon', last_name: 'Gagnon' }),
+        person({ id: '2', name: 'Ross Tremblay', last_name: 'Tremblay' }),
+      ],
+    });
+    // A blended household is exactly where the surname matters most.
+    expect(residentSummary(h)).toBe('Heather Gagnon, Ross Tremblay');
+  });
+
+  it('does not fold when a resident has no surname on file', () => {
+    const h = household({
+      people: [
+        person({ id: '1', name: 'Heather Gagnon', last_name: 'Gagnon' }),
+        person({ id: '2', name: 'Ross', last_name: null }),
+      ],
+    });
+    expect(residentSummary(h)).toBe('Heather Gagnon, Ross');
+  });
+
+  it('leaves the dead out of the line a canvasser reads aloud', () => {
+    const h = household({
+      people: [
+        person({ id: '1', name: 'Heather Gagnon', last_name: 'Gagnon' }),
+        person({ id: '2', name: 'Ross Gagnon', last_name: 'Gagnon', deceased: true }),
+      ],
+    });
+    expect(residentSummary(h)).toBe('Heather Gagnon');
+    expect(residentSummary(household({ people: [person({ deceased: true })] }))).toBe('');
+  });
+});
+
+describe('deriveWalkEntries', () => {
+  const unit = (id: string, apt: string, walk_order: number) =>
+    household({ id, walk_order, apt, street: 'Huron Ave N', street_num: '58', address: `58 Huron Ave N, Unit ${apt}` });
+
+  it('folds units that share a street number into one building row', () => {
+    const entries = deriveWalkEntries([
+      unit('1', '101', 2),
+      unit('2', '102', 3),
+      household({ id: '3', walk_order: 1 }),
+    ]);
+    expect(entries.map((e) => e.kind)).toEqual(['door', 'building']);
+    const building = entries[1];
+    if (building?.kind !== 'building') throw new Error('expected a building');
+    expect(building.units).toHaveLength(2);
+    // Takes its earliest unit's walk order, so folding never moves a block in the walk.
+    expect(building.walkOrder).toBe(2);
+    expect(building.address).toBe('58 Huron Ave N');
+  });
+
+  it('never folds unit-less doors that share a street number', () => {
+    // Two of those are a duplicate-data problem, and folding them would hide it.
+    const dupes = [
+      household({ id: '1', walk_order: 1, street: 'Alder St', street_num: '218' }),
+      household({ id: '2', walk_order: 2, street: 'Alder St', street_num: '218' }),
+    ];
+    expect(deriveWalkEntries(dupes).map((e) => e.kind)).toEqual(['door', 'door']);
+    expect(buildingKeyOf(dupes[0] as CompanionHousehold)).toBeNull();
+  });
+
+  it('counts a building attempted only when every unit is', () => {
+    const entries = deriveWalkEntries([unit('1', '101', 1), unit('2', '102', 2)]);
+    const building = entries[0];
+    if (building?.kind !== 'building') throw new Error('expected a building');
+    expect(building.attempted).toBe(0);
+
+    const done = deriveWalkEntries([{ ...unit('1', '101', 1), door_outcome: 'no_answer' }, unit('2', '102', 2)]);
+    const partial = done[0];
+    if (partial?.kind !== 'building') throw new Error('expected a building');
+    expect(partial.attempted).toBe(1);
+  });
+
+  it('orders units numerically, then alphabetically', () => {
+    const doors = [unit('1', '1003', 1), unit('2', '101', 2), unit('3', 'PH2', 3), unit('4', '102', 4)];
+    // 1003 after 102, and the lettered penthouse last rather than sorted as zero.
+    expect(unitsOf(doors, buildingKeyOf(doors[0] as CompanionHousehold) ?? '').map((u) => u.apt)).toEqual([
+      '101',
+      '102',
+      '1003',
+      'PH2',
+    ]);
   });
 });

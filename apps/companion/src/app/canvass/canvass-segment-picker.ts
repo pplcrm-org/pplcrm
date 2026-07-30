@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, output, signal } from '@angular/core';
 
 import { haversineKm } from '@common';
 import { Icon } from '@icons/icon';
@@ -8,23 +8,22 @@ import { CanvassStore } from './canvass-store';
 import { firstNameOf } from './canvass-ui';
 import { GeoPosition } from './geo-position';
 
-/** Anything further away than this is not "the street you are standing on". */
-const NEARBY_RADIUS_KM = 0.5;
-
 /**
- * Scope the walk to one street.
+ * Choose the street to walk.
  *
  * A plain conditional panel, **never** the focus-based DaisyUI `.dropdown` — that idiom
  * closes on the first touch inside itself in Safari, and this bug has shipped twice
  * (`pplcrm-design-principles` §4).
  *
- * Three groups, in this order on purpose:
- *   1. **All doors** — today's exact behaviour, first, so nothing is ever hidden and the
- *      way back is the most obvious thing on screen.
- *   2. **Nearby** — only once the phone actually has a fix. No fix, no section; no
- *      apologising for a feature the volunteer never asked for.
- *   3. **All streets in this turf** — walk order, because that is the order the turf was
- *      cut in and the only one that means anything on foot.
+ * There is deliberately no "All doors" option. A turf is a neighbourhood and a shift is a
+ * street; a list of 143 addresses spanning nine streets is not something anyone walks in
+ * one pass, and offering it as the default made narrowing the volunteer's first job.
+ * Nothing is hidden by removing it — every street is here, including the single bucket
+ * holding doors with no street on file, and the turf's own total is stated below the list.
+ *
+ * Order is the answer to "where am I": nearest first once the phone has a fix, walk order
+ * otherwise. Both orders are named in the heading, because a list that silently reorders
+ * itself when a location arrives is a list you stop trusting.
  */
 @Component({
   selector: 'pc-canvass-segment-picker',
@@ -35,51 +34,15 @@ const NEARBY_RADIUS_KM = 0.5;
       <header class="flex items-start justify-between gap-3">
         <div>
           <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">Show doors on</p>
-          <h2 class="text-base font-semibold">Choose a street</h2>
+          <h2 class="text-base font-semibold">{{ orderTitle() }}</h2>
         </div>
         <button type="button" class="btn btn-ghost btn-sm btn-circle" aria-label="Close" (click)="closed.emit()">
           <pc-icon name="x-mark" [size]="5" />
         </button>
       </header>
 
-      <button
-        type="button"
-        class="flex w-full items-center justify-between gap-3 rounded-lg border p-3 text-left"
-        [class.border-primary]="store.segmentKey() === null"
-        [class.border-base-300]="store.segmentKey() !== null"
-        (click)="choose(null)"
-      >
-        <span>
-          <span class="block font-medium">All doors</span>
-          <span class="block text-xs text-base-content/70">{{ allDoorsSubtitle() }}</span>
-        </span>
-        @if (store.segmentKey() === null) {
-          <span class="badge badge-primary badge-sm">Showing</span>
-        }
-      </button>
-
-      @if (nearby().length > 0) {
-        <section class="flex flex-col gap-2">
-          <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">Near you</p>
-          @for (s of nearby(); track s.key) {
-            <button
-              type="button"
-              class="flex w-full items-center justify-between gap-3 rounded-lg border border-base-300 p-3 text-left"
-              (click)="choose(s.key)"
-            >
-              <span class="min-w-0">
-                <span class="block truncate font-medium">{{ s.street }}</span>
-                <span class="block truncate text-xs text-base-content/70">{{ subtitle(s) }}</span>
-                @if (whoIsHere(s); as who) {
-                  <span class="block truncate text-xs font-medium text-secondary">{{ who }}</span>
-                }
-              </span>
-              <span class="shrink-0 text-xs text-base-content/60">{{ distanceLabel(s) }}</span>
-            </button>
-          }
-        </section>
-      } @else if (position.state() === 'prompt' && anyGeocoded()) {
-        <button type="button" class="btn btn-outline btn-secondary btn-sm w-full" (click)="position.request()">
+      @if (position.state() === 'prompt' && anyGeocoded()) {
+        <button type="button" class="btn btn-outline btn-primary btn-sm w-full" (click)="findMe()">
           Find the street I'm on
         </button>
       } @else if (position.state() === 'locating') {
@@ -92,10 +55,7 @@ const NEARBY_RADIUS_KM = 0.5;
       }
 
       <section class="flex flex-col gap-2">
-        <p class="text-[10.5px] font-semibold uppercase tracking-[0.07em] text-base-content/50">
-          All streets in this turf
-        </p>
-        @for (s of store.segments(); track s.key) {
+        @for (s of ordered(); track s.key) {
           <button
             type="button"
             class="flex w-full items-center justify-between gap-3 rounded-lg border p-3 text-left"
@@ -112,14 +72,21 @@ const NEARBY_RADIUS_KM = 0.5;
                 <span class="block truncate text-xs font-medium text-secondary">{{ who }}</span>
               }
             </span>
-            @if (store.segmentKey() === s.key) {
-              <span class="badge badge-primary badge-sm shrink-0">Showing</span>
-            } @else if (s.key === nextDoorSegmentKey()) {
-              <span class="shrink-0 text-xs font-medium text-primary">Your next door</span>
-            }
+            <span class="flex shrink-0 flex-col items-end gap-0.5">
+              @if (distanceLabel(s); as distance) {
+                <span class="text-xs text-base-content/60">{{ distance }}</span>
+              }
+              @if (store.segmentKey() === s.key) {
+                <span class="badge badge-primary badge-sm">Showing</span>
+              } @else if (s.key === nextDoorSegmentKey()) {
+                <span class="text-xs font-medium text-primary">Your next door</span>
+              }
+            </span>
           </button>
         }
       </section>
+
+      <p class="text-xs text-base-content/60">{{ turfTotal() }}</p>
     </div>
   `,
 })
@@ -129,17 +96,22 @@ export class CanvassSegmentPicker {
   protected readonly position = inject(GeoPosition);
   protected readonly store = inject(CanvassStore);
 
-  /** Suppressed until a fix exists — an empty "Near you" heading answers nothing. */
-  protected readonly nearby = computed<CanvassSegment[]>(() => {
-    const here = this.position.coords();
-    if (!here) return [];
-    return this.store
-      .segments()
-      .filter((s) => s.centroid != null && haversineKm(here, s.centroid) <= NEARBY_RADIUS_KM)
-      .sort((a, b) => (this.distanceKm(a) ?? Infinity) - (this.distanceKm(b) ?? Infinity));
-  });
+  /** Set by "Find the street I'm on" — the one path allowed to move the scope for them. */
+  private readonly snapToNearest = signal(false);
 
   protected readonly anyGeocoded = computed(() => this.store.segments().some((s) => s.centroid != null));
+
+  /**
+   * Streets, nearest first when there is a fix.
+   *
+   * Streets with no geocoded door sort last rather than first: `Infinity` is the honest
+   * distance to somewhere we cannot place, and burying it beats claiming it is next door.
+   */
+  protected readonly ordered = computed<CanvassSegment[]>(() => {
+    const segments = this.store.segments();
+    if (!this.position.coords()) return segments;
+    return [...segments].sort((a, b) => (this.distanceKm(a) ?? Infinity) - (this.distanceKm(b) ?? Infinity));
+  });
 
   /** Which street holds the next unattempted door, so narrowing to it is one tap. */
   protected readonly nextDoorSegmentKey = computed(() => {
@@ -147,14 +119,38 @@ export class CanvassSegmentPicker {
     return segments.find((s) => s.attempted < s.doors)?.key ?? null;
   });
 
-  protected allDoorsSubtitle(): string {
-    const stats = this.store.stats();
-    return `${stats.doors_attempted} of ${stats.doors_total} attempted across the whole turf`;
+  constructor() {
+    // Only ever fires after an explicit tap on "Find the street I'm on" — asking to be put
+    // on the street you are standing on is a request, so honouring it is not a surprise.
+    // Any other fix that arrives leaves the chosen scope exactly where it is.
+    effect(() => {
+      const nearest = this.ordered()[0];
+      if (!this.snapToNearest() || !nearest || !this.position.coords()) return;
+      this.snapToNearest.set(false);
+      this.store.chooseSegment(nearest.key);
+      this.closed.emit();
+    });
   }
 
-  protected choose(key: string | null): void {
+  protected choose(key: string): void {
+    this.snapToNearest.set(false);
     this.store.chooseSegment(key);
     this.closed.emit();
+  }
+
+  protected findMe(): void {
+    this.snapToNearest.set(true);
+    this.position.request();
+  }
+
+  protected orderTitle(): string {
+    return this.position.coords() ? 'Streets nearest you' : 'Streets in walk order';
+  }
+
+  /** Always states the whole turf, so a street's count can never read as the turf's. */
+  protected turfTotal(): string {
+    const stats = this.store.stats();
+    return `${stats.doors_attempted} of ${stats.doors_total} attempted across the whole turf.`;
   }
 
   /**
@@ -173,9 +169,9 @@ export class CanvassSegmentPicker {
     return `${names[0]}, ${names[1]} and ${names.length - 2} more are here`;
   }
 
-  protected distanceLabel(s: CanvassSegment): string {
+  protected distanceLabel(s: CanvassSegment): string | null {
     const km = this.distanceKm(s);
-    if (km == null) return '';
+    if (km == null) return null;
     return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
   }
 

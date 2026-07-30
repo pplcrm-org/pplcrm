@@ -3,10 +3,19 @@ import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signa
 import type { CompanionHousehold } from '@common';
 import { Icon } from '@icons/icon';
 
-import { conversations, doorStatus, doorStatusLabel, isAttempted } from './canvass-derive';
+import type { WalkEntry } from './canvass-derive';
+import {
+  conversations,
+  doorStatus,
+  doorStatusLabel,
+  hasVoted,
+  householdStance,
+  isAttempted,
+  residentSummary,
+} from './canvass-derive';
 import { CanvassSegmentPicker } from './canvass-segment-picker';
 import { CanvassStore } from './canvass-store';
-import { firstNameOf, statusBadgeClass } from './canvass-ui';
+import { statusBadgeClass, stanceStyle, type StanceStyle } from './canvass-ui';
 
 /**
  * How often the turf re-pulls itself while the walk list is open.
@@ -20,9 +29,18 @@ const REFRESH_MS = 60_000;
 type ListFilter = 'all' | 'remaining' | 'visited';
 
 /**
- * The walk list (spec §3.3): progress first ("6 of 14 doors attempted"), then
- * doors in walk order. The next open door — lowest walk order not attempted —
- * gets the primary ring and a filled number bubble.
+ * The walk list (spec §3.3): the street you are on, its progress, then its doors in walk
+ * order. The next open door — lowest walk order not attempted — gets the primary ring and
+ * a filled number bubble.
+ *
+ * Two things a row says before it is tapped, because both change whether it is worth
+ * knocking: **who lives here** (full names, with a shared surname said once) and **where
+ * they stand** (a coloured left edge and a thumb, from the CRM's prior ID or from a survey
+ * logged on this walk). A yard sign already owed and a ballot already cast get their own
+ * marks — both mean "the ask at this door is different".
+ *
+ * Apartments arrive as one household per unit, so a block would otherwise be forty
+ * identical-looking rows. They fold into one building row that opens the unit list.
  */
 @Component({
   selector: 'pc-canvass-list',
@@ -41,16 +59,14 @@ type ListFilter = 'all' | 'remaining' | 'visited';
       </header>
 
       <div class="rounded-lg border border-base-300 bg-base-100 p-4">
-        <p class="font-medium">{{ attempted() }} of {{ total() }} doors attempted</p>
+        <p class="font-medium">{{ progressLine() }}</p>
         <progress
           class="progress progress-primary mt-2 w-full"
-          [value]="attempted()"
-          [max]="total()"
-          aria-label="Turf progress"
+          [value]="scopeAttempted()"
+          [max]="scopeTotal()"
+          aria-label="Progress on this street"
         ></progress>
-        <p class="mt-1 text-xs text-base-content/70">
-          {{ conversationCount() }} {{ conversationCount() === 1 ? 'conversation' : 'conversations' }}
-        </p>
+        <p class="mt-1 text-xs text-base-content/70">{{ turfLine() }}</p>
         <!-- Several people can be walking this turf, so say how fresh these numbers are
              rather than letting them look authoritative when they're an hour old. -->
         <button
@@ -71,6 +87,7 @@ type ListFilter = 'all' | 'remaining' | 'visited';
           [attr.aria-expanded]="pickerOpen()"
           (click)="pickerOpen.set(!pickerOpen())"
         >
+          <pc-icon name="map-pin" [size]="5" class="shrink-0 text-primary" />
           <span class="min-w-0 flex-1">
             <span class="block truncate font-medium">{{ scopeTitle() }}</span>
             <span class="block truncate text-xs text-base-content/70">{{ scopeSubtitle() }}</span>
@@ -99,38 +116,65 @@ type ListFilter = 'all' | 'remaining' | 'visited';
       </div>
 
       <div class="flex flex-col gap-2">
-        @for (h of filtered(); track h.id) {
+        @for (entry of filtered(); track entry.key) {
           <button
             type="button"
-            class="flex w-full items-center gap-3 rounded-lg border border-base-300 bg-base-100 p-3 text-left"
-            [class.ring-2]="h.id === store.nextDoorId()"
-            [class.ring-primary]="h.id === store.nextDoorId()"
-            (click)="open(h.id)"
+            class="flex w-full items-center gap-3 rounded-lg border border-l-4 border-base-300 bg-base-100 p-3 text-left"
+            [class]="accentClass(entry)"
+            [class.ring-2]="entry.key === store.nextEntryKey()"
+            [class.ring-primary]="entry.key === store.nextEntryKey()"
+            (click)="open(entry)"
           >
-            <span
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold"
-              [class.bg-primary]="h.id === store.nextDoorId()"
-              [class.text-primary-content]="h.id === store.nextDoorId()"
-              [class.border-primary]="h.id === store.nextDoorId()"
-              [class.border-base-300]="h.id !== store.nextDoorId()"
-              [class.text-base-content]="h.id !== store.nextDoorId()"
-            >
-              {{ h.walk_order }}
-            </span>
-            <span class="min-w-0 flex-1">
-              <span class="block truncate font-medium">{{ h.address }}</span>
-              @if (residentNames(h)) {
-                <span class="block truncate text-xs text-base-content/70">{{ residentNames(h) }}</span>
-              }
-            </span>
-            <span [class]="chipClass(h)">{{ chipLabel(h) }}</span>
+            @if (entry.kind === 'building') {
+              <span
+                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-base-300 text-base-content"
+              >
+                <pc-icon name="building-office" [size]="4" />
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate font-medium">{{ entry.address }}</span>
+                <span class="block truncate text-xs text-base-content/70">{{ buildingSubtitle(entry) }}</span>
+              </span>
+              <pc-icon name="chevron-right" [size]="5" class="shrink-0 text-base-content/40" />
+            } @else {
+              <span
+                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-xs font-semibold"
+                [class.bg-primary]="entry.key === store.nextEntryKey()"
+                [class.text-primary-content]="entry.key === store.nextEntryKey()"
+                [class.border-primary]="entry.key === store.nextEntryKey()"
+                [class.border-base-300]="entry.key !== store.nextEntryKey()"
+                [class.text-base-content]="entry.key !== store.nextEntryKey()"
+              >
+                {{ entry.household.walk_order }}
+              </span>
+              <span class="min-w-0 flex-1">
+                <span class="block truncate font-medium">{{ entry.household.address }}</span>
+                @if (residents(entry.household); as names) {
+                  <span class="block truncate text-xs text-base-content/70">{{ names }}</span>
+                }
+              </span>
+              <span class="flex shrink-0 items-center gap-1.5">
+                <!-- Marks before the status chip: they change what you ASK at the door,
+                     which matters before you know whether anyone answered it. -->
+                @if (entry.household.yard_sign) {
+                  <pc-icon name="yard-sign" [size]="4" class="text-info" title="Wants a yard sign" />
+                }
+                @if (voted(entry.household)) {
+                  <pc-icon name="check-circle" [size]="4" class="text-success" title="Already voted" />
+                }
+                @if (stance(entry.household); as s) {
+                  <pc-icon [name]="s.icon" [size]="4" [class]="s.tone" [title]="s.label" />
+                }
+                <span [class]="chipClass(entry.household)">{{ chipLabel(entry.household) }}</span>
+              </span>
+            }
           </button>
         } @empty {
           <div class="flex flex-col items-center gap-2 rounded-lg border border-base-300 bg-base-100 p-6 text-center">
             <p class="text-base-content/70">{{ emptyMessage() }}</p>
             @if (filter() !== 'all') {
-              <button type="button" class="btn btn-outline btn-secondary" (click)="filter.set('all')">
-                Show all doors
+              <button type="button" class="btn btn-outline btn-primary" (click)="filter.set('all')">
+                Show every door here
               </button>
             }
           </div>
@@ -150,29 +194,51 @@ export class CanvassList {
     { id: 'visited', label: 'Visited' },
   ];
 
-  // Turf-wide on purpose, even when the list is scoped to one street: the progress bar
-  // answers "how is the turf doing", and the scope row right below it answers "what am I
-  // looking at". Two different questions, two different numbers, both labelled.
-  protected readonly attempted = computed(() => this.store.stats().doors_attempted);
-  protected readonly total = computed(() => this.store.stats().doors_total);
-  protected readonly conversationCount = computed(() => conversations(this.store.households()));
+  /**
+   * Progress on the street in view, with the turf stated underneath.
+   *
+   * The bar tracks the scope because the scope is the shift: "3 of 14" on the street you
+   * are standing on is something you can finish, where "3 of 143" is a number you can only
+   * feel bad about. The turf line keeps the bigger picture one line away.
+   */
+  protected readonly scopeAttempted = computed(() => this.store.scopedHouseholds().filter(isAttempted).length);
+  protected readonly scopeTotal = computed(() => this.store.scopedHouseholds().length);
+  protected readonly conversationCount = computed(() => conversations(this.store.scopedHouseholds()));
 
-  protected readonly filtered = computed<CompanionHousehold[]>(() => {
-    const households = [...this.store.scopedHouseholds()].sort((a, b) => a.walk_order - b.walk_order);
+  protected readonly filtered = computed<WalkEntry[]>(() => {
+    const entries = this.store.walkEntries();
     const filter = this.filter();
     switch (filter) {
       case 'remaining':
-        return households.filter((h) => !isAttempted(h));
+        return entries.filter((e) => !this.entryAttempted(e));
       case 'visited':
-        return households.filter((h) => isAttempted(h));
+        return entries.filter((e) => this.entryAttempted(e));
       case 'all':
-        return households;
+        return entries;
       default: {
         const _exhaustive: never = filter;
         return _exhaustive;
       }
     }
   });
+
+  constructor() {
+    const timer = setInterval(() => void this.store.refresh(), REFRESH_MS);
+    inject(DestroyRef).onDestroy(() => clearInterval(timer));
+  }
+
+  /**
+   * The coloured left edge. Buildings never carry one — a block of forty flats has no
+   * single stance, and averaging one would be a claim nobody made.
+   */
+  protected accentClass(entry: WalkEntry): string {
+    if (entry.kind === 'building') return 'border-l-base-300';
+    return stanceStyle(householdStance(entry.household))?.accent ?? 'border-l-base-300';
+  }
+
+  protected buildingSubtitle(entry: Extract<WalkEntry, { kind: 'building' }>): string {
+    return `${entry.units.length} units · ${entry.attempted} attempted`;
+  }
 
   protected chipClass(h: CompanionHousehold): string {
     return statusBadgeClass(doorStatus(h));
@@ -182,16 +248,30 @@ export class CanvassList {
     return doorStatusLabel(doorStatus(h));
   }
 
-  constructor() {
-    const timer = setInterval(() => void this.store.refresh(), REFRESH_MS);
-    inject(DestroyRef).onDestroy(() => clearInterval(timer));
+  protected countFor(filter: ListFilter): number {
+    const entries = this.store.walkEntries();
+    if (filter === 'remaining') return entries.filter((e) => !this.entryAttempted(e)).length;
+    if (filter === 'visited') return entries.filter((e) => this.entryAttempted(e)).length;
+    return entries.length;
   }
 
-  protected countFor(filter: ListFilter): number {
-    const households = this.store.scopedHouseholds();
-    if (filter === 'remaining') return households.filter((h) => !isAttempted(h)).length;
-    if (filter === 'visited') return households.filter((h) => isAttempted(h)).length;
-    return households.length;
+  protected emptyMessage(): string {
+    const filter = this.filter();
+    // Say which scope is empty. "Every door is attempted" about one street, read as if it
+    // were the whole turf, would send a volunteer home early.
+    const where = this.store.activeSegment()?.street ?? 'this turf';
+    switch (filter) {
+      case 'remaining':
+        return `Every door on ${where} is attempted. Pick the next street.`;
+      case 'visited':
+        return `No doors visited on ${where} yet. Start with the ringed door.`;
+      case 'all':
+        return `There are no doors on ${where} yet.`;
+      default: {
+        const _exhaustive: never = filter;
+        return _exhaustive;
+      }
+    }
   }
 
   /** "Updated just now" — vague on purpose past the first hour; the exact minute is noise. */
@@ -206,50 +286,49 @@ export class CanvassList {
     return 'Updated over an hour ago · tap to update';
   }
 
-  protected refreshNow(): void {
-    void this.store.refresh();
-  }
-
-  protected scopeTitle(): string {
-    return this.store.activeSegment()?.street ?? 'All doors in this turf';
-  }
-
-  /** Always states the scope against the whole turf, so "20 doors" can't read as "20 left". */
-  protected scopeSubtitle(): string {
-    const total = this.store.stats().doors_total;
-    const segment = this.store.activeSegment();
-    if (!segment) return `${total} ${total === 1 ? 'door' : 'doors'} · tap to walk one street at a time`;
-    return `${segment.attempted} of ${segment.doors} attempted · ${total} doors in this turf`;
-  }
-
-  protected emptyMessage(): string {
-    const filter = this.filter();
-    // Say which scope is empty. "Every door is attempted" about one street, read as if it
-    // were the whole turf, would send a volunteer home early.
-    const where = this.store.activeSegment()?.street ?? 'this turf';
-    switch (filter) {
-      case 'remaining':
-        return `Every door on ${where} is attempted. Nice work.`;
-      case 'visited':
-        return `No doors visited on ${where} yet. Start with the ringed door.`;
-      case 'all':
-        return `There are no doors on ${where} yet.`;
-      default: {
-        const _exhaustive: never = filter;
-        return _exhaustive;
-      }
-    }
-  }
-
-  protected open(householdId: string): void {
-    this.store.view.set({ kind: 'household', household_id: householdId });
+  protected open(entry: WalkEntry): void {
+    if (entry.kind === 'building') this.store.view.set({ kind: 'building', building_key: entry.key });
+    else this.store.view.set({ kind: 'household', household_id: entry.household.id });
   }
 
   protected openPicker(): void {
     this.store.view.set({ kind: 'picker' });
   }
 
-  protected residentNames(h: CompanionHousehold): string {
-    return h.people.map((p) => firstNameOf(p.name)).join(', ');
+  protected progressLine(): string {
+    const total = this.scopeTotal();
+    const where = this.store.activeSegment()?.street ?? 'this turf';
+    return `${this.scopeAttempted()} of ${total} doors attempted on ${where}`;
+  }
+
+  protected residents(h: CompanionHousehold): string {
+    return residentSummary(h);
+  }
+
+  protected refreshNow(): void {
+    void this.store.refresh();
+  }
+
+  protected scopeTitle(): string {
+    return this.store.activeSegment()?.street ?? 'Every door in this turf';
+  }
+
+  protected scopeSubtitle(): string {
+    const streets = this.store.segments().length;
+    if (streets <= 1) return 'The only street in this turf · tap to confirm';
+    return `Tap to switch street · ${streets} streets in this turf`;
+  }
+
+  protected stance(h: CompanionHousehold): StanceStyle | null {
+    return stanceStyle(householdStance(h));
+  }
+
+  protected voted(h: CompanionHousehold): boolean {
+    return hasVoted(h);
+  }
+
+  /** A building counts as attempted only when every unit in it does. */
+  private entryAttempted(entry: WalkEntry): boolean {
+    return entry.kind === 'building' ? entry.attempted === entry.units.length : isAttempted(entry.household);
   }
 }

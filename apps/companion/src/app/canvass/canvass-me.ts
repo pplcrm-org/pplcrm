@@ -114,7 +114,7 @@ const CLOCK_TICK_MS = 30_000;
 
         <button
           type="button"
-          class="btn btn-outline btn-secondary w-full"
+          class="btn btn-outline btn-primary w-full"
           [disabled]="store.queue().length === 0"
           (click)="syncNow()"
         >

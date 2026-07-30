@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import type { SupportLevel, VotingStatus } from './campaigns.schema';
 import { idSchema, nameSchema, notesSchema } from './core.schema';
 
 /**
@@ -14,9 +15,11 @@ export type TurfStatus = (typeof TURF_STATUSES)[number];
 
 /**
  * What happened at the door. "attempted" = any knock except `cleared`;
- * "conversation" = a talk. `moved` is a person-level no-conversation code;
- * `cleared` is the append-only "door outcome toggled off" marker — the latest
- * outcome knock wins, and `cleared` means the door is back on the list.
+ * "conversation" = a talk. `moved` is recordable for one person or for the whole door
+ * (nobody by that name lives here anymore); `deceased` and `data_error` are person-level
+ * corrections to the file rather than reports of a visit, but they are still knocks — the
+ * canvasser stood there. `cleared` is the append-only "door outcome toggled off" marker —
+ * the latest outcome knock wins, and `cleared` means the door is back on the list.
  */
 export const KNOCK_OUTCOMES = [
   'conversation',
@@ -25,6 +28,8 @@ export const KNOCK_OUTCOMES = [
   'moved',
   'refused',
   'inaccessible',
+  'deceased',
+  'data_error',
   'cleared',
 ] as const;
 export type KnockOutcome = (typeof KNOCK_OUTCOMES)[number];
@@ -49,6 +54,8 @@ export const KNOCK_OUTCOME_LABELS: Record<KnockOutcome, string> = {
   moved: 'Moved',
   refused: 'Refused',
   inaccessible: "Couldn't reach",
+  deceased: 'Deceased',
+  data_error: 'Error in data',
   cleared: 'Result cleared',
 };
 
@@ -60,6 +67,35 @@ export const KNOCK_RESPONSE_LABELS: Record<KnockResponse, string> = {
   not_voting: 'Not voting',
   already_voted: 'Already voted',
 };
+
+/**
+ * The three-way read a walk list is coloured by.
+ *
+ * Deliberately coarser than either `SUPPORT_LEVELS` (six) or `KNOCK_RESPONSES` (five): at a
+ * doorstep, on a phone, in the sun, the only question the colour answers is "is this a
+ * friendly door". Both vocabularies collapse into it here so the map, the list and the
+ * household card can never disagree about what "leaning" looks like.
+ */
+export type CanvassStance = 'supporter' | 'undecided' | 'non_supporter';
+
+export const SUPPORT_LEVEL_TO_STANCE: Record<SupportLevel, CanvassStance> = {
+  strong: 'supporter',
+  leaning: 'supporter',
+  neutral: 'undecided',
+  undecided: 'undecided',
+  leaning_against: 'non_supporter',
+  against: 'non_supporter',
+};
+
+/** `not_voting`/`already_voted` are turnout facts, not stances, so they map to nothing. */
+export const KNOCK_RESPONSE_TO_STANCE: Partial<Record<KnockResponse, CanvassStance>> = {
+  supporter: 'supporter',
+  undecided: 'undecided',
+  non_supporter: 'non_supporter',
+};
+
+/** Ballot already cast — the green check on a walk-list row. */
+export const VOTED_STATUSES: readonly VotingStatus[] = ['voted_advance', 'voted_eday'];
 
 /** Doors-per-turf presets from the Cut-new-turfs dialog. */
 export const DOORS_PER_TURF_PRESETS = [30, 40, 50, 60] as const;
@@ -145,8 +181,9 @@ export function isKnockOutcome(v: unknown): v is KnockOutcome {
 
 /**
  * A full survey (spec §3.5). `person_id` null = the anonymous household-level
- * survey. `support` is the one required field — EXCEPT that toggling
- * "Do not contact" alone is saveable, which the refine below encodes.
+ * survey. `support` is the one required field — EXCEPT that a save carrying only
+ * "Do not contact" or only "65 or older" is still a save worth keeping, which the
+ * refine below encodes. Any of the three is a fact learned at the door.
  */
 export const CompanionSurveyObj = z
   .object({
@@ -157,24 +194,39 @@ export const CompanionSurveyObj = z
     wants_volunteer: z.boolean().default(false),
     wants_yard_sign: z.boolean().default(false),
     set_dnc: z.boolean().default(false),
+    /** 65 or older — person-level only; a household has no age. */
+    senior: z.boolean().default(false),
     contact_phone: z.string().trim().max(40).nullable().optional(),
     contact_email: z.string().trim().email().max(200).nullable().optional(),
     subscribe: z.boolean().default(false),
     notes: z.string().trim().max(2000).nullable().optional(),
   })
-  .refine((v) => v.support != null || v.set_dnc, { message: 'Pick a support level to save' });
+  .refine((v) => v.support != null || v.set_dnc || v.senior, { message: 'Pick a support level to save' });
 
-/** One-tap no-conversation codes for a person (spec §3.5). */
+/**
+ * One-tap codes for a person when there was no survey to record (spec §3.5).
+ *
+ * `deceased` and `data_error` are corrections to the file rather than reports of a visit,
+ * but they arrive the same way and are logged the same way. `note` exists for `data_error`
+ * alone — "what is wrong here" is the whole content of that report, and a flag with no
+ * explanation gives the organizer nothing to act on.
+ */
 export const CompanionPersonResultObj = z.object({
   household_id: idSchema,
   person_id: idSchema,
-  result: z.enum(['not_home', 'moved', 'refused']),
+  result: z.enum(['not_home', 'moved', 'refused', 'deceased', 'data_error']),
+  note: z.string().trim().max(2000).nullable().optional(),
 });
 
-/** Door-level outcome (spec §3.4 quick actions). */
+/**
+ * Door-level outcome (spec §3.4 quick actions).
+ *
+ * `moved` at the DOOR means "nobody on this list lives here anymore" — distinct from the
+ * person-level `moved`, which means one named resident left a household that still exists.
+ */
 export const CompanionDoorOutcomeObj = z.object({
   household_id: idSchema,
-  outcome: z.enum(['no_answer', 'inaccessible', 'refused']),
+  outcome: z.enum(['no_answer', 'inaccessible', 'refused', 'moved']),
 });
 
 export const CompanionClearOutcomeObj = z.object({
@@ -249,18 +301,39 @@ export interface CompanionSurveyPrefill {
   subscribe: boolean;
 }
 
-export type CompanionPersonResult = 'canvassed' | 'not_home' | 'moved' | 'refused';
+export type CompanionPersonResult = 'canvassed' | 'not_home' | 'moved' | 'refused' | 'deceased' | 'data_error';
 
 export interface CompanionPerson {
   id: string;
+  /** "Heather Gagnon" — the full name, because at a door the surname is half the identification. */
   name: string;
+  /**
+   * Sent alongside `name` so the walk list can collapse a shared surname ("Heather & Ross
+   * Gagnon") instead of printing it twice on a phone-width row. Null when there is none.
+   */
+  last_name: string | null;
   /** Suppressed from all outreach — card renders dimmed and non-interactive. */
   dnc: boolean;
+  /**
+   * Support and turnout as the CRM knows them coming in — from ANY source (a phone bank,
+   * an import, an earlier canvass), not just this turf's knocks.
+   *
+   * This is the one deliberate widening of payload minimization: a paper walk list has
+   * always carried prior ID, it is the entire reason a canvasser prioritizes one door over
+   * another, and "already voted" is essentially never something the door team recorded
+   * themselves. Still no emails, phones, donations, or notes.
+   */
+  support: SupportLevel | null;
+  voting_status: VotingStatus | null;
+  /** Reported dead. The card is read-only and says so rather than quietly disappearing. */
+  deceased: boolean;
+  /** 65 or older, where somebody has said. Null = never asked. */
+  senior: boolean | null;
   result: CompanionPersonResult | null;
   survey: CompanionSurveyPrefill | null;
 }
 
-export type CompanionDoorOutcome = 'no_answer' | 'inaccessible' | 'refused';
+export type CompanionDoorOutcome = 'no_answer' | 'inaccessible' | 'refused' | 'moved';
 
 export interface CompanionHousehold {
   id: string;
@@ -276,10 +349,20 @@ export interface CompanionHousehold {
    */
   street: string | null;
   street_num: string | null;
+  /**
+   * Unit/suite, when this door is one of many in a building.
+   *
+   * Apartments are ordinary household rows that happen to share a street number, so the
+   * companion groups them back into one building row and opens the unit list on tap —
+   * fifty rows that all read "58 Huron Avenue" is not a walk list.
+   */
+  apt: string | null;
   lat: number | null;
   lng: number | null;
   /** Whole-door do-not-contact (every resident is DNC) — skip, but it still counts. */
   dnc: boolean;
+  /** Somebody at this door has an open yard-sign request. Shown as an icon on the row. */
+  yard_sign: boolean;
   door_outcome: CompanionDoorOutcome | null;
   /** The anonymous household-level survey, when one was recorded. */
   hh_survey: CompanionSurveyPrefill | null;

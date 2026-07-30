@@ -2,10 +2,12 @@ import type {
   AddTurfType,
   AssignTurfType,
   CompanionClaimSegmentType,
+  CompanionDoorOutcome,
   CompanionHousehold,
   CompanionOpAck,
   CompanionOpType,
   CompanionPerson,
+  CompanionPersonResult,
   CompanionSegmentClaim,
   CompanionSurveyPrefill,
   CompanionSurveyType,
@@ -21,6 +23,7 @@ import type {
   UpdateTurfType,
   VotingStatus,
 } from '../../../../../../libs/common/src';
+import { SUPPORT_LEVELS, TASK_OPEN_STATUSES, VOTING_STATUSES } from '../../../../../../libs/common/src';
 
 import { env } from '../../../env';
 import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resend-limit';
@@ -70,6 +73,61 @@ const KNOCK_RESPONSE_TO_VOTING: Partial<Record<KnockResponse, VotingStatus>> = {
   not_voting: 'not_voting',
   already_voted: 'voted_advance',
 };
+
+/**
+ * `support_level` / `voting_status` are plain text columns, so a row written before a
+ * vocabulary changed (or by an import) can hold a value the union no longer names. Narrow
+ * rather than cast: an unrecognized value reads as "unknown" at the door, which is true.
+ */
+function isSupportLevel(v: unknown): v is SupportLevel {
+  return typeof v === 'string' && (SUPPORT_LEVELS as readonly string[]).includes(v);
+}
+
+function isVotingStatus(v: unknown): v is VotingStatus {
+  return typeof v === 'string' && (VOTING_STATUSES as readonly string[]).includes(v);
+}
+
+/**
+ * Task-name prefix for "Error in data" reports. Also the dedupe key — one open review task
+ * per person, matched by this prefix rather than by a flag column.
+ */
+const DATA_ERROR_TASK_PREFIX = 'Check door data:';
+
+/** Door-level outcomes the Companion can render and re-record. */
+const COMPANION_DOOR_OUTCOMES: readonly CompanionDoorOutcome[] = ['no_answer', 'inaccessible', 'refused', 'moved'];
+
+/** Person-level no-conversation codes, in the same order the survey screen offers them. */
+const COMPANION_PERSON_RESULTS: readonly CompanionPersonResult[] = [
+  'not_home',
+  'moved',
+  'refused',
+  'deceased',
+  'data_error',
+];
+
+function isCompanionDoorOutcome(v: string): v is CompanionDoorOutcome {
+  return (COMPANION_DOOR_OUTCOMES as readonly string[]).includes(v);
+}
+
+/**
+ * The stored knock outcome as a person card reads it, or null.
+ *
+ * Null covers `cleared` and anything a future vocabulary adds: an outcome this build does
+ * not understand shows as no result rather than as a wrong one.
+ */
+function personResultOf(outcome: string): CompanionPersonResult | null {
+  return COMPANION_PERSON_RESULTS.find((r) => r === outcome) ?? null;
+}
+
+/** One resident as the companion payload needs them — see `peopleByHousehold`. */
+interface ResidentRow {
+  id: string;
+  name: string;
+  last_name: string | null;
+  dnc: boolean;
+  deceased: boolean;
+  senior: boolean | null;
+}
 
 /** Derived display status — computed from stored lifecycle + knock activity. */
 export type TurfDisplayStatus = 'draft' | 'assigned' | 'in_field' | 'complete' | 'retired';
@@ -789,6 +847,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   }
 
   public async updateTurf(auth: IAuthKeyPayload, id: string, input: UpdateTurfType): Promise<void> {
+    const turf = await this.turfsRepo().getTurfCore({ tenant_id: auth.tenant_id, id });
+    if (!turf) throw new NotFoundError('Turf not found');
+
     const row = {
       ...(input.name != null ? { name: input.name } : {}),
       ...(input.status != null ? { status: input.status } : {}),
@@ -797,6 +858,21 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       updated_at: new Date(),
     } as OperationDataType<'turfs', 'update'>;
     await this.turfsRepo().update({ tenant_id: auth.tenant_id, id, row });
+
+    // A rename is the one thing about a turf staff change by hand, and the name is
+    // load-bearing: canvassers already walking it see it in the Companion and the field
+    // report files the turf under it. The turf's own activity log is where someone looks
+    // to find out who changed it, so it is recorded in the `changes` shape the log renders.
+    if (input.name != null && input.name !== turf.name) {
+      await this.userActivity.log({
+        tenant_id: auth.tenant_id,
+        user_id: auth.user_id,
+        activity: 'update',
+        entity: 'turf',
+        entity_id: id,
+        metadata: { changes: { name: { from: turf.name, to: input.name } } },
+      });
+    }
   }
 
   // -------------------------------------------------- Companion (public) ----
@@ -842,8 +918,17 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       this.segmentClaims.activeForTurf({ tenant_id, turf_id }),
     ]);
 
+    const campaignId = String(turf.campaign_id ?? '');
     const householdIds = doorRows.map((d) => d.household_id);
     const people = await this.peopleByHousehold(tenant_id, householdIds);
+    const personIds = [...people.values()].flat().map((p) => p.id);
+    // Prior ID and open sign requests are what turn a list of addresses into a walk list:
+    // they say which door is worth the next ten minutes. Both are read AFTER the residents
+    // because both are keyed off them.
+    const [priorFacts, yardSignDoors] = await Promise.all([
+      this.priorFactsByPerson(tenant_id, campaignId, personIds),
+      this.openYardSignHouseholds(tenant_id, campaignId, householdIds),
+    ]);
 
     // Index the latest knock per (household, person).
     const doorState = new Map<string, (typeof state)[number]>();
@@ -856,10 +941,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     const households: CompanionHousehold[] = doorRows.map((d, i) => {
       const residents = people.get(d.household_id) ?? [];
       const ds = doorState.get(d.household_id);
-      const doorOutcome =
-        ds && (ds.outcome === 'no_answer' || ds.outcome === 'inaccessible' || ds.outcome === 'refused')
-          ? ds.outcome
-          : null;
+      const doorOutcome = ds != null && isCompanionDoorOutcome(ds.outcome) ? ds.outcome : null;
       const hhSurvey = ds && ds.outcome === 'conversation' ? this.toPrefill(ds) : null;
       return {
         id: d.household_id,
@@ -869,25 +951,26 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         // one thing the UI renders.
         street: d.street1,
         street_num: d.street_num,
+        apt: d.apt,
         lat: d.lat,
         lng: d.lng,
         dnc: residents.length > 0 && residents.every((p) => p.dnc),
+        yard_sign: yardSignDoors.has(d.household_id),
         door_outcome: doorOutcome,
         hh_survey: hhSurvey,
         people: residents.map((p): CompanionPerson => {
           const ps = personState.get(`${d.household_id}:${p.id}`);
-          const result =
-            ps == null
-              ? null
-              : ps.outcome === 'conversation'
-                ? 'canvassed'
-                : ps.outcome === 'not_home' || ps.outcome === 'moved' || ps.outcome === 'refused'
-                  ? ps.outcome
-                  : null;
+          const prior = priorFacts.get(p.id);
+          const result = ps == null ? null : ps.outcome === 'conversation' ? 'canvassed' : personResultOf(ps.outcome);
           return {
             id: p.id,
             name: p.name,
+            last_name: p.last_name,
             dnc: p.dnc,
+            support: prior?.support ?? null,
+            voting_status: prior?.voting_status ?? null,
+            deceased: p.deceased,
+            senior: p.senior,
             result,
             survey: ps && ps.outcome === 'conversation' ? this.toPrefill(ps) : null,
           };
@@ -1291,7 +1374,15 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       case 'person_result': {
         const personId = String(op.payload.person_id);
         await this.assertPersonInHousehold(trx, tenant_id, personId, householdId);
-        await insertKnock({ person_id: personId, outcome: op.payload.result });
+        await insertKnock({ person_id: personId, outcome: op.payload.result, notes: op.payload.note ?? null });
+        await this.applyPersonResultSideEffects(trx, {
+          tenant_id,
+          turf_id,
+          person_id: personId,
+          actor,
+          result: op.payload.result,
+          note: op.payload.note ?? null,
+        });
         await logActivity('person', personId, { outcome: op.payload.result });
         return { op_id: op.op_id, status: 'applied' };
       }
@@ -1333,6 +1424,105 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         return _exhaustive;
       }
     }
+  }
+
+  /**
+   * The writes a one-tap person code triggers, in the op's transaction.
+   *
+   * `not_home` / `moved` / `refused` are reports of a visit and change nothing about the
+   * person — the knock row IS the record. The two that do change something are corrections
+   * to the file, and both were previously impossible to make from a doorstep:
+   *
+   * - **deceased** stamps `deceased_at` and sets `do_not_contact`. Sending one more letter
+   *   to a dead person is the single most damaging thing a campaign's data can do, so the
+   *   suppression is not optional and does not wait for staff review. The date is only ever
+   *   set once — a second report must not overwrite when we first learned it.
+   * - **data_error** writes nothing to the person. A volunteer saying "this record is
+   *   wrong" is a report, not a diagnosis, and guessing which field they meant would be
+   *   worse than leaving it alone. It opens a task for the campaign admin instead, so a
+   *   human with the full record decides. One open task per person at a time — a family of
+   *   four with a wrong address should not become four identical tasks.
+   */
+  private async applyPersonResultSideEffects(
+    trx: Transaction<Models>,
+    input: {
+      tenant_id: string;
+      turf_id: string;
+      person_id: string;
+      actor: string;
+      result: CompanionPersonResult;
+      note: string | null;
+    },
+  ): Promise<void> {
+    const { tenant_id, person_id, actor, result, note } = input;
+
+    if (result === 'deceased') {
+      await trx
+        .updateTable('persons')
+        .set({ deceased_at: new Date(), do_not_contact: true, updatedby_id: actor, updated_at: new Date() })
+        .where('tenant_id', '=', tenant_id)
+        .where('id', '=', person_id)
+        .where('deceased_at', 'is', null)
+        .execute();
+      // The DNC has to land even on a person already marked deceased by an earlier knock —
+      // the guarded update above skips them entirely.
+      await trx
+        .updateTable('persons')
+        .set({ do_not_contact: true, updatedby_id: actor, updated_at: new Date() })
+        .where('tenant_id', '=', tenant_id)
+        .where('id', '=', person_id)
+        .where('do_not_contact', '=', false)
+        .execute();
+      return;
+    }
+
+    if (result !== 'data_error') return;
+
+    const open = await trx
+      .selectFrom('tasks')
+      .select(['id'])
+      .where('tenant_id', '=', tenant_id)
+      .where('person_id', '=', person_id)
+      .where('status', 'in', [...TASK_OPEN_STATUSES])
+      .where('name', 'like', `${DATA_ERROR_TASK_PREFIX}%`)
+      .executeTakeFirst();
+    if (open) return;
+
+    const person = await trx
+      .selectFrom('persons')
+      .select(['first_name', 'last_name'])
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', person_id)
+      .executeTakeFirst();
+    const who = [person?.first_name, person?.last_name].filter(Boolean).join(' ') || 'a resident';
+    const campaignId = await this.resolveKnockCampaignId(tenant_id, input.turf_id);
+    const admin = campaignId
+      ? await trx
+          .selectFrom('campaigns')
+          .select(['admin_id'])
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', campaignId)
+          .executeTakeFirst()
+      : null;
+
+    await trx
+      .insertInto('tasks')
+      .values({
+        tenant_id,
+        name: `${DATA_ERROR_TASK_PREFIX} ${who}`.slice(0, 200),
+        details: note?.trim()
+          ? `A canvasser flagged this record at the door:\n\n${note.trim()}`
+          : 'A canvasser flagged this record at the door without saying what was wrong.',
+        status: 'todo',
+        priority: 'low',
+        person_id,
+        // Falls back to the staff account whose link is being walked. Somebody real owns it
+        // either way — an unassigned task is one nobody notices.
+        assigned_to: admin?.admin_id != null ? String(admin.admin_id) : actor,
+        createdby_id: actor,
+        updatedby_id: actor,
+      } as OperationDataType<'tasks', 'insert'>)
+      .execute();
   }
 
   /** The follow-up writes a survey triggers (spec §3.5) — all in the op's transaction. */
@@ -1472,6 +1662,32 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           .where('volunteer_status', 'is', null)
           .execute();
       }
+
+      // "65 or older" — exactly two transitions, never a blanket write.
+      //
+      // The toggle ships `false` on every survey, including the overwhelming majority where
+      // nobody thought about age, so writing it straight through would assert "under 65"
+      // about the entire turf. Instead: an ON toggle sets true where it is not already
+      // true, and an OFF toggle only clears a value that was actually true — which is a
+      // canvasser correcting a mis-tap or an earlier mistake, since the client pre-fills the
+      // toggle from what the CRM already holds. A never-recorded person stays NULL.
+      if (survey.senior) {
+        await trx
+          .updateTable('persons')
+          .set({ senior: true, updated_at: new Date(), updatedby_id: actor })
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', personId)
+          .where((eb) => eb.or([eb('senior', 'is', null), eb('senior', '=', false)]))
+          .execute();
+      } else {
+        await trx
+          .updateTable('persons')
+          .set({ senior: false, updated_at: new Date(), updatedby_id: actor })
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', personId)
+          .where('senior', '=', true)
+          .execute();
+      }
     }
   }
 
@@ -1609,16 +1825,19 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     return [row?.first_name, row?.last_name].filter(Boolean).join(' ') || 'Volunteer';
   }
 
-  /** Residents per household — names + DNC only (payload minimization, spec §2). */
-  private async peopleByHousehold(
-    tenant_id: string,
-    household_ids: string[],
-  ): Promise<Map<string, { id: string; name: string; dnc: boolean }[]>> {
-    const map = new Map<string, { id: string; name: string; dnc: boolean }[]>();
+  /**
+   * Residents per household — names, DNC, and the two door-recorded person flags.
+   *
+   * Still payload-minimized (spec §2): no emails, phones, donations or notes. `last_name`
+   * travels separately from the joined `name` so the walk list can fold a shared surname
+   * into one line instead of printing it once per resident on a phone-width row.
+   */
+  private async peopleByHousehold(tenant_id: string, household_ids: string[]): Promise<Map<string, ResidentRow[]>> {
+    const map = new Map<string, ResidentRow[]>();
     if (household_ids.length === 0) return map;
     const rows = await this.knocks.db
       .selectFrom('persons')
-      .select(['id', 'household_id', 'first_name', 'last_name', 'do_not_contact'])
+      .select(['id', 'household_id', 'first_name', 'last_name', 'do_not_contact', 'deceased_at', 'senior'])
       .where('tenant_id', '=', tenant_id)
       .where('household_id', 'in', household_ids)
       .orderBy('id')
@@ -1629,11 +1848,69 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       list.push({
         id: String(r.id),
         name: [r.first_name, r.last_name].filter(Boolean).join(' ') || 'Unnamed resident',
+        last_name: r.last_name ?? null,
         dnc: Boolean(r.do_not_contact),
+        deceased: r.deceased_at != null,
+        senior: r.senior ?? null,
       });
       map.set(hid, list);
     }
     return map;
+  }
+
+  /**
+   * Support + turnout as the CRM already knows them, for the people at these doors.
+   *
+   * Read from `campaign_person_facts` in the TURF's campaign, so a writ-period walk shows
+   * the election's read on a voter rather than the office's. Empty map when the turf has
+   * no campaign — an unknown context must show "unknown", never another campaign's answer.
+   */
+  private async priorFactsByPerson(
+    tenant_id: string,
+    campaign_id: string,
+    person_ids: string[],
+  ): Promise<Map<string, { support: SupportLevel | null; voting_status: VotingStatus | null }>> {
+    const map = new Map<string, { support: SupportLevel | null; voting_status: VotingStatus | null }>();
+    if (!campaign_id || person_ids.length === 0) return map;
+    const rows = await this.knocks.db
+      .selectFrom('campaign_person_facts')
+      .select(['person_id', 'support_level', 'voting_status'])
+      .where('tenant_id', '=', tenant_id)
+      .where('campaign_id', '=', campaign_id)
+      .where('person_id', 'in', person_ids)
+      .execute();
+    for (const r of rows) {
+      map.set(String(r.person_id), {
+        support: isSupportLevel(r.support_level) ? r.support_level : null,
+        voting_status: isVotingStatus(r.voting_status) ? r.voting_status : null,
+      });
+    }
+    return map;
+  }
+
+  /**
+   * Which of these doors already has a yard sign coming.
+   *
+   * "Open" is the same pair of statuses the Deliveries intake guard uses (`new` |
+   * `approved`) — a delivered sign is a sign already in the ground, and the walk list marks
+   * that differently from one still owed. Campaign-scoped for the same reason as the facts
+   * above: a request raised for the office is not a promise the election campaign made.
+   */
+  private async openYardSignHouseholds(
+    tenant_id: string,
+    campaign_id: string,
+    household_ids: string[],
+  ): Promise<Set<string>> {
+    if (!campaign_id || household_ids.length === 0) return new Set<string>();
+    const rows = await this.knocks.db
+      .selectFrom('delivery_requests')
+      .select(['household_id'])
+      .where('tenant_id', '=', tenant_id)
+      .where('campaign_id', '=', campaign_id)
+      .where('household_id', 'in', household_ids)
+      .where('status', 'in', ['new', 'approved'])
+      .execute();
+    return new Set(rows.map((r) => String(r.household_id)));
   }
 
   private toPrefill(s: {
@@ -1785,13 +2062,18 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   private formatAddress(d: {
     street_num: string | null;
     street1: string | null;
+    apt?: string | null;
     city: string | null;
     state: string | null;
     zip: string | null;
   }): string {
     const line = [d.street_num, d.street1].filter(Boolean).join(' ');
+    // The unit goes second, where a courier and a canvasser both look for it. Bare digits
+    // get "Unit" in front so "302" can't read as part of the street number.
+    const apt = d.apt?.trim();
+    const unit = apt ? (/^[\d\s-]+$/.test(apt) ? `Unit ${apt}` : apt) : null;
     const tail = [d.city, d.state, d.zip].filter(Boolean).join(', ');
-    return [line, tail].filter(Boolean).join(', ') || 'Address unavailable';
+    return [line, unit, tail].filter(Boolean).join(', ') || 'Address unavailable';
   }
 
   private dayWindow(now: Date): { from: Date; to: Date } {

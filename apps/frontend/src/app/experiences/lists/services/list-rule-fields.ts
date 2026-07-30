@@ -41,6 +41,22 @@ export const DO_NOT_CONTACT_CHOICES: RuleChoice[] = [
   { value: 'false', label: 'No — contactable' },
 ];
 
+/**
+ * `persons.senior` is deliberately tri-state: NULL means nobody has asked, which is not
+ * the same as "under 65". "Not recorded" is therefore a real answer, reached with the
+ * `is not` operator against either value.
+ */
+export const SENIOR_CHOICES: RuleChoice[] = [
+  { value: 'true', label: 'Yes — 65 or older' },
+  { value: 'false', label: 'No — under 65' },
+];
+
+/** Presence of `persons.deceased_at`, cast to a yes/no by the repo. */
+export const DECEASED_CHOICES: RuleChoice[] = [
+  { value: 'true', label: 'Yes — reported deceased' },
+  { value: 'false', label: 'No' },
+];
+
 /** Field name → the label shown in the picker and in the definition sentence. */
 export const RULE_FIELD_LABELS: Record<string, string> = {
   tags: 'Tags',
@@ -51,6 +67,8 @@ export const RULE_FIELD_LABELS: Record<string, string> = {
   support_level: 'Support level',
   voting_status: 'Voting status',
   do_not_contact: 'Do not contact',
+  senior: 'Senior (65+)',
+  deceased: 'Deceased',
   first_name: 'First Name',
   last_name: 'Last Name',
   email: 'Email',
@@ -75,6 +93,8 @@ export const RULE_FIELD_CHOICES: Record<string, RuleChoice[]> = {
   support_level: SUPPORT_LEVEL_CHOICES,
   voting_status: VOTING_STATUS_CHOICES,
   do_not_contact: DO_NOT_CONTACT_CHOICES,
+  senior: SENIOR_CHOICES,
+  deceased: DECEASED_CHOICES,
 };
 
 export function ruleFieldLabel(field: string): string {

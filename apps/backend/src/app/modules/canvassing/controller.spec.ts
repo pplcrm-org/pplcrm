@@ -312,6 +312,38 @@ describe('CanvassingController', () => {
     expect(total).toBe(40);
   });
 
+  it('renames a turf everywhere it is read, without disturbing its doors or its links', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const [turf] = await controller.getTurfs(auth);
+    if (!turf) throw new Error('expected a turf');
+
+    const { token } = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    // Snapshot AFTER the assignment: putting a canvasser on a turf legitimately moves its
+    // display status, so comparing against the pre-assign shape would blame the rename.
+    const before = await controller.getTurfDetail(auth, turf.id);
+
+    await controller.updateTurf(auth, turf.id, { name: 'North of Elm' });
+
+    // The staff surfaces and the link a volunteer is already holding all read the new
+    // name — a rename that only landed on the list would leave canvassers on the old one.
+    const renamed = (await controller.getTurfs(auth)).find((t) => t.id === turf.id);
+    expect(renamed?.name).toBe('North of Elm');
+    const detail = await controller.getTurfDetail(auth, turf.id);
+    expect(detail.name).toBe('North of Elm');
+    expect(detail.door_count).toBe(before.door_count);
+    expect(detail.status).toBe(before.status);
+    expect(detail.canvassers.map((c) => c.name)).toEqual(before.canvassers.map((c) => c.name));
+    const payload = await controller.getCompanionTurf(token, session);
+    expect(payload.turf_name).toBe('North of Elm');
+
+    await expect(controller.updateTurf(auth, rand(), { name: 'Nowhere' })).rejects.toThrow(/not found/i);
+  });
+
   it('puts several volunteers on one turf, each with their own working link', async () => {
     await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
     // Turfs never cross a ward, so the cut yields more than one; hold on to the

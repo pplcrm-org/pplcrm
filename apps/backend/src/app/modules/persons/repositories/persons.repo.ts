@@ -277,6 +277,12 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         // isEmpty / isNotEmpty operators read correctly.
         volunteer_status: { col: 'persons.volunteer_status' },
         staff_status: { col: 'persons.staff_status' },
+        // Recorded at the door (§13), and compared as text like do_not_contact below.
+        // `senior` is genuinely tri-state (NULL = nobody has asked), so its own cast is
+        // enough. `deceased_at` is a DATE, and a rule asking "is deceased" wants a yes/no
+        // — so the presence of the date is what gets cast, not the date itself.
+        senior: { col: 'persons.senior::text', isCast: true },
+        deceased: { col: '(persons.deceased_at IS NOT NULL)::text', isCast: true },
         // Campaign-scoped facts — resolved against options.campaignId above, so
         // a rule on these means "in the context this query is running in".
         subscription_status: { col: 'csub.status' },
@@ -335,6 +341,8 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'persons.volunteer_status',
         'persons.staff_status',
         'persons.do_not_contact',
+        'persons.deceased_at',
+        'persons.senior',
         'csub.status as subscription_status',
         sql<string[]>`coalesce(array_remove(array_agg(CASE WHEN tags.type = 'tag' THEN tags.name END), null), '{}')`.as(
           'tags',
@@ -373,6 +381,8 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'persons.volunteer_status',
         'persons.staff_status',
         'persons.do_not_contact',
+        'persons.deceased_at',
+        'persons.senior',
         'csub.status',
       ])
       .$if(!!options.sortModel?.length, (qb) =>
