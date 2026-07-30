@@ -132,10 +132,16 @@ approve/decline, and the always-enabled "Plan routes · N ready" primary, which 
 doesn't provide. Pages: `deliveries-requests` (`/deliveries`), `deliveries-plan` (`/deliveries/plan`),
 `deliveries-routes` (`/deliveries/routes`), `deliveries-route-detail` (`/deliveries/routes/:id`).
 The sidebar has a single **Deliveries** entry (→ `/deliveries`), so the two list pages carry a
-shared **`deliveries-nav.ts`** (`pc-deliveries-nav`) segmented switcher in their header — a DaisyUI
-`join` of two `routerLink`s whose active segment is driven by `routerLinkActive` (no JS state) —
-because otherwise the routes list is only reachable by opening a single route from the requests
-grid's Route column. The **routes list rows** carry the same inline affordances as the route detail:
+shared **`deliveries-nav.ts`** (`pc-deliveries-nav`) surface switcher in their header — the house
+`pc-tab-bar` in its `underline` variant, whose active tab is driven by `routerLinkActive` (no JS
+state) — because otherwise the routes list is only reachable by opening a single route from the
+requests grid's Route column. The **Routes** tab carries a count of the routes a volunteer is
+currently out delivering (`deliveries.getRouteCounts` → `DeliveryRoutesRepo.getStatusCounts`,
+read with `skipErrorHandler` so a failed count drops the badge instead of toasting). It counts
+`in_progress` only and is hidden at zero, so the option also sets `tooltip` ("N routes in
+progress") — a bare number beside "Routes" would otherwise read as the route total. The nav
+fetches on init and exposes `refresh()`; `deliveries-routes.ts` calls it after canceling a route,
+the one in-page action that can retire an in-progress route. The **routes list rows** carry the same inline affordances as the route detail:
 an inline dashed **Assign** button in the Volunteer cell when unassigned, and a trailing `⋯`
 overflow (assign/change volunteer via the shared `assign-volunteer-dialog.ts`, copy volunteer link,
 resend link to volunteer, cancel route, delete route) — mirrors the canvassing turf table. The route

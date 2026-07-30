@@ -519,6 +519,10 @@ export class DeliveriesController {
     return this.routesRepo.getAllWithCounts({ tenant_id: tenant, options: options as never });
   }
 
+  public getRouteCounts(tenant: string) {
+    return this.routesRepo.getStatusCounts(tenant);
+  }
+
   public async getRouteById(auth: IAuthKeyPayload, id: string) {
     const route = await this.routesRepo.getRouteRow(auth.tenant_id, id);
     if (!route) throw new NotFoundError('Route not found');

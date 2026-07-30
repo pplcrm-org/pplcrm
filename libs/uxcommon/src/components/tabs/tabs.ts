@@ -6,6 +6,11 @@ export interface PcTabOption {
   label: string;
   badge?: string | number;
   disabled?: boolean;
+  /**
+   * Hover explanation. On a disabled tab it renders as the DaisyUI tooltip naming the unmet
+   * condition; on an enabled one it is a native title — say what a badge counts when the bare
+   * number would read as something else.
+   */
   tooltip?: string;
   /** When set, the pill renders as a router link (page-level tabs that navigate) instead of a stateful button. */
   route?: string;
@@ -58,6 +63,7 @@ const UNDERLINE_BADGE = 'text-xs tabular-nums opacity-70';
             [routerLinkActive]="activeLinkClass()"
             [routerLinkActiveOptions]="{ exact: tab.exact ?? false }"
             [class]="linkClass()"
+            [attr.title]="tab.tooltip || null"
           >
             <span>{{ tab.label }}</span>
             @if (tab.badge !== undefined && tab.badge !== null) {
@@ -73,6 +79,7 @@ const UNDERLINE_BADGE = 'text-xs tabular-nums opacity-70';
             [class]="tabClass(tab)"
             [class.tooltip]="tab.disabled && tab.tooltip"
             [attr.data-tip]="tab.disabled && tab.tooltip ? tab.tooltip : null"
+            [attr.title]="!tab.disabled && tab.tooltip ? tab.tooltip : null"
             (click)="!tab.disabled && selectTab(tab.id)"
           >
             <span>{{ tab.label }}</span>
