@@ -4,6 +4,7 @@ import { Router, RouterModule } from '@angular/router';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Card as PcCard } from '@uxcommon/components/card/card';
 import { DetailHeader as PcDetailHeader } from '@uxcommon/components/detail-header/detail-header';
+import { EntityPicker, PcPickerOption } from '@uxcommon/components/entity-picker/entity-picker';
 import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
 import { Icon } from '@uxcommon/components/icons/icon';
 import { Input as PcInput } from '@uxcommon/components/input/input';
@@ -26,12 +27,32 @@ interface PersonOption {
   label: string;
 }
 
+/** The subset of a list row this form needs to render a pickable option. */
+interface TeamListOption {
+  id: string;
+  is_dynamic: boolean;
+  name: string;
+  object: string | null;
+}
+
 import { DatePipe } from '@angular/common';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
 @Component({
   selector: 'pc-team-form',
-  imports: [EmptyState, FormField, RouterModule, Icon, DatePipe, PcDetailHeader, PcInput, PcTextarea, PcSelect, PcCard],
+  imports: [
+    EmptyState,
+    EntityPicker,
+    FormField,
+    RouterModule,
+    Icon,
+    DatePipe,
+    PcDetailHeader,
+    PcInput,
+    PcTextarea,
+    PcSelect,
+    PcCard,
+  ],
   templateUrl: './team-form.html',
 })
 export class TeamFormComponent implements OnInit {
@@ -80,11 +101,46 @@ export class TeamFormComponent implements OnInit {
   protected signalPeople = signal<PersonOption[]>([]);
   protected readonly people = computed(() => this.signalPeople());
   protected readonly users = signal<IAuthUser[]>([]);
-  protected readonly availableLists = signal<any[]>([]);
-  protected readonly assignedLists = signal<any[]>([]);
+  protected readonly availableLists = signal<TeamListOption[]>([]);
   protected readonly teamTasks = signal<any[]>([]);
   protected readonly saving = signal(false);
-  protected readonly volunteers = computed(() => this.detail()?.volunteers ?? []);
+
+  // Both pickers read their selection straight out of the form payload, so what
+  // the chips show is by construction what will be saved — the old right-hand
+  // "Currently Assigned" pane read from the last server response and silently
+  // ignored volunteers you had just ticked.
+  protected readonly selectedVolunteerIds = computed(() => this.payload().volunteer_ids ?? []);
+  protected readonly selectedListIds = computed(() => this.payload().list_ids ?? []);
+
+  protected readonly volunteerOptions = computed<PcPickerOption[]>(() => {
+    const captainId = this.payload().team_captain_id;
+    return this.people().map((person) => ({
+      id: person.id,
+      label: person.label,
+      hint: person.email,
+      badge: person.id === captainId ? 'Captain' : null,
+    }));
+  });
+
+  protected readonly listOptions = computed<PcPickerOption[]>(() =>
+    this.availableLists().map((list) => ({
+      id: list.id,
+      label: list.name,
+      hint: `${list.is_dynamic ? 'Smart' : 'Static'} list of ${list.object ?? 'people'}`,
+    })),
+  );
+
+  /**
+   * Guide, don't error (design §3): naming a captain who isn't on the roster is a
+   * near-certain oversight, so say so and offer the one-click fix instead of
+   * letting it save quietly.
+   */
+  protected readonly captainMissingFromTeam = computed<PersonOption | null>(() => {
+    const captainId = this.payload().team_captain_id;
+    if (!captainId) return null;
+    if (this.selectedVolunteerIds().includes(captainId)) return null;
+    return this.people().find((person) => person.id === captainId) ?? null;
+  });
 
   constructor() {
     effect(() => {
@@ -139,7 +195,6 @@ export class TeamFormComponent implements OnInit {
                 volunteer_ids: teamDetail.volunteers?.map((v) => v.id) ?? [],
                 list_ids: teamDetail.list_ids ?? [],
               });
-              this.assignedLists.set(teamDetail.lists ?? []);
             } catch (err) {
               console.error('Failed to load source team details for cloning', err);
               const data = state.cloneData;
@@ -160,43 +215,20 @@ export class TeamFormComponent implements OnInit {
     }
   }
 
-  protected captainLabel(captainId: string | null) {
-    if (!captainId) return '—';
-    const person = this.people().find((p) => p.id === captainId);
-    return person?.label ?? '—';
-  }
-
-  protected isVolunteerSelected(id: string): boolean {
-    return this.payload().volunteer_ids?.includes(id) ?? false;
-  }
-
-  protected onVolunteersChange(event: Event) {
-    const select = event.target as HTMLSelectElement;
-    const selectedOptions = Array.from(select.selectedOptions).map((o) => o.value);
-
-    this.payload.update((p) => ({
-      ...p,
-      volunteer_ids: selectedOptions,
-    }));
+  protected onVolunteersChange(ids: string[]) {
+    this.payload.update((p) => ({ ...p, volunteer_ids: ids }));
     this.form.volunteer_ids().markAsDirty();
   }
 
-  protected isListSelected(id: string): boolean {
-    return this.payload().list_ids?.includes(id) ?? false;
+  protected onListsChange(ids: string[]) {
+    this.payload.update((p) => ({ ...p, list_ids: ids }));
+    this.form.list_ids().markAsDirty();
   }
 
-  protected onListsChange(event: Event) {
-    const select = event.target as HTMLSelectElement;
-    const selectedOptions = Array.from(select.selectedOptions).map((o) => o.value);
-
-    this.payload.update((p) => ({
-      ...p,
-      list_ids: selectedOptions,
-    }));
-    this.form.list_ids().markAsDirty();
-
-    const matching = this.availableLists().filter((l) => selectedOptions.includes(l.id));
-    this.assignedLists.set(matching);
+  protected addCaptainToTeam() {
+    const captain = this.captainMissingFromTeam();
+    if (!captain) return;
+    this.onVolunteersChange([...this.selectedVolunteerIds(), captain.id]);
   }
 
   protected async deleteTeam() {
@@ -348,7 +380,8 @@ export class TeamFormComponent implements OnInit {
   private async loadLists() {
     try {
       const res = await this.lists.getAll({ limit: 1000 });
-      this.availableLists.set(res?.rows ?? []);
+      const rows: unknown[] = res?.rows ?? [];
+      this.availableLists.set(rows.map(toListOption).filter((list): list is TeamListOption => list !== null));
     } catch (err) {
       console.error('Failed to load lists', err);
       this.availableLists.set([]);
@@ -398,7 +431,6 @@ export class TeamFormComponent implements OnInit {
       volunteer_ids: team?.volunteers?.map((v) => v.id) ?? [],
       list_ids: team?.list_ids ?? [],
     });
-    this.assignedLists.set(team?.lists ?? []);
   }
 
   protected getPriorityClass(priority: string | null | undefined): string {
@@ -434,4 +466,22 @@ export class TeamFormComponent implements OnInit {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+/** The lists endpoint returns count-augmented rows behind an index signature, so narrow rather than cast. */
+function toListOption(row: unknown): TeamListOption | null {
+  if (!isRecord(row)) return null;
+
+  const id = row['id'];
+  if (typeof id !== 'string' && typeof id !== 'number') return null;
+
+  const name = row['name'];
+  const object = row['object'];
+
+  return {
+    id: String(id),
+    name: typeof name === 'string' && name.trim().length ? name : 'Untitled list',
+    is_dynamic: row['is_dynamic'] === true,
+    object: typeof object === 'string' ? object : null,
+  };
 }

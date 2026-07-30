@@ -242,10 +242,15 @@ export const CONTACTS_ARTICLES: HelpArticle[] = [
         items: [
           { title: 'Open [Teams](/teams)', detail: 'Every team shows as a card with its lead and volunteer count.' },
           { title: 'Click New team', detail: 'Name the team and describe its purpose.' },
-          { title: 'Add volunteers', detail: 'Build the roster from your existing people.' },
+          {
+            title: 'Add volunteers',
+            detail:
+              'Search the volunteer picker and tick everyone on the crew. Each pick becomes a chip you can remove, and the team captain is badged in the list. If you name a captain who is not on the roster, the form offers to add them.',
+          },
           {
             title: 'Give it work',
-            detail: 'Attach lists to call through and tasks to complete. The team page tracks both.',
+            detail:
+              'Pick the target lists this team will contact the same way, then attach tasks to complete. The team page tracks both.',
           },
         ],
       },

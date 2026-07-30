@@ -70,6 +70,7 @@ libs/
         models.ts
         money.ts
         org-mode.ts
+        phone.ts
         preflight-lint.ts
         public-id.ts
         schema.ts
@@ -111,6 +112,9 @@ libs/
           empty-state.ts
         entity-overview/
           entity-overview.ts
+        entity-picker/
+          entity-picker.css
+          entity-picker.ts
         fields-selector/
           fields-selector.html
           fields-selector.ts
