@@ -42,9 +42,7 @@ const MODULE_ITEMS: readonly ModuleNavItem[] = SidebarItems.flatMap((item) => [i
             {{ label(item) }} is turned off for this workspace, so it isn't in the sidebar. Everything here still works.
           </span>
         </div>
-        <a routerLink="/workspace" [queryParams]="{ section: 'modules' }" class="btn btn-xs shrink-0 sm:btn-sm">
-          Turn it back on
-        </a>
+        <a routerLink="/workspace/modules" class="btn btn-xs shrink-0 sm:btn-sm"> Turn it back on </a>
       </div>
     }
   `,

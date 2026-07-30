@@ -265,9 +265,40 @@
         popover
         [id]="profileMenuId"
         [style.position-anchor]="profileMenuAnchor"
-        class="dropdown dropdown-end pc-dropdown-sheet menu menu-md bg-base-100 sm:rounded-box sm:mt-3 sm:w-44 cursor-pointer shadow px-0 mx-0"
+        class="dropdown dropdown-end pc-dropdown-sheet menu menu-md bg-base-100 sm:rounded-box sm:mt-3 sm:w-56 cursor-pointer shadow px-0 mx-0"
         (click)="closeSheet($event)"
       >
+        <!-- Which kind of organization this workspace is set up as. Admins get the link to
+             the switch; everyone else gets the fact as a `menu-title` row, because
+             /workspace is role-guarded and DaisyUI would otherwise give a plain child the
+             hover highlight of a menu item it cannot act on (§2, no dead affordances). -->
+        @if (canChangeOrgMode()) {
+        <li class="mb-1 border-b border-base-200">
+          <!-- The two lines live in one child span: DaisyUI lays a menu item's children out
+               in grid columns, so [text block][chevron] is the shape it already expects. -->
+          <a routerLink="/workspace/modules" class="hover:text-primary py-2.5">
+            <span class="flex min-w-0 flex-col gap-0.5">
+              <span
+                class="pc-eyebrow"
+                i18n="Navbar|Eyebrow above the workspace organization mode@@navbar.profile.menu.workspaceEyebrow"
+                >Workspace</span
+              >
+              <span class="truncate font-semibold">{{ orgModeLabel() }}</span>
+            </span>
+            <pc-icon class="shrink-0 opacity-50" name="chevron-right" [size]="4"></pc-icon>
+          </a>
+        </li>
+        } @else {
+        <li class="menu-title mb-1 flex flex-col gap-0.5 border-b border-base-200">
+          <span
+            class="pc-eyebrow"
+            i18n="Navbar|Eyebrow above the workspace organization mode@@navbar.profile.menu.workspaceEyebrow"
+            >Workspace</span
+          >
+          <span class="text-base-content truncate font-semibold">{{ orgModeLabel() }}</span>
+        </li>
+        }
+
         <li class="hover:text-primary">
           <a routerLink="/profile">
             <pc-icon name="user-circle"></pc-icon>

@@ -9,6 +9,7 @@ import { SidebarService } from 'apps/frontend/src/app/layout/sidebar/sidebar-ser
 import { ThemeService } from 'apps/frontend/src/app/layout/theme/theme-service';
 import { NotificationsService } from '../../services/api/notifications-service';
 import { EmailActionsStore } from '../../experiences/emails/services/store/email-actions.store';
+import { SettingsService } from '@experiences/settings/services/settings-service';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { provideRouter } from '@angular/router';
 
@@ -23,14 +24,17 @@ describe('Navbar Component', () => {
   let mockThemeSvc: any;
   let mockNotificationsSvc: any;
   let initNotificationsSpy: any;
+  let user: any;
 
   beforeEach(async () => {
     initNotificationsSpy = vi.spyOn(Navbar.prototype as any, 'initNotifications').mockReturnValue(Promise.resolve());
 
+    user = signal<any>({ name: 'Test User', role: 'admin', tenant_org_mode: 'church' });
+
     mockAuthSvc = {
       signOut: vi.fn(),
-      currentUser: vi.fn().mockReturnValue({ name: 'Test User' }),
-      getUserSignal: vi.fn().mockReturnValue(signal({ name: 'Test User' })),
+      currentUser: vi.fn().mockReturnValue(user()),
+      getUserSignal: vi.fn().mockReturnValue(user),
       resolveAvatarUrl: vi.fn().mockImplementation((url) => url),
     };
 
@@ -81,6 +85,8 @@ describe('Navbar Component', () => {
         { provide: ThemeService, useValue: mockThemeSvc },
         { provide: NotificationsService, useValue: mockNotificationsSvc },
         { provide: EmailActionsStore, useValue: mockEmailActionsStore },
+        // OrgModeService (behind the avatar-menu workspace header) reads the settings snapshot.
+        { provide: SettingsService, useValue: { snapshotSignal: signal({}), upsert: vi.fn() } },
       ],
     }).compileComponents();
 
@@ -306,5 +312,21 @@ describe('Navbar Component', () => {
 
   it('should compute avatar initials from the user name', () => {
     expect(component['userInitials']()).toBeDefined();
+  });
+
+  it('should label the workspace with the tenant organization mode', () => {
+    expect(component['orgModeLabel']()).toBe('Church');
+  });
+
+  it('should fall back to the default mode label when the session carries none', () => {
+    user.set({ name: 'Test User', role: 'admin' });
+    expect(component['orgModeLabel']()).toBe('Constituency office');
+  });
+
+  it('should offer the mode switch to admins and only state it for plain members', () => {
+    expect(component['canChangeOrgMode']()).toBe(true);
+
+    user.set({ name: 'Test User', role: 'user' });
+    expect(component['canChangeOrgMode']()).toBe(false);
   });
 });
