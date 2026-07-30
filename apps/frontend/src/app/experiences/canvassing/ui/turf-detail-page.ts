@@ -29,6 +29,7 @@ import {
   refreshResultMessage,
 } from './turf-vocabulary';
 import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
+import { OrgModeService } from '../../../services/org-mode.service';
 
 type TurfStatus = TurfDetail['status'];
 type DoorStatus = TurfDoor['status'];
@@ -79,6 +80,7 @@ export class TurfDetailPage {
   private readonly breadcrumbs = inject(BreadcrumbsService);
   private readonly confirm = inject(ConfirmDialogService);
   private readonly router = inject(Router);
+  private readonly orgMode = inject(OrgModeService);
 
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
@@ -101,10 +103,18 @@ export class TurfDetailPage {
       untracked(() => void this.load());
     });
 
+    // The parent crumb is worded by the tenant's organization mode, matching the
+    // sidebar entry and the route's own `data.breadcrumb` term — this trail overwrites
+    // that default, so hardcoding it here showed "Canvassing" to an office workspace
+    // that had just clicked "Door knocking". Reading the term inside the effect keeps
+    // it live if the mode changes.
     effect(() => {
       const d = this.detail();
       if (!d) return;
-      this.breadcrumbs.setCrumbs([{ label: 'Canvassing', route: '/canvassing' }, { label: d.name }]);
+      this.breadcrumbs.setCrumbs([
+        { label: this.orgMode.term('nav.canvassing'), route: '/canvassing' },
+        { label: d.name },
+      ]);
     });
   }
 
