@@ -255,6 +255,9 @@ async function cleanup(db: Db, tenantId: string): Promise<void> {
   await db.deleteFrom('campaign_subscriptions').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('map_peoples_tags').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('tags').where('tenant_id', '=', tenantId).execute();
+  // "Error in data" at the door opens a review task assigned to a real user, so tasks
+  // have to go before persons and authusers or the teardown trips their foreign keys.
+  await db.deleteFrom('tasks').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_knocks').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_segment_claims').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_assignments').where('tenant_id', '=', tenantId).execute();
@@ -918,6 +921,200 @@ describe('CanvassingController', () => {
       .where('id', '=', bob!.id)
       .executeTakeFirstOrThrow();
     expect(bobPerson.do_not_contact).toBe(true);
+  });
+
+  it('carries prior ID, unit and yard-sign standing out to the walk list', async () => {
+    // A walk list is useful on its first morning only if it shows what the CRM already
+    // knows — otherwise every door reads "no ID" until your own team has knocked it.
+    const [alice] = s.residentIds;
+    await db
+      .insertInto('campaign_person_facts')
+      .values({
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        person_id: alice!,
+        support_level: 'leaning',
+        voting_status: 'voted_advance',
+        createdby_id: s.userId,
+        updatedby_id: s.userId,
+      })
+      .execute();
+    await db
+      .updateTable('households')
+      .set({ apt: '302' })
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', s.householdIds[0]!)
+      .execute();
+    await db
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        household_id: s.householdIds[0]!,
+        source: 'manual',
+        status: 'new',
+        createdby_id: s.userId,
+        updatedby_id: s.userId,
+      })
+      .execute();
+
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const turf = (await controller.getTurfs(auth)).find((t) => t.door_count > 0);
+    if (!turf) throw new Error('expected a turf');
+    const { token } = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    const companion = await controller.getCompanionTurf(token, session);
+
+    const home = companion.households.find((h) => h.id === s.householdIds[0]);
+    if (!home) throw new Error('expected the seeded door');
+    expect(home.apt).toBe('302');
+    // Bare digits get "Unit" in front so 302 cannot read as part of the street number.
+    expect(home.address).toContain('Unit 302');
+    expect(home.yard_sign).toBe(true);
+    const person = home.people.find((p) => p.id === alice);
+    expect(person?.support).toBe('leaning');
+    expect(person?.voting_status).toBe('voted_advance');
+    expect(person?.last_name).toBe('Door');
+    // Still payload-minimized: prior ID widened the payload, contact details did not.
+    expect(JSON.stringify(companion)).not.toMatch(/@example\.com/);
+  });
+
+  it('records deceased, a data-error task, and the senior band from the door', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const turf = (await controller.getTurfs(auth)).find((t) => t.door_count > 0);
+    if (!turf) throw new Error('expected a turf');
+    const { token } = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    const companion = await controller.getCompanionTurf(token, session);
+    const home = companion.households.find((h) => h.people.length > 1);
+    if (!home) throw new Error('expected a door with two residents');
+    const [alice, bob] = home.people;
+
+    const { acks } = await controller.postCompanionResults(token, session, [
+      {
+        op_id: 'op-dead-1',
+        recorded_at: null,
+        type: 'person_result',
+        payload: { household_id: home.id, person_id: alice!.id, result: 'deceased' },
+      },
+      {
+        op_id: 'op-err-1',
+        recorded_at: null,
+        type: 'person_result',
+        payload: { household_id: home.id, person_id: bob!.id, result: 'data_error', note: 'Nobody by that name here' },
+      },
+      {
+        op_id: 'op-senior-1',
+        recorded_at: null,
+        type: 'survey',
+        payload: {
+          household_id: home.id,
+          person_id: bob!.id,
+          support: null,
+          issues: [],
+          wants_volunteer: false,
+          wants_yard_sign: false,
+          set_dnc: false,
+          senior: true,
+          subscribe: false,
+        },
+      },
+    ]);
+    expect(acks.map((a) => a.status)).toEqual(['applied', 'applied', 'applied']);
+
+    // Deceased stamps the date AND stops contact — the harm is one more letter.
+    const alicePerson = await db
+      .selectFrom('persons')
+      .select(['deceased_at', 'do_not_contact'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', alice!.id)
+      .executeTakeFirstOrThrow();
+    expect(alicePerson.deceased_at).not.toBeNull();
+    expect(alicePerson.do_not_contact).toBe(true);
+
+    // "Error in data" changes nothing about the person — it asks a human to look.
+    const bobPerson = await db
+      .selectFrom('persons')
+      .select(['first_name', 'senior', 'do_not_contact'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', bob!.id)
+      .executeTakeFirstOrThrow();
+    expect(bobPerson.first_name).toBe('Bob');
+    expect(bobPerson.do_not_contact).toBe(false);
+    // A save carrying only "65 or older" is still a save worth keeping.
+    expect(bobPerson.senior).toBe(true);
+
+    const tasks = await db
+      .selectFrom('tasks')
+      .select(['name', 'details', 'assigned_to', 'person_id'])
+      .where('tenant_id', '=', s.tenantId)
+      .execute();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.name).toContain('Bob Door');
+    expect(tasks[0]?.details).toContain('Nobody by that name here');
+    // Owned by the campaign admin, because an unassigned task is one nobody notices.
+    expect(String(tasks[0]?.assigned_to)).toBe(s.userId);
+
+    // A second report about the same person does not become a second task.
+    await controller.postCompanionResults(token, session, [
+      {
+        op_id: 'op-err-2',
+        recorded_at: null,
+        type: 'person_result',
+        payload: { household_id: home.id, person_id: bob!.id, result: 'data_error', note: 'Still wrong' },
+      },
+    ]);
+    expect(await db.selectFrom('tasks').select('id').where('tenant_id', '=', s.tenantId).execute()).toHaveLength(1);
+
+    // Un-ticking the toggle is a correction, and only ever clears a value that was true.
+    await controller.postCompanionResults(token, session, [
+      {
+        op_id: 'op-senior-2',
+        recorded_at: null,
+        type: 'survey',
+        payload: {
+          household_id: home.id,
+          person_id: bob!.id,
+          support: 'undecided',
+          issues: [],
+          wants_volunteer: false,
+          wants_yard_sign: false,
+          set_dnc: false,
+          senior: false,
+          subscribe: false,
+        },
+      },
+    ]);
+    const corrected = await db
+      .selectFrom('persons')
+      .select('senior')
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', bob!.id)
+      .executeTakeFirstOrThrow();
+    expect(corrected.senior).toBe(false);
+
+    // Everyone else stays NULL: "nobody has asked" is not the same claim as "under 65".
+    const untouched = await db
+      .selectFrom('persons')
+      .select('senior')
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', s.volunteerPersonId)
+      .executeTakeFirstOrThrow();
+    expect(untouched.senior).toBeNull();
+
+    // The door reads it back: a deceased resident is marked, not quietly removed.
+    const after = await controller.getCompanionTurf(token, session);
+    const reread = after.households.find((h) => h.id === home.id);
+    expect(reread?.people.find((p) => p.id === alice!.id)?.deceased).toBe(true);
+    expect(reread?.people.find((p) => p.id === bob!.id)?.result).toBe('canvassed');
   });
 
   it('handles door outcomes, clears, no-conversation codes, and add-person-at-door', async () => {

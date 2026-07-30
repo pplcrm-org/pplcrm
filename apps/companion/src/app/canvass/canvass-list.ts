@@ -295,6 +295,19 @@ export class CanvassList {
     this.store.view.set({ kind: 'picker' });
   }
 
+  /**
+   * The turf's own numbers, one line under the street's.
+   *
+   * Both are stated because they answer different questions — "can I finish this street"
+   * and "how is the turf doing" — and a single unlabelled figure would be read as either.
+   */
+  protected turfLine(): string {
+    const stats = this.store.stats();
+    const conversations = this.conversationCount();
+    const talks = `${conversations} ${conversations === 1 ? 'conversation' : 'conversations'} here`;
+    return `${talks} · ${stats.doors_attempted} of ${stats.doors_total} attempted across the turf`;
+  }
+
   protected progressLine(): string {
     const total = this.scopeTotal();
     const where = this.store.activeSegment()?.street ?? 'this turf';

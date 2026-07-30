@@ -42,11 +42,47 @@ Companion survey vocabulary: `canvass_issues text[]` + `canvass_script`.
 Kysely models live in `libs/common/src/lib/kysely.models.ts` (Turfs,
 TurfHouseholds, TurfAssignments, TurfKnocks). Zod triad + vocabularies in
 `libs/common/src/lib/schemas/canvassing.schema.ts` (`TURF_STATUSES`,
-`KNOCK_OUTCOMES` — now incl. `moved` + the append-only `cleared` marker — and
-`KNOCK_RESPONSES`, the spec-§3.5 five: `supporter | undecided | non_supporter |
-not_voting | already_voted`, labels in `KNOCK_RESPONSE_LABELS`). The Companion
-API contract (`CompanionTurfPayload`, `CompanionOpObj` union, `CompanionOpAck`)
-lives in the same schema file and is shared with `apps/companion`.
+`KNOCK_OUTCOMES` — `moved`, `deceased`, `data_error`, plus the append-only
+`cleared` marker — and `KNOCK_RESPONSES`, the spec-§3.5 five: `supporter |
+undecided | non_supporter | not_voting | already_voted`, labels in
+`KNOCK_RESPONSE_LABELS`). The Companion API contract (`CompanionTurfPayload`,
+`CompanionOpObj` union, `CompanionOpAck`) lives in the same schema file and is
+shared with `apps/companion`.
+
+**One stance vocabulary, three surfaces.** `CanvassStance` (`supporter |
+undecided | non_supporter`) is what a walk-list row, a map pin and a household
+card are all coloured by, and both richer vocabularies collapse into it through
+`SUPPORT_LEVEL_TO_STANCE` and `KNOCK_RESPONSE_TO_STANCE` in the same schema
+file. Add a support level or a knock response and you add a mapping here, or the
+Companion silently reads it as "no ID". `VOTED_STATUSES` is the matching list
+for the green check ("has cast a ballot", not "intends to").
+
+### Two person columns the door writes (2026-07-30)
+
+`persons.deceased_at` (timestamptz) and `persons.senior` (boolean) — first-class
+columns rather than tags, for the same reason `volunteer_status`/`staff_status`
+stopped being tags (§15). Both **nullable with no default**: `senior = NULL` means
+"nobody has asked", which is not the claim `senior = false` makes. Migration
+`2026-07-30-canvass-person-flags.ts` adds partial indexes matching the only two
+queries anyone runs. Wired into the smart-list rule builder as `senior` /
+`deceased` (`persons.repo` columnMapping + `list-rule-fields.ts` + `list-form.ts`
+— a rule field needs **all three** or it is silently dropped; see `pplcrm-lists`),
+and onto the person page's standing card under "At the door".
+
+Written from `applyPersonResultSideEffects` / `applySurveySideEffects`:
+
+- **`deceased`** stamps `deceased_at` (once — a second report must not overwrite
+  when we first learned it) **and** sets `do_not_contact`. Not optional: the harm
+  the flag exists to prevent is one more letter.
+- **`data_error`** writes nothing to the person. It opens a Task named
+  `Check door data: <name>` assigned to the campaign admin (falling back to the
+  link's deployer) carrying the volunteer's note. One open task per person,
+  deduped on that name prefix — a family of four at a wrong address is one task.
+- **`senior`** has exactly two transitions and never a blanket write: ON sets
+  `true` where it is not already true, OFF only clears a value that was `true`.
+  The survey toggle ships `false` on every save, so writing it straight through
+  would assert "under 65" about the whole turf. The client pre-fills the toggle
+  from `CompanionPerson.senior`, which is what makes an un-tick a correction.
 
 ### Derived state — never stored twice (§22.6)
 
@@ -152,6 +188,43 @@ Two things worth knowing from the canvassing side:
 Everything else — the code lifecycle, the enumeration guards, the person match-or-create
 rules — lives in `pplcrm-companion-access`. Read it before touching `joinStart`.
 
+### Prior ID in the payload, and what a row shows
+
+`CompanionPerson` carries `support` + `voting_status` read from
+`campaign_person_facts` **in the turf's campaign** — from any source, not just
+this turf's knocks — plus `last_name`, `deceased` and `senior`.
+`CompanionHousehold` carries `apt` and `yard_sign` (an open `new`/`approved`
+`delivery_requests` row for that household, campaign-scoped).
+
+This is the one deliberate widening of payload minimization (§2): a paper walk
+list has always carried prior ID, and "already voted" is essentially never
+canvasser-recorded, so without it the green check could never fire. Still no
+emails, phones, donations or notes. `priorFactsByPerson` returns an empty map
+when the turf has no campaign — an unknown context must read as unknown, never as
+another campaign's answer.
+
+Client side, `personStance` lets a survey recorded on this walk beat the prior ID
+(newer, and heard first-hand), and `householdStance` folds every resident plus
+the anonymous household survey into unanimity-or-`mixed` — never an average,
+which would put a confident colour on the doors that most need a conversation.
+`residentSummary` folds a shared surname ("Heather & Ross Gagnon") and **drops
+deceased residents**, so nobody reads a dead person's name off a screen at their
+family's door.
+
+### Apartments: `WalkEntry`, not one row per flat
+
+`deriveWalkEntries()` groups doors into the rows the list actually renders:
+`{kind:'door'}` or `{kind:'building'}`. `buildingKeyOf(h)` is
+`street_num|segmentKeyOf(h)` and returns null unless the door carries an `apt` —
+two unit-less households sharing a street number are a duplicate-data problem,
+not a building, and folding them would hide it. A building takes its earliest
+unit's `walk_order` (folding never moves a block in the walk), sorts units
+numerically then alphabetically (`101 < 102 < 1003 < PH2`), and counts as
+attempted only when every unit does. A one-unit "building" stays a plain door.
+`CanvassStore.nextEntryKey` puts the ring on the row the volunteer can see and
+tap, which for a flat is its building. `canvass-building.ts` renders the unit
+list, and `canvass-household.ts` goes back to it rather than to the walk list.
+
 ### Street segments and live refresh
 
 `CompanionHousehold` carries `street` + `street_num` **alongside** the flattened `address`
@@ -174,6 +247,18 @@ dropped it) — an empty screen would blame the volunteer for something the turf
 `stats()` stays turf-wide on purpose; only `nextDoorId()` follows the scope. The picker
 (`canvass-segment-picker.ts`) is a plain conditional panel, **never** the focus-based
 DaisyUI `.dropdown` (§4 — that bug has shipped twice).
+
+**Street-first by default (2026-07-30).** `applyDefaultScope()` runs after every payload
+load/switch and scopes to the street holding the next unattempted door — a turf is a
+neighbourhood, a shift is a street, and landing on "all 143 doors" made narrowing the
+volunteer's first job. It is a **no-op on a single-street turf** (nothing to narrow) and
+it deliberately does **not** claim the street: a claim tells the group "I am standing
+here", and the app guessing would put a name on a street nobody has walked to. Only an
+explicit pick claims. The picker has **no "All doors" option** — nothing is hidden by
+that, because every street is listed (incl. the one `UNKNOWN_SEGMENT_KEY` bucket) and the
+turf total is printed under the list. Streets sort nearest-first once `GeoPosition` has a
+fix and by walk order otherwise, with the heading naming which order is in force;
+"Find the street I'm on" is the only path allowed to move the scope for the volunteer.
 
 **Live refresh**: `CanvassStore.refresh()` re-pulls the turf every 60s while the walk list
 is open and replaces ONLY the server payload — `localOps` replay on top, so nothing queued
@@ -276,7 +361,10 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   `set_dnc` → `persons.do_not_contact`; contact capture fills blanks only;
   `subscribe` → `campaign_subscriptions` with `consent_source='canvass'`;
   `wants_volunteer` → sets `persons.volunteer_status = 'prospective'` when it is
-  NULL (first-class status, §15 — not a tag; + 'Added at door' tag on person_create).
+  NULL (first-class status, §15 — not a tag; + 'Added at door' tag on person_create);
+  `senior` → `persons.senior`, two transitions only (see "Two person columns the
+  door writes" above). The `person_result` codes `deceased` and `data_error` have
+  their own side effects in `applyPersonResultSideEffects`.
 - **Offline**: the app queues ops in `localStorage` (`pc-canvass-queue:<token>`),
   replays them as an optimistic overlay (`canvass-derive.ts applyLocalOps`), and
   flushes on the `online` event / load — idempotent via `op_id`.

@@ -366,11 +366,19 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'companion', text: 'The Canvass Companion' },
       {
         kind: 'p',
-        text: 'The Companion is a web app, nothing to install. After verifying, the volunteer lands on their assignment, taps **Start walking**, and works the door list in the suggested walk order (any order works). At each door they survey the people on file (support level, top issues, follow-up flags, and notes) or record a one-tap result like not home or moved. Door-level outcomes (nobody home, inaccessible, refused) close a door with one tap and can be cleared just as fast, and “+ Add someone at this door” captures a new name on the spot. Every result syncs live to the person, the household, the turf’s progress, and the Activity log, attributed honestly as “via Canvass Companion”. No signal? Results queue on the phone and upload automatically when the volunteer is back online.',
+        text: 'The Companion is a web app, nothing to install. After verifying, the volunteer lands on their assignment, taps **Start walking**, and works the door list in the suggested walk order (any order works). Each row shows who lives there by full name — with a shared surname said once, so “Heather & Ross Gagnon” rather than the surname twice. At each door they survey the people on file (support level, top issues, follow-up flags, and notes) or record a one-tap result like not home or moved. Door-level outcomes (nobody home, inaccessible, refused, moved out) close a door with one tap and can be cleared just as fast, and “+ Add someone at this door” captures a new name on the spot. Every result syncs live to the person, the household, the turf’s progress, and the Activity log, attributed honestly as “via Canvass Companion”. No signal? Results queue on the phone and upload automatically when the volunteer is back online.',
       },
       {
         kind: 'p',
-        text: 'On a big turf they can walk **one street at a time**. The bar above the door list says what they’re looking at — “All doors in this turf” to start, so nothing is ever hidden — and tapping it opens a street picker: all doors, the streets nearest them if they let the phone share its location, then every street in the turf in walk order. Picking one narrows the list and the map together and says so; “All doors” is always the first option back. Turf progress in the header stays turf-wide either way, so a finished street never reads as a finished turf.',
+        text: 'The Companion works **one street at a time**. A turf is a neighbourhood; a shift is a street. It opens already narrowed to the street holding the volunteer’s next unknocked door, and the bar above the door list names it. Tapping that bar opens the street picker: every street in the turf, nearest first once the phone shares its location and in walk order otherwise, each with its own progress. There is no “all doors” option — nothing is hidden by that, because every street is in the list (including one bucket for doors with no street on file) and the whole turf’s total is stated underneath. The progress bar tracks the street in view, with the turf’s own count on the line below, so a finished street never reads as a finished turf.',
+      },
+      {
+        kind: 'p',
+        text: 'Rows carry what a canvasser needs before they knock. A coloured left edge and a thumb say where the door stands — green thumbs-up for a supporter, red thumbs-down for someone against, an amber question mark for undecided, and an amber group icon when the people at one door disagree. That reading comes from whatever the CRM already knows, from any source, so a turf is useful on its first morning rather than only after your own team has knocked it. A yard-sign icon means somebody there is already owed a sign, and a green check means somebody there has already voted. Doors nobody has ever ID’d carry no mark at all — an icon on every row would say nothing while competing with the ones that do. The map colours its pins from exactly the same reading, so a green row can never be a grey pin.',
+      },
+      {
+        kind: 'p',
+        text: 'Apartments fold into their building. Forty flats at 58 Huron Avenue arrive as forty households sharing one street address, so the walk list shows one row — “58 Huron Avenue N · 40 units · 3 attempted” — that opens into the unit list. Units are ordered the way a hallway runs (101, 102, then 1003, with lettered units like PH2 last), and each one behaves exactly like a door on a street. A building only counts as done when every unit in it does.',
       },
       {
         kind: 'p',
@@ -382,7 +390,15 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Survey answers do real work: a support level updates the person’s support reading for the turf’s [campaign](/workspace/campaigns), **Wants a yard sign** drops a request straight into the [Deliveries](/deliveries) intake pool, **Wants to volunteer** sets their volunteer status to Prospective on the person record, contact details fill in blanks on the person record, and **Do not contact** suppresses them everywhere, immediately.',
+        text: 'Survey answers do real work: a support level updates the person’s support reading for the turf’s [campaign](/workspace/campaigns), **Wants a yard sign** drops a request straight into the [Deliveries](/deliveries) intake pool, **Wants to volunteer** sets their volunteer status to Prospective on the person record, **65 or older** records their age band on the person record so you can build a seniors list, contact details fill in blanks on the person record, and **Do not contact** suppresses them everywhere, immediately.',
+      },
+      {
+        kind: 'p',
+        text: 'A canvasser also meets things that are wrong with the record itself, and the bottom of the survey is where those go. **Deceased** stamps the date on the person record and stops all contact immediately — one more letter to someone who has died is the worst thing a campaign’s data can do, so it does not wait for review. **Error in data** asks what is wrong and opens a task for the campaign admin with the volunteer’s own words; it changes nothing about the person, because “this is wrong” is a report, not a diagnosis. Both sit at the end behind a confirmation rather than in the quick-code row at the top, so neither is one mis-tap away from the most-tapped buttons on the screen. One open review task per person — a family of four at a wrong address does not become four identical tasks.',
+      },
+      {
+        kind: 'p',
+        text: 'Both facts are visible and editable on the person record, under **At the door** in the standing card: the senior band as a three-way choice (65 or older / under 65 / not recorded — “not recorded” is a real answer, because nobody has asked), and the deceased mark with the date it was recorded. Undoing a deceased mark restores the record but deliberately leaves do-not-contact in place. Both are filters in the [smart-list](/lists) rule builder as **Senior (65+)** and **Deceased**.',
       },
       {
         kind: 'p',
