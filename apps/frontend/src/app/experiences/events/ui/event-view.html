@@ -82,7 +82,7 @@
 
       @if (publicUrl()) {
       <pc-card title="Public RSVP Link" icon="globe-americas">
-        <button pc-card-actions class="btn btn-xs btn-outline btn-secondary" (click)="copyPublicUrl()">
+        <button pc-card-actions class="btn btn-xs btn-outline btn-primary" (click)="copyPublicUrl()">
           <pc-icon name="document-duplicate" [size]="3"></pc-icon> Copy
         </button>
         <div class="flex gap-2">
@@ -92,7 +92,7 @@
             readonly
             class="input input-bordered input-xs flex-1 font-mono text-[10px]"
           />
-          <a [href]="publicUrl()" target="_blank" class="btn btn-xs btn-outline btn-secondary px-2">
+          <a [href]="publicUrl()" target="_blank" class="btn btn-xs btn-outline btn-primary px-2">
             <pc-icon name="arrow-top-right-on-square" [size]="3"></pc-icon>
           </a>
         </div>
@@ -210,7 +210,7 @@
             <div class="flex justify-between items-center">
               <h4 class="font-semibold text-sm text-base-content/70">Attendee List</h4>
               @if (registrations().length > 0) {
-              <button type="button" class="btn btn-xs btn-outline btn-secondary gap-1" (click)="exportCsv()">
+              <button type="button" class="btn btn-xs btn-outline btn-primary gap-1" (click)="exportCsv()">
                 <pc-icon name="arrow-down-tray" [size]="3"></pc-icon> Export CSV
               </button>
               }

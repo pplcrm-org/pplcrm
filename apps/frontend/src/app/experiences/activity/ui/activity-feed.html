@@ -8,7 +8,7 @@
     helpArticle="activity-log"
   >
     <button
-      class="btn btn-outline btn-secondary btn-sm gap-2"
+      class="btn btn-outline btn-primary btn-sm gap-2"
       (click)="exportFeed()"
       [disabled]="isLoadingExport() || activities().length === 0"
       title="Export activity feed as CSV"
@@ -237,7 +237,7 @@
     <!-- Load More Button -->
     @if (hasMore()) {
     <div class="flex justify-center pt-4">
-      <button class="btn btn-outline btn-secondary gap-2" [disabled]="isLoading()" (click)="loadMore()">
+      <button class="btn btn-outline btn-primary gap-2" [disabled]="isLoading()" (click)="loadMore()">
         @if (isLoading()) {
         <span class="loading loading-spinner loading-xs"></span>
         }

@@ -29,7 +29,7 @@
         <div class="font-semibold text-base-content">{{ formatDate(listData()?.last_refreshed_at) }}</div>
       </div>
       <button
-        class="btn btn-outline btn-secondary btn-sm gap-2 mr-2"
+        class="btn btn-outline btn-primary btn-sm gap-2 mr-2"
         [disabled]="refreshing() || loading()"
         (click)="refreshList()"
       >
@@ -164,7 +164,7 @@
                   </div>
                 </td>
                 <td class="text-center">
-                  <a [routerLink]="['/newsletters', n.id]" class="btn btn-outline btn-secondary btn-xs gap-1">
+                  <a [routerLink]="['/newsletters', n.id]" class="btn btn-outline btn-primary btn-xs gap-1">
                     <pc-icon name="presentation-chart-line" [size]="4"></pc-icon>
                     View Report
                   </a>

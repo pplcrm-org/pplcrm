@@ -134,7 +134,7 @@ const MOBILE_ACTIONS_QUERY = '(max-width: 639.98px)';
                 <button
                   type="button"
                   tabindex="0"
-                  class="btn btn-outline btn-secondary btn-sm gap-1"
+                  class="btn btn-outline btn-primary btn-sm gap-1"
                   aria-label="More actions"
                 >
                   <pc-icon name="ellipsis-vertical" [size]="4"></pc-icon>

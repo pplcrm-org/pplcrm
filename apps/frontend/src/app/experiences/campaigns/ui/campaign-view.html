@@ -67,7 +67,7 @@
           <span class="text-sm font-medium text-primary" i18n>You are working in this campaign</span>
         </div>
         } @else {
-        <button type="button" class="btn btn-outline btn-secondary btn-sm gap-2" (click)="workInThis()">
+        <button type="button" class="btn btn-outline btn-primary btn-sm gap-2" (click)="workInThis()">
           <pc-icon name="arrow-path" [size]="4"></pc-icon>
           <span i18n>Work in this campaign</span>
         </button>
@@ -114,7 +114,7 @@
           </label>
           <button
             type="button"
-            class="btn btn-outline btn-secondary btn-sm mt-1"
+            class="btn btn-outline btn-primary btn-sm mt-1"
             [disabled]="!carrySourceId() || carryRunning() || (!carryCopySupport() && !carryCopySubscriptions())"
             (click)="runCarryOver()"
           >

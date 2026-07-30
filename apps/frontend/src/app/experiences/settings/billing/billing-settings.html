@@ -64,7 +64,7 @@
       @if (details()?.stripeCustomerId) {
       <button
         type="button"
-        class="btn btn-outline btn-secondary btn-sm gap-1.5"
+        class="btn btn-outline btn-primary btn-sm gap-1.5"
         [disabled]="portalPending()"
         (click)="openPortal()"
       >
@@ -191,7 +191,7 @@
           <button
             type="button"
             class="btn w-full"
-            [class]="isCurrentPlan(plan) ? 'btn-outline btn-secondary' : plan.key === 'free' ? 'btn-outline btn-secondary' : 'btn-primary'"
+            [class]="isCurrentPlan(plan) ? 'btn-outline btn-primary' : plan.key === 'free' ? 'btn-outline btn-primary' : 'btn-primary'"
             [disabled]="ctaDisabled(plan)"
             (click)="choosePlan(plan)"
           >

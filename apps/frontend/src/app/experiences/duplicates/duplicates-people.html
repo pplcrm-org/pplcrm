@@ -102,7 +102,7 @@
               <button
                 type="button"
                 class="btn btn-xs"
-                [class]="group.selectedTargetId === left.id ? 'btn-success' : 'btn-outline btn-secondary'"
+                [class]="group.selectedTargetId === left.id ? 'btn-success' : 'btn-outline btn-primary'"
                 (click)="selectRole(gIdx, left.id, 'target')"
               >
                 Keep primary
@@ -110,7 +110,7 @@
               <button
                 type="button"
                 class="btn btn-xs"
-                [class]="group.selectedSourceId === left.id ? 'btn-error' : 'btn-outline btn-secondary'"
+                [class]="group.selectedSourceId === left.id ? 'btn-error' : 'btn-outline btn-primary'"
                 (click)="selectRole(gIdx, left.id, 'source')"
               >
                 Merge away
@@ -120,7 +120,7 @@
               <button
                 type="button"
                 class="btn btn-xs"
-                [class]="group.selectedTargetId === right.id ? 'btn-success' : 'btn-outline btn-secondary'"
+                [class]="group.selectedTargetId === right.id ? 'btn-success' : 'btn-outline btn-primary'"
                 (click)="selectRole(gIdx, right.id, 'target')"
               >
                 Keep primary
@@ -128,7 +128,7 @@
               <button
                 type="button"
                 class="btn btn-xs"
-                [class]="group.selectedSourceId === right.id ? 'btn-error' : 'btn-outline btn-secondary'"
+                [class]="group.selectedSourceId === right.id ? 'btn-error' : 'btn-outline btn-primary'"
                 (click)="selectRole(gIdx, right.id, 'source')"
               >
                 Merge away
@@ -202,7 +202,7 @@
             <div class="flex gap-2 mt-4 pt-3 border-t border-base-300">
               <button
                 [class]="
-                              'btn btn-xs flex-1 ' + (group.selectedTargetId === person.id ? 'btn-success' : 'btn-outline btn-secondary')
+                              'btn btn-xs flex-1 ' + (group.selectedTargetId === person.id ? 'btn-success' : 'btn-outline btn-primary')
                             "
                 (click)="selectRole(gIdx, person.id, 'target')"
               >
@@ -210,7 +210,7 @@
               </button>
               <button
                 [class]="
-                              'btn btn-xs flex-1 ' + (group.selectedSourceId === person.id ? 'btn-error' : 'btn-outline btn-secondary')
+                              'btn btn-xs flex-1 ' + (group.selectedSourceId === person.id ? 'btn-error' : 'btn-outline btn-primary')
                             "
                 (click)="selectRole(gIdx, person.id, 'source')"
               >

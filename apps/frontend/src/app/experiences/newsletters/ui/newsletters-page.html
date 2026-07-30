@@ -139,7 +139,7 @@
         @if (row.status === 'draft') {
         <div class="flex items-center justify-end gap-1">
           <!-- Editing needs the desktop wizard, so the phone view keeps only Send. -->
-          <a class="btn btn-outline btn-secondary btn-xs hidden sm:inline-flex" [routerLink]="[row.id, 'edit']">
+          <a class="btn btn-outline btn-primary btn-xs hidden sm:inline-flex" [routerLink]="[row.id, 'edit']">
             Edit draft
           </a>
           <span class="tooltip-left" [class.tooltip]="sendBlocker(row) !== null" [attr.data-tip]="sendBlocker(row)">
@@ -155,13 +155,13 @@
         </div>
         } @else if (row.status === 'scheduled') {
         <div class="flex items-center justify-end gap-1">
-          <a class="btn btn-outline btn-secondary btn-xs" [routerLink]="[row.id]">View</a>
-          <button type="button" class="btn btn-outline btn-secondary btn-xs" (click)="cancelSchedule(row)">
+          <a class="btn btn-outline btn-primary btn-xs" [routerLink]="[row.id]">View</a>
+          <button type="button" class="btn btn-outline btn-primary btn-xs" (click)="cancelSchedule(row)">
             Cancel schedule
           </button>
         </div>
         } @else {
-        <a class="btn btn-outline btn-secondary btn-xs" [routerLink]="[row.id]">View report</a>
+        <a class="btn btn-outline btn-primary btn-xs" [routerLink]="[row.id]">View report</a>
         }
       </td>
     </tr>

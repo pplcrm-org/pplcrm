@@ -26,7 +26,7 @@
     </div>
     <button
       type="button"
-      class="btn btn-outline btn-secondary btn-sm shrink-0"
+      class="btn btn-outline btn-primary btn-sm shrink-0"
       (click)="showUnusedOnly.set(!showUnusedOnly())"
     >
       {{ showUnusedOnly() ? 'Show all tags' : 'Show the ' + unusedRows().length + ' unused' }}
@@ -54,7 +54,7 @@
             {{ showUnusedOnly() ? 'No unused tags. Nice and tidy.' : 'No tags yet.' }}
           </p>
           @if (showUnusedOnly()) {
-          <button type="button" class="btn btn-sm btn-outline btn-secondary" (click)="showUnusedOnly.set(false)">
+          <button type="button" class="btn btn-sm btn-outline btn-primary" (click)="showUnusedOnly.set(false)">
             Show all tags
           </button>
           } @else {

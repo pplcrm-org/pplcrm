@@ -67,7 +67,7 @@
             <div class="flex gap-2 mt-4 pt-3 border-t border-base-300">
               <button
                 [class]="
-                          'btn btn-xs flex-1 ' + (group.selectedTargetId === hh.id ? 'btn-success' : 'btn-outline btn-secondary')
+                          'btn btn-xs flex-1 ' + (group.selectedTargetId === hh.id ? 'btn-success' : 'btn-outline btn-primary')
                         "
                 (click)="selectRole(gIdx, hh.id, 'target')"
               >
@@ -75,7 +75,7 @@
               </button>
               <button
                 [class]="
-                          'btn btn-xs flex-1 ' + (group.selectedSourceId === hh.id ? 'btn-error' : 'btn-outline btn-secondary')
+                          'btn btn-xs flex-1 ' + (group.selectedSourceId === hh.id ? 'btn-error' : 'btn-outline btn-primary')
                         "
                 (click)="selectRole(gIdx, hh.id, 'source')"
               >

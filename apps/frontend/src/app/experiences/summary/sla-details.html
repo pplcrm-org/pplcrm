@@ -89,7 +89,7 @@
               <a
                 [routerLink]="['/inbox']"
                 [queryParams]="{ email: email.id }"
-                class="btn btn-xs btn-outline btn-secondary"
+                class="btn btn-xs btn-outline btn-primary"
               >
                 Open Email
               </a>
@@ -158,7 +158,7 @@
             </td>
             <td class="text-center text-base-content/50 font-mono text-[10px] align-middle">{{ taskSlaHours() }}h</td>
             <td class="text-right pr-4 align-middle">
-              <a [routerLink]="['/tasks', task.id]" class="btn btn-xs btn-outline btn-secondary"> Go to Task </a>
+              <a [routerLink]="['/tasks', task.id]" class="btn btn-xs btn-outline btn-primary"> Go to Task </a>
             </td>
           </tr>
           }

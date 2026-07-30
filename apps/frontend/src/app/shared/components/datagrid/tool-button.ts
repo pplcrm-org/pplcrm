@@ -35,7 +35,7 @@ import { PcIconNameType } from '@icons/icons.index';
           >
             @if (phoneLabel()) {
               <!-- Labeled trigger on phones: a bare icon does not read as a menu. -->
-              <span class="btn btn-outline btn-secondary btn-sm gap-1 pointer-events-none sm:hidden">
+              <span class="btn btn-outline btn-primary btn-sm gap-1 pointer-events-none sm:hidden">
                 <pc-icon [name]="icon()" [size]="4"></pc-icon>
                 {{ phoneLabel() }}
               </span>

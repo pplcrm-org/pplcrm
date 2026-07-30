@@ -60,7 +60,7 @@ import { TourService } from './tour.service';
           <div class="flex items-center gap-1.5">
             <button type="button" class="btn btn-ghost btn-xs" (click)="tour.skip()">Skip</button>
             @if (tour.index() > 0) {
-              <button type="button" class="btn btn-outline btn-secondary btn-xs" (click)="tour.previous()">Back</button>
+              <button type="button" class="btn btn-outline btn-primary btn-xs" (click)="tour.previous()">Back</button>
             }
             <button type="button" class="btn btn-primary btn-xs" (click)="tour.next()">
               {{ tour.isLast() ? 'Finish' : 'Next' }}

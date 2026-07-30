@@ -78,7 +78,7 @@
       <!-- Public Signup Link Card -->
       @if (publicUrl()) {
       <pc-card title="Public Signup Link" icon="globe-americas">
-        <button pc-card-actions class="btn btn-xs btn-outline btn-secondary" (click)="copySnippet()">
+        <button pc-card-actions class="btn btn-xs btn-outline btn-primary" (click)="copySnippet()">
           <pc-icon name="document-duplicate" [size]="3"></pc-icon> Copy
         </button>
 
@@ -90,7 +90,7 @@
               readonly
               class="input input-bordered input-xs flex-1 font-mono text-[10px]"
             />
-            <a [href]="publicUrl()" target="_blank" class="btn btn-xs btn-outline btn-secondary px-2">
+            <a [href]="publicUrl()" target="_blank" class="btn btn-xs btn-outline btn-primary px-2">
               <pc-icon name="arrow-top-right-on-square" [size]="3"></pc-icon>
             </a>
           </div>

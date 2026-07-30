@@ -177,13 +177,13 @@
             <a [routerLink]="commsSettingsLink" class="link link-primary">Workspace settings → Communications</a>.
           </p>
           <div class="flex flex-wrap items-center gap-2">
-            <button type="button" class="btn btn-sm btn-outline btn-secondary" (click)="openSaveTemplate()">
+            <button type="button" class="btn btn-sm btn-outline btn-primary" (click)="openSaveTemplate()">
               <pc-icon name="bookmark" [size]="4"></pc-icon>
               Save as template
             </button>
             <button
               type="button"
-              class="btn btn-sm btn-outline btn-secondary"
+              class="btn btn-sm btn-outline btn-primary"
               [disabled]="preflightRunning()"
               (click)="runFullPreflight()"
             >
@@ -193,7 +193,7 @@
             <span class="tooltip-left" [class.tooltip]="isDemo()" [attr.data-tip]="isDemo() ? demoSendTooltip : null">
               <button
                 type="button"
-                class="btn btn-sm btn-outline btn-secondary"
+                class="btn btn-sm btn-outline btn-primary"
                 [disabled]="isDemo()"
                 (click)="sendTestEmail()"
               >
@@ -569,7 +569,7 @@
               <label class="text-xs font-medium">Send date</label>
               <button
                 type="button"
-                class="btn btn-sm btn-outline btn-secondary justify-between"
+                class="btn btn-sm btn-outline btn-primary justify-between"
                 (click)="toggleDatePicker()"
               >
                 <span>{{ scheduledDateDisplay() }}</span>
@@ -610,7 +610,7 @@
           <h3 class="pc-eyebrow">Deliverability check</h3>
           <button
             type="button"
-            class="btn btn-sm btn-outline btn-secondary"
+            class="btn btn-sm btn-outline btn-primary"
             [disabled]="preflightRunning()"
             (click)="runFullPreflight()"
           >

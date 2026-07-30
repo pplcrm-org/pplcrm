@@ -15,23 +15,21 @@
   </div>
   <div pc-actions-suffix class="flex items-center gap-2">
     @if (email(); as em) { @if (em.status === 'scheduled') {
-    <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="cancelSchedule()">
-      Cancel schedule
-    </button>
-    <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="sendNow()">Send now</button>
+    <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="cancelSchedule()">Cancel schedule</button>
+    <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="sendNow()">Send now</button>
     } @if (canResend()) {
-    <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="openResendDialog()">
+    <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="openResendDialog()">
       Resend to non-openers
     </button>
     } @if (!isUnsent()) {
-    <button type="button" class="btn btn-outline btn-secondary btn-sm" (click)="exportReportCsv()">
+    <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="exportReportCsv()">
       Export report CSV
     </button>
     } @if (em.status === 'draft') {
     <!-- Drafts: editing is the main act; duplicating steps back. Both need the desktop wizard, so phones hide them. -->
     <button
       type="button"
-      class="btn btn-outline btn-secondary btn-sm hidden gap-2 sm:inline-flex"
+      class="btn btn-outline btn-primary btn-sm hidden gap-2 sm:inline-flex"
       [disabled]="isDuplicating()"
       (click)="duplicateNewsletter()"
     >
@@ -125,7 +123,7 @@
               Bounced addresses @if (rep.bounces.total > 0) { · {{ formatNumber(rep.bounces.total) }} }
             </h2>
             @if (rep.bounces.rows.length > 0) {
-            <button type="button" class="btn btn-outline btn-secondary btn-xs" (click)="exportBouncesCsv()">
+            <button type="button" class="btn btn-outline btn-primary btn-xs" (click)="exportBouncesCsv()">
               Export {{ formatNumber(rep.bounces.total) }} bounces CSV
             </button>
             }
@@ -315,7 +313,7 @@
               </p>
               <p class="mt-0.5 text-[10px] text-base-content/50">Replies thread into conversations there</p>
             </div>
-            <a routerLink="/inbox" class="btn btn-outline btn-secondary btn-xs shrink-0">Open Inbox</a>
+            <a routerLink="/inbox" class="btn btn-outline btn-primary btn-xs shrink-0">Open Inbox</a>
           </div>
 
           @if (mostEngaged().length > 0) {
@@ -498,7 +496,7 @@
           </div>
           <button
             type="button"
-            class="btn btn-outline btn-secondary btn-xs mt-3 w-full"
+            class="btn btn-outline btn-primary btn-xs mt-3 w-full"
             (click)="emailExpanded.set(!emailExpanded())"
           >
             {{ emailExpanded() ? 'Collapse email' : 'View sent email' }}
@@ -517,7 +515,7 @@
             <input #attachmentInput type="file" class="hidden" (change)="onAttachmentSelected($event)" />
             <button
               type="button"
-              class="btn btn-outline btn-secondary btn-xs gap-1"
+              class="btn btn-outline btn-primary btn-xs gap-1"
               [disabled]="isUploadingAttachment()"
               (click)="attachmentInput.click()"
             >

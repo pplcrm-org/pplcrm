@@ -37,7 +37,7 @@
         <span class="pc-eyebrow">Editor:</span>
         <button
           type="button"
-          class="btn btn-xs btn-outline btn-secondary"
+          class="btn btn-xs btn-outline btn-primary"
           [class.btn-active]="editorMode() === 'code'"
           (click)="toggleEditorMode()"
         >
@@ -436,7 +436,7 @@
             type="button"
             cdkDrag
             [cdkDragData]="t.type"
-            class="btn btn-outline btn-secondary btn-sm flex justify-start gap-2 h-12"
+            class="btn btn-outline btn-primary btn-sm flex justify-start gap-2 h-12"
             (click)="addBlock(t.type)"
           >
             <pc-icon [name]="t.icon" [size]="5" [class]="t.iconClass"></pc-icon>
@@ -496,7 +496,7 @@
               @for (variable of textVariables; track variable.name) {
               <button
                 type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
+                class="btn btn-xs btn-outline btn-primary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
                 (mousedown)="$event.preventDefault()"
                 (click)="insertVariable(block, variable.name)"
                 [title]="'Insert ' + variable.label + ' at the cursor'"
@@ -647,7 +647,7 @@
               @for (variable of buttonVariables; track variable.name) {
               <button
                 type="button"
-                class="btn btn-xs btn-outline btn-secondary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
+                class="btn btn-xs btn-outline btn-primary py-0.5 px-1.5 h-auto min-h-0 text-[10px]"
                 (mousedown)="$event.preventDefault()"
                 (click)="insertVariable(block, variable.name)"
                 [title]="'Insert ' + variable.label + ' at the cursor'"

@@ -47,14 +47,14 @@
     </div>
     <div class="join">
       <button
-        class="join-item btn btn-outline btn-secondary btn-sm gap-1"
+        class="join-item btn btn-outline btn-primary btn-sm gap-1"
         [disabled]="currentPage() === 1"
         (click)="prev.emit()"
       >
         <pc-icon name="chevron-left" [size]="4"></pc-icon> Previous
       </button>
       <button
-        class="join-item btn btn-outline btn-secondary btn-sm gap-1"
+        class="join-item btn btn-outline btn-primary btn-sm gap-1"
         [disabled]="currentPage() >= totalPages()"
         (click)="next.emit()"
       >

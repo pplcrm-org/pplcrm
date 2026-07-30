@@ -162,7 +162,8 @@ Applies to the in-app Help Center too. (This skill's own dev-facing prose is exe
 governs what ships to users.)
 
 **Button roles have one class string each** — main `btn-primary` (right-most, one per surface),
-cancel `btn-outline btn-accent`, secondary `btn-outline btn-secondary`, archive
+cancel `btn-outline btn-accent`, secondary `btn-outline btn-primary` (the outline is the
+demotion — a secondary action shares the primary hue rather than adding a second one), archive
 `btn-outline btn-warning`, delete `btn-outline btn-error`, icon-only tertiary
 `btn-ghost btn-xs btn-circle`. The full table with sizes, placement, and exceptions is
 **UX-GUIDELINES §B** — apply it verbatim; any other combination is drift. Button rounding comes
@@ -209,7 +210,7 @@ The implementation preference ladder, in order:
 **`btn-outline` always pairs with a color modifier.** `btn-outline` alone renders in
 `base-content` and reads as a disabled/dead button next to real DaisyUI buttons. Which color is
 not a per-callsite choice — it comes from the action's **role** (UX-GUIDELINES §B):
-`btn-secondary` for secondary actions, `btn-accent` for cancel/dismiss, `btn-error` for
+`btn-primary` for secondary actions, `btn-accent` for cancel/dismiss, `btn-error` for
 destructive, `btn-warning` for archive. A bare `btn-outline`/`btn-outline btn-sm`/etc. with no
 color class is never correct — fix it on sight.
 

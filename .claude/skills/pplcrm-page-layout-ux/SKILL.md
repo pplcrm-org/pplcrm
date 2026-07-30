@@ -204,7 +204,7 @@ Every page must answer three orientation questions:
 - [ ] Sentence case, one modal idiom (the dialog service), one empty-state pattern
       (icon + plain sentence + action).
 - [ ] **Button vocabulary** (UX-GUIDELINES §4b): main action `btn-primary` right-most and one per
-      surface; cancel `btn-outline btn-accent`; secondary `btn-outline btn-secondary`; archive
+      surface; cancel `btn-outline btn-accent`; secondary `btn-outline btn-primary`; archive
       `btn-outline btn-warning`; delete `btn-outline btn-error`; create labels are "New {noun}".
       No `rounded-*`/decoration utilities on buttons.
 - [ ] **Body text is `text-xs`** — no `text-sm`/`text-base`/`text-[13px]` body copy
