@@ -1,6 +1,6 @@
 ---
 name: pplcrm-page-layout-ux
-description: "How pplCRM detail/record pages compose (pc-detail-layout + pc-detail-header + pc-breadcrumbs + record-navigation.service) and the review checklist for shipping a page change. USE WHEN building or reviewing a detail/record view, adding breadcrumbs, wiring prev/next record navigation, placing the activity log, choosing AlertService vs confirm-dialog, or reviewing a page for UX consistency before commit. EXAMPLES: 'wire prev/next record navigation', 'where does pc-record-activities go', 'review this detail page before I ship it'."
+description: "How detail/record pages compose (pc-detail-layout + pc-detail-header + pc-breadcrumbs + record-navigation.service), and the review checklist for shipping a page change. USE WHEN building or reviewing a detail/record view, adding breadcrumbs, wiring prev/next record navigation, placing the activity log, or choosing AlertService vs confirm-dialog. EXAMPLES: 'wire prev/next record navigation', 'where does pc-record-activities go', 'review this detail page before I ship it'."
 ---
 
 # pplCRM page layout & detail-page UX

@@ -1,6 +1,6 @@
 ---
 name: pplcrm-schemas-validation
-description: "Write and wire the shared Zod schemas in libs/common that validate every tRPC input and drive frontend forms in pplCRM. USE WHEN adding or editing a *.schema.ts file, defining an AddXObj/UpdateXObj/XObj triad, reusing core.schema helpers, or deciding between .partial() and a hand-written Update variant. EXAMPLES: 'Add a Zod schema for the new invoices entity', 'Why is UpdateTeamObj hand-written instead of AddTeamObj.partial()?', 'What does nameSchema enforce?'."
+description: "The shared Zod schemas in libs/common that validate every tRPC input and drive frontend forms. USE WHEN adding or editing a *.schema.ts file, defining an AddXObj/UpdateXObj/XObj triad, reusing core.schema helpers, or deciding between .partial() and a hand-written Update variant. EXAMPLES: 'add a Zod schema for the new invoices entity', 'why is UpdateTeamObj hand-written instead of AddTeamObj.partial()', 'what does nameSchema enforce'."
 ---
 
 # pplCRM: Shared Zod Schemas & Validation

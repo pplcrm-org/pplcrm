@@ -1,6 +1,6 @@
 ---
 name: pplcrm-add-entity
-description: "Orchestrates adding a whole new CRUD record type across every layer of the pplcrm monorepo (Zod schema triad, DB migration, Kysely model, tRPC router, backend registration, frontend experience with list/detail/edit, breadcrumbs, activity log, tests) as one ordered checklist. USE WHEN adding a new CRUD entity/module/experience, scaffolding a new record type end-to-end, or wiring a new table all the way from Postgres to an Angular list+detail page. EXAMPLES: 'add a new Campaigns entity', 'scaffold a Projects module with a list and detail view', 'create a new experience for donors'."
+description: "The ordered checklist for adding a whole new CRUD record type across every layer — Zod schema triad, DB migration, Kysely model, tRPC router, backend registration, frontend experience with list/detail/edit, breadcrumbs, activity log, help article, tests. USE WHEN adding a new CRUD entity/module/experience, scaffolding a new record type end-to-end, or wiring a new table all the way from Postgres to an Angular list+detail page. EXAMPLES: 'add a new Campaigns entity', 'scaffold a Projects module with a list and detail view'."
 ---
 
 # Add a new CRUD entity (end-to-end orchestration)
@@ -64,9 +64,9 @@ example: `interface Teams`) and add `<table>: <Entity>;` to the `Models` interfa
 ### 4. Migration (`apps/backend/src/app/_migrations/YYYY-MM-DD-<description>.ts`)
 
 New timestamped file exporting `up(db)` and `down(db)`. For the `up()`/`down()` shape see
-`apps/backend/src/app/_migrations/2026-06-27-person-opt-in.ts` (uses ``sql`...`.execute(db)``) —
-but note that file is an `ALTER TABLE`; a new entity needs a `CREATE TABLE` including the standard
-`RecordType` base columns (`id`, `tenant_id`, `createdby_id`, `updatedby_id`, `created_at`,
+`apps/backend/src/app/_migrations/2026-07-27-y-rate-limits.ts` (uses ``sql`...`.execute(db)``, and
+shows both a `CREATE TABLE` and an `ALTER TABLE` in one file). A new entity needs a `CREATE TABLE`
+including the standard `RecordType` base columns (`id`, `tenant_id`, `createdby_id`, `updatedby_id`, `created_at`,
 `updated_at` — see `RecordType` in `kysely.models.ts`, and copy a real table's DDL from
 `_migrations/schema.sql` for defaults/indexes). Never edit an already-applied migration.
 → Naming convention, the `schema.sql` baseline, the runner: `pplcrm-migrations`.

@@ -1,6 +1,6 @@
 ---
 name: pplcrm-angular-components
-description: "Conventions for building component-internal state, forms, loading, and icons in the Angular 22 frontend (signals-only, the form() signal-forms helper, createLoadingGate, pc-icon). USE WHEN adding or editing a component under apps/frontend/src/app/**, wiring an add/edit form, gating a spinner on a tRPC call, or placing a pc-icon. EXAMPLES: 'why is my form always invalid', 'the spinner flickers on fast responses', 'what values can pc-icon name take'."
+description: "Component-internal state, forms, loading, and icons in the Angular 22 frontend — signals-only, the form() signal-forms helper, createLoadingGate, pc-icon. USE WHEN adding or editing a component under apps/frontend/src/app/**, wiring an add/edit form, gating a spinner on a tRPC call, or placing a pc-icon. EXAMPLES: 'why is my form always invalid', 'the spinner flickers on fast responses', 'what values can pc-icon name take'."
 ---
 
 # pplCRM Angular Component Conventions
@@ -250,6 +250,32 @@ initial load's `catch` sends it — which is how the failure disguises itself:
 Kick off initial loads from `ngOnInit()` (the value is bound by then) or from an `effect()` when
 the load must re-run as the input changes (`turf-detail-page.ts`). Reading an **optional** input
 in the constructor doesn't throw — it silently reads the default, which is worse.
+
+### …but never call `inject()` from `ngOnInit()` (NG0203)
+
+The injection context is open during field initialization and the constructor, and closed by the
+time any lifecycle hook runs. So the mirror-image mistake is moving work into `ngOnInit()` and
+taking `inject(DestroyRef)` along with it:
+
+```ts
+// ✗ NG0203 the moment the component mounts — the whole view fails to render
+public ngOnInit(): void {
+  const timer = setInterval(() => void this.store.refresh(), REFRESH_MS);
+  inject(DestroyRef).onDestroy(() => clearInterval(timer));
+}
+
+// ✓ constructor — nothing here needs an input, so there is no reason to wait
+constructor() {
+  const timer = setInterval(() => void this.store.refresh(), REFRESH_MS);
+  inject(DestroyRef).onDestroy(() => clearInterval(timer));
+}
+```
+
+`canvass-list.ts` did the first version, so selecting a turf in the Canvass Companion threw
+`NG0203` instead of opening the walk list (fixed 2026-07-30). Timers, listeners and other
+teardown-needing setup belong in the constructor — they don't depend on an input, so the reason
+to defer to `ngOnInit()` doesn't apply. If you genuinely need both an input and a `DestroyRef`,
+inject the `DestroyRef` as a class field and use it from the hook.
 
 ## Non-goals
 

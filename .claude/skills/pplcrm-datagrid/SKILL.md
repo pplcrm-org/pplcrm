@@ -1,6 +1,6 @@
 ---
 name: pplcrm-datagrid
-description: "How pplCRM's custom DataGrid (pc-datagrid) works and how to build/extend a grid page: the AbstractAPIService DI contract, ColumnDef shape, server-side fetch options, inline editing with undo + cell flash, selection/bulk actions, the grid→detail record-navigation handoff, and the DI traps that break grid tests. USE WHEN adding a list/grid page for an entity, adding or changing grid columns, wiring inline editing or a custom cell renderer, changing toolbar actions (delete/export/import/add), debugging a grid that loads nothing, or writing tests that touch a grid. EXAMPLES: 'add a grid for the campaigns entity', 'make the status column editable', 'why does my grid test never call getAll'."
+description: "The custom DataGrid (pc-datagrid): the AbstractAPIService DI contract, ColumnDef shape, server-side fetch options, inline editing with undo + cell flash, selection/bulk actions, the grid→detail record-navigation handoff, and the DI traps that break grid tests. USE WHEN adding a list/grid page for an entity, adding or changing grid columns, wiring inline editing or a custom cell renderer, changing toolbar actions (delete/export/import/add), debugging a grid that loads nothing, or writing tests that touch a grid. EXAMPLES: 'make the status column editable', 'why does my grid test never call getAll', 'my grid renders no rows'."
 ---
 
 # pplCRM DataGrid (`pc-datagrid`)

@@ -40,6 +40,20 @@ describe('SidebarItems', () => {
     expect(new Set(keys).size, 'sidebar shortcut keys must be unique').toBe(keys.length);
   });
 
+  // `g` opens the chord, so it can never also be a destination key.
+  it('never uses the chord prefix as a destination key', () => {
+    for (const item of all) {
+      expect(item.shortcut, `item "${item.name}" cannot use the chord prefix`).not.toBe('g');
+    }
+  });
+
+  // A visible entry with no hint is the odd one out in the sidebar; keep the set complete.
+  it('gives every navigable item a navigation shortcut', () => {
+    for (const item of navigable) {
+      expect(item.shortcut, `item "${item.name}" is missing a shortcut`).toBeTruthy();
+    }
+  });
+
   it('marks the admin-only ADMIN section as adminOnly', () => {
     const admin = SidebarItems.find((item) => item.name === 'ADMIN');
     expect(admin?.adminOnly).toBe(true);

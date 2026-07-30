@@ -36,6 +36,7 @@ import {
   refreshResultMessage,
 } from './turf-vocabulary';
 import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
+import { OrgModeService } from '../../../services/org-mode.service';
 
 type TurfStatus = TurfListItem['status'];
 type Tab = 'turfs' | 'report';
@@ -109,9 +110,18 @@ export class CanvassingPage implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly dialog = inject(ConfirmDialogService);
   private readonly router = inject(Router);
+  private readonly orgMode = inject(OrgModeService);
 
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
+
+  /**
+   * Worded by the tenant's organization mode, so the page header matches the sidebar
+   * entry the user clicked to get here ("Door knocking" in an office, "Visitation" in
+   * a church). Prose below it stays fixed — see ORG_MODE_TERMS' doctrine on why only
+   * fixed labels are translated.
+   */
+  protected readonly pageTitle = computed<string>(() => this.orgMode.term('nav.canvassing'));
 
   protected readonly tab = signal<Tab>('turfs');
 

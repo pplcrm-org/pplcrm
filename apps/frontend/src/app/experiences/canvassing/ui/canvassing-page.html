@@ -2,7 +2,7 @@
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4). Its ⓘ carries
        the definition of a turf and the door into the full canvassing guide. -->
   <pc-grid-header
-    title="Canvassing"
+    [title]="pageTitle()"
     description="A turf is one walkable batch of doors, cut from a list. You hand each turf to volunteers, they knock with the Canvass Companion on their phone, and every answer lands back here."
     helpArticle="canvassing"
     [totalSentence]="headline() || 'No turfs yet'"
@@ -24,7 +24,7 @@
     [activeTab]="tab()"
     (activeTabChange)="selectTab($event)"
     variant="underline"
-    label="Canvassing views"
+    [label]="pageTitle() + ' views'"
   />
 
   @if (tab() === 'turfs') { @if (loaded() && turfs().length === 0) {

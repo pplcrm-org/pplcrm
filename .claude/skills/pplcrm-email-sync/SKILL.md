@@ -1,16 +1,14 @@
 ---
 name: pplcrm-email-sync
 description: >-
-  How mailbox sync works in pplCRM — the 48-hour initial window shared by the Gmail and MS Graph
-  adapters, the window-scoped deletion sweep (the invariant that prevents wiping a tenant's archive),
-  per-folder checkpointing, the folder-scoped attachment payload policy (eager / deferred / spam
-  never), on-demand attachment materialization, and the body storage split (blob HTML + Postgres
-  text extract). USE WHEN touching modules/google-sync, modules/ms-sync, the email ingester,
-  email_bodies / email_attachments schema, the attachment download routes, or when a user reports
-  missing mail, missing attachments, an empty inbox after connecting, or a body that will not load.
-  EXAMPLES 'why does connecting Gmail only bring 2 days', 'the attachment says no longer available',
-  'change the initial sync window', 'add a folder to the sync', 'why is spam read-only',
-  'my emails disappeared after a re-sync'.
+  Mailbox sync (Gmail + MS Graph) — the 48-hour initial window, the window-scoped deletion sweep
+  (the invariant that prevents wiping a tenant's archive), per-folder checkpointing, the
+  folder-scoped attachment payload policy (eager / deferred / spam never), and the body storage
+  split (blob HTML + Postgres text extract). USE WHEN touching modules/google-sync, modules/ms-sync,
+  the email ingester, email_bodies / email_attachments schema, the attachment download routes, or
+  when a user reports missing mail, missing attachments, an empty inbox after connecting, or a body
+  that will not load. EXAMPLES 'why does connecting Gmail only bring 2 days', 'the attachment says
+  no longer available', 'my emails disappeared after a re-sync'.
 ---
 
 # Mailbox sync

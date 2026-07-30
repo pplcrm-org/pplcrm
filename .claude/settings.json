@@ -123,6 +123,39 @@
     ]
   },
 
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/claude-hooks/protect-generated.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/claude-hooks/format-file.mjs\"",
+            "timeout": 30,
+            "statusMessage": "Formatting"
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/claude-hooks/sync-reminders.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+
   "enabledPlugins": {
     "nx@nx-claude-plugins": true
   },
@@ -170,6 +203,20 @@
     "filesystem": {
       "// allowRead": "The Read(./.env.*) deny rules above also catch the committed *.example templates, which hold no secrets. lint-staged stats the whole tracked tree to take its backup stash, so the pre-commit hook dies on lstat(.env.development.example). Re-allow the templates only; the real .env.development/.production/.test are untracked, never stashed, and stay denied.",
       "allowRead": ["./.env.example", "./.env.*.example", "./**/.env.example", "./**/.env.*.example"]
-    }
+    },
+
+    "// excludedCommands": "Measured 2026-07-30, sandboxed, --skip-nx-cache: Angular builds are 3 green in 14 runs (frontend 0/3, companion 0/3, and 0/3 even with NG_BUILD_MAX_WORKERS=1), vs 8/8 green with CI=1. Cause: lmdb's open() dies silently on SIGABRT/134 under Seatbelt (POSIX named semaphores — an IPC denial no allowWrite fixes), and @angular/build opens that cache lazily OUTSIDE its own try/catch, so stderr is empty and it looks like a code error. CI=1 disables Angular's persistent cache and is the sandbox-preserving alternative when you want one. `nx build backend` is fine sandboxed (2/2, no LMDB) and needs no exclusion. `nx test backend` fails deterministically instead: .env.test is read-denied, so the globalSetup guardrail sees an empty DB_NAME — unsandboxed it is 1340/1340 green. Do NOT allow-read .env.test (it holds JWT_SECRET/SHARED_SECRET), and do NOT widen these globs to bare run-many*/affected*, which would un-sandbox lint and every other project's tests. Full evidence: .claude/skills/pplcrm-quality-gate/SKILL.md.",
+    "excludedCommands": [
+      "npx nx build*",
+      "nx build*",
+      "npx nx run *:build*",
+      "npx nx run-many -t build*",
+      "npx nx run-many --target=build*",
+      "npx nx affected -t build*",
+      "npx nx affected --target=build*",
+      "npx nx test backend*",
+      "nx test backend*",
+      "npx nx run backend:test*"
+    ]
   }
 }

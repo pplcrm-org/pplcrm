@@ -1,6 +1,6 @@
 ---
 name: pplcrm-lists
-description: The Lists feature (§8) — smart vs static membership, the rule-builder field contract (what a rule field must be wired into on BOTH sides or it is silently dropped), campaign scoping of a stored definition, and the built-in undeletable "All Subscribers" / "All Volunteers" lists. USE WHEN adding or changing a field the rule builder can filter on, touching modules/lists or experiences/lists, debugging a smart list that matches nothing or the wrong people, changing what a list definition stores, or working on the built-in/system lists. EXAMPLES 'add "last donated" to the list rule dropdown', 'my smart list matches zero people', 'why can I not delete All Volunteers', 'make a new built-in list'.
+description: Lists (§8) — smart vs static membership, the rule-builder field contract (a rule field must be wired into BOTH the repo columnMapping and the frontend field list or it is silently dropped), campaign scoping of a stored definition, and the built-in undeletable "All Subscribers" / "All Volunteers" lists. USE WHEN adding or changing a field the rule builder can filter on, touching modules/lists or experiences/lists, debugging a smart list that matches nothing or the wrong people, or working on the built-in/system lists. EXAMPLES 'my smart list matches zero people', 'add "last donated" to the list rule dropdown', 'why can I not delete All Volunteers'.
 ---
 
 # Lists (§8)

@@ -1,6 +1,6 @@
 ---
 name: pplcrm-deliveries
-description: How pplCRM's Deliveries feature works (spec §14) — yard-sign delivery requests → pure-preview route planning → volunteer-driven routes, with the tokenized public volunteer page. Covers the three tables and their "routed is derived" invariant, the pure routing engine, the tRPC + public-token backend, the frontend surfaces, and the honest activity attribution. USE WHEN touching anything under modules/deliveries, experiences/deliveries, the routing engine (lib/routing), the delivery_* tables, the public /r/:token page, or the deliveries sidebar badge. EXAMPLES: 'add a field to delivery requests', 'why is a request still showing as routed', 'change how routes are estimated', 'the volunteer link 404s'.
+description: Deliveries (§14) — yard-sign requests → pure-preview route planning → volunteer-driven routes, the three delivery_* tables and their "routed is derived" invariant, the pure routing engine, and the tokenized public volunteer page. USE WHEN touching modules/deliveries, experiences/deliveries, the routing engine (lib/routing), the delivery_* tables, the public /r/:token page, or the deliveries sidebar badge. EXAMPLES: 'why is a request still showing as routed', 'change how routes are estimated', 'the volunteer link 404s'.
 ---
 
 # Deliveries (§14)
@@ -11,14 +11,15 @@ repo-root `YARD-SIGN-ROUTES-PLAN.md` — the spec's strings win where they disag
 
 ## The data model (3 tables, all tenant-scoped + RLS)
 
-Migration: `apps/backend/src/app/_migrations/2026-07-11-deliveries.ts` (dated 07-11 so it sorts
-after the already-applied `2026-07-10-person-public-id` — Kysely forbids a new migration inserted
-before an applied one). Kysely models (`DeliveryRequests`, `DeliveryRoutes`, `DeliveryRouteStops`)
+The three tables live in the squashed baseline (`_migrations/schema.sql`); the original dated
+migration no longer exists post-squash (see `pplcrm-migrations`). A **new** delivery migration must
+still sort alphabetically after every applied file — Kysely aborts with "corrupted migrations"
+otherwise. Kysely models (`DeliveryRequests`, `DeliveryRoutes`, `DeliveryRouteStops`)
 in `libs/common/src/lib/kysely.models.ts`.
 
 - **`delivery_requests`** — one per household sign request. `status: new | approved | declined | delivered`
   (spec spelling; **no `cancelled`**). Tied to a `household_id` (coords + geocoding_status live on the
-  household — Wave 1A; never a parallel geocoder). `web_form_id` is `uuid` (web_forms has a uuid id).
+  household; never a parallel geocoder). `web_form_id` is `uuid` (web_forms has a uuid id).
 - **`delivery_routes`** — `status: draft | assigned | in_progress | completed | canceled` (American
   one-L "canceled", per spec). Carries `start_lat/lng`, `est_minutes/est_km`, a `params` jsonb
   snapshot, and the share link as **`share_token_hash` (sha256 hex) only** — the raw token is returned
@@ -132,10 +133,16 @@ approve/decline, and the always-enabled "Plan routes · N ready" primary, which 
 doesn't provide. Pages: `deliveries-requests` (`/deliveries`), `deliveries-plan` (`/deliveries/plan`),
 `deliveries-routes` (`/deliveries/routes`), `deliveries-route-detail` (`/deliveries/routes/:id`).
 The sidebar has a single **Deliveries** entry (→ `/deliveries`), so the two list pages carry a
-shared **`deliveries-nav.ts`** (`pc-deliveries-nav`) segmented switcher in their header — a DaisyUI
-`join` of two `routerLink`s whose active segment is driven by `routerLinkActive` (no JS state) —
-because otherwise the routes list is only reachable by opening a single route from the requests
-grid's Route column. The **routes list rows** carry the same inline affordances as the route detail:
+shared **`deliveries-nav.ts`** (`pc-deliveries-nav`) surface switcher in their header — the house
+`pc-tab-bar` in its `underline` variant, whose active tab is driven by `routerLinkActive` (no JS
+state) — because otherwise the routes list is only reachable by opening a single route from the
+requests grid's Route column. The **Routes** tab carries a count of the routes a volunteer is
+currently out delivering (`deliveries.getRouteCounts` → `DeliveryRoutesRepo.getStatusCounts`,
+read with `skipErrorHandler` so a failed count drops the badge instead of toasting). It counts
+`in_progress` only and is hidden at zero, so the option also sets `tooltip` ("N routes in
+progress") — a bare number beside "Routes" would otherwise read as the route total. The nav
+fetches on init and exposes `refresh()`; `deliveries-routes.ts` calls it after canceling a route,
+the one in-page action that can retire an in-progress route. The **routes list rows** carry the same inline affordances as the route detail:
 an inline dashed **Assign** button in the Volunteer cell when unassigned, and a trailing `⋯`
 overflow (assign/change volunteer via the shared `assign-volunteer-dialog.ts`, copy volunteer link,
 resend link to volunteer, cancel route, delete route) — mirrors the canvassing turf table. The route

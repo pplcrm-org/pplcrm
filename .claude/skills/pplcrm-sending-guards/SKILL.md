@@ -1,6 +1,6 @@
 ---
 name: pplcrm-sending-guards
-description: "The anti-abuse layer around outbound email and plan enforcement: the pre-send gates in send-guards.ts (verified domain, free-tier phone verification, 7-day warm-up cap), the newsletter preflight content gate (deliverability score 0-100, blocked band refuses the send; preflight.service.ts + libs/common preflight-lint + Claude AI review), the bounce/complaint tripwires that pause or suspend a tenant, the per-tenant hourly send cap in the outbox worker, the FEATURE_MATRIX plan gate (plan-gate.ts + GATED_FEATURES), the disposable-email signup block, the free-tier SendGrid subuser, and the Postmark bounce webhook. USE WHEN a send is blocked/paused/suspended, a 'Deliverability score N' error blocks a send, a tenant hit 'requires the Grassroots plan', changing plan feature gates or send caps/tripwire/preflight thresholds, adding a plan-gated module, un-pausing a tenant, or touching newsletter_send_log / newsletter_content_checks / tenants.sending_paused_at / phone verification. EXAMPLES: 'why can't this free tenant send', 'resume sending for tenant X', 'gate the new module to Movement', 'change the warm-up cap', 'why is this newsletter blocked at score 42'."
+description: "The anti-abuse layer around outbound email and plan enforcement: pre-send gates in send-guards.ts, the newsletter preflight score, bounce/complaint tripwires, the per-tenant hourly send cap, and the FEATURE_MATRIX plan gate (plan-gate.ts + GATED_FEATURES). USE WHEN a send is blocked/paused/suspended, a 'Deliverability score N' error blocks a send, a tenant hit 'requires the Grassroots plan', changing plan feature gates or send caps/tripwire/preflight thresholds, un-pausing a tenant, or touching newsletter_send_log / newsletter_content_checks / tenants.sending_paused_at / phone verification. EXAMPLES: 'why can't this free tenant send', 'why is this newsletter blocked at score 42', 'gate the new module to Movement'."
 ---
 
 # Sending guards & plan enforcement (anti-abuse layer)
@@ -65,7 +65,7 @@ All constants (caps, rates, messages) live at the top of that file. Enforcement 
      (`isVerified = spf && dkim && linkBranded && subuserOk`), because click tracking is on
      unconditionally (`newsletter-mail.service.ts`) — an unbranded domain ships `sendgrid.net`
      links on a shared, blocklist-exposed click domain. Its label is caller-chosen
-     (`linkSubdomain` on the entry, `DEFAULT_LINK_SUBDOMAIN = 'email'` from `libs/common/dns-label.ts`)
+     (`linkSubdomain` on the entry, `DEFAULT_LINK_SUBDOMAIN = 'email'` from `libs/common/src/lib/dns-label.ts`)
      because `email.<domain>` is often already in use; `settings.setLinkSubdomain` moves it after
      the fact by recreating only the link branding, leaving a validated DKIM setup intact. Before
      2026-07-26 the label was hardcoded and a collision locked that tenant out of sending with no

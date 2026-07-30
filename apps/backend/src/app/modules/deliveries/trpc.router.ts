@@ -67,6 +67,7 @@ export const DeliveriesRouter = router({
   getAllRoutes: authProcedure
     .input(getAllOptions.optional())
     .query(({ ctx, input }) => controller.getAllRoutes(ctx.auth.tenant_id, input)),
+  getRouteCounts: authProcedure.query(({ ctx }) => controller.getRouteCounts(ctx.auth.tenant_id)),
   getRouteById: authProcedure.input(idSchema).query(({ ctx, input }) => controller.getRouteById(ctx.auth, input)),
   updateRoute: authProcedure
     .input(z.object({ id: idSchema, data: UpdateDeliveryRouteObj }))

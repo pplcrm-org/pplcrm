@@ -4,7 +4,23 @@
     title="Approvals"
     helpArticle="volunteer-access"
     [totalSentence]="loaded() ? pendingSentence() : null"
-  ></pc-grid-header>
+  >
+    <!-- Volunteers verify on their phones while the organizer watches this page, and
+         nothing pushes that arrival here — so the way to see it is a plain Refresh. -->
+    <button
+      type="button"
+      class="btn btn-ghost btn-sm"
+      title="Check for volunteers who just verified"
+      [disabled]="refreshing()"
+      (click)="reloadAll()"
+    >
+      @if (refreshing()) {
+      <span class="loading loading-spinner loading-xs"></span>
+      Refreshing… } @else {
+      <pc-icon name="arrow-path" [size]="4" />
+      Refresh }
+    </button>
+  </pc-grid-header>
 
   <p class="max-w-prose text-xs text-base-content/60">
     Companion links are personal. A volunteer opening their turf or route link first verifies a code sent to their email

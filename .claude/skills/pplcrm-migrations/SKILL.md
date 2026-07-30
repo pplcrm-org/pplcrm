@@ -1,6 +1,6 @@
 ---
 name: pplcrm-migrations
-description: "How to add and run Kysely SQL migrations in the pplCRM backend, the filename convention that controls run order, the never-edit-an-applied-migration rule, and how the schema baseline works. USE WHEN adding or changing a database table/column, writing a migration file, debugging 'corrupt migration'/'relation already exists' errors on startup, or regenerating the schema baseline. EXAMPLES: 'add a migration to add a column to persons', 'how do I regenerate schema_dump.sql', 'migration failed with corrupt migrations error'."
+description: "Adding and running Kysely SQL migrations, the filename convention that controls run order, the never-edit-an-applied-migration rule, and how the schema.sql baseline works. USE WHEN adding or changing a database table/column, writing a migration file, debugging 'corrupt migrations' or 'relation already exists' errors on startup, or regenerating the schema baseline. EXAMPLES: 'add a column to persons', 'how do I regenerate the schema baseline', 'migration failed with corrupt migrations error'."
 ---
 
 # pplCRM Database Migrations

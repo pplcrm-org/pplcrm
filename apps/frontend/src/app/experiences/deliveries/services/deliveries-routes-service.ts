@@ -24,6 +24,18 @@ export class DeliveriesRoutesService extends AbstractAPIService<'delivery_routes
     return this.api.deliveries.getAllRoutes.query(options, { signal: this.ac.signal });
   }
 
+  /**
+   * Route counts keyed by status (`draft`, `assigned`, `in_progress`, `completed`, `canceled`).
+   * `skipErrorHandler` because this only feeds the Routes tab badge — a failed count must not
+   * toast over the page the user is actually working on; the caller just drops the badge.
+   */
+  public getStatusCounts(): Promise<Record<string, number>> {
+    return this.api.deliveries.getRouteCounts.query(undefined, {
+      signal: this.ac.signal,
+      context: { skipErrorHandler: true },
+    });
+  }
+
   public getById(id: string): Promise<DeliveryRouteDetail> {
     return this.api.deliveries.getRouteById.query(id);
   }

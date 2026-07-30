@@ -213,6 +213,9 @@ export const SidebarItems: ISidebarItem[] = [
         moduleId: 'deliveries',
         route: '/deliveries',
         icon: 'house-modern',
+        // `e` (dEliveries): `d` belongs to Duplicates, and the church-mode wording
+        // ("Drop-offs") also starts with a taken letter.
+        shortcut: 'e',
         // badgeCount = live approved-and-ready request count (spec §14), populated at runtime by
         // Sidebar from `deliveries.getReadyCount` — see sidebar.ts. Static data left unset.
       },
@@ -231,6 +234,8 @@ export const SidebarItems: ISidebarItem[] = [
         moduleId: 'volunteerAccess',
         route: '/volunteer-access',
         icon: 'identification',
+        // `r` (appRovals): `a` belongs to Automations.
+        shortcut: 'r',
         // badgeCount = volunteers awaiting approval, populated at runtime by
         // Sidebar from `companionAccess.pendingCount`.
       },
@@ -247,6 +252,8 @@ export const SidebarItems: ISidebarItem[] = [
         route: '/tags',
         alsoActiveFor: ['/issues'],
         icon: 'label',
+        // `s` (tagS & issueS): `t` is Teams, `i` is Inbox, `l` (label) is Lists.
+        shortcut: 's',
       },
       {
         // Wave 1E (spec §17): History page with Imports/Exports tabs, plus the
@@ -255,6 +262,8 @@ export const SidebarItems: ISidebarItem[] = [
         name: 'Import & export',
         route: '/imports',
         icon: 'arrows-up-down-tray',
+        // `x` (eXport, the usual key for it): `i` is Inbox.
+        shortcut: 'x',
       },
       {
         name: `Duplicates`,
@@ -276,17 +285,22 @@ export const SidebarItems: ISidebarItem[] = [
         name: 'Users',
         route: '/users',
         icon: 'users',
+        // `m` (workspace Members): `u` is Households and `s` is Tags & issues.
+        shortcut: 'm',
       },
 
       {
         name: 'Activity',
         route: '/activity',
         icon: 'clipboard-document-list',
+        // `y` (activitY): `a` is Automations, `c` is Companies, `t` is Teams.
+        shortcut: 'y',
       },
       {
         name: 'Workspace',
         route: '/workspace',
         icon: 'wrench-screwdriver',
+        shortcut: 'w',
       },
     ],
   },

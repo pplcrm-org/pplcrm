@@ -406,7 +406,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
     blocks: [
       {
         kind: 'p',
-        text: 'Deliveries turns sign requests into optimized driving routes and hands each one to a volunteer. Open [Deliveries](/deliveries) under **Field** in the sidebar. The badge shows how many requests are approved and ready to route. A **Requests / Routes** switch at the top of the page flips between the incoming request pool and the routes you have already planned. The **Plan routes** button stays disabled until at least one request is approved and located. There is nothing to route before then.',
+        text: 'Deliveries turns sign requests into optimized driving routes and hands each one to a volunteer. Open [Deliveries](/deliveries) under **Field** in the sidebar. The badge shows how many requests are approved and ready to route. A **Requests / Routes** switch at the top of the page flips between the incoming request pool and the routes you have already planned. **Routes** carries a count whenever volunteers are out delivering: it is the number of routes in progress, not the total number of routes, so an empty count means nobody has started one yet. The **Plan routes** button stays disabled until at least one request is approved and located. There is nothing to route before then.',
       },
       { kind: 'h2', id: 'requests', text: 'Requests: approve what comes in' },
       {

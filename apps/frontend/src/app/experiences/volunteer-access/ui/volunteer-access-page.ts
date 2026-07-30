@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, inject, signal, viewChild } from '@angular/core';
 
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -44,14 +44,31 @@ export class VolunteerAccessPage implements OnInit {
   private readonly confirmDlg = inject(ConfirmDialogService);
   private readonly svc = inject(VolunteerAccessService);
 
+  private readonly joinCodes = viewChild(JoinCodePanel);
+
   protected readonly busyId = signal<string | null>(null);
   protected readonly flashedId = signal<string | null>(null);
   protected readonly loaded = signal(false);
   protected readonly loading = createLoadingGate();
+  protected readonly refreshing = signal(false);
   protected readonly rows = signal<CompanionVolunteerRow[]>([]);
 
   public ngOnInit(): void {
     void this.refresh();
+  }
+
+  /**
+   * This page is a waiting room — an organizer sits on it while volunteers verify on
+   * their phones, and nothing pushes those arrivals in. So the refresh is explicit,
+   * and it re-reads the join code counts alongside the table for one consistent answer.
+   */
+  protected async reloadAll(): Promise<void> {
+    this.refreshing.set(true);
+    try {
+      await this.refreshAll();
+    } finally {
+      this.refreshing.set(false);
+    }
   }
 
   protected async approve(row: CompanionVolunteerRow): Promise<void> {
@@ -60,7 +77,7 @@ export class VolunteerAccessPage implements OnInit {
       await this.svc.approve(row.id);
       this.alerts.showSuccess(`Approved ${this.displayName(row)}. Their link works now`);
       this.flash(row.id);
-      await this.refresh();
+      await this.refreshAll();
     } catch {
       this.alerts.showError('Could not approve. Try again');
     } finally {
@@ -127,7 +144,7 @@ export class VolunteerAccessPage implements OnInit {
     try {
       await this.svc.revoke(row.id);
       this.alerts.showSuccess(`Revoked ${this.displayName(row)}. Their devices are signed out`);
-      await this.refresh();
+      await this.refreshAll();
     } catch {
       this.alerts.showError('Could not revoke. Try again');
     } finally {
@@ -153,6 +170,11 @@ export class VolunteerAccessPage implements OnInit {
   private flash(id: string): void {
     this.flashedId.set(id);
     setTimeout(() => this.flashedId.set(null), 1500);
+  }
+
+  /** Approving changes both surfaces: the table row and the join code's waiting-for-you count. */
+  private async refreshAll(): Promise<void> {
+    await Promise.all([this.refresh(), this.joinCodes()?.reload()]);
   }
 
   private async refresh(): Promise<void> {

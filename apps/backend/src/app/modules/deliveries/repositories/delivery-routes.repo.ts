@@ -82,6 +82,23 @@ export class DeliveryRoutesRepo extends BaseRepository<'delivery_routes'> {
     };
   }
 
+  /**
+   * Route counts by status, for the Requests/Routes tab badge. Every status key is present (zeroed)
+   * so the caller never has to distinguish "no routes in that state" from "status unknown".
+   */
+  public async getStatusCounts(tenantId: string, trx?: Transaction<Models>): Promise<Record<string, number>> {
+    const db = trx ?? this.db;
+    const rows = await db
+      .selectFrom('delivery_routes')
+      .select(['status', ({ fn }) => fn.count<number>('id').as('n')])
+      .where('tenant_id', '=', tenantId)
+      .groupBy('status')
+      .execute();
+    const counts: Record<string, number> = { draft: 0, assigned: 0, in_progress: 0, completed: 0, canceled: 0 };
+    for (const r of rows) counts[String(r.status)] = Number(r.n);
+    return counts;
+  }
+
   /** Typed single-route fetch (getOneById erases the row type to `{}`). */
   public async getRouteRow(
     tenantId: string,

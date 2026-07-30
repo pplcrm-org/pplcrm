@@ -50,6 +50,8 @@ export class DeliveriesRoutes implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly confirm = inject(ConfirmDialogService);
   private readonly assignDlg = viewChild.required<AssignVolunteerDialog>('assignDlg');
+  /** Canceling a route can retire the in-progress count the nav badge is showing. */
+  private readonly nav = viewChild.required(DeliveriesNav);
   protected readonly loading = createLoadingGate();
 
   protected readonly rows = signal<DeliveryRouteRow[]>([]);
@@ -164,7 +166,7 @@ export class DeliveriesRoutes implements OnInit {
     try {
       await this.svc.setStatus(row.id, 'canceled');
       this.alerts.showSuccess('Route canceled');
-      await this.reload();
+      await Promise.all([this.reload(), this.nav().refresh()]);
     } catch (err) {
       this.alerts.showError(err instanceof Error ? err.message : 'Could not cancel the route');
     }
