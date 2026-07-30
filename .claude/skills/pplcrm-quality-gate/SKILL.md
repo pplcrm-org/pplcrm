@@ -43,6 +43,36 @@ Heads-up on **pre-existing failures** — check whether the flagged lines/tests 
 - ~~`nx test frontend` has **2 pre-existing failing tests** (`services/api/user-message.spec.ts`, `layout/sidebar/sidebar.spec.ts`)~~ — both pass as of 2026-07-25; `nx run-many -t test -p frontend backend common uxcommon` is fully green (1188 tests).
 - ~~Deploy CI has **no test step**, which is how broken specs land on main.~~ — fixed 2026-07-25, see below.
 
+## `nx build` cannot run inside Claude Code's sandbox (fixed 2026-07-30)
+
+If an agent reports that a build fails, check the shape of the failure before you believe it. A
+sandboxed `nx build` prints exactly this and nothing else:
+
+```
+❯ Building...
+/*! 🌼 daisyUI 5.5.23 */
+
+ NX   Running target build for project companion failed
+```
+
+No diagnostic, no file, no stack — and `--verbose` adds nothing. That is the signature of the
+environment, not of your code. Two independent causes, both of which look like a build error:
+
+1. **nx dotenv + the `.env` deny rules.** nx dotenv-loads `.env.<configuration>` for every task, so
+   `build:production` reads `.env.production`, hits the sandbox `EPERM`, and the error propagates
+   out of `dotenv` as a bare task failure. Only builds trip it — `test`/`lint` have no matching
+   configuration name, which is why they stay green and the failure looks project-specific.
+2. **LMDB and POSIX semaphores.** `@angular/build` caches compiled JS in an LMDB store under
+   `.angular/cache`; LMDB's writer lock uses POSIX named semaphores, which Seatbelt denies. The
+   process dies on **SIGABRT (exit 134)** with nothing on stderr. No `allowWrite` path fixes this —
+   it is an IPC denial, not a filesystem one, and it reproduces with a three-line `lmdb` script
+   writing to `$TMPDIR`.
+
+`.claude/settings.json` now lists build invocations in `sandbox.excludedCommands`, so they run
+outside the sandbox exactly as they do in a developer's terminal. `nx test` and `nx lint` are
+unaffected and stay sandboxed. If you see the silent-failure signature again on some other target,
+add that target's invocation to the same list rather than debugging the app.
+
 ## CI runs this gate now (2026-07-25)
 
 `.github/workflows/verify.yml` runs **lint / test / build / e2e** on every PR, and `deploy.yml`

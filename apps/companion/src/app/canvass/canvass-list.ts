@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
 
 import type { CompanionHousehold } from '@common';
 import { Icon } from '@icons/icon';
@@ -139,7 +139,7 @@ type ListFilter = 'all' | 'remaining' | 'visited';
     </div>
   `,
 })
-export class CanvassList implements OnInit {
+export class CanvassList {
   protected readonly store = inject(CanvassStore);
 
   protected readonly pickerOpen = signal(false);
@@ -182,7 +182,7 @@ export class CanvassList implements OnInit {
     return doorStatusLabel(doorStatus(h));
   }
 
-  public ngOnInit(): void {
+  constructor() {
     const timer = setInterval(() => void this.store.refresh(), REFRESH_MS);
     inject(DestroyRef).onDestroy(() => clearInterval(timer));
   }
