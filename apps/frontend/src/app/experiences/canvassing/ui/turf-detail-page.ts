@@ -21,27 +21,18 @@ import {
 import { CanvassingService, type TurfDetail, type TurfDoor } from '../services/canvassing-service';
 import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
 import { AssignTurfDialog } from './assign-turf-dialog';
+import {
+  TURF_STATUS_HINT,
+  TURF_STATUS_LABEL,
+  TURF_STATUS_TONE,
+  refreshFromListExplainer,
+  refreshResultMessage,
+} from './turf-vocabulary';
 import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
 
 type TurfStatus = TurfDetail['status'];
 type DoorStatus = TurfDoor['status'];
 type DoorFilter = 'all' | DoorStatus;
-
-const STATUS_LABEL: Record<TurfStatus, string> = {
-  draft: 'Draft (unassigned)',
-  assigned: 'Sent to app',
-  in_field: 'In field now',
-  complete: 'Complete',
-  retired: 'Retired',
-};
-
-const STATUS_TONE: Record<TurfStatus, PcStatusType> = {
-  draft: 'ghost',
-  assigned: 'info',
-  in_field: 'success',
-  complete: 'neutral',
-  retired: 'ghost',
-};
 
 /** Door dots read the same here as on the field report's coverage map. */
 const DOOR_VARIANT: Record<DoorStatus, PcMapVariant> = {
@@ -97,7 +88,8 @@ export class TurfDetailPage {
   protected readonly rosterOpen = signal(false);
   protected readonly qrOpen = signal(false);
 
-  protected readonly statusLabel = STATUS_LABEL;
+  protected readonly statusLabel = TURF_STATUS_LABEL;
+  protected readonly statusHint = TURF_STATUS_HINT;
   protected readonly doorFilters = DOOR_FILTERS;
   protected readonly doorLabel = DOOR_LABEL;
 
@@ -170,7 +162,7 @@ export class TurfDetailPage {
   });
 
   protected tone(status: TurfStatus): PcStatusType {
-    return STATUS_TONE[status];
+    return TURF_STATUS_TONE[status];
   }
 
   protected doorTone(status: DoorStatus): PcStatusType {
@@ -219,10 +211,19 @@ export class TurfDetailPage {
   }
 
   protected async refreshFromList(): Promise<void> {
+    const listName = this.detail()?.list_name;
+    if (!listName) return;
+    const ok = await this.confirm.confirm({
+      title: `Re-read "${listName}"?`,
+      message: refreshFromListExplainer(listName),
+      confirmText: 'Refresh doors',
+    });
+    if (!ok) return;
+
     const end = this._loading.begin();
     try {
       const res = await this.svc.refreshFromList(this.id());
-      this.alerts.showSuccess(`Refreshed. ${res.added} added, ${res.removed} removed. Knock history kept.`);
+      this.alerts.showSuccess(refreshResultMessage(listName, res));
       await this.load();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');

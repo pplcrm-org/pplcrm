@@ -970,20 +970,18 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     const session = await this.companionAccess.resolveSession(sessionToken);
     const tenant_id = session.tenant_id;
 
-    const [mineIds, rows, progress, canvassers, mayRoam] = await Promise.all([
+    const [mineIds, rows, progress, canvassers, mayRoam, campaigns] = await Promise.all([
       this.assignments.activeTurfIdsForVolunteer({ tenant_id, volunteer_person_id: session.person_id }),
       this.turfsRepo().getTurfs(tenant_id),
       this.knocks.getProgressByTenant(tenant_id),
       this.assignments.canvassersByTurf({ tenant_id }),
       volunteerMayRoam(this.knocks.db, { tenant_id, can_roam: session.can_roam }),
+      this.campaignsRepo.getSwitcherList({ tenant_id }),
     ]);
 
     const mineSet = new Set(mineIds);
-    // A roaming volunteer stays inside the campaigns they already work in. With no
-    // assignment yet there is nothing to infer from, so the picker is empty until an
-    // organizer places them once — roaming widens a volunteer's reach, it does not
-    // bootstrap it.
-    const myCampaigns = new Set(rows.filter((r) => mineSet.has(r.id)).map((r) => String(r.campaign_id ?? '')));
+    const myCampaigns = this.roamableCampaigns({ campaigns, mineIds, session, turfs: rows });
+    const campaignNames = new Map(campaigns.map((c) => [String(c.id), c.name]));
 
     const toChoice = (r: (typeof rows)[number]): CompanionTurfChoice => {
       const p = progress.get(r.id);
@@ -996,6 +994,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         canvassers: (canvassers.get(r.id) ?? []).length,
         centroid_lat: r.centroid_lat,
         centroid_lng: r.centroid_lng,
+        campaign_name: campaignNames.get(String(r.campaign_id ?? '')) ?? null,
       };
     };
 
@@ -1009,6 +1008,35 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
             .map(toChoice)
         : [],
     };
+  }
+
+  /**
+   * Which campaigns a roaming volunteer may reach.
+   *
+   * Placed volunteers stay inside the campaigns they already work in — roaming widens
+   * reach, it does not cross campaigns. A volunteer with no assignment yet is the case
+   * roaming exists FOR: approval is the trust decision, so they bootstrap from the
+   * campaign their join code named, or from every active campaign in the workspace when
+   * they came in some other way. Archived campaigns are read-only history and are never
+   * a bootstrap, but an existing assignment in one still counts — that turf is already
+   * theirs and the picker must keep showing it.
+   *
+   * Both the picker and self-claim read this, so a listed turf is always claimable.
+   */
+  private roamableCampaigns(input: {
+    campaigns: readonly { id: unknown; status: string }[];
+    mineIds: readonly string[];
+    session: { join_campaign_id: string | null };
+    turfs: readonly TurfRow[];
+  }): Set<string> {
+    const mineSet = new Set(input.mineIds);
+    const placed = input.turfs.filter((r) => mineSet.has(r.id)).map((r) => String(r.campaign_id ?? ''));
+    if (placed.length > 0) return new Set(placed);
+
+    const active = new Set(input.campaigns.filter((c) => c.status !== 'archived').map((c) => String(c.id)));
+    const fromJoinCode = input.session.join_campaign_id;
+    if (fromJoinCode && active.has(fromJoinCode)) return new Set([fromJoinCode]);
+    return active;
   }
 
   /**
@@ -1041,12 +1069,12 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
     // Same campaign guard as the picker, so a guessed turf id cannot reach further
     // than the list would have offered.
-    const mineIds = await this.assignments.activeTurfIdsForVolunteer({
-      tenant_id,
-      volunteer_person_id: session.person_id,
-    });
-    const all = await this.turfsRepo().getTurfs(tenant_id);
-    const myCampaigns = new Set(all.filter((r) => mineIds.includes(r.id)).map((r) => String(r.campaign_id ?? '')));
+    const [mineIds, all, campaigns] = await Promise.all([
+      this.assignments.activeTurfIdsForVolunteer({ tenant_id, volunteer_person_id: session.person_id }),
+      this.turfsRepo().getTurfs(tenant_id),
+      this.campaignsRepo.getSwitcherList({ tenant_id }),
+    ]);
+    const myCampaigns = this.roamableCampaigns({ campaigns, mineIds, session, turfs: all });
     if (!myCampaigns.has(String(turf.campaign_id ?? ''))) {
       throw new ForbiddenError('That turf belongs to another campaign.');
     }

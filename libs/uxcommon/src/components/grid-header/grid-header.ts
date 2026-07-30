@@ -1,9 +1,10 @@
 import { Component, computed, input, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { Icon } from '@icons/icon';
 
 @Component({
   selector: 'pc-grid-header',
-  imports: [Icon],
+  imports: [Icon, RouterLink],
   template: `
     <header class="mb-3 flex flex-wrap items-start justify-between gap-3">
       <div class="min-w-0">
@@ -14,7 +15,7 @@ import { Icon } from '@icons/icon';
           @if (countText(); as text) {
             <p class="text-xs tabular-nums text-base-content/60" aria-live="polite">{{ text }}</p>
           }
-          @if (description()) {
+          @if (hasAbout()) {
             <button
               type="button"
               class="btn btn-circle btn-ghost btn-xs text-base-content/40 hover:text-primary"
@@ -26,8 +27,13 @@ import { Icon } from '@icons/icon';
             </button>
           }
         </div>
-        @if (descriptionOpen() && description()) {
-          <p class="mt-1 max-w-2xl text-xs leading-relaxed text-base-content/60">{{ description() }}</p>
+        @if (descriptionOpen() && hasAbout()) {
+          <p class="mt-1 max-w-2xl text-xs leading-relaxed text-base-content/60">
+            {{ description() }}
+            @if (helpArticle(); as article) {
+              <a class="link link-primary whitespace-nowrap" [routerLink]="['/help', article]"> Read the full guide </a>
+            }
+          </p>
         }
       </div>
       <div class="flex items-center gap-2">
@@ -40,6 +46,13 @@ export class GridHeaderComponent {
   public readonly title = input.required<string>();
   public readonly description = input<string>('');
   public readonly eyebrow = input<string>('');
+
+  /**
+   * Help Center article id for this page. When set, the ⓘ panel ends with a link
+   * into `/help/:id` — the door from a section to the guide that explains it, so
+   * a first-time user is never left guessing what the page's vocabulary means.
+   */
+  public readonly helpArticle = input<string>('');
 
   /** Initial expanded state of the description; the ⓘ button toggles it afterwards. */
   public readonly open = input<boolean>(false);
@@ -59,6 +72,9 @@ export class GridHeaderComponent {
 
   private readonly descToggled = signal<boolean | null>(null);
   protected readonly descriptionOpen = computed(() => this.descToggled() ?? this.open());
+
+  /** The ⓘ affordance earns its place if there is either a blurb or a guide behind it. */
+  protected readonly hasAbout = computed<boolean>(() => this.description() !== '' || this.helpArticle() !== '');
 
   private readonly countFormatter = new Intl.NumberFormat();
 

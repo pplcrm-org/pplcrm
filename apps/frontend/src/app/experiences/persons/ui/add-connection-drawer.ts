@@ -86,13 +86,13 @@ type PersonSearchResult = { id: string; first_name: string | null; last_name: st
         <!-- Relation type -->
         <div class="flex flex-col gap-1.5">
           <label i18n class="text-sm font-semibold text-base-content/80">Relationship Type</label>
-          <select
-            class="select select-bordered w-full text-sm"
-            [value]="relationType()"
-            (change)="onRelationTypeChange($event)"
-          >
+          <select class="select select-bordered w-full text-sm" (change)="onRelationTypeChange($event)">
+            <!-- Current value on the option, not on the select: a [value] binding on the
+                 select runs before @for has made any options, so the browser falls back to
+                 the first one — the drawer would read "Referred by" while it saved
+                 "Close friend". -->
             @for (type of relationTypes; track type) {
-              <option [value]="type">{{ relationTypeLabels[type] }}</option>
+              <option [value]="type" [selected]="type === relationType()">{{ relationTypeLabels[type] }}</option>
             }
           </select>
         </div>

@@ -297,6 +297,8 @@ export interface CompanionTurfChoice {
   canvassers: number;
   centroid_lat: number | null;
   centroid_lng: number | null;
+  /** Which campaign it belongs to — shown only when the picker spans more than one. */
+  campaign_name: string | null;
 }
 
 export interface CompanionTurfChoices {

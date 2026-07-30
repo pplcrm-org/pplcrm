@@ -267,6 +267,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
           'On a phone the sidebar tucks away: tap the ☰ menu button in the top-left to slide it open, and tap it again (now an ✕) to close.',
           'The logo takes you back to the [Dashboard](/dashboard) from anywhere.',
           'Jump without the mouse: press `g` then a section letter (the hints appear beside the items). Press `?` anytime for the full list. See [Keyboard shortcuts](/help/shortcuts).',
+          'A few section names, and which optional sections are listed at all, depend on what kind of organization your workspace is (a constituency office knocks doors; a church visits). Your workspace type is shown at the top of the avatar menu, and administrators can change it there. See [Settings and configuration](/help/settings).',
         ],
       },
       { kind: 'h2', id: 'appearance', text: 'Theme and focus' },

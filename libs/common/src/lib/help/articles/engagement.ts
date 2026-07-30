@@ -262,15 +262,16 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
     blocks: [
       {
         kind: 'p',
-        text: 'Open [Canvassing](/canvassing) under **Field** in the sidebar. The header sentence sums up the whole operation at a glance: how many turfs exist, how many are in the field now, how many doors have been attempted, and how many turfs are still waiting for a canvasser.',
+        text: 'A **turf** is one walkable batch of doors, cut from a list you already have. You hand a turf to volunteers, they knock with the Canvass Companion on their phone, and every answer lands back in the CRM. Open [Canvassing](/canvassing) under **Field** in the sidebar. The sentence under the title sums the operation up: how many turfs exist, how many are being knocked right now, how many doors have been tried, and how many turfs still have nobody on them.',
       },
       { kind: 'h2', id: 'cut', text: 'Cut turfs from a list' },
       {
         kind: 'steps',
         items: [
           {
-            title: 'Click **Cut new turfs**',
-            detail: 'Pick a universe: any [smart list](/lists) of the people (or households) you want knocked.',
+            title: 'Click **Cut turfs from a list**',
+            detail:
+              'Pick the list of people or households you want knocked. Any [list](/lists) works, and a smart list is the one to prefer because the turfs can be re-read from it later.',
           },
           {
             title: 'Choose doors per turf',
@@ -280,9 +281,24 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
           {
             title: 'Confirm',
             detail:
-              'Turfs are cut from your located households into contiguous, walkable groups that never cross a hard barrier like a highway, rail line, or river. New turfs land as Draft, unassigned.',
+              'Turfs are cut from the addresses the app has placed on the map, into batches whose doors sit next to each other. A turf never crosses a ward boundary, and wards follow the rivers, rail lines and arterial roads, so nobody is sent across one. New turfs arrive marked **Needs canvassers**.',
           },
         ],
+      },
+      { kind: 'h2', id: 'statuses', text: 'What the badge on a turf means' },
+      {
+        kind: 'list',
+        items: [
+          '**Needs canvassers**: cut and ready to walk, but nobody is on it yet.',
+          '**Links sent**: its canvassers have their personal Companion links. No knocks logged yet.',
+          '**Knocking now**: a knock was logged on this turf in the last few hours.',
+          '**Every door knocked**: every door in the turf has been tried at least once.',
+          '**Retired**: closed to new knocks. Everything it collected stays in the field report.',
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'Nothing here is a setting you switch. Each badge is worked out from the knocks that have actually come in, so a turf tells you the truth about itself without anyone remembering to update it.',
       },
       {
         kind: 'callout',
@@ -298,7 +314,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'assign', text: 'Put canvassers on a turf' },
       {
         kind: 'p',
-        text: '**Add canvassers** opens the turf’s roster. Search for people and add as many as you like at once, because a turf holds a whole group walking it together, not one person. Everyone you add gets their own personal Companion link, **sent to them automatically** by email and text (whichever contacts their [person record](/people) has on file). Links are personal on purpose: each volunteer proves it’s them with a one-time code sent to their own email or mobile, and a brand-new volunteer needs a one-time admin approval on the Volunteer access page before the turf loads. Remove someone from the roster and their link stops working immediately, while everyone else keeps walking and the doors they already knocked stay credited to them. Keep a turf in sync with its list any time with **Refresh from list**. It pulls in new matching doors without ever losing knock history.',
+        text: '**Add canvassers** opens the turf’s roster. Search for people and add as many as you like at once, because a turf holds a whole group walking it together, not one person. Everyone you add gets their own personal Companion link, **sent to them automatically** by email and text (whichever contacts their [person record](/people) has on file). Links are personal on purpose: each volunteer proves it’s them with a one-time code sent to their own email or mobile, and a brand-new volunteer needs a one-time admin approval on the Volunteer access page before the turf loads. Remove someone from the roster and their link stops working immediately, while everyone else keeps walking and the doors they already knocked stay credited to them.',
       },
       {
         kind: 'p',
@@ -309,6 +325,17 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         tone: 'tip',
         title: 'Before you assign',
         text: 'Make sure the volunteer’s person record has an email or mobile number. That’s where their link and verification code go. No contact on file means nothing can be sent and the link can’t be opened — the app warns you and leaves the copied link for you to deliver another way.',
+      },
+      { kind: 'h2', id: 'refresh', text: 'Keeping a turf in step with its list' },
+      {
+        kind: 'p',
+        text: 'A list keeps moving after you cut from it: people are added, people move away, a smart list re-decides who belongs. **Refresh doors from list**, in a turf’s ⋯ menu or on the turf page, re-reads the list and brings the turf back in line. Doors still in the list are left exactly as they are, new addresses in the list that fall inside the turf’s ward are added, and doors that have left the list come off the turf. Knocks already logged are kept either way, so nothing disappears from the field report. The app tells you the count both ways before and after.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Greyed out? The turf has no list behind it',
+        text: 'Only a turf that was cut from a list can be re-read from one, because that is where the doors came from. A turf built by hand has nothing to compare against, so the action is offered but disabled and says why.',
       },
       { kind: 'h2', id: 'join-qr', text: 'Sign volunteers up on the spot with a QR code' },
       {

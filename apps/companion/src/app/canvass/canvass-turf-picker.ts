@@ -191,14 +191,26 @@ export class CanvassTurfPicker {
 
   /**
    * "Nothing available" has two very different causes, and saying the wrong one sends
-   * the volunteer to the wrong place. Roaming widens reach inside campaigns they
-   * already work in, so with no turf at all there is nothing to widen from yet.
+   * the volunteer to the wrong place: nothing has been cut yet (wait), versus every
+   * other turf already has someone on it (ask where to help).
    */
   protected noneAvailableReason(c: CompanionTurfChoices): string {
     return c.mine.length === 0
-      ? "Your organizer hasn't placed you on a campaign yet. Once they do, you can pick your own turfs here."
+      ? "There aren't any turfs to walk yet. Your organizer cuts them from a list, and they'll show up here."
       : 'Every other turf in your campaign already has someone on it. Ask your organizer where to help.';
   }
+
+  /**
+   * A volunteer with no assignment yet can be offered turfs from more than one campaign,
+   * and then the campaign is the first thing they need to tell them apart. With one
+   * campaign it is noise, so it isn't shown.
+   */
+  protected readonly spansCampaigns = computed(() => {
+    const c = this.choices();
+    if (!c) return false;
+    const names = new Set([...c.mine, ...c.available].map((t) => t.campaign_name).filter(Boolean));
+    return names.size > 1;
+  });
 
   /** Any turf with a centroid can show a distance, so the prompt is worth offering. */
   protected showsDistance(c: CompanionTurfChoices): boolean {
@@ -206,7 +218,9 @@ export class CanvassTurfPicker {
   }
 
   protected subtitle(t: CompanionTurfChoice): string {
-    const parts: string[] = [`${t.attempted} of ${t.doors} doors`];
+    const parts: string[] = [];
+    if (this.spansCampaigns() && t.campaign_name) parts.push(t.campaign_name);
+    parts.push(`${t.attempted} of ${t.doors} doors`);
     const km = this.distanceKm(t);
     if (km != null) parts.push(km < 1 ? `${Math.round(km * 1000)} m away` : `${km.toFixed(1)} km away`);
     else if (t.ward) parts.push(t.ward);

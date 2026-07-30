@@ -10,8 +10,11 @@
           <p class="pc-eyebrow">Turf</p>
           <div class="flex flex-wrap items-center gap-2">
             <h1 class="text-2xl font-bold tracking-tight text-base-content">{{ d.name }}</h1>
-            <pc-status-badge [type]="tone(d.status)">{{ statusLabel[d.status] }}</pc-status-badge>
+            <span [title]="statusHint[d.status]">
+              <pc-status-badge [type]="tone(d.status)">{{ statusLabel[d.status] }}</pc-status-badge>
+            </span>
           </div>
+          <p class="max-w-xl text-xs text-base-content/60">{{ statusHint[d.status] }}</p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" class="btn btn-primary btn-sm" (click)="rosterOpen.set(true)">
@@ -19,10 +22,18 @@
             {{ d.canvassers.length > 0 ? 'Manage canvassers' : 'Add canvassers' }}
           </button>
           <button type="button" class="btn btn-ghost btn-sm" (click)="qrOpen.set(true)">Show join QR</button>
-          <button type="button" class="btn btn-ghost btn-sm" (click)="refreshFromList()">
-            <pc-icon name="arrow-path" [size]="4" />
-            Refresh from list
-          </button>
+          <!-- Offered only when there is a list behind this turf; the tooltip says why
+               it is not, rather than letting the click fail (§2/§3). -->
+          <span
+            class="tooltip-bottom"
+            [class.tooltip]="!d.list_id"
+            data-tip="This turf was built by hand, so there is no list to re-read."
+          >
+            <button type="button" class="btn btn-ghost btn-sm" [disabled]="!d.list_id" (click)="refreshFromList()">
+              <pc-icon name="arrow-path" [size]="4" />
+              Refresh doors from list
+            </button>
+          </span>
           @if (d.status !== 'retired') {
           <button type="button" class="btn btn-ghost btn-sm text-error" (click)="retire()">Retire turf</button>
           }
@@ -31,23 +42,23 @@
 
       <div class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
         <div>
-          <p class="text-[10.5px] uppercase tracking-[0.06em] text-base-content/50">Campaign</p>
+          <p class="pc-eyebrow">Campaign</p>
           <p class="text-base-content/80">{{ d.campaign_name || '—' }}</p>
         </div>
         <div>
-          <p class="text-[10.5px] uppercase tracking-[0.06em] text-base-content/50">Ward</p>
+          <p class="pc-eyebrow">Ward</p>
           <p class="text-base-content/80">{{ d.ward || '—' }}</p>
         </div>
         <div>
-          <p class="text-[10.5px] uppercase tracking-[0.06em] text-base-content/50">Universe</p>
+          <p class="pc-eyebrow">Cut from list</p>
           @if (d.list_id) {
           <a class="text-primary" [routerLink]="['/lists', d.list_id]">{{ d.list_name || 'List' }}</a>
           } @else {
-          <p class="text-base-content/50">Not from a list</p>
+          <p class="text-base-content/50">Built by hand</p>
           }
         </div>
         <div>
-          <p class="text-[10.5px] uppercase tracking-[0.06em] text-base-content/50">Last activity</p>
+          <p class="pc-eyebrow">Last knock</p>
           <p class="text-base-content/80">
             {{ d.last_activity_at ? (d.last_activity_at | date: 'MMM d, h:mm a') : 'No knocks yet' }}
           </p>
@@ -236,8 +247,9 @@
           } @empty {
           <tr>
             <td colspan="7" class="py-10 text-center text-sm text-base-content/60">
-              @if (doorFilter() === 'all') { This turf has no doors yet. "Refresh from list" pulls in the universe's
-              current members. } @else { No doors in this view. }
+              @if (doorFilter() === 'all') { @if (d.list_id) { This turf has no doors yet. "Refresh doors from list"
+              pulls in everyone currently in {{ d.list_name || 'its list' }}. } @else { This turf has no doors yet. It
+              was built by hand, so doors are added by cutting turfs from a list. } } @else { No doors in this view. }
             </td>
           </tr>
           }

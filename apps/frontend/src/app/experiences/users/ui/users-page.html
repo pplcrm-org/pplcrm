@@ -1,6 +1,11 @@
 <div class="mx-auto flex w-full max-w-[980px] flex-col gap-5 p-4">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Users" [totalSentence]="loaded() ? headerSentence() : null">
+  <pc-grid-header
+    title="Users"
+    description="Everyone who can sign in to this workspace, and what each of them is allowed to do."
+    helpArticle="users-roles"
+    [totalSentence]="loaded() ? headerSentence() : null"
+  >
     <span class="tooltip-left" [class.tooltip]="inviteLockReason() !== null" [attr.data-tip]="inviteLockReason()">
       <button
         type="button"

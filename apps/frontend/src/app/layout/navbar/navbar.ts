@@ -7,6 +7,10 @@ import { AnimateIfDirective } from '@uxcommon/directives/animate-if.directive';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 
+import { ORG_MODE_LABELS } from '@common';
+
+import { injectHelpDoor } from '../../shared/help-doors';
+import { OrgModeService } from '../../services/org-mode.service';
 import { FavouriteToggle } from '../favourite-toggle/favourite-toggle';
 import { TourService } from '../tour/tour.service';
 import { PersonalSettingsDialog } from '../../experiences/settings/personal-settings-dialog/personal-settings-dialog';
@@ -47,6 +51,13 @@ export class Navbar implements OnDestroy {
   private readonly auth = inject(AuthService);
   private readonly tourSvc = inject(TourService);
 
+  /**
+   * The guide for whatever section the user is standing in, offered above the Help
+   * Center itself. Empty when the section has no article, so the menu never opens a
+   * door onto nothing (§2).
+   */
+  protected readonly pageHelpArticle = injectHelpDoor();
+
   /** Re-entry point for the tour. Offered only while the demo data it walks through is still
    * present — every stop lands on a seeded record, so the tour is meaningless once they are gone. */
   protected readonly showTourEntry = computed(() => !!this.auth.getUserSignal()()?.tenant_demo_mode_at);
@@ -65,6 +76,25 @@ export class Navbar implements OnDestroy {
     const user = this.currentUser();
     return user ? this.userService.resolveAvatarUrl(user.avatar_url) : null;
   });
+
+  private readonly orgModeSvc = inject(OrgModeService);
+
+  /**
+   * What kind of organization this workspace is set up as, shown as the header of the
+   * avatar menu.
+   *
+   * The mode retitles nav entries and decides which optional modules start in the sidebar,
+   * yet it was only visible on the settings page that sets it — so the answer to "why does
+   * my sidebar say Door knocking" lived nowhere the user would look (design §1/§2).
+   */
+  protected readonly orgModeLabel = computed(() => ORG_MODE_LABELS[this.orgModeSvc.mode()]);
+
+  /**
+   * Whether to make that header a link to the switch. `/workspace` is behind `roleGuard`,
+   * which turns away exactly `role === 'user'` — a plain member sees the label as text
+   * rather than a link that would bounce them to the dashboard (no dead affordances, §2).
+   */
+  protected readonly canChangeOrgMode = computed(() => this.currentUser()?.role !== 'user');
 
   /** Initials shown in the avatar circle when the user has no picture. */
   protected readonly userInitials = computed(() => {

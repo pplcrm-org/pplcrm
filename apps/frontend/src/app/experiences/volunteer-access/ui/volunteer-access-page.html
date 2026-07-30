@@ -1,6 +1,10 @@
 <div class="mx-auto flex w-full max-w-[980px] flex-col gap-5 p-4">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Approvals" [totalSentence]="loaded() ? pendingSentence() : null"></pc-grid-header>
+  <pc-grid-header
+    title="Approvals"
+    helpArticle="volunteer-access"
+    [totalSentence]="loaded() ? pendingSentence() : null"
+  ></pc-grid-header>
 
   <p class="max-w-prose text-xs text-base-content/60">
     Companion links are personal. A volunteer opening their turf or route link first verifies a code sent to their email
@@ -52,11 +56,13 @@
           class="select select-bordered select-xs w-40 cursor-pointer"
           [attr.aria-label]="'Turf access for ' + displayName(row)"
           [disabled]="busyId() === row.id"
-          [value]="roamValue(row)"
           (change)="onRoamChange(row, $event)"
         >
+          <!-- The current value lives on the option, not on the select: a [value] binding
+               on the select runs before @for has created any options, so the browser has
+               nothing to select and silently falls back to the first one. -->
           @for (opt of roamOptions; track opt.value) {
-          <option [value]="opt.value">{{ opt.label }}</option>
+          <option [value]="opt.value" [selected]="opt.value === roamValue(row)">{{ opt.label }}</option>
           }
         </select>
         } @else {

@@ -1,6 +1,11 @@
 <div class="flex flex-col gap-6 p-6">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Automations" [totalSentence]="summarySentence()">
+  <pc-grid-header
+    title="Automations"
+    description="Rules that watch for something to happen and then act, so follow-up never depends on remembering."
+    helpArticle="automations"
+    [totalSentence]="summarySentence()"
+  >
     <button class="btn btn-primary btn-sm gap-1" type="button" (click)="newAutomation()">
       <pc-icon name="add-schedule" [size]="4"></pc-icon>
       New automation
