@@ -108,7 +108,10 @@ client — the gate needs them to render the right state; keep uniform 404 for d
 tokens.
 
 **The other direction**: `resolveSession(sessionToken)` answers "who is this?" with no
-capability link at all, returning `{ tenant_id, volunteer_id, person_id, can_roam }`.
+capability link at all, returning
+`{ tenant_id, volunteer_id, person_id, can_roam, join_campaign_id }` (the last one is the
+campaign their join code named, provenance a roaming volunteer with no assignment yet is
+scoped to — see `pplcrm-canvassing` → `roamableCampaigns()`).
 It exists because turf tokens are hashed and can never be handed back out, so a
 volunteer switching turfs has no link to present — the session is the credential, and
 an active `turf_assignments` row is the per-turf authorization on top of it. Same

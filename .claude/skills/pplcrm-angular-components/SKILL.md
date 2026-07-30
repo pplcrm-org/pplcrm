@@ -178,6 +178,39 @@ every size in use must be in the `@source inline("{w,h}-{2,3,4,...}")` safelist 
 `apps/frontend/src/styles.css`. Using a size outside that list silently renders an unsized
 icon; add the new value to the safelist in the same change. Sizes in use: 2–8, 10, 12, 16.
 
+## A `<select>`'s current value goes on the `<option>`, never on the select
+
+This project has no `ngModel`, so a plain `<select>` is bound by hand — and the obvious
+way is silently wrong whenever the options come from `@for`:
+
+```html
+<!-- WRONG: reads correct, shows the first option forever -->
+<select [value]="chosen()" (change)="onChange($event)">
+  @for (opt of options; track opt.value) {
+  <option [value]="opt.value">{{ opt.label }}</option>
+  }
+</select>
+
+<!-- RIGHT -->
+<select (change)="onChange($event)">
+  @for (opt of options; track opt.value) {
+  <option [value]="opt.value" [selected]="opt.value === chosen()">{{ opt.label }}</option>
+  }
+</select>
+```
+
+The select's `[value]` update binding runs **before** `@for` has created any `<option>`, so
+the browser has nothing to match, drops the value, and settles on the first option once the
+options appear. Angular then never re-writes it, because the bound value hasn't changed. The
+failure is invisible to the type checker and to a build: it looks like a persistence bug
+("I set it, came back, and it reverted"), and on a form it means the UI says one thing while
+the payload saves another. Static `<option>` lists are unaffected — they exist by update
+time — but use `[selected]` there too rather than relying on that.
+
+Fixed twice on 2026-07-29 (`volunteer-access-page.html` turf access, `add-connection-drawer.ts`
+relationship type). `volunteer-access-page.spec.ts` is the regression test: render, then
+assert `select.value`.
+
 ## Signals-only state, `inject()` at the field level
 
 No `Subject`/`BehaviorSubject`/manual subscriptions for state. Use `signal()`, `computed()`,
@@ -196,6 +229,27 @@ protected readonly currentUserRole = computed(() => this.auth.getUser()?.role);
 
 Reserve the constructor for `effect()` wiring, and use `untracked()` inside an effect when the
 body should not re-subscribe to signals it reads (see the effect in `user-view.ts`).
+
+### Never read a required input from the constructor (NG0950)
+
+An input — routed (`withComponentInputBinding()`) or template-bound (`[turfId]="…"`) — is set
+**after** the component is constructed (`RouterOutlet.activateWith` creates the component, then
+calls the input binder; a template's update pass runs after its creation pass). So any
+constructor-time `this.someRequiredInput()` throws `NG0950`, and the throw lands wherever your
+initial load's `catch` sends it — which is how the failure disguises itself:
+
+- `approve-page.ts` (`/a/:token`) turned it into `state: 'dead'`, so **every** approve-by-text
+  link rendered "This approval link isn't active" with no request ever reaching the backend.
+  Fixed 2026-07-29; `approve-page.spec.ts` is the regression test (create the component, then
+  `componentRef.setInput` — the same order the router uses — and assert the service was called
+  with the token).
+- `organizer-page.ts` (`/o/:token`) had the same bug, hidden by its 20s poll: the page flashed
+  dead and healed itself on the next tick.
+- `assign-turf-dialog.ts` had it too, and answered with an empty canvasser roster.
+
+Kick off initial loads from `ngOnInit()` (the value is bound by then) or from an `effect()` when
+the load must re-run as the input changes (`turf-detail-page.ts`). Reading an **optional** input
+in the constructor doesn't throw — it silently reads the default, which is worse.
 
 ## Non-goals
 

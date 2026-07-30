@@ -149,6 +149,12 @@ export interface ResolvedCompanionSession {
   person_id: string;
   /** Per-volunteer roam override; null = inherit the workspace setting. */
   can_roam: boolean | null;
+  /**
+   * The campaign of the join code they came in through, when it named one — provenance,
+   * not authorization. It is what a roaming volunteer with no assignment yet is scoped
+   * to, so a poster for one campaign doesn't open the whole workspace.
+   */
+  join_campaign_id: string | null;
 }
 
 interface PersonContacts {
@@ -448,11 +454,17 @@ export class CompanionAccessController {
 
     await this.sessionsRepo.touchLastUsed({ tenant_id: session.tenant_id, id: session.id });
 
+    // Only the QR path leaves a join code behind, so most sessions skip this read.
+    const joinCode = volunteer.join_code_id
+      ? await this.joinCodesRepo.findById({ tenant_id: session.tenant_id, id: volunteer.join_code_id })
+      : null;
+
     return {
       tenant_id: session.tenant_id,
       volunteer_id: volunteer.id,
       person_id: volunteer.person_id,
       can_roam: volunteer.can_roam ?? null,
+      join_campaign_id: joinCode?.campaign_id ?? null,
     };
   }
 

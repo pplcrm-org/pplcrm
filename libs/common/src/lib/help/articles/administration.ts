@@ -247,6 +247,8 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       'verify',
       'revoke',
       'code',
+      'turf access',
+      'roam',
     ],
     related: ['users-roles', 'canvassing', 'deliveries', 'activity-log'],
     blocks: [
@@ -258,6 +260,15 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'When someone verifies for the first time, every admin gets an email, an in-app notification in the bell menu, and a badge on [Volunteer access](/volunteer-access) in the Admin section. Opening the notification takes you straight there. Each row shows the volunteer, their contact on file, and a status chip: **Invited** (link sent, not yet verified), **Awaiting approval**, **Approved**, or **Revoked**. Click **Approve** and their open Companion page unlocks by itself within seconds. They never re-enter a code.',
+      },
+      { kind: 'h2', id: 'turf-access', text: 'How much a volunteer can pick for themselves' },
+      {
+        kind: 'p',
+        text: 'The **Turf access** column on an approved row decides whether that volunteer chooses their own [turfs](/canvassing) or only walks the ones you hand them. **Workspace default** follows the setting in Workspace → Companion apps. **Any turf in campaign** lets them open the turf picker in the Canvass Companion and start on any turf that isn’t retired — including one somebody else is already walking, which is how a group splits a turf. **Only assigned turfs** pins them to what you place them on. Changing it takes effect on their next tap; nothing needs resending.',
+      },
+      {
+        kind: 'p',
+        text: 'A volunteer you’ve never placed on a turf can still pick one, as long as they may roam. They see the turfs of every campaign that isn’t archived, unless they joined by scanning a QR code for one campaign, in which case they see that campaign’s turfs. Once they’re on a turf, roaming keeps them inside the campaigns they’re actually working.',
       },
       { kind: 'h2', id: 'revoke', text: 'Revoking access' },
       {

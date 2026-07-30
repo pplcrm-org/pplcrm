@@ -560,8 +560,8 @@ describe('CanvassingController', () => {
     const [start, target] = turfs;
     if (!start || !target) throw new Error('expected two turfs');
 
-    // One assignment first: roaming widens a volunteer's reach within campaigns they
-    // already work in, it does not place them into a campaign from nothing.
+    // Placed once first: a volunteer who already works a campaign roams inside it, and
+    // nowhere else. (The never-placed case is the test above.)
     await controller.assignTurf(auth, {
       turf_id: start.id,
       team_id: null,
@@ -579,6 +579,27 @@ describe('CanvassingController', () => {
     // Claiming twice is not an error — a double tap on a slow connection is not a failure.
     await expect(controller.claimTurf(session, target.id)).resolves.toEqual({ turf_id: target.id });
     expect(await controller.getTurfCanvassers(auth, target.id)).toHaveLength(1);
+  });
+
+  it('lets a roaming volunteer with no assignment yet start from any active campaign', async () => {
+    await setRoamPolicy(db, s.tenantId, s.userId, 'campaign');
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 20 });
+    const turfs = await controller.getTurfs(auth);
+    const [target] = turfs;
+    if (!target) throw new Error('expected a turf');
+
+    // Approved, verified, and never placed on anything by hand — the case an organizer
+    // who turned roaming on expects to work without also assigning a first turf.
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+
+    const choices = await controller.getMyTurfs(session);
+    expect(choices.mine).toEqual([]);
+    expect(choices.available.map((t) => t.turf_id)).toContain(target.id);
+    expect(choices.available[0]?.campaign_name).toBeTruthy();
+
+    // And the picker never lists what self-claim would refuse.
+    await expect(controller.claimTurf(session, target.id)).resolves.toEqual({ turf_id: target.id });
+    expect((await controller.getMyTurfs(session)).mine.map((t) => t.turf_id)).toEqual([target.id]);
   });
 
   it('refuses self-claim server-side when the workspace assigns turfs by hand', async () => {
