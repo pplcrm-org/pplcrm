@@ -1,6 +1,6 @@
 ---
 name: pplcrm-testing
-description: "Write and run Vitest unit tests in this repo, isolate backend specs that share one Postgres, and understand why a spec can pass `nx lint` yet be rejected by the pre-commit hook. USE WHEN adding or editing a `*.spec.ts`, running project tests, mocking with `vi.spyOn`/`vi.fn`, debugging a spec that lints clean under nx but fails on commit, or chasing a backend spec that only fails when the whole suite runs. EXAMPLES: 'my spec passes nx lint but the commit hook rejects it', 'how do I run just one test file', 'mock the mail service in a backend test', 'this spec passes alone but is flaky in CI'."
+description: "Writing and running Vitest unit tests, isolating backend specs that share one Postgres, and why a spec can pass `nx lint` yet be rejected by the pre-commit hook. USE WHEN adding or editing a `*.spec.ts`, running project tests, mocking with `vi.spyOn`/`vi.fn`, or chasing a backend spec that only fails when the whole suite runs. EXAMPLES: 'how do I run just one test file', 'mock the mail service in a backend test', 'this spec passes alone but is flaky in CI'."
 ---
 
 # Testing in pplCRM (Vitest)

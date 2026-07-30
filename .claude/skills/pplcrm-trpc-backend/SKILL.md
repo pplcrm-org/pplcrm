@@ -1,6 +1,6 @@
 ---
 name: pplcrm-trpc-backend
-description: "How pplCRM builds tRPC backend endpoints: procedure/router/controller/repo layering, throwing AppError subclasses (not raw TRPCError), the error-sanitization boundary, Kysely transactions via repo.transaction(), and the background_jobs transactional-outbox pattern. USE WHEN adding or changing a backend endpoint, wiring a tRPC procedure, deciding which error to throw, wrapping a multi-table write in a transaction, or enqueuing background work. EXAMPLES: 'this mutation needs to update two tables atomically', 'which TRPCError code should I throw for a duplicate name', 'how do I send an email from a mutation without a ghost job'."
+description: "Building tRPC backend endpoints: procedure/router/controller/repo layering, throwing AppError subclasses (not raw TRPCError), the error-sanitization boundary, Kysely transactions via repo.transaction(), and the background_jobs transactional-outbox pattern. USE WHEN adding or changing a backend endpoint, wiring a tRPC procedure, deciding which error to throw, wrapping a multi-table write in a transaction, or enqueuing background work. EXAMPLES: 'this mutation needs to update two tables atomically', 'which error code for a duplicate name', 'send an email from a mutation without a ghost job'."
 ---
 
 # tRPC Backend Endpoints (pplCRM)

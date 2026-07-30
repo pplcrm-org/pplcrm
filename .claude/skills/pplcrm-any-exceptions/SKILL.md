@@ -1,6 +1,6 @@
 ---
 name: pplcrm-any-exceptions
-description: The catalogue of intentional `any` in the backend — the categories that remain after the no-explicit-any cleanup, why each is unavoidable as written, how they are marked (AnyQB alias / scoped eslint-disable), and the follow-ups that would let them be typed. USE WHEN you hit an `@typescript-eslint/no-explicit-any` warning in apps/backend, are reviewing an `any` and wondering if it is deliberate, are tempted to add a new `any` or an eslint-disable, or want to know what it would take to drive the count to zero. EXAMPLES 'is this any intentional or a bug', 'why is there an eslint-disable in google-sync', 'can I add an any here', 'how do I get the backend to zero any'.
+description: The catalogue of intentional `any` in the backend — which categories remain (dynamic Kysely builders, external Gmail/Graph JSON, tRPC shape, BigInt seams), why each is unavoidable, and how they are marked (the AnyQB alias / a scoped eslint-disable). USE WHEN you hit an `@typescript-eslint/no-explicit-any` warning in apps/backend, are reviewing an `any` and wondering if it is deliberate, or are tempted to add a new `any` or eslint-disable. EXAMPLES 'is this any intentional or a bug', 'can I add an any here', 'how do I get the backend to zero any'.
 metadata:
   type: reference
 ---

@@ -1,6 +1,6 @@
 ---
 name: pplcrm-quality-gate
-description: "Explains why `nx lint` passing does NOT mean the pre-commit hook will pass, and how to verify a change the way the hook actually does before committing. USE WHEN preparing to commit, when a commit was rejected by the pre-commit hook after lint looked clean, or when fixing @typescript-eslint/no-floating-promises or no-misused-promises. EXAMPLES: 'before committing', 'nx lint passed but the hook rejected it', 'no-misused-promises on my event handler'."
+description: "Why `nx lint` passing does NOT mean the pre-commit hook will pass, and how to verify a change the way the hook actually does. USE WHEN preparing to commit, when a commit was rejected by the pre-commit hook after lint looked clean, or when fixing @typescript-eslint/no-floating-promises or no-misused-promises. EXAMPLES: 'before committing', 'nx lint passed but the hook rejected it', 'no-misused-promises on my event handler'."
 ---
 
 # pplcrm Quality Gate

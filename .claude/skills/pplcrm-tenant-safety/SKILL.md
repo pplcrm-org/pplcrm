@@ -1,6 +1,6 @@
 ---
 name: pplcrm-tenant-safety
-description: "Explains the custom no-unscoped-db-query ESLint rule that is the multi-tenant safety net — what trips it, the ignoreTables allow-list and why each table is on it, the query shapes it silently cannot catch, and how to add a table to the allow-list as a reviewed security decision. USE WHEN a lint error says 'no-unscoped-db-query' or 'has no .where(tenant_id) filter', when writing/reviewing any backend Kysely query that could leak across tenants, when tempted to add an eslint-disable for this rule, or when changing the ignoreTables list. EXAMPLES: 'can I add ms_graph_tokens to the ignore list?', 'why does the rule not catch my query built in two steps?', 'the rule flagged my subquery but tenant_id is filtered inside'."
+description: "The custom local/no-unscoped-db-query ESLint rule that is the multi-tenant safety net — what trips it, the ignoreTables allow-list and why each table is on it, and the query shapes it silently cannot catch. USE WHEN a lint error says 'no-unscoped-db-query' or 'has no .where(tenant_id) filter', when writing/reviewing any backend Kysely query that could leak across tenants, when tempted to add an eslint-disable for this rule, or when changing the ignoreTables list. EXAMPLES: 'can I add ms_graph_tokens to the ignore list?', 'why does the rule not catch my query built in two steps?'."
 ---
 
 # Multi-tenant query safety (`no-unscoped-db-query` + RLS)

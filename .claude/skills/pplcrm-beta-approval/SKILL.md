@@ -1,6 +1,6 @@
 ---
 name: pplcrm-beta-approval
-description: The closed-beta gate on new workspaces — signup succeeds but the tenant is held at approval_status='pending' until pplCRM ops clicks an emailed approve/decline link, and every session-issuing path (password, 2FA, passkey) refuses until then. USE WHEN a user reports they cannot sign in / sees "waiting for approval", when approving or declining a tenant, when touching signUp / signIn / verify2FA / verifyAuthentication, tenants.approval_status, the /api/tenant-approval route, or when a local dev signup will not let you in. EXAMPLES 'let this customer in', 'why is my new signup stuck', 'turn the beta gate off for dev', 'add another way to sign in'.
+description: The closed-beta gate on new workspaces — signup succeeds but the tenant is held at approval_status='pending' until ops clicks an emailed approve/decline link, and every session-issuing path (password, 2FA, passkey) refuses until then. USE WHEN a user cannot sign in or sees "waiting for approval", when approving/declining a tenant, when touching signUp / signIn / verify2FA / verifyAuthentication, tenants.approval_status, the /api/tenant-approval route, or when a local dev signup will not let you in. EXAMPLES 'why is my new signup stuck', 'turn the beta gate off for dev', 'add another way to sign in'.
 ---
 
 # The closed-beta approval gate

@@ -1,23 +1,23 @@
 ---
 name: pplcrm-canvassing
-description: How pplCRM's Canvassing feature (§13) works end-to-end — the turfs/turf_households/turf_assignments/turf_knocks tables, the turf-cutting engine (clusters geocoded households into contiguous ward-bounded turfs), derived progress from knocks, the tokenised account-less Canvass Companion, and the field report. USE WHEN editing anything under modules/canvassing, experiences/canvassing, the turf/knock schema, the cutting engine, the Companion public route, or the field report. EXAMPLES 'add a knock outcome', 'why do turfs never cross a ward', 'how does the Companion token auth work', 'where does turf progress come from'.
+description: Canvassing (§13) — the turfs / turf_households / turf_assignments / turf_knocks tables, the turf-cutting engine (clusters geocoded households into contiguous ward-bounded turfs), progress derived from knocks, and the tokenised account-less Canvass Companion. USE WHEN editing modules/canvassing, experiences/canvassing, the turf/knock schema, the cutting engine, the Companion public route, or the field report. EXAMPLES 'add a knock outcome', 'why do turfs never cross a ward', 'where does turf progress come from'.
 ---
 
 # Canvassing (§13)
 
 Cut a smart-list universe into walkable **turfs**, hand them to volunteers via a
 **Canvass Companion** (web app, no account), and let every knock sync back live.
-Built net-new in Wave 2 Track F. Reuses Wave 1A geocoding (`households.lat/lng` +
-`ward`) and Wave 1C `lists.getCurrentMembers` — do **not** re-derive either.
+Reuses the existing household geocoding (`households.lat/lng` + `ward`) and
+`lists.getCurrentMembers` — do **not** re-derive either.
 
 ## Data model
 
-The four core tables live in the squashed baseline (`_migrations/schema.sql`) — the old
-dated `2026-07-11-canvassing.ts` no longer exists post-squash (see `pplcrm-migrations`).
+The four core tables live in the squashed baseline (`_migrations/schema.sql`) — the
+original dated migration no longer exists post-squash (see `pplcrm-migrations`).
 `turf_segment_claims` was added later by its own dated file.
 
-Canvassing-namespaced (so they never collide with Track G's
-delivery tables). All follow the house pattern: `bigint` id + `UNIQUE(id)` +
+Canvassing-namespaced, so they never collide with the `delivery_*`
+tables. All follow the house pattern: `bigint` id + `UNIQUE(id)` +
 `PRIMARY KEY(id, tenant_id)`, `ENABLE`+`FORCE ROW LEVEL SECURITY` with the
 standard `tenant_isolation` policy, grants to `pplcrm_app`. Multi-statement DDL
 runs through `sql.raw(...)` (parameterless → simple protocol), like the baseline.
@@ -224,7 +224,7 @@ never disagree with the actual cut.
 ## The universe = a smart list (reuse, don't re-derive)
 
 `CanvassingController.resolveUniverseHouseholdIds` calls
-`new ListsController().getCurrentMembers(auth, listId)` (Wave 1C). If the list is
+`new ListsController().getCurrentMembers(auth, listId)`. If the list is
 `people`, it maps to distinct `household_id`s; if `households`, uses them
 directly. Then `TurfsRepo.getHouseholdsGeo` fetches lat/lng/ward. **Refresh doors
 from list** re-runs this, drops doors that left the list (knock rows persist —

@@ -1,6 +1,6 @@
 ---
 name: pplcrm-design-principles
-description: "The app-wide UI/UX doctrine for pplCRM — beauty as a trust signal, the three orientation questions, disclosure over suppression, guide-don't-error, the consistency contract (semantic tokens, one modal/toast/empty-state idiom, sentence case), DaisyUI-first/CSS-over-JS implementation, and the motion rules for subtle purposeful animation. USE WHEN designing or building ANY new UI (page, dialog, form, grid feature, empty state, error message), adding an animation/transition/hover effect, choosing colors, fonts/type sizes/weights, or button labels, writing user-facing copy, reviewing a UI change for polish/consistency, deciding how to surface an error or disabled state, choosing between a DaisyUI component and a custom widget, or when asked to 'make it beautiful/modern/professional/fun'. EXAMPLES: 'what color should this badge be', 'how should I word this error', 'should this button be disabled?', 'flash the row after save'."
+description: "The app-wide UI/UX doctrine for pplCRM — the three orientation questions, disclosure over suppression, guide-don't-error, one-idiom-per-job, semantic color tokens, DaisyUI-first/CSS-over-JS, and the motion rules. USE WHEN designing or building ANY new UI (page, dialog, form, grid feature, empty state, error message), adding an animation/transition/hover effect, choosing colors, type sizes or button labels, writing user-facing copy, reviewing a UI change for polish/consistency, deciding how to surface an error or disabled state, or when asked to 'make it beautiful/modern/professional'. EXAMPLES: 'what color should this badge be', 'how should I word this error', 'should this button be disabled?', 'flash the row after save'."
 ---
 
 # pplCRM design principles
@@ -11,10 +11,11 @@ developer or agent. The approved source design proposals are the two artifacts:
 and [Newsletter UX](https://claude.ai/code/artifact/c765baa0-9498-47ac-9a79-09e6540ebbb3).
 This skill is the durable distillation; when in doubt, re-read those.
 
-**Also read [UX-GUIDELINES.md](UX-GUIDELINES.md) in this directory before touching any UI.**
-It is the working distillation of this doctrine plus concrete rulings made during the North
-Star prototype (the extended idiom table, exact typography/motion values, hover and disabled
-rules). Where this doctrine is silent, that document rules.
+[UX-GUIDELINES.md](UX-GUIDELINES.md) in this directory is the **lookup reference** — open it
+when you need an exact button class string (its §B), an idiom for a job §4 below doesn't list
+(§A), a specific type/density value (§C), a pinned ruling (§D), or the leak rules for URLs and
+error copy (§E). It is not required reading for every change; this file is. Where this
+doctrine is silent, that document rules.
 
 ## 0. The north star: beauty is a trust proxy
 
@@ -164,7 +165,7 @@ governs what ships to users.)
 cancel `btn-outline btn-accent`, secondary `btn-outline btn-secondary`, archive
 `btn-outline btn-warning`, delete `btn-outline btn-error`, icon-only tertiary
 `btn-ghost btn-xs btn-circle`. The full table with sizes, placement, and exceptions is
-**UX-GUIDELINES §4b** — apply it verbatim; any other combination is drift. Button rounding comes
+**UX-GUIDELINES §B** — apply it verbatim; any other combination is drift. Button rounding comes
 only from the `--radius-field` token in `styles.css` (both themes) — never a `rounded-*` utility
 on a button. Every list page's header is `pc-grid-header` with actions projected right — never a
 hand-rolled h1 + button row.
@@ -207,7 +208,7 @@ The implementation preference ladder, in order:
 
 **`btn-outline` always pairs with a color modifier.** `btn-outline` alone renders in
 `base-content` and reads as a disabled/dead button next to real DaisyUI buttons. Which color is
-not a per-callsite choice — it comes from the action's **role** (UX-GUIDELINES §4b):
+not a per-callsite choice — it comes from the action's **role** (UX-GUIDELINES §B):
 `btn-secondary` for secondary actions, `btn-accent` for cancel/dismiss, `btn-error` for
 destructive, `btn-warning` for archive. A bare `btn-outline`/`btn-outline btn-sm`/etc. with no
 color class is never correct — fix it on sight.
@@ -274,7 +275,7 @@ name the state change an animation narrates, cut it.
   dialogs. Enforced globally by the `body` font-size rule in `styles.css`, so unsized elements
   default to 12px and larger type is always an explicit opt-in. `text-sm` is the one-notch-up
   reserved for `pc-detail-item` values and weighted section headings; the Help Center is the
-  deliberate larger exception. The full numeric scale lives in UX-GUIDELINES §8.
+  deliberate larger exception. The full numeric scale lives in UX-GUIDELINES §C.
 - Headings earn weight (600–700), so **weight is hierarchy** — don't reach for size or color
   first. Monospace is `ui-monospace`/system mono, reserved for IDs, routes, and kbd hints.
 - Kickers/eyebrows are small uppercase tracked labels; record names are the big type.

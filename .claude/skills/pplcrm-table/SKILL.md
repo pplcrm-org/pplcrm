@@ -1,6 +1,6 @@
 ---
 name: pplcrm-table
-description: The lightweight presentational table shell (pc-table) and the shared token contract every tabular surface obeys. USE WHEN building a non-datagrid table (an admin/vocabulary/ledger list), styling any table, deciding between pc-datagrid and pc-table, changing table header/density/border look, or touching the .pc-table token contract in styles.css. EXAMPLES 'add a table to the settings page', 'why are my table headers not micro-caps', 'make this bespoke table match the grids', 'change the table row density everywhere'.
+description: The lightweight presentational table shell (pc-table) and the shared .pc-table token contract in styles.css that every tabular surface obeys. USE WHEN building a non-datagrid table (an admin/vocabulary/ledger list), styling any table, deciding between pc-datagrid and pc-table, or changing table header/density/border look. EXAMPLES 'add a table to the settings page', 'why are my table headers not micro-caps', 'change the table row density everywhere'.
 ---
 
 # pc-table & the shared table token contract

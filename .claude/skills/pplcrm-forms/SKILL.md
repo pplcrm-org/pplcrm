@@ -1,6 +1,6 @@
 ---
 name: pplcrm-forms
-description: "How the North Star 'living funnel' Forms experience works end-to-end — the web_forms lifecycle (draft/published/archived), the FormField model + normForm() email-identity invariant + creation templates, the three-mode forms-page (browse + New-form stepper + live edit), form_submissions, the tenant-subdomain public /f/:slug page, and why donation forms stay on a separate path (/d/:slug). USE WHEN editing anything under experiences/forms, the web-forms backend module, web_forms/form_submissions schema, the public form page, or reconciling forms with donations. EXAMPLES: 'add a field type to forms', 'why is the email field locked', 'the public /f/:slug page 404s', 'do donation forms show in the Forms page'."
+description: "The 'living funnel' Forms experience — the web_forms lifecycle (draft/published/archived), the FormField model + normForm() email-identity invariant, the three-mode forms page (browse / New-form stepper / live edit), form_submissions, the public /f/:slug page, and why donation forms stay on /d/:slug. USE WHEN editing anything under experiences/forms, the web-forms backend module, web_forms / form_submissions schema, the public form page, or reconciling forms with donations. EXAMPLES: 'add a field type to forms', 'why is the email field locked', 'the public /f/:slug page 404s'."
 ---
 
 # pplCRM Forms (living-funnel model)
@@ -108,11 +108,11 @@ grid + form-editor model is gone; `forms-grid.ts` and `form-editor.ts` were dele
   immediately and the preview re-renders. The confirmation-email + embed dialogs are the exceptions
   (explicit Save / Copy).
 
-## Donation-forms convergence — decided, deferred (Track J, 2026-07-08)
+## Donation-forms convergence — decided, deferred (2026-07-08)
 
 Spec §12 (Fig. 15) describes donations as folding into the Forms living-funnel model — a
 "donation" template alongside signup/pledge/rsvp/request/survey. The app deliberately does **not**
-do this today; Track J re-examined the tradeoff and decided to **keep them separate for now**
+do this today; the tradeoff was re-examined and the decision was to **keep them separate for now**
 rather than converge in the same change that shipped the Donations page/dialog work. Concrete
 reasons, so the next agent doesn't have to re-derive them:
 
@@ -131,7 +131,7 @@ reasons, so the next agent doesn't have to re-derive them:
   _list_, but their card shows "Donation form" rather than a submission count, and their responses
   are not reconciled into the Responses tab.) Fully unifying the response view still means reconciling
   two different response models, not just two field shapes.
-- **The donation-collection UX just changed underneath this decision.** Track J added the Fig. 15
+- **The donation-collection UX changed underneath this decision.** The Donations work added the Fig. 15
   "Record donation" dialog (`record-donation-dialog.ts`) for offline gifts and rebuilt the
   Donations page stats/table to match spec — i.e. the _product_ gap the spec cared about (no way
   to record a gift by hand) is now closed without touching the forms model at all. That lowers the

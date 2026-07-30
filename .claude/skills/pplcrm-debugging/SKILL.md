@@ -1,6 +1,6 @@
 ---
 name: pplcrm-debugging
-description: "Trace a failed request through pplCRM's backend error plumbing (AppError → tRPC → Pino) to the client toast, and catch this stack's specific silent-failure traps. USE WHEN debugging a production/runtime failure, a useless 'Something went wrong' toast, a stuck spinner, a swallowed error, or when someone gives you a correlationId / support code. EXAMPLES: 'why did this fail in production but the toast is generic', 'user gave me a support code, find the log', 'the spinner never stops on this page'."
+description: "Tracing a failed request through the backend error plumbing (AppError → tRPC → Pino) to the client toast, plus this stack's silent-failure traps. USE WHEN debugging a runtime failure, a useless 'Something went wrong' toast, a stuck spinner, a swallowed error, or when someone gives you a correlationId / support code. EXAMPLES: 'why did this fail in production but the toast is generic', 'user gave me a support code, find the log', 'the spinner never stops'."
 ---
 
 # Debugging pplCRM
