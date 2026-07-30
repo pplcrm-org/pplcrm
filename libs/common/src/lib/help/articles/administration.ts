@@ -259,7 +259,11 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'approve', text: 'Approving a volunteer' },
       {
         kind: 'p',
-        text: 'When someone verifies for the first time, every admin gets an email, an in-app notification in the bell menu, and a badge on [Volunteer access](/volunteer-access) in the Admin section. Opening the notification takes you straight there. Each row shows the volunteer, their contact on file, and a status chip: **Invited** (link sent, not yet verified), **Awaiting approval**, **Approved**, or **Revoked**. Click **Approve** and their open Companion page unlocks by itself within seconds. They never re-enter a code.',
+        text: 'When someone verifies for the first time, every admin gets an email, an in-app notification in the bell menu, and a badge on [Volunteer access](/volunteer-access) in the Admin section. Opening the notification takes you straight there. Each row shows the volunteer, their contact on file, and a status chip: **Invited** (link sent, not yet verified), **Awaiting approval**, **Approved**, or **Revoked**. Click **Approve** and their open Companion page unlocks by itself within seconds. They never re-enter a code, and the sidebar badge drops as you approve.',
+      },
+      {
+        kind: 'p',
+        text: 'If you are sitting on the page while volunteers verify on their phones, **Refresh** at the top re-reads the list and the join code counts. New arrivals do not appear on their own.',
       },
       { kind: 'h2', id: 'turf-access', text: 'How much a volunteer can pick for themselves' },
       {

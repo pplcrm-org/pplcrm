@@ -145,7 +145,7 @@ export class JoinCodePanel {
   );
 
   constructor() {
-    void this.refresh();
+    void this.reload();
   }
 
   protected countSentence(code: JoinCodeRow): string {
@@ -191,7 +191,7 @@ export class JoinCodePanel {
     this.busy.set(true);
     try {
       await this.svc.rotate(code.id);
-      await this.refresh();
+      await this.reload();
       this.alerts.showSuccess('New code created. Reprint anything with the old one on it');
     } catch {
       this.alerts.showError('Could not rotate the code. Try again');
@@ -245,8 +245,14 @@ export class JoinCodePanel {
     }
   }
 
-  private async refresh(): Promise<void> {
-    this.loading.set(true);
+  /**
+   * Public so the page's Refresh can re-read the codes too: the count sentence here
+   * ("N awaiting your approval") is the same news the table below is showing.
+   */
+  public async reload(): Promise<void> {
+    // The progress bar is for the first load, when there is nothing to look at yet.
+    // A re-read keeps the QR on screen rather than blinking it out and back.
+    this.loading.set(this.rows().length === 0);
     try {
       this.rows.set(await this.svc.getForCampaign());
       const active = this.active();

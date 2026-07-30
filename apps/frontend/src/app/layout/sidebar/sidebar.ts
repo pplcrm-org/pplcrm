@@ -63,9 +63,10 @@ export class Sidebar {
    *  Same one-shot-per-session loading shape as the badges above. */
   protected readonly deliveriesReadyCount = signal<number | null>(null);
 
-  /** Volunteers awaiting companion-access approval, for the Volunteer access badge.
-   *  Same one-shot-per-session loading shape as the badges above. */
-  protected readonly volunteerAccessPending = signal<number | null>(null);
+  /** Volunteers awaiting companion-access approval, for the Volunteer access badge. Unlike the
+   *  badges above this one is owned by the service, so approving on the Volunteer access page
+   *  drops the badge in the same beat instead of leaving a stale count until the next reload. */
+  protected readonly volunteerAccessPending = this.volunteerAccessSvc.pendingApprovals;
 
   /** One-shot fetched fallback for the Inbox badge — covers sessions where the Inbox page
    *  (and thus its folders store) never loads. */
@@ -195,10 +196,11 @@ export class Sidebar {
     }
   }
 
-  /** Volunteer access badge = volunteers awaiting approval. One fetch per session. */
+  /** Volunteer access badge = volunteers awaiting approval. One fetch per session; the
+   *  Volunteer access page keeps it current from there on. */
   private async loadVolunteerAccessPending(): Promise<void> {
     try {
-      this.volunteerAccessPending.set(await this.volunteerAccessSvc.pendingCount());
+      await this.volunteerAccessSvc.refreshPendingCount();
     } catch {
       // Badge just stays unset — never show a stale or fabricated count.
     }
