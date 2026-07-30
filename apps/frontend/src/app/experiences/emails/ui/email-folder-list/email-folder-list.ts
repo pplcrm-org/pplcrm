@@ -7,6 +7,13 @@ import { TimeAgoPipe } from '@uxcommon/pipes/timeago.pipe';
 import type { EmailFolderType } from '../../../../../../../../libs/common/src/lib/models';
 import { EmailsStore } from '../../services/store/emailstore';
 
+const TRIAGE_COLLAPSED_KEY = 'pc-email-triage-collapsed';
+
+/** Absent/corrupt storage means first use — start collapsed. Only an explicit 'false' expands. */
+function readStoredCollapsed(): boolean {
+  return localStorage.getItem(TRIAGE_COLLAPSED_KEY) !== 'false';
+}
+
 @Component({
   selector: 'pc-email-folder-list',
   imports: [Swap, Icon, TimeAgoPipe],
@@ -22,7 +29,12 @@ export class EmailFolderList implements OnInit {
 
   public readonly folders = this.store.allFolders;
 
-  public readonly foldersCollapsed = signal(false);
+  /**
+   * Triage rail starts collapsed so the list and reading pane get the width; hovering it on lg+
+   * still reveals the labels, so nothing is hidden — only quieted. The user's own toggle is
+   * remembered per browser and wins from then on.
+   */
+  public readonly foldersCollapsed = signal(readStoredCollapsed());
 
   public readonly realFoldersCollapsed = signal(false);
 
@@ -87,6 +99,7 @@ export class EmailFolderList implements OnInit {
 
   public toggleFolders(): void {
     this.foldersCollapsed.update((v) => !v);
+    localStorage.setItem(TRIAGE_COLLAPSED_KEY, String(this.foldersCollapsed()));
   }
 
   public toggleRealFolders(): void {
