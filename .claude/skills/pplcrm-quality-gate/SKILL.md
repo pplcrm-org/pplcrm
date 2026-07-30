@@ -65,7 +65,8 @@ NG_BUILD_MAX_WORKERS=1 npx nx build <project> --skip-nx-cache
 Nx's default parallelism turns the underlying failure into a ~100-line esbuild goroutine dump
 (`fatal error: all goroutines are asleep - deadlock`) — that is the Go binary parked in
 `sendRequest` waiting on a Node process that already died, not a bug in esbuild. Serialised to one
-worker, the actual message appears. `--verbose` alone does not do this.
+worker, a _deterministic_ error prints; `--verbose` alone does not do this. It is a diagnostic, not
+a workaround — it does nothing for cause 2 (0/3 sandboxed companion builds with one worker).
 
 ### 1. `existsSync` + `process.loadEnvFile` in a vite config — real bug, fixed in code
 
@@ -87,31 +88,51 @@ The sandbox denies **reading** `.env*` but still permits `stat`, so an `existsSy
   `try`/`catch` — see [apps/backend/vite.config.ts](../../../apps/backend/vite.config.ts) and the
   older, correct [global-setup.ts](../../../apps/backend/src/test-setup/global-setup.ts).
 
-### 2. LMDB + POSIX named semaphores — real hazard, but not what breaks builds here
+### 2. LMDB + POSIX named semaphores — why Angular builds die silently
 
-Verified: `open()` from `lmdb` dies **silently on SIGABRT (exit 134)** inside the sandbox, both for a
-fresh path and for the existing `.angular/cache/<ver>/<project>/angular-compiler.db`, and succeeds
-unsandboxed. `@angular/build` wraps `new LmdbCacheStore(...)` in a `try`/`catch`
-(`esbuild/angular/compiler-plugin.js`), but `LmdbCacheStore#ensureCacheFile()` opens **lazily** on
-the first `get`/`has` — outside that catch — so the abort is uncatchable and stderr stays empty.
+`open()` from `lmdb` dies **silently on SIGABRT (exit 134)** inside the sandbox — for a fresh path
+and for an existing `angular-compiler.db` alike — and succeeds unsandboxed. `@angular/build` wraps
+`new LmdbCacheStore(...)` in a `try`/`catch` (`esbuild/angular/compiler-plugin.js`), but
+`LmdbCacheStore#ensureCacheFile()` opens **lazily** on the first `get`/`has`, outside that catch, so
+the abort is uncatchable and stderr stays empty. `angular-compiler.db` keeps its old mtime (or sits
+at 0 bytes) after a failed run, while `.tsbuildinfo` beside it updates — that pair is the fingerprint.
 
-It is not the observed cause, though: after fix 1, `npx nx build frontend --skip-nx-cache` passes
-**inside** the sandbox (verified twice), and `angular-compiler.db`'s mtime never moves while
-`.tsbuildinfo` in the same directory does — the production `application` builder never opens the
-store. Unverified: `build` for companion/backend, `nx test`, and `nx serve` (dev-server prebundling
-and i18n inlining are the paths that would exercise the cache).
+Measured 2026-07-30, `--skip-nx-cache`, all inside the sandbox:
 
-If something does hit it, `CI=1` disables Angular's persistent cache (`utils/normalize-cache.js`,
-default `environment: 'local'`) and `CI=1 npx nx build frontend` passes sandboxed — prefer that to
-un-sandboxing.
+| target               | plain                   | `CI=1`  |
+| -------------------- | ----------------------- | ------- |
+| `nx build frontend`  | red (0/3 in a row)      | **3/3** |
+| `nx build companion` | red (0/3; 0/3 1-worker) | **3/3** |
+| `nx build backend`   | **2/2 green** (no LMDB) | n/a     |
 
-### Why builds are still excluded from the sandbox
+Across the session: **3 greens in 14** sandboxed Angular build runs without `CI=1`, **8/8 with it**.
+It is intermittent, so one green proves nothing — that is what makes it so easy to misattribute.
 
-`.claude/settings.json` keeps **build-only** entries in `sandbox.excludedCommands` as a hedge for the
-projects nobody has checked yet — not because builds provably cannot be sandboxed; the frontend one
-demonstrably can. Never widen those globs to bare `run-many*`/`affected*`: that silently
-un-sandboxes `test` and `lint`. Before adding any target to that list, run the
-`NG_BUILD_MAX_WORKERS=1` repro above and fix what it shows you.
+`CI=1` disables Angular's persistent cache (`utils/normalize-cache.js`, default
+`environment: 'local'`), removing the LMDB path entirely; the db mtime confirms it is never opened.
+Use it when you want a build **and** the sandbox. Non-Angular targets are unaffected.
+
+### 3. `nx test backend` cannot read `.env.test` (deterministic)
+
+Fails every time in the sandbox, but loudly and honestly:
+
+```
+Error: Refusing to run the backend test suite against database "": ... Fix DB_NAME in .env.test
+```
+
+`.env.test` is read-denied, so after fix 1 the load is skipped silently and the globalSetup guardrail
+sees an empty `DB_NAME`. Nothing is wrong with the suite — unsandboxed it is **133 files / 1340 tests
+green** (2026-07-30). Either run it unsandboxed (it is in `sandbox.excludedCommands`) or export the
+creds into the shell first. Do not "fix" this by allow-reading `.env.test`; it holds `JWT_SECRET` and
+`SHARED_SECRET`. Other projects' tests need no DB and stay sandboxed.
+
+### Why builds and backend tests are excluded from the sandbox
+
+`.claude/settings.json` lists them in `sandbox.excludedCommands` on the strength of the table above,
+so they run as they do in a developer's terminal. Never widen those globs to bare
+`run-many*`/`affected*` — that silently un-sandboxes `lint` and every other project's `test`. Before
+adding a new target, reproduce it at least three times (this failure mode is flaky) and run the
+`NG_BUILD_MAX_WORKERS=1` diagnostic, so a real bug like cause 1 does not get papered over.
 
 ## CI runs this gate now (2026-07-25)
 

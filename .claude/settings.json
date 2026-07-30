@@ -172,7 +172,7 @@
       "allowRead": ["./.env.example", "./.env.*.example", "./**/.env.example", "./**/.env.*.example"]
     },
 
-    "// excludedCommands": "A hedge, not a proven requirement — `npx nx build frontend` verifiably PASSES sandboxed (2026-07-30) once the .env.test bug in apps/backend/vite.config.ts is fixed. What is proven is that lmdb's open() dies silently on SIGABRT/134 under Seatbelt (POSIX named semaphores, an IPC denial no allowWrite fixes), and @angular/build opens its LMDB cache lazily outside its own try/catch — so any target that exercises that cache would fail with an empty stderr. Kept for build invocations only, covering the projects nobody has checked yet. Sandbox-preserving alternative if you hit it: CI=1 disables Angular's persistent cache. Do NOT widen these globs to bare run-many*/affected* — that un-sandboxes test and lint too. Full evidence: .claude/skills/pplcrm-quality-gate/SKILL.md.",
+    "// excludedCommands": "Measured 2026-07-30, sandboxed, --skip-nx-cache: Angular builds are 3 green in 14 runs (frontend 0/3, companion 0/3, and 0/3 even with NG_BUILD_MAX_WORKERS=1), vs 8/8 green with CI=1. Cause: lmdb's open() dies silently on SIGABRT/134 under Seatbelt (POSIX named semaphores — an IPC denial no allowWrite fixes), and @angular/build opens that cache lazily OUTSIDE its own try/catch, so stderr is empty and it looks like a code error. CI=1 disables Angular's persistent cache and is the sandbox-preserving alternative when you want one. `nx build backend` is fine sandboxed (2/2, no LMDB) and needs no exclusion. `nx test backend` fails deterministically instead: .env.test is read-denied, so the globalSetup guardrail sees an empty DB_NAME — unsandboxed it is 1340/1340 green. Do NOT allow-read .env.test (it holds JWT_SECRET/SHARED_SECRET), and do NOT widen these globs to bare run-many*/affected*, which would un-sandbox lint and every other project's tests. Full evidence: .claude/skills/pplcrm-quality-gate/SKILL.md.",
     "excludedCommands": [
       "npx nx build*",
       "nx build*",
@@ -180,7 +180,10 @@
       "npx nx run-many -t build*",
       "npx nx run-many --target=build*",
       "npx nx affected -t build*",
-      "npx nx affected --target=build*"
+      "npx nx affected --target=build*",
+      "npx nx test backend*",
+      "nx test backend*",
+      "npx nx run backend:test*"
     ]
   }
 }
