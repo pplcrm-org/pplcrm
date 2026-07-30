@@ -8,7 +8,9 @@ name: Verify
 # is green, so main is gated by the same checks a PR is.
 #
 # Job split rationale:
-#   lint    — BOTH lint paths, because they enforce disjoint rule sets (CLAUDE.md §6):
+#   lint    — prettier --check (the git hook is the only other enforcement, and --no-verify
+#             skips it), plus BOTH lint paths, because they enforce disjoint rule sets
+#             (CLAUDE.md §6):
 #             `nx lint` carries the multi-tenant local/no-unscoped-db-query rule; plain root
 #             eslint carries no-floating-promises / no-misused-promises, which nx lint does NOT
 #             enforce for frontend and uxcommon.
@@ -47,6 +49,13 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      # Formatting is enforced ONLY by .husky/pre-commit (lint-staged -> prettier --write), and a
+      # `git commit --no-verify` walks straight past it. eslint is no backstop: the root config
+      # extends eslint-config-prettier, which DISABLES stylistic rules rather than checking them.
+      # Repo-wide rather than changed-files-only (unlike the eslint step below) because the repo
+      # is already fully prettier-clean, so there is no pre-existing debt to work around. ~8s.
+      - name: Format check
+        run: npx prettier --check .
       # Project-local configs — the ONLY path that enforces local/no-unscoped-db-query (the
       # multi-tenant leak guard) via apps/backend/eslint.config.cjs.
       - name: Lint (nx project configs)

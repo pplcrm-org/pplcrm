@@ -123,6 +123,39 @@
     ]
   },
 
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/claude-hooks/protect-generated.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/claude-hooks/format-file.mjs\"",
+            "timeout": 30,
+            "statusMessage": "Formatting"
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/tools/claude-hooks/sync-reminders.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+
   "enabledPlugins": {
     "nx@nx-claude-plugins": true
   },

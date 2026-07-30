@@ -118,6 +118,14 @@ module.exports = [
     languageOptions: { sourceType: 'commonjs', globals: { ...globals.node } },
   },
 
+  /* 6️⃣b Claude Code hook scripts are Node ESM, run by the editor harness (not
+   *      by the app), so they need node globals and may write to stdout. */
+  {
+    files: ['tools/claude-hooks/**/*.mjs'],
+    languageOptions: { sourceType: 'module', globals: { ...globals.node } },
+    rules: { 'no-console': 'off' },
+  },
+
   /* 7️⃣  Register @angular-eslint rules for Angular projects so that tools
    *      which run from the workspace root (editor, lint-staged/git hooks)
    *      recognize rule IDs like `@angular-eslint/component-selector` —

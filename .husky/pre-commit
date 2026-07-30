@@ -1,1 +1,13 @@
 npx lint-staged
+
+# lint-staged runs eslint with the ROOT config, which does not carry the
+# multi-tenant `local/no-unscoped-db-query` rule — that lives only in
+# apps/backend/eslint.config.cjs. Without this step a Kysely query missing its
+# .where('tenant_id', ...) filter reaches a commit with nothing objecting, and
+# the only thing standing between it and production is someone remembering to
+# type `npx nx lint backend` by hand. ~25s uncached, near-instant on an Nx cache
+# hit, and only when backend source is actually staged.
+if git diff --cached --name-only --diff-filter=ACM | grep -q '^apps/backend/src/.*\.ts$'; then
+  echo "› backend source staged — running nx lint backend (tenant-scoping rule)"
+  npx nx lint backend || exit 1
+fi

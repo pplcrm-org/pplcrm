@@ -9,7 +9,7 @@ description: "Why `nx lint` passing does NOT mean the pre-commit hook will pass,
 
 **`nx lint <project>` and the pre-commit hook enforce DIFFERENT rules. A green `nx lint` does not mean the hook will pass.** This is not a caching or stale-file problem — the two commands load different ESLint config files.
 
-- The pre-commit hook (`.husky/pre-commit` → `npx lint-staged`) runs plain `eslint` from the **repo root**, so ESLint loads the **root** `eslint.config.cjs`. That file declares the type-aware rules:
+- The pre-commit hook's **first** step (`.husky/pre-commit` → `npx lint-staged`) runs plain `eslint` from the **repo root**, so ESLint loads the **root** `eslint.config.cjs`. That file declares the type-aware rules:
   ```
   '@typescript-eslint/no-floating-promises': 'error',
   '@typescript-eslint/no-misused-promises': 'error',
@@ -17,6 +17,7 @@ description: "Why `nx lint` passing does NOT mean the pre-commit hook will pass,
 - `nx lint <project>` runs the `@nx/eslint:lint` executor, which loads the **project-local** config (e.g. `apps/frontend/eslint.config.cjs`). Whether that enforces the root's promise rules depends on whether the project config spreads the root config in — and the four projects are split:
   - **backend** and **common**: their configs spread in the root config (`...require('../../eslint.config.cjs')`), so `nx lint backend` / `nx lint common` enforce the promise rules **and** their own project rules. For these two, `nx lint` is a superset of the hook.
   - **frontend** and **uxcommon**: their configs do **not** spread the root, so under `nx lint frontend` / `nx lint uxcommon`, `no-floating-promises` and `no-misused-promises` are **not enforced at all**. This is where the gap still lives. (They aren't merged yet because each has pre-existing violations that would surface: frontend trips `@angular-eslint/no-output-native` in `multiselect-filter.ts`/`singleselect-filter.ts`, uxcommon trips `@angular-eslint/prefer-inject` in several files. Fixing those and spreading the root config there too is the intended follow-up.)
+- The hook's **second** step (added 2026-07-30) runs `npx nx lint backend` when — and only when — the staged set contains a file matching `^apps/backend/src/.*\.ts$`. Rationale: `local/no-unscoped-db-query` lives only in `apps/backend/eslint.config.cjs`, so before this step a Kysely query missing its `.where('tenant_id', ...)` filter could reach a commit with nothing objecting. ~25s uncached, near-instant on an Nx cache hit. Frontend is deliberately **not** gated this way — its project config carries no security rule worth 25s on every commit.
 
 Verified with a throwaway file containing one floating promise:
 
@@ -34,7 +35,19 @@ Run plain ESLint from the repo root on exactly the files you changed, with the s
 npx eslint <changed-file-1> <changed-file-2> --report-unused-disable-directives-severity=off
 ```
 
-If that exits 0, the pre-commit hook's `*.{ts,html}` step will pass. This is the single check that matters for the hook. The full CLAUDE.md pipeline (`prettier --write .`, `nx lint frontend`, `nx lint backend`, builds, tests) is still required before a PR — `nx lint backend` is the only path that enforces the tenant-safety rule (see `pplcrm-tenant-safety`), so neither check alone is sufficient.
+If that exits 0, the pre-commit hook's `*.{ts,html}` step will pass. If you touched anything under `apps/backend/src`, also run `npx nx lint backend` — the hook now runs it for you, so a failure there rejects the commit rather than surfacing later. The full CLAUDE.md pipeline (`prettier --write .`, `nx lint frontend`, builds, tests) is still required before a PR; the hook covers formatting, the promise rules, and backend tenant-scoping, but not `nx lint frontend`, the builds, or the test suites.
+
+## Claude Code hooks (editor-side, `.claude/settings.json`)
+
+Three hooks run inside Claude Code sessions; scripts live in `tools/claude-hooks/` (not `.claude/hooks/`, which the sandbox denies writes to). They are a convenience layer, **not** a substitute for the git hook — a human editing in another editor gets none of them.
+
+| Hook                    | Event                | What it does                                                                                                              |
+| ----------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `protect-generated.mjs` | PreToolUse on edits  | Denies hand-edits to `apps/*/STRUCTURE.md`, `_migrations/schema.sql`, `0001_baseline.ts`, `apps/website/src/generated/**` |
+| `format-file.mjs`       | PostToolUse on edits | `prettier --write --ignore-unknown` on the edited file (~0.1s), so the tree already matches lint-staged's output          |
+| `sync-reminders.mjs`    | PostToolUse on edits | Injects the CLAUDE.md keep-in-sync obligations (website claims, Help Center, notification checklist) keyed by path        |
+
+Per-edit **eslint** is deliberately absent: one type-aware backend file costs ~26s — the same as linting the entire project, because the cost is the TypeScript project service, not the file. That belongs at commit time, which is what the hook's second step does.
 
 Heads-up on **pre-existing failures** — check whether the flagged lines/tests are yours before burning time:
 
