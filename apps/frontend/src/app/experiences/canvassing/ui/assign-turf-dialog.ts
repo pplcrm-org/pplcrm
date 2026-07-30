@@ -1,3 +1,4 @@
+import type { OnInit } from '@angular/core';
 import { Component, computed, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
@@ -142,7 +143,7 @@ interface PersonOption {
     </dialog>
   `,
 })
-export class AssignTurfDialog {
+export class AssignTurfDialog implements OnInit {
   public readonly turfId = input.required<string>();
   public readonly turfName = input.required<string>();
   /** Emitted once on close so the page reloads the turf list. */
@@ -194,7 +195,12 @@ export class AssignTurfDialog {
     }
   }, 250);
 
-  constructor() {
+  /**
+   * Init, not the constructor: `turfId` is bound after this component is constructed, so
+   * `loadRoster()` used to read it too early, throw NG0950, and hit its own catch — the
+   * roster came up empty every time the dialog opened.
+   */
+  public ngOnInit(): void {
     void this.loadRoster();
   }
 

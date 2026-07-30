@@ -1,3 +1,4 @@
+import type { OnInit } from '@angular/core';
 import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, input, signal } from '@angular/core';
 
 import type { CompanionOrganizerPayload, CompanionOrganizerPending } from '@common';
@@ -141,10 +142,11 @@ const POLL_MS = 20_000;
     }
   `,
 })
-export class OrganizerPage {
+export class OrganizerPage implements OnInit {
   /** Route param — the organizer token from /o/:token. */
   public readonly token = input.required<string>();
 
+  private readonly destroyRef = inject(DestroyRef);
   private readonly session = inject(CompanionSessionService);
 
   protected readonly busyId = signal<string | null>(null);
@@ -155,10 +157,16 @@ export class OrganizerPage {
 
   protected readonly pendingCount = computed(() => this.payload()?.pending?.length ?? 0);
 
-  constructor() {
+  /**
+   * Init, not the constructor: a routed input is bound after construction, so reading
+   * `token()` any earlier throws NG0950 and `load()`'s catch reports the link as dead. Here
+   * the 20s poll hid it — the page healed itself on the next tick. On the approve page,
+   * which has no poll, the same mistake made every link permanently dead.
+   */
+  public ngOnInit(): void {
     void this.load();
     const timer = setInterval(() => void this.poll(), POLL_MS);
-    inject(DestroyRef).onDestroy(() => clearInterval(timer));
+    this.destroyRef.onDestroy(() => clearInterval(timer));
   }
 
   protected approvedLine(p: CompanionOrganizerPayload): string {

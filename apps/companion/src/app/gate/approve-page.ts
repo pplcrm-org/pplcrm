@@ -1,3 +1,4 @@
+import type { OnInit } from '@angular/core';
 import { ChangeDetectionStrategy, Component, computed, inject, input, signal } from '@angular/core';
 
 import type { CompanionApprovalPayload } from '@common';
@@ -104,7 +105,7 @@ import { CompanionSessionService } from './companion-api';
     </div>
   `,
 })
-export class ApprovePage {
+export class ApprovePage implements OnInit {
   /** Route param — the approval token from /a/:token. */
   public readonly token = input.required<string>();
 
@@ -117,7 +118,16 @@ export class ApprovePage {
 
   protected readonly name = computed(() => this.payload()?.volunteerName ?? 'this volunteer');
 
-  constructor() {
+  /**
+   * Load on init, NOT in the constructor.
+   *
+   * `withComponentInputBinding()` fills a routed input straight after the component is
+   * constructed, so reading `token()` from the constructor throws NG0950 — and this page's
+   * `catch` turns any throw into `state: 'dead'`. That is exactly how every approve-by-text
+   * link rendered "This approval link isn't active" without a single request reaching the
+   * backend. Keep credential reads out of the constructor.
+   */
+  public ngOnInit(): void {
     void this.load();
   }
 
