@@ -43,10 +43,9 @@ Heads-up on **pre-existing failures** — check whether the flagged lines/tests 
 - ~~`nx test frontend` has **2 pre-existing failing tests** (`services/api/user-message.spec.ts`, `layout/sidebar/sidebar.spec.ts`)~~ — both pass as of 2026-07-25; `nx run-many -t test -p frontend backend common uxcommon` is fully green (1188 tests).
 - ~~Deploy CI has **no test step**, which is how broken specs land on main.~~ — fixed 2026-07-25, see below.
 
-## `nx build` cannot run inside Claude Code's sandbox (fixed 2026-07-30)
+## Diagnostic-free target failures under Claude Code's sandbox (2026-07-30)
 
-If an agent reports that a build fails, check the shape of the failure before you believe it. A
-sandboxed `nx build` prints exactly this and nothing else:
+A sandboxed nx target can fail printing nothing usable:
 
 ```
 ❯ Building...
@@ -55,23 +54,64 @@ sandboxed `nx build` prints exactly this and nothing else:
  NX   Running target build for project companion failed
 ```
 
-No diagnostic, no file, no stack — and `--verbose` adds nothing. That is the signature of the
-environment, not of your code. Two independent causes, both of which look like a build error:
+**Do not read a missing diagnostic as proof the cause is environmental.** The first time this was
+investigated the cause was a real bug in a checked-in config file (cause 1 below), and "it's the
+sandbox" would have shipped it. Get the real error before concluding anything:
 
-1. **nx dotenv + the `.env` deny rules.** nx dotenv-loads `.env.<configuration>` for every task, so
-   `build:production` reads `.env.production`, hits the sandbox `EPERM`, and the error propagates
-   out of `dotenv` as a bare task failure. Only builds trip it — `test`/`lint` have no matching
-   configuration name, which is why they stay green and the failure looks project-specific.
-2. **LMDB and POSIX semaphores.** `@angular/build` caches compiled JS in an LMDB store under
-   `.angular/cache`; LMDB's writer lock uses POSIX named semaphores, which Seatbelt denies. The
-   process dies on **SIGABRT (exit 134)** with nothing on stderr. No `allowWrite` path fixes this —
-   it is an IPC denial, not a filesystem one, and it reproduces with a three-line `lmdb` script
-   writing to `$TMPDIR`.
+```bash
+NG_BUILD_MAX_WORKERS=1 npx nx build <project> --skip-nx-cache
+```
 
-`.claude/settings.json` now lists build invocations in `sandbox.excludedCommands`, so they run
-outside the sandbox exactly as they do in a developer's terminal. `nx test` and `nx lint` are
-unaffected and stay sandboxed. If you see the silent-failure signature again on some other target,
-add that target's invocation to the same list rather than debugging the app.
+Nx's default parallelism turns the underlying failure into a ~100-line esbuild goroutine dump
+(`fatal error: all goroutines are asleep - deadlock`) — that is the Go binary parked in
+`sendRequest` waiting on a Node process that already died, not a bug in esbuild. Serialised to one
+worker, the actual message appears. `--verbose` alone does not do this.
+
+### 1. `existsSync` + `process.loadEnvFile` in a vite config — real bug, fixed in code
+
+```
+NX   Failed to process project graph.
+   - apps/backend/vite.config.ts:
+     Error: ENOENT: no such file or directory, open '.../.env.test'
+         at process.loadEnvFile (node:internal/process/per_thread:360:7)
+         at buildViteTargets (node_modules/@nx/vite/dist/src/plugins/plugin.js:113:29)
+```
+
+The sandbox denies **reading** `.env*` but still permits `stat`, so an `existsSync` guard returns
+`true` and `process.loadEnvFile` then throws. Two consequences worth remembering:
+
+- `@nx/vite` evaluates **every** vite config to infer targets during project-graph construction, so
+  the backend's config took down an unrelated `nx build frontend`. Every nx command builds the
+  graph, so this class of bug breaks `test` and `lint` too — never scope its workaround to builds.
+- Presence never implies readability. Env-file loading in this repo is best-effort and belongs in a
+  `try`/`catch` — see [apps/backend/vite.config.ts](../../../apps/backend/vite.config.ts) and the
+  older, correct [global-setup.ts](../../../apps/backend/src/test-setup/global-setup.ts).
+
+### 2. LMDB + POSIX named semaphores — real hazard, but not what breaks builds here
+
+Verified: `open()` from `lmdb` dies **silently on SIGABRT (exit 134)** inside the sandbox, both for a
+fresh path and for the existing `.angular/cache/<ver>/<project>/angular-compiler.db`, and succeeds
+unsandboxed. `@angular/build` wraps `new LmdbCacheStore(...)` in a `try`/`catch`
+(`esbuild/angular/compiler-plugin.js`), but `LmdbCacheStore#ensureCacheFile()` opens **lazily** on
+the first `get`/`has` — outside that catch — so the abort is uncatchable and stderr stays empty.
+
+It is not the observed cause, though: after fix 1, `npx nx build frontend --skip-nx-cache` passes
+**inside** the sandbox (verified twice), and `angular-compiler.db`'s mtime never moves while
+`.tsbuildinfo` in the same directory does — the production `application` builder never opens the
+store. Unverified: `build` for companion/backend, `nx test`, and `nx serve` (dev-server prebundling
+and i18n inlining are the paths that would exercise the cache).
+
+If something does hit it, `CI=1` disables Angular's persistent cache (`utils/normalize-cache.js`,
+default `environment: 'local'`) and `CI=1 npx nx build frontend` passes sandboxed — prefer that to
+un-sandboxing.
+
+### Why builds are still excluded from the sandbox
+
+`.claude/settings.json` keeps **build-only** entries in `sandbox.excludedCommands` as a hedge for the
+projects nobody has checked yet — not because builds provably cannot be sandboxed; the frontend one
+demonstrably can. Never widen those globs to bare `run-many*`/`affected*`: that silently
+un-sandboxes `test` and `lint`. Before adding any target to that list, run the
+`NG_BUILD_MAX_WORKERS=1` repro above and fix what it shows you.
 
 ## CI runs this gate now (2026-07-25)
 

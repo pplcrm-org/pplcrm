@@ -172,7 +172,15 @@
       "allowRead": ["./.env.example", "./.env.*.example", "./**/.env.example", "./**/.env.*.example"]
     },
 
-    "// excludedCommands": "An Angular build cannot run inside the sandbox, and it fails in a way that looks like a code error: nx prints 'Failed tasks' with no diagnostic at all. Two independent causes, both environmental. (1) nx eagerly dotenv-loads .env.<configuration> for every task, so `build:production` reads .env.production, hits the EPERM from the deny rules above, and the error propagates out of dotenv as a bare task failure. (2) @angular/build caches compiled JS in an LMDB store under .angular/cache, and LMDB's writer lock uses POSIX named semaphores, which Seatbelt denies — the process dies on SIGABRT (exit 134) with nothing on stderr, and no allowWrite path fixes it because it is an IPC denial, not a filesystem one. Builds therefore run outside the sandbox, exactly as they do in a developer's own terminal. Scoped to build invocations: nx test and nx lint are unaffected and stay sandboxed.",
-    "excludedCommands": ["npx nx build*", "npx nx run-many*", "npx nx affected*", "npx nx run *:build*", "nx build*"]
+    "// excludedCommands": "A hedge, not a proven requirement — `npx nx build frontend` verifiably PASSES sandboxed (2026-07-30) once the .env.test bug in apps/backend/vite.config.ts is fixed. What is proven is that lmdb's open() dies silently on SIGABRT/134 under Seatbelt (POSIX named semaphores, an IPC denial no allowWrite fixes), and @angular/build opens its LMDB cache lazily outside its own try/catch — so any target that exercises that cache would fail with an empty stderr. Kept for build invocations only, covering the projects nobody has checked yet. Sandbox-preserving alternative if you hit it: CI=1 disables Angular's persistent cache. Do NOT widen these globs to bare run-many*/affected* — that un-sandboxes test and lint too. Full evidence: .claude/skills/pplcrm-quality-gate/SKILL.md.",
+    "excludedCommands": [
+      "npx nx build*",
+      "nx build*",
+      "npx nx run *:build*",
+      "npx nx run-many -t build*",
+      "npx nx run-many --target=build*",
+      "npx nx affected -t build*",
+      "npx nx affected --target=build*"
+    ]
   }
 }

@@ -1,15 +1,21 @@
 /// <reference types='vitest' />
-import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 // Local/dev DB credentials come from a gitignored `.env.test` file at the repo root
 // (DB_USER, DB_NAME, DB_PASSWORD, DB_PORT, DB_HOST, DB_SSL, JWT_SECRET, SHARED_SECRET —
 // see apps/backend/src/env.ts for the full schema). CI/production set these as real
-// env vars instead, so loading the file is best-effort only.
+// env vars instead, so loading the file is best-effort — and must stay that way: an
+// `existsSync` guard here is not enough, because the file can be present-but-unreadable
+// (a sandboxed shell that denies reading `.env*`, restrictive ownership) and then
+// `loadEnvFile` throws. @nx/vite evaluates every vite config to infer targets, so a throw
+// escaping this file fails the whole Nx project graph — taking down unrelated targets
+// like `nx build frontend` with no diagnostic. See the pplcrm-quality-gate skill.
 const envTestPath = resolve(__dirname, '../../.env.test');
-if (existsSync(envTestPath)) {
+try {
   process.loadEnvFile(envTestPath);
+} catch {
+  // Absent or unreadable — the `test.env` block below falls back per key.
 }
 
 export default defineConfig(() => ({
