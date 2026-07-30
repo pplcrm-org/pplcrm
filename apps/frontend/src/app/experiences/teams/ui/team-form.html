@@ -76,7 +76,7 @@
         [selectedIds]="selectedVolunteerIds()"
         (selectedIdsChange)="onVolunteersChange($event)"
       >
-        <a pc-picker-empty-action class="btn btn-outline btn-secondary btn-xs" [routerLink]="['/people']">
+        <a pc-picker-empty-action class="btn btn-outline btn-primary btn-xs" [routerLink]="['/people']">
           Go to people
         </a>
       </pc-entity-picker>
@@ -85,7 +85,7 @@
       <div class="alert alert-warning alert-soft py-2 text-xs">
         <pc-icon name="information-circle" [size]="4"></pc-icon>
         <span>{{ captain.label }} is this team's captain but is not on the roster.</span>
-        <button type="button" class="btn btn-outline btn-secondary btn-xs" (click)="addCaptainToTeam()">
+        <button type="button" class="btn btn-outline btn-primary btn-xs" (click)="addCaptainToTeam()">
           Add {{ captain.label }}
         </button>
       </div>
@@ -108,9 +108,7 @@
         [selectedIds]="selectedListIds()"
         (selectedIdsChange)="onListsChange($event)"
       >
-        <a pc-picker-empty-action class="btn btn-outline btn-secondary btn-xs" [routerLink]="['/lists']">
-          Go to lists
-        </a>
+        <a pc-picker-empty-action class="btn btn-outline btn-primary btn-xs" [routerLink]="['/lists']"> Go to lists </a>
       </pc-entity-picker>
     </pc-card>
 

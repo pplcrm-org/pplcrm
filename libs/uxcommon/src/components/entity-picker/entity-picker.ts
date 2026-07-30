@@ -102,7 +102,7 @@ export interface PcPickerOption {
                 [bordered]="false"
                 [title]="'No ' + plural() + ' match “' + search() + '”'"
               >
-                <button type="button" class="btn btn-outline btn-secondary btn-xs" (click)="search.set('')">
+                <button type="button" class="btn btn-outline btn-primary btn-xs" (click)="search.set('')">
                   Clear search
                 </button>
               </pc-empty-state>
