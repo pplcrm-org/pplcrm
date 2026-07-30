@@ -25,6 +25,7 @@
     [totalCount]="hasLoaded() ? totalCountAll() : null"
     [filtered]="anyFilterActive()"
     [totalSentence]="totalSentence()"
+    [helpArticle]="helpDoor()"
   ></pc-grid-header>
   } @if (showToolbar()) { <pc-dg-toolbar /> } } @if (showNarrowTypeFilter()) {
   <!-- System views: segmented control with per-view counts (composes AND with filters) -->

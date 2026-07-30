@@ -193,7 +193,12 @@
 <!-- ── Browse mode ─────────────────────────────────────────────────────── -->
 <div class="flex flex-col gap-4 p-4">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Forms" [totalSentence]="countSentence()">
+  <pc-grid-header
+    title="Forms"
+    description="Public pages that collect signups, RSVPs and donations straight into the CRM."
+    helpArticle="forms"
+    [totalSentence]="countSentence()"
+  >
     <button class="btn btn-primary btn-sm gap-1.5" (click)="openNewForm()" type="button">
       <pc-icon name="add-form" [size]="4"></pc-icon>
       New form

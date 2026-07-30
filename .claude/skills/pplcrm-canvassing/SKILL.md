@@ -97,8 +97,9 @@ door in. That door is the device session:
 
 - `CompanionAccessController.resolveSession(sessionToken)` — a sibling to
   `requireSession`, answering "who is this?" instead of "may they open this link?".
-  It returns `{ tenant_id, volunteer_id, person_id, can_roam }`. **Do not change
-  `requireSession`** — `/t/:token` and `/r/:token` keep their link-first check.
+  It returns `{ tenant_id, volunteer_id, person_id, can_roam, join_campaign_id }`.
+  **Do not change `requireSession`** — `/t/:token` and `/r/:token` keep their
+  link-first check.
 - Two independent checks authorize a session-first request: the session says who they
   are (and that an admin approved them), and an **active `turf_assignments` row** says
   they belong on that turf (`assignmentForSession`). Roaming governs who may _create_
@@ -114,8 +115,17 @@ door in. That door is the device session:
 browse and self-claim any unretired turf in a campaign **they already work in**;
 `assigned` restricts them to turfs staff placed them on. `companion_volunteers.can_roam`
 overrides per volunteer (null = inherit) so one person can be pinned or trusted without
-moving the workspace. Roaming never bootstraps a volunteer into a campaign — with no
-assignment there is nothing to infer from and the picker is empty.
+moving the workspace.
+
+**Which campaigns a roamer may reach** is `CanvassingController.roamableCampaigns()`, and
+both the picker (`getMyTurfs`) and self-claim (`claimTurf`) read it — a turf the picker
+lists is always claimable. Placed volunteers roam inside the campaigns their active
+assignments are in, and nowhere else. A volunteer with **no assignment yet** bootstraps
+from their join code's campaign (`join_campaign_id`, provenance from the QR path) if it
+named one, and otherwise from **every active campaign** in the workspace; archived
+campaigns are never a bootstrap. Until 2026-07-29 that case returned nothing, so
+"any turf in campaign" silently did nothing for anyone staff hadn't already placed by
+hand — do not reintroduce that as a "roaming widens, never bootstraps" rule.
 
 Client offline note: every queued op carries the `turf_id` it was recorded on, and
 `sendableBatch()` stops at a turf change. Without that, a queue recorded on one turf
@@ -216,9 +226,18 @@ never disagree with the actual cut.
 `CanvassingController.resolveUniverseHouseholdIds` calls
 `new ListsController().getCurrentMembers(auth, listId)` (Wave 1C). If the list is
 `people`, it maps to distinct `household_id`s; if `households`, uses them
-directly. Then `TurfsRepo.getHouseholdsGeo` fetches lat/lng/ward. **Refresh from
-list** re-runs this, drops doors that left the list (knock rows persist —
+directly. Then `TurfsRepo.getHouseholdsGeo` fetches lat/lng/ward. **Refresh doors
+from list** re-runs this, drops doors that left the list (knock rows persist —
 history kept) and adds new in-ward members not yet in any turf.
+
+It only works on a turf with a `list_id`, i.e. one that was **cut**; `addTurf`
+accepts an optional `list_id` but `updateTurf` cannot attach one afterwards, so a
+hand-built turf can never be refreshed. Both surfaces therefore gate the action on
+`list_name`/`list_id` rather than letting the `BadRequestError` be the explanation:
+the row menu names the list in the label ("Refresh doors from Ward 12 supporters")
+and disables the item when there is none, the detail page disables the button with
+a tooltip, and both ask for confirmation first through
+`refreshFromListExplainer()`/`refreshResultMessage()` in `ui/turf-vocabulary.ts`.
 
 ## Canvass Companion — tokenised, verified, in apps/companion (§13.4 + COMPANION-APPS-PLAN.md)
 
@@ -271,8 +290,18 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
 - `experiences/canvassing/services/canvassing-service.ts` — extends `TRPCService`,
   wraps `api.canvassing.*`. Router: `modules/canvassing/trpc.router.ts`, registered
   as `canvassing:` in `modules/trpc.ts`.
+- `ui/turf-vocabulary.ts` — **the one place the feature's user-facing words live**:
+  the status label/hint/tone/map-variant maps and the refresh copy. Both the list and
+  the detail page read it, so a turf can never read two ways. The labels deliberately
+  describe the world rather than the stored lifecycle (`draft` → "Needs canvassers",
+  `assigned` → "Links sent", `in_field` → "Knocking now", `complete` → "Every door
+  knocked"); if you add a display status, add its label **and** its hint here and in
+  the help article's status glossary.
 - `ui/canvassing-page.ts` — the /canvassing page (Turfs & assignments + Field
-  report tabs, `pc-map` turf-centroid markers tinted by status). The Field report
+  report tabs, `pc-map` turf-centroid markers tinted by status). Header is
+  `pc-grid-header` with `helpArticle="canvassing"`, so the ⓘ defines a turf and links
+  the guide. With zero turfs the whole tab is a `pc-empty-state` walking through the
+  three steps (`GETTING_STARTED`) instead of four empty widgets. The Field report
   tab's **Coverage** card (§13.3) has a Street map / By ward toggle: `getCoverage`
   (router + `controller.getCoverage`) returns one door per geocoded turf household
   coloured by window knock status (`conversation`/`attempted`/`not_yet`), a

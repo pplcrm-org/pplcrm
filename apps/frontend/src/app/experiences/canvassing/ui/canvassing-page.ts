@@ -5,10 +5,13 @@ import { Router, RouterLink } from '@angular/router';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
+import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
 import { Icon } from '@icons/icon';
 import { PcMap } from '@uxcommon/components/map/map';
 import type { PcMapMarker, PcMapPolygon, PcMapVariant } from '@uxcommon/components/map/map-types';
 import { RowActions } from '@uxcommon/components/row-actions/row-actions';
+import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
 import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
 
 import type { FieldReportRangeType } from '../../../../../../../libs/common/src';
@@ -24,6 +27,14 @@ import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pa
 import { AssignTurfDialog } from './assign-turf-dialog';
 import { CompanionSettingsDialog } from './companion-settings-dialog';
 import { CutTurfsDialog } from './cut-turfs-dialog';
+import {
+  TURF_STATUS_HINT,
+  TURF_STATUS_LABEL,
+  TURF_STATUS_MAP_VARIANT,
+  TURF_STATUS_TONE,
+  refreshFromListExplainer,
+  refreshResultMessage,
+} from './turf-vocabulary';
 import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
 
 type TurfStatus = TurfListItem['status'];
@@ -48,29 +59,23 @@ const COVERAGE_LEGEND: { status: CoverageStatus; label: string; dot: string }[] 
   { status: 'not_yet', label: 'Not yet knocked', dot: 'bg-base-300' },
 ];
 
-const STATUS_VARIANT: Record<TurfStatus, PcMapVariant> = {
-  draft: 'neutral',
-  assigned: 'info',
-  in_field: 'success',
-  complete: 'primary',
-  retired: 'muted',
-};
-
-const STATUS_LABEL: Record<TurfStatus, string> = {
-  draft: 'Draft (unassigned)',
-  assigned: 'Sent to app',
-  in_field: 'In field now',
-  complete: 'Complete',
-  retired: 'Retired',
-};
-
-const STATUS_BADGE: Record<TurfStatus, string> = {
-  draft: 'badge-ghost',
-  assigned: 'badge-info',
-  in_field: 'badge-success',
-  complete: 'badge-primary',
-  retired: 'badge-ghost opacity-60',
-};
+/** The three steps of the whole feature, shown until the first turfs exist. */
+const GETTING_STARTED: { title: string; detail: string }[] = [
+  {
+    title: 'Cut turfs from a list',
+    detail:
+      'Pick a list of people or households. Their addresses are split into batches of roughly 40 doors that sit next to each other, and no turf crosses a ward boundary.',
+  },
+  {
+    title: 'Add canvassers',
+    detail:
+      'Each volunteer gets their own link to the Canvass Companion, a web app on their phone. Nothing to install, and the link works only for them.',
+  },
+  {
+    title: 'Watch the answers arrive',
+    detail: 'Every door they log updates the person, the household and this page while they walk.',
+  },
+];
 
 const RANGES: { key: ReportRange; label: string }[] = [
   { key: 'today', label: 'Today' },
@@ -84,10 +89,13 @@ const RANGES: { key: ReportRange; label: string }[] = [
   selector: 'pc-canvassing-page',
   imports: [
     DatePipe,
+    EmptyState,
+    GridHeaderComponent,
     Icon,
     PcMap,
     RouterLink,
     RowActions,
+    StatusBadge,
     TabBar,
     CutTurfsDialog,
     AssignTurfDialog,
@@ -129,9 +137,14 @@ export class CanvassingPage implements OnInit {
   protected readonly qrTarget = signal<TurfListItem | null>(null);
 
   protected readonly ranges = RANGES;
-  protected readonly statusLabel = STATUS_LABEL;
-  protected readonly statusBadge = STATUS_BADGE;
+  protected readonly statusLabel = TURF_STATUS_LABEL;
+  protected readonly statusHint = TURF_STATUS_HINT;
+  protected readonly statusTone = TURF_STATUS_TONE;
   protected readonly coverageLegend = COVERAGE_LEGEND;
+  protected readonly gettingStarted = GETTING_STARTED;
+
+  /** First load has answered. Guards the getting-started panel against a false empty flash. */
+  protected readonly loaded = signal(false);
 
   ngOnInit(): void {
     void this.loadTurfs();
@@ -193,7 +206,7 @@ export class CanvassingPage implements OnInit {
   }
 
   protected variantFor(status: TurfStatus): PcMapVariant {
-    return STATUS_VARIANT[status];
+    return TURF_STATUS_MAP_VARIANT[status];
   }
 
   protected progressPct(t: TurfListItem): number {
@@ -212,6 +225,7 @@ export class CanvassingPage implements OnInit {
       this.turfs.set(turfs);
       this.summary.set(summary);
       this.today.set(today);
+      this.loaded.set(true);
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load canvassing.');
     } finally {
@@ -320,10 +334,18 @@ export class CanvassingPage implements OnInit {
   }
 
   protected async refresh(t: TurfListItem): Promise<void> {
+    if (!t.list_name) return;
+    const ok = await this.dialog.confirm({
+      title: `Re-read "${t.list_name}"?`,
+      message: refreshFromListExplainer(t.list_name),
+      confirmText: 'Refresh doors',
+    });
+    if (!ok) return;
+
     const end = this._loading.begin();
     try {
       const res = await this.svc.refreshFromList(t.id);
-      this.alerts.showSuccess(`Refreshed. ${res.added} added, ${res.removed} removed. Knock history kept.`);
+      this.alerts.showSuccess(refreshResultMessage(t.list_name, res));
       await this.loadTurfs();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to refresh turf.');

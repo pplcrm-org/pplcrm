@@ -311,10 +311,20 @@
             <ng-container i18n="Navbar|User settings menu item@@navbar.profile.menu.settings">Settings</ng-container>
           </a>
         </li>
+        @if (pageHelpArticle(); as article) {
+        <li class="hover:text-primary">
+          <a [routerLink]="['/help', article]">
+            <pc-icon name="information-circle"></pc-icon>
+            <ng-container i18n="Navbar|Guide for the current page@@navbar.profile.menu.helpThisPage"
+              >Help for this page</ng-container
+            >
+          </a>
+        </li>
+        }
         <li class="hover:text-primary">
           <a routerLink="/help">
-            <pc-icon name="information-circle"></pc-icon>
-            <ng-container i18n="Navbar|Help center menu item@@navbar.profile.menu.help">Help</ng-container>
+            <pc-icon name="document-text"></pc-icon>
+            <ng-container i18n="Navbar|Help center menu item@@navbar.profile.menu.help">Help center</ng-container>
           </a>
         </li>
         @if (showTourEntry()) {

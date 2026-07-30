@@ -1,26 +1,21 @@
 <div class="mx-auto w-full max-w-6xl p-4 sm:p-6">
-  <!-- Header -->
-  <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
-    <div>
-      <!-- Visible title lives in the navbar breadcrumb; keep an accessible heading only. -->
-      <h1 class="sr-only">Canvassing</h1>
-      @if (headline()) {
-      <p class="text-xs text-base-content/70">{{ headline() }}</p>
-      } @else {
-      <p class="text-xs text-base-content/70">Cut your first turfs to start knocking doors.</p>
-      }
-    </div>
-    <div class="flex items-center gap-2">
-      <button type="button" class="btn btn-ghost btn-sm" (click)="settingsOpen.set(true)">
-        <pc-icon name="cog" [size]="4" />
-        Survey settings
-      </button>
-      <button type="button" class="btn btn-primary btn-sm" (click)="openCut()">
-        <pc-icon name="map-pin" [size]="4" />
-        Cut new turfs
-      </button>
-    </div>
-  </div>
+  <!-- Header: the one list-page header idiom (pc-grid-header, design §4). Its ⓘ carries
+       the definition of a turf and the door into the full canvassing guide. -->
+  <pc-grid-header
+    title="Canvassing"
+    description="A turf is one walkable batch of doors, cut from a list. You hand each turf to volunteers, they knock with the Canvass Companion on their phone, and every answer lands back here."
+    helpArticle="canvassing"
+    [totalSentence]="headline() || 'No turfs yet'"
+  >
+    <button type="button" class="btn btn-ghost btn-sm" (click)="settingsOpen.set(true)">
+      <pc-icon name="cog" [size]="4" />
+      Survey settings
+    </button>
+    <button type="button" class="btn btn-primary btn-sm" (click)="openCut()">
+      <pc-icon name="map-pin" [size]="4" />
+      Cut turfs from a list
+    </button>
+  </pc-grid-header>
 
   <!-- Surface switch (turfs / field report) — the underline tab row the People grid uses -->
   <pc-tab-bar
@@ -32,7 +27,35 @@
     label="Canvassing views"
   />
 
-  @if (tab() === 'turfs') {
+  @if (tab() === 'turfs') { @if (loaded() && turfs().length === 0) {
+  <!-- First run. Nothing here works until turfs exist, so the page spends its whole
+       surface explaining the three steps instead of showing four empty widgets (§3). -->
+  <pc-empty-state
+    icon="map-pin"
+    title="No turfs yet"
+    hint="A turf is one walkable batch of doors, cut from a list you already have."
+  >
+    <ol class="mt-2 max-w-md space-y-3 text-left">
+      @for (step of gettingStarted; track step.title) {
+      <li class="flex gap-3">
+        <span
+          class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary"
+        >
+          {{ $index + 1 }}
+        </span>
+        <span>
+          <span class="font-medium text-base-content">{{ step.title }}</span>
+          <span class="block text-base-content/60">{{ step.detail }}</span>
+        </span>
+      </li>
+      }
+    </ol>
+    <button type="button" class="btn btn-primary btn-sm mt-2" (click)="openCut()">
+      <pc-icon name="map-pin" [size]="4" />
+      Cut turfs from a list
+    </button>
+  </pc-empty-state>
+  } @else {
   <!-- In the field today -->
   <section class="card mb-4 border border-base-300 bg-base-100">
     <div class="card-body p-4">
@@ -102,7 +125,10 @@
         Turfs appear here on the ward map once they are cut.
       </div>
       }
-      <p class="mt-2 text-xs text-base-content/50">Auto-cut keeps turfs contiguous and off Route 9 and the river.</p>
+      <p class="mt-2 text-xs text-base-content/50">
+        One pin per turf, placed in the middle of its doors and coloured by status. Click a pin to open that turf. Turfs
+        never cross a ward boundary.
+      </p>
     </div>
   </section>
 
@@ -113,10 +139,10 @@
         <thead>
           <tr class="text-xs uppercase text-base-content/50">
             <th>Turf</th>
-            <th>Size</th>
+            <th>Doors</th>
             <th>Canvassers</th>
-            <th>Progress</th>
-            <th>Last activity</th>
+            <th>Doors tried</th>
+            <th>Last knock</th>
             <th></th>
           </tr>
         </thead>
@@ -126,11 +152,14 @@
             <td>
               <div class="flex items-center gap-2">
                 <a class="font-medium text-primary" [routerLink]="['/canvassing', t.id]">{{ t.name }}</a>
-                <span class="badge badge-sm {{ statusBadge[t.status] }}">{{ statusLabel[t.status] }}</span>
+                <!-- The hint spells the badge out, so the word is never the whole story. -->
+                <span [title]="statusHint[t.status]">
+                  <pc-status-badge [type]="statusTone[t.status]" size="sm">{{ statusLabel[t.status] }}</pc-status-badge>
+                </span>
               </div>
-              @if (t.list_name) {
-              <div class="text-xs text-base-content/50">{{ t.list_name }}</div>
-              }
+              <div class="text-xs text-base-content/50">
+                @if (t.list_name) { Cut from {{ t.list_name }} } @else { Built by hand, not from a list }
+              </div>
             </td>
             <td class="whitespace-nowrap">{{ t.door_count }} doors</td>
             <td>
@@ -182,31 +211,36 @@
                 <li>
                   <button type="button" (click)="qrTarget.set(t)">Show join QR</button>
                 </li>
-                <li><button type="button" (click)="refresh(t)">Refresh from list</button></li>
+                <!-- Only a turf cut from a list can be re-synced with one. Naming the list
+                     in the label is what makes the action legible at all (§2/§3). -->
+                @if (t.list_name) {
+                <li><button type="button" (click)="refresh(t)">Refresh doors from {{ t.list_name }}</button></li>
+                } @else {
+                <li>
+                  <button type="button" disabled title="This turf was built by hand, so there is no list to re-read.">
+                    Refresh doors from list
+                  </button>
+                </li>
+                }
                 <li>
                   <button type="button" class="text-error" (click)="retire(t)">Retire turf</button>
                 </li>
               </pc-row-actions>
             </td>
           </tr>
-          } @empty {
-          <tr>
-            <td colspan="6" class="py-10 text-center text-sm text-base-content/60">
-              No turfs yet. Choose a smart-list universe and
-              <button type="button" class="link link-primary" (click)="openCut()">cut your first turfs</button>.
-            </td>
-          </tr>
           }
         </tbody>
       </table>
     </div>
-    <div class="border-t border-base-300 p-3 text-xs text-base-content/60">
-      Assigning a volunteer sends them their personal Canvass Companion link by email or text — the Companion is a web
-      app, nothing to install, and the link only works for them. Progress and conversations sync back live. Knocks land
-      on the person, the household, and the Activity log.
+    <div class="space-y-1 border-t border-base-300 p-3 text-xs text-base-content/60">
+      <p>
+        Adding a canvasser emails and texts them their own Canvass Companion link. The Companion is a web app on their
+        phone, so there is nothing to install, and the link works only for them.
+      </p>
+      <p>Every knock they log updates this table, the person, the household and the Activity log within seconds.</p>
     </div>
   </section>
-  } @else {
+  } } @else {
   <!-- Field report -->
   <section>
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">

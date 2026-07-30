@@ -86,6 +86,9 @@ apps/
               companion-settings-dialog.ts
               cut-turfs-dialog.html
               cut-turfs-dialog.ts
+              turf-detail-page.html
+              turf-detail-page.ts
+              turf-vocabulary.ts
           companies/
             services/
               companies-service.ts
@@ -561,6 +564,7 @@ apps/
           services/
             currency.service.ts
             date-format.service.ts
+          help-doors.ts
           public-page-meta.ts
           public-pages.ts
         app.config.ts

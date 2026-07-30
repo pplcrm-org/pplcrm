@@ -1,6 +1,11 @@
 <div class="mx-auto w-full max-w-7xl p-6">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Newsletters" [totalSentence]="headerSentence()">
+  <pc-grid-header
+    title="Newsletters"
+    description="Write, preview and send email to a list, then watch opens and clicks land back on each person."
+    helpArticle="newsletters"
+    [totalSentence]="headerSentence()"
+  >
     <a routerLink="add" class="btn btn-primary btn-sm hidden gap-2 sm:inline-flex">
       <pc-icon name="plus" [size]="4"></pc-icon>
       New newsletter

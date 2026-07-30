@@ -46,6 +46,7 @@ import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { DateFormatService } from '../../services/date-format.service';
+import { injectHelpDoor } from '../../help-doors';
 
 import { ListsService } from '@experiences/lists/services/lists-service';
 import { TagsService } from '@experiences/tags/services/tags-service';
@@ -608,6 +609,10 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
   protected readonly router = inject(Router);
   public readonly undoMgr = new UndoManager();
 
+  private readonly sectionHelp = injectHelpDoor();
+  /** Explicit article id wins; otherwise the section's guide, resolved from the URL. */
+  protected readonly helpDoor = computed<string>(() => this.helpArticle() ?? this.sectionHelp());
+
   // Select-all-across-results state
   protected readonly allSelected = this.store?.allSelected ?? signal(false);
   protected readonly allSelectedCount = this.store?.allSelectedCount ?? signal(0);
@@ -737,6 +742,12 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
   public title = input<string | null>(null);
   public description = input<string | null>(null);
   public showDescription = input<boolean>(false);
+
+  /**
+   * Help Center article behind the header's ⓘ. Left unset it resolves from the route,
+   * so every grid page offers its own guide for free; pass '' to suppress the door.
+   */
+  public helpArticle = input<string | null>(null);
 
   /**
    * Grain-specific total sentence rendered under the title (spec §5), e.g.

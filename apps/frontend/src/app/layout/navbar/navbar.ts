@@ -9,6 +9,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 
 import { ORG_MODE_LABELS } from '@common';
 
+import { injectHelpDoor } from '../../shared/help-doors';
 import { OrgModeService } from '../../services/org-mode.service';
 import { FavouriteToggle } from '../favourite-toggle/favourite-toggle';
 import { TourService } from '../tour/tour.service';
@@ -49,6 +50,13 @@ export class Navbar implements OnDestroy {
   private readonly alerts = inject(AlertService);
   private readonly auth = inject(AuthService);
   private readonly tourSvc = inject(TourService);
+
+  /**
+   * The guide for whatever section the user is standing in, offered above the Help
+   * Center itself. Empty when the section has no article, so the menu never opens a
+   * door onto nothing (§2).
+   */
+  protected readonly pageHelpArticle = injectHelpDoor();
 
   /** Re-entry point for the tour. Offered only while the demo data it walks through is still
    * present — every stop lands on a seeded record, so the tour is meaningless once they are gone. */

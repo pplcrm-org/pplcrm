@@ -1,6 +1,11 @@
 <div class="p-6 max-w-7xl mx-auto">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
-  <pc-grid-header title="Import / export" [totalSentence]="tab() === 'imports' ? historySentence() : exportsSentence()">
+  <pc-grid-header
+    title="Import / export"
+    description="Bring people in from a spreadsheet, and take your data back out the same way."
+    helpArticle="import"
+    [totalSentence]="tab() === 'imports' ? historySentence() : exportsSentence()"
+  >
     @if (tab() === 'imports') {
     <button type="button" class="btn btn-primary btn-sm gap-1.5 shrink-0" (click)="startNewImport()">
       <pc-icon name="arrow-up-tray" [size]="4"></pc-icon>
