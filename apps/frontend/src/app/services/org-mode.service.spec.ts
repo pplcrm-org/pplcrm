@@ -72,9 +72,13 @@ describe('OrgModeService', () => {
       expect(service.isEnabled('volunteerAccess')).toBe(true);
     });
 
-    it('leaves everything on for the default mode', () => {
+    /** An office keeps the field modules; it starts without Donations (its association raises). */
+    it('applies the default mode’s defaults', () => {
       const service = makeService();
-      expect(service.enabledModules().size).toBe(4);
+      expect(service.isEnabled('canvassing')).toBe(true);
+      expect(service.isEnabled('deliveries')).toBe(true);
+      expect(service.isEnabled('volunteerAccess')).toBe(true);
+      expect(service.isEnabled('donations')).toBe(false);
     });
 
     it('lets an explicit override re-enable a module the mode turned off', () => {
@@ -82,9 +86,15 @@ describe('OrgModeService', () => {
       expect(makeService().isEnabled('canvassing')).toBe(true);
     });
 
+    /** The path every pre-modes workspace takes after the donations backfill migration. */
+    it('honours an explicit override on a module the mode turned off', () => {
+      snapshot.set({ 'workspace.modules': { donations: true } });
+      expect(makeService().isEnabled('donations')).toBe(true);
+    });
+
     it('lets an explicit override turn off a module the mode left on', () => {
-      snapshot.set({ 'workspace.modules': { donations: false } });
-      expect(makeService().isEnabled('donations')).toBe(false);
+      snapshot.set({ 'workspace.modules': { deliveries: false } });
+      expect(makeService().isEnabled('deliveries')).toBe(false);
     });
 
     it('reads overrides from the session before the snapshot arrives', () => {

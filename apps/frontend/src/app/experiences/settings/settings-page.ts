@@ -7,8 +7,9 @@ import { PcIconNameType } from '@icons/icons.index';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
-import { IAuthUserDetail, SettingsEntryType } from '../../../../../../libs/common/src';
+import { IAuthUserDetail, ORG_MODE_IS_ELECTORAL, SettingsEntryType } from '../../../../../../libs/common/src';
 import { AuthService } from '../../auth/auth-service';
+import { OrgModeService } from '../../services/org-mode.service';
 import { HouseholdsService } from '../households/services/households-service';
 import { AccountSettingsComponent } from './account/account-settings';
 import { ApiKeysSettingsComponent } from './api-keys/api-keys-settings';
@@ -159,6 +160,7 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
 export class SettingsPage implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly auth = inject(AuthService);
+  private readonly orgMode = inject(OrgModeService);
   private readonly router = inject(Router);
 
   /** Kept so existing template/route bindings read naturally; the page is workspace-only now. */
@@ -215,9 +217,18 @@ export class SettingsPage implements OnInit {
   protected trackField = (_: number, field: SectionFieldState) => field.controlName;
   protected trackSection = (_: number, section: SectionState) => section.config.id;
 
-  /** The custom (self-saving) sections visible in the current mode. */
+  /**
+   * The custom (self-saving) sections visible in the current mode.
+   *
+   * Campaigns is where you add and archive ELECTION contexts, so it is hidden for an organization
+   * that does not run elections — a church has no election to add, and offering one reads as the
+   * app not knowing what kind of organization it is talking to. The route still resolves for a
+   * deep link (and every tenant still has its permanent office context underneath); this is the
+   * nav, not a permission.
+   */
   protected get visibleCustomSections(): CustomSectionConfig[] {
-    return CUSTOM_SECTIONS;
+    if (ORG_MODE_IS_ELECTORAL[this.orgMode.mode()]) return CUSTOM_SECTIONS;
+    return CUSTOM_SECTIONS.filter((section) => section.id !== 'campaigns');
   }
 
   /** The sidebar nav: both section sources merged in the order declared by the

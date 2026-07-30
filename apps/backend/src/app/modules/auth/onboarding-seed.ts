@@ -4,6 +4,7 @@ import {
   DEFAULT_ORG_MODE,
   FORM_TEMPLATES,
   ORG_MODE_IS_ELECTORAL,
+  ORG_MODE_MODULE_DEFAULTS,
   fieldsForTemplate,
 } from '../../../../../../libs/common/src';
 import type { FormType, OrgMode } from '../../../../../../libs/common/src';
@@ -47,23 +48,30 @@ export const SHARED_STARTER_TAGS: StarterTagDef[] = [
 ];
 
 /**
- * Starter tags that only make sense for an electoral organization (see ORG_MODE_IS_ELECTORAL).
- * The electoral demo dataset attaches demo households to 'lawn sign location' BY NAME, so any
- * mode whose dataset references these tags must also be electoral — `demo-datasets.spec.ts`
- * checks exactly that.
+ * Starter tags for an organization that runs elections (see ORG_MODE_IS_ELECTORAL) — a
+ * constituency office as much as a campaign. Both track who just moved into the riding.
+ *
+ * Signs are NOT here. A lawn sign needs a candidate, so 'lawn sign location' lives in the
+ * campaign column of MODE_EXTRA_TAGS below; the electoral demo datasets attach households to
+ * it BY NAME, and `demo-datasets.spec.ts` is what proves a dataset only references vocabulary
+ * its own mode seeds.
  */
 export const CAMPAIGN_STARTER_TAGS: StarterTagDef[] = [
   { name: 'new to riding', description: 'Moved into the riding within the last year.', color: '#06b6d4' },
+];
+
+/** The sign-operation tag — campaign only, and referenced by name from that mode's dataset. */
+export const SIGN_STARTER_TAGS: StarterTagDef[] = [
   { name: 'lawn sign location', description: 'Household that has agreed to display a lawn sign.', color: '#16a34a' },
 ];
 
-/** Every starter tag, in the order a demo-seeding mode gets them. */
-export const STARTER_TAGS: StarterTagDef[] = [...SHARED_STARTER_TAGS, ...CAMPAIGN_STARTER_TAGS];
+/** Every starter tag a campaign gets — the widest set, in seeding order. */
+export const STARTER_TAGS: StarterTagDef[] = [...SHARED_STARTER_TAGS, ...CAMPAIGN_STARTER_TAGS, ...SIGN_STARTER_TAGS];
 
 /** Mode-specific additions on top of the shared set. */
 export const MODE_EXTRA_TAGS: Record<OrgMode, StarterTagDef[]> = {
   office: [],
-  campaign: [],
+  campaign: SIGN_STARTER_TAGS,
   nonprofit: [
     { name: 'major donor', description: 'Gives at a level worth a personal thank-you.', color: '#16a34a' },
     { name: 'program participant', description: 'Takes part in a program you run.', color: '#06b6d4' },
@@ -186,10 +194,36 @@ export async function seedStarterTags(
     .execute();
 }
 
-/** One extra, mode-appropriate request form for the modes that skip the campaign starters. */
+/** The mode-appropriate request form each mode opens with — the first job it actually does. */
 export const MODE_STARTER_FORMS: Record<OrgMode, StarterFormDef[]> = {
-  office: [],
-  campaign: [],
+  office: [
+    {
+      key: 'request',
+      formType: 'standard',
+      name: 'Casework intake',
+      slug: 'casework-intake',
+      description:
+        'Intake form for constituents asking the office for help. Requests arrive as tasks you can assign and track to a resolution.',
+      submitLabel: FORM_TEMPLATES.request.submitLabel,
+      thanksBody: 'Thanks — your request is with the office and someone will follow up.',
+      confirmSubject: 'We received your request',
+      confirmBody:
+        'Hi [First name],\n\nThanks for contacting the office — we have your request and someone will follow up with you shortly.',
+    },
+  ],
+  campaign: [
+    {
+      key: 'request',
+      formType: 'standard',
+      name: 'Yard sign request',
+      slug: 'yard-sign-request',
+      description: 'Yard sign request form for your website. Requests feed the Deliveries page for route planning.',
+      submitLabel: FORM_TEMPLATES.request.submitLabel,
+      thanksBody: 'We’ll deliver your yard sign soon.',
+      confirmSubject: 'Your yard sign request',
+      confirmBody: 'Hi [First name],\n\nThanks for your request — a volunteer will drop off your sign soon.',
+    },
+  ],
   nonprofit: [
     {
       key: 'request',
@@ -218,18 +252,6 @@ export const MODE_STARTER_FORMS: Record<OrgMode, StarterFormDef[]> = {
   ],
 };
 
-/**
- * Creates the starter web forms (all drafts) for a new tenant: one of
- * each standard kind (signup ×2, request, survey), a standard fundraising
- * pledge form, plus the two donation giving pages (one-time + recurring). These
- * are deliberately separate from the demo dataset
- * (modules/demo/demo-seed.ts): exiting demo mode deletes the demo data but
- * keeps these forms — a ready-made starting point the user publishes when
- * they're ready.
- *
- * Returns the created ids + slugs so the demo seeder can attach sample
- * submissions to two of them.
- */
 /** The starter forms every organization gets, whatever it organizes. */
 export const UNIVERSAL_STARTER_FORMS: StarterFormDef[] = [
   {
@@ -254,6 +276,19 @@ export const UNIVERSAL_STARTER_FORMS: StarterFormDef[] = [
     confirmSubject: 'Thanks for signing up',
     confirmBody: 'Hi [First name],\n\nThanks for signing up — we’ll be in touch soon.',
   },
+];
+
+/**
+ * The fundraising starters: the two donation giving pages plus the no-payment pledge form.
+ *
+ * Withheld from any mode whose sidebar starts without Donations (see `fundraisingFormsFor`) —
+ * seeding a giving page into a constituency office would be handing it a fundraising operation
+ * it is not the legal entity for, and parking it on a page its own sidebar does not link to.
+ * Turning Donations on in Workspace → Modules reveals the page; the forms are not retroactively
+ * created there, which is the honest outcome: an office that fundraises for its association
+ * builds the giving page it actually wants.
+ */
+export const FUNDRAISING_STARTER_FORMS: StarterFormDef[] = [
   {
     key: 'pledge',
     formType: 'recurring_donation',
@@ -291,22 +326,58 @@ export const UNIVERSAL_STARTER_FORMS: StarterFormDef[] = [
 ];
 
 /**
- * Electoral-only starters (see ORG_MODE_IS_ELECTORAL). The electoral demo dataset attaches sample
- * submissions to 'issues-survey' BY SLUG and demo-seed.ts silently skips a slug it cannot find,
- * so a dataset referencing these must belong to an electoral mode.
+ * Per-mode renaming of the fundraising starters. SLUGS NEVER CHANGE — they are the public URL
+ * and `onboarding-seed.spec.ts` asserts the giving page exists by slug for every mode that
+ * fundraises. Only the words a congregation would not recognise change: a church takes an
+ * offering, it does not run a fundraising campaign.
+ *
+ * Total, so adding a mode is a compile error here rather than a silent fallback to campaign
+ * vocabulary.
+ */
+export const MODE_FUNDRAISING_TERMS: Record<OrgMode, Record<string, Pick<StarterFormDef, 'name' | 'description'>>> = {
+  office: {},
+  campaign: {},
+  nonprofit: {},
+  church: {
+    'recurring-donation': {
+      name: 'Monthly giving',
+      description: 'Monthly-giving form. Customize the fields, then publish so members can give regularly.',
+    },
+    'one-time-donation': {
+      name: 'Give online',
+      description: 'Online giving form for one-time gifts and offerings. Customize the fields, then publish.',
+    },
+    'fundraising-pledge': {
+      name: 'Giving pledge',
+      description:
+        'Collect giving pledges for the year. Responses become people you can follow up with — no payment is taken here (use Give online for card gifts).',
+    },
+  },
+};
+
+/**
+ * The fundraising starters a mode gets, in that mode's words.
+ *
+ * Gated on the mode's own Donations default rather than a second flag: "does this organization's
+ * sidebar open with Donations" and "should signup create giving pages" are the same question, and
+ * two flags would eventually disagree.
+ */
+export function fundraisingFormsFor(mode: OrgMode): StarterFormDef[] {
+  if (!ORG_MODE_MODULE_DEFAULTS[mode].donations) return [];
+  const terms = MODE_FUNDRAISING_TERMS[mode];
+  return FUNDRAISING_STARTER_FORMS.map((form) => ({ ...form, ...terms[form.slug] }));
+}
+
+/**
+ * Starters for a mode that runs elections (see ORG_MODE_IS_ELECTORAL) — an office between
+ * elections asks its constituents what matters exactly as a campaign does. The electoral demo
+ * datasets attach sample submissions to 'issues-survey' BY SLUG and demo-seed.ts silently skips
+ * a slug it cannot find, so a dataset referencing this must belong to an electoral mode.
+ *
+ * The yard-sign request form moved to the campaign column of MODE_STARTER_FORMS: it feeds a sign
+ * operation, which needs a candidate, not merely an election.
  */
 export const ELECTORAL_STARTER_FORMS: StarterFormDef[] = [
-  {
-    key: 'request',
-    formType: 'standard',
-    name: 'Yard sign request',
-    slug: 'yard-sign-request',
-    description: 'Yard sign request form for your website. Requests feed the Deliveries page for route planning.',
-    submitLabel: FORM_TEMPLATES.request.submitLabel,
-    thanksBody: 'We’ll deliver your yard sign soon.',
-    confirmSubject: 'Your yard sign request',
-    confirmBody: 'Hi [First name],\n\nThanks for your request — a volunteer will drop off your sign soon.',
-  },
   {
     key: 'survey',
     formType: 'standard',
@@ -327,6 +398,7 @@ export const ELECTORAL_STARTER_FORMS: StarterFormDef[] = [
 export function starterFormsFor(mode: OrgMode): StarterFormDef[] {
   return [
     ...UNIVERSAL_STARTER_FORMS,
+    ...fundraisingFormsFor(mode),
     ...(ORG_MODE_IS_ELECTORAL[mode] ? ELECTORAL_STARTER_FORMS : []),
     ...MODE_STARTER_FORMS[mode],
   ];

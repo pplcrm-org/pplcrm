@@ -6,7 +6,7 @@ import { INLINE_BODY_MAX_BYTES } from '../emails/services/email-body-text';
 import { handleMaterializeDemoAttachments } from '../../lib/jobs/handlers/demo.handlers';
 import { StorageService } from '../../lib/storage.service';
 import { useTestTransaction } from '../../lib/test-utils/db-test-isolation';
-import { SYSTEM_LISTS } from '@common';
+import { ORG_MODE_IS_ELECTORAL, ORG_MODE_MODULE_DEFAULTS, SYSTEM_LISTS } from '@common';
 import { STARTER_ISSUES, STARTER_TAGS, seedStarterForms, seedStarterTags } from '../auth/onboarding-seed';
 import { ensureSystemLists } from '../lists/system-lists';
 import { DemoController } from './controller';
@@ -63,9 +63,13 @@ describe('demo seeding and exit-demo', () => {
   /**
    * Mirrors the signUp transaction's seeding-relevant steps for one fresh tenant, in the given
    * organization mode — starter vocabulary, starter forms and demo dataset all chosen the way
-   * signup chooses them. Defaults to 'office', which is what most of this suite asserts against.
+   * signup chooses them.
+   *
+   * Defaults to 'campaign': it is the mode with every section populated (signs, turfs, a donor
+   * ledger), so it is the one the DEMO_* imports below describe and the widest exercise of the
+   * seeder. The per-mode suite at the bottom covers the other three against their own datasets.
    */
-  async function seedFixture(mode: OrgMode = 'office'): Promise<Fixture> {
+  async function seedFixture(mode: OrgMode = 'campaign'): Promise<Fixture> {
     const dataset = DEMO_DATASETS[mode];
     if (!dataset) throw new Error(`No demo dataset for mode "${mode}"`);
     const trx = ctx.trx;
@@ -874,15 +878,20 @@ describe('demo seeding and exit-demo', () => {
   });
 
   /**
-   * The electoral suite above proves the SEEDER works. These prove the two datasets written for
-   * the non-electoral modes actually land in Postgres — the failure this catches is not a broken
+   * The campaign suite above proves the SEEDER works. These prove the datasets written for the
+   * other three modes actually land in Postgres — the failure this catches is not a broken
    * reference (demo-datasets.spec.ts covers those statically) but a row the database rejects, or
    * a submission silently dropped because the form slug does not exist for that mode.
+   *
+   * Every module-dependent expectation is derived from ORG_MODE_MODULE_DEFAULTS rather than
+   * hard-coded, so this stays honest for a mode like `office` that shows canvassing and deliveries
+   * but hides donations.
    */
-  describe.each([['nonprofit' as const], ['church' as const]])('%s demo workspace', (mode) => {
-    it('seeds end to end, with no electoral leftovers', async () => {
+  describe.each([['office' as const], ['nonprofit' as const], ['church' as const]])('%s demo workspace', (mode) => {
+    it('seeds end to end, with nothing behind a hidden module', async () => {
       const dataset = DEMO_DATASETS[mode];
       if (!dataset) throw new Error(`no dataset for ${mode}`);
+      const modules = ORG_MODE_MODULE_DEFAULTS[mode];
       const f = await seedFixture(mode);
 
       expect(await count('persons', f.tenant_id)).toBe(dataset.persons.length);
@@ -892,8 +901,15 @@ describe('demo seeding and exit-demo', () => {
       expect(await count('emails', f.tenant_id)).toBe(dataset.emails.length);
       expect(await count('newsletters', f.tenant_id)).toBe(dataset.newsletters.length);
       expect(await count('volunteer_events', f.tenant_id)).toBe(dataset.volunteerEvents.length);
+
+      // Donations are seeded iff the mode shows them; an office keeps its ledger empty because
+      // the association it fundraises through is a different entity with its own books.
       expect(await count('donations', f.tenant_id)).toBe(dataset.donations.length);
       expect(await count('donation_pledges', f.tenant_id)).toBe(dataset.pledges.length);
+      if (!modules.donations) {
+        expect(await count('donations', f.tenant_id)).toBe(0);
+        expect(await count('donation_pledges', f.tenant_id)).toBe(0);
+      }
 
       // The silent-skip failure: a submission whose form slug this mode never seeds is dropped
       // without an error, so the count is the only evidence.
@@ -902,13 +918,19 @@ describe('demo seeding and exit-demo', () => {
       // Tag and issue attachments likewise vanish quietly when the name does not match.
       expect(await count('map_peoples_tags', f.tenant_id)).toBeGreaterThan(0);
 
-      // These modes hide canvassing and deliveries, so nothing may be seeded behind them.
-      expect(await count('turfs', f.tenant_id)).toBe(0);
-      expect(await count('delivery_requests', f.tenant_id)).toBe(0);
-      expect(await count('delivery_routes', f.tenant_id)).toBe(0);
+      // Field data exists exactly where the sidebar links to it.
+      expect(await count('turfs', f.tenant_id)).toBe(modules.canvassing ? dataset.turfs.length : 0);
+      expect(await count('delivery_requests', f.tenant_id)).toBe(
+        modules.deliveries ? dataset.deliveryRequests.length : 0,
+      );
+      expect(await count('delivery_routes', f.tenant_id)).toBe(modules.deliveries ? dataset.deliveryRoutes.length : 0);
 
-      // No support levels or voting statuses: these organizations do not canvass for votes.
-      expect(await count('campaign_person_facts', f.tenant_id)).toBe(0);
+      // Support levels and voting statuses belong to organizations that run elections.
+      if (ORG_MODE_IS_ELECTORAL[mode]) {
+        expect(await count('campaign_person_facts', f.tenant_id)).toBeGreaterThan(0);
+      } else {
+        expect(await count('campaign_person_facts', f.tenant_id)).toBe(0);
+      }
       expect(await count('campaign_subscriptions', f.tenant_id)).toBeGreaterThan(0);
     });
 

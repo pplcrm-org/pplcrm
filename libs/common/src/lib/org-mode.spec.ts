@@ -47,24 +47,35 @@ describe('org-mode', () => {
   });
 
   /**
-   * The regression guard. `office` is the default mode, so an existing workspace and
-   * a plain signup both land on it — its wording and its module set must stay
-   * byte-identical to what shipped before modes existed. If one of these fails,
-   * introducing a mode changed the product for everyone who never asked for one.
+   * `office` is the default mode, so an existing workspace and a plain signup both land on
+   * it. It is no longer byte-identical to the pre-modes product — an office starts with
+   * Donations off and calls canvassing "Door knocking" — so what is guarded here is the part
+   * that still must not move for an existing workspace: the modules it can reach.
+   *
+   * Donations-off is safe for existing workspaces ONLY because
+   * `2026-07-29-office-mode-differentiation.ts` stamps `{donations: true}` into their sparse
+   * override map. Turning another default off without that backfill removes a nav entry from
+   * every workspace that predates modes — assert the pairing here, not just the value.
    */
-  describe('the default mode is today’s product', () => {
-    it('uses the shipped sidebar strings', () => {
+  describe('the default mode', () => {
+    it('keeps every module an existing workspace uses reachable by default', () => {
+      for (const id of OPTIONAL_MODULES.filter((m) => m !== 'donations')) {
+        expect(ORG_MODE_MODULE_DEFAULTS[DEFAULT_ORG_MODE][id], id).toBe(true);
+      }
+    });
+
+    /** The one deliberate exception — an office does not fundraise; its association does. */
+    it('starts a constituency office without donations', () => {
+      expect(ORG_MODE_MODULE_DEFAULTS[DEFAULT_ORG_MODE].donations).toBe(false);
+    });
+
+    /** Off by default, but still nameable — a user who turns it back on needs a label. */
+    it('still names every term, including the modules it starts with off', () => {
       expect(ORG_MODE_TERMS[DEFAULT_ORG_MODE]).toEqual({
-        'nav.canvassing': 'Canvassing',
+        'nav.canvassing': 'Door knocking',
         'nav.deliveries': 'Deliveries',
         'nav.donations': 'Donations',
       });
-    });
-
-    it('leaves every optional module on', () => {
-      for (const id of OPTIONAL_MODULES) {
-        expect(ORG_MODE_MODULE_DEFAULTS[DEFAULT_ORG_MODE][id], id).toBe(true);
-      }
     });
 
     it('still seeds the demo dataset', () => {

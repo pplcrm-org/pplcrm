@@ -76,12 +76,16 @@ export type TermKey = (typeof TERM_KEYS)[number];
  * Total, not partial: every mode supplies every key. A missing string is a compile
  * error rather than a runtime hole, so no consumer needs a `??` fallback chain.
  *
- * The `office` column MUST stay equal to the shipped sidebar strings — it is the
- * default mode, so it is also the regression guard (asserted in org-mode.spec.ts).
+ * `office` used to be byte-identical to the shipped pre-modes sidebar, as the default
+ * mode's regression guard. It deliberately is not any more: "Canvassing" is electoral
+ * vote-ID language, and a constituency office knocks year-round without an election on.
+ * The guard that replaced it is the migration that stamps every pre-existing workspace's
+ * module overrides (2026-07-29-office-mode-differentiation.ts) — wording may change under
+ * an existing workspace, but its sidebar CONTENTS may not.
  */
 export const ORG_MODE_TERMS: Record<OrgMode, Record<TermKey, string>> = {
   office: {
-    'nav.canvassing': 'Canvassing',
+    'nav.canvassing': 'Door knocking',
     'nav.deliveries': 'Deliveries',
     'nav.donations': 'Donations',
   },
@@ -115,12 +119,22 @@ export const OPTIONAL_MODULES = ['canvassing', 'deliveries', 'donations', 'volun
 export type ModuleId = (typeof OPTIONAL_MODULES)[number];
 
 /**
- * Where each mode starts. `office` and `campaign` are all-on, which is exactly
- * today's behaviour — introducing modes must not change what an existing or default
- * workspace sees.
+ * Where each mode starts.
+ *
+ * `office` starts with donations OFF: a publicly-funded constituency office does not
+ * fundraise — the riding association / EDA does, and it is a separate legal entity with
+ * its own books. An office that also runs its association's finances turns Donations back
+ * on in Workspace → Modules; nothing is deleted or unreachable either way.
+ *
+ * BEWARE, `office` is `DEFAULT_ORG_MODE`: every workspace created before modes existed has
+ * no `workspace.mode` row and resolves here. Because the override map is SPARSE
+ * (`isModuleEnabled`), flipping a default to false silently removes the nav entry from
+ * every one of those workspaces. `2026-07-29-office-mode-differentiation.ts` stamps
+ * `{donations: true}` into their overrides for exactly that reason. Flip another default
+ * and you owe the same backfill.
  */
 export const ORG_MODE_MODULE_DEFAULTS: Record<OrgMode, Record<ModuleId, boolean>> = {
-  office: { canvassing: true, deliveries: true, donations: true, volunteerAccess: true },
+  office: { canvassing: true, deliveries: true, donations: false, volunteerAccess: true },
   campaign: { canvassing: true, deliveries: true, donations: true, volunteerAccess: true },
   nonprofit: { canvassing: false, deliveries: false, donations: true, volunteerAccess: true },
   church: { canvassing: false, deliveries: false, donations: true, volunteerAccess: true },
@@ -156,9 +170,14 @@ export function parseModuleOverrides(value: unknown): Partial<Record<ModuleId, b
 }
 
 /**
- * Whether a mode runs elections — the only thing that justifies the campaign-flavoured starter
- * vocabulary ("new to riding", "lawn sign location", the yard-sign request and issues-survey
- * forms).
+ * Whether a mode runs elections. Exactly one question, asked in three places: whether a person
+ * carries a support level and a voting status (`person-campaign-facts`), whether the Campaigns
+ * settings section — which is where you add and archive ELECTION contexts — appears at all, and
+ * whether signup seeds the electoral starter vocabulary ("new to riding", the issues survey).
+ *
+ * It is NOT "is this a campaign". Lawn signs and the yard-sign request form used to hang off this
+ * flag, which handed a constituency office a sign operation it has no candidate for; they now live
+ * in the campaign column of `MODE_EXTRA_TAGS` / `MODE_STARTER_FORMS` (backend onboarding-seed.ts).
  *
  * Kept apart from ORG_MODE_SEEDS_DEMO below on purpose. The two used to be one flag, which was
  * fine while only electoral modes had a demo dataset; once a church seeds a demo workspace, one

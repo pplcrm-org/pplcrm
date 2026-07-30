@@ -1,12 +1,17 @@
 /**
- * The hand-curated demo dataset for the ELECTORAL modes (office, campaign).
+ * The hand-curated demo dataset for `campaign` mode.
  *
  * One of several — see `demo-datasets.ts` for the per-mode registry and
  * `demo-data-types.ts` for the shapes and the ground rules every dataset obeys.
  *
- * This is a fictional municipal campaign in Ottawa: wards, turfs, lawn signs and an issues
- * survey. It is deliberately NOT the dataset for a church or a non-profit, whose signups hide
- * canvassing and deliveries and whose starter vocabulary never contains "lawn sign location".
+ * This is a fictional municipal campaign in Ottawa: wards, turfs, lawn signs, a donor ledger and
+ * an issues survey. It is deliberately NOT the dataset for a church or a non-profit, whose signups
+ * hide canvassing and deliveries and whose starter vocabulary never contains "lawn sign location".
+ *
+ * `office` mode DERIVES from this file rather than sharing it (see demo-data-office.ts): the same
+ * people at the same addresses, with casework in place of the sign operation and no donor ledger.
+ * Many of the consts below are exported for exactly that — renaming one is a compile error there,
+ * which is the intent.
  */
 
 import type {

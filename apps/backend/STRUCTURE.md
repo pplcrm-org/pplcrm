@@ -28,6 +28,7 @@ apps/
           2026-07-28-zz-companion-join-codes.ts
           2026-07-28-zzz-street-claims-organizer.ts
           2026-07-28-zzzz-emails-preview-text.ts
+          2026-07-29-office-mode-differentiation.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -217,6 +218,7 @@ apps/
             demo-attachment-assets.ts
             demo-data-church.ts
             demo-data-nonprofit.ts
+            demo-data-office.ts
             demo-data-places.ts
             demo-data-types.ts
             demo-datasets.ts

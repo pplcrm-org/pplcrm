@@ -162,7 +162,8 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         kind: 'list',
         items: [
           '**Organization**: your name, contact details, and mailing address, plus the settings everyone sees the effect of — **time zone**, **currency**, **date format**, and the **default theme** for people who have not picked their own. Time zone is the one worth setting first: it decides what “9am” means for service levels and working hours, and which day a date belongs to across the app. Currency is used for donations, pledges, and event pricing — both what a donor is charged and what you see.',
-          '**Campaigns**: your permanent office context and any election campaigns — create and archive them, switch which one you (as an admin) are working in, and read how user assignment works. See [Campaigns and contexts](/help/campaigns-contexts).',
+          '**Modules**: what kind of organization this is — **Constituency office**, **Political campaign**, **Non-profit**, or **Church** — and which optional modules (Canvassing, Deliveries, Donations, Approvals) appear in your sidebar. The organization type only picks the wording and the starting set: a constituency office starts without **Donations**, because a publicly funded office does not fundraise — its riding association does, on separate books. Turn any module back on here and it reappears immediately. Turning one off never deletes anything, and never blocks a link you already have.',
+          '**Campaigns**: your permanent office context and any election campaigns — create and archive them, switch which one you (as an admin) are working in, and read how user assignment works. This section appears for organizations that run elections (a constituency office or a campaign). See [Campaigns and contexts](/help/campaigns-contexts).',
           '**Teams & access**: default role for invitations and the MFA requirement.',
           '**Data & duplicates**: maintenance for the address matching behind duplicate detection. Recomputing address fingerprints is worth doing if your addresses were imported oddly and duplicates are being missed; it is available once a month.',
           '**Communications**: default from-name and from-address (verified senders only), reply-to, the newsletter footer disclaimer, and double opt-in for web-form subscribers.',
@@ -360,6 +361,12 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         tone: 'info',
         title: 'The office cannot be archived or deleted',
         text: 'It is the permanent workspace. Election campaigns cannot be deleted either. Archive them instead, so their history and attribution stay intact.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Only for organizations that run elections',
+        text: 'Election campaigns are offered to constituency offices and political campaigns. If your workspace is set to Non-profit or Church under [Workspace → Modules](/workspace/modules), the Campaigns section is hidden — you still have the one permanent context underneath, which is simply your workspace. Change the organization type there if that is wrong.',
       },
     ],
   },

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { ORG_MODES, ORG_MODE_IS_ELECTORAL } from '../../../../../../libs/common/src';
+import { ORG_MODES, ORG_MODE_IS_ELECTORAL, ORG_MODE_MODULE_DEFAULTS } from '../../../../../../libs/common/src';
 import {
   CAMPAIGN_STARTER_TAGS,
+  FUNDRAISING_STARTER_FORMS,
   MODE_ISSUES,
   SHARED_STARTER_TAGS,
+  SIGN_STARTER_TAGS,
   STARTER_ISSUES,
   STARTER_TAGS,
+  fundraisingFormsFor,
   starterFormsFor,
   starterTagsFor,
 } from './onboarding-seed';
@@ -17,11 +20,13 @@ import {
  * `modules/demo/demo-datasets.spec.ts`, next to the datasets it checks.
  */
 describe('starter vocabulary', () => {
-  it('keeps STARTER_TAGS as the full electoral set', () => {
+  it('keeps STARTER_TAGS as the widest (campaign) set', () => {
     expect(STARTER_TAGS.map((t) => t.name)).toEqual([
       ...SHARED_STARTER_TAGS.map((t) => t.name),
       ...CAMPAIGN_STARTER_TAGS.map((t) => t.name),
+      ...SIGN_STARTER_TAGS.map((t) => t.name),
     ]);
+    expect(starterTagsFor('campaign').map((t) => t.name)).toEqual(STARTER_TAGS.map((t) => t.name));
   });
 
   it('gives electoral modes the campaign tags and withholds them from the rest', () => {
@@ -32,6 +37,22 @@ describe('starter vocabulary', () => {
           ORG_MODE_IS_ELECTORAL[mode],
         );
       }
+    }
+  });
+
+  /**
+   * A lawn sign needs a candidate, not merely an election: a constituency office runs no sign
+   * operation, so the tag and the yard-sign request form are campaign-only even though the office
+   * is electoral. This is the distinction that used to be missing.
+   */
+  it('keeps the sign operation to campaign mode', () => {
+    for (const mode of ORG_MODES) {
+      const names = new Set(starterTagsFor(mode).map((t) => t.name));
+      const slugs = new Set(starterFormsFor(mode).map((f) => f.slug));
+      for (const tag of SIGN_STARTER_TAGS) {
+        expect(names.has(tag.name), `${mode} tag "${tag.name}"`).toBe(mode === 'campaign');
+      }
+      expect(slugs.has('yard-sign-request'), `${mode} yard-sign form`).toBe(mode === 'campaign');
     }
   });
 
@@ -52,10 +73,40 @@ describe('starter vocabulary', () => {
   it('gives every mode the forms a workspace cannot function without', () => {
     for (const mode of ORG_MODES) {
       const slugs = new Set(starterFormsFor(mode).map((f) => f.slug));
-      for (const slug of ['volunteer-signup', 'newsletter-sign-up', 'one-time-donation']) {
+      for (const slug of ['volunteer-signup', 'newsletter-sign-up']) {
         expect(slugs.has(slug), `${mode} does not seed the "${slug}" starter form`).toBe(true);
       }
     }
+  });
+
+  /**
+   * The giving pages follow the mode's own Donations default, so a workspace never opens with a
+   * fundraising form parked on a page its sidebar does not link to.
+   */
+  it('seeds the giving pages exactly for the modes that fundraise', () => {
+    for (const mode of ORG_MODES) {
+      const slugs = new Set(starterFormsFor(mode).map((f) => f.slug));
+      const fundraises = ORG_MODE_MODULE_DEFAULTS[mode].donations;
+      for (const slug of ['one-time-donation', 'recurring-donation', 'fundraising-pledge']) {
+        expect(slugs.has(slug), `${mode} (donations=${fundraises}) form "${slug}"`).toBe(fundraises);
+      }
+    }
+  });
+
+  /** Renaming a giving page is a wording change; its slug is a public URL and must not move. */
+  it('renames the giving pages per mode without moving a slug', () => {
+    const canonical = FUNDRAISING_STARTER_FORMS.map((f) => f.slug);
+    for (const mode of ORG_MODES.filter((m) => ORG_MODE_MODULE_DEFAULTS[m].donations)) {
+      expect(
+        fundraisingFormsFor(mode).map((f) => f.slug),
+        mode,
+      ).toEqual(canonical);
+    }
+    expect(fundraisingFormsFor('church').map((f) => f.name)).toEqual([
+      'Monthly giving',
+      'Give online',
+      'Giving pledge',
+    ]);
   });
 
   it('gives every mode a non-empty issue vocabulary', () => {

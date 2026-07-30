@@ -3,6 +3,7 @@ import type { OrgMode } from '../../../../../../libs/common/src';
 import type { DemoDataset } from './demo-data-types';
 import { CHURCH_DEMO_DATASET } from './demo-data-church';
 import { NONPROFIT_DEMO_DATASET } from './demo-data-nonprofit';
+import { OFFICE_DEMO_DATASET } from './demo-data-office';
 import { CAMPAIGN_DEMO_DATASET } from './demo-seed-data';
 
 /**
@@ -17,7 +18,10 @@ import { CAMPAIGN_DEMO_DATASET } from './demo-seed-data';
  * agree — flipping one without the other is caught there, not in production.
  */
 export const DEMO_DATASETS: Record<OrgMode, DemoDataset | null> = {
-  office: CAMPAIGN_DEMO_DATASET,
+  // Office and campaign share a rolodex, not a workspace: the office dataset reuses the same
+  // people and addresses (see demo-data-office.ts) but replaces the sign drops with casework and
+  // seeds no donor ledger, because office mode starts with Donations off.
+  office: OFFICE_DEMO_DATASET,
   campaign: CAMPAIGN_DEMO_DATASET,
   nonprofit: NONPROFIT_DEMO_DATASET,
   church: CHURCH_DEMO_DATASET,

@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { ORG_MODES, ORG_MODE_IS_ELECTORAL, ORG_MODE_MODULE_DEFAULTS, ORG_MODE_SEEDS_DEMO } from '@common';
 import type { OrgMode } from '@common';
 
-import { CAMPAIGN_STARTER_TAGS, MODE_ISSUES, starterFormsFor, starterTagsFor } from '../auth/onboarding-seed';
+import {
+  CAMPAIGN_STARTER_TAGS,
+  MODE_ISSUES,
+  SIGN_STARTER_TAGS,
+  starterFormsFor,
+  starterTagsFor,
+} from '../auth/onboarding-seed';
 import { DEMO_DATASETS } from './demo-datasets';
 import type { DemoDataset } from './demo-data-types';
 
@@ -83,7 +89,7 @@ describe('demo datasets', () => {
        */
       it('uses electoral vocabulary only in electoral modes', () => {
         if (ORG_MODE_IS_ELECTORAL[mode]) return;
-        const electoral = new Set(CAMPAIGN_STARTER_TAGS.map((t) => t.name));
+        const electoral = new Set([...CAMPAIGN_STARTER_TAGS, ...SIGN_STARTER_TAGS].map((t) => t.name));
         const referenced = [
           ...dataset.households.flatMap((h) => h.tags ?? []),
           ...dataset.persons.flatMap((p) => p.tags ?? []),
@@ -105,6 +111,10 @@ describe('demo datasets', () => {
         if (!defaults.deliveries) {
           expect(dataset.deliveryRequests, `${mode} hides deliveries but its dataset seeds requests`).toHaveLength(0);
           expect(dataset.deliveryRoutes, `${mode} hides deliveries but its dataset seeds routes`).toHaveLength(0);
+        }
+        if (!defaults.donations) {
+          expect(dataset.donations, `${mode} hides donations but its dataset seeds gifts`).toHaveLength(0);
+          expect(dataset.pledges, `${mode} hides donations but its dataset seeds pledges`).toHaveLength(0);
         }
       });
 

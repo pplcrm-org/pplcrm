@@ -161,6 +161,25 @@ export const DEMO_ATTACHMENT_ASSETS = {
       ]),
   },
 
+  // Constituency office workspace.
+  'sidewalk-hazard': {
+    filename: 'sidewalk-hazard.png',
+    content_type: 'image/png',
+    build: () => buildPng(320, 240, [0x9a, 0x9d, 0xa0]),
+  },
+  'office-hours-hold': {
+    filename: 'office-hours-hold.ics',
+    content_type: 'text/calendar',
+    build: () =>
+      ics(
+        'demo-office-hours@pplcrm.example',
+        'Mobile office hours (hold)',
+        'Bytown Coffee Roasters',
+        '20260226T230000Z',
+        '20260227T010000Z',
+      ),
+  },
+
   // Nonprofit workspace.
   'hamper-referrals': {
     filename: 'hamper-referrals.csv',
