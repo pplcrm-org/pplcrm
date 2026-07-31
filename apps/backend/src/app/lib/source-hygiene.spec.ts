@@ -45,7 +45,9 @@ function allSourceFiles(): string[] {
 }
 
 describe('source hygiene', () => {
-  it('no source file contains a NUL (0x00) byte', () => {
+  // ~0.2s alone, but under the full suite 140 spec files compete for I/O and the
+  // default 5s timeout has been exceeded — the generous cap keeps the guard non-flaky.
+  it('no source file contains a NUL (0x00) byte', { timeout: 60_000 }, () => {
     const files = allSourceFiles();
     expect(files.length).toBeGreaterThan(0);
 
