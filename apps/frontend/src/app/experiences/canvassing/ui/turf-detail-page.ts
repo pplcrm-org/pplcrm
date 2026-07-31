@@ -8,6 +8,7 @@ import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.servic
 import { Icon } from '@icons/icon';
 import { PcMap } from '@uxcommon/components/map/map';
 import type { PcMapMarker, PcMapPolygon, PcMapVariant } from '@uxcommon/components/map/map-types';
+import { RowActions } from '@uxcommon/components/row-actions/row-actions';
 import { StatusBadge, type PcStatusType } from '@uxcommon/components/status-badge/status-badge';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { RecordActivities } from '@experiences/activity/ui/record-activities/record-activities';
@@ -32,6 +33,7 @@ import {
   turfRenameIntent,
 } from './turf-vocabulary';
 import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
+import { JoinCodesService } from '../../volunteer-access/services/join-codes-service';
 import { OrgModeService } from '../../../services/org-mode.service';
 
 type TurfStatus = TurfDetail['status'];
@@ -72,13 +74,24 @@ const DOOR_FILTERS: { key: DoorFilter; label: string }[] = [
  */
 @Component({
   selector: 'pc-turf-detail-page',
-  imports: [DatePipe, Icon, PcMap, RouterLink, StatusBadge, RecordActivities, AssignTurfDialog, JoinCodePanel],
+  imports: [
+    DatePipe,
+    Icon,
+    PcMap,
+    RouterLink,
+    RowActions,
+    StatusBadge,
+    RecordActivities,
+    AssignTurfDialog,
+    JoinCodePanel,
+  ],
   templateUrl: './turf-detail-page.html',
 })
 export class TurfDetailPage {
   public readonly id = input.required<string>();
 
   private readonly svc = inject(CanvassingService);
+  private readonly joinCodes = inject(JoinCodesService);
   private readonly alerts = inject(AlertService);
   private readonly breadcrumbs = inject(BreadcrumbsService);
   private readonly confirm = inject(ConfirmDialogService);
@@ -92,6 +105,8 @@ export class TurfDetailPage {
   protected readonly doorFilter = signal<DoorFilter>('all');
   protected readonly rosterOpen = signal(false);
   protected readonly qrOpen = signal(false);
+  /** Guards the header button while the code is fetched or created — a double click must not mint two codes. */
+  protected readonly copyingJoinLink = signal(false);
 
   protected readonly statusLabel = TURF_STATUS_LABEL;
   protected readonly statusHint = TURF_STATUS_HINT;
@@ -220,6 +235,32 @@ export class TurfDetailPage {
     }
     if (!phrase) {
       this.alerts.showWarn('They have no email or mobile on file — paste them the copied link yourself');
+    }
+  }
+
+  /**
+   * The join link is the same URL the QR encodes (/j/:code, scoped to this turf).
+   * Copying it from the header covers the ask that arrives by text or email without
+   * opening the QR dialog; when the turf has no live code yet, one is created first,
+   * exactly as the QR panel would.
+   */
+  protected async copyJoinLink(): Promise<void> {
+    const d = this.detail();
+    if (!d) return;
+    this.copyingJoinLink.set(true);
+    try {
+      const rows = await this.joinCodes.getForCampaign();
+      const code =
+        rows.find((r) => r.status === 'active' && (r.turf_id ?? null) === d.id) ??
+        (await this.joinCodes.create({ turf_id: d.id, label: d.name }));
+      await navigator.clipboard.writeText(code.url).catch(() => undefined);
+      this.alerts.showSuccess(
+        'Join link copied. Anyone who opens it can sign up for this turf; they still need your approval.',
+      );
+    } catch {
+      this.alerts.showError('Could not get the join link. Try again');
+    } finally {
+      this.copyingJoinLink.set(false);
     }
   }
 

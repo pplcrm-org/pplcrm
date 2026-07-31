@@ -63,6 +63,7 @@ apps/
             job-handlers.ts
             job-payloads.ts
             reschedule.ts
+            stripe-event-order.ts
             webhook-worker.ts
             worker.ts
           mail/
@@ -103,11 +104,13 @@ apps/
           fastify.types.ts
           hibp.ts
           html-escape.ts
+          ndjson.ts
           oauth-state.ts
           outbound-url-guard.ts
           password-hash.ts
           person-public-id.ts
           profile-preferences.ts
+          public-route-errors.ts
           public-tenant.ts
           rate-limiter.ts
           rest-auth.ts
