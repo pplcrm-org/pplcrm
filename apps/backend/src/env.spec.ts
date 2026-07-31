@@ -27,6 +27,15 @@ function parseWith(overrides: Record<string, string | undefined> = {}): z.infer<
   return envSchema.parse({ ...VALID_PRODUCTION_ENV, ...overrides });
 }
 
+describe('envSchema', () => {
+  // BUILD_SHA is baked into the production image by CI (deploy.yml --build-arg) and reported
+  // by /healthz so the post-deploy smoke test can verify which build is actually serving.
+  it('defaults BUILD_SHA to dev and passes a provided value through', () => {
+    expect(parseWith().BUILD_SHA).toBe('dev');
+    expect(parseWith({ BUILD_SHA: 'abc1234' }).BUILD_SHA).toBe('abc1234');
+  });
+});
+
 describe('assertProductionSecrets', () => {
   afterEach(() => {
     vi.unstubAllEnvs();

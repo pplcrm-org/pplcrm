@@ -4,6 +4,12 @@ import { z } from 'zod';
 export const envSchema = z.object({
   HOST: z.string().default('localhost'),
   PORT: z.coerce.number().default(3000),
+  // Git commit SHA of the running build. Baked into the production image by the Docker build
+  // (deploy.yml passes --build-arg BUILD_SHA=<github.sha>; the Dockerfile turns it into an ENV).
+  // /healthz reports it so the post-deploy smoke test can verify the revision actually serving
+  // traffic is the one just deployed — not an old revision left up by a failed single-revision
+  // rollover. 'dev' everywhere outside a CI-built image.
+  BUILD_SHA: z.string().optional().default('dev'),
   DB_USER: z.string().min(1, 'DB_USER is required'),
   DB_NAME: z.string().min(1, 'DB_NAME is required'),
   DB_PASSWORD: z.string().min(1, 'DB_PASSWORD is required'),
@@ -265,6 +271,7 @@ assertProductionSecrets(parsedEnv);
 export const env = {
   host: parsedEnv.HOST,
   port: parsedEnv.PORT,
+  buildSha: parsedEnv.BUILD_SHA,
   db: {
     user: parsedEnv.DB_USER,
     database: parsedEnv.DB_NAME,
