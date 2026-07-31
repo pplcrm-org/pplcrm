@@ -451,6 +451,12 @@ export class WebhookEventWorker {
             const invoiceId = String(stripeObj.id);
             const amountPaidCents = Number(stripeObj.amount_paid || 0);
 
+            // NOTE: unscoped by design — invoice.payment_succeeded is not Connect-gated, so
+            // eventRecord.tenant_id may be null here (a platform billing invoice finds no pledge
+            // and falls through). stripe_subscription_id is globally unique
+            // (donation_pledges_stripe_subscription_id_key), and every write below is scoped by
+            // the pledge row's own tenant_id.
+            // eslint-disable-next-line local/no-unscoped-db-query
             const pledge = await this.db
               .selectFrom('donation_pledges')
               .selectAll()
@@ -459,6 +465,9 @@ export class WebhookEventWorker {
 
             if (pledge && amountPaidCents > 0) {
               // Avoid duplicate recording (invoice id as session id key)
+              // NOTE: unscoped by design — dedupe probe keyed on the globally-unique Stripe
+              // invoice id (donations_stripe_session_id_key UNIQUE); reads only the row id.
+              // eslint-disable-next-line local/no-unscoped-db-query
               const alreadyRecorded = await this.db
                 .selectFrom('donations')
                 .select('id')
@@ -500,6 +509,11 @@ export class WebhookEventWorker {
             const nextBillingDate = periodEndUnix ? new Date(periodEndUnix * 1000).toISOString().slice(0, 10) : null;
 
             if (mappedStatus) {
+              // NOTE: unscoped by design — status sync keyed on the globally-unique
+              // stripe_subscription_id (donation_pledges_stripe_subscription_id_key UNIQUE);
+              // eventRecord.tenant_id is null when the connected-account row is missing, so a
+              // tenant filter would silently drop legitimate updates.
+              // eslint-disable-next-line local/no-unscoped-db-query
               await this.db
                 .updateTable('donation_pledges')
                 .set({
@@ -513,6 +527,9 @@ export class WebhookEventWorker {
             }
           } else if (isSubscriptionDeleted) {
             const subscriptionId = String(stripeObj.id);
+            // NOTE: unscoped by design — same globally-unique stripe_subscription_id key as the
+            // status-sync branch above.
+            // eslint-disable-next-line local/no-unscoped-db-query
             await this.db
               .updateTable('donation_pledges')
               .set({ status: 'cancelled', cancelled_at: new Date(), updated_at: new Date() })
@@ -520,6 +537,9 @@ export class WebhookEventWorker {
               .execute();
           } else if (isInvoiceFailed) {
             const subscriptionId = String(stripeObj.subscription);
+            // NOTE: unscoped by design — same globally-unique stripe_subscription_id key as the
+            // status-sync branch above.
+            // eslint-disable-next-line local/no-unscoped-db-query
             await this.db
               .updateTable('donation_pledges')
               .set({ status: 'past_due', updated_at: new Date() })

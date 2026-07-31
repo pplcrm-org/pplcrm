@@ -505,6 +505,9 @@ export class BackgroundJobWorker {
 
       // Clean up/timeout data exports stuck in pending/processing for more than 1 hour
       const staleExportTime = new Date(Date.now() - 60 * 60 * 1000); // 1 hour
+      // NOTE: unscoped by design — queue-hygiene sweep over EVERY tenant's stuck exports; it
+      // reads only ids (plus the tenant_id used to scope the per-export job cleanup below).
+      // eslint-disable-next-line local/no-unscoped-db-query
       const staleExports = await this.db
         .selectFrom('data_exports')
         .select(['id', 'tenant_id'])
@@ -514,6 +517,9 @@ export class BackgroundJobWorker {
 
       if (staleExports.length > 0) {
         const ids = staleExports.map((e) => e.id);
+        // NOTE: unscoped by design — the ids come from the sweep above and are globally-unique
+        // primary keys; the update deliberately spans tenants (same queue-hygiene pass).
+        // eslint-disable-next-line local/no-unscoped-db-query
         await this.db
           .updateTable('data_exports')
           .set({

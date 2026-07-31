@@ -48,7 +48,9 @@ interface FailureGroup {
  *      what makes the external probe catch a wedged worker while the API stays healthy.
  *
  * All queries here are cross-tenant by design (this is a platform-level operator digest, not a
- * tenant surface) — lib/jobs/handlers is outside the local/no-unscoped-db-query rule's scope.
+ * tenant surface). The local/no-unscoped-db-query rule now covers lib/** too; these queries pass
+ * because the queue/ops tables they touch (background_jobs, webhook_events, ops_heartbeats,
+ * tenants) are on its ignoreTables list.
  */
 export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
   const now = new Date();

@@ -102,12 +102,17 @@ it was mutation-tested (simulating a leak makes it fail), so a green run here is
 
 - Rule source: `tools/eslint-rules/rules/no-unscoped-db-query.cjs`
 - Registered as `local/no-unscoped-db-query` in `tools/eslint-rules/index.cjs`
-- **Only enabled for backend module files:** `apps/backend/eslint.config.cjs` scopes it to
-  `files: ['**/src/app/modules/**/*.ts']`, `ignores: ['**/*.spec.ts']`, severity `error`.
+- **Enabled for backend module AND lib files:** `apps/backend/eslint.config.cjs` scopes it to
+  `files: ['**/src/app/modules/**/*.ts', '**/src/app/lib/**/*.ts']`,
+  `ignores: ['**/*.spec.ts', '**/src/app/lib/base.repo.ts']`, severity `error`. (lib/\*\* was added
+  2026-07-31: the background workers, job handlers, and mail services live there, write donations
+  and send newsletters, and the RLS backstop is inert there — workers never bind the per-request
+  tenant context, see `lib/tenant-context.ts`.)
 
-So the rule does **not** run on: `apps/backend/src/app/lib/base.repo.ts` (outside `modules/**`),
-`*.spec.ts`, migrations, or any frontend/common code. Queries in those files get **zero**
-tenant-scope enforcement — they are the manual-review frontier.
+So the rule does **not** run on: `apps/backend/src/app/lib/base.repo.ts` (the generic query
+builder — tenant filtering is the callers' responsibility), `*.spec.ts`, migrations, or any
+frontend/common code. Queries in those files get **zero** tenant-scope enforcement — they are
+the manual-review frontier.
 
 ### Gotcha: plain `eslint` from the repo root does NOT enable this rule
 
@@ -137,7 +142,7 @@ The rule fires when a **single contiguous** method chain:
 Minimal repro that fails `npx nx lint backend`:
 
 ```ts
-// ❌ inside apps/backend/src/app/modules/**  → "Kysely query on 'persons' has no
+// ❌ inside apps/backend/src/app/modules/** or lib/**  → "Kysely query on 'persons' has no
 //    .where('tenant_id', …) filter"
 db.selectFrom('persons').selectAll().execute();
 ```
@@ -210,18 +215,30 @@ apps/backend/src`; most pair the disable with a `NOTE:` explaining where the rea
 ## The ignore-list (allow-list) and why each table is on it
 
 The rule has a built-in default list, but **the enforced list is set by the `ignoreTables`
-config override in `apps/backend/eslint.config.cjs`**, not the default. The live list is 3
+config override in `apps/backend/eslint.config.cjs`**, not the default. The live list is 7
 tables:
 
-| Table       | Why cross-tenant access is intentional                                                                                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `authusers` | Login is by email before any tenant is known. See `passkey.controller.ts` — `.selectFrom('authusers').where('email', '=', …)`. It _selects_ `tenant_id` to establish scope for everything after. |
-| `sessions`  | Sign-out / session lookup is by `session_id` hash; the token carries no tenant.                                                                                                                  |
-| `tenants`   | The tenant table itself is looked up by `id`; scoping it by `tenant_id` is circular.                                                                                                             |
+| Table             | Why cross-tenant access is intentional                                                                                                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `authusers`       | Login is by email before any tenant is known. See `passkey.controller.ts` — `.selectFrom('authusers').where('email', '=', …)`. It _selects_ `tenant_id` to establish scope for everything after.                                      |
+| `sessions`        | Sign-out / session lookup is by `session_id` hash; the token carries no tenant.                                                                                                                                                       |
+| `tenants`         | The tenant table itself is looked up by `id`; scoping it by `tenant_id` is circular.                                                                                                                                                  |
+| `rate_limits`     | Abuse counters keyed by opaque caller-namespaced strings (an IP, an email, a tenant); no `tenant_id` column, and the limiter deliberately runs outside any tenant context. Added 2026-07-27.                                          |
+| `background_jobs` | The shared job queue. The worker claims/settles/recovers rows across ALL tenants by design, keyed by globally-unique row id; `tenant_id` is nullable (cron singletons have none). Added 2026-07-31 with the lib/\*\* scope expansion. |
+| `webhook_events`  | The Stripe event queue. Rows are ingested before tenant resolution (`tenant_id` nullable, filled from the connected account when resolvable) and the drain worker claims/settles by globally-unique row id. Added 2026-07-31.         |
+| `ops_heartbeats`  | Platform dead-man's-switch state for `/healthz/worker`; the table has no `tenant_id` column at all. Added 2026-07-31.                                                                                                                 |
 
 The pattern: a table is safe to allow-list only if its natural key is **globally unique and not
-tenant-derived** (email, session hash, the tenant id itself). If the table has a `tenant_id`
+tenant-derived** (email, session hash, the tenant id itself, a queue row id) — or it is pure
+platform infrastructure with no per-tenant business data. If the table has a `tenant_id`
 column and queries key on it, it does not belong on the list.
+
+Note the queue-table tradeoff accepted on 2026-07-31: `background_jobs` and `webhook_events` DO
+have a (nullable) `tenant_id`, and allow-listing them silences the rule for module code too —
+e.g. `duplicates.repo.ts#getLastSweepAt`. That was judged acceptable because every query on them
+is queue machinery keyed by row id / status, and the rows' business payloads are only acted on
+by handlers that scope their own queries. A tenant-facing feature that LISTS a tenant's jobs
+must still hand-add the `tenant_id` filter — the linter will not remind you.
 
 ### Bearer-credential lookups: intentional, per-method, NOT allow-listed
 
@@ -268,14 +285,15 @@ schema of an allow-listed table, re-justify or remove its entry in the same PR.
 ## Adding a table to the ignore-list — a security review, not a lint fix
 
 Adding a table silences the rule for **every** query against it, forever, everywhere in
-`modules/**`. Before editing `ignoreTables` in `apps/backend/eslint.config.cjs`:
+`modules/**` and `lib/**`. Before editing `ignoreTables` in `apps/backend/eslint.config.cjs`:
 
 1. Prove the table has no `tenant_id` column, OR that every legitimate query genuinely must span
    tenants (auth/session/tenant-lookup shaped). If the table has a `tenant_id`, the answer is
    almost always "scope the query," not "allow-list the table."
 2. Prefer the narrowest tool. A one-off intentional cross-tenant query should be a per-line
    `// eslint-disable-next-line local/no-unscoped-db-query` **with a `// NOTE:` proving safety**
-   (see the 11 existing sites) — not a global allow-list entry.
+   (see the ~24 existing sites — the 2026-07-31 lib/\*\* expansion added the cron-scan and
+   Stripe-subscription-id ones) — not a global allow-list entry.
 3. Add a one-line justification in the config comment block above `ignoreTables` in the same style
    as the existing entries, naming the safe key. An entry with no rationale is a review reject.
 4. Get a second reviewer. This is the one lint change where "it makes the error go away" is exactly
@@ -284,9 +302,9 @@ Adding a table silences the rule for **every** query against it, forever, everyw
 After changing the list, re-run `npx nx lint backend` and confirm nothing _else_ newly passes that
 should not have.
 
-**Known baseline:** `npx nx lint backend` currently has pre-existing `no-unscoped-db-query`
-errors that predate your change — see the "Heads-up" note in `pplcrm-quality-gate` for the
-current list before assuming your diff caused them.
+**Known baseline:** as of 2026-07-31 (the lib/\*\* scope expansion) `npx nx lint backend` passes
+with zero `no-unscoped-db-query` errors. If you see one, your diff caused it — but check the
+"Heads-up" note in `pplcrm-quality-gate` in case the baseline moved again.
 
 ## Non-goals
 

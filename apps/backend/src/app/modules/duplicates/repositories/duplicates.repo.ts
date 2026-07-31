@@ -32,8 +32,8 @@ export class DuplicatesRepo extends BaseRepository<'potential_duplicates'> {
    * `lib/jobs/handlers/maintenance.handlers.ts`), so there is no tenant_id to scope this by. */
   public async getLastSweepAt(): Promise<Date | null> {
     // NOTE: unscoped by design — this is the completion timestamp of the single global cron
-    // run that sweeps every tenant in one job, not tenant-specific data.
-    // eslint-disable-next-line local/no-unscoped-db-query
+    // run that sweeps every tenant in one job, not tenant-specific data. (No disable needed:
+    // background_jobs is on the rule's ignoreTables list.)
     const lastJob = await this.db
       .selectFrom('background_jobs')
       .select(['updated_at'])

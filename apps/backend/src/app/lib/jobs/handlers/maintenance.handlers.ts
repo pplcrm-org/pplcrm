@@ -169,6 +169,9 @@ export async function handleRecomputeAllDuplicates(db: Kysely<Models>): Promise<
   if (lastRunTime) {
     tenantsToRecompute = new Set<string>();
     for (const table of ['persons', 'households', 'companies'] as const) {
+      // NOTE: unscoped by design — this cron probe returns only the DISTINCT tenant_ids with a
+      // row changed since the last sweep (no business data), to decide which tenants to recompute.
+      // eslint-disable-next-line local/no-unscoped-db-query
       const changedTenants = await db
         .selectFrom(table)
         .select('tenant_id')

@@ -756,6 +756,9 @@ export async function buildNewsletterAttachments(
  */
 export async function handleProcessScheduledNewsletters(db: Kysely<Models>): Promise<void> {
   const now = new Date();
+  // NOTE: unscoped by design — the cron scans every tenant's scheduled newsletters in one pass;
+  // each row carries the tenant_id that scopes the actual send (sendNewsletter re-checks it).
+  // eslint-disable-next-line local/no-unscoped-db-query
   const due = await db
     .selectFrom('newsletters')
     .select(['id', 'tenant_id', 'name', 'updatedby_id'])
