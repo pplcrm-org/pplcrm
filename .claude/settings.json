@@ -88,6 +88,7 @@
     ],
 
     "allow": [
+      "Bash(tools/quiet.sh*)",
       "Bash(nx *)",
       "Bash(npx nx *)",
       "Bash(npm run *)",
@@ -248,7 +249,19 @@
     },
 
     "// excludedCommands": "Measured 2026-07-30, sandboxed, --skip-nx-cache: Angular builds are 3 green in 14 runs (frontend 0/3, companion 0/3, and 0/3 even with NG_BUILD_MAX_WORKERS=1), vs 8/8 green with CI=1. Cause: lmdb's open() dies silently on SIGABRT/134 under Seatbelt (POSIX named semaphores — an IPC denial no allowWrite fixes), and @angular/build opens that cache lazily OUTSIDE its own try/catch, so stderr is empty and it looks like a code error. CI=1 disables Angular's persistent cache and is the sandbox-preserving alternative when you want one. `nx build backend` is fine sandboxed (2/2, no LMDB) and needs no exclusion. `nx test backend` fails deterministically instead: .env.test is read-denied, so the globalSetup guardrail sees an empty DB_NAME — unsandboxed it is 1340/1340 green. Do NOT allow-read .env.test (it holds JWT_SECRET/SHARED_SECRET), and do NOT widen these globs to bare run-many*/affected*, which would un-sandbox lint and every other project's tests. Full evidence: .claude/skills/pplcrm-quality-gate/SKILL.md.",
+    "// excludedCommands via tools/quiet.sh": "tools/quiet.sh runs a verification command and prints one result line instead of a wall of output (CLAUDE.md §0a). These prefixes must be kept in step with the bare ones below: excludedCommands prefix-matches the command STRING, so wrapping a build in the helper changes what it matches, and without these entries the Angular builds and the backend tests silently drop back into the sandbox and hit the failures documented above.",
     "excludedCommands": [
+      "tools/quiet.sh npx nx build*",
+      "tools/quiet.sh nx build*",
+      "tools/quiet.sh npx nx run *:build*",
+      "tools/quiet.sh npx nx run-many -t build*",
+      "tools/quiet.sh npx nx run-many --target=build*",
+      "tools/quiet.sh npx nx affected -t build*",
+      "tools/quiet.sh npx nx affected --target=build*",
+      "tools/quiet.sh npx nx test backend*",
+      "tools/quiet.sh nx test backend*",
+      "tools/quiet.sh npx nx run backend:test*",
+
       "npx nx build*",
       "nx build*",
       "npx nx run *:build*",

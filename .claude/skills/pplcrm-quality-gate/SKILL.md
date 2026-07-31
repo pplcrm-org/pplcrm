@@ -37,6 +37,8 @@ npx eslint <changed-file-1> <changed-file-2> --report-unused-disable-directives-
 
 If that exits 0, the pre-commit hook's `*.{ts,html}` step will pass. If you touched anything under `apps/backend/src`, also run `npx nx lint backend` — the hook now runs it for you, so a failure there rejects the commit rather than surfacing later. The full CLAUDE.md pipeline (`prettier --write .`, `nx lint frontend`, builds, tests) is still required before a PR; the hook covers formatting, the promise rules, and backend tenant-scoping, but not `nx lint frontend`, the builds, or the test suites.
 
+Run every command on this page through `tools/quiet.sh`, as CLAUDE.md §0a requires — `tools/quiet.sh npx eslint <files> --report-unused-disable-directives-severity=off`. It prints one labelled success/failure line and shows the last 40 lines of output only on failure. Do **not** hand-write a `>"$TMPDIR/x.log" 2>&1 && echo ... || { ...; }` suffix instead: that form prompts for permission on every run, because the `$TMPDIR` expansion, the `&&`/`||` segments and the `{ ...; }` group defeat the `Bash(npx eslint*)`-style prefix rules. Spell the helper exactly `tools/quiet.sh`, which is what the allow rule and the `sandbox.excludedCommands` entries in `.claude/settings.json` match.
+
 ## Claude Code hooks (editor-side, `.claude/settings.json`)
 
 Three hooks run inside Claude Code sessions; scripts live in `tools/claude-hooks/` (not `.claude/hooks/`, which the sandbox denies writes to). They are a convenience layer, **not** a substitute for the git hook — a human editing in another editor gets none of them.
