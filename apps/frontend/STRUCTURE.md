@@ -466,6 +466,7 @@ apps/
         routing/
           public-routes.ts
           route-reuse-strategy.ts
+          stale-bundle.ts
         services/
           api/
             abstract-api.service.ts
