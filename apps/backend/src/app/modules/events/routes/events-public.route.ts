@@ -5,6 +5,7 @@ import { EventsController } from '../controller';
 import { resolveTenantById, resolveTenantFromRequest } from '../../../lib/public-tenant';
 import { checkKeyedSubmissionRateLimit, tenantIdFromOptionalApiKey } from '../../../lib/validate-api-key';
 import { checkRateLimit } from '../../../lib/rate-limiter';
+import { publicClientMessageOf } from '../../../lib/public-route-errors';
 import { AppError } from '../../../errors/app-errors';
 
 const ctrl = new EventsController();
@@ -92,8 +93,10 @@ const eventsPublicRoute: FastifyPluginCallback = (fastify, _, done) => {
       fastify.log.error(err);
       const status = getStatusFromError(err);
       // Client errors carry user-actionable copy; 5xx detail must not leak to the public.
-      const message =
-        status < 500 && err instanceof Error && err.message ? err.message : 'An unexpected error occurred.';
+      // Gate on the error's TYPE, not just its status: a framework error with a sub-500
+      // statusCode is not client copy.
+      const fallback = 'An unexpected error occurred.';
+      const message = status < 500 ? publicClientMessageOf(err, fallback) : fallback;
       return reply.status(status).send({ error: message });
     }
   });

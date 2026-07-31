@@ -1,7 +1,8 @@
+import { TRPCError } from '@trpc/server';
 import { describe, expect, it } from 'vitest';
 
 import { BadRequestError, NotFoundError, UnauthorizedError } from '../errors/app-errors';
-import { publicMessageOf } from './public-route-errors';
+import { publicClientMessageOf, publicMessageOf } from './public-route-errors';
 
 const FALLBACK = 'Unable to load this turf.';
 
@@ -45,5 +46,34 @@ describe('publicMessageOf', () => {
   it('falls back when an AppError has an empty message', () => {
     const empty = Object.assign(new Error(''), { status: 404, code: 'NOT_FOUND' });
     expect(publicMessageOf(empty, FALLBACK)).toBe(FALLBACK);
+  });
+});
+
+describe('publicClientMessageOf', () => {
+  it('passes through a TRPCError with a client-facing code', () => {
+    const soldOut = new TRPCError({ code: 'BAD_REQUEST', message: 'This event is sold out.' });
+    expect(publicClientMessageOf(soldOut, FALLBACK)).toBe('This event is sold out.');
+  });
+
+  it('returns the fallback for an INTERNAL_SERVER_ERROR TRPCError', () => {
+    const internal = new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'kysely: connection terminated' });
+    expect(publicClientMessageOf(internal, FALLBACK)).toBe(FALLBACK);
+  });
+
+  it('returns the fallback for a framework-style error that only carries a statusCode', () => {
+    // e.g. a Fastify body-parse error: 4xx statusCode, but its message is not client copy.
+    const framework = Object.assign(new Error('Unexpected token < in JSON at position 0'), { statusCode: 400 });
+    expect(publicClientMessageOf(framework, FALLBACK)).toBe(FALLBACK);
+  });
+
+  it('returns the fallback for a plain Error (e.g. a raw Postgres/Kysely error)', () => {
+    const dbError = new Error('duplicate key value violates unique constraint "form_submissions_pkey"');
+    expect(publicClientMessageOf(dbError, FALLBACK)).toBe(FALLBACK);
+  });
+
+  it('passes through AppError subclass messages, like publicMessageOf does', () => {
+    expect(publicClientMessageOf(new BadRequestError('Enter a valid email address.'), FALLBACK)).toBe(
+      'Enter a valid email address.',
+    );
   });
 });

@@ -800,7 +800,13 @@ export class CompanionAccessController {
    * screen and not a red toast (§3).
    */
   public async sendJoinCodeToPhone(auth: IAuthKeyPayload, id: string): Promise<JoinCodePhoneSendResult> {
-    checkRateLimit(`companion-organizer-send:${auth.user_id}`, ORGANIZER_SEND_LIMIT, ORGANIZER_SEND_WINDOW_MS);
+    // Durable (Postgres-backed) limiter: this guards a paid Twilio send, so the ceiling must
+    // survive deploys and hold across replicas — same rule as verifyStart above.
+    await checkDurableRateLimit(
+      `companion-organizer-send:${auth.user_id}`,
+      ORGANIZER_SEND_LIMIT,
+      ORGANIZER_SEND_WINDOW_MS,
+    );
 
     const code = await this.joinCodesRepo.findById({ tenant_id: auth.tenant_id, id });
     if (!code) throw new NotFoundError('Join code not found.');

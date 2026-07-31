@@ -179,9 +179,11 @@ describe('CompanionAccessController', () => {
   });
 
   afterEach(async () => {
-    // Durable rate-limit buckets are keyed by token / tenant id, not by a tenant_id column.
+    // Durable rate-limit buckets are keyed by token / tenant id / admin user id, not by a
+    // tenant_id column.
     await db.deleteFrom('rate_limits').where('key', 'like', `%${s.token}%`).execute();
     await db.deleteFrom('rate_limits').where('key', 'like', `%${s.tenantId}%`).execute();
+    await db.deleteFrom('rate_limits').where('key', 'like', `companion-organizer-send:%${s.adminId}%`).execute();
     await cleanup(db, s.tenantId);
   });
 
