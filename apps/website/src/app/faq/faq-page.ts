@@ -80,7 +80,7 @@ export class FaqPage {
         },
         {
           q: 'Where is my data stored?',
-          a: 'In Canada. Your workspace data stays there for processing and backups.',
+          a: 'In Canada. Your workspace data stays there for processing and backups. Signup asks whether you need a specific region — Canada, the United States or the European Union — and the default is "does not matter", which is the right answer for most organizations. Choosing a region is part of the Movement plan. Only Canada is running today, so a workspace that asks for another region is still created in Canada and the request is recorded; the signup form says so at the time.',
         },
         {
           q: 'What happens when I delete something?',

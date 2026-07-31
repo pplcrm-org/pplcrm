@@ -3,6 +3,7 @@ import { z } from 'zod';
 // Type-only, so this does not create a runtime cycle with auth.schema.ts (which imports
 // AUTH_ROLES from here). One definition of the preference keys, not two.
 import type { NotificationPreferencesType } from './schemas/auth.schema';
+import { DATA_REGION_CHOICES, DEFAULT_DATA_REGION_CHOICE } from './data-residency';
 import { DEFAULT_ORG_MODE, ORG_MODES, type ModuleId, type OrgMode } from './org-mode';
 
 export interface IAuthKeyPayload {
@@ -225,4 +226,12 @@ export const signUpInputObj = z.object({
    * existing caller keeps working.
    */
   mode: z.enum(ORG_MODES).default(DEFAULT_ORG_MODE),
+  /**
+   * Where the workspace's data is stored, or 'any' for no requirement. Asked at signup
+   * because it is a property of how the workspace is provisioned — once records exist,
+   * changing it is a data migration. Accepted from anyone regardless of plan: naming a
+   * region needs Movement (DATA_RESIDENCY_MIN_PLAN), but nobody has chosen a plan yet at
+   * signup, so this records the answer and the form states the requirement.
+   */
+  data_region: z.enum(DATA_REGION_CHOICES).default(DEFAULT_DATA_REGION_CHOICE),
 });

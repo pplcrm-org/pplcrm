@@ -11,7 +11,7 @@ export const PRIVACY_DOC: LegalDoc = {
   title: 'Privacy policy',
   intro:
     'What we collect, why, where it lives, and the things we will never do with it. Written to be read, not skimmed past.',
-  updated: 'July 28, 2026',
+  updated: 'July 31, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -149,7 +149,7 @@ export const PRIVACY_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'Workspaces are hosted in Canada, and your workspace data stays in Canada for processing and backups. Four narrow exceptions apply: card payments processed by Stripe are stored by Stripe in the United States, email or SMS necessarily travels to wherever the recipient is, newsletter drafts sent to the AI deliverability review are processed by Anthropic in the United States, and technical error reports from our backend (with credentials and workspace content stripped) are stored by Sentry in the United States.',
+      text: 'Workspaces are hosted in Canada, and your workspace data stays in Canada for processing and backups. Signup asks whether you require a specific region (Canada, the United States or the European Union), and defaults to no requirement; choosing a region is part of the Movement plan. Only Canada is in operation today, so every workspace — including one that asked for another region — is created in Canada, and the request is recorded for if and when that region opens. Four narrow exceptions apply: card payments processed by Stripe are stored by Stripe in the United States, email or SMS necessarily travels to wherever the recipient is, newsletter drafts sent to the AI deliverability review are processed by Anthropic in the United States, and technical error reports from our backend (with credentials and workspace content stripped) are stored by Sentry in the United States.',
     },
     {
       kind: 'h2',

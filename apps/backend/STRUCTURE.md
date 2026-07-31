@@ -30,6 +30,7 @@ apps/
           2026-07-28-zzzz-emails-preview-text.ts
           2026-07-29-office-mode-differentiation.ts
           2026-07-30-canvass-person-flags.ts
+          2026-07-31-tenant-data-region.ts
           schema.sql
         config/
           email-folders.config.ts

@@ -2,11 +2,19 @@ import { createHash, createHmac, randomBytes, randomInt, randomUUID, timingSafeE
 import { createSigner } from 'fast-jwt';
 import type { QueryResult, Transaction } from 'kysely';
 import {
+  DATA_REGION_CHOICE_LABELS,
+  DATA_RESIDENCY_MIN_PLAN,
+  DEFAULT_DATA_REGION_CHOICE,
   DEFAULT_ORG_MODE,
   MODULE_VISIBILITY_SETTINGS_KEY,
   ORG_MODE_SETTINGS_KEY,
+  PLANS_BY_KEY,
   RESERVED_SUBDOMAINS,
+  hasRegionPreference,
   hasSettledPlan,
+  hostingRegionFor,
+  isChoicePendingRegion,
+  isDataRegionChoice,
   isOrgMode,
   parseModuleOverrides,
   slugifyHandle,
@@ -14,6 +22,7 @@ import {
 import { signedFileDownloadUrl } from '../../lib/signed-download';
 
 import type {
+  DataRegionChoice,
   IAuthKeyPayload,
   INow,
   InviteAuthUserType,
@@ -1515,6 +1524,11 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     // Zod defaults this, but signUp is also reachable from tests and internal callers that
     // build the input by hand — fall back rather than seeding an undefined mode.
     const orgMode: OrgMode = isOrgMode(input.mode) ? input.mode : DEFAULT_ORG_MODE;
+    // Same reasoning as `orgMode` above: Zod defaults it, but internal callers build the
+    // input by hand, and an undefined value would land in a NOT NULL column.
+    const dataRegion: DataRegionChoice = isDataRegionChoice(input.data_region)
+      ? input.data_region
+      : DEFAULT_DATA_REGION_CHOICE;
     let token: { auth_token: string; refresh_token: string; refresh_expires_at: Date | null } = {
       auth_token: '',
       refresh_token: '',
@@ -1541,7 +1555,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       const password = await hashPassword(input.password);
 
       await this.tenants.transaction().execute(async (trx) => {
-        const tenant_id = await this.createTenant(trx, input.organization, approval);
+        const tenant_id = await this.createTenant(trx, input.organization, approval, dataRegion);
         const user = await this.createUser(trx, tenant_id, password, email, input);
         const userId = String(user.id);
         const profile = await this.createProfile(trx, user.id, tenant_id, user.id);
@@ -1683,6 +1697,7 @@ ${waitlistNote}
             organization: input.organization,
             first_name: input.first_name,
             email,
+            data_region: dataRegion,
           });
         } else {
           token = await this.createTokens(
@@ -2218,7 +2233,12 @@ ${waitlistNote}
     return profile;
   }
 
-  private async createTenant(trx: Transaction<Models>, name: string, approval: NewTenantApproval) {
+  private async createTenant(
+    trx: Transaction<Models>,
+    name: string,
+    approval: NewTenantApproval,
+    dataRegion: DataRegionChoice,
+  ) {
     const slug = await this.generateTenantSlug(trx, name);
     const row = {
       name,
@@ -2228,6 +2248,11 @@ ${waitlistNote}
       // Only a workspace that still needs a decision carries a live ops link.
       approval_token_hash: approval.status === 'pending' ? approval.tokenHash : null,
       approved_at: approval.status === 'approved' ? new Date() : null,
+      // What the workspace ASKED for — 'any' means it stated no requirement. Only Canada is
+      // standing today, so a 'us'/'eu' row records an unfulfilled request rather than
+      // describing where the data sits: read it through `hostingRegionFor()` before telling
+      // anyone where their data is.
+      data_region: dataRegion,
     } as OperationDataType<'tenants', 'insert'>;
     const tenantAddResult = await this.tenants.add({ row }, trx);
     if (!tenantAddResult) {
@@ -2365,30 +2390,64 @@ ${waitlistNote}
    * inbox must not be attributed to (and pause) the tenant it happens to be about.
    *
    * Everything interpolated here — org name, first name, email — is attacker-chosen, so it is
-   * escaped. The one link is GET-only and merely renders the decision page; approving is a
-   * POST from that page, so a mail scanner prefetching the link cannot approve anyone.
+   * escaped. The data region is not (it comes from our own label table, keyed by a validated
+   * enum) but is escaped alongside them so nobody has to work out which is which. The one link
+   * is GET-only and merely renders the decision page; approving is a POST from that page, so a
+   * mail scanner prefetching the link cannot approve anyone.
+   *
+   * A stated region also goes in the SUBJECT line, so the signups needing a conversation
+   * before approval are visible in the inbox list without opening each mail. Signups with no
+   * residency requirement — which will be most of them — get the subject they always had.
    */
   private async enqueueTenantApprovalRequest(
     trx: Transaction<Models>,
-    opts: { tenant_id: string; token: string; organization: string; first_name: string; email: string },
+    opts: {
+      tenant_id: string;
+      token: string;
+      organization: string;
+      first_name: string;
+      email: string;
+      data_region: DataRegionChoice;
+    },
   ) {
     const reviewUrl = `${env.apiUrl}/api/tenant-approval/${opts.token}`;
     const org = escapeHtml(opts.organization);
     const name = escapeHtml(opts.first_name);
     const mail = escapeHtml(opts.email);
 
+    // Three things ops has to know, and a bare region label states none of them:
+    //   1. what was asked for,
+    //   2. whether that region exists yet (only Canada does),
+    //   3. that naming a region requires the Movement plan, while every signup starts on Free.
+    // "European Union" on its own would read as a statement that the workspace IS in the EU,
+    // which is the one thing that is not true.
+    const regionLabel = DATA_REGION_CHOICE_LABELS[opts.data_region];
+    const stated = hasRegionPreference(opts.data_region);
+    const pending = isChoicePendingRegion(opts.data_region);
+    const actualLabel = DATA_REGION_CHOICE_LABELS[hostingRegionFor(opts.data_region)];
+    const minPlanName = PLANS_BY_KEY[DATA_RESIDENCY_MIN_PLAN].name;
+
+    const regionPlain = !stated
+      ? `${regionLabel} (no requirement) — stored in ${actualLabel}`
+      : pending
+        ? `${regionLabel} — NOT AVAILABLE YET, created in ${actualLabel}. Needs the ${minPlanName} plan; this signup starts on Free.`
+        : `${regionLabel} — available. Needs the ${minPlanName} plan; this signup starts on Free.`;
+    const region = escapeHtml(regionPlain);
+    const subjectSuffix = stated ? ` — asked for ${regionLabel}` : '';
+
     await this.mailService.enqueueMail(
       {
         to: env.opsAlertEmail ?? env.postmarkFromEmail,
         audience: 'account',
-        subject: `pplCRM beta signup: ${opts.organization}`,
-        text: `A new workspace is waiting for beta approval.\n\nOrganization: ${opts.organization}\nName: ${opts.first_name}\nEmail: ${opts.email}\nTenant: ${opts.tenant_id}\n\nApprove or decline: ${reviewUrl}`,
+        subject: `pplCRM beta signup: ${opts.organization}${subjectSuffix}`,
+        text: `A new workspace is waiting for beta approval.\n\nOrganization: ${opts.organization}\nName: ${opts.first_name}\nEmail: ${opts.email}\nData region: ${regionPlain}\nTenant: ${opts.tenant_id}\n\nApprove or decline: ${reviewUrl}`,
         html: `<h2>New beta signup</h2>
 <p>A new workspace signed up and is waiting for approval. Nobody can sign into it until you decide.</p>
 <p>
   <strong>Organization:</strong> ${org}<br />
   <strong>Name:</strong> ${name}<br />
   <strong>Email:</strong> ${mail}<br />
+  <strong>Data region:</strong> ${stated ? `<strong style="color:#b45309">${region}</strong>` : region}<br />
   <strong>Tenant:</strong> ${escapeHtml(opts.tenant_id)}
 </p>
 <div class="btn-container">

@@ -53,6 +53,38 @@
     <span class="label-text-alt text-error -my-2 pb-2">Please choose what kind of organization this is</span>
     }
 
+    <!-- Data residency. Sits with the other workspace questions because it is decided when the
+         workspace is provisioned, not later: once records exist, changing region is a data
+         migration. Starts on "Does not matter" — the honest state of an organization that has
+         no residency requirement, and the only answer that needs no paid plan. The same
+         `ms-0 ps-0` note applies here as on the select above. -->
+    <label class="select w-full">
+      <pc-icon [size]="4" name="globe-americas" />
+      <select class="ms-0 ps-0" (change)="onRegionChange($event)">
+        <!-- Bare labels, like the org-type select above. The description carries the detail on
+             the line below instead: a native select clips rather than wraps, and the full
+             sentence does not fit this card at any width worth designing for. -->
+        @for (r of regions; track r) {
+        <option [value]="r" [selected]="r === signUpData().data_region">{{ regionLabels[r] }}</option>
+        }
+      </select>
+    </label>
+    <!-- Two separate facts, and naming a region can trigger both. The plan requirement applies to
+         every region including Canada (choosing at all is the paid part). The availability note
+         applies only to regions with no hosting yet (LIVE_DATA_REGIONS in data-residency.ts).
+         Stating them here is not optional: the alternative is taking a residency choice we
+         cannot honour, on a plan the user has not bought, and letting them find out later. -->
+    @if (regionPreferenceStated()) {
+    <span class="label-text-alt text-warning -my-2 pb-2">
+      Choosing where your data lives is part of the {{ residencyMinPlanName }} plan. On any other plan your data is
+      stored in {{ defaultRegionLabel }} and this choice does not apply. @if (regionNotLiveYet()) { {{
+      chosenRegionLabel() }} hosting is also not open yet — for now every workspace is created in {{ actualRegionLabel()
+      }}, and we have recorded that you asked for {{ chosenRegionLabel() }}. }
+    </span>
+    } @else {
+    <span class="label-text-alt text-neutral-100 -my-2 pb-2 opacity-70">{{ chosenRegionDescription() }}</span>
+    }
+
     <label class="input w-full validator">
       <pc-icon [size]="4" name="at-symbol" />
       <input
