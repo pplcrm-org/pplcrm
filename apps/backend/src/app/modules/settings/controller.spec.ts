@@ -48,6 +48,8 @@ async function createTestSeed(db: any) {
 }
 
 async function cleanTenant(db: any, tenantId: string) {
+  // Durable rate-limit buckets embed the tenant id in their key rather than a tenant_id column.
+  await db.deleteFrom('rate_limits').where('key', 'like', `%${tenantId}%`).execute();
   await db.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
   await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
@@ -288,6 +290,53 @@ describe('SettingsController Integration', () => {
 
     // Second check within a minute should fail with TOO_MANY_REQUESTS
     await expect(controller.verifyVerifiedDomain(auth, 'ratelimit.com')).rejects.toThrow(/Please wait/);
+  });
+
+  it('should cap phone verification SMS per tenant with a durable counter', async () => {
+    const auth = { tenant_id: tenantId, user_id: userId } as any;
+    // Random numbers per run: the per-number bucket lives in Postgres and would otherwise
+    // collide across test runs inside the same hour window.
+    const base = 2000000 + Math.floor(Math.random() * 7000000);
+    const number = (i: number) => `+1416${base + i}`;
+    const usedKeys = [0, 1, 2, 3].map((i) => `phoneVerifyRequest:${number(i)}`);
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        const res = await controller.requestPhoneVerification(auth, number(i));
+        expect(res.success).toBe(true);
+      }
+      // Distinct destination each time, so only the per-tenant ceiling can refuse this one.
+      await expect(controller.requestPhoneVerification(auth, number(3))).rejects.toThrow(/too many requests/i);
+
+      // The counter must live in Postgres, not a per-process Map: each pass costs a Twilio
+      // SMS, so the ceiling has to survive a deploy and be shared across replicas.
+      const bucket = await db
+        .selectFrom('rate_limits')
+        .select(['count'])
+        .where('key', '=', `phoneVerifyRequest:${tenantId}`)
+        .executeTakeFirst();
+      expect(bucket).toBeDefined();
+    } finally {
+      await db.deleteFrom('rate_limits').where('key', 'in', usedKeys).execute();
+    }
+  });
+
+  it('should cap phone verification SMS per destination number across tenants', async () => {
+    // SMS-bombing a victim from several workspaces: the per-number bucket is shared, so a
+    // fresh tenant gets refused once the number itself is exhausted.
+    const victimNumber = `+1416${2000000 + Math.floor(Math.random() * 7000000)}`;
+    const other = await createTestSeed(db);
+    try {
+      const authA = { tenant_id: tenantId, user_id: userId } as any;
+      for (let i = 0; i < 3; i++) {
+        await controller.requestPhoneVerification(authA, victimNumber);
+      }
+      const authB = { tenant_id: other.tenantId, user_id: other.userId } as any;
+      await expect(controller.requestPhoneVerification(authB, victimNumber)).rejects.toThrow(/too many requests/i);
+    } finally {
+      await db.deleteFrom('rate_limits').where('key', '=', `phoneVerifyRequest:${victimNumber}`).execute();
+      await cleanTenant(db, other.tenantId);
+    }
   });
 
   it('should add the email to verified_emails upon verifySenderEmail', async () => {

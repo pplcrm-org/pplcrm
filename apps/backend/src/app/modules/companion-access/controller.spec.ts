@@ -179,6 +179,9 @@ describe('CompanionAccessController', () => {
   });
 
   afterEach(async () => {
+    // Durable rate-limit buckets are keyed by token / tenant id, not by a tenant_id column.
+    await db.deleteFrom('rate_limits').where('key', 'like', `%${s.token}%`).execute();
+    await db.deleteFrom('rate_limits').where('key', 'like', `%${s.tenantId}%`).execute();
     await cleanup(db, s.tenantId);
   });
 
@@ -271,11 +274,20 @@ describe('CompanionAccessController', () => {
     await expect(controller.verifyConfirm('turf', s.token, code, null)).rejects.toThrow(/request a new code/i);
   });
 
-  it('rate-limits code sends per token', async () => {
+  it('rate-limits code sends per token with a durable counter', async () => {
     await controller.verifyStart('turf', s.token, 'email');
     await controller.verifyStart('turf', s.token, 'email');
     await controller.verifyStart('turf', s.token, 'email');
     await expect(controller.verifyStart('turf', s.token, 'email')).rejects.toThrow(/too many requests/i);
+
+    // The counter must live in Postgres, not a per-process Map: each send costs a real
+    // SMS/email, so the ceiling has to survive a deploy and be shared across replicas.
+    const buckets = await db
+      .selectFrom('rate_limits')
+      .select(['count'])
+      .where('key', '=', `companion-verify-start:${s.token}`)
+      .execute();
+    expect(buckets.length).toBeGreaterThan(0);
   });
 
   it('refuses to send verification codes while the organization is suspended', async () => {

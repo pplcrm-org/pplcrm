@@ -355,14 +355,9 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
 
     try {
       if (list.object === 'people') {
-        // Clear current mappings
-        await this.mapListsPersonsRepo.db
-          .deleteFrom('map_lists_persons')
-          .where('tenant_id', '=', tenant_id)
-          .where('list_id', '=', id)
-          .execute();
-
-        // Resolve and insert new mappings
+        // Resolve the new membership BEFORE touching the old one, so a failed
+        // rule query can't cost the list its current snapshot. No pagination
+        // here on purpose: a refresh wants every matching row.
         const result = await this.personsController.getAllWithAddress(auth, definition);
         const rows = result.rows.map((p) => ({
           tenant_id: tenant_id,
@@ -371,20 +366,28 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
           createdby_id: user_id,
           updatedby_id: user_id,
         }));
-        if (rows.length) {
-          await this.mapListsPersonsRepo.addMany({
-            rows: rows as OperationDataType<'map_lists_persons', 'insert'>[],
-          });
-        }
-      } else if (list.object === 'households') {
-        // Clear current mappings
-        await this.mapListsHouseholdsRepo.db
-          .deleteFrom('map_lists_households')
-          .where('tenant_id', '=', tenant_id)
-          .where('list_id', '=', id)
-          .execute();
 
-        // Resolve and insert new mappings
+        // Swap the membership atomically. Run unwrapped, the delete committed
+        // first and a failing insert (e.g. a big tenant blowing Postgres's
+        // 65535-bind-parameter cap in one statement) left the list EMPTY — a
+        // newsletter using it as an exclude list then mailed unsubscribed
+        // people. The chunked insert keeps each statement under the cap; the
+        // transaction makes any failure leave the previous membership intact.
+        await this.mapListsPersonsRepo.transaction().execute(async (trx) => {
+          await trx
+            .deleteFrom('map_lists_persons')
+            .where('tenant_id', '=', tenant_id)
+            .where('list_id', '=', id)
+            .execute();
+          if (rows.length) {
+            await this.mapListsPersonsRepo.addManyChunked(
+              { rows: rows as OperationDataType<'map_lists_persons', 'insert'>[] },
+              trx,
+            );
+          }
+        });
+      } else if (list.object === 'households') {
+        // Same shape as the people branch: resolve first, then swap atomically.
         const result = await this.householdsController.getAllWithPeopleCount(auth, definition);
         const rows = result.rows.map((h) => ({
           tenant_id: tenant_id,
@@ -393,11 +396,20 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
           createdby_id: user_id,
           updatedby_id: user_id,
         }));
-        if (rows.length) {
-          await this.mapListsHouseholdsRepo.addMany({
-            rows: rows as OperationDataType<'map_lists_households', 'insert'>[],
-          });
-        }
+
+        await this.mapListsHouseholdsRepo.transaction().execute(async (trx) => {
+          await trx
+            .deleteFrom('map_lists_households')
+            .where('tenant_id', '=', tenant_id)
+            .where('list_id', '=', id)
+            .execute();
+          if (rows.length) {
+            await this.mapListsHouseholdsRepo.addManyChunked(
+              { rows: rows as OperationDataType<'map_lists_households', 'insert'>[] },
+              trx,
+            );
+          }
+        });
       }
 
       // Update refreshed timestamp and status back to idle

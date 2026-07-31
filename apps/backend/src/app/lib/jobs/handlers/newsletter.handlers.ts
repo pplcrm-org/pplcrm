@@ -3,7 +3,7 @@ import { sql } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
 import { logger } from '../../../logger';
-import { ConflictError } from '../../../errors/app-errors';
+import { ConflictError, InternalError } from '../../../errors/app-errors';
 import type { NewsletterAttachment, NewsletterRecipient } from '../../mail/newsletter-mail.service';
 import { NewsletterEmailService } from '../../mail/newsletter-mail.service';
 import {
@@ -383,6 +383,10 @@ export async function handleSendNewsletter(
     // tripwires). So the advanced resume point is made durable in the job payload FIRST, then
     // SendGrid is called. Do not "fix" this back to send-then-persist.
     //
+    // Transient HTTP failures (timeout, connection reset, 429/408/5xx) are retried in place
+    // inside NewsletterEmailService, so the skip only happens after those retries are exhausted
+    // (or on a crash) — and the catch around the send below records exactly what was skipped.
+    //
     // The resume point is the max email of the batch about to go out: `recipients` is non-empty
     // here (length === 0 breaks above) and walked in ascending email order, so its final element
     // is past every address in this batch under the `email > cursor` keyset semantics — hence the
@@ -411,20 +415,37 @@ export async function handleSendNewsletter(
         .execute();
     }
 
-    const batchDelivered = await newsletterMailSvc.sendNewsletter({
-      fromName,
-      fromEmail,
-      replyTo,
-      recipients,
-      subject: newsletter.subject || 'Newsletter',
-      html: finalHtml,
-      text: finalText,
-      sendgridApiKey,
-      subuserUsername,
-      newsletterId,
-      tenantId,
-      attachments,
-    });
+    let batchDelivered: number;
+    try {
+      batchDelivered = await newsletterMailSvc.sendNewsletter({
+        fromName,
+        fromEmail,
+        replyTo,
+        recipients,
+        subject: newsletter.subject || 'Newsletter',
+        html: finalHtml,
+        text: finalText,
+        sendgridApiKey,
+        subuserUsername,
+        newsletterId,
+        tenantId,
+        attachments,
+      });
+    } catch (sendError) {
+      // The resume point (nextCursor) is already durable above, so a job-level retry resumes
+      // PAST this batch: these recipients are skipped, never retried (at-most-once, see the
+      // claim comment). The mail service has already retried transient HTTP failures in place,
+      // so reaching here means the batch is genuinely lost — put exactly what was skipped into
+      // the error message (the worker records it on the job row) instead of failing opaquely.
+      const rangeStart = cursor === null ? 'start of audience' : `after ${cursor} (exclusive)`;
+      throw new InternalError(
+        `Newsletter ${newsletterId}: batch send failed after in-place retries — ` +
+          `${recipients.length} recipients skipped on job retry ` +
+          `(email range: ${rangeStart} up to ${nextCursor} inclusive)`,
+        undefined,
+        { cause: sendError },
+      );
+    }
 
     deliveredCount += batchDelivered;
     offset = nextOffset;

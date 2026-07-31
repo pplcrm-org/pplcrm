@@ -233,7 +233,10 @@ export class CompanionAccessController {
     token: string,
     channel: CompanionVerifyChannel,
   ): Promise<{ masked: string }> {
-    checkRateLimit(`companion-verify-start:${token}`, VERIFY_START_LIMIT, VERIFY_START_WINDOW_MS);
+    // Durable (Postgres-backed), because each pass can cost a Twilio SMS: an in-memory counter
+    // resets on deploy and multiplies by the replica count. Same reasoning as the per-day
+    // ceiling further down.
+    await checkDurableRateLimit(`companion-verify-start:${token}`, VERIFY_START_LIMIT, VERIFY_START_WINDOW_MS);
 
     const link = await this.resolveVerifySubject(kind, token);
     if (!link || !link.volunteer_person_id) throw new NotFoundError('This link is not active.');

@@ -2,6 +2,49 @@ import { env } from '../../../env';
 import { InternalError } from '../../errors/app-errors';
 import { logger } from '../../logger';
 
+const SENDGRID_SEND_URL = 'https://api.sendgrid.com/v3/mail/send';
+
+// ── Transient-failure policy for a single SendGrid chunk request ──────────────────────────────
+// Total-request timeout (same AbortSignal.timeout idiom as lib/hibp.ts).
+const SENDGRID_REQUEST_TIMEOUT_MS = 30_000;
+// Attempts INCLUDING the first — 3 total means at most 2 in-place retries.
+const SENDGRID_MAX_ATTEMPTS = 3;
+// Exponential backoff between attempts: ~1s after the first failure, ~4s after the second…
+const RETRY_BASE_DELAY_MS = 1_000;
+const RETRY_BACKOFF_FACTOR = 4;
+// …plus up to this much random jitter so parallel sends don't retry in lockstep.
+const RETRY_JITTER_MAX_MS = 250;
+// A 429 Retry-After asking for longer than this is not "reasonable" — clamp it.
+const RETRY_AFTER_CAP_MS = 30_000;
+const MS_PER_SECOND = 1_000;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_REQUEST_TIMEOUT = 408;
+const HTTP_SERVER_ERROR_MIN = 500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Transient HTTP statuses worth retrying in place. Every other non-2xx (bad request, auth,
+ * payload too large…) is permanent and must fail immediately — retrying cannot fix it. */
+function isRetryableStatus(status: number): boolean {
+  return status === HTTP_TOO_MANY_REQUESTS || status === HTTP_REQUEST_TIMEOUT || status >= HTTP_SERVER_ERROR_MIN;
+}
+
+/** Jittered exponential backoff before the retry that follows failure number `attempt`. */
+function backoffDelayMs(attempt: number): number {
+  return RETRY_BASE_DELAY_MS * RETRY_BACKOFF_FACTOR ** (attempt - 1) + Math.random() * RETRY_JITTER_MAX_MS;
+}
+
+/** A reasonable (numeric seconds, non-negative, capped) Retry-After delay, or null to use backoff. */
+function retryAfterDelayMs(response: Response): number | null {
+  const header = response.headers.get('Retry-After');
+  if (!header) return null;
+  const seconds = Number(header);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.min(seconds * MS_PER_SECOND, RETRY_AFTER_CAP_MS);
+}
+
 export interface NewsletterRecipient {
   email: string;
   /** Per-recipient SendGrid substitutions (token -> resolved value) for merge fields. */
@@ -166,17 +209,7 @@ export class NewsletterEmailService {
       };
 
       try {
-        const response = await fetch('https://api.sendgrid.com/v3/mail/send', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`SendGrid API responded with status ${response.status}: ${errorText}`);
-        }
-
+        await this.postChunkWithRetry(headers, JSON.stringify(body));
         deliveredCount += chunk.length;
       } catch (error) {
         throw new InternalError('Failed to send newsletter via SendGrid', undefined, { cause: error });
@@ -184,5 +217,53 @@ export class NewsletterEmailService {
     }
 
     return deliveredCount;
+  }
+
+  /**
+   * POSTs one chunk to SendGrid, retrying transient failures (network error/timeout/abort, 429,
+   * 408, 5xx) in place — up to SENDGRID_MAX_ATTEMPTS total — so a routine blip doesn't fail the
+   * whole job and turn into a silently skipped batch under the caller's at-most-once cursor.
+   * Non-retryable 4xx (bad request, auth) throw immediately. A 429's Retry-After header is
+   * honored (capped at RETRY_AFTER_CAP_MS) instead of the backoff.
+   *
+   * Deliberate, bounded exception to at-most-once: retrying after a timeout or connection reset —
+   * where we never saw the response — can deliver this ONE chunk twice if SendGrid had already
+   * accepted the request. Considered and accepted (2026-07-31): a rare duplicated chunk beats the
+   * alternative, where the job-level retry resumes past the batch and every recipient in it is
+   * silently skipped.
+   */
+  private async postChunkWithRetry(headers: Record<string, string>, body: string): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      let response: Response;
+      try {
+        response = await fetch(SENDGRID_SEND_URL, {
+          method: 'POST',
+          headers,
+          body,
+          signal: AbortSignal.timeout(SENDGRID_REQUEST_TIMEOUT_MS),
+        });
+      } catch (networkError) {
+        if (attempt >= SENDGRID_MAX_ATTEMPTS) throw networkError;
+        logger.warn(
+          { attempt, err: networkError },
+          'SendGrid request failed before a response (network/timeout) — retrying chunk in place',
+        );
+        await sleep(backoffDelayMs(attempt));
+        continue;
+      }
+
+      if (response.ok) return;
+
+      const errorText = await response.text();
+      const httpError = new Error(`SendGrid API responded with status ${response.status}: ${errorText}`);
+      if (!isRetryableStatus(response.status) || attempt >= SENDGRID_MAX_ATTEMPTS) throw httpError;
+
+      const retryAfterMs = response.status === HTTP_TOO_MANY_REQUESTS ? retryAfterDelayMs(response) : null;
+      logger.warn(
+        { attempt, status: response.status, retryAfterMs },
+        'SendGrid responded with a transient error — retrying chunk in place',
+      );
+      await sleep(retryAfterMs ?? backoffDelayMs(attempt));
+    }
   }
 }

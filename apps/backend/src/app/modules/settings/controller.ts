@@ -30,6 +30,7 @@ import { BaseController } from '../../lib/base.controller';
 import { BadRequestError, ConflictError, TooManyRequestsError } from '../../errors/app-errors';
 import { SendGridWhitelabelService } from '../../lib/mail/sendgrid-whitelabel.service';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
+import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
 import { checkRateLimit } from '../../lib/rate-limiter';
 import { maskPhone, normalizeE164 } from '../../lib/sms/phone';
 import { SmsService } from '../../lib/sms/sms.service';
@@ -265,8 +266,10 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
       throw new BadRequestError('Enter a valid mobile number, including the country code for non-US numbers.');
     }
     // Throttle per tenant (code farming) and per destination number (SMS-bombing a victim).
-    checkRateLimit(`phoneVerifyRequest:${auth.tenant_id}`, 3, 60 * 60 * 1000);
-    checkRateLimit(`phoneVerifyRequest:${normalized}`, 3, 60 * 60 * 1000);
+    // Durable (Postgres-backed), because each pass costs a Twilio SMS: an in-memory counter
+    // resets on deploy and multiplies by the replica count.
+    await checkDurableRateLimit(`phoneVerifyRequest:${auth.tenant_id}`, 3, 60 * 60 * 1000);
+    await checkDurableRateLimit(`phoneVerifyRequest:${normalized}`, 3, 60 * 60 * 1000);
 
     const code = String(randomInt(100000, 1000000));
     const smsService = new SmsService();
