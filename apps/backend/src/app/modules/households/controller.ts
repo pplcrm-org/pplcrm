@@ -14,6 +14,7 @@ import { BaseRepository } from '../../lib/base.repo';
 import { fingerprintFull, fingerprintStreet, isBlankAddress, isIncompleteAddress } from '../../lib/address-normalize';
 import { enqueueGeocodeJobs } from '../../lib/gis/geocode-queue';
 import { backfillMissingSlugs, uniqueSlug } from '../../lib/slug';
+import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../lib/ndjson';
 import { StorageService } from '../../lib/storage.service';
 import { HouseholdRepo } from './repositories/households.repo';
 import { MapHouseholdsTagsRepo } from './repositories/map-households-tags.repo';
@@ -510,8 +511,10 @@ export class HouseholdsController extends BaseController<'households', Household
     const storageKey = `imports/payloads/${auth.tenant_id}/${importRecordId}.json`;
 
     try {
-      const payloadBuffer = Buffer.from(JSON.stringify(input.rows), 'utf8');
-      await this.storageService.upload(storageKey, payloadBuffer, 'application/json');
+      // NDJSON (one row object per line) so the import job can stream rows
+      // instead of parsing one giant array — see lib/ndjson.ts.
+      const payloadBuffer = serializeRowsToNdjson(input.rows);
+      await this.storageService.upload(storageKey, payloadBuffer, NDJSON_CONTENT_TYPE);
     } catch (err) {
       logger.error({ err }, 'Failed to upload import payload to storage');
       await this.importsRepo.delete({
@@ -597,7 +600,9 @@ export class HouseholdsController extends BaseController<'households', Household
     campaign_id: string,
     tags: string[],
     skipped: number,
-    rows: Record<string, string>[],
+    // Any row source works (arrays included); the import job passes a lazy
+    // NDJSON iterator so the full payload is never materialized at once.
+    rows: Iterable<Record<string, string>> | AsyncIterable<Record<string, string>>,
   ) {
     const results = { inserted: 0, errors: 0, skipped: 0 };
     const errorMessages: string[] = [];
@@ -611,10 +616,7 @@ export class HouseholdsController extends BaseController<'households', Household
       if (clean && !uniqueTagNames.has(clean.toLowerCase())) uniqueTagNames.set(clean.toLowerCase(), clean);
     }
 
-    const chunkSize = 100;
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize);
-
+    for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
       // 1. Sanitize and fingerprint valid rows upfront
       type Entry = {
         sanitized: {

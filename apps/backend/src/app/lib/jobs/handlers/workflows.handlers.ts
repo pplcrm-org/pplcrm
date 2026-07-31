@@ -39,6 +39,9 @@ const MAX_ACTIONS_PER_TICK = 50;
 // automations are skipped: "Pausing stops new runs immediately — nothing queues while paused."
 export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<void> {
   const now = new Date();
+  // NOTE: unscoped by design — this is the cron scan that drains due enrollments for EVERY
+  // tenant in one pass; each row carries the tenant_id that scopes all downstream work.
+  // eslint-disable-next-line local/no-unscoped-db-query
   const pendingEnrollments = await db
     .selectFrom('workflow_enrollments')
     .selectAll()
@@ -76,6 +79,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
         await db
           .updateTable('workflow_enrollments')
           .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
+          .where('tenant_id', '=', enrollment.tenant_id)
           .where('id', '=', enrollment.id)
           .execute();
         continue;
@@ -85,6 +89,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
         const lockedEnrollment = await trx
           .selectFrom('workflow_enrollments')
           .selectAll()
+          .where('tenant_id', '=', enrollment.tenant_id)
           .where('id', '=', enrollment.id)
           .where('status', '=', 'active')
           .where('next_run_at', '<=', now)
@@ -97,19 +102,21 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
         const workflow = await trx
           .selectFrom('workflows')
           .select(['id', 'name', 'status', 'createdby_id', 'exit_conditions'])
+          .where('tenant_id', '=', lockedEnrollment.tenant_id)
           .where('id', '=', lockedEnrollment.workflow_id)
           .executeTakeFirst();
 
         // Workflow gone, or paused → do not run. Push the enrollment forward so a paused
         // automation doesn't hot-loop the batch; it resumes cleanly when un-paused.
         if (!workflow) {
-          await completeEnrollment(trx, lockedEnrollment.id);
+          await completeEnrollment(trx, lockedEnrollment.tenant_id, lockedEnrollment.id);
           return;
         }
         if (workflow.status === 'paused') {
           await trx
             .updateTable('workflow_enrollments')
             .set({ next_run_at: new Date(Date.now() + TEN_MINUTES_MS), updated_at: new Date() })
+            .where('tenant_id', '=', lockedEnrollment.tenant_id)
             .where('id', '=', lockedEnrollment.id)
             .execute();
           return;
@@ -118,6 +125,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
         const person = await trx
           .selectFrom('persons')
           .select(['id', 'email', 'first_name', 'last_name'])
+          .where('tenant_id', '=', lockedEnrollment.tenant_id)
           .where('id', '=', lockedEnrollment.person_id)
           .executeTakeFirst();
 
@@ -144,6 +152,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
           await trx
             .updateTable('workflow_enrollments')
             .set({ status: 'exited', next_run_at: null, updated_at: new Date() })
+            .where('tenant_id', '=', lockedEnrollment.tenant_id)
             .where('id', '=', lockedEnrollment.id)
             .execute();
           return;
@@ -156,18 +165,20 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
           const step = await trx
             .selectFrom('workflow_steps')
             .selectAll()
+            .where('tenant_id', '=', lockedEnrollment.tenant_id)
             .where('workflow_id', '=', lockedEnrollment.workflow_id)
             .where('step_number', '=', currentStepNumber)
             .executeTakeFirst();
 
           if (!step) {
-            await completeEnrollment(trx, lockedEnrollment.id);
+            await completeEnrollment(trx, lockedEnrollment.tenant_id, lockedEnrollment.id);
             return;
           }
 
           const nextStep = await trx
             .selectFrom('workflow_steps')
             .select(['step_number'])
+            .where('tenant_id', '=', lockedEnrollment.tenant_id)
             .where('workflow_id', '=', lockedEnrollment.workflow_id)
             .where('step_number', '>', currentStepNumber)
             .orderBy('step_number', 'asc')
@@ -186,10 +197,11 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
                   next_run_at: new Date(Date.now() + delayMs),
                   updated_at: new Date(),
                 })
+                .where('tenant_id', '=', lockedEnrollment.tenant_id)
                 .where('id', '=', lockedEnrollment.id)
                 .execute();
             } else {
-              await completeEnrollment(trx, lockedEnrollment.id);
+              await completeEnrollment(trx, lockedEnrollment.tenant_id, lockedEnrollment.id);
             }
             return;
           }
@@ -225,6 +237,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
               await trx
                 .updateTable('workflow_enrollments')
                 .set({ next_run_at: new Date(Date.now() + HOUR_MS), updated_at: new Date() })
+                .where('tenant_id', '=', lockedEnrollment.tenant_id)
                 .where('id', '=', lockedEnrollment.id)
                 .execute();
               logger.info(
@@ -252,13 +265,14 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
           }
 
           if (!nextStep) {
-            await completeEnrollment(trx, lockedEnrollment.id);
+            await completeEnrollment(trx, lockedEnrollment.tenant_id, lockedEnrollment.id);
             return;
           }
           currentStepNumber = nextStep.step_number;
           await trx
             .updateTable('workflow_enrollments')
             .set({ current_step_number: currentStepNumber, next_run_at: new Date(), updated_at: new Date() })
+            .where('tenant_id', '=', lockedEnrollment.tenant_id)
             .where('id', '=', lockedEnrollment.id)
             .execute();
         }
@@ -291,6 +305,9 @@ const MAX_LAPSED_ENROLLMENTS_PER_RUN = 500;
  */
 export async function handleDetectLapsedSupporters(db: Kysely<Models>): Promise<void> {
   const now = new Date();
+  // NOTE: unscoped by design — the daily cron enumerates every tenant's active supporter_lapsed
+  // workflows in one pass; each row carries the tenant_id that scopes all downstream work.
+  // eslint-disable-next-line local/no-unscoped-db-query
   const lapsedWorkflows = await db
     .selectFrom('workflows')
     .select(['id', 'tenant_id', 'trigger_event_id'])
@@ -520,10 +537,11 @@ async function loadTaskSlaConfig(db: Kysely<Models>, tenantId: string): Promise<
   return slaPolicyFrom(settingsMapFrom(rows));
 }
 
-async function completeEnrollment(trx: Transaction<Models>, enrollmentId: string): Promise<void> {
+async function completeEnrollment(trx: Transaction<Models>, tenantId: string, enrollmentId: string): Promise<void> {
   await trx
     .updateTable('workflow_enrollments')
     .set({ status: 'completed', next_run_at: null, updated_at: new Date() })
+    .where('tenant_id', '=', tenantId)
     .where('id', '=', enrollmentId)
     .execute();
 }

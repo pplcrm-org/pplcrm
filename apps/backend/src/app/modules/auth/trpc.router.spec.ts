@@ -171,9 +171,10 @@ describe('AuthRouter', () => {
     };
     const result = await caller.signUp(signUpData);
 
-    // `mode` is defaulted by signUpInputObj, so the controller always sees it even when
-    // the caller (an audience landing page with no ?for=) never sent one.
-    expect(spy).toHaveBeenCalledWith({ ...signUpData, mode: 'office' });
+    // `mode` and `data_region` are both defaulted by signUpInputObj, so the controller always
+    // sees them even when the caller (an audience landing page with no ?for=, or an older
+    // client that predates the residency picker) never sent one.
+    expect(spy).toHaveBeenCalledWith({ ...signUpData, mode: 'office', data_region: 'any' });
     expect(result).toEqual({ auth_token: 'signup-auth-token', approval_pending: false });
     expect(setCookie).toHaveBeenCalledWith(
       'pc_refresh',

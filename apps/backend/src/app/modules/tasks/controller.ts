@@ -24,6 +24,7 @@ import { TransactionalEmailService } from '../../lib/mail/transactional-mail.ser
 import { notificationEnabled } from '../../lib/profile-preferences';
 import { assertAssigneeInTenant, findAssigneeForNotification } from '../../lib/tenant-members';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
+import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../lib/ndjson';
 import { StorageService } from '../../lib/storage.service';
 import { TRPCError } from '@trpc/server';
 import { logger } from '../../logger';
@@ -366,8 +367,10 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     const storageKey = `imports/payloads/${auth.tenant_id}/${importRecordId}.json`;
 
     try {
-      const payloadBuffer = Buffer.from(JSON.stringify(input.rows), 'utf8');
-      await this.storageService.upload(storageKey, payloadBuffer, 'application/json');
+      // NDJSON (one row object per line) so the import job can stream rows
+      // instead of parsing one giant array — see lib/ndjson.ts.
+      const payloadBuffer = serializeRowsToNdjson(input.rows);
+      await this.storageService.upload(storageKey, payloadBuffer, NDJSON_CONTENT_TYPE);
     } catch (err) {
       logger.error({ err }, 'Failed to upload import payload to storage');
       await this.importsRepo.delete({
@@ -442,7 +445,9 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     tenant_id: string,
     user_id: string,
     skipped: number,
-    rows: Record<string, string>[],
+    // Any row source works (arrays included); the import job passes a lazy
+    // NDJSON iterator so the full payload is never materialized at once.
+    rows: Iterable<Record<string, string>> | AsyncIterable<Record<string, string>>,
   ) {
     const results = { inserted: 0, errors: 0, skipped: 0 };
     const errorMessages: string[] = [];
@@ -476,10 +481,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
       }
     }
 
-    const chunkSize = 100;
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize);
-
+    for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
       // 1. Normalize and filter valid rows upfront
       const taskRows: any[] = [];
       for (const raw of chunk) {

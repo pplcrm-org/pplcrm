@@ -34,16 +34,20 @@ module.exports = [
    * Flags any Kysely query chain (selectFrom / updateTable / deleteFrom) that
    * reaches an execute terminal without a .where('tenant_id', …) filter.
    *
-   * Scoped to modules/** only — excludes:
-   *   - base.repo.ts          (tenant filtering is callers' responsibility)
-   *   - job-handlers.ts       (per-tenant loops; tenant_id used inside trx)
-   *   - _migrations/**        (DDL; no runtime tenant scoping)
+   * Scoped to modules/** AND lib/** (lib added 2026-07-31: the background
+   * workers, job handlers, and mail services live there, write donations and
+   * send newsletters, and are NOT covered by the RLS backstop — workers never
+   * bind the per-request tenant context, see lib/tenant-context.ts). Excludes:
+   *   - lib/base.repo.ts      (generic query builder; tenant filtering is
+   *                            callers' responsibility)
+   *   - _migrations/**        (DDL; no runtime tenant scoping — outside both
+   *                            globs anyway)
    *   - *.spec.ts             (integration tests do their own scoped cleanup)
-   *   - kyselyinit*.ts        (migration runner)
+   *   - kyselyinit*.ts        (migration runner — outside both globs anyway)
    * ─────────────────────────────────────────────────────────────────────── */
   {
-    files: ['**/src/app/modules/**/*.ts'],
-    ignores: ['**/*.spec.ts'],
+    files: ['**/src/app/modules/**/*.ts', '**/src/app/lib/**/*.ts'],
+    ignores: ['**/*.spec.ts', '**/src/app/lib/base.repo.ts'],
     // `local` is already registered by the root config spread in above —
     // redeclaring it here for the same file set throws
     // "Cannot redefine plugin 'local'" under ESLint's flat config.
@@ -68,7 +72,26 @@ module.exports = [
           // address) as well as tenants, so there is no tenant_id to scope by and the limiter
           // deliberately runs outside any tenant context. Every row is write-only-ish state
           // that expires; none of it is readable business data.
-          ignoreTables: ['authusers', 'sessions', 'tenants', 'rate_limits'],
+          //
+          // Added 2026-07-31 (when the rule's scope grew to cover lib/**):
+          //   background_jobs - the shared job queue. The worker claims/settles/recovers rows
+          //                     across ALL tenants by design, keyed by globally-unique row id;
+          //                     tenant_id is nullable (cron singletons have none). Handlers
+          //                     scope their business queries by the tenant id in the payload.
+          //   webhook_events  - the Stripe event queue. Rows are ingested before tenant
+          //                     resolution (tenant_id nullable) and the drain worker
+          //                     claims/settles by globally-unique row id.
+          //   ops_heartbeats  - platform dead-man's-switch state; the table has no tenant_id
+          //                     column at all.
+          ignoreTables: [
+            'authusers',
+            'sessions',
+            'tenants',
+            'rate_limits',
+            'background_jobs',
+            'webhook_events',
+            'ops_heartbeats',
+          ],
         },
       ],
     },

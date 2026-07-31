@@ -30,6 +30,7 @@ apps/
           2026-07-28-zzzz-emails-preview-text.ts
           2026-07-29-office-mode-differentiation.ts
           2026-07-30-canvass-person-flags.ts
+          2026-07-31-tenant-data-region.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -62,6 +63,7 @@ apps/
             job-handlers.ts
             job-payloads.ts
             reschedule.ts
+            stripe-event-order.ts
             webhook-worker.ts
             worker.ts
           mail/
@@ -102,11 +104,13 @@ apps/
           fastify.types.ts
           hibp.ts
           html-escape.ts
+          ndjson.ts
           oauth-state.ts
           outbound-url-guard.ts
           password-hash.ts
           person-public-id.ts
           profile-preferences.ts
+          public-route-errors.ts
           public-tenant.ts
           rate-limiter.ts
           rest-auth.ts

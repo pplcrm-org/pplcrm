@@ -3,6 +3,7 @@ import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastif
 import { DeliveriesController } from '../controller';
 import { DELIVERY_SKIP_REASONS } from '../../../../../../../libs/common/src';
 import { isRateLimited } from '../../../lib/rate-limiter';
+import { publicMessageOf as messageOf } from '../../../lib/public-route-errors';
 
 const controller = new DeliveriesController();
 
@@ -44,11 +45,6 @@ function statusOf(err: unknown): number {
     if (typeof rec.statusCode === 'number') return rec.statusCode;
   }
   return 500;
-}
-
-function messageOf(err: unknown, fallback: string): string {
-  if (err instanceof Error && err.message) return err.message;
-  return fallback;
 }
 
 /**

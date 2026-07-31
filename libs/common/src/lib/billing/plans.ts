@@ -508,6 +508,26 @@ export function planAllowsGeocoding(planName: string | null | undefined): boolea
 }
 
 /**
+ * Minimum plan for choosing where a workspace's data is stored (see ../data-residency.ts).
+ *
+ * Kept OUT of `GATED_FEATURES` for the same reason as `GEOCODING_MIN_PLAN`: that registry gates
+ * tRPC MODULES through `planFeatureGate`, and residency is not a module — there is no procedure
+ * to refuse. It is a provisioning attribute chosen once, at signup, before any plan has been
+ * selected. Signup therefore records the answer from anyone and TELLS them it needs Movement;
+ * it does not refuse the choice at a point where nobody could have paid yet.
+ *
+ * It does appear in `FEATURE_MATRIX` (the 'Movement only' group), because the signup form now
+ * states this rule to every user and the pricing page has to agree with it.
+ */
+export const DATA_RESIDENCY_MIN_PLAN: PlanKey = 'movement';
+
+/** Whether a stored plan value includes choosing a data region — Movement and up. */
+export function planAllowsDataResidency(planName: string | null | undefined): boolean {
+  const plan = getPlanDef(planName) ?? PLANS_BY_KEY.free;
+  return PLAN_RANK[plan.key] >= PLAN_RANK[DATA_RESIDENCY_MIN_PLAN];
+}
+
+/**
  * Shared feature-comparison matrix — drives the website's Mailchimp-style comparison table
  * (plan-header cards + feature rows). This is a SEPARATE data source from each PlanDef's
  * `features[]` bullet list (which drives the app-side billing cards): `features[]` is a short,
@@ -599,6 +619,13 @@ export const FEATURE_MATRIX: readonly FeatureMatrixGroup[] = [
       {
         label: 'Companion volunteer access & monitoring',
         values: { free: false, grassroots: false, movement: true },
+      },
+      // Backed by DATA_RESIDENCY_MIN_PLAN above. Every other plan is stored where the platform
+      // runs, which is why the lower cells say "Canada" rather than ✗ — those workspaces still
+      // have a data region, they just do not get to pick it.
+      {
+        label: 'Choose where your data is stored',
+        values: { free: 'Canada', grassroots: 'Canada', movement: true },
       },
       {
         label: 'Support',

@@ -31,6 +31,7 @@ import { BadRequestError, ForbiddenError, NotFoundError } from '../../errors/app
 import { BaseController } from '../../lib/base.controller';
 import { volunteerMayRoam } from '../../lib/canvass-roam-policy';
 import { notifyVolunteerOfLink, type VolunteerLinkSendResult } from '../../lib/mail/volunteer-link-notify';
+import { publicMessageOf } from '../../lib/public-route-errors';
 import { publicOrgName } from '../../lib/public-tenant';
 import { turfAssignmentExpiry } from '../../lib/volunteer-link-policy';
 import { CampaignPersonFactsRepo } from '../campaigns/repositories/campaign-person-facts.repo';
@@ -1269,10 +1270,12 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         });
         acks.push(ack);
       } catch (err: unknown) {
+        // Acks go back to an unauthenticated companion device — only the app's own
+        // error family carries client-safe messages (same rule as the public routes).
         acks.push({
           op_id: op.op_id,
           status: 'rejected',
-          error: err instanceof Error ? err.message : 'Could not record this result.',
+          error: publicMessageOf(err, 'Could not record this result.'),
         });
       }
     }

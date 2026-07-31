@@ -166,6 +166,91 @@ describe('NewsletterEmailService', () => {
   });
 
   /**
+   * Transient SendGrid failures (429/408/5xx, network errors, timeouts) are retried in place —
+   * up to 3 attempts — because the send job persists its resume cursor BEFORE calling this
+   * service: a chunk that fails outright is skipped by the job retry, never re-sent. Permanent
+   * 4xx must fail immediately (retrying a bad request or bad auth cannot succeed).
+   */
+  describe('transient-failure retry policy', () => {
+    const okResponse = { ok: true, status: 202, text: (): string => '' };
+
+    function failureResponse(status: number, retryAfter?: string): unknown {
+      return {
+        ok: false,
+        status,
+        headers: { get: (): string | null => retryAfter ?? null },
+        text: (): Promise<string> => Promise.resolve('upstream error'),
+      };
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('attaches a total-request timeout signal to every SendGrid request', async () => {
+      await service.sendNewsletter({ ...baseOptions, sendgridApiKey: 'SG.test' });
+      expect(fetchMock.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('retries once on 429 and honors the Retry-After header for the wait', async () => {
+      vi.useFakeTimers();
+      fetchMock.mockResolvedValueOnce(failureResponse(429, '7')).mockResolvedValueOnce(okResponse as any);
+
+      const send = service.sendNewsletter({ ...baseOptions, sendgridApiKey: 'SG.test' });
+      // Let the first (failing) request settle; the retry must now be waiting on Retry-After.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // 1ms short of the 7s Retry-After: the retry has not fired yet…
+      await vi.advanceTimersByTimeAsync(6_999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // …and at exactly 7s it does.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await expect(send).resolves.toBe(1);
+    });
+
+    it('recovers when SendGrid returns a 5xx and the retry succeeds', async () => {
+      vi.useFakeTimers();
+      fetchMock.mockResolvedValueOnce(failureResponse(500)).mockResolvedValueOnce(okResponse as any);
+
+      const send = service.sendNewsletter({ ...baseOptions, sendgridApiKey: 'SG.test' });
+      await vi.runAllTimersAsync();
+      await expect(send).resolves.toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries after a network error whose response was never seen (bounded duplicate risk, accepted)', async () => {
+      vi.useFakeTimers();
+      fetchMock.mockRejectedValueOnce(new Error('socket hang up')).mockResolvedValueOnce(okResponse as any);
+
+      const send = service.sendNewsletter({ ...baseOptions, sendgridApiKey: 'SG.test' });
+      await vi.runAllTimersAsync();
+      await expect(send).resolves.toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails immediately on a permanent 4xx with NO retry', async () => {
+      fetchMock.mockResolvedValue(failureResponse(400));
+
+      await expect(service.sendNewsletter({ ...baseOptions, sendgridApiKey: 'SG.test' })).rejects.toBeInstanceOf(
+        InternalError,
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws InternalError once every attempt is exhausted', async () => {
+      vi.useFakeTimers();
+      fetchMock.mockResolvedValue(failureResponse(503));
+
+      const send = service.sendNewsletter({ ...baseOptions, sendgridApiKey: 'SG.test' });
+      const assertion = expect(send).rejects.toBeInstanceOf(InternalError);
+      await vi.runAllTimersAsync();
+      await assertion;
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  /**
    * RFC 8058 one-click. Gmail/Yahoo require the header pair on bulk mail, and the URL names a
    * specific person — so it must ride on each personalization. A message-level header would hand
    * all 1,000 recipients in a batch the first person's unsubscribe token.

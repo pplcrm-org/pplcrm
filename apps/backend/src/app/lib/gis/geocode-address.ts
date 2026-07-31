@@ -1,6 +1,9 @@
 import { env } from '../../../env';
 import { logger } from '../../logger';
 
+/** Deadline for the Google Maps geocode HTTP call — a hung connection must not stall a worker slot. */
+const GEOCODE_TIMEOUT_MS = 10_000;
+
 export interface GeocodeResult {
   lat: number;
   lng: number;
@@ -41,7 +44,7 @@ export async function geocodeAddress(addressStr: string): Promise<GeocodeResult 
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(addressStr)}&key=${env.googleMapsApiKey}`;
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(GEOCODE_TIMEOUT_MS) });
   if (!response.ok) {
     throw new Error(`Google Maps Geocoding API returned status ${response.status}`);
   }

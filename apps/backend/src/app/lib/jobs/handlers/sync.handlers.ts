@@ -42,6 +42,9 @@ async function queueUserSyncJobs(db: Kysely<Models>): Promise<void> {
   try {
     // §15 — connections are per-campaign, so schedule one sync job per connected
     // (tenant, campaign) mailbox rather than one per tenant.
+    // NOTE: unscoped by design — the cron enumerates every connected mailbox to fan out one sync
+    // job per (tenant, campaign). Only the ids are read; the token secrets are never selected.
+    // eslint-disable-next-line local/no-unscoped-db-query
     const googleTokens = await db.selectFrom('google_oauth_tokens').select(['tenant_id', 'campaign_id']).execute();
 
     for (const token of googleTokens) {
@@ -78,6 +81,8 @@ async function queueUserSyncJobs(db: Kysely<Models>): Promise<void> {
       }
     }
 
+    // NOTE: unscoped by design — same cron fan-out as the Google loop above; ids only, no secrets.
+    // eslint-disable-next-line local/no-unscoped-db-query
     const msTokens = await db.selectFrom('ms_oauth_tokens').select(['tenant_id', 'campaign_id']).execute();
 
     for (const token of msTokens) {

@@ -44,10 +44,16 @@ RUN npm pkg delete scripts.prepare && npm ci --omit=dev
 ######################################
 FROM node:26-bookworm-slim AS runtime
 WORKDIR /app
+# Git commit SHA of this build, passed by CI (deploy.yml --build-arg BUILD_SHA=<github.sha>).
+# /healthz reports it so the post-deploy smoke test can prove the NEW revision is serving —
+# in single-revision Container Apps, a new revision that never becomes healthy leaves the old
+# one answering 200. 'dev' for local builds.
+ARG BUILD_SHA=dev
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
-    MIGRATE_ON_BOOT=false
+    MIGRATE_ON_BOOT=false \
+    BUILD_SHA=$BUILD_SHA
 
 # Ship the pruned prod deps + the bundle. Run as the image's built-in unprivileged `node` user.
 COPY --from=builder --chown=node:node /app/node_modules ./node_modules

@@ -2,7 +2,24 @@ import { DecimalPipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
 import { form, submit, required, email, minLength, FormField } from '@angular/forms/signals';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { ORG_MODES, ORG_MODE_LABELS, isOrgMode, type OrgMode } from '@common';
+import {
+  DATA_REGION_CHOICES,
+  DATA_REGION_CHOICE_DESCRIPTIONS,
+  DATA_REGION_CHOICE_LABELS,
+  DATA_RESIDENCY_MIN_PLAN,
+  DEFAULT_DATA_REGION,
+  DEFAULT_DATA_REGION_CHOICE,
+  ORG_MODES,
+  ORG_MODE_LABELS,
+  PLANS_BY_KEY,
+  hasRegionPreference,
+  hostingRegionFor,
+  isChoicePendingRegion,
+  isDataRegionChoice,
+  isOrgMode,
+  type DataRegionChoice,
+  type OrgMode,
+} from '@common';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -26,6 +43,13 @@ export class SignUpPage {
   protected readonly modes = ORG_MODES;
   protected readonly modeLabels = ORG_MODE_LABELS;
 
+  protected readonly regions = DATA_REGION_CHOICES;
+  protected readonly regionLabels = DATA_REGION_CHOICE_LABELS;
+
+  /** Named in the notice under the picker, so the plan requirement and the pricing page cannot
+   * drift apart — both read the same constant. */
+  protected readonly residencyMinPlanName = PLANS_BY_KEY[DATA_RESIDENCY_MIN_PLAN].name;
+
   /** `?for=church` from an audience landing page; anything unrecognised leaves it unanswered. */
   private readonly modeParam = this.route.snapshot.queryParamMap.get('for');
 
@@ -46,7 +70,49 @@ export class SignUpPage {
      * so the marketing site's audience pages carry the answer through for free.
      */
     mode: this.initialMode(),
+    /**
+     * Where this workspace's data is stored. Unlike `mode` this starts answered — with "Does
+     * not matter", which is the true state of an organization that has not thought about it
+     * and the only answer that needs no paid plan. Asked here rather than later because it is
+     * decided at provisioning time; see data-residency.ts.
+     */
+    data_region: DEFAULT_DATA_REGION_CHOICE as DataRegionChoice,
   });
+
+  /**
+   * True once a specific region is named. This — not which region — is what triggers the
+   * notice, because naming any region at all is the part that needs the paid plan.
+   */
+  protected readonly regionPreferenceStated = computed(() => hasRegionPreference(this.signUpData().data_region));
+
+  /**
+   * True when the named region has no hosting yet, which is every region except Canada today.
+   * Adds a second sentence to the notice: the choice is recorded, but the workspace is created
+   * in Canada, and the form says so rather than implying otherwise.
+   */
+  protected readonly regionNotLiveYet = computed(() => isChoicePendingRegion(this.signUpData().data_region));
+
+  /** The label for whatever was picked — used in the notice below. */
+  protected readonly chosenRegionLabel = computed(() => DATA_REGION_CHOICE_LABELS[this.signUpData().data_region]);
+
+  /** What the pick means, shown under the select whenever there is no notice to show instead.
+   * Lives on the line below rather than inside the option, which a select would clip. */
+  protected readonly chosenRegionDescription = computed(
+    () => DATA_REGION_CHOICE_DESCRIPTIONS[this.signUpData().data_region],
+  );
+
+  /** Where the data actually goes given the pick — used by the availability sentence. */
+  protected readonly actualRegionLabel = computed(
+    () => DATA_REGION_CHOICE_LABELS[hostingRegionFor(this.signUpData().data_region)],
+  );
+
+  /**
+   * Where a workspace lands when its region choice does not apply — used by the PLAN sentence,
+   * which must not use `actualRegionLabel`. The two agree only while Canada is the sole live
+   * region: once a second region opens, a non-Movement workspace that picked it still gets the
+   * default, and `hostingRegionFor` would name the picked region instead.
+   */
+  protected readonly defaultRegionLabel = DATA_REGION_CHOICE_LABELS[DEFAULT_DATA_REGION];
 
   /**
    * Whether the question has been answered — the single source of truth for both the
@@ -84,6 +150,18 @@ export class SignUpPage {
     const mode = target.value;
     if (isOrgMode(mode)) {
       this.signUpData.update((d) => ({ ...d, mode }));
+    }
+  }
+
+  /** Driven by hand for the same reason as `onModeChange`: it is a plain select, not a
+   * signal-forms field, so nothing here can be bound with `[formField]`. */
+  protected onRegionChange(event: Event): void {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement)) return;
+
+    const region = target.value;
+    if (isDataRegionChoice(region)) {
+      this.signUpData.update((d) => ({ ...d, data_region: region }));
     }
   }
 

@@ -366,6 +366,24 @@ export { normalizeE164 } from './lib/phone';
 export type { SystemListKey, SystemListDef } from './lib/system-lists';
 export { SYSTEM_LIST_KEYS, SYSTEM_LISTS, systemListDefinition } from './lib/system-lists';
 
+export type { DataRegion, DataRegionChoice } from './lib/data-residency';
+export {
+  DATA_REGIONS,
+  DATA_REGION_CHOICES,
+  DATA_REGION_CHOICE_DESCRIPTIONS,
+  DATA_REGION_CHOICE_LABELS,
+  DEFAULT_DATA_REGION,
+  DEFAULT_DATA_REGION_CHOICE,
+  LIVE_DATA_REGIONS,
+  NO_REGION_PREFERENCE,
+  hasRegionPreference,
+  hostingRegionFor,
+  isChoicePendingRegion,
+  isDataRegion,
+  isDataRegionChoice,
+  isDataRegionLive,
+} from './lib/data-residency';
+
 export type { OrgMode, TermKey, ModuleId } from './lib/org-mode';
 export {
   DEFAULT_ORG_MODE,
@@ -552,6 +570,8 @@ export {
   planAllowsFeature,
   GEOCODING_MIN_PLAN,
   planAllowsGeocoding,
+  DATA_RESIDENCY_MIN_PLAN,
+  planAllowsDataResidency,
 } from './lib/billing/plans';
 export type {
   PlanKey,

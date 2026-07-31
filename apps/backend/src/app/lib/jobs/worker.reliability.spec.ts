@@ -12,6 +12,8 @@ import { BackgroundJobWorker } from './worker';
  *    multiply a self-rescheduling job every stale window).
  *  - recoverStaleJobs must dead-letter a poison job that has exhausted its attempts instead of
  *    requeuing it forever, while still requeuing jobs that have retries left.
+ *  - when the dead-lettered job is a recurring (cron) type, recoverStaleJobs must re-seed the
+ *    chain's next run, or the cron silently stops until the next deploy.
  */
 
 interface WorkerInternals {
@@ -76,9 +78,17 @@ describe('recoverStaleJobs', () => {
   const worker = new BackgroundJobWorker();
   const prefix = `recover-${Math.floor(Math.random() * 1_000_000)}`;
   const staleLock = new Date(Date.now() - 40 * 60 * 1000); // older than the 30-min threshold
+  // A real entry in CRON_JOBS, so dead-lettering it must re-seed the chain's next run.
+  const CRON_TYPE = 'prune_retention';
 
   afterEach(async () => {
     await db.deleteFrom('background_jobs').where('queue', 'like', `${prefix}%`).execute();
+    // The re-seeded next run is inserted by scheduleNextRun with queue 'default', so the
+    // prefix-scoped delete above never catches it — clean it up by payload type.
+    await db
+      .deleteFrom('background_jobs')
+      .where(sql`payload->>'type'`, '=', CRON_TYPE)
+      .execute();
   });
 
   it('dead-letters an exhausted stale job and requeues one with retries left', async () => {
@@ -126,6 +136,74 @@ describe('recoverStaleJobs', () => {
 
     expect(await statusOf(exhaustedQueue)).toBe('failed');
     expect(await statusOf(retryableQueue)).toBe('pending');
+  });
+
+  it('re-seeds the next run when a dead-lettered stale job is a cron type, but not for others', async () => {
+    const cronQueue = `${prefix}-cron`;
+    const nonCronQueue = `${prefix}-noncron`;
+
+    // Start from a clean chain: a pre-existing pending run of the cron type would satisfy
+    // scheduleNextRun's dedup and mask whether recovery actually re-seeded anything.
+    await db
+      .deleteFrom('background_jobs')
+      .where(sql`payload->>'type'`, '=', CRON_TYPE)
+      .execute();
+
+    await db
+      .insertInto('background_jobs')
+      .values([
+        {
+          tenant_id: null,
+          queue: cronQueue,
+          status: 'processing',
+          payload: JSON.stringify({ type: CRON_TYPE }),
+          run_at: staleLock,
+          locked_at: staleLock,
+          locked_by: 'dead-worker',
+          attempts: 3,
+          max_attempts: 3,
+        },
+        {
+          tenant_id: null,
+          queue: nonCronQueue,
+          status: 'processing',
+          payload: JSON.stringify({ type: 'not-a-cron-type' }),
+          run_at: staleLock,
+          locked_at: staleLock,
+          locked_by: 'dead-worker',
+          attempts: 3,
+          max_attempts: 3,
+        },
+      ])
+      .execute();
+
+    await asInternals(worker).recoverStaleJobs();
+
+    // Both stale rows are dead-lettered…
+    const deadRows = await db
+      .selectFrom('background_jobs')
+      .select(['queue', 'status'])
+      .where('queue', 'in', [cronQueue, nonCronQueue])
+      .execute();
+    expect(deadRows.map((r: { status: string }) => String(r.status))).toEqual(['failed', 'failed']);
+
+    // …and the cron type gets exactly one fresh pending row (inserted by scheduleNextRun).
+    const cronPending = await db
+      .selectFrom('background_jobs')
+      .select('id')
+      .where('status', '=', 'pending')
+      .where(sql`payload->>'type'`, '=', CRON_TYPE)
+      .execute();
+    expect(cronPending.length).toBe(1);
+
+    // A non-cron type gets no replacement row.
+    const nonCronPending = await db
+      .selectFrom('background_jobs')
+      .select('id')
+      .where('status', '=', 'pending')
+      .where(sql`payload->>'type'`, '=', 'not-a-cron-type')
+      .execute();
+    expect(nonCronPending.length).toBe(0);
   });
 
   it('leaves a fresh (recently heartbeated) processing job alone', async () => {

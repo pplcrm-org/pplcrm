@@ -1,6 +1,7 @@
 import type { FastifyPluginCallback } from 'fastify';
 import { sql } from 'kysely';
 
+import { env } from '../env';
 import { BaseRepository } from './lib/base.repo';
 import emailsApiRoute from './modules/emails/routes/emails-api.route';
 import msSyncCallbackRoute from './modules/ms-sync/ms-callback.route';
@@ -105,21 +106,27 @@ export const routes: FastifyPluginCallback = (fastify, _opts, done) => {
 
   // Readiness probe — verifies Postgres is reachable so an orchestrator can gate traffic/restarts.
   // Returns 503 (not 200) when the DB is down; body is intentionally minimal (no error details).
+  // `build` is the commit SHA baked into the image (env.buildSha, 'dev' outside CI images) — the
+  // CI smoke test matches it against the SHA it just deployed, because in single-revision
+  // Container Apps a failed rollover leaves the OLD revision answering 200 here. The SHA is
+  // static per process, so the 5-second result cache below never makes it stale.
   fastify.get('/healthz', async (_req, res) => {
     // Result cached briefly (finding M3): this is unauthenticated and was one DB round-trip
     // per request, so anyone could turn it into a query generator. A few seconds of staleness
     // is irrelevant to an orchestrator probing every 10-30s.
     const cached = readHealthCache();
     if (cached !== null) {
-      return cached ? res.send({ status: 'ok' }) : res.code(503).send({ status: 'unavailable' });
+      return cached
+        ? res.send({ status: 'ok', build: env.buildSha })
+        : res.code(503).send({ status: 'unavailable', build: env.buildSha });
     }
     try {
       await sql`select 1`.execute(BaseRepository.dbInstance);
       writeHealthCache(true);
-      return res.send({ status: 'ok' });
+      return res.send({ status: 'ok', build: env.buildSha });
     } catch {
       writeHealthCache(false);
-      return res.code(503).send({ status: 'unavailable' });
+      return res.code(503).send({ status: 'unavailable', build: env.buildSha });
     }
   });
 

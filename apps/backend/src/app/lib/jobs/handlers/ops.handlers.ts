@@ -48,7 +48,9 @@ interface FailureGroup {
  *      what makes the external probe catch a wedged worker while the API stays healthy.
  *
  * All queries here are cross-tenant by design (this is a platform-level operator digest, not a
- * tenant surface) — lib/jobs/handlers is outside the local/no-unscoped-db-query rule's scope.
+ * tenant surface). The local/no-unscoped-db-query rule now covers lib/** too; these queries pass
+ * because the queue/ops tables they touch (background_jobs, webhook_events, ops_heartbeats,
+ * tenants) are on its ignoreTables list.
  */
 export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
   const now = new Date();
@@ -125,6 +127,10 @@ export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
 
   let alertFingerprint = details.last_alert_fingerprint;
   let alertedAt = details.last_alerted_at;
+  // If the alert email throws (e.g. a Postmark outage — exactly when the watchdog has findings),
+  // the failure is held here so the heartbeat write and next-run scheduling below still happen,
+  // then rethrown at the end so the job is still recorded as failed.
+  let mailFailure: { error: unknown } | undefined;
   if (sections.length > 0) {
     // Fingerprint on the *categories* of trouble, not raw counts — a persistent backlog
     // shouldn't re-alert every 5 minutes, but a new failure category (or one escalating by an
@@ -154,19 +160,28 @@ export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
       logger.warn({ sections }, 'Ops watchdog: sending problem digest');
       // Send directly (not via the mail queue): if the queue is the sick component, the alert
       // would sit behind the very backlog it is reporting.
-      await mailService.sendMail({
-        to: env.opsAlertEmail,
-        subject: `pplCRM ops: ${summarize(failedJobs, failedWebhooks, backlogged, newlyPausedTenants.length)}`,
-        text: body,
-        html: `<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(body)}</pre>`,
-      });
-      alertFingerprint = fingerprint;
-      alertedAt = now.toISOString();
+      try {
+        await mailService.sendMail({
+          to: env.opsAlertEmail,
+          subject: `pplCRM ops: ${summarize(failedJobs, failedWebhooks, backlogged, newlyPausedTenants.length)}`,
+          text: body,
+          html: `<pre style="font-family: inherit; white-space: pre-wrap;">${escapeHtml(body)}</pre>`,
+        });
+        // Stamp the fingerprint only on a successful send — on failure the next cycle must
+        // re-attempt the alert rather than suppress it as already-sent.
+        alertFingerprint = fingerprint;
+        alertedAt = now.toISOString();
+      } catch (err) {
+        mailFailure = { error: err };
+      }
     }
   }
 
-  // The dead-man beat — reached only when the whole cycle above succeeded. Upsert so a missing
-  // row (fresh DB) heals itself rather than failing the cron forever.
+  // The dead-man beat — reached when the CHECKS above succeeded, even if the alert email did
+  // not go out. That keeps the heartbeat's meaning truthful ("the watchdog's checks ran"),
+  // which is exactly what /healthz/worker is probing — a mail-provider outage must not page
+  // "worker dead". Upsert so a missing row (fresh DB) heals itself rather than failing the
+  // cron forever.
   const newDetails = JSON.stringify({
     last_checked_at: now.toISOString(),
     last_alert_fingerprint: alertFingerprint,
@@ -179,6 +194,12 @@ export async function handleOpsWatchdog(db: Kysely<Models>): Promise<void> {
     .execute();
 
   await scheduleNextRun(db, 'ops_watchdog', CRON_JOBS.ops_watchdog);
+
+  // Rethrow the captured mail failure so the job is still recorded as failed and shows up in
+  // the next ops digest. scheduleNextRun is idempotent under its advisory-lock dedup (see
+  // reschedule.ts), so this rethrow path — where the worker's rescheduleCronJobOnFailure also
+  // runs — cannot double-queue the chain.
+  if (mailFailure) throw mailFailure.error;
 }
 
 // Postmark's total-message cap is 10 MB; leave headroom for the body + inline logo.

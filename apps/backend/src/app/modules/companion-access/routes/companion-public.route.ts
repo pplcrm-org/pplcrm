@@ -10,6 +10,7 @@ import {
 } from '../../../../../../../libs/common/src';
 import { CompanionAccessController } from '../controller';
 import { isRateLimited } from '../../../lib/rate-limiter';
+import { publicMessageOf as messageOf } from '../../../lib/public-route-errors';
 
 /**
  * Public companion access API (COMPANION-APPS-PLAN.md §4 A2) — the verify +
@@ -37,11 +38,6 @@ function statusOf(err: unknown): number {
     if (typeof candidate === 'number') return candidate;
   }
   return 500;
-}
-
-function messageOf(err: unknown, fallback: string): string {
-  if (err instanceof Error && err.message) return err.message;
-  return fallback;
 }
 
 function sessionTokenOf(req: FastifyRequest): string | null {

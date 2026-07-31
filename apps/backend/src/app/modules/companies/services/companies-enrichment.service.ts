@@ -11,6 +11,8 @@ import { logger } from '../../../logger';
 const ENRICHMENT_QUEUE_BATCH = 2000;
 /** Rows per insert statement, so one run never builds a single enormous multi-row INSERT. */
 const ENRICHMENT_INSERT_CHUNK = 500;
+/** Deadline for each Google Places HTTP call — a hung connection must not stall a worker slot. */
+const PLACES_TIMEOUT_MS = 10_000;
 
 /** Fields we lift from Google Places. All optional — Google may not know them. */
 export interface CompanyLookupResult {
@@ -45,7 +47,7 @@ export class CompaniesEnrichmentService {
 
     // Step 1: Text Search to find the Place ID.
     const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(name)}&key=${apiKey}`;
-    const searchRes = await fetch(searchUrl);
+    const searchRes = await fetch(searchUrl, { signal: AbortSignal.timeout(PLACES_TIMEOUT_MS) });
     if (!searchRes.ok) {
       throw new Error(`Google Places Text Search returned status ${searchRes.status}`);
     }
@@ -58,7 +60,7 @@ export class CompaniesEnrichmentService {
     // Step 2: Fetch Place Details for the top result.
     const placeId = searchData.results[0].place_id;
     const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,website,international_phone_number,formatted_phone_number,editorial_summary,types&key=${apiKey}`;
-    const detailsRes = await fetch(detailsUrl);
+    const detailsRes = await fetch(detailsUrl, { signal: AbortSignal.timeout(PLACES_TIMEOUT_MS) });
     if (!detailsRes.ok) {
       throw new Error(`Google Places Details returned status ${detailsRes.status}`);
     }

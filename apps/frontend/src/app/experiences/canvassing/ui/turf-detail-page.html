@@ -27,27 +27,38 @@
           </div>
           <p class="max-w-xl text-xs text-base-content/60">{{ statusHint[d.status] }}</p>
         </div>
+        <!-- Two main actions up front, everything else behind the ⋯ menu — the same
+             shape as the delivery route header. -->
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" class="btn btn-primary btn-sm" (click)="rosterOpen.set(true)">
             <pc-icon name="user-plus" [size]="4" />
             {{ d.canvassers.length > 0 ? 'Manage canvassers' : 'Add canvassers' }}
           </button>
-          <button type="button" class="btn btn-ghost btn-sm" (click)="qrOpen.set(true)">Show join QR</button>
-          <!-- Offered only when there is a list behind this turf; the tooltip says why
-               it is not, rather than letting the click fail (§2/§3). -->
-          <span
-            class="tooltip-bottom"
-            [class.tooltip]="!d.list_id"
-            data-tip="This turf was built by hand, so there is no list to re-read."
+          <button
+            type="button"
+            class="btn btn-outline btn-primary btn-sm"
+            [disabled]="copyingJoinLink()"
+            (click)="copyJoinLink()"
           >
-            <button type="button" class="btn btn-ghost btn-sm" [disabled]="!d.list_id" (click)="refreshFromList()">
-              <pc-icon name="arrow-path" [size]="4" />
-              Refresh doors from list
-            </button>
-          </span>
-          @if (d.status !== 'retired') {
-          <button type="button" class="btn btn-ghost btn-sm text-error" (click)="retire()">Retire turf</button>
-          }
+            <pc-icon name="document-duplicate" [size]="4" />
+            Copy join link
+          </button>
+          <pc-row-actions [label]="'More actions for ' + d.name">
+            <li><button type="button" (click)="qrOpen.set(true)">Show join QR</button></li>
+            <!-- Only a turf cut from a list can be re-synced with one. Naming the list
+                 in the label is what makes the action legible at all (§2/§3). -->
+            @if (d.list_name) {
+            <li><button type="button" (click)="refreshFromList()">Refresh doors from {{ d.list_name }}</button></li>
+            } @else {
+            <li>
+              <button type="button" disabled title="This turf was built by hand, so there is no list to re-read.">
+                Refresh doors from list
+              </button>
+            </li>
+            } @if (d.status !== 'retired') {
+            <li><button type="button" class="text-error" (click)="retire()">Retire turf</button></li>
+            }
+          </pc-row-actions>
         </div>
       </div>
 

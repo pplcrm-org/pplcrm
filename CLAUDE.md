@@ -32,6 +32,26 @@
 
 # pplCRM Project Standards
 
+## 0a. Report verification commands as one line, not as a wall of output
+
+Builds, tests, linters, formatters and type checks are run to learn one bit of information: did it pass. Their stdout is noise that buries everything else in the transcript. Run them through `tools/quiet.sh`, which captures the output and prints a single labelled result line:
+
+```bash
+tools/quiet.sh npx nx build frontend
+tools/quiet.sh npx prettier --write file-a.ts file-b.ts
+tools/quiet.sh npx eslint file-a.ts --report-unused-disable-directives-severity=off
+```
+
+Passing prints one line (`nx build frontend: success`). Failing prints one line plus the last 40 lines of the captured log, which is where the actual error is, and exits with the wrapped command's own status. Never paste a successful build or test log into a response — say "frontend build: success" and move on.
+
+Three rules about the form:
+
+- **Do not hand-write the redirect-and-echo suffix.** Appending `>"$TMPDIR/x.log" 2>&1 && echo ... || { ...; }` to a command **makes it prompt for permission every time**, which is why the helper exists. A permission rule such as `Bash(npx prettier*)` matches a literal prefix; that suffix adds a `"$TMPDIR"` expansion whose value is unknown before the shell runs, `&&`/`||` segments that are each matched separately, and a `{ ...; }` group. `Bash(tools/quiet.sh*)` matches all of it in one rule.
+- **Invoke it as exactly `tools/quiet.sh`** — relative to the repo root, no `./` and no absolute path. `.claude/settings.json` matches that literal prefix in two places: the permission allow rule, and the `sandbox.excludedCommands` entries that keep Angular builds and `nx test backend` running outside the sandbox. A different spelling silently drops them back in and reintroduces the failures documented in that file.
+- **When you add a command to `sandbox.excludedCommands`, add the `tools/quiet.sh `-prefixed form too.** The two lists have to stay in step.
+
+Applies to subagents too — a subagent that returns a build log has returned noise.
+
 ## 0. Skill Library — check here before re-deriving anything
 
 Project-specific how-tos live in `.claude/skills/<name>/SKILL.md`, and every one of them is already listed — with its full trigger conditions — in your available-skills context. Read the matching skill **first**: it has the verified file paths, commands, and examples, so you don't re-grep the codebase from scratch. (This section deliberately does not repeat that list; a second copy only goes stale.)
@@ -215,6 +235,8 @@ npx nx lint <project>                                                       # pr
 npx nx build frontend && npx nx build backend
 npx nx test frontend && npx nx test backend
 ```
+
+Run each of these through `tools/quiet.sh` as §0a requires (`tools/quiet.sh npx nx build frontend`) — these five commands are the main source of transcript noise, and the only thing worth reporting is which of them passed.
 
 **Why both are required:** the pre-commit hook (plain `eslint`, root config) and `nx lint <project>` (project-local config) enforce **disjoint rule sets** — the hook catches `no-floating-promises`/`no-misused-promises`, only `nx lint backend` catches the multi-tenant `local/no-unscoped-db-query` rule. A green run of one says nothing about the other. The full mechanism, the known pre-existing failures, and worked before/after fixes for the promise rules live in **`pplcrm-quality-gate`** — read it before your first commit in a session.
 

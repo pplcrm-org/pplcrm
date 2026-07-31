@@ -4,6 +4,7 @@ import { TRPCError } from '@trpc/server';
 import { sql } from 'kysely';
 
 import { fingerprintFull, fingerprintStreet } from '../../../lib/address-normalize';
+import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../../lib/ndjson';
 import { backfillMissingSlugs } from '../../../lib/slug';
 import { backfillPersonPublicIds, insertPersonWithPublicId } from '../../../lib/person-public-id';
 import { notificationEnabled } from '../../../lib/profile-preferences';
@@ -668,8 +669,10 @@ export class PersonsService {
     const storageKey = `imports/payloads/${auth.tenant_id}/${importRecordId}.json`;
 
     try {
-      const payloadBuffer = Buffer.from(JSON.stringify(input.rows), 'utf8');
-      await this.storageService.upload(storageKey, payloadBuffer, 'application/json');
+      // NDJSON (one row object per line) so the import job can stream rows
+      // instead of parsing one giant array — see lib/ndjson.ts.
+      const payloadBuffer = serializeRowsToNdjson(input.rows);
+      await this.storageService.upload(storageKey, payloadBuffer, NDJSON_CONTENT_TYPE);
     } catch (err) {
       logger.error({ err }, 'Failed to upload import payload to storage');
       await this.importsRepo.delete({ tenant_id: auth.tenant_id, id: importRecordId });
@@ -749,7 +752,9 @@ export class PersonsService {
     campaign_id: string,
     tags: string[],
     skipped: number,
-    rows: Record<string, string>[],
+    // Any row source works (arrays included); the import job passes a lazy
+    // NDJSON iterator so the full payload is never materialized at once.
+    rows: Iterable<Record<string, string>> | AsyncIterable<Record<string, string>>,
     options?: {
       duplicateDecision?: 'merge' | 'skip' | 'import_new';
       listName?: string;
@@ -784,9 +789,12 @@ export class PersonsService {
     let autoTagId: string | null = null;
     const autoTag = tags.find((t) => t.startsWith('Imported-')) || tags[0];
 
-    const chunkSize = 100;
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize);
+    // Total rows consumed from the source so far — replaces rows.length now
+    // that the source may be a lazy iterator (also drives 1-based row numbers).
+    let rowsSeen = 0;
+    for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
+      const chunkStartRow = rowsSeen;
+      rowsSeen += chunk.length;
 
       // 1. Sanitize and classify all valid rows in the chunk upfront
       type ValidEntry = {
@@ -818,7 +826,7 @@ export class PersonsService {
       const SKIP_REASONS_CAP = 500;
       const validEntries: ValidEntry[] = [];
       for (const [chunkIdx, raw] of chunk.entries()) {
-        const rowNumber = i + chunkIdx + 1;
+        const rowNumber = chunkStartRow + chunkIdx + 1;
         const sanitized = this.sanitizeRow(raw);
         if (
           !sanitized.first_name &&
@@ -1321,7 +1329,7 @@ export class PersonsService {
         entity: 'persons',
         quantity: results.inserted,
         metadata: {
-          rows_received: rows.length,
+          rows_received: rowsSeen,
           tags_applied: tags.slice(0, 10),
           auto_tag: autoTag,
           households_created: results.households_created,

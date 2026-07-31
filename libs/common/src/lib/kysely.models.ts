@@ -836,6 +836,10 @@ interface Tenants extends Omit<RecordType, 'createdby_id'>, AddressType {
   paused_at: Timestamp | null;
   /** Demo mode: set while the seeded test-drive data is present; NULL = exited/never. */
   demo_mode_at: Timestamp | null;
+  /** Data residency: the answer given at signup, defaulting to 'any' (no requirement).
+   * This is what the workspace ASKED for, not where its rows are. For that, pass it through
+   * `hostingRegionFor()` — only Canada is standing today (libs/common/src/lib/data-residency.ts). */
+  data_region: Generated<'any' | 'ca' | 'us' | 'eu'>;
   /** Beta gate: 'pending' until pplCRM ops approves the account, then 'approved' (or 'declined').
    * Anything other than 'approved' blocks every sign-in path — see modules/auth/tenant-approval.ts. */
   approval_status: Generated<'pending' | 'approved' | 'declined'>;

@@ -8,6 +8,12 @@ import { ImportsRepo } from '../../../modules/imports/repositories/imports.repo'
 import { PersonsService } from '../../../modules/persons/services/persons.service';
 import { TasksController } from '../../../modules/tasks/controller';
 import { StorageService } from '../../storage.service';
+import {
+  importRowsFromLegacyJsonArray,
+  importRowsFromNdjson,
+  isLegacyJsonArrayPayload,
+  type StoredImportRow,
+} from '../../ndjson';
 import { notificationEnabled } from '../../profile-preferences';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
@@ -107,9 +113,22 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
     },
   });
 
-  // 2. Download mapping payload from storage
+  // 2. Download the mapping payload and iterate it lazily. The payload is
+  // NDJSON (one row object per line): rows are parsed line by line and handed
+  // to the processors in chunks, so beyond the downloaded string only the
+  // current chunk of row objects is alive — never one array of every row.
   const buffer = await storageService.download(payload.storage_key);
-  const rows = JSON.parse(buffer.toString('utf8'));
+  const text = buffer.toString('utf8');
+
+  let rowSource: Iterable<StoredImportRow>;
+  if (isLegacyJsonArrayPayload(text)) {
+    // Legacy format: one JSON array holding every row. This branch exists only
+    // for jobs enqueued before the NDJSON switch whose payloads are already in
+    // storage — it can be removed after one deploy cycle.
+    rowSource = importRowsFromLegacyJsonArray(text);
+  } else {
+    rowSource = importRowsFromNdjson(text);
+  }
 
   // 3. Process the import rows in chunks
   let verification: EmailVerificationSummary | null = null;
@@ -120,7 +139,7 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
       payload.tenant_id,
       payload.user_id,
       Number(payload.skipped || 0),
-      rows,
+      rowSource,
     );
   } else if (payload.source === 'tasks') {
     const tasksController = new TasksController();
@@ -129,7 +148,7 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
       payload.tenant_id,
       payload.user_id,
       Number(payload.skipped || 0),
-      rows,
+      rowSource,
     );
   } else if (payload.source === 'households') {
     const householdsController = new HouseholdsController();
@@ -140,9 +159,20 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
       payload.campaign_id ?? '',
       payload.tags ?? [],
       Number(payload.skipped || 0),
-      rows,
+      rowSource,
     );
   } else {
+    // Collect just the email columns while the rows stream past, so the
+    // post-import verification doesn't need a second pass over the payload.
+    // Worst case this holds two short strings per row — not the full rows.
+    const emailRows: Array<{ email?: string; email2?: string }> = [];
+    function* collectEmails(source: Iterable<StoredImportRow>): Generator<StoredImportRow, void, undefined> {
+      for (const row of source) {
+        if (row['email'] || row['email2']) emailRows.push({ email: row['email'], email2: row['email2'] });
+        yield row;
+      }
+    }
+
     const personsService = new PersonsService();
     await personsService.processImportRows(
       payload.import_id,
@@ -151,7 +181,7 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
       payload.campaign_id ?? '',
       payload.tags ?? [],
       Number(payload.skipped || 0),
-      rows,
+      collectEmails(rowSource),
       {
         duplicateDecision: payload.duplicate_decision ?? 'skip',
         listName: payload.list_name ?? undefined,
@@ -164,7 +194,7 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
     verification = await runImportEmailVerification(
       db,
       { tenant_id: payload.tenant_id, import_id: payload.import_id, user_id: payload.user_id },
-      rows,
+      emailRows,
     );
   }
 

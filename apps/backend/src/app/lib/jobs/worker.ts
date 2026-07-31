@@ -24,6 +24,20 @@ const RESERVED_SLOTS = 1;
 const STALE_JOB_THRESHOLD_MS = 30 * 60 * 1000;
 const JOB_HEARTBEAT_MS = 5 * 60 * 1000;
 
+// How long stop() waits for in-flight jobs to finish before releasing them back to the queue.
+// Deliberately shorter than DEFAULT_SHUTDOWN_TIMEOUT_MS (25s) in shutdown.ts, which force-exits
+// the process after SIGTERM: the ~10s gap is the budget for the release UPDATEs to commit before
+// the force-exit lands. Without this release, a job killed mid-flight would sit invisible in
+// 'processing' until recoverStaleJobs reclaims it after STALE_JOB_THRESHOLD_MS (30 minutes), and
+// would burn one of its attempts on a deploy that was never the job's fault.
+const SHUTDOWN_DRAIN_DEADLINE_MS = 15_000;
+
+// A job released at shutdown becomes runnable again only after this delay. Invariant: 90s exceeds
+// the force-exit window remaining after the drain deadline (25s − 15s = 10s), so the old process
+// is certainly dead before any new process can claim the row — the un-cancellable zombie handler
+// promise can never run concurrently with a re-claim.
+const SHUTDOWN_RELEASE_RUN_DELAY_MS = 90_000;
+
 /**
  * Thrown when a handler outlives its wall-clock cap (see jobTimeoutMs). Distinct class because the
  * failure path treats it differently from an ordinary error: the timed-out promise keeps running.
@@ -41,8 +55,14 @@ export class BackgroundJobWorker {
 
   // Number of jobs currently in flight (real concurrency), capped at maxConcurrency.
   private activeJobsCount = 0;
+  // Ids of the job rows currently being executed by this process (added at claim, removed when the
+  // job settles). stop() uses this to release still-running rows back to 'pending' when the drain
+  // deadline passes, instead of leaving them stuck in 'processing' until stale recovery.
+  private readonly inFlightJobIds = new Set<string>();
   private readonly maxConcurrency = env.workerConcurrency;
   private isRunning = false;
+  // Instance field (not a const reference at the callsite) so tests can shorten the wait.
+  private shutdownDrainDeadlineMs = SHUTDOWN_DRAIN_DEADLINE_MS;
   // Epoch ms the next drain is scheduled for, so overlapping schedule requests coalesce to the
   // soonest one instead of stacking timers.
   private nextDrainAt = Number.POSITIVE_INFINITY;
@@ -106,9 +126,26 @@ export class BackgroundJobWorker {
       logger.info(
         `Background Job Worker: Waiting for ${this.activeJobsCount} active jobs to complete before shutting down...`,
       );
-      await new Promise<void>((resolve) => {
+      const drained = new Promise<void>((resolve) => {
         this.shutdownResolver = resolve;
       });
+
+      // Wait for a clean drain, but only up to SHUTDOWN_DRAIN_DEADLINE_MS: shutdown.ts force-exits
+      // the process soon after, so past the deadline we hand the still-running jobs back to the
+      // queue while there is still time for those UPDATEs to reach the database.
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      const drainedInTime = await Promise.race([
+        drained.then(() => true),
+        new Promise<boolean>((resolve) => {
+          deadlineTimer = setTimeout(() => resolve(false), this.shutdownDrainDeadlineMs);
+          if (typeof deadlineTimer.unref === 'function') deadlineTimer.unref();
+        }),
+      ]);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+
+      if (!drainedInTime) {
+        await this.releaseInFlightJobs();
+      }
     }
     logger.info('Background Job Worker stopped.');
   }
@@ -173,6 +210,10 @@ export class BackgroundJobWorker {
     const job = await claimNextPendingJob(this.db, workerId, inFlightCap);
 
     if (!job) return false;
+
+    // Registered before the handler starts so a shutdown at any point mid-execution can find and
+    // release this row; removed in the finally below once the job has settled either way.
+    this.inFlightJobIds.add(job.id);
 
     logger.info({ jobId: job.id, queue: job.queue }, 'Processing job');
 
@@ -389,6 +430,7 @@ export class BackgroundJobWorker {
     } finally {
       // Reached on success, on handler failure, and on timeout — so neither the heartbeat interval
       // nor the timeout timer can outlive the job.
+      this.inFlightJobIds.delete(job.id);
       clearInterval(heartbeat);
       if (timeoutHandle) clearTimeout(timeoutHandle);
     }
@@ -419,7 +461,7 @@ export class BackgroundJobWorker {
       // Dead-letter such a job once it has been claimed max_attempts times instead of requeuing it
       // forever — otherwise a poison job re-crashes the worker every stale window indefinitely.
       // `attempts` is incremented at claim time, so it reflects real tries.
-      await this.db
+      const deadLettered = await this.db
         .updateTable('background_jobs')
         .set({
           status: 'failed',
@@ -431,7 +473,20 @@ export class BackgroundJobWorker {
         .where('status', '=', 'processing')
         .where('locked_at', '<', staleTime)
         .where(sql<boolean>`attempts >= coalesce(max_attempts, 3)`)
+        .returning(sql<string | null>`payload->>'type'`.as('type'))
         .execute();
+
+      // Mirror of the in-process dead-letter path in processNextJob: a dead-lettered recurring
+      // (cron) job whose chain isn't re-seeded silently stops until the next deploy — retention
+      // pruning, scheduled deletions, the ops watchdog itself. rescheduleCronJobOnFailure no-ops
+      // for non-cron types and scheduleNextRun dedups under an advisory lock, so calling it for
+      // every distinct dead-lettered type is safe.
+      const deadLetteredTypes = new Set(
+        deadLettered.map((row) => row.type).filter((type): type is string => type != null),
+      );
+      for (const type of deadLetteredTypes) {
+        await this.rescheduleCronJobOnFailure(type);
+      }
 
       // Requeue stale jobs that still have retries left.
       await this.db
@@ -450,6 +505,9 @@ export class BackgroundJobWorker {
 
       // Clean up/timeout data exports stuck in pending/processing for more than 1 hour
       const staleExportTime = new Date(Date.now() - 60 * 60 * 1000); // 1 hour
+      // NOTE: unscoped by design — queue-hygiene sweep over EVERY tenant's stuck exports; it
+      // reads only ids (plus the tenant_id used to scope the per-export job cleanup below).
+      // eslint-disable-next-line local/no-unscoped-db-query
       const staleExports = await this.db
         .selectFrom('data_exports')
         .select(['id', 'tenant_id'])
@@ -459,6 +517,9 @@ export class BackgroundJobWorker {
 
       if (staleExports.length > 0) {
         const ids = staleExports.map((e) => e.id);
+        // NOTE: unscoped by design — the ids come from the sweep above and are globally-unique
+        // primary keys; the update deliberately spans tenants (same queue-hygiene pass).
+        // eslint-disable-next-line local/no-unscoped-db-query
         await this.db
           .updateTable('data_exports')
           .set({
@@ -480,6 +541,41 @@ export class BackgroundJobWorker {
       }
     } catch (err) {
       logger.error({ err }, 'Failed to recover stale background jobs');
+    }
+  }
+
+  /**
+   * Shutdown drain deadline passed with jobs still running: hand their rows back to the queue so
+   * the next deploy's worker picks them up ~90s later instead of 30 minutes later via stale
+   * recovery. The attempts decrement refunds the claim-time increment — a deploy kill is not a
+   * real execution failure, and without the refund three deploys against the same long job would
+   * dead-letter it. Guarded on status='processing' so a job that finishes (or fails) between the
+   * deadline and the force-exit keeps its final state — the settle path's UPDATE and this one can
+   * never both win.
+   */
+  private async releaseInFlightJobs(): Promise<void> {
+    const jobIds = [...this.inFlightJobIds];
+    if (jobIds.length === 0) return;
+
+    logger.warn({ jobIds }, 'Shutdown drain deadline passed; releasing in-flight jobs back to pending');
+    try {
+      await this.db
+        .updateTable('background_jobs')
+        .set({
+          status: 'pending',
+          locked_at: null,
+          locked_by: null,
+          // See SHUTDOWN_RELEASE_RUN_DELAY_MS: the delay outlives the force-exit backstop, so the
+          // zombie handler in this process is dead before any new process can claim the row.
+          run_at: new Date(Date.now() + SHUTDOWN_RELEASE_RUN_DELAY_MS),
+          attempts: sql<number>`greatest(attempts - 1, 0)`,
+          updated_at: new Date(),
+        })
+        .where('id', 'in', jobIds)
+        .where('status', '=', 'processing')
+        .execute();
+    } catch (err) {
+      logger.error({ err, jobIds }, 'Failed to release in-flight jobs during shutdown');
     }
   }
 

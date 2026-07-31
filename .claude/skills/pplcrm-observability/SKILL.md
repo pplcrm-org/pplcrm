@@ -35,11 +35,11 @@ page us" — if you weaken this materially, update `security-content.ts` (see `p
 
 ## Health endpoints (`apps/backend/src/app/routes.ts`)
 
-| Endpoint              | Means                                                                | Used by                                                        |
-| --------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `GET /`               | process is up (no DB touch)                                          | Container App **liveness** probe                               |
-| `GET /healthz`        | Postgres reachable (`select 1`), else 503                            | Container App **readiness**, CI smoke test, availability probe |
-| `GET /healthz/worker` | ops watchdog heartbeat fresh (< 20 min), else 503 `{status:"stale"}` | availability probe only                                        |
+| Endpoint              | Means                                                                                                                 | Used by                                                        |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `GET /`               | process is up (no DB touch)                                                                                           | Container App **liveness** probe                               |
+| `GET /healthz`        | Postgres reachable (`select 1`), else 503; body carries `build` = the image's commit SHA (`BUILD_SHA`, 'dev' locally) | Container App **readiness**, CI smoke test, availability probe |
+| `GET /healthz/worker` | ops watchdog heartbeat fresh (< 20 min), else 503 `{status:"stale"}`                                                  | availability probe only                                        |
 
 Rules: liveness must NEVER check the DB (a DB outage would restart-loop the app); `/healthz` must
 NEVER include worker/queue state (a jammed queue must not pull the API from ingress). The probe
@@ -99,8 +99,12 @@ is outside the `local/no-unscoped-db-query` rule's scope (`modules/**` only).
   (`{status:'unavailable'}`, `retry-after: 30`); pplforms' `/d/*` browser navigations get a tiny
   inline HTML page. Backend 5xx _responses_ pass through untouched — only thrown fetches are caught.
 - `deploy.yml` "Smoke test backend /healthz": after `az containerapp update`, polls
-  `https://api.pplcrm.com/healthz` 10×15 s and fails the workflow (before edge deploys) if the new
-  revision never answers 200.
+  `https://api.pplcrm.com/healthz` 12×15 s and fails the workflow (before edge deploys) unless it
+  gets HTTP 200 **and** a `build` field equal to the deployed `github.sha`. The SHA check exists
+  because single-revision Container Apps keep the OLD revision serving (and answering 200) when
+  the new one never becomes healthy; `BUILD_SHA` is baked in as a Docker build arg in the image
+  job, using the same `github.sha` as the image tag. The failure message distinguishes
+  "answered with a different build (old revision still serving)" from "never answered 200".
 
 ## Gotchas
 

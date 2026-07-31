@@ -8,6 +8,7 @@ import { resolveTenantById, resolveTenantFromRequest } from '../../../lib/public
 import { checkKeyedSubmissionRateLimit, tenantIdFromOptionalApiKey } from '../../../lib/validate-api-key';
 import { env } from '../../../../env';
 import { checkRateLimit } from '../../../lib/rate-limiter';
+import { publicClientMessageOf } from '../../../lib/public-route-errors';
 
 /** Per-IP ceiling on the read-only public pages (form config, donation page). Generous:
  *  a refresh or a slow page with several assets must never trip it. */
@@ -619,10 +620,10 @@ const webFormsPublicRoute: FastifyPluginCallback = (fastify, _, done) => {
       const statusCode = httpStatusOf(err) ?? 500;
       // Client errors (4xx: validation, rate limit) carry user-actionable copy; anything 5xx is an
       // unexpected internal failure whose detail must not leak to the public (SECURITY-REVIEW 5.2).
-      const message =
-        statusCode < 500 && err instanceof Error && err.message
-          ? err.message
-          : 'An unexpected error occurred during submission.';
+      // Gate on the error's TYPE, not just its status: a framework error with a sub-500
+      // statusCode is not client copy.
+      const fallback = 'An unexpected error occurred during submission.';
+      const message = statusCode < 500 ? publicClientMessageOf(err, fallback) : fallback;
 
       if (isJsonExpected) {
         return reply.status(statusCode).send({ error: message });

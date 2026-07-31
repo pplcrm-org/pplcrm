@@ -133,6 +133,56 @@ describe('AuthController', () => {
     await cleanup(db, owner.id, owner.tenant_id);
   }, 30000);
 
+  // Residency is chosen at signup and never asked again, so the one thing that must not fail
+  // silently is the write: a choice that is dropped here is unrecoverable, because nothing
+  // downstream ever asks the question a second time.
+  it('should store the chosen data region on the tenant, and fall back to no-preference when none was sent', async () => {
+    const chosenEmail = `region-eu-${Date.now()}-${rand()}@example.com`;
+    await controller.signUp({
+      organization: `Org-${rand()}`,
+      email: chosenEmail,
+      password: 'StrongPassword123!',
+      first_name: 'Owner',
+      data_region: 'eu',
+    } as any);
+    const chosen = await db
+      .selectFrom('authusers')
+      .select(['id', 'tenant_id'])
+      .where('email', '=', chosenEmail)
+      .executeTakeFirstOrThrow();
+    const chosenTenant = await db
+      .selectFrom('tenants')
+      .select('data_region')
+      .where('id', '=', chosen.tenant_id)
+      .executeTakeFirstOrThrow();
+    expect(chosenTenant.data_region).toBe('eu');
+
+    // An internal caller that builds the input by hand never goes through the Zod default, so
+    // the controller has to supply one itself rather than writing undefined. 'any' — no stated
+    // requirement — is the only honest fallback; inventing a region would fabricate a request.
+    const defaultedEmail = `region-default-${Date.now()}-${rand()}@example.com`;
+    await controller.signUp({
+      organization: `Org-${rand()}`,
+      email: defaultedEmail,
+      password: 'StrongPassword123!',
+      first_name: 'Owner',
+    } as any);
+    const defaulted = await db
+      .selectFrom('authusers')
+      .select(['id', 'tenant_id'])
+      .where('email', '=', defaultedEmail)
+      .executeTakeFirstOrThrow();
+    const defaultedTenant = await db
+      .selectFrom('tenants')
+      .select('data_region')
+      .where('id', '=', defaulted.tenant_id)
+      .executeTakeFirstOrThrow();
+    expect(defaultedTenant.data_region).toBe('any');
+
+    await cleanup(db, chosen.id, chosen.tenant_id);
+    await cleanup(db, defaulted.id, defaulted.tenant_id);
+  }, 60000);
+
   it('should enforce the plan seat cap on inviteUser', async () => {
     const owner = await signUpOwner(controller, db);
     // Free plan allows 2 staff seats. signUp seeds demo teammates, so deactivate everyone but the

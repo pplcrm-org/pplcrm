@@ -63,6 +63,7 @@ libs/
           web-forms.schema.ts
           workflows.schema.ts
         auth.ts
+        data-residency.ts
         dns-label.ts
         emails.ts
         jsend.ts

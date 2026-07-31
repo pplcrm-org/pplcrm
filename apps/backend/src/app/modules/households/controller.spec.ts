@@ -369,4 +369,56 @@ describe('HouseholdsController', () => {
     expect(history.skipped_count).toBe(3);
     expect(history.households_created).toBe(1);
   });
+
+  it('keeps counts correct when a lazy row source crosses the chunk boundary (105 rows)', async () => {
+    const importRow = await db
+      .insertInto('data_imports')
+      .values({
+        tenant_id: tenantId,
+        createdby_id: userId,
+        updatedby_id: userId,
+        file_name: 'big.csv',
+        source: 'households',
+        row_count: 105,
+        status: 'processing',
+        processed_at: new Date(),
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const importId = String(importRow.id);
+
+    // A generator — the import job hands processImportRows a lazy NDJSON
+    // iterator, never a full array. 105 rows = chunks of 100 + 5:
+    //   indexes 0..101  unique addresses            → 102 inserted
+    //   index 102       repeats index 50 (cross-chunk duplicate) → skipped
+    //   index 103       repeats it again            → skipped
+    //   index 104       blank row                   → skipped
+    function* rowGen(): Generator<Record<string, string>, void, undefined> {
+      for (let i = 0; i <= 101; i++) {
+        yield { street_num: String(i + 1), street1: 'Cedar Ave', city: 'Springfield', state: 'IL', zip: '62701' };
+      }
+      yield { street_num: '51', street1: 'Cedar Ave', city: 'Springfield', state: 'IL', zip: '62701' };
+      yield { street_num: '51', street1: 'Cedar Ave', city: 'Springfield', state: 'IL', zip: '62701' };
+      yield { street_num: '', street1: '' };
+    }
+
+    const result = await controller.processImportRows(importId, tenantId, userId, campaignId, [], 0, rowGen());
+
+    expect(result.inserted).toBe(102);
+    expect(result.skipped).toBe(3);
+    expect(result.errors).toBe(0);
+
+    const created = await db
+      .selectFrom('households')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('file_id', '=', importId)
+      .execute();
+    expect(created).toHaveLength(102);
+
+    const history = await db.selectFrom('data_imports').selectAll().where('id', '=', importId).executeTakeFirst();
+    expect(history.inserted_count).toBe(102);
+    expect(history.skipped_count).toBe(3);
+    expect(history.error_count).toBe(0);
+  });
 });

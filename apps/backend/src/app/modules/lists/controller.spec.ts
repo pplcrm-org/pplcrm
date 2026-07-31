@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ListsController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
+import { MapListsPersonsRepo } from './repositories/map-lists-persons.repo';
 import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import type { IAuthKeyPayload } from '@common';
 
@@ -321,5 +322,187 @@ describe('ListsController Background Refresh', () => {
     const rows: any[] = Array.isArray(result) ? result : (result?.rows ?? []);
     expect(Array.isArray(rows)).toBe(true);
     expect(rows.some((r) => r.name === 'Grid Query List')).toBe(true);
+  });
+
+  /** Insert `count` bare persons and one static list; returns their ids for mapping rows. */
+  async function seedPersonsAndStaticList(count: number): Promise<{ listId: string; personIds: string[] }> {
+    const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
+    const personIds: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const personId = rand();
+      personIds.push(personId);
+      await db
+        .insertInto('persons')
+        .values({
+          id: personId,
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          household_id: householdId,
+          first_name: `Person${i}`,
+          last_name: 'Chunk',
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+    }
+    const listId = rand();
+    await db
+      .insertInto('lists')
+      .values({
+        id: listId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: `Chunk List ${listId}`,
+        object: 'people',
+        is_dynamic: false,
+        status: 'idle',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    return { listId, personIds };
+  }
+
+  function membershipRows(listId: string, personIds: string[]) {
+    return personIds.map((person_id) => ({
+      tenant_id: tenantId,
+      list_id: listId,
+      person_id,
+      createdby_id: userId,
+      updatedby_id: userId,
+    }));
+  }
+
+  describe('addManyChunked', () => {
+    const repo = new MapListsPersonsRepo();
+
+    it('returns 0 and issues no insert for an empty row set', async () => {
+      const inserted = await repo.addManyChunked({ rows: [], chunkSize: 2 });
+      expect(inserted).toBe(0);
+    });
+
+    it('inserts a row set exactly one chunk long in a single statement', async () => {
+      const { listId, personIds } = await seedPersonsAndStaticList(2);
+      const inserted = await repo.addManyChunked({ rows: membershipRows(listId, personIds) as any, chunkSize: 2 });
+      expect(inserted).toBe(2);
+
+      const mappings = await db.selectFrom('map_lists_persons').selectAll().where('list_id', '=', listId).execute();
+      expect(mappings.map((m: any) => m.person_id).sort()).toEqual([...personIds].sort());
+    });
+
+    it('inserts chunk size + 1 rows across two statements and counts them all', async () => {
+      const { listId, personIds } = await seedPersonsAndStaticList(3);
+      const inserted = await repo.addManyChunked({ rows: membershipRows(listId, personIds) as any, chunkSize: 2 });
+      expect(inserted).toBe(3);
+
+      const mappings = await db.selectFrom('map_lists_persons').selectAll().where('list_id', '=', listId).execute();
+      expect(mappings.map((m: any) => m.person_id).sort()).toEqual([...personIds].sort());
+    });
+
+    it('rejects a non-positive chunk size', async () => {
+      await expect(repo.addManyChunked({ rows: [], chunkSize: 0 })).rejects.toThrow(/positive integer/);
+    });
+  });
+
+  it('keeps the previous membership intact when the refresh insert fails mid-swap', async () => {
+    // New membership: Alice, tagged "volunteer". Previous membership: Bob.
+    const { personIds } = await seedPersonsAndStaticList(2);
+    const [aliceId, bobId] = personIds;
+
+    const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
+    const tagId = rand();
+    await db
+      .insertInto('tags')
+      .values({ id: tagId, tenant_id: tenantId, name: 'volunteer', createdby_id: userId, updatedby_id: userId })
+      .execute();
+    await db
+      .insertInto('map_peoples_tags')
+      .values({ tenant_id: tenantId, person_id: aliceId, tag_id: tagId, createdby_id: userId, updatedby_id: userId })
+      .execute();
+
+    const listId = rand();
+    await db
+      .insertInto('lists')
+      .values({
+        id: listId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Refresh Failure List',
+        object: 'people',
+        is_dynamic: true,
+        status: 'refreshing',
+        definition: JSON.stringify({ tags: ['volunteer'] }),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    // The membership as it stood before the refresh.
+    await db
+      .insertInto('map_lists_persons')
+      .values({ tenant_id: tenantId, list_id: listId, person_id: bobId, createdby_id: userId, updatedby_id: userId })
+      .execute();
+
+    // A local controller so the spy can't leak into the shared instance.
+    const failingController = new ListsController();
+    vi.spyOn((failingController as any).mapListsPersonsRepo, 'addManyChunked').mockRejectedValue(
+      new Error('insert blew up'),
+    );
+
+    await expect(failingController.executeListRefresh(tenantId, listId, userId)).rejects.toThrow('insert blew up');
+
+    // The delete rolled back with the failed insert: Bob is still a member.
+    const mappings = await db.selectFrom('map_lists_persons').selectAll().where('list_id', '=', listId).execute();
+    expect(mappings.length).toBe(1);
+    expect(mappings[0].person_id).toBe(bobId);
+
+    // And the list reports the failure instead of pretending it refreshed.
+    const listRow = await db.selectFrom('lists').selectAll().where('id', '=', listId).executeTakeFirst();
+    expect(listRow.status).toBe('failed');
+    expect(listRow.last_refreshed_at).toBeNull();
+  });
+
+  it('executeListRefresh replaces the previous membership on success', async () => {
+    // Previous membership: Bob. New membership after refresh: Alice (tagged).
+    const { personIds } = await seedPersonsAndStaticList(2);
+    const [aliceId, bobId] = personIds;
+
+    const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
+    const tagId = rand();
+    await db
+      .insertInto('tags')
+      .values({ id: tagId, tenant_id: tenantId, name: 'volunteer', createdby_id: userId, updatedby_id: userId })
+      .execute();
+    await db
+      .insertInto('map_peoples_tags')
+      .values({ tenant_id: tenantId, person_id: aliceId, tag_id: tagId, createdby_id: userId, updatedby_id: userId })
+      .execute();
+
+    const listId = rand();
+    await db
+      .insertInto('lists')
+      .values({
+        id: listId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Refresh Swap List',
+        object: 'people',
+        is_dynamic: true,
+        status: 'refreshing',
+        definition: JSON.stringify({ tags: ['volunteer'] }),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    await db
+      .insertInto('map_lists_persons')
+      .values({ tenant_id: tenantId, list_id: listId, person_id: bobId, createdby_id: userId, updatedby_id: userId })
+      .execute();
+
+    await controller.executeListRefresh(tenantId, listId, userId);
+
+    const mappings = await db.selectFrom('map_lists_persons').selectAll().where('list_id', '=', listId).execute();
+    expect(mappings.length).toBe(1);
+    expect(mappings[0].person_id).toBe(aliceId);
   });
 });

@@ -46,6 +46,13 @@ const TENANT_ID_PATTERN = /^\d+$/;
 const MAX_FILTER_DEPTH = 10;
 
 /**
+ * Rows per INSERT statement in addManyChunked. Postgres caps a statement at
+ * 65535 bind parameters; at 1000 rows a table can carry ~65 bound columns per
+ * row before hitting it, which no table here approaches.
+ */
+const INSERT_CHUNK_SIZE = 1000;
+
+/**
  * Tables whose rows belong to exactly one campaign context (Campaigns §15).
  * getAll/getAllWithCounts filter these by `options.campaignId` when provided;
  * everything else (the shared rolodex: persons, households, companies, tags,
@@ -136,6 +143,31 @@ export class BaseRepository<T extends keyof Models> {
 
   public async addMany(input: { rows: OperationDataType<T, 'insert'>[] }, trx?: Transaction<Models>) {
     return this.getInsert(trx).values(input.rows).returningAll().execute();
+  }
+
+  /**
+   * Bulk insert for row counts addMany cannot survive: one multi-row INSERT
+   * exceeds Postgres's 65535-bind-parameter cap past ~13k rows on a 5-column
+   * table, so this splits the rows into fixed-size chunks (one statement each)
+   * and skips RETURNING — callers on this path only need the count. Pass `trx`
+   * to make all chunks part of one atomic write; `chunkSize` is overridable so
+   * tests can exercise the chunk boundaries cheaply.
+   */
+  public async addManyChunked(
+    input: { rows: OperationDataType<T, 'insert'>[]; chunkSize?: number },
+    trx?: Transaction<Models>,
+  ): Promise<number> {
+    const chunkSize = input.chunkSize ?? INSERT_CHUNK_SIZE;
+    if (!Number.isInteger(chunkSize) || chunkSize < 1) {
+      throw new Error(`addManyChunked: chunkSize must be a positive integer, got ${String(chunkSize)}`);
+    }
+    let inserted = 0;
+    for (let i = 0; i < input.rows.length; i += chunkSize) {
+      const chunk = input.rows.slice(i, i + chunkSize);
+      const results = await this.getInsert(trx).values(chunk).execute();
+      inserted += results.reduce((sum, r) => sum + Number(r.numInsertedOrUpdatedRows ?? 0), 0);
+    }
+    return inserted;
   }
 
   public async addOrGet<K extends keyof Models[T] & string>(

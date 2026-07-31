@@ -139,6 +139,75 @@ describe('tenant approval (closed-beta gate)', () => {
     await expect(assertTenantApprovedForSignIn(rand())).rejects.toThrow(ForbiddenError);
   });
 
+  /**
+   * The mail pplCRM ops reads before letting a workspace in.
+   *
+   * Called directly rather than through `signUp`, because the mail is only enqueued when the
+   * workspace is held — and the test run sets AUTO_APPROVE_TENANTS, so no signup in this suite
+   * is ever held. The method takes its transaction only to hand to the outbox, so a null
+   * stands in for one.
+   */
+  async function approvalMailFor(dataRegion: string): Promise<{ subject: string; text: string; html: string }> {
+    const enqueued: any[] = [];
+    vi.spyOn((controller as any).mailService, 'enqueueMail').mockImplementation((msg: any): void => {
+      enqueued.push(msg);
+    });
+
+    await (controller as any).enqueueTenantApprovalRequest(null, {
+      tenant_id: tenantId,
+      token: 'test-token',
+      organization: 'Acme Org',
+      first_name: 'Casey',
+      email: 'casey@example.com',
+      data_region: dataRegion,
+    });
+
+    expect(enqueued).toHaveLength(1);
+    return enqueued[0];
+  }
+
+  // Ops decides approvals from this mail alone, so the region has to be in it — there is no
+  // screen they check afterwards.
+  it('names the requested data region in the ops approval mail', async () => {
+    const mail = await approvalMailFor('eu');
+
+    expect(mail.text).toContain('Data region: European Union');
+    expect(mail.html).toContain('European Union');
+    // Both caveats, because either one alone would mislead: the region does not exist yet, and
+    // the signup starts on Free while choosing a region needs Movement.
+    expect(mail.text).toContain('NOT AVAILABLE YET');
+    expect(mail.text).toContain('created in Canada');
+    expect(mail.text).toContain('Movement');
+  });
+
+  // Visible in the inbox list without opening anything: these are the signups needing a
+  // conversation before approval.
+  it('flags a requested region in the subject line', async () => {
+    expect((await approvalMailFor('eu')).subject).toBe('pplCRM beta signup: Acme Org — asked for European Union');
+    expect((await approvalMailFor('ca')).subject).toBe('pplCRM beta signup: Acme Org — asked for Canada');
+  });
+
+  // Most signups state no requirement. Those must read as ordinary, or the flag stops meaning
+  // anything, and the subject stays exactly what it was before residency existed.
+  it('leaves the subject unchanged and states no requirement when none was given', async () => {
+    const mail = await approvalMailFor('any');
+
+    expect(mail.subject).toBe('pplCRM beta signup: Acme Org');
+    expect(mail.text).toContain('Data region: Does not matter (no requirement) — stored in Canada');
+    expect(mail.text).not.toContain('NOT AVAILABLE');
+    expect(mail.text).not.toContain('Movement');
+  });
+
+  // Canada is available today, so it must not be described as pending — but it is still a
+  // stated preference, so the plan requirement still applies.
+  it('does not call an available region unavailable', async () => {
+    const mail = await approvalMailFor('ca');
+
+    expect(mail.text).toContain('Data region: Canada — available.');
+    expect(mail.text).not.toContain('NOT AVAILABLE');
+    expect(mail.text).toContain('Movement');
+  });
+
   it('resolves an ops link to its tenant and owner, and rejects an unknown token', async () => {
     const { token, tokenHash } = mintApprovalToken();
     await seedTenant({ status: 'pending', tokenHash });

@@ -83,6 +83,12 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
       'cannot sign in',
       'account not active',
       'invitation',
+      'data residency',
+      'region',
+      'where is my data stored',
+      'canada',
+      'united states',
+      'european union',
     ],
     related: ['welcome', 'demo-mode', 'users-roles'],
     blocks: [
@@ -114,6 +120,23 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
             detail: 'The message goes to the address you signed up with and links straight to sign-in.',
           },
         ],
+      },
+      { kind: 'h2', id: 'data-region', text: 'Choosing where your data is stored' },
+      {
+        kind: 'p',
+        text: 'The signup form asks whether you need your workspace data stored in a particular region: Canada, the United States or the European Union. It starts on "Does not matter", which is the right answer unless your organization has a rule requiring otherwise. It is asked at signup because it decides how the workspace is built — once your contacts, email and files exist, moving regions is a data migration rather than a setting.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Choosing a region is part of the Movement plan',
+        text: 'Leaving the answer on "Does not matter" costs nothing and is what most organizations do. Naming a specific region is a Movement plan feature; on any other plan your data is stored in Canada and the choice does not apply. See [Workspace settings](/help/settings).',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'Only Canada is open today',
+        text: 'United States and European Union hosting is not running yet. If you pick one of them, your workspace is created in Canada and your request is recorded against your organization; the signup form tells you this at the time. Everything in [Where your data lives](https://pplcrm.com/privacy#residency) applies to your workspace today.',
       },
       {
         kind: 'callout',

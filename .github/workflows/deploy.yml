@@ -107,6 +107,11 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/backend:latest
             ghcr.io/${{ github.repository }}/backend:${{ github.sha }}
+          # Bake the commit SHA into the image (Dockerfile ARG → ENV BUILD_SHA). /healthz reports
+          # it, and the post-deploy smoke test asserts it — same SHA as the image tag above, so
+          # tag and reported build can never disagree.
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -168,8 +173,12 @@ jobs:
             else
               echo "::warning::${{ vars.AZURE_API_APP }} does not exist yet — create it manually (PROD-CHECKLIST §5), then re-run."
             fi
-      # Post-deploy smoke test: the new revision must answer /healthz (200 = process up AND Postgres
-      # reachable) before we bother rolling the edges. 10 × 15s covers a single-revision rollover.
+      # Post-deploy smoke test: the new revision must answer /healthz with 200 AND report the
+      # commit SHA we just deployed (the `build` field, baked into the image as BUILD_SHA).
+      # A bare 200 is not enough: in single-revision mode, a new revision that never becomes
+      # healthy leaves the OLD revision serving — it answers 200 and the deploy would go green
+      # while production still runs the previous build. 12 × 15s covers a single-revision
+      # rollover (/healthz also caches its DB check for 5s, which the retry cadence absorbs).
       # Skips with the same guard as the update step (nothing was deployed on the first run).
       - name: Smoke test backend /healthz
         uses: azure/cli@v2
@@ -179,16 +188,25 @@ jobs:
               echo "app not created yet — skipping smoke test"
               exit 0
             fi
-            for i in $(seq 1 10); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.pplcrm.com/healthz || true)
-              if [ "$code" = "200" ]; then
-                echo "healthz OK after $i attempt(s)"
+            expected="${{ github.sha }}"
+            code=""
+            body=""
+            for i in $(seq 1 12); do
+              code=$(curl -s -o /tmp/healthz-body -w '%{http_code}' --max-time 10 https://api.pplcrm.com/healthz || true)
+              body=$(cat /tmp/healthz-body 2>/dev/null || true)
+              if [ "$code" = "200" ] && printf '%s' "$body" | grep -q "\"build\":\"$expected\""; then
+                echo "healthz OK — running build $expected after $i attempt(s)"
                 exit 0
               fi
-              echo "attempt $i/10: got $code"
+              echo "attempt $i/12: HTTP ${code:-none}, body: ${body:-<empty>}"
               sleep 15
             done
-            echo "::error::api.pplcrm.com/healthz did not return 200 after the new revision rolled"
+            echo "last response: HTTP ${code:-none}, body: ${body:-<empty>}"
+            if [ "$code" = "200" ]; then
+              echo "::error::/healthz answered 200 but reported a different build than $expected — the OLD revision is still serving (the new revision never became healthy). Check the Container App's revision status and console logs."
+            else
+              echo "::error::api.pplcrm.com/healthz never answered 200 after the new revision rolled (last HTTP code: ${code:-none})."
+            fi
             exit 1
       # ── Cloudflare Pages: marketing site ──
       # Angular emits the static site under a `browser/` subdir; deploy THAT, not its parent.
