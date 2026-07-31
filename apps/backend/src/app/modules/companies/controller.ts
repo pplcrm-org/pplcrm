@@ -11,6 +11,7 @@ import type {
 import type { Transaction } from 'kysely';
 import { slugifyRecordName } from '../../../../../../libs/common/src';
 import { backfillMissingSlugs, uniqueSlug } from '../../lib/slug';
+import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../lib/ndjson';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
 import { StorageService } from '../../lib/storage.service';
 import { TRPCError } from '@trpc/server';
@@ -248,8 +249,10 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
     const storageKey = `imports/payloads/${auth.tenant_id}/${importRecordId}.json`;
 
     try {
-      const payloadBuffer = Buffer.from(JSON.stringify(input.rows), 'utf8');
-      await this.storageService.upload(storageKey, payloadBuffer, 'application/json');
+      // NDJSON (one row object per line) so the import job can stream rows
+      // instead of parsing one giant array — see lib/ndjson.ts.
+      const payloadBuffer = serializeRowsToNdjson(input.rows);
+      await this.storageService.upload(storageKey, payloadBuffer, NDJSON_CONTENT_TYPE);
     } catch (err) {
       logger.error({ err }, 'Failed to upload import payload to storage');
       await this.importsRepo.delete({
@@ -324,15 +327,14 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
     tenant_id: string,
     user_id: string,
     skipped: number,
-    rows: Record<string, string>[],
+    // Any row source works (arrays included); the import job passes a lazy
+    // NDJSON iterator so the full payload is never materialized at once.
+    rows: Iterable<Record<string, string>> | AsyncIterable<Record<string, string>>,
   ) {
     const results = { inserted: 0, errors: 0, skipped: 0 };
     const errorMessages: string[] = [];
 
-    const chunkSize = 100;
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize);
-
+    for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
       // 1. Filter valid rows upfront
       const validRows: Record<string, string>[] = [];
       for (const raw of chunk) {
