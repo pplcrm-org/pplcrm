@@ -3,6 +3,7 @@ import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastif
 import { CompanionClaimSegmentObj, CompanionResultsObj } from '../../../../../../../libs/common/src';
 import { CanvassingController } from '../controller';
 import { isRateLimited } from '../../../lib/rate-limiter';
+import { publicMessageOf as messageOf } from '../../../lib/public-route-errors';
 
 /**
  * Public Canvass Companion API (§13.4 / COMPANION-APPS-PLAN.md §5 B3) — the
@@ -36,11 +37,6 @@ function statusOf(err: unknown): number {
     if (typeof candidate === 'number') return candidate;
   }
   return 500;
-}
-
-function messageOf(err: unknown, fallback: string): string {
-  if (err instanceof Error && err.message) return err.message;
-  return fallback;
 }
 
 function sessionTokenOf(req: FastifyRequest): string | null {
