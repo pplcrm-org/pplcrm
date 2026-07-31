@@ -507,6 +507,13 @@ export class BillingController {
       .execute();
   }
 
+  /**
+   * Called ONLY by WebhookEventWorker (lib/jobs/webhook-worker.ts) — Stripe events are never
+   * dispatched here directly. That worker runs the out-of-order guard
+   * (lib/jobs/stripe-event-order.ts) before this method, so a stale `customer.subscription.*`
+   * redelivery is skipped upstream and never reaches the tenant plan/status writes below. If a
+   * second caller is ever added, it must run the same guard first.
+   */
   public async processWebhookEvent(event: Stripe.Event) {
     logger.info(`Processing webhook event: ${event.id} (${event.type})`);
 

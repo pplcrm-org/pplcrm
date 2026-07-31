@@ -65,9 +65,11 @@ async function cleanTenant(tenantId: string): Promise<void> {
   await db.updateTable('tenants').set({ admin_id: null }).where('id', '=', tenantId).execute();
   await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('donation_pledges').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('donations').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
 }
@@ -77,7 +79,11 @@ async function cleanTenant(tenantId: string): Promise<void> {
 // deletes this file's rows — never a blanket deleteFrom.
 const insertedEventRowIds: string[] = [];
 
-async function enqueueEvent(tenantId: string | null, event: Record<string, unknown>): Promise<string> {
+async function enqueueEvent(
+  tenantId: string | null,
+  event: Record<string, unknown>,
+  status: 'pending' | 'processed' = 'pending',
+): Promise<string> {
   const row = await db
     .insertInto('webhook_events')
     .values({
@@ -85,7 +91,8 @@ async function enqueueEvent(tenantId: string | null, event: Record<string, unkno
       stripe_event_id: `${String(event['id'])}_${Math.random().toString(36).slice(2, 9)}`,
       type: String(event['type']),
       payload: JSON.stringify(event),
-      status: 'pending',
+      status,
+      processed_at: status === 'processed' ? new Date() : null,
       // Backdate: the claim compares run_at against the JS clock, which can lag Postgres's now()
       // default by enough to make a freshly inserted row "not due yet" (flaky claims).
       run_at: new Date(Date.now() - 60_000),
@@ -105,6 +112,7 @@ async function eventStatus(id: string): Promise<string> {
 describe('WebhookEventWorker — Stripe Connect dispatch', () => {
   const worker = new WebhookEventWorker();
   let tenantId: string;
+  let adminId: string;
   let billingSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
@@ -112,7 +120,7 @@ describe('WebhookEventWorker — Stripe Connect dispatch', () => {
     platform.isMockMode = false;
     platform.applicationFeeRefund.mockReset();
     billingSpy = vi.spyOn(BillingController.prototype, 'processWebhookEvent').mockResolvedValue(undefined as any);
-    ({ tenantId } = await seedTenantWithAdmin());
+    ({ tenantId, userId: adminId } = await seedTenantWithAdmin());
   });
 
   afterEach(async () => {
@@ -201,6 +209,115 @@ describe('WebhookEventWorker — Stripe Connect dispatch', () => {
 
     expect(billingSpy).not.toHaveBeenCalled();
     expect(await eventStatus(eventId)).toBe('processed');
+  });
+
+  // Regression: Stripe retries can redeliver an OLDER subscription event after a newer one for the
+  // same subscription was already processed. Events are applied in arrival order, so without the
+  // staleness guard (lib/jobs/stripe-event-order.ts) the stale redelivery would overwrite current
+  // pledge state with an out-of-date snapshot.
+  describe('out-of-order subscription events', () => {
+    let personId: string;
+    let campaignId: string;
+    let subscriptionId: string;
+
+    beforeEach(async () => {
+      campaignId = String(Math.floor(Math.random() * 100000000) + 1000000);
+      await db
+        .insertInto('campaigns')
+        .values({
+          id: campaignId,
+          tenant_id: tenantId,
+          admin_id: adminId,
+          name: 'Stale Guard Campaign',
+          createdby_id: adminId,
+          updatedby_id: adminId,
+        })
+        .execute();
+      personId = await seedPerson(tenantId, adminId);
+      subscriptionId = `sub_stale_${Math.random().toString(36).slice(2, 10)}`;
+      await db
+        .insertInto('donation_pledges')
+        .values({
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          person_id: personId,
+          stripe_subscription_id: subscriptionId,
+          monthly_amount: 2500,
+          status: 'active',
+          createdby_id: adminId,
+          updatedby_id: adminId,
+        })
+        .execute();
+    });
+
+    async function pledgeStatus(): Promise<string> {
+      const pledge = await db
+        .selectFrom('donation_pledges')
+        .select('status')
+        .where('tenant_id', '=', tenantId)
+        .where('stripe_subscription_id', '=', subscriptionId)
+        .executeTakeFirstOrThrow();
+      return String(pledge.status);
+    }
+
+    const NEWER_CREATED = 1_700_000_500;
+
+    it('a stale subscription.updated (older `created` than an already-processed one) does not overwrite the pledge', async () => {
+      // A newer event for this subscription has already been processed…
+      await enqueueEvent(
+        tenantId,
+        {
+          id: 'evt_sub_newer',
+          type: 'customer.subscription.updated',
+          account: 'acct_w1',
+          created: NEWER_CREATED,
+          data: { object: { id: subscriptionId, status: 'active' } },
+        },
+        'processed',
+      );
+
+      // …then Stripe redelivers an OLDER one claiming the subscription is past_due.
+      const staleEventId = await enqueueEvent(tenantId, {
+        id: 'evt_sub_stale',
+        type: 'customer.subscription.updated',
+        account: 'acct_w1',
+        created: NEWER_CREATED - 100,
+        data: { object: { id: subscriptionId, status: 'past_due' } },
+      });
+
+      await (worker as any).processNextEvent(staleEventId);
+
+      // The stale snapshot must not be applied, and the event is acknowledged (not retried).
+      expect(await pledgeStatus()).toBe('active');
+      expect(await eventStatus(staleEventId)).toBe('processed');
+    });
+
+    it('a subscription.updated newer than everything already processed still applies', async () => {
+      await enqueueEvent(
+        tenantId,
+        {
+          id: 'evt_sub_older_processed',
+          type: 'customer.subscription.updated',
+          account: 'acct_w1',
+          created: NEWER_CREATED - 200,
+          data: { object: { id: subscriptionId, status: 'active' } },
+        },
+        'processed',
+      );
+
+      const freshEventId = await enqueueEvent(tenantId, {
+        id: 'evt_sub_fresh',
+        type: 'customer.subscription.updated',
+        account: 'acct_w1',
+        created: NEWER_CREATED,
+        data: { object: { id: subscriptionId, status: 'past_due' } },
+      });
+
+      await (worker as any).processNextEvent(freshEventId);
+
+      expect(await pledgeStatus()).toBe('past_due');
+      expect(await eventStatus(freshEventId)).toBe('processed');
+    });
   });
 
   it('a fully refunded Connect charge refunds the platform application fee', async () => {
@@ -350,5 +467,55 @@ describe('WebhookEventWorker — Stripe Connect dispatch', () => {
 
     expect(platform.applicationFeeRefund).not.toHaveBeenCalled();
     expect(await eventStatus(eventId)).toBe('processed');
+  });
+});
+
+// Regression: a NOTIFY that landed while a poll cycle was in flight started a SECOND concurrent
+// cycle, and each concurrent cycle's finally block armed its own timer without clearing the other —
+// so every mid-cycle NOTIFY added one more permanent poll loop. wakeUp() must coalesce into a
+// single "poll again when the in-flight cycle finishes" instead. processNextEvent is mocked, so
+// this block never touches the shared webhook_events queue.
+describe('WebhookEventWorker — poll-loop coalescing', () => {
+  it('wakeUp during an in-flight cycle results in exactly one follow-up cycle', async () => {
+    const w = new WebhookEventWorker();
+    (w as any).isRunning = true;
+
+    let cycleCount = 0;
+    let releaseFirstCycle: () => void = () => undefined;
+    const firstCycleGate = new Promise<void>((resolve) => {
+      releaseFirstCycle = resolve;
+    });
+    // Typed view of the private method so mockImplementation expects a Promise-returning callback.
+    const pollTarget = w as unknown as { processNextEvent: () => Promise<boolean> };
+    vi.spyOn(pollTarget, 'processNextEvent').mockImplementation(async () => {
+      cycleCount++;
+      if (cycleCount === 1) await firstCycleGate;
+      return false; // "queue empty" — a real cycle would back off 30s, far outside this test's window
+    });
+
+    try {
+      (w as any).poll();
+      await vi.waitFor(() => expect(cycleCount).toBe(1));
+
+      // Three NOTIFYs land while the first cycle is still running.
+      (w as any).wakeUp();
+      (w as any).wakeUp();
+      (w as any).wakeUp();
+
+      // They must NOT start concurrent cycles (the old code did, which is what multiplied loops).
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(cycleCount).toBe(1);
+
+      releaseFirstCycle();
+
+      // Exactly one coalesced follow-up cycle fires…
+      await vi.waitFor(() => expect(cycleCount).toBe(2));
+      // …and nothing else: the next poll is the 30s idle backoff, so any extra cycle inside this
+      // window would mean a duplicated loop survived.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(cycleCount).toBe(2);
+    } finally {
+      await w.stop();
+    }
   });
 });

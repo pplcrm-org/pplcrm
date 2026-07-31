@@ -9,6 +9,7 @@ import { DonationsController } from '../../modules/donations/controller';
 import { updateCachedAccountStatus } from '../../modules/donations/stripe-connect';
 import { sql } from 'kysely';
 import { getStripe, isMockMode } from '../stripe-platform-client';
+import { isStaleStripeSubscriptionEvent } from './stripe-event-order';
 import { logger } from '../../logger';
 
 // A 'processing' webhook event whose lock is older than this is treated as abandoned (its worker
@@ -29,6 +30,10 @@ const WEBHOOK_TIMEOUT_MS = 2 * 60 * 1000;
 export class WebhookEventWorker {
   private isRunning = false;
   private timer: NodeJS.Timeout | null = null;
+  /** True while a runPollCycle() is executing — enforces the single-poll-loop invariant. */
+  private cycleInFlight = false;
+  /** A wake arrived mid-cycle; re-poll immediately when the in-flight cycle finishes. */
+  private pollAgainAfterCycle = false;
   private activeJobsCount = 0;
   private shutdownResolver: (() => void) | null = null;
   private pgClient: Client | null = null;
@@ -135,6 +140,14 @@ export class WebhookEventWorker {
   }
 
   private wakeUp() {
+    // A NOTIFY that lands while a cycle is in flight must NOT start a second concurrent cycle:
+    // each concurrent cycle's finally block schedules its own timer, and every mid-cycle NOTIFY
+    // would add another permanent poll loop. Coalesce into "poll again as soon as this cycle
+    // finishes" instead (same coalescing idea as BackgroundJobWorker.scheduleDrain).
+    if (this.cycleInFlight) {
+      this.pollAgainAfterCycle = true;
+      return;
+    }
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -144,12 +157,21 @@ export class WebhookEventWorker {
 
   private poll() {
     if (!this.isRunning) return;
+    // Replace any pending timer, never stack a second live one.
+    if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       void this.runPollCycle();
     }, 0);
   }
 
   private async runPollCycle(): Promise<void> {
+    // A timer can fire in the same tick as a wakeUp()-scheduled poll; if a cycle is already in
+    // flight, record that another poll was wanted and let that cycle's finally block handle it.
+    if (this.cycleInFlight) {
+      this.pollAgainAfterCycle = true;
+      return;
+    }
+    this.cycleInFlight = true;
     let processedAnEvent = false;
     try {
       this.activeJobsCount++;
@@ -158,14 +180,17 @@ export class WebhookEventWorker {
       logger.error({ err }, 'Error in webhook event worker poll cycle');
     } finally {
       this.activeJobsCount--;
+      this.cycleInFlight = false;
 
       // If shutdown was requested and no active jobs remain, resolve the stop() promise
       if (!this.isRunning && this.activeJobsCount === 0 && this.shutdownResolver) {
         this.shutdownResolver();
       } else {
-        // Poll again immediately (10ms) if an event was processed to drain the queue quickly,
-        // or back off to 30 seconds if no events were found.
-        const delay = processedAnEvent ? 10 : 30000;
+        // A wake that arrived mid-cycle re-polls immediately (0ms). Otherwise poll again quickly
+        // (10ms) if an event was processed to drain the queue, or back off to 30 seconds.
+        const wakeRequested = this.pollAgainAfterCycle;
+        this.pollAgainAfterCycle = false;
+        const delay = wakeRequested ? 0 : processedAnEvent ? 10 : 30000;
         this.pollWithDelay(delay);
       }
     }
@@ -173,6 +198,8 @@ export class WebhookEventWorker {
 
   private pollWithDelay(ms: number) {
     if (!this.isRunning) return;
+    // Replace any pending timer, never stack a second live one.
+    if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => this.poll(), ms);
   }
 
@@ -339,7 +366,26 @@ export class WebhookEventWorker {
           const isDisputeCreated = eventType === 'charge.dispute.created';
           const isDisputeClosed = eventType === 'charge.dispute.closed';
 
-          if (isAccountUpdated && eventRecord.tenant_id) {
+          // Stripe retries can redeliver an OLDER subscription event after a newer one for the
+          // same subscription was already processed; applying it would roll subscription state
+          // back to a stale snapshot. This one check covers BOTH the Connect pledge branches
+          // below AND the platform billing fall-through, because the BillingController's webhook
+          // handler is only ever invoked from here. Same-subscription-object ordering only — it
+          // does not order across object types (e.g. invoice.* vs customer.subscription.*).
+          const isStaleSubscriptionEvent =
+            eventType.startsWith('customer.subscription.') && stripeObj?.id
+              ? await isStaleStripeSubscriptionEvent(this.db, {
+                  stripeEventId: String(payload.id ?? eventRecord.stripe_event_id),
+                  subscriptionId: String(stripeObj.id),
+                  createdUnix: Number(payload.created),
+                  tenantId: eventRecord.tenant_id ? String(eventRecord.tenant_id) : null,
+                })
+              : false;
+
+          if (isStaleSubscriptionEvent) {
+            // Acknowledged without action — the newer, already-processed event's state stands.
+            // (The skip is logged at info level by isStaleStripeSubscriptionEvent.)
+          } else if (isAccountUpdated && eventRecord.tenant_id) {
             // Connect onboarding progress: cache details_submitted / charges_enabled — this is what
             // flips the tenant's "charges enabled" gate on after they finish Stripe-hosted onboarding.
             const tenantId = String(eventRecord.tenant_id);
