@@ -996,20 +996,24 @@ describe('CanvassingController', () => {
     const companion = await controller.getCompanionTurf(token, session);
     const home = companion.households.find((h) => h.people.length > 1);
     if (!home) throw new Error('expected a door with two residents');
-    const [alice, bob] = home.people;
+    // Pick the residents by name, not by position: the payload sorts them by person id and
+    // the fixture assigns those ids randomly, so position does not tell you who is who.
+    const alice = home.people.find((p) => p.name.startsWith('Alice'));
+    const bob = home.people.find((p) => p.name.startsWith('Bob'));
+    if (!alice || !bob) throw new Error('expected Alice and Bob at this door');
 
     const { acks } = await controller.postCompanionResults(token, session, [
       {
         op_id: 'op-dead-1',
         recorded_at: null,
         type: 'person_result',
-        payload: { household_id: home.id, person_id: alice!.id, result: 'deceased' },
+        payload: { household_id: home.id, person_id: alice.id, result: 'deceased' },
       },
       {
         op_id: 'op-err-1',
         recorded_at: null,
         type: 'person_result',
-        payload: { household_id: home.id, person_id: bob!.id, result: 'data_error', note: 'Nobody by that name here' },
+        payload: { household_id: home.id, person_id: bob.id, result: 'data_error', note: 'Nobody by that name here' },
       },
       {
         op_id: 'op-senior-1',
@@ -1017,7 +1021,7 @@ describe('CanvassingController', () => {
         type: 'survey',
         payload: {
           household_id: home.id,
-          person_id: bob!.id,
+          person_id: bob.id,
           support: null,
           issues: [],
           wants_volunteer: false,
@@ -1035,7 +1039,7 @@ describe('CanvassingController', () => {
       .selectFrom('persons')
       .select(['deceased_at', 'do_not_contact'])
       .where('tenant_id', '=', s.tenantId)
-      .where('id', '=', alice!.id)
+      .where('id', '=', alice.id)
       .executeTakeFirstOrThrow();
     expect(alicePerson.deceased_at).not.toBeNull();
     expect(alicePerson.do_not_contact).toBe(true);
@@ -1045,7 +1049,7 @@ describe('CanvassingController', () => {
       .selectFrom('persons')
       .select(['first_name', 'senior', 'do_not_contact'])
       .where('tenant_id', '=', s.tenantId)
-      .where('id', '=', bob!.id)
+      .where('id', '=', bob.id)
       .executeTakeFirstOrThrow();
     expect(bobPerson.first_name).toBe('Bob');
     expect(bobPerson.do_not_contact).toBe(false);
@@ -1069,7 +1073,7 @@ describe('CanvassingController', () => {
         op_id: 'op-err-2',
         recorded_at: null,
         type: 'person_result',
-        payload: { household_id: home.id, person_id: bob!.id, result: 'data_error', note: 'Still wrong' },
+        payload: { household_id: home.id, person_id: bob.id, result: 'data_error', note: 'Still wrong' },
       },
     ]);
     expect(await db.selectFrom('tasks').select('id').where('tenant_id', '=', s.tenantId).execute()).toHaveLength(1);
@@ -1082,7 +1086,7 @@ describe('CanvassingController', () => {
         type: 'survey',
         payload: {
           household_id: home.id,
-          person_id: bob!.id,
+          person_id: bob.id,
           support: 'undecided',
           issues: [],
           wants_volunteer: false,
@@ -1097,7 +1101,7 @@ describe('CanvassingController', () => {
       .selectFrom('persons')
       .select('senior')
       .where('tenant_id', '=', s.tenantId)
-      .where('id', '=', bob!.id)
+      .where('id', '=', bob.id)
       .executeTakeFirstOrThrow();
     expect(corrected.senior).toBe(false);
 
@@ -1113,8 +1117,8 @@ describe('CanvassingController', () => {
     // The door reads it back: a deceased resident is marked, not quietly removed.
     const after = await controller.getCompanionTurf(token, session);
     const reread = after.households.find((h) => h.id === home.id);
-    expect(reread?.people.find((p) => p.id === alice!.id)?.deceased).toBe(true);
-    expect(reread?.people.find((p) => p.id === bob!.id)?.result).toBe('canvassed');
+    expect(reread?.people.find((p) => p.id === alice.id)?.deceased).toBe(true);
+    expect(reread?.people.find((p) => p.id === bob.id)?.result).toBe('canvassed');
   });
 
   it('handles door outcomes, clears, no-conversation codes, and add-person-at-door', async () => {
