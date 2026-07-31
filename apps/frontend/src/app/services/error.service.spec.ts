@@ -7,6 +7,7 @@ import { JSendServerError } from '../../../../../libs/common/src';
 import { ApiError } from './api/api-error';
 import { TokenService } from './api/token-service';
 import { SERVER_UNREACHABLE_MESSAGE } from './api/user-message';
+import { STALE_BUNDLE_MESSAGE } from '../routing/stale-bundle';
 import { ErrorService } from './error.service';
 
 const FALLBACK = 'Something went wrong, please try again';
@@ -145,6 +146,12 @@ describe('ErrorService', () => {
       service.handle(new Error('Pick a campaign first'));
 
       expect(mockAlerts.showError).toHaveBeenCalledWith('Pick a campaign first');
+    });
+
+    it('names the real problem for a chunk that would not import — "try again" would never work', () => {
+      service.handle(new TypeError('Failed to fetch dynamically imported module: /chunk-BJHSTgRT.js'));
+
+      expect(mockAlerts.showError).toHaveBeenCalledWith(STALE_BUNDLE_MESSAGE);
     });
   });
 

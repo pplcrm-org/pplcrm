@@ -8,6 +8,7 @@ import { SERVER_UNREACHABLE_MESSAGE, getUserErrorMessage, isServerUnreachable } 
 
 import { TokenService } from './api/token-service';
 import { isCurrentRoutePublic } from '../routing/public-routes';
+import { STALE_BUNDLE_MESSAGE, isStaleBundleError } from '../routing/stale-bundle';
 
 /**
  * Window after a 401 sign-out redirect during which we (a) dedupe further 401s into the same
@@ -71,6 +72,14 @@ export class ErrorService {
         return;
       }
       this.alerts.showError(error.message);
+      return;
+    }
+
+    // A lazy-route chunk the browser refused to import. app.config.ts already tried to rescue the
+    // navigation with a hard reload; reaching here means it declined (a reload just happened, or
+    // storage is unavailable), so tell the user the one thing that actually helps.
+    if (isStaleBundleError(error)) {
+      this.alerts.showError(STALE_BUNDLE_MESSAGE);
       return;
     }
 

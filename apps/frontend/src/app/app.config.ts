@@ -8,6 +8,7 @@ import {
   TitleStrategy,
   provideRouter,
   withComponentInputBinding,
+  withNavigationErrorHandler,
   withPreloading,
 } from '@angular/router';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
@@ -20,6 +21,7 @@ import { CustomRouteReuseStrategy } from './routing/route-reuse-strategy';
 import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
 import { jsendInterceptor } from './services/jsend.interceptor';
 import { GlobalErrorHandler } from './services/global-error-handler';
+import { claimReloadForStaleBundle, isStaleBundleError } from './routing/stale-bundle';
 
 export function initSession(authService: AuthService) {
   return async () => {
@@ -52,7 +54,19 @@ export const appConfig: ApplicationConfig = {
     },
     // Preload lazy route chunks in the background after first paint so slow
     // connections don't stall on chunk download at click time.
-    provideRouter(appRoutes, withComponentInputBinding(), withPreloading(PreloadAllModules)),
+    provideRouter(
+      appRoutes,
+      withComponentInputBinding(),
+      withPreloading(PreloadAllModules),
+      // A navigation that died because its chunk would not import can only be rescued by a fresh
+      // document — the failed module URL is stuck in this document's module map, so retrying the
+      // same route in-page fails instantly (see routing/stale-bundle.ts). Hard-load the URL the
+      // user was going to; when the claim is refused, ErrorService says so instead.
+      withNavigationErrorHandler((event) => {
+        if (!isStaleBundleError(event.error) || !claimReloadForStaleBundle()) return;
+        window.location.assign(event.url);
+      }),
+    ),
 
     provideZonelessChangeDetection(),
 

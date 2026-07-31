@@ -115,6 +115,18 @@ Fastify's per-request logger), so correlate a tRPC failure by **timestamp + stac
    If data silently fails to appear with no toast, check the browser console for a swallowed
    `.catch` before assuming the request never fired.
 
+4. **A preloaded chunk that failed to import poisons that route for the whole session.** `app.config.ts`
+   uses `withPreloading(PreloadAllModules)`, so every lazy route is `import()`ed in the background after
+   first paint — and Angular's `PreloadAllModules` swallows preload failures (`catchError(() => of(null))`).
+   Per the module spec a failed module URL stays failed in the document's module map, so the user's later
+   click on that route fails **instantly, with no network request**, while the chunk is perfectly healthy on
+   the server. On app.pplcrm.com (Cloudflare Pages, `/*  /index.html  200`) a momentarily missing chunk comes
+   back as HTML, so the symptom reads `Failed to load module script: … MIME type of "text/html"` followed by
+   `TypeError: Failed to fetch dynamically imported module: …/chunk-XXXX.js`. Don't go hunting the deploy —
+   `curl -I` the chunk first; it usually 200s. `apps/frontend/src/app/routing/stale-bundle.ts` recognises
+   all four engines' wording; `withNavigationErrorHandler` hard-loads the target URL once (a fresh document
+   is the only cure), and `ErrorService` shows `STALE_BUNDLE_MESSAGE` when the one-per-30s claim is refused.
+
 ## Non-goals
 
 - **TRPCError codes / how to throw them / transaction & outbox conventions** → `pplcrm-trpc-backend`.
