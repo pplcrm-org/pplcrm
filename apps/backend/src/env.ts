@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-const envSchema = z.object({
+// Exported for env.spec.ts, which builds valid parsed-env fixtures from it.
+export const envSchema = z.object({
   HOST: z.string().default('localhost'),
   PORT: z.coerce.number().default(3000),
   DB_USER: z.string().min(1, 'DB_USER is required'),
@@ -211,7 +212,7 @@ const MIN_SECRET_LENGTH = 32;
  * A deploy that cannot reach its secrets must fail loudly rather than come up degraded.
  * Mirrors the long-standing TRUST_PROXY guard above.
  */
-function assertProductionSecrets(parsed: z.infer<typeof envSchema>): void {
+export function assertProductionSecrets(parsed: z.infer<typeof envSchema>): void {
   if (process.env['NODE_ENV'] !== 'production') return;
 
   const problems: string[] = [];
@@ -228,6 +229,21 @@ function assertProductionSecrets(parsed: z.infer<typeof envSchema>): void {
   }
   if (!parsed.STRIPE_SECRET_KEY?.trim() || parsed.STRIPE_SECRET_KEY.includes('MockKey')) {
     problems.push('STRIPE_SECRET_KEY must be set to a real key — an unset key silently enables billing mock mode.');
+  }
+  if (!parsed.STRIPE_CONNECT_WEBHOOK_SECRET?.trim()) {
+    problems.push(
+      'STRIPE_CONNECT_WEBHOOK_SECRET must be set — without it every donation webhook is rejected, so donations are never recorded while donors are still charged.',
+    );
+  }
+  if (!parsed.SENDGRID_WEBHOOK_VERIFICATION_KEY?.trim()) {
+    problems.push(
+      'SENDGRID_WEBHOOK_VERIFICATION_KEY must be set — without it bounce/spam-complaint events are never recorded, so suppressions and the bounce tripwires go dead.',
+    );
+  }
+  if (!parsed.POSTMARK_WEBHOOK_TOKEN?.trim()) {
+    problems.push(
+      'POSTMARK_WEBHOOK_TOKEN must be set — without it every inbound Postmark delivery/bounce event is rejected.',
+    );
   }
   if (parsed.ALLOW_MOCK_PAYMENTS) {
     problems.push('ALLOW_MOCK_PAYMENTS must never be set in production — it accepts forged payment data.');
