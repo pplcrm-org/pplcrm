@@ -14,6 +14,9 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
 ];
 
+/** Deadline for Google OAuth token/profile HTTP calls — a hung connection must not stall a worker slot. */
+const GOOGLE_OAUTH_TIMEOUT_MS = 15_000;
+
 export class GoogleOAuthService {
   private readonly db: Kysely<Models>;
   private readonly clientId: string;
@@ -43,6 +46,7 @@ export class GoogleOAuthService {
   public async handleCallback(code: string, connectedBy: string, tenantId: string, campaignId: string): Promise<void> {
     const res = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
+      signal: AbortSignal.timeout(GOOGLE_OAUTH_TIMEOUT_MS),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code,
@@ -68,6 +72,7 @@ export class GoogleOAuthService {
 
     // Fetch user profile to get Google email
     const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      signal: AbortSignal.timeout(GOOGLE_OAUTH_TIMEOUT_MS),
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
@@ -170,6 +175,7 @@ export class GoogleOAuthService {
     // Refresh token
     const res = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
+      signal: AbortSignal.timeout(GOOGLE_OAUTH_TIMEOUT_MS),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: this.clientId,

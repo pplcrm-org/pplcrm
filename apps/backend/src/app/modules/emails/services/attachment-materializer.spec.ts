@@ -233,6 +233,20 @@ describe('materializeAttachment (integration)', () => {
     expect(await attachmentFileId(attachment.id)).toBeNull();
   });
 
+  it('reports unavailable when the provider connection times out', async () => {
+    const attachment = await seedDeferredAttachment({ folderId: INBOX, preview: 'google:MSG_SLOW' });
+    // What AbortSignal.timeout() produces when the deadline passes mid-request.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'))),
+    );
+
+    const result = await materializeAttachment(db, tenantId, attachment);
+
+    expect(result.status).toBe('unavailable');
+    expect(await attachmentFileId(attachment.id)).toBeNull();
+  });
+
   it('reports unavailable for an email with no provider key', async () => {
     // A locally composed message has no provider-side copy to fetch from.
     const attachment = await seedDeferredAttachment({ folderId: INBOX, preview: 'a plain preview' });

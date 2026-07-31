@@ -8,6 +8,9 @@ import { escapeHtml, type TrustedHtml } from '../html-escape';
 import { LOGO_CID, LOGO_PNG_BASE64 } from './logo-asset';
 import { assertTenantMaySendTransactional, type MailAudience } from './transactional-send-guard';
 
+/** Deadline for the Postmark HTTP call — a hung provider connection must not stall a worker slot. */
+const POSTMARK_TIMEOUT_MS = 15_000;
+
 export interface MailAttachment {
   name: string;
   contentBase64: string;
@@ -239,6 +242,7 @@ export class TransactionalEmailService {
     try {
       const response = await fetch('https://api.postmarkapp.com/email', {
         method: 'POST',
+        signal: AbortSignal.timeout(POSTMARK_TIMEOUT_MS),
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',

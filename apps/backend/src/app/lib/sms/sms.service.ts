@@ -5,6 +5,9 @@ import { InternalError } from '../../errors/app-errors';
 import { logger } from '../../logger';
 import { BaseRepository } from '../base.repo';
 
+/** Deadline for the Twilio HTTP call — a hung provider connection must not stall a worker slot. */
+const TWILIO_TIMEOUT_MS = 15_000;
+
 export interface SendSmsOptions {
   /** E.164 destination — normalize with `normalizeE164()` before calling. */
   to: string;
@@ -42,6 +45,7 @@ export class SmsService {
         `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(this.accountSid)}/Messages.json`,
         {
           method: 'POST',
+          signal: AbortSignal.timeout(TWILIO_TIMEOUT_MS),
           headers: {
             Accept: 'application/json',
             'Content-Type': 'application/x-www-form-urlencoded',

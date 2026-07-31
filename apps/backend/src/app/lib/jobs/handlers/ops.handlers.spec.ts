@@ -186,6 +186,25 @@ describe('handleOpsWatchdog', () => {
     expect(mail.text).toContain('Queue backlog');
   });
 
+  it('still beats the heartbeat and schedules the next run when the alert email fails, then rethrows', async () => {
+    sendMail.mockRejectedValue(new Error('postmark down'));
+    const { db, inserts } = makeFakeDb(withFailures());
+
+    await expect(handleOpsWatchdog(db)).rejects.toThrow('postmark down');
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]?.table).toBe('ops_heartbeats');
+    expect(inserts[0]?.values['name']).toBe('ops_watchdog');
+    const details = JSON.parse(String(inserts[0]?.values['details'])) as Record<string, unknown>;
+    // The fingerprint is NOT stamped on failure — the next cycle re-attempts the alert
+    // instead of suppressing it as already-sent.
+    expect(details['last_alert_fingerprint']).toBeUndefined();
+    expect(details['last_alerted_at']).toBeUndefined();
+    expect(details['last_checked_at']).toBeTruthy();
+    expect(scheduleNextRun).toHaveBeenCalledWith(db, 'ops_watchdog', FIVE_MINUTES_MS);
+  });
+
   it('still beats the heartbeat when OPS_ALERT_EMAIL is unset (findings only logged)', async () => {
     env.opsAlertEmail = undefined;
     const { db, inserts } = makeFakeDb(withFailures());

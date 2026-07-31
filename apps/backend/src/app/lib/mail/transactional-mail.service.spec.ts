@@ -70,4 +70,17 @@ describe('TransactionalEmailService', () => {
     await service.sendMail({ ...baseOptions, notificationSettingsLink: true });
     expect(sentBody().TextBody).toBe(`Plain body\n\nChoose what you're notified about: ${settingsUrl}`);
   });
+
+  it('sends the Postmark request with an abort timeout so a hung connection cannot stall a worker', async () => {
+    const service = new TransactionalEmailService();
+    await service.sendMail({ ...baseOptions });
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('surfaces a timed-out Postmark call through the existing send-failure path', async () => {
+    fetchMock.mockRejectedValueOnce(new DOMException('The operation timed out.', 'TimeoutError'));
+    const service = new TransactionalEmailService();
+    await expect(service.sendMail({ ...baseOptions })).rejects.toThrow('Failed to send transactional email');
+  });
 });

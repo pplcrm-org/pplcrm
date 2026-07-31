@@ -27,6 +27,10 @@ import { fetchGraphAttachmentContent } from '../../ms-sync/ms-sync.service';
 
 export type MaterializeResult = { status: 'ok'; fileId: string } | { status: 'forbidden' } | { status: 'unavailable' };
 
+/** Deadline for provider attachment downloads — generous because payloads can be large,
+ *  but a hung connection must not stall a worker slot indefinitely. */
+const ATTACHMENT_FETCH_TIMEOUT_MS = 60_000;
+
 /** Which provider a synced email came from, read from its dedupe key. */
 function parseProviderKey(preview: string | null): { provider: 'google' | 'ms'; messageId: string } | null {
   if (!preview) return null;
@@ -46,6 +50,7 @@ async function fetchGmailAttachmentContent(
   remoteRef: string | null,
 ): Promise<Buffer> {
   const msgRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`, {
+    signal: AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS),
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!msgRes.ok) {
@@ -73,7 +78,7 @@ async function fetchGmailAttachmentContent(
 
   const attRes = await fetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${idToFetch}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+    { signal: AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS), headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (!attRes.ok) {
     throw new Error(`Gmail attachment ${idToFetch} unavailable: ${attRes.status}`);
