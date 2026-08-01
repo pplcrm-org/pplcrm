@@ -60,6 +60,10 @@ describe('EmailsController attachment delete cleanup (integration)', () => {
       await db.deleteFrom(table).where('tenant_id', '=', tenantId).execute();
     }
     await db.deleteFrom('emails').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('newsletters').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('profiles').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('files').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
@@ -264,6 +268,107 @@ describe('EmailsController attachment delete cleanup (integration)', () => {
     await controller.deleteMany(tenantId as any, [emailId]);
 
     expect(storageDeleteSpy).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // Cross-feature protection. A `files` row is shared whenever two uploads have the same bytes,
+  // so the row an email attachment points at can equally be a profile photo, a person photo or a
+  // newsletter image. Deleting the email must not destroy those.
+  // ---------------------------------------------------------------------------------------------
+
+  it('keeps a file that a profile photo also points at', async () => {
+    const storageKey = `emails/attachments/${rand()}_headshot.png`;
+    const { emailId, fileId } = await seedTrashedEmailWithAttachment(storageKey, rand() + rand());
+
+    // Explicit id on purpose: profiles rows created by sign-up copy the authusers id, so a row
+    // drawn from profiles_id_seq (which starts at 1 independently) collides with them across the
+    // parallel suite. Every other spec that seeds a profile does the same.
+    await db
+      .insertInto('profiles')
+      .values({ id: rand(), tenant_id: tenantId, auth_id: userId, avatar_file_id: fileId })
+      .execute();
+
+    await controller.deleteMany(tenantId as any, [emailId]);
+
+    expect(await fileExists(fileId)).toBe(true);
+    expect(storageDeleteSpy).not.toHaveBeenCalledWith(storageKey);
+  });
+
+  it('keeps a file that a person photo also points at', async () => {
+    const storageKey = `emails/attachments/${rand()}_portrait.png`;
+    const { emailId, fileId } = await seedTrashedEmailWithAttachment(storageKey, rand() + rand());
+
+    const household = await db
+      .insertInto('households')
+      .values({ tenant_id: tenantId, createdby_id: userId, updatedby_id: userId })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await db
+      .insertInto('persons')
+      .values({
+        tenant_id: tenantId,
+        household_id: String(household.id),
+        first_name: 'Photo',
+        last_name: 'Owner',
+        file_id: fileId,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    await controller.deleteMany(tenantId as any, [emailId]);
+
+    expect(await fileExists(fileId)).toBe(true);
+    expect(storageDeleteSpy).not.toHaveBeenCalledWith(storageKey);
+  });
+
+  it('keeps a newsletter image, which nothing points at but the newsletter owns', async () => {
+    // Newsletter images are owned only by the files.entity_type / entity_id tag — no column
+    // anywhere holds their id. A reference check that looked at columns alone would delete them.
+    const storageKey = `emails/attachments/${rand()}_banner.png`;
+    const { emailId, fileId } = await seedTrashedEmailWithAttachment(storageKey, rand() + rand());
+
+    const newsletter = await db
+      .insertInto('newsletters')
+      .values({
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Weekly update',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await db
+      .updateTable('files')
+      .set({ entity_type: 'newsletter', entity_id: String(newsletter.id) })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', fileId)
+      .execute();
+
+    await controller.deleteMany(tenantId as any, [emailId]);
+
+    expect(await fileExists(fileId)).toBe(true);
+    expect(storageDeleteSpy).not.toHaveBeenCalledWith(storageKey);
+  });
+
+  it('still deletes a file whose entity tag names a newsletter that no longer exists', async () => {
+    // The other half of the ownership rule: a tag left behind by a deleted newsletter must not
+    // make the file undeletable forever, or the tenant can never reclaim the storage.
+    const storageKey = `emails/attachments/${rand()}_stale.png`;
+    const { emailId, fileId } = await seedTrashedEmailWithAttachment(storageKey, rand() + rand());
+
+    await db
+      .updateTable('files')
+      .set({ entity_type: 'newsletter', entity_id: rand() })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', fileId)
+      .execute();
+
+    await controller.deleteMany(tenantId as any, [emailId]);
+
+    expect(await fileExists(fileId)).toBe(false);
+    expect(storageDeleteSpy).toHaveBeenCalledWith(storageKey);
   });
 
   it('moves to trash (no hard delete) when the email is not already in trash', async () => {

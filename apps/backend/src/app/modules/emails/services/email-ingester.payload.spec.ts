@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import crypto from 'crypto';
 import { BaseRepository } from '../../../lib/base.repo';
 import { StorageService } from '../../../lib/storage.service';
 import { EmailIngesterService, type IngestableEmail } from './email-ingester.service';
@@ -214,6 +215,42 @@ describe('EmailIngesterService payload policy (integration)', () => {
       const [rowA] = await attachmentsFor('MSG_D1');
       const [rowB] = await attachmentsFor('MSG_D2');
       expect(String(rowA.file_id)).toBe(String(rowB.file_id));
+    });
+
+    it('does not reuse a file that is not an email attachment', async () => {
+      // The dedupe used to match any files row in the tenant with the same hash, which handed an
+      // incoming attachment part-ownership of an avatar or a newsletter image whenever the bytes
+      // matched — and the email delete sweep then deleted it. Storing the bytes twice is the
+      // cheaper mistake.
+      const content = Buffer.from('bytes that already exist as an avatar');
+      const avatarSha = crypto.createHash('sha256').update(content).digest('hex');
+
+      const avatarFile = await db
+        .insertInto('files')
+        .values({
+          tenant_id: tenantId,
+          filename: 'avatar.png',
+          mime_type: 'image/png',
+          size_bytes: content.length,
+          storage_key: `avatars/${tenantId}/${userId}/a.png`,
+          sha256_hex: avatarSha,
+          uploaded_by: userId,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+
+      await ingester.ingestEmail(
+        makeEmail('MSG_D3', { attachments: [attachment('same.bin', content.length, content, 'REF_C')] }),
+        tenantId,
+        campaignId,
+        userId,
+        INBOX,
+      );
+
+      // A second blob was uploaded and a second files row created; the avatar's row is untouched.
+      expect(uploadSpy).toHaveBeenCalledTimes(1);
+      const [row] = await attachmentsFor('MSG_D3');
+      expect(String(row.file_id)).not.toBe(String(avatarFile.id));
     });
   });
 

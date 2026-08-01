@@ -109,6 +109,23 @@ Body blobs are **not** deduped (one blob, one email), so deletion is uncondition
 `purgeBodyBlobs` in both the ingester and `EmailsController`. Attachment files _are_ sha256-deduped
 and go through `purgeOrphanedFiles`.
 
+### Deleting an email must not delete another feature's file
+
+`purgeOrphanedFiles` (both copies) now delegates to `purgeUnreferencedFiles` in
+`apps/backend/src/app/lib/file-references.ts`. Do not reintroduce a local "is any email attachment
+still using this?" check: that is what it used to ask, and it was wrong. Seven columns across the
+schema hold a `files.id` (`email_attachments.file_id`, `profiles.avatar_file_id`,
+`bug_reports.screenshot_file_id`, and `file_id` on `companies`, `households`, `persons`, `tasks`),
+and only the first two have a real foreign key — so deleting an email could silently destroy an
+avatar or a person photo that resolved to the same row, with nothing in Postgres objecting.
+Newsletter images and team logos are worse: nothing points at them at all, they are owned only by
+the `files.entity_type` / `entity_id` tag, so a column-only check deletes them too. The shared
+helper covers all of it and is schema-drift-tested in `lib/file-references.spec.ts`.
+
+Ordering rule, kept deliberately: the `files` row delete runs inside a transaction and the blob is
+deleted only **after** that transaction commits. A failed blob delete leaks bytes; a blob deleted
+before a rolled-back row delete leaves a permanently broken download.
+
 No search UI consumes `body_text` yet; the column and index exist so search can be added without a
 backfill.
 
@@ -118,6 +135,14 @@ backfill.
 original code uploaded first and deduped after, which stranded the second blob: the pre-existing
 `files` row was linked and the new `storage_key` was recorded nowhere, so nothing could find it to
 delete. Covered by _"reuses an identical blob instead of uploading it twice"_.
+
+That lookup **joins `email_attachments`**, so it only ever reuses a `files` row that is itself an
+email attachment. Matching any row in the tenant gave an incoming attachment part-ownership of
+whatever else happened to have the same bytes (an avatar, a newsletter image), which the delete
+sweep then destroyed. Storing identical bytes twice in that rare case is the cheaper mistake.
+Covered by _"does not reuse a file that is not an email attachment"_. Note the compose-and-send
+path in `emails/routes/emails-api.route.ts` still dedupes tenant-wide; the reference check makes
+that safe, but narrowing it the same way is the tidier follow-up.
 
 ## Where things are stored
 
@@ -163,4 +188,9 @@ the two can drift. It matches on the parts that matter:
 - `email-ingester.payload.spec.ts` — eager/deferred/spam/trash attachment paths, dedupe-before-upload,
   inline vs offloaded bodies.
 - `email-body-text.spec.ts` — extraction (pure).
-- `controller.delete-cleanup.spec.ts` — body blob purge on hard delete, untouched on soft delete.
+- `controller.delete-cleanup.spec.ts` — body blob purge on hard delete, untouched on soft delete,
+  and the cross-feature cases: an email delete must not remove a file a profile photo, a person
+  photo or a live newsletter still holds, but must still remove one with a stale entity tag.
+- `lib/file-references.spec.ts` — the list of files-referencing columns is compared against
+  `pg_catalog`, so a migration that adds a new one fails the suite instead of quietly reopening
+  the bug.

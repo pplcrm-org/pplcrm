@@ -16,6 +16,7 @@ import { NotificationsRepo } from '../notifications/repositories/notifications.r
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { notificationEnabled } from '../../lib/profile-preferences';
 import { UserActivityRepo } from '../../lib/user-activity.repo';
+import { purgeUnreferencedFiles } from '../../lib/file-references';
 import { sanitizeHtml } from '../../lib/mail/sanitize-util';
 import { StorageService } from '../../lib/storage.service';
 import { signedEmailAttachmentUrl } from '../../lib/signed-download';
@@ -423,48 +424,16 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
   }
 
   /**
-   * Delete file rows + storage blobs for files that are no longer referenced by
-   * any remaining email attachment (files are sha256-deduped and can be shared).
-   * Storage deletion is best-effort: a failed blob delete must not abort the txn.
+   * Delete file rows + storage blobs for files nothing points at any more.
+   *
+   * "Nothing" means every column in the schema that holds a files.id, plus the entity-ownership
+   * tag — not just the email attachments this controller knows about. Attachment uploads are
+   * sha256-deduped, so a row reached from an email can equally be somebody's avatar, a person
+   * photo or a newsletter image; asking only about email attachments deleted those.
    */
   private async purgeOrphanedFiles(tenant_id: string, fileIds: string[]): Promise<void> {
     if (fileIds.length === 0) return;
-
-    const db = this.attachmentsRepo.db;
-    for (const fileId of fileIds) {
-      try {
-        const stillReferenced = await db
-          .selectFrom('email_attachments')
-          .select('id')
-          .where('tenant_id', '=', tenant_id)
-          .where('file_id', '=', fileId)
-          .limit(1)
-          .executeTakeFirst();
-
-        if (stillReferenced) continue;
-
-        const file = await db
-          .selectFrom('files')
-          .select(['id', 'storage_key'])
-          .where('tenant_id', '=', tenant_id)
-          .where('id', '=', fileId)
-          .executeTakeFirst();
-
-        if (!file) continue;
-
-        await db.deleteFrom('files').where('tenant_id', '=', tenant_id).where('id', '=', fileId).execute();
-
-        if (file.storage_key) {
-          try {
-            await this.storageService.delete(file.storage_key);
-          } catch (err) {
-            logger.error({ err }, `Failed to delete storage blob ${file.storage_key} for file ${fileId}`);
-          }
-        }
-      } catch (err) {
-        logger.error({ err }, `Failed to purge orphaned file ${fileId}`);
-      }
-    }
+    await purgeUnreferencedFiles(this.attachmentsRepo.db, this.storageService, tenant_id, fileIds);
   }
 
   public async getAllAttachments(

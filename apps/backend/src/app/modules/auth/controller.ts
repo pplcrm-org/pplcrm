@@ -56,6 +56,7 @@ import {
 import { BaseController } from '../../lib/base.controller';
 import type { QueryParams } from '../../lib/base.repo';
 import { COMMON_PASSWORDS } from '../../lib/common-passwords';
+import { deleteFileRowIfUnreferenced } from '../../lib/file-references';
 import { escapeHtml } from '../../lib/html-escape';
 import { getPwnedCount } from '../../lib/hibp';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
@@ -1951,31 +1952,14 @@ ${waitlistNote}
     await this.storage.upload(storageKey, buffer, mimeType);
 
     let finalFileId = '';
+    // Blob key of the previous avatar, deleted only after the transaction commits — see below.
+    let replacedAvatarKey: string | null = null;
 
     await this.getRepo()
       .db.transaction()
       .execute(async (trx) => {
         const existingProfile = await this.profiles.getOneByAuthId(auth.user_id);
-
-        // Clean up old avatar
-        if (existingProfile?.avatar_file_id) {
-          try {
-            const oldFile = await trx
-              .selectFrom('files')
-              .select('storage_key')
-              .where('tenant_id', '=', auth.tenant_id)
-              .where('id', '=', existingProfile.avatar_file_id)
-              .executeTakeFirst();
-            if (oldFile?.storage_key) await this.storage.delete(oldFile.storage_key);
-            await trx
-              .deleteFrom('files')
-              .where('tenant_id', '=', auth.tenant_id)
-              .where('id', '=', existingProfile.avatar_file_id)
-              .execute();
-          } catch {
-            /* non-critical */
-          }
-        }
+        const previousAvatarFileId = existingProfile?.avatar_file_id ? String(existingProfile.avatar_file_id) : null;
 
         // Insert new file record
         const fileResult = await trx
@@ -2015,7 +1999,33 @@ ${waitlistNote}
             })
             .execute();
         }
+
+        // Clean up the previous avatar LAST, and only if nothing else points at that files row.
+        // Order matters twice over:
+        //  - the profile now points at the new file, so the old row's only remaining holders are
+        //    genuinely other features;
+        //  - an old avatar can be shared, because attachment and upload paths dedupe on sha256,
+        //    so deleting it unconditionally destroyed whatever else resolved to those bytes.
+        if (previousAvatarFileId) {
+          try {
+            replacedAvatarKey = await deleteFileRowIfUnreferenced(trx, auth.tenant_id, previousAvatarFileId, {
+              includeEntityOwnership: true,
+            });
+          } catch (err) {
+            logger.error({ err }, `Failed to clean up replaced avatar file ${previousAvatarFileId}`);
+          }
+        }
       });
+
+    // Blob delete only after commit: a rolled-back transaction must never leave the row pointing
+    // at a blob that is already gone. The reverse failure just leaks bytes.
+    if (replacedAvatarKey) {
+      try {
+        await this.storage.delete(replacedAvatarKey);
+      } catch (err) {
+        logger.error({ err }, `Failed to delete replaced avatar blob ${replacedAvatarKey}`);
+      }
+    }
 
     return { file_id: finalFileId, avatar_url: signedFileDownloadUrl(String(finalFileId), auth.tenant_id) };
   }

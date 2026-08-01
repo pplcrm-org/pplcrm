@@ -4,7 +4,8 @@ import { StorageService } from '../../lib/storage.service';
 import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
 import type { getAllOptionsType } from '../../../../../../libs/common/src';
 import { logger } from '../../logger';
-import { ForbiddenError } from '../../errors/app-errors';
+import { ConflictError, ForbiddenError } from '../../errors/app-errors';
+import { describeFileReferences, findFileReferences } from '../../lib/file-references';
 import { getPlanLimits } from '../billing/usage-limits';
 import { verifyUploadHandle } from '../../lib/signed-download';
 import { sanitizeFilename } from '../../lib/storage-key';
@@ -143,18 +144,38 @@ export class FilesController extends BaseController<'files', FilesRepo> {
   }
 
   public override async delete(tenant_id: string, id: string, userId?: string): Promise<boolean> {
-    const file = (await this.getOneById({ tenant_id, id })) as any;
+    const file = await this.getRepo()
+      .db.selectFrom('files')
+      .select(['id', 'storage_key'])
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', id)
+      .executeTakeFirst();
     if (!file) return false;
 
-    // Delete from DB
+    // Uploads are sha256-deduped, so one files row can serve several features at once. Deleting
+    // it here used to take the blob with it and leave an email attachment, an avatar or a person
+    // photo pointing at nothing — and five of the seven columns that hold a files.id have no
+    // foreign key, so Postgres said nothing. Refuse, and name what is holding it.
+    //
+    // The entity_type ownership tag is deliberately excluded: this endpoint IS how an owning
+    // feature deletes its own file (the newsletter editor calls files.delete to remove an image),
+    // so counting the tag would make those files undeletable.
+    const referrers = await findFileReferences(this.getRepo().db, tenant_id, id, {
+      includeEntityOwnership: false,
+    });
+    if (referrers.length > 0) {
+      throw new ConflictError(`This file can't be deleted because ${describeFileReferences(referrers)} still uses it.`);
+    }
+
     const deleted = await super.delete(tenant_id, id, userId);
 
-    // Delete from Azure Storage
+    // Blob last: a failure here leaks bytes, whereas deleting the blob first would leave a row
+    // whose download is permanently broken if the row delete then failed.
     if (deleted && file.storage_key) {
       try {
-        await this.storageService.delete(file.storage_key);
+        await this.storageService.delete(String(file.storage_key));
       } catch (err) {
-        logger.error({ err }, `Failed to delete blob for storage key ${file.storage_key}`);
+        logger.error({ err }, `Failed to delete blob for storage key ${String(file.storage_key)}`);
       }
     }
     return deleted;
@@ -162,9 +183,26 @@ export class FilesController extends BaseController<'files', FilesRepo> {
 
   public override async deleteMany(tenant_id: string, ids: string[], userId?: string): Promise<boolean> {
     let anyDeleted = false;
+    const kept: string[] = [];
+
     for (const id of ids) {
-      const ok = await this.delete(tenant_id, id, userId);
-      if (ok) anyDeleted = true;
+      try {
+        if (await this.delete(tenant_id, id, userId)) anyDeleted = true;
+      } catch (err) {
+        // One in-use file must not abandon the rest of the selection. Delete what can be
+        // deleted, then report the ones that were kept.
+        if (err instanceof ConflictError) {
+          kept.push(id);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (kept.length > 0) {
+      throw new ConflictError(
+        `${kept.length} of ${ids.length} selected files are still used by another record and were kept.`,
+      );
     }
     return anyDeleted;
   }

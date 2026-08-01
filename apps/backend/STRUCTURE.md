@@ -102,6 +102,7 @@ apps/
           download-headers.ts
           durable-rate-limiter.ts
           fastify.types.ts
+          file-references.ts
           hibp.ts
           html-escape.ts
           ndjson.ts

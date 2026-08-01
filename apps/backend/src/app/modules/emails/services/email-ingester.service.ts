@@ -10,6 +10,7 @@ import { env } from '../../../../env';
 import crypto from 'crypto';
 import { sanitizeHtml } from '../../../lib/mail/sanitize-util';
 import { extractBodyText, previewTextFrom, INLINE_BODY_MAX_BYTES } from './email-body-text';
+import { purgeUnreferencedFiles } from '../../../lib/file-references';
 import { logger } from '../../../logger';
 
 export interface IngestableEmail {
@@ -210,45 +211,14 @@ export class EmailIngesterService {
   }
 
   /**
-   * Delete file rows + storage blobs for files no longer referenced by any
-   * remaining attachment (files are sha256-deduped and can be shared). Storage
-   * deletion is best-effort and must not throw.
+   * Delete file rows + storage blobs for files nothing points at any more.
+   *
+   * Same rule as EmailsController.purgeOrphanedFiles, and the same shared check: every column
+   * in the schema that holds a files.id, plus the entity-ownership tag. Checking only
+   * email_attachments here destroyed avatars and newsletter images that shared the row.
    */
   private async purgeOrphanedFiles(tenantId: string, fileIds: string[]): Promise<void> {
-    for (const fileId of fileIds) {
-      try {
-        const stillReferenced = await this.db
-          .selectFrom('email_attachments')
-          .select('id')
-          .where('tenant_id', '=', tenantId)
-          .where('file_id', '=', fileId)
-          .limit(1)
-          .executeTakeFirst();
-
-        if (stillReferenced) continue;
-
-        const file = await this.db
-          .selectFrom('files')
-          .select(['id', 'storage_key'])
-          .where('tenant_id', '=', tenantId)
-          .where('id', '=', fileId)
-          .executeTakeFirst();
-
-        if (!file) continue;
-
-        await this.db.deleteFrom('files').where('tenant_id', '=', tenantId).where('id', '=', fileId).execute();
-
-        if (file.storage_key) {
-          try {
-            await this.storageService.delete(file.storage_key);
-          } catch (err) {
-            logger.error({ err }, `Failed to delete storage blob ${file.storage_key} for file ${fileId}`);
-          }
-        }
-      } catch (err) {
-        logger.error({ err }, `Failed to purge orphaned file ${fileId}`);
-      }
-    }
+    await purgeUnreferencedFiles(this.db, this.storageService, tenantId, fileIds);
   }
 
   /**
@@ -257,6 +227,12 @@ export class EmailIngesterService {
    * The order matters. Uploading before checking for a duplicate strands the freshly-written blob:
    * the dedupe would link the pre-existing `files` row and the new `storage_key` would be recorded
    * nowhere, so nothing could ever find it to delete. Hash first, look up, upload only on a miss.
+   *
+   * The lookup only reuses a `files` row that is ITSELF an email attachment. It used to match any
+   * row in the tenant with the same hash, which quietly gave an incoming attachment part-ownership
+   * of somebody's avatar, a person photo or a newsletter image whenever the bytes happened to be
+   * identical — and the email delete sweep then deleted it. Storing those bytes twice costs one
+   * duplicate blob in a rare case; sharing them cost a permanently destroyed file.
    *
    * Shared with the on-demand materialization path, so both routes store attachments identically.
    */
@@ -276,9 +252,12 @@ export class EmailIngesterService {
 
     const existingFile = await this.db
       .selectFrom('files')
-      .select(['id', 'storage_key'])
-      .where('tenant_id', '=', tenantId)
-      .where('sha256_hex', '=', sha256_hex)
+      .innerJoin('email_attachments', 'email_attachments.file_id', 'files.id')
+      .select(['files.id as id', 'files.storage_key as storage_key'])
+      .where('files.tenant_id', '=', tenantId)
+      .where('email_attachments.tenant_id', '=', tenantId)
+      .where('files.sha256_hex', '=', sha256_hex)
+      .limit(1)
       .executeTakeFirst();
 
     if (existingFile) {
