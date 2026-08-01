@@ -4,10 +4,12 @@
  * Runs at the Cloudflare edge in place of a VM. Three jobs:
  *   1. Serve the built Angular SPA (public form `/f/:slug`, event RSVP `/e/:slug`, volunteer
  *      `/v/:slug`) as static assets, with SPA fallback to index.html.
- *   2. Forward the backend's public REST surface (`/api/*`) to the CRM backend unchanged.
+ *   2. Forward the backend's public REST surface (`/api/*`) to the CRM backend.
  *   3. Serve the server-rendered donation page: rewrite `/d/:slug` → the backend's
- *      `/api/forms/d/:slug` and inject `?t=<org>` from the subdomain (a direct browser navigation to
- *      `/d/:slug` carries no `?t=`, unlike the SPA's `/api` calls which append it themselves).
+ *      `/api/forms/d/:slug`.
+ *
+ * On both proxied paths the request hostname decides the tenant: `?t=<org>` is set from the
+ * subdomain, overwriting anything the caller sent (see `forwardedSearch`).
  *
  * All of this makes every public call **same-origin** on `<org>.pplforms.com`, which is why backend
  * CORS stays locked to the CRM origin (do NOT widen it). See
@@ -37,23 +39,42 @@ function orgFromHost(hostname: string): string | null {
 }
 
 /**
+ * The query string to forward to the backend, with `t` forced to the org in the request hostname.
+ *
+ * The subdomain is the authority on which tenant a public page belongs to, not a default. The
+ * backend prefers `?t=` over the Host header (apps/backend/src/app/lib/public-tenant.ts,
+ * `resolveTenantFromRequest`), so while this Worker only filled `t` in when the caller had omitted
+ * it, `https://trusted-org.pplforms.com/d/x?t=attacker-org` rendered the attacker's donation page
+ * under the trusted org's hostname — and its Stripe Connect direct charge collected the money into
+ * the attacker's connected account. Overwriting `t` closes that: on an org subdomain, every proxied
+ * request resolves to that org and nothing else.
+ *
+ * Hosts that name no org (the apex, `www`, anything under three labels) keep the caller's query
+ * byte-for-byte, exactly as before — they have no subdomain to assert.
+ */
+function forwardedSearch(url: URL): string {
+  const org = orgFromHost(url.hostname);
+  if (!org) return url.search;
+  const params = new URLSearchParams(url.search);
+  params.set('t', org);
+  // Non-empty by construction: `t` was just set.
+  return `?${params.toString()}`;
+}
+
+/**
  * Map a public request URL to its backend target, or null when it should be served as a static
  * asset instead.
  */
 function backendTarget(url: URL, env: Env): string | null {
-  // Donation page: /d/:slug → /api/forms/d/:slug, with ?t=<org> injected from the subdomain.
-  if (url.pathname.startsWith('/d/')) {
-    const params = new URLSearchParams(url.search);
-    const org = orgFromHost(url.hostname);
-    if (org && !params.has('t')) params.set('t', org);
-    const qs = params.toString();
-    return `${env.BACKEND_ORIGIN}/api/forms/d/${url.pathname.slice('/d/'.length)}${qs ? `?${qs}` : ''}`;
-  }
-  // Everything else under /api/* passes through unchanged (the SPA appends its own ?t=).
-  if (url.pathname.startsWith('/api/')) {
-    return `${env.BACKEND_ORIGIN}${url.pathname}${url.search}`;
-  }
-  return null;
+  const isDonationPage = url.pathname.startsWith('/d/');
+  if (!isDonationPage && !url.pathname.startsWith('/api/')) return null;
+  // Both proxied paths get the subdomain's `t`: on `<org>.pplforms.com` every legitimate API call
+  // (form config, submit, event RSVP) originates from that org's own page.
+  const search = forwardedSearch(url);
+  // Donation page: /d/:slug → /api/forms/d/:slug. Everything else under /api/* keeps its path.
+  return isDonationPage
+    ? `${env.BACKEND_ORIGIN}/api/forms/d/${url.pathname.slice('/d/'.length)}${search}`
+    : `${env.BACKEND_ORIGIN}${url.pathname}${search}`;
 }
 
 async function proxyToBackend(request: Request, target: string): Promise<Response> {
