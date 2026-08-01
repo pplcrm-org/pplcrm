@@ -2,13 +2,17 @@
 //
 // Deliberately split from main.bicep so CI can deploy it: main.bicep bundles the Postgres server
 // and therefore demands pgAdminPassword on every run, but this template only *references* the
-// existing server — no secrets needed beyond the service principal CI already logs in with.
-// Deployed automatically by .github/workflows/deploy-infra.yml on changes under infra/azure/;
-// manual escape hatch:
+// existing server — no DB credentials needed beyond the service principal CI already logs in with.
+// Deployed automatically by .github/workflows/deploy-infra.yml on changes under infra/azure/.
+//
+// Two values are passed on the command line rather than committed to the .bicepparam file:
+// containerAppResourceId (looked up at deploy time) and opsAlertSmsNumber (a personal mobile
+// number, held in the OPS_ALERT_SMS_NUMBER GitHub Actions secret). Manual escape hatch:
 //
 //   az deployment group create -g pplcrm-cad-prod \
 //     -f infra/azure/monitoring.bicep -p infra/azure/canadacentral-monitoring.bicepparam \
-//     -p containerAppResourceId="$(az containerapp show -n pplcrm-api -g pplcrm-cad-prod --query id -o tsv)"
+//     -p containerAppResourceId="$(az containerapp show -n pplcrm-api -g pplcrm-cad-prod --query id -o tsv)" \
+//     -p opsAlertSmsNumber='<10-digit mobile number>'
 //
 // External synthetic probes hit the public surfaces every 5 minutes from 5 regions; alerts fan out
 // through one action group (Azure mobile-app push + email). /healthz returns 503 when Postgres is
@@ -29,7 +33,9 @@ param opsAlertEmail string
 @description('Azure ACCOUNT email for mobile-app push (must match the account signed into the Azure mobile app — push silently no-ops otherwise). Empty = use opsAlertEmail.')
 param azurePushEmail string = ''
 
-@description('Mobile number for SMS alerts, national format without country code (e.g. 4168236993). Empty = no SMS receiver.')
+// Never hard-code a real number in a committed .bicepparam — CI passes it from the
+// OPS_ALERT_SMS_NUMBER GitHub Actions secret (see .github/workflows/deploy-infra.yml).
+@description('Mobile number for SMS alerts, national format without country code (10 digits in the NANP, e.g. 4165550123). Empty = NO SMS receiver is created, which removes the primary wake-up channel; see smsAlertReceiverConfiguredOut.')
 param opsAlertSmsNumber string = ''
 
 @description('Country code for the SMS number.')
@@ -315,3 +321,9 @@ resource pgMetricAlerts 'Microsoft.Insights/metricAlerts@2018-03-01' = [
 
 output appInsightsNameOut string = appInsights.name
 output logAnalyticsNameOut string = logAnalytics.name
+
+// false means the action group has email + Azure-app push but NO SMS receiver. Push is unreliable
+// for this subscription's guest (#EXT#) identity, so false effectively means "nothing will wake
+// anyone up at 3am". Surfaced as an output so a deploy that silently drops SMS is still visible in
+// the deployment result; the CI workflow additionally refuses to deploy without the number.
+output smsAlertReceiverConfiguredOut bool = !empty(opsAlertSmsNumber)

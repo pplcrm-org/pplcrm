@@ -14,15 +14,23 @@ process.
 
 All in `infra/azure/monitoring.bicep` + `canadacentral-monitoring.bicepparam`, **deployed by CI**:
 `.github/workflows/deploy-infra.yml` runs `az deployment group create` on any merge touching those
-files (or via workflow_dispatch). No secrets — monitoring.bicep references the existing Postgres
+files (or via workflow_dispatch). No DB password — monitoring.bicep references the existing Postgres
 server via `existing` instead of provisioning it, which is why it's split from the manual,
-password-bearing `main.bicep`. Provisioned:
+password-bearing `main.bicep`. It does need one repository secret, **`OPS_ALERT_SMS_NUMBER`** (the
+on-call mobile number; personal data, so deliberately not committed to the `.bicepparam`). The
+workflow passes it as `-p opsAlertSmsNumber=` and **fails the job if it is unset or not exactly 10
+digits** — deploying without it would quietly create an action group with no SMS receiver.
+Provisioned:
 
 - **Availability tests** (App Insights standard webtests, every 5 min from 5 regions, expect 200):
   `api.pplcrm.com/healthz`, `app.pplcrm.com`, `go.pplcrm.com`, optional `formsProbeUrl` tenant
   host, and — only with `enableWorkerProbe = true` — `api.pplcrm.com/healthz/worker`.
 - **Action group `pplcrm-ops-ag`**: Azure mobile-app push + email to `opsAlertEmail`
-  (set in `canadacentral-monitoring.bicepparam`). Test via portal → action group → "Test action group".
+  (set in `canadacentral-monitoring.bicepparam`), plus SMS to `opsAlertSmsNumber` when supplied.
+  SMS is the channel that actually wakes someone: app push is unreliable for this subscription's
+  guest (`#EXT#`) identity. An empty `opsAlertSmsNumber` creates no SMS receiver at all — the
+  `smsAlertReceiverConfiguredOut` deployment output reports which happened.
+  Test via portal → action group → "Test action group".
 - **Metric alerts**: per-test availability (2+ locations failing / 5 min), Container App
   `RestartCount`/`Replicas` (the workflow looks up `containerAppResourceId`; skipped until the
   hand-created app exists), Postgres `cpu_percent` > 90, `storage_percent` > 80,

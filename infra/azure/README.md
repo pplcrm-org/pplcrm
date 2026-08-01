@@ -6,14 +6,20 @@ these templates mirror those exact resources and are the reproducible path for r
 
 Two templates, two deploy paths:
 
-| Template           | Contents                            | Deployed by                                                     |
-| ------------------ | ----------------------------------- | --------------------------------------------------------------- |
-| `main.bicep`       | Postgres + Blob (the data plane)    | **Manually** — needs `pgAdminPassword` on the CLI               |
-| `monitoring.bicep` | Probes, action group, metric alerts | **CI** (`.github/workflows/deploy-infra.yml`) — needs no secret |
+| Template           | Contents                            | Deployed by                                                          |
+| ------------------ | ----------------------------------- | -------------------------------------------------------------------- |
+| `main.bicep`       | Postgres + Blob (the data plane)    | **Manually** — needs `pgAdminPassword` on the CLI                    |
+| `monitoring.bicep` | Probes, action group, metric alerts | **CI** (`.github/workflows/deploy-infra.yml`) — needs no DB password |
 
 The split is deliberate: `monitoring.bicep` references the existing Postgres server (`existing`
 keyword) instead of provisioning it, so CI can deploy alert changes on merge without the DB admin
 password ever entering GitHub.
+
+`monitoring.bicep` does need one GitHub Actions secret: **`OPS_ALERT_SMS_NUMBER`**, the on-call
+mobile number for the SMS alert receiver. It is a personal number, so it is not committed to
+`canadacentral-monitoring.bicepparam`; the workflow passes it as `-p opsAlertSmsNumber=` and
+**fails the job outright if the secret is unset**, because a deploy without it would silently
+produce an action group with no SMS receiver. See `deploy/GO-LIVE-CHECKLIST.md` §1.
 
 ## What main.bicep provisions (manual)
 
@@ -32,7 +38,9 @@ _WIP — the `pplcrm-api` Container App is appended when the checklist reaches �
   DB-down = failure by design), `app.pplcrm.com`, `go.pplcrm.com`, an optional tenant
   `*.pplforms.com` host (`formsProbeUrl`), and — once the backend ships `GET /healthz/worker` —
   the job-worker dead-man heartbeat (`enableWorkerProbe`)
-- **Action group `pplcrm-ops-ag`**: Azure mobile-app push + email to `opsAlertEmail`
+- **Action group `pplcrm-ops-ag`**: Azure mobile-app push + email to `opsAlertEmail`, plus an SMS
+  receiver when `opsAlertSmsNumber` is supplied (the `smsAlertReceiverConfiguredOut` output says
+  whether one was created)
 - **Metric alerts**: availability failures, Container App restarts / zero replicas (the workflow
   looks up `containerAppResourceId`; skipped until the app exists), Postgres
   cpu/storage/connection saturation

@@ -296,8 +296,10 @@ live separately):
       optional `/healthz/worker`), an action group (Azure app push + email to `opsAlertEmail`), and
       metric alerts (Container App restarts/replicas, Postgres cpu/storage/connections). The
       `deploy-infra.yml` workflow deploys it on any change under `infra/azure/` monitoring files
-      (or via workflow_dispatch) — no secrets needed; see `infra/azure/README.md`. Test with the
-      action group's "Test action group" button.
+      (or via workflow_dispatch) — no DB password needed, but it does require the
+      `OPS_ALERT_SMS_NUMBER` repository secret (on-call mobile for the SMS receiver) and fails the
+      job if it is missing; see `infra/azure/README.md` and `deploy/GO-LIVE-CHECKLIST.md` §1. Test
+      with the action group's "Test action group" button.
 - [ ] Verify DB backups / point-in-time restore are enabled on the Flexible Server.
 - [ ] Establish the migration workflow going forward: **new timestamped migration files only**, never edit applied ones.
 - [ ] Plan secret rotation (`SHARED_SECRET`, `OAUTH_TOKEN_ENC_KEY` — rotating the latter forces mailbox re-consent).

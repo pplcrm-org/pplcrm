@@ -4,14 +4,21 @@ name: Deploy infra (monitoring)
 # metric alerts (see the pplcrm-observability skill). Runs whenever the monitoring template or
 # its params change on main, so alert thresholds are merge-to-deploy.
 #
-# monitoring.bicep needs NO secrets (it references the existing Postgres server rather than
-# provisioning it), which is exactly why it is split from main.bicep — the data-plane template
+# monitoring.bicep needs no DATABASE credentials (it references the existing Postgres server rather
+# than provisioning it), which is exactly why it is split from main.bicep — the data-plane template
 # requires pgAdminPassword and stays a manual deploy (see infra/azure/README.md).
 #
 # The service principal behind AZURE_CREDENTIALS needs rights to create Microsoft.Insights /
 # Microsoft.OperationalInsights resources in the resource group (Contributor on the RG covers it).
 #
 # Required secrets:   AZURE_CREDENTIALS            (service-principal JSON — same as deploy.yml)
+#                     OPS_ALERT_SMS_NUMBER         (on-call mobile, 10 digits, no country code, no
+#                                                   punctuation — e.g. 4165550123. A personal number,
+#                                                   so it is a secret rather than a committed param.
+#                                                   This job FAILS if it is unset: without it the
+#                                                   action group has no SMS receiver and nothing
+#                                                   wakes anyone up. See deploy/GO-LIVE-CHECKLIST.md
+#                                                   §1.)
 # Required variables: AZURE_RESOURCE_GROUP, AZURE_API_APP
 
 on:
@@ -33,14 +40,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Fail before touching Azure if the on-call number is missing. Deploying without it would
+      # succeed and quietly leave the action group with no SMS receiver — the one channel that
+      # actually wakes someone up — so this stops rather than degrades.
+      - name: Require the on-call SMS number
+        env:
+          OPS_ALERT_SMS_NUMBER: ${{ secrets.OPS_ALERT_SMS_NUMBER }}
+        run: |
+          if [ -z "$OPS_ALERT_SMS_NUMBER" ]; then
+            echo "::error::Repository secret OPS_ALERT_SMS_NUMBER is not set. Set it to the on-call mobile number (10 digits, no country code, no punctuation) with: gh secret set OPS_ALERT_SMS_NUMBER -R pplcrm-org/pplcrm. Without it the pplcrm-ops-ag action group gets no SMS receiver and outage alerts reach email/push only."
+            exit 1
+          fi
+          if ! printf '%s' "$OPS_ALERT_SMS_NUMBER" | grep -Eq '^[0-9]{10}$'; then
+            echo "::error::OPS_ALERT_SMS_NUMBER must be exactly 10 digits with no country code, spaces, or punctuation (the country code is a separate bicep parameter, opsAlertSmsCountryCode)."
+            exit 1
+          fi
+
       - uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       # containerAppResourceId wires the Container App restart/replica alerts; before the app is
       # hand-created (PROD-CHECKLIST §5) it resolves empty and those alerts are simply skipped.
+      # opsAlertSmsNumber is passed here rather than committed to the .bicepparam file — it is a
+      # personal mobile number and must not live in git.
       - name: Deploy monitoring bicep
         uses: azure/cli@v2
+        env:
+          OPS_ALERT_SMS_NUMBER: ${{ secrets.OPS_ALERT_SMS_NUMBER }}
         with:
           inlineScript: |
             APP_ID=$(az containerapp show \
@@ -53,4 +80,5 @@ jobs:
               -g "${{ vars.AZURE_RESOURCE_GROUP }}" \
               -f infra/azure/monitoring.bicep \
               -p infra/azure/canadacentral-monitoring.bicepparam \
-              -p containerAppResourceId="$APP_ID"
+              -p containerAppResourceId="$APP_ID" \
+              -p opsAlertSmsNumber="$OPS_ALERT_SMS_NUMBER"

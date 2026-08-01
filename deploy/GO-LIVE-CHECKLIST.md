@@ -13,16 +13,16 @@ Cloudflare, wrangler, or the maps-key build).
 
 ## 0. Current production topology (what's already live)
 
-| Surface                         | Platform                 | Name / notes                                                               |
-| ------------------------------- | ------------------------ | -------------------------------------------------------------------------- |
-| `pplcrm.com` (marketing)        | Cloudflare Pages         | project `pplcrm-website`, prod branch `main`                               |
-| `app.pplcrm.com` (CRM SPA)      | Cloudflare Pages         | project `pplcrm-app`, prod branch `main`                                   |
-| `api.pplcrm.com` (backend)      | Azure Container App      | `pplcrm-api` in RG `pplcrm-cad-prod`, env `pplcrm-env`, **Canada Central** |
-| `go.pplcrm.com` (companion)     | Cloudflare Worker        | `go-edge` (infra/go-edge), route `go.pplcrm.com/*`                         |
-| `*.pplforms.com` (public forms) | Cloudflare Worker        | `pplforms-edge` (infra/pplforms-edge), route `*.pplforms.com/*`            |
-| Postgres                        | Azure PG Flexible Server | `pplcrm-pg`, **Burstable B1ms** (tiny — see §10)                           |
-| Object storage                  | Azure Blob               | account `pplcrmcadstorage`, container `uploads`                            |
-| Cloudflare account              | —                        | `dc5af929b1d37f58e401ddb0c5c7e85b` (owns both zones + all Workers/Pages)   |
+| Surface                         | Platform                 | Name / notes                                                                         |
+| ------------------------------- | ------------------------ | ------------------------------------------------------------------------------------ |
+| `pplcrm.com` (marketing)        | Cloudflare Pages         | project `pplcrm-website`, prod branch `main`                                         |
+| `app.pplcrm.com` (CRM SPA)      | Cloudflare Pages         | project `pplcrm-app`, prod branch `main`                                             |
+| `api.pplcrm.com` (backend)      | Azure Container App      | `pplcrm-api` in RG `pplcrm-cad-prod`, env `pplcrm-env`, **Canada Central**           |
+| `go.pplcrm.com` (companion)     | Cloudflare Worker        | `go-edge` (infra/go-edge), route `go.pplcrm.com/*`                                   |
+| `*.pplforms.com` (public forms) | Cloudflare Worker        | `pplforms-edge` (infra/pplforms-edge), route `*.pplforms.com/*`                      |
+| Postgres                        | Azure PG Flexible Server | `pplcrm-pg`, **Burstable B1ms** (tiny — see §10)                                     |
+| Object storage                  | Azure Blob               | account `pplcrmcadstorage`, container `uploads`                                      |
+| Cloudflare account              | —                        | one account owns both zones + all Workers/Pages (id: `CLOUDFLARE_ACCOUNT_ID` secret) |
 
 **CI/CD:** `.github/workflows/deploy.yml`. Every push to `main` runs: build 4 apps → backend image to
 GHCR (`ghcr.io/pplcrm-org/pplcrm/backend`, **private**, pulled via PAT registry secret) → `az containerapp
@@ -58,6 +58,53 @@ already quoted). See the memory file.
 frontend bundle at build (placeholder + inject step in `deploy.yml`). To change it:
 `gh secret set VITE_GOOGLE_MAPS_API_KEY -R pplcrm-org/pplcrm` then re-run the pipeline (a rebuild is required;
 there is no live env var to flip).
+
+### GitHub Actions repository secrets (separate from Container App secrets)
+
+These live in GitHub, not in the Container App. Set them with
+`gh secret set <NAME> -R pplcrm-org/pplcrm`.
+
+| Secret                                                                      | Used by            | Purpose                                                                    |
+| --------------------------------------------------------------------------- | ------------------ | -------------------------------------------------------------------------- |
+| `AZURE_CREDENTIALS`                                                         | both deploy flows  | Service-principal JSON for `azure/login`                                   |
+| `VITE_GOOGLE_MAPS_API_KEY`                                                  | `deploy.yml`       | Browser maps key baked into the frontend bundle                            |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`                             | `deploy.yml`       | Pages + Worker deploys                                                     |
+| `PROD_DB_HOST/NAME/MIGRATION_USER/MIGRATION_PASSWORD`                       | `deploy.yml`       | The `migrate` job that applies pending migrations before the backend rolls |
+| **`OPS_ALERT_SMS_NUMBER`** — **not created yet; see the action item below** | `deploy-infra.yml` | On-call mobile number for the Azure Monitor SMS alert receiver             |
+
+- [ ] **ACTION REQUIRED — create `OPS_ALERT_SMS_NUMBER` before the next infrastructure deploy.**
+      The on-call mobile number used to be committed in
+      `infra/azure/canadacentral-monitoring.bicepparam`. It was removed from the working tree because
+      it is personal contact data (it is still recoverable from git history — see the note at the end
+      of this section). `.github/workflows/deploy-infra.yml` now reads it from this secret and
+      **fails the whole job with an explicit error if the secret is unset or is not exactly 10
+      digits**. Until someone sets it, every run of "Deploy infra (monitoring)" — whether triggered
+      by a merge touching `infra/azure/` or by workflow_dispatch — will fail. That failure is
+      intentional: deploying without the number would succeed and leave the `pplcrm-ops-ag` action
+      group with email and Azure-app push only, and app push is unreliable for this subscription's
+      guest (`#EXT#`) identity, so nobody would be woken by an outage.
+
+      ```bash
+      # 10 digits, no country code, no punctuation (the country code is the separate
+      # opsAlertSmsCountryCode bicep parameter, default '1').
+      gh secret set OPS_ALERT_SMS_NUMBER -R pplcrm-org/pplcrm
+      gh workflow run "Deploy infra (monitoring)" -R pplcrm-org/pplcrm   # re-run after setting it
+      ```
+
+      To verify afterwards: the deployment output includes `smsAlertReceiverConfiguredOut`, which is
+      `true` only when an SMS receiver was actually created. Portal → `pplcrm-ops-ag` → **Test action
+      group** sends a real text.
+
+> **These values remain in git history, and `pplcrm-org/pplcrm` is a PUBLIC repository.** Removing the
+> on-call number, the Twilio from-number and the Cloudflare account id from the working tree does not
+> remove them from the repository — every one of those commits is on `origin/main` and readable by
+> anyone on the internet, and has been since 2026-07-17 (Cloudflare account id) / 2026-07-21 (both
+> phone numbers). Treat all three as already disclosed. Erasing them for real requires rewriting
+> history (`git filter-repo` or equivalent) plus a force-push that invalidates every existing clone,
+> and even then GitHub may retain the old objects until asked to garbage-collect them, and forks or
+> third-party mirrors keep their own copies. That is the repository owner's call, not something a
+> routine change should do. Weigh it against the cheaper alternative for the on-call number: change
+> the number, or point the SMS receiver at a number that is not personal.
 
 ---
 
@@ -116,8 +163,9 @@ until this is live.
 - [x] Confirm `twilio-account-sid` / `twilio-auth-token` are live and the account is funded — **verified
       2026-07-21** (creds authenticate against the Twilio API).
 - [x] `twilio-from-number` is a real, SMS-capable number — **verified owned via the Twilio API
-      2026-07-21**, and the secret was fixed to E.164 (`2892789936` → `+12892789936`, revision
-      restarted; local `.env.production` synced).
+      2026-07-21**, and the secret was fixed to E.164 format (a bare 10-digit number was rejected;
+      it now carries the leading `+1`, revision restarted; local `.env.production` synced). Read the
+      current value with `az containerapp secret show`; it is not recorded here.
 - [ ] Test the companion `/t/:token` or `/r/:token` verify flow end-to-end (see `pplcrm-companion-access`).
 
 ## 6. Google & Microsoft
