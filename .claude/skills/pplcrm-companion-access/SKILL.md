@@ -233,6 +233,17 @@ no token and no text, which is correct: they couldn't approve anyway.
   `DeliveriesController.isTokenUsable` or the gate and the data endpoint will
   disagree about whether a link is dead. Turf `expires_at` is unaffected
   (per-assignment, staff-set).
+- **Merging two people can take companion access away.** `PersonsRepo.mergePersons`
+  re-points `companion_volunteers.person_id` from the source person to the target.
+  When BOTH people already have a volunteer row, `UNIQUE (tenant_id, person_id)`
+  makes a plain update impossible, so the **target's row wins and the source's row
+  is deleted**, along with its `companion_sessions` and `companion_approval_tokens`.
+  That direction is deliberate: keeping the more permissive row would let a merge
+  grant access an admin had explicitly revoked. The cost is that merging an
+  approved, actively-canvassing volunteer into a target that was only ever
+  `invited` revokes access, and that volunteer must verify a code again on the
+  surviving record. If someone reports "my volunteer suddenly sees the verify
+  screen again", check whether their person record was merged.
 - Tests: fabricate an approved volunteer + session directly (see
   `mintApprovedSession` in `canvassing/controller.spec.ts`) instead of driving the
   whole verify journey; that journey is covered once in
