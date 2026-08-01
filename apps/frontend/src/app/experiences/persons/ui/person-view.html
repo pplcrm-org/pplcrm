@@ -488,8 +488,15 @@
         <pc-tab-panel id="household" [activeTab]="activeTab()">
           <!-- Household members -->
           <div class="flex flex-col gap-4">
-            @if (householdId() && !isPlaceholderHousehold()) { @defer {
-            <pc-people-in-household [householdId]="householdId()!" [excludePersonId]="id()"></pc-people-in-household>
+            @if (householdId() && householdResource.isLoading()) {
+            <!-- Household record still resolving — mounting the list now would fetch the shared
+                 no-address placeholder bucket and flash unrelated people. -->
+            <div class="skeleton w-full h-32"></div>
+            } @else if (householdId() && !isPlaceholderHousehold()) { @defer {
+            <pc-people-in-household
+              [householdId]="householdId()!"
+              [excludePersonId]="person().id"
+            ></pc-people-in-household>
             } @placeholder {
             <div class="skeleton w-full h-32"></div>
             } } @else {

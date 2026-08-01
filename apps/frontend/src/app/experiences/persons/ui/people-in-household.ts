@@ -10,6 +10,17 @@ type HouseholdMember = PERSONINHOUSEHOLDTYPE & { email?: string | null };
   selector: 'pc-people-in-household',
   imports: [RouterModule],
   template: `<div class="flex flex-col">
+    @if (isLoading() && !peopleInHousehold().length) {
+      @for (row of [0, 1]; track row) {
+        <div class="flex items-center gap-3 px-2 py-2.5">
+          <div class="skeleton h-9 w-9 shrink-0 rounded-full"></div>
+          <div class="flex flex-col gap-1.5">
+            <div class="skeleton h-3 w-32"></div>
+            <div class="skeleton h-2.5 w-44"></div>
+          </div>
+        </div>
+      }
+    }
     @if (!peopleInHousehold().length && !isLoading()) {
       <p i18n class="py-2 text-sm italic text-base-content/40">No one else at this address yet.</p>
     }

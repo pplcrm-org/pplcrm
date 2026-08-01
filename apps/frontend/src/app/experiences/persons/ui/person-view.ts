@@ -141,6 +141,8 @@ export class PersonView {
 
   protected readonly addressString = computed(() => {
     const hh = this.householdResource.value() as Households | null | undefined;
+    // Undefined while the household record is in flight — show blank, not a wrong claim.
+    if (hh === undefined && this.householdResource.isLoading()) return '';
     if (!hh || hh.is_placeholder) return 'No Address Assigned';
     return this.getFormattedAddress(hh);
   });
