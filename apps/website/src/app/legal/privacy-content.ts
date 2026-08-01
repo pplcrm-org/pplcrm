@@ -11,7 +11,7 @@ export const PRIVACY_DOC: LegalDoc = {
   title: 'Privacy policy',
   intro:
     'What we collect, why, where it lives, and the things we will never do with it. Written to be read, not skimmed past.',
-  updated: 'July 31, 2026',
+  updated: 'August 1, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -167,6 +167,7 @@ export const PRIVACY_DOC: LegalDoc = {
         '**Workspace deletion** can be scheduled by an organization admin. After a 30-day grace window (cancelable at any time), every record in the workspace is permanently deleted, and we confirm by email when it is done.',
         "**Login deletion** (deleting an individual user account) permanently removes the person's email address, name, password and sign-in credentials after the same 30-day cancelable window. Work they contributed inside a workspace (records, notes, activity history) belongs to that organization and stays in its workspace, attributed to “Deleted user”.",
         '**Activity logs** are kept for 90 days, then pruned automatically.',
+        '**Synced mail you archive or move** out of a synced folder in your own mail client is hidden from the CRM but kept, so any comments, assignment or triage status your team added to it survive. If nobody ever commented on it, assigned it, starred it or closed it, the copy is deleted 90 days later.',
         '**Export files** are downloadable for 30 days, then removed. **Import source files** are kept for 90 days so you can audit an import, then removed.',
         '**Sessions** expire after 24 hours, or 30 days if you chose “remember me”. Volunteer device sessions expire after 30 days.',
         '**Suppression records** (unsubscribes, bounces, complaints) are kept while a workspace is active, because keeping them is what honors the opt-out.',
