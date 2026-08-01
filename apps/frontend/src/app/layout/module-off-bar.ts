@@ -18,13 +18,13 @@ const MODULE_ITEMS: readonly ModuleNavItem[] = SidebarItems.flatMap((item) => [i
 );
 
 /**
- * Explains a page that isn't in the sidebar.
+ * Explains a page whose module is turned off.
  *
- * A module the tenant's organization mode leaves off is hidden from the nav but stays
- * fully routable — bookmarks, shared links and help-article deep links must not 404, and
- * hiding a module is a default rather than a permission. That leaves a gap: someone who
- * follows an old link lands on a working page they can't find again. This strip closes it
- * and points at the switch, per "disclosure over suppression" (design §2).
+ * An off module is dimmed in the nav but stays fully routable — bookmarks, shared links
+ * and help-article deep links must not 404, and turning a module off is a default rather
+ * than a permission. Someone who follows an old link lands on a working page whose nav
+ * entry doesn't navigate. This strip explains that and points at the switch, per
+ * "disclosure over suppression" (design §2).
  *
  * Mounted once in the shell, so it covers every optional module with no per-page work.
  */
@@ -39,13 +39,8 @@ const MODULE_ITEMS: readonly ModuleNavItem[] = SidebarItems.flatMap((item) => [i
         <div class="flex min-w-0 items-center gap-2">
           <pc-icon name="eye-slash" [size]="5" class="shrink-0 text-base-content/60"></pc-icon>
           <span class="truncate text-base-content/80">
-            @if (dimmedInSidebar()) {
-              {{ label(item) }} is turned off for this workspace, so it is dimmed in the sidebar. Everything here still
-              works.
-            } @else {
-              {{ label(item) }} is turned off for this workspace, so it isn't in the sidebar. Everything here still
-              works.
-            }
+            {{ label(item) }} is turned off for this workspace, so it is dimmed in the sidebar. Everything here still
+            works.
           </span>
         </div>
         <a routerLink="/workspace/modules" class="btn btn-xs shrink-0 sm:btn-sm"> Turn it back on </a>
@@ -71,13 +66,6 @@ export class ModuleOffBar {
     const enabled = this.orgMode.enabledModules();
     const match = MODULE_ITEMS.find((item) => path === item.route || path.startsWith(`${item.route}/`));
     return match && !enabled.has(match.moduleId) ? match : null;
-  });
-
-  /** True when the current off module still shows (dimmed) in the sidebar, i.e. it is
-   *  off by the mode's default rather than by an explicit user override. */
-  protected readonly dimmedInSidebar = computed<boolean>(() => {
-    const item = this.offItem();
-    return !!item && this.orgMode.moduleVisibilities().get(item.moduleId) === 'offByMode';
   });
 
   protected label(item: ISidebarItem): string {

@@ -61,8 +61,9 @@ export class OrgModeService {
     return this.user()?.tenant_module_overrides ?? {};
   });
 
-  /** Per-module resolution including WHO turned it off — the sidebar dims 'offByMode'
-   *  entries but hides 'offByUser' ones. */
+  /** Per-module resolution including WHO turned it off. The sidebar dims both off
+   *  states the same way; the Workspace → Modules page uses the distinction to say
+   *  "default for <mode>" vs "you turned this off". */
   public readonly moduleVisibilities = computed<ReadonlyMap<ModuleId, ModuleVisibility>>(() => {
     const mode = this.mode();
     const overrides = this.overrides();

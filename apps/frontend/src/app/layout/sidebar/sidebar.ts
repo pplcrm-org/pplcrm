@@ -142,26 +142,25 @@ export class Sidebar {
   /**
    * Apply the tenant's module visibility to the entries.
    *
-   * Off by the MODE's default (no user override): the entry stays in the sidebar,
-   * dimmed — clicking it explains and points at Workspace → Modules instead of
-   * navigating, so the module stays discoverable. Off by an EXPLICIT user override:
-   * `hidden`, the same mechanism Task board / Households / Companies already use.
-   * Either way the `g` chord keeps working and the route stays resolvable — off is a
-   * default, not a permission. Pinned clones keep their `moduleId` (see
-   * `cloneForFavourite`), so PINS entries get the same treatment for free.
+   * An off module — whether off by the MODE's default or by an EXPLICIT user
+   * override — stays in the sidebar, dimmed: clicking it explains and points at
+   * Workspace → Modules instead of navigating, so the module stays discoverable
+   * and the two off states look the same everywhere. The `g` chord keeps working
+   * and the route stays resolvable — off is a default, not a permission. Pinned
+   * clones keep their `moduleId` (see `cloneForFavourite`), so PINS entries get
+   * the same treatment for free.
    */
   private applyModuleVisibility(items: ISidebarItem[]): ISidebarItem[] {
     const visibilities = this.orgMode.moduleVisibilities();
     const scope = (item: ISidebarItem): ISidebarItem => {
       const state = item.moduleId ? visibilities.get(item.moduleId) : undefined;
-      if (state === 'offByUser') return { ...item, hidden: true };
-      if (state === 'offByMode') return { ...item, dimmed: true };
+      if (state === 'offByMode' || state === 'offByUser') return { ...item, dimmed: true };
       return item;
     };
     return items.map((item) => (item.children ? { ...scope(item), children: item.children.map(scope) } : scope(item)));
   }
 
-  /** Click on a nav entry. Dimmed = module off by the mode's default: explain, don't navigate. */
+  /** Click on a nav entry. Dimmed = the module is off: explain, don't navigate. */
   protected onNavClick(nav: ISidebarItem, event: Event): void {
     if (nav.dimmed) {
       event.preventDefault();

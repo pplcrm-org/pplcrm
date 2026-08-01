@@ -138,11 +138,11 @@ describe('Sidebar Component', () => {
   });
 
   /**
-   * Module visibility, three states. A module a MODE leaves off by default is DIMMED, not
-   * dropped — it stays visible so the user learns it exists, and clicking it explains
-   * instead of navigating. A module the USER explicitly turned off is HIDDEN. Either way
-   * the route stays resolvable and the `g` chord keeps working, because "off" is a
-   * default the user can undo, not a permission.
+   * Module visibility. An off module — off by the MODE's default or by an explicit USER
+   * override — is DIMMED, not dropped: it stays visible so the user learns it exists,
+   * and clicking it explains instead of navigating. The route stays resolvable and the
+   * `g` chord keeps working, because "off" is a default the user can undo, not a
+   * permission.
    */
   describe('organization mode', () => {
     function buildWith(mode: string, overrides: Record<string, boolean> = {}): Sidebar {
@@ -182,15 +182,15 @@ describe('Sidebar Component', () => {
       expect(find(cmp, 'Donations')?.hidden).toBeFalsy();
     });
 
-    it('hides a module the user explicitly turned off', () => {
+    it('dims a module the user explicitly turned off, same as a mode default', () => {
       const campaign = buildWith('campaign', { donations: false });
-      expect(find(campaign, 'Donations')?.hidden).toBe(true);
-      expect(find(campaign, 'Donations')?.dimmed).toBeFalsy();
+      expect(find(campaign, 'Donations')?.dimmed).toBe(true);
+      expect(find(campaign, 'Donations')?.hidden).toBeFalsy();
 
-      // The user's decision owns the state even when it matches the mode default.
+      // Same treatment when the user's decision matches the mode default.
       const church = buildWith('church', { canvassing: false });
-      expect(find(church, 'Canvassing')?.hidden).toBe(true);
-      expect(find(church, 'Canvassing')?.dimmed).toBeFalsy();
+      expect(find(church, 'Canvassing')?.dimmed).toBe(true);
+      expect(find(church, 'Canvassing')?.hidden).toBeFalsy();
     });
 
     it('keeps them fully visible in campaign mode', () => {
