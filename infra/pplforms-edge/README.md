@@ -4,9 +4,16 @@ Cloudflare Worker that serves `*.pplforms.com` — the public tenant surfaces (f
 RSVP `/e/:slug`, volunteer `/v/:slug`, donation `/d/:slug`). It replaces what would otherwise be an
 nginx VM: it serves the built Angular SPA as static assets, reverse-proxies `/api/*` to the CRM
 backend, and serves the server-rendered donation page by rewriting `/d/:slug` → the backend's
-`/api/forms/d/:slug` (injecting `?t=<org>` from the subdomain). Every public call is same-origin,
-which is why backend CORS stays locked to the CRM origin. See [`src/index.ts`](src/index.ts) for the
-reasoning.
+`/api/forms/d/:slug`. Every public call is same-origin, which is why backend CORS stays locked to the
+CRM origin. See [`src/index.ts`](src/index.ts) for the reasoning.
+
+On any host whose subdomain names an organization, the Worker **sets `?t=<org>` from that subdomain
+on every request it forwards**, overwriting whatever the caller supplied. This applies to both the
+`/d/:slug` rewrite and the `/api/*` proxy. Without it the subdomain was only a default: a link of the
+form `https://trusted-org.pplforms.com/d/<slug>?t=other-org` rendered another organization's donation
+page under a trusted organization's hostname, and the payment settled into that other organization's
+connected Stripe account. On the apex and on `www` the subdomain names no organization, so the query
+string is forwarded untouched.
 
 ## One-time setup
 
@@ -23,8 +30,9 @@ reasoning.
    - (An `A *` → `192.0.2.1` proxied works equally; the address is a placeholder either way.)
 4. **Set the backend base domain.** In the backend's prod environment, set
    `PUBLIC_BASE_DOMAIN=pplforms.com` (frontend `environment.prod.ts` already has
-   `publicBaseDomain: 'pplforms.com'`). The `?t=<org>` query is the primary tenant signal, so this
-   is a belt-and-suspenders fallback for Host-based resolution.
+   `publicBaseDomain: 'pplforms.com'`). The backend still reads the `?t=<org>` query first; behind
+   this Worker that value is always the one the subdomain dictates, so Host-based resolution is the
+   fallback for requests that reach the API hostname directly rather than through the Worker.
 
 ## Deploy
 
