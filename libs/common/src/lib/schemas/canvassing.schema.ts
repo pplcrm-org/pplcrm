@@ -276,13 +276,25 @@ export type CompanionSurveyType = z.infer<typeof CompanionSurveyObj>;
 export type CompanionOpType = z.infer<typeof CompanionOpObj>;
 export type CompanionResultsType = z.infer<typeof CompanionResultsObj>;
 
+/**
+ * Everything an op hands back to the device beyond "it happened".
+ *
+ * Kept as an open record rather than a single column so the ledger that stores it
+ * (`companion_ops.result`, jsonb) never needs another migration when a future op type
+ * has to return an id of its own. Parsed on the way out of the ledger, so a row written
+ * by an older or newer build degrades to "returned nothing" instead of throwing.
+ */
+export const CompanionOpResultObj = z.object({
+  /** For person_create: the real id to swap in for the client's temp person. */
+  person_id: idSchema.optional(),
+});
+export type CompanionOpResultType = z.infer<typeof CompanionOpResultObj>;
+
 /** Per-op server acknowledgement — `duplicate` means "already applied, treat as success". */
-export interface CompanionOpAck {
+export interface CompanionOpAck extends CompanionOpResultType {
   op_id: string;
   status: 'applied' | 'duplicate' | 'rejected';
   error?: string;
-  /** For person_create: the real id to swap in for the client's temp person. */
-  person_id?: string;
 }
 
 // ------------------------------------------------------------------------

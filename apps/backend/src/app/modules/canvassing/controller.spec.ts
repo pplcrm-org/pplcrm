@@ -1196,6 +1196,49 @@ describe('CanvassingController', () => {
     expect(bad.acks[0]?.status).toBe('rejected');
   });
 
+  it('re-answers a retried person_create with the id it created the first time', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const [turf] = await controller.getTurfs(auth);
+    if (!turf) throw new Error('expected a turf');
+    const { token } = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    const companion = await controller.getCompanionTurf(token, session);
+    const door = companion.households[0];
+    if (!door) throw new Error('expected a door');
+
+    const op = {
+      op_id: 'op-create-retry',
+      recorded_at: null,
+      type: 'person_create' as const,
+      payload: { household_id: door.id, name: 'Robin Newcomer' },
+    };
+
+    const first = await controller.postCompanionResults(token, session, [op]);
+    expect(first.acks[0]?.status).toBe('applied');
+    const personId = first.acks[0]?.person_id;
+    expect(personId).toBeTruthy();
+
+    // The phone never saw that reply (dropped connection) and sends the batch again.
+    // Without the stored result this came back as a bare `duplicate`, the phone kept
+    // its `tmp-…` placeholder, and every queued survey for that person jammed forever.
+    const retry = await controller.postCompanionResults(token, session, [op]);
+    expect(retry.acks[0]?.status).toBe('duplicate');
+    expect(retry.acks[0]?.person_id).toBe(personId);
+
+    // Still exactly one person: the duplicate answered from the ledger, it did not re-apply.
+    const people = await db
+      .selectFrom('persons')
+      .select('id')
+      .where('tenant_id', '=', s.tenantId)
+      .where('first_name', '=', 'Robin')
+      .execute();
+    expect(people).toHaveLength(1);
+  });
+
   it('rejects an invalid Companion token', async () => {
     await expect(controller.getCompanionTurf('not-a-real-token', null)).rejects.toThrow();
   });

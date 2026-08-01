@@ -45,6 +45,8 @@ const TURF_ID = '4';
  *  must find the same unsynced queue either way. */
 const QUEUE_KEY = 'pc-canvass-queue';
 const LEGACY_QUEUE_KEY = `pc-canvass-queue:${TOKEN}`;
+/** Results that came off the queue without syncing; survives a reload like the queue. */
+const BLOCKED_KEY = 'pc-canvass-blocked';
 
 function turfPayload(): CompanionTurfPayload {
   return {
@@ -311,7 +313,7 @@ describe('CanvassStore', () => {
       expect(store.householdById('10')?.door_outcome).toBe('refused');
     });
 
-    it('drops a rejected op, reverts its overlay, and toasts the error', async () => {
+    it('keeps a rejected op for the volunteer instead of destroying it', async () => {
       const showError = vi.spyOn(alerts, 'showError');
       fetchMock.mockImplementation((url: string, init?: RequestInit) => {
         if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
@@ -325,8 +327,14 @@ describe('CanvassStore', () => {
       store.doorOutcome('10', 'refused');
       await flushMicrotasks();
       expect(store.queue()).toHaveLength(0);
+      // The server did not record it, so the door must not claim otherwise.
       expect(store.householdById('10')?.door_outcome).toBeNull();
       expect(showError).toHaveBeenCalledWith(expect.stringContaining('DNC door'));
+      // But the work itself is still here, named, with the server's reason.
+      expect(store.blocked()).toHaveLength(1);
+      expect(store.blocked()[0]?.entry.label).toBe('Refused · 218 Alder St');
+      expect(store.blocked()[0]?.reason).toBe('DNC door');
+      expect(store.blocked()[0]?.retryable).toBe(true);
     });
 
     it('keeps the queue and goes offline on a network failure, then drains on the online event', async () => {
@@ -396,6 +404,213 @@ describe('CanvassStore', () => {
       store.setWorkOffline(false);
       await flushMicrotasks();
       expect(store.queue()).toHaveLength(0);
+    });
+  });
+
+  describe('a person added at the door whose response was lost', () => {
+    /** Add a person at door 11 and record a survey against them, both queued offline. */
+    function addPersonThenSurvey(): string {
+      store.online.set(false);
+      store.addPerson('11', 'New Neighbor');
+      const tempId = store.householdById('11')?.people[0]?.id ?? '';
+      store.submitSurvey('11', tempId, {
+        support: 'undecided',
+        issues: [],
+        wants_volunteer: false,
+        wants_yard_sign: false,
+        set_dnc: false,
+        senior: false,
+        contact_phone: null,
+        contact_email: null,
+        subscribe: false,
+        notes: null,
+      });
+      return tempId;
+    }
+
+    beforeEach(async () => {
+      await store.load(TOKEN);
+    });
+
+    it('resolves the temp id from a duplicate ack and drains the queue', async () => {
+      addPersonThenSurvey();
+      expect(store.queue()).toHaveLength(2);
+
+      // The batch reached the server and WAS applied; only the response was lost. The
+      // re-send conflicts on the ledger, and the ledger now answers with the person id.
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
+        const body = JSON.parse(String(init.body)) as { ops: { op_id: string; type: string }[] };
+        const acks = body.ops.map(
+          (op): CompanionOpAck =>
+            op.type === 'person_create'
+              ? { op_id: op.op_id, status: 'duplicate', person_id: '55' }
+              : { op_id: op.op_id, status: 'duplicate' },
+        );
+        return Promise.resolve(jsonResponse({ acks }));
+      });
+
+      store.online.set(true);
+      await store.flush();
+      await flushMicrotasks();
+
+      expect(store.queue()).toHaveLength(0);
+      expect(store.blocked()).toHaveLength(0);
+      expect(store.syncStatus()).toBe('idle');
+      // The survey went out naming the real person, not the placeholder.
+      expect(postedOps(fetchMock, 1)[0]?.payload['person_id']).toBe('55');
+      expect(store.householdById('11')?.people[0]?.id).toBe('55');
+    });
+
+    it('recovers on its own when the server can never supply the id', async () => {
+      const showError = vi.spyOn(alerts, 'showError');
+      addPersonThenSurvey();
+
+      // A phone wedged in the field: its person_create was applied before the ledger
+      // stored op results, so no version of the server can answer with an id.
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
+        const body = JSON.parse(String(init.body)) as { ops: { op_id: string }[] };
+        return Promise.resolve(jsonResponse(acksFor(body.ops, 'duplicate')));
+      });
+
+      store.online.set(true);
+      await store.flush();
+      await flushMicrotasks();
+
+      // The queue drains instead of jamming, and the survey is held, not deleted.
+      expect(store.queue()).toHaveLength(0);
+      expect(store.blocked()).toHaveLength(1);
+      expect(store.blocked()[0]?.entry.op.type).toBe('survey');
+      expect(store.blocked()[0]?.retryable).toBe(false);
+      // The volunteer is told, rather than left with a silently stalled queue.
+      expect(showError).toHaveBeenCalled();
+      // The placeholder person is gone, so nothing new can be recorded against them.
+      expect(store.householdById('11')?.people.some((p) => p.id.startsWith('tmp-'))).toBe(false);
+    });
+
+    it('recovers a queue that reloaded with its person_create already gone', async () => {
+      // Exactly what a wedged phone has in localStorage: the survey survived the reload,
+      // the person_create had been dequeued by the ack that carried no id.
+      const orphan = {
+        op_id: 'orphan-1',
+        recorded_at: new Date().toISOString(),
+        type: 'person_result',
+        payload: { household_id: '11', person_id: 'tmp-gone', result: 'not_home' },
+      };
+      const unrelated = {
+        op_id: 'unrelated-1',
+        recorded_at: new Date().toISOString(),
+        type: 'door_outcome',
+        payload: { household_id: '10', outcome: 'no_answer' },
+      };
+      localStorage.setItem(
+        QUEUE_KEY,
+        JSON.stringify([
+          { op: orphan, label: 'Someone · 220 Scott Blvd' },
+          { op: unrelated, label: 'Nobody home · 218 Alder St' },
+        ]),
+      );
+
+      await store.load(TOKEN);
+      await flushMicrotasks();
+
+      // The unresolvable entry no longer blocks the door recorded after it.
+      expect(postedOps(fetchMock, 0).map((o) => o.op_id)).toEqual(['unrelated-1']);
+      expect(store.queue()).toHaveLength(0);
+      expect(store.blocked().map((b) => b.entry.op.op_id)).toEqual(['orphan-1']);
+      // And it survives another reload, because the volunteer has not decided yet.
+      expect(JSON.parse(localStorage.getItem(BLOCKED_KEY) ?? '[]')).toHaveLength(1);
+    });
+
+    it('sends unrelated results while a person_create is still waiting on its ack', async () => {
+      const tempId = addPersonThenSurvey();
+      expect(tempId.startsWith('tmp-')).toBe(true);
+      // A door recorded after the survey, on a household nothing else touches.
+      store.doorOutcome('10', 'no_answer');
+      expect(store.queue()).toHaveLength(3);
+
+      store.online.set(true);
+      await store.flush();
+      await flushMicrotasks();
+
+      // First batch: the person_create AND the unrelated door outcome. The survey waits
+      // for its person, but it does not hold the door behind it.
+      expect(postedOps(fetchMock, 0).map((o) => o.type)).toEqual(['person_create', 'door_outcome']);
+    });
+
+    it('retries held results the volunteer asks to send again', async () => {
+      let reject = true;
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
+        const body = JSON.parse(String(init.body)) as { ops: { op_id: string }[] };
+        if (reject) {
+          return Promise.resolve(
+            jsonResponse({
+              acks: body.ops.map(
+                (op): CompanionOpAck => ({
+                  op_id: op.op_id,
+                  status: 'rejected',
+                  error: 'That household is not part of this turf.',
+                }),
+              ),
+            }),
+          );
+        }
+        return Promise.resolve(jsonResponse(acksFor(body.ops)));
+      });
+
+      store.doorOutcome('10', 'refused');
+      await flushMicrotasks();
+      expect(store.blocked()).toHaveLength(1);
+
+      // The organizer refreshed the turf's doors; the same result now applies cleanly.
+      reject = false;
+      await store.retryBlocked();
+      await flushMicrotasks();
+
+      expect(store.blocked()).toHaveLength(0);
+      expect(store.queue()).toHaveLength(0);
+      expect(store.householdById('10')?.door_outcome).toBe('refused');
+    });
+
+    it('never re-sends a result whose person can never be identified', async () => {
+      addPersonThenSurvey();
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
+        const body = JSON.parse(String(init.body)) as { ops: { op_id: string }[] };
+        return Promise.resolve(jsonResponse(acksFor(body.ops, 'duplicate')));
+      });
+      store.online.set(true);
+      await store.flush();
+      await flushMicrotasks();
+      expect(store.blocked()).toHaveLength(1);
+
+      const postsBefore = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/results')).length;
+      await store.retryBlocked();
+      await flushMicrotasks();
+
+      // Offering "try again" for something that cannot succeed would be a lie.
+      expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/results'))).toHaveLength(postsBefore);
+      expect(store.blocked()).toHaveLength(1);
+    });
+
+    it('lets the volunteer discard a held result', async () => {
+      fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+        if (!init || init.method !== 'POST') return Promise.resolve(jsonResponse(turfPayload()));
+        const body = JSON.parse(String(init.body)) as { ops: { op_id: string }[] };
+        return Promise.resolve(
+          jsonResponse({ acks: body.ops.map((op): CompanionOpAck => ({ op_id: op.op_id, status: 'rejected' })) }),
+        );
+      });
+      store.doorOutcome('10', 'refused');
+      await flushMicrotasks();
+      const opId = store.blocked()[0]?.entry.op.op_id ?? '';
+
+      store.discardBlocked(opId);
+
+      expect(store.blocked()).toHaveLength(0);
+      expect(JSON.parse(localStorage.getItem(BLOCKED_KEY) ?? '[]')).toHaveLength(0);
     });
   });
 

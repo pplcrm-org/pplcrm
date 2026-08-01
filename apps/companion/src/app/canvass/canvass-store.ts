@@ -72,6 +72,31 @@ export interface QueuedOp extends LocalOp {
   turf_id?: string;
 }
 
+/**
+ * A recorded result that came back off the queue without reaching the server, kept
+ * where the volunteer can see it.
+ *
+ * Two things land here, and neither may be deleted behind the volunteer's back:
+ * a result the server REFUSED (which is reachable from ordinary validation — the turf's
+ * household list can change while a phone is offline), and a result whose person can
+ * never be identified, because the `person_create` it depends on was acknowledged
+ * without an id. Silently dropping either destroys work somebody did at a door.
+ */
+export interface BlockedOp {
+  entry: QueuedOp;
+  /** A plain sentence the volunteer reads. Server wording when the server had some. */
+  reason: string;
+  /**
+   * Whether sending it again could work.
+   *
+   * A refusal often stops applying (the organizer refreshes the turf's doors and the
+   * household is in it again), so those are offered a retry. A result whose person id
+   * is unrecoverable is not — re-sending it would fail identically forever, and saying
+   * "try again" about something that cannot succeed is worse than saying nothing.
+   */
+  retryable: boolean;
+}
+
 /** Everything the survey view collects; maps 1:1 onto the survey op payload. */
 export interface SurveyDraft {
   support: KnockResponse | null;
@@ -106,6 +131,15 @@ const QUEUE_KEY = 'pc-canvass-queue';
 /** Pre-2026-07-28 per-token keys, adopted once so a deploy never eats an offline shift. */
 const LEGACY_QUEUE_KEY_PREFIX = 'pc-canvass-queue:';
 /**
+ * Results that came off the queue without syncing. Persisted like the queue, because a
+ * reload must not be the thing that finally destroys work the app already told the
+ * volunteer it was holding for them.
+ */
+const BLOCKED_KEY = 'pc-canvass-blocked';
+/** What a result says when the person it was recorded against can never be identified. */
+const UNRESOLVABLE_REASON =
+  'The person this was recorded against was saved, but this phone lost track of their record. Refresh the turf and record it again.';
+/**
  * Doors THIS device logged this shift.
  *
  * Kept separately from the queue because the queue empties as results sync, while
@@ -115,13 +149,42 @@ const LEGACY_QUEUE_KEY_PREFIX = 'pc-canvass-queue:';
  */
 const MY_DOORS_KEY_PREFIX = 'pc-canvass-mydoors:';
 
+/**
+ * A stand-in real id, used only to validate a stored op that carries a temp one.
+ *
+ * `CompanionOpObj` requires every person id to be a database id, which is right for the
+ * wire — the server must never be handed a `tmp-…` placeholder. But the phone's own
+ * persisted queue is full of them for as long as it is offline, so validating stored
+ * entries against the wire schema unchanged deleted, on every reload, exactly the results
+ * recorded for somebody added at a door. Masking the placeholder for the length of the
+ * check keeps the rest of the shared validation and loses nothing else.
+ */
+const TEMP_ID_MASK = '0';
+
+function maskTempPersonId(op: unknown): unknown {
+  if (op == null || typeof op !== 'object') return op;
+  const payload = (op as { payload?: unknown }).payload;
+  if (payload == null || typeof payload !== 'object') return op;
+  const personId = (payload as { person_id?: unknown }).person_id;
+  if (typeof personId !== 'string' || !isTempPersonId(personId)) return op;
+  return { ...op, payload: { ...payload, person_id: TEMP_ID_MASK } };
+}
+
 function isQueuedOp(value: unknown): value is QueuedOp {
   if (value == null || typeof value !== 'object') return false;
   const candidate = value as { label?: unknown; op?: unknown; temp_person_id?: unknown; turf_id?: unknown };
   if (typeof candidate.label !== 'string') return false;
   if (candidate.temp_person_id !== undefined && typeof candidate.temp_person_id !== 'string') return false;
   if (candidate.turf_id !== undefined && typeof candidate.turf_id !== 'string') return false;
-  return CompanionOpObj.safeParse(candidate.op).success;
+  return CompanionOpObj.safeParse(maskTempPersonId(candidate.op)).success;
+}
+
+function isBlockedOp(value: unknown): value is BlockedOp {
+  if (value == null || typeof value !== 'object') return false;
+  const candidate = value as { entry?: unknown; reason?: unknown; retryable?: unknown };
+  if (typeof candidate.reason !== 'string') return false;
+  if (typeof candidate.retryable !== 'boolean') return false;
+  return isQueuedOp(candidate.entry);
 }
 
 @Injectable()
@@ -133,6 +196,11 @@ export class CanvassStore {
   public readonly payload = signal<CompanionTurfPayload | null>(null);
   /** Ops not yet acked by the server; persisted to localStorage. */
   public readonly queue = signal<QueuedOp[]>([]);
+  /**
+   * Results that left the queue without syncing, held for the volunteer to retry or
+   * discard. Never emptied by the app on its own — see `BlockedOp`.
+   */
+  public readonly blocked = signal<BlockedOp[]>([]);
   public readonly syncStatus = signal<SyncStatus>('idle');
   public readonly lastSyncedAt = signal<Date | null>(null);
   /** Volunteer chose to hold the queue; flush waits for toggle-off or "Sync now". */
@@ -219,6 +287,8 @@ export class CanvassStore {
   public readonly stats = computed(() => meStats(this.households()));
   /** Doors this volunteer logged on this device this shift. */
   public readonly myDoorCount = computed(() => this.myDoorIds().size);
+  /** Everything recorded on this phone that is not in pplCRM yet — queued or held. */
+  public readonly unsyncedCount = computed(() => this.queue().length + this.blocked().length);
   /** Scoped, so narrowing to a street moves the ring to the next door ON that street. */
   public readonly nextDoorId = computed(() => nextDoor(this.scopedHouseholds())?.id ?? null);
   /**
@@ -616,6 +686,9 @@ export class CanvassStore {
   /** Drain the queue in order. Manual = the "Sync now" button (overrides work-offline). */
   public async flush(manual = false): Promise<void> {
     if (this.flushing) return;
+    // Before any early return, including the offline one: a wedged queue must show up in
+    // the "couldn't sync" list the moment the app notices, not only once a POST succeeds.
+    this.quarantineUnresolvable();
     if (this.workOffline() && !manual) return;
     if (this.queue().length === 0) {
       this.syncStatus.set('idle');
@@ -630,7 +703,7 @@ export class CanvassStore {
     try {
       while (this.queue().length > 0) {
         // Hold back ops that reference a temp person id — their person_create
-        // (earlier in the queue) must ack first so the real id can swap in.
+        // (still queued) must ack first so the real id can swap in.
         const batch = this.sendableBatch();
         if (batch.length === 0) {
           this.syncStatus.set('error');
@@ -661,6 +734,15 @@ export class CanvassStore {
         const { acks } = (await res.json()) as { acks: CompanionOpAck[] };
         this.applyAcks(batch, acks);
         this.inFlightOpIds.set(new Set<string>());
+        // A response that acknowledged nothing we sent leaves this batch at the head of
+        // the queue, and the loop would post it again forever. Measured against the batch
+        // rather than the queue length, because a volunteer can record another door while
+        // the POST is in flight. Stop and show the sync failure instead of spinning.
+        const sentIds = new Set(batch.map((entry) => entry.op.op_id));
+        if (this.queue().filter((entry) => sentIds.has(entry.op.op_id)).length === batch.length) {
+          this.syncStatus.set('error');
+          return;
+        }
       }
       this.syncStatus.set('idle');
       this.lastSyncedAt.set(new Date());
@@ -680,6 +762,38 @@ export class CanvassStore {
     if (!on) void this.flush();
   }
 
+  /**
+   * Put the retryable held results back on the queue and try again.
+   *
+   * Only the retryable ones move: a result whose person id is gone would fail in exactly
+   * the same way, and a button that quietly does nothing is worse than no button. Their
+   * optimistic overlay comes back with them, so the door shows the work again while it
+   * is in flight.
+   */
+  public async retryBlocked(): Promise<void> {
+    const retrying = this.blocked().filter((b) => b.retryable);
+    if (retrying.length === 0) return;
+    const ids = new Set(retrying.map((b) => b.entry.op.op_id));
+    this.blocked.update((list) => list.filter((b) => !ids.has(b.entry.op.op_id)));
+    this.persistBlocked();
+    const entries = retrying.map((b) => b.entry);
+    this.localOps.update((l) => [...l, ...entries]);
+    this.queue.update((q) => [...q, ...entries]);
+    this.persistQueue();
+    await this.flush(true);
+  }
+
+  /** The volunteer decided a held result is not worth keeping. */
+  public discardBlocked(opId: string): void {
+    this.blocked.update((list) => list.filter((b) => b.entry.op.op_id !== opId));
+    this.persistBlocked();
+  }
+
+  public discardAllBlocked(): void {
+    this.blocked.set([]);
+    this.persistBlocked();
+  }
+
   /** "End shift on this device" — wipe local traces, back to the landing view. */
   public endShift(): void {
     // Hand the street back so tomorrow's group isn't told it's taken. The TTL would get
@@ -688,10 +802,12 @@ export class CanvassStore {
     try {
       localStorage.removeItem(this.storageKey());
       localStorage.removeItem(this.myDoorsKey());
+      localStorage.removeItem(BLOCKED_KEY);
     } catch {
       // Storage unavailable — the in-memory clear below still applies.
     }
     this.queue.set([]);
+    this.blocked.set([]);
     this.localOps.set([]);
     this.myDoorIds.set(new Set<string>());
     this.lastAction.set(null);
@@ -713,13 +829,24 @@ export class CanvassStore {
       if (!entry) continue;
       this.queue.update((q) => q.filter((e) => e.op.op_id !== ack.op_id));
       if (ack.status === 'rejected') {
-        // Drop the op and revert its optimistic overlay (the replay recomputes).
+        // The server did not record it, so the optimistic overlay has to go — but the
+        // work itself moves to the "couldn't sync" list instead of being deleted.
         this.localOps.update((l) => l.filter((e) => e.op.op_id !== ack.op_id));
-        if (entry.temp_person_id != null) this.dropOpsReferencing(entry.temp_person_id);
         if (this.lastAction()?.op_id === ack.op_id) this.lastAction.set(null);
-        this.alerts.showError(`Couldn't sync "${entry.label}": ${ack.error ?? 'it was rejected'}`);
-      } else if (entry.op.type === 'person_create' && entry.temp_person_id != null && ack.person_id != null) {
-        this.swapTempId(entry.temp_person_id, ack.person_id);
+        const reason = ack.error ?? 'Your organizer’s copy refused it.';
+        this.block(entry, reason, true);
+        // Everything queued against a person the server would not create is refused for
+        // the same reason. It is shown alongside, not quietly deleted with them.
+        if (entry.temp_person_id != null) {
+          this.blockOpsReferencing(entry.temp_person_id, `Recorded for ${entry.label}, which could not be saved.`);
+        }
+        this.alerts.showError(`Couldn't sync "${entry.label}": ${reason} It is kept under Sync in the Me tab.`);
+      } else if (entry.op.type === 'person_create' && entry.temp_person_id != null) {
+        // `applied` and `duplicate` both mean the person exists on the server. With an
+        // id we can finish the job; without one (an op applied before the ledger kept
+        // results) nothing later can supply it, so we stop pretending it will.
+        if (ack.person_id != null) this.swapTempId(entry.temp_person_id, ack.person_id);
+        else this.forgetUnresolvedPerson(entry);
       }
     }
     this.persistQueue();
@@ -729,11 +856,57 @@ export class CanvassStore {
     return { op_id: crypto.randomUUID(), recorded_at: new Date().toISOString() };
   }
 
-  /** A rejected person_create orphans any queued ops aimed at its temp person. */
-  private dropOpsReferencing(tempId: string): void {
-    const keep = (entry: QueuedOp): boolean => opPersonId(entry.op) !== tempId;
-    this.queue.update((q) => q.filter(keep));
-    this.localOps.update((l) => l.filter(keep));
+  /** Move a result out of the queue and into the list the volunteer can act on. */
+  private block(entry: QueuedOp, reason: string, retryable: boolean): void {
+    this.blocked.update((list) =>
+      list.some((b) => b.entry.op.op_id === entry.op.op_id) ? list : [...list, { entry, reason, retryable }],
+    );
+    this.persistBlocked();
+  }
+
+  /** Everything queued against one temp person, held with a shared explanation. */
+  private blockOpsReferencing(tempId: string, reason: string): QueuedOp[] {
+    const affected = this.queue().filter((entry) => opPersonId(entry.op) === tempId);
+    if (affected.length === 0) return [];
+    const ids = new Set(affected.map((entry) => entry.op.op_id));
+    this.queue.update((q) => q.filter((entry) => !ids.has(entry.op.op_id)));
+    this.localOps.update((l) => l.filter((entry) => !ids.has(entry.op.op_id)));
+    for (const entry of affected) this.block(entry, reason, false);
+    return affected;
+  }
+
+  /**
+   * Say what stopped, by name where there is only one.
+   *
+   * The wedged state used to produce no toast and no banner at all — a volunteer who
+   * never opened the Me tab had no way to learn their results had stopped going out.
+   */
+  private announceHeld(entries: readonly QueuedOp[]): void {
+    const first = entries[0];
+    if (!first) return;
+    this.alerts.showError(
+      entries.length === 1
+        ? `Couldn't sync “${first.label}”. It is kept under Sync in the Me tab.`
+        : `${entries.length} results couldn't be synced. They are kept under Sync in the Me tab.`,
+    );
+  }
+
+  /**
+   * The server has this person but will never tell us their id — stop showing the
+   * placeholder, and hold everything recorded against it.
+   *
+   * Clearing the overlay entry matters as much as holding the dependents: while the
+   * `tmp-` person keeps rendering on the door, every further survey or one-tap result
+   * the volunteer records against them queues another op that can never be sent. The
+   * real person is already on the server, so the refresh below brings them back with
+   * their true id and the door reads correctly again.
+   */
+  private forgetUnresolvedPerson(entry: QueuedOp): void {
+    const tempId = entry.temp_person_id;
+    if (tempId == null) return;
+    this.localOps.update((l) => l.filter((e) => e.op.op_id !== entry.op.op_id));
+    this.announceHeld(this.blockOpsReferencing(tempId, UNRESOLVABLE_REASON));
+    void this.refresh();
   }
 
   private expireSession(): void {
@@ -770,6 +943,26 @@ export class CanvassStore {
       localStorage.setItem(this.storageKey(), JSON.stringify(this.queue()));
     } catch {
       // Storage full/blocked — the queue still lives in memory for this visit.
+    }
+  }
+
+  private persistBlocked(): void {
+    try {
+      localStorage.setItem(BLOCKED_KEY, JSON.stringify(this.blocked()));
+    } catch {
+      // Storage full/blocked — the list still lives in memory for this visit.
+    }
+  }
+
+  private restoreBlocked(): void {
+    try {
+      const raw = localStorage.getItem(BLOCKED_KEY);
+      if (!raw) return;
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      this.blocked.set(parsed.filter(isBlockedOp));
+    } catch {
+      // Corrupt/blocked storage — start with nothing held rather than crash.
     }
   }
 
@@ -820,6 +1013,7 @@ export class CanvassStore {
   }
 
   private restoreQueue(): void {
+    this.restoreBlocked();
     try {
       const raw = localStorage.getItem(QUEUE_KEY) ?? this.legacyQueue();
       if (!raw) return;
@@ -843,18 +1037,71 @@ export class CanvassStore {
   }
 
   /**
-   * The next batch to send: entries from the head of the queue that share one turf and
-   * sit before any unacked temp person id.
+   * The temp person ids a `person_create` still sitting in the queue will produce.
    *
-   * Stopping at a turf change matters — each batch posts to one turf's endpoint, and a
-   * queue can span turfs after a mid-shift switch. The next flush picks up the rest.
+   * This is the whole test for "can this dependency ever resolve?". A queued op naming a
+   * temp person that no queued `person_create` produces is waiting on something that no
+   * longer exists — a fact about the queue, not a guess. It needs no attempt counter and
+   * no clock, so it cannot drop a result early because the network was slow, and it
+   * cannot leave a phone wedged while a timer runs down. It also covers the phones
+   * already stuck in the field, whose `person_create` was dequeued by an earlier build.
+   */
+  private producibleTempPersonIds(): ReadonlySet<string> {
+    const out = new Set<string>();
+    for (const entry of this.queue()) {
+      if (entry.op.type !== 'person_create') continue;
+      const temp = entry.temp_person_id;
+      if (temp != null) out.add(temp);
+    }
+    return out;
+  }
+
+  /** Queue entries waiting on a person nobody will ever create. */
+  private unresolvableEntries(): QueuedOp[] {
+    const producible = this.producibleTempPersonIds();
+    return this.queue().filter((entry) => {
+      const personId = opPersonId(entry.op);
+      return personId != null && isTempPersonId(personId) && !producible.has(personId);
+    });
+  }
+
+  /**
+   * Take unresolvable results off the queue and put them in front of the volunteer.
+   *
+   * The backstop that does not need the server: a phone that wedged before the ledger
+   * stored op results has no fix coming from the other end, so the app has to notice on
+   * its own. Dropping them silently would be the same bug wearing a different face, so
+   * every one of them lands in `blocked` with what it was and why it stopped.
+   */
+  private quarantineUnresolvable(): void {
+    const stuck = this.unresolvableEntries();
+    if (stuck.length === 0) return;
+    const ids = new Set(stuck.map((entry) => entry.op.op_id));
+    this.queue.update((q) => q.filter((entry) => !ids.has(entry.op.op_id)));
+    this.localOps.update((l) => l.filter((entry) => !ids.has(entry.op.op_id)));
+    for (const entry of stuck) this.block(entry, UNRESOLVABLE_REASON, false);
+    this.persistQueue();
+    this.announceHeld(stuck);
+  }
+
+  /**
+   * The next batch to send: entries that share one turf, skipping any still waiting on a
+   * `person_create` ahead of them in the queue.
+   *
+   * Skipping rather than stopping is the point. One held-back entry used to end the scan,
+   * so a single unresolvable result at the head froze every unrelated door recorded after
+   * it. The held-back entry travels in a later batch, once its person has an id.
+   *
+   * Stopping at a turf change still matters — each batch posts to one turf's endpoint, and
+   * a queue can span turfs after a mid-shift switch. The next flush picks up the rest.
    */
   private sendableBatch(): QueuedOp[] {
+    const producible = this.producibleTempPersonIds();
     const out: QueuedOp[] = [];
     let turfId: string | undefined;
     for (const entry of this.queue()) {
       const personId = opPersonId(entry.op);
-      if (personId != null && isTempPersonId(personId)) break;
+      if (personId != null && isTempPersonId(personId) && producible.has(personId)) continue;
       if (out.length === 0) turfId = entry.turf_id;
       else if (entry.turf_id !== turfId) break;
       out.push(entry);

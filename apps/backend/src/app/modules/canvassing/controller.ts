@@ -5,6 +5,7 @@ import type {
   CompanionDoorOutcome,
   CompanionHousehold,
   CompanionOpAck,
+  CompanionOpResultType,
   CompanionOpType,
   CompanionPerson,
   CompanionPersonResult,
@@ -23,7 +24,12 @@ import type {
   UpdateTurfType,
   VotingStatus,
 } from '../../../../../../libs/common/src';
-import { SUPPORT_LEVELS, TASK_OPEN_STATUSES, VOTING_STATUSES } from '../../../../../../libs/common/src';
+import {
+  CompanionOpResultObj,
+  SUPPORT_LEVELS,
+  TASK_OPEN_STATUSES,
+  VOTING_STATUSES,
+} from '../../../../../../libs/common/src';
 
 import { env } from '../../../env';
 import { assertVolunteerLinkResendAllowed } from '../../lib/volunteer-link-resend-limit';
@@ -1255,18 +1261,20 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
             .onConflict((oc) => oc.columns(['tenant_id', 'op_id']).doNothing())
             .returning('op_id')
             .executeTakeFirst();
-          if (!claimed) return { op_id: op.op_id, status: 'duplicate' } as CompanionOpAck;
+          if (!claimed) return this.duplicateAck(trx, tenant_id, op.op_id);
 
           if (!doorIds.has(String(op.payload.household_id))) {
             throw new BadRequestError('That household is not part of this turf.');
           }
-          return this.applyCompanionOp(trx, {
+          const ack = await this.applyCompanionOp(trx, {
             op,
             tenant_id,
             turf_id,
             actor: assignment.created_by,
             canvasser_name: canvasserName,
           });
+          await this.rememberOpResult(trx, tenant_id, op.op_id, ack);
+          return ack;
         });
         acks.push(ack);
       } catch (err: unknown) {
@@ -1280,6 +1288,48 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       }
     }
     return { acks };
+  }
+
+  /**
+   * Answer a retry of an op that already succeeded — with whatever it returned the
+   * first time.
+   *
+   * The claim above is `ON CONFLICT DO NOTHING ... RETURNING op_id`, which returns
+   * nothing at all on a conflict, so the stored result cannot come back from that same
+   * statement and needs this second, tenant-scoped read. Answering a `duplicate` with no
+   * payload is what used to wedge a device: the phone's `person_create` HAD been applied,
+   * but the reply was lost, and the re-send told it nothing about the person it created.
+   */
+  private async duplicateAck(trx: Transaction<Models>, tenant_id: string, op_id: string): Promise<CompanionOpAck> {
+    const prior = await trx
+      .selectFrom('companion_ops')
+      .select('result')
+      .where('tenant_id', '=', tenant_id)
+      .where('op_id', '=', op_id)
+      .executeTakeFirst();
+    // A row written before this column existed, or by a build that stored a different
+    // shape, parses to "returned nothing" rather than throwing — the device has its own
+    // recovery for that case and a 500 here would help nobody.
+    const parsed = CompanionOpResultObj.safeParse(prior?.result);
+    return { op_id, status: 'duplicate', ...(parsed.success ? parsed.data : {}) };
+  }
+
+  /** Persist what this op returned, in the op's own transaction, for a future retry. */
+  private async rememberOpResult(
+    trx: Transaction<Models>,
+    tenant_id: string,
+    op_id: string,
+    ack: CompanionOpAck,
+  ): Promise<void> {
+    const result: CompanionOpResultType = {};
+    if (ack.person_id != null) result.person_id = ack.person_id;
+    if (Object.keys(result).length === 0) return;
+    await trx
+      .updateTable('companion_ops')
+      .set({ result: JSON.stringify(result) })
+      .where('tenant_id', '=', tenant_id)
+      .where('op_id', '=', op_id)
+      .execute();
   }
 
   /** Apply one Companion op inside its transaction; returns the ack. */

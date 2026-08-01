@@ -390,6 +390,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
+        text: 'Occasionally a result cannot be sent — the turf’s door list changed while the phone was offline, for instance, so the household it names is no longer part of the turf. The Companion never deletes that result. A red bar appears at the top of every screen saying how many results couldn’t sync, and the **Me** tab lists each one by name with the reason. **Try again** re-sends the ones a retry could still fix (useful right after you refresh a turf’s doors from its list), and **Discard this one** removes a result the volunteer decides is not worth keeping. Nothing on that list has reached the CRM, so it is worth clearing before the phone is put away.',
+      },
+      {
+        kind: 'p',
         text: 'Survey answers do real work: a support level updates the person’s support reading for the turf’s [campaign](/workspace/campaigns), **Wants a yard sign** drops a request straight into the [Deliveries](/deliveries) intake pool, **Wants to volunteer** sets their volunteer status to Prospective on the person record, **65 or older** records their age band on the person record so you can build a seniors list, contact details fill in blanks on the person record, and **Do not contact** suppresses them everywhere, immediately.',
       },
       {

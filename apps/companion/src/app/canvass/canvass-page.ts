@@ -63,15 +63,38 @@ type TabId = 'list' | 'map' | 'me';
         </div>
       } @else {
         <div class="mx-auto flex min-h-screen w-full max-w-md flex-col" [class.pb-20]="tabsVisible()">
-          @if (!store.online()) {
-            <div
-              class="sticky top-0 z-20 bg-warning px-4 py-2 text-center text-xs font-medium text-warning-content"
-              role="status"
-            >
-              Offline: {{ store.queue().length }} {{ store.queue().length === 1 ? 'result' : 'results' }} queued in this
-              browser
-            </div>
-          }
+          <!-- One sticky strip for every "your results are not in pplCRM yet" state. The
+               held-results bar is deliberately outside the Me tab: a volunteer who never
+               opens that tab used to get no sign at all that their queue had stopped. -->
+          <div class="sticky top-0 z-20">
+            @if (!store.online()) {
+              <div class="bg-warning px-4 py-2 text-center text-xs font-medium text-warning-content" role="status">
+                Offline: {{ store.queue().length }} {{ store.queue().length === 1 ? 'result' : 'results' }} queued in
+                this browser
+              </div>
+            }
+            @if (store.blocked().length > 0) {
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-2 bg-error px-4 py-2 text-left text-xs font-medium text-error-content"
+                (click)="openTab('me')"
+              >
+                <span>
+                  {{ store.blocked().length }} {{ store.blocked().length === 1 ? 'result' : 'results' }} couldn't sync
+                </span>
+                <span class="underline">Review</span>
+              </button>
+            } @else if (store.syncStatus() === 'error') {
+              <button
+                type="button"
+                class="flex w-full items-center justify-between gap-2 bg-warning px-4 py-2 text-left text-xs font-medium text-warning-content"
+                (click)="openTab('me')"
+              >
+                <span>Results aren't syncing</span>
+                <span class="underline">Review</span>
+              </button>
+            }
+          </div>
           @switch (store.view().kind) {
             @case ('landing') {
               <pc-canvass-landing></pc-canvass-landing>

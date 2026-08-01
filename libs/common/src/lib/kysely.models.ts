@@ -558,6 +558,18 @@ interface CompanionOps {
   tenant_id: string;
   op_id: string;
   scope: 'canvass' | 'deliveries';
+  /**
+   * What the op handed back to the device, as `CompanionOpResultObj` (canvassing.schema).
+   *
+   * Stored so a RETRY of an op that already succeeded can be answered with the same
+   * value instead of a bare `duplicate`. Without it a `person_create` whose response was
+   * lost in transit could never tell the phone the real person id, and every queued
+   * survey aimed at that person stayed unsendable forever.
+   *
+   * Optional on insert (most ops return nothing) and written by a follow-up UPDATE in the
+   * same transaction as the op itself.
+   */
+  result: ColumnType<JsonValue | null, string | null | undefined, string | null>;
   created_at: Generated<Timestamp>;
 }
 

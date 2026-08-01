@@ -24,7 +24,7 @@ need a new dated file (see `pplcrm-migrations`).
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `companion_volunteers`       | One row per (tenant, person) ever sent a link. `status`: `invited` → `verified` (code confirmed, awaiting admin) → `approved` \| `revoked`. Carries the hashed verify code + attempt count.                                                                                                                                                                                                               |
 | `companion_sessions`         | A verified device. Only `sha256(token)` stored (`lib/token-hash.ts`); raw token returned once; 30-day expiry; `revoked_at` set for all rows on volunteer revoke.                                                                                                                                                                                                                                          |
-| `companion_ops`              | Write-once idempotency ledger for BOTH apps: PK `(tenant_id, op_id)`, `scope` 'canvass'/'deliveries'. Insert `ON CONFLICT DO NOTHING`; a conflict means "already applied".                                                                                                                                                                                                                                |
+| `companion_ops`              | Idempotency ledger for BOTH apps: PK `(tenant_id, op_id)`, `scope` 'canvass'/'deliveries'. Insert `ON CONFLICT DO NOTHING`; a conflict means "already applied". Plus `result` jsonb (2026-08-01) — what the op RETURNED, so a retry can be answered with it. See "Retrying an op that already succeeded" below.                                                                                           |
 | `campaign_join_codes`        | A shareable QR/typeable code that puts a **stranger** into this gate. `code` is 8 Crockford-ish chars (no 0/O/1/I) and UNIQUE **globally** — a scan has no tenant context, so the code resolves it. `turf_id` set = everyone who scans lands on that turf; null = they land on the turf picker. `status`/`expires_at`/`max_uses`/`use_count` bound it. Migration `2026-07-28-zz-companion-join-codes.ts`. |
 | `companion_approval_tokens`  | One-tap "approve this volunteer" links, minted **per admin** so `approved_by` records who actually tapped. sha256 only, 72-hour TTL, single use (`markUsedForVolunteer` burns every outstanding row for that volunteer once anyone decides).                                                                                                                                                              |
 | `companion_organizer_tokens` | The credential behind `/o/:token`, the organizer's launch page. sha256 only, 12-hour TTL, **multi-use but scoped to ONE `join_code_id`** — it can approve the people who scanned that poster and nothing else in the workspace. `revoked_at` set by `revokeForJoinCode` whenever the code is rotated or revoked. Migration `2026-07-28-zzz-street-claims-organizer.ts`.                                   |
@@ -32,6 +32,27 @@ need a new dated file (see `pplcrm-migrations`).
 `companion_volunteers` also carries the QR-join handshake: `join_claim_hash` +
 `join_claim_expires_at` (30 min, one live claim per person — a second scan replaces the
 first) and `join_code_id` (provenance, kept after the claim is burned).
+
+### Retrying an op that already succeeded (`companion_ops.result`)
+
+A conflict on the ledger means "already applied", but a bare `duplicate` ack is not enough
+for every op type. `person_create` returns the real person id, and the device needs it to
+swap out its `tmp-…` placeholder; when the first response is lost in transit — the exact
+case the offline queue exists for — the re-send used to come back empty and every queued
+survey for that person became unsendable forever, jamming the whole queue.
+
+So the apply path writes what the op returned into `companion_ops.result` (jsonb, shape
+`CompanionOpResultObj` in `canvassing.schema.ts`) inside the op's own transaction, and the
+duplicate path reads it back. Three things to keep true:
+
+- **The claim cannot return it.** `onConflict(...).doNothing().returning('op_id')` yields
+  `undefined` on a conflict, so the duplicate branch needs its own tenant-scoped SELECT
+  (`CanvassingController.duplicateAck`). There is no way to fold it into the one statement.
+- **Generic on purpose.** It is "what this op returned", not `result_person_id`, so the next
+  op type that hands something back is a change to the Zod shape, not another migration.
+- **A missing/odd value parses to "returned nothing"**, never a throw — rows written before
+  the column existed are real. The companion has its own recovery for that case
+  (`CanvassStore.quarantineUnresolvable`), which is what un-wedges phones already in the field.
 
 Assignments carry the volunteer identity: `turf_assignments.volunteer_person_id`
 (+ `expires_at`) and `delivery_routes.volunteer_person_id`. An assignment without a

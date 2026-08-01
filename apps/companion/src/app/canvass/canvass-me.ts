@@ -99,6 +99,34 @@ const CLOCK_TICK_MS = 30_000;
           </div>
         }
 
+        @if (store.blocked().length > 0) {
+          <div class="rounded-lg border border-error/40 bg-error/5 p-3">
+            <p class="text-xs font-medium text-error">
+              Couldn't sync ({{ store.blocked().length }}) — still on this phone, not in pplCRM
+            </p>
+            <ul class="mt-2 flex flex-col gap-2">
+              @for (held of store.blocked(); track held.entry.op.op_id) {
+                <li class="flex flex-col gap-1 border-t border-base-300 pt-2 first:border-0 first:pt-0">
+                  <span class="text-xs font-medium">{{ held.entry.label }}</span>
+                  <span class="text-xs text-base-content/70">{{ held.reason }}</span>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-xs self-start"
+                    (click)="store.discardBlocked(held.entry.op.op_id)"
+                  >
+                    Discard this one
+                  </button>
+                </li>
+              }
+            </ul>
+            @if (retryableCount() > 0) {
+              <button type="button" class="btn btn-outline btn-error btn-sm mt-3 w-full" (click)="retryBlocked()">
+                Try {{ retryableCount() === 1 ? 'it' : 'them' }} again ({{ retryableCount() }})
+              </button>
+            }
+          </div>
+        }
+
         <label class="flex min-h-11 items-center justify-between gap-3">
           <span>
             Work offline
@@ -131,6 +159,8 @@ export class CanvassMe {
 
   protected readonly stats = computed(() => this.store.stats());
   protected readonly topIssues = computed(() => this.stats().top_issues.slice(0, 5));
+  /** Held results that a re-send could still fix; the rest can only be read and discarded. */
+  protected readonly retryableCount = computed(() => this.store.blocked().filter((b) => b.retryable).length);
 
   /**
    * Several volunteers can walk one turf, and the turf payload carries all of their
@@ -184,12 +214,14 @@ export class CanvassMe {
   }
 
   protected async endShift(): Promise<void> {
-    const queued = this.store.queue().length;
+    // Counts held results too — they are recorded work sitting on this phone, and
+    // ending the shift destroys them exactly like a queued one.
+    const unsynced = this.store.unsyncedCount();
     const confirmed = await this.dialogs.confirm({
       title: 'End shift on this device?',
       message:
-        queued > 0
-          ? `This clears results stored in this browser. ${queued} unsynced ${queued === 1 ? 'result' : 'results'} will be lost.`
+        unsynced > 0
+          ? `This clears results stored in this browser. ${unsynced} unsynced ${unsynced === 1 ? 'result' : 'results'} will be lost.`
           : 'This clears results stored in this browser. Synced results are already in pplCRM.',
       variant: 'danger',
       confirmText: 'End shift',
@@ -198,6 +230,10 @@ export class CanvassMe {
     if (!confirmed) return;
     this.store.endShift();
     this.alerts.showSuccess('Shift ended. Reopen your link anytime');
+  }
+
+  protected retryBlocked(): void {
+    void this.store.retryBlocked();
   }
 
   protected onWorkOffline(event: Event): void {

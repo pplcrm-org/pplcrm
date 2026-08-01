@@ -356,7 +356,9 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   (`survey`, `person_result`, `door_outcome`, `clear_outcome`, `person_create`),
   each claimed in the `companion_ops` ledger (`ON CONFLICT DO NOTHING`) and applied
   in its own transaction; acks are `applied | duplicate | rejected` per op, and a
-  `person_create` ack returns the real id to swap for the client temp id. Those two
+  `person_create` ack returns the real id to swap for the client temp id — **on the
+  `duplicate` path too**, read back from `companion_ops.result` (see
+  `pplcrm-companion-access` → "Retrying an op that already succeeded"). Those two
   are the **only** routes on `canvass-public.route.ts` — the old `POST /knock`
   single-op endpoint is gone (`LogKnockObj` survives in the schema with no call
   sites). Staff-side roster reads/writes go over tRPC, not this public route.
@@ -372,9 +374,25 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   `senior` → `persons.senior`, two transitions only (see "Two person columns the
   door writes" above). The `person_result` codes `deceased` and `data_error` have
   their own side effects in `applyPersonResultSideEffects`.
-- **Offline**: the app queues ops in `localStorage` (`pc-canvass-queue:<token>`),
-  replays them as an optimistic overlay (`canvass-derive.ts applyLocalOps`), and
-  flushes on the `online` event / load — idempotent via `op_id`.
+- **Offline**: the app queues ops in `localStorage` (`pc-canvass-queue`), replays
+  them as an optimistic overlay (`canvass-derive.ts applyLocalOps`), and flushes on
+  the `online` event / load — idempotent via `op_id`. Four rules keep a queue from
+  wedging, all in `CanvassStore` and all with specs:
+  - `sendableBatch()` **skips** an op whose `tmp-…` person is still waiting on its
+    `person_create`; it must never `break`, or one held entry freezes every unrelated
+    door recorded after it.
+  - "Can this dependency ever resolve?" is answered **structurally** — is there still a
+    queued `person_create` producing that temp id — never by a retry count or an age.
+    No clock means nothing is dropped because the network was slow.
+  - Anything that leaves the queue unsent lands in `blocked` (persisted under
+    `pc-canvass-blocked`) with a reason and a `retryable` flag, and is shown in a
+    top-of-screen bar plus a list in the Me tab with Try again / Discard. **A rejected
+    op is never deleted** — the "not part of this turf" refusal is reachable from an
+    ordinary turf refresh, so deleting it would destroy real doorstep work.
+  - `isQueuedOp` masks a `tmp-` person id before validating against `CompanionOpObj`.
+    The wire schema requires a real db id (correctly — the server must never see a
+    placeholder), and validating stored entries with it unchanged deleted exactly those
+    results on every reload.
 - **Honest attribution (§22.7)**: activity rows land under the **real CRM account
   that deployed the link** (`assignment.created_by`) with `metadata.via =
 "via Canvass Companion (<volunteer name>)"` — the name now comes from the
