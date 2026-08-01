@@ -1,14 +1,17 @@
 ---
 name: pplcrm-email-sync
 description: >-
-  Mailbox sync (Gmail + MS Graph) — the 48-hour initial window, the window-scoped deletion sweep
-  (the invariant that prevents wiping a tenant's archive), per-folder checkpointing, the
-  folder-scoped attachment payload policy (eager / deferred / spam never), and the body storage
-  split (blob HTML + Postgres text extract). USE WHEN touching modules/google-sync, modules/ms-sync,
-  the email ingester, email_bodies / email_attachments schema, the attachment download routes, or
-  when a user reports missing mail, missing attachments, an empty inbox after connecting, or a body
-  that will not load. EXAMPLES 'why does connecting Gmail only bring 2 days', 'the attachment says
-  no longer available', 'my emails disappeared after a re-sync'.
+  Mailbox sync (Gmail + MS Graph) — the 48-hour initial window, detachment (a message that leaves
+  the synced folder is hidden via emails.detached_at, never deleted) and how it differs from
+  deleted_at, re-attaching a returning message, the window-scoped reconciliation sweep, the 90-day
+  retention sweep for detached rows, per-folder checkpointing, the folder-scoped attachment payload
+  policy (eager / deferred / spam never), and the body storage split (blob HTML + Postgres text
+  extract). USE WHEN touching modules/google-sync, modules/ms-sync, the email ingester,
+  emails.detached_at, the inbox folder/count queries, email_bodies / email_attachments schema, the
+  attachment download routes, or when a user reports missing mail, missing attachments, an empty
+  inbox after connecting, a message that vanished after archiving it in Outlook, or a body that will
+  not load. EXAMPLES 'why does connecting Gmail only bring 2 days', 'the attachment says no longer
+  available', 'my emails disappeared after a re-sync', 'archiving in Outlook deleted my comments'.
 ---
 
 # Mailbox sync
@@ -44,16 +47,97 @@ Before the window existed, connecting pulled the entire mailbox — a job that c
 its 1-hour timeout and restarted from zero on each of 3 attempts, plus thousands of already-handled
 messages landing as `status='open'`.
 
-## ⚠ The sweep invariant
+## ⚠ Detachment, not deletion (the sync NEVER destroys a message)
 
-Gmail has no deletion tombstones, so both adapters reconcile deletions by comparing what the server
-returned against local rows. **The candidate set must be scoped to the window that was fetched** —
-join `email_headers` and filter `date_sent >= windowStart`.
+**A message that leaves the folder we sync from is detached, never deleted.** `detachMessage` in the
+ingester sets `emails.detached_at = now()` and touches nothing else. The row, its comments, its
+assignee, its status and its favourite flag all survive.
+
+This is not a nicety. A folder-scoped view reports a message as gone the moment it merely _leaves_
+that folder, which ordinary use does constantly:
+
+| Path                                                                          | Fires when                                                                                                    |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Graph delta marks a message `@removed` (`ms-sync.service.ts`)                 | **every sync, initial or incremental** — archiving in Outlook, dragging to a folder, or a rule filing it      |
+| the reconciliation sweep in either adapter (server did not return a local id) | initial sync / expired delta link (Graph); first connection or forced re-sync (Gmail, `folderLastSync === 0`) |
+
+Until 2026-08-01 both paths hard-deleted the `emails` row and every child table, so a user archiving
+a message in Outlook destroyed the team's internal comments on it, who it was assigned to and its
+triage status, with no activity-log entry and no recovery. Do not reintroduce a delete on either
+path.
+
+### `detached_at` vs `deleted_at` — two different claims, do not merge them
+
+| Column        | Means                                                    | Written by                                             |
+| ------------- | -------------------------------------------------------- | ------------------------------------------------------ |
+| `deleted_at`  | the user put this in the **CRM's own Trash**             | `EmailRepo.moveToTrash`, cleared by `restoreFromTrash` |
+| `detached_at` | the **provider** stopped listing it in the synced folder | `EmailIngesterService.detachMessage`                   |
+
+Setting `deleted_at` for an archived message would file it into the user's CRM trash, which is a
+different and wrong claim. Added by `_migrations/2026-08-01-emails-detached-at.ts`.
+
+### Where a detached message does and does not show up
+
+Decided in **one place**: `EmailRepo.buildFolderPredicate` (and mirrored, filter by filter, in
+`getEmailCountsByFolder`). If you add a folder or a count, decide which side it is on.
+
+- **Hidden**: the real folders (Inbox, Sent, Trash, Spam) and the triage views over the inbox stream
+  (All open, Closed, Unassigned) — a message archived in Outlook must not still sit in the CRM inbox.
+- **Still shown**: **Assigned to me** and **Favourites**, because those exist only because somebody
+  in the CRM acted on the message. Archiving upstream must not quietly clear an assignee's list.
+- **Always reachable by id**: `getEmailWithHeadersAndRecipients`, `getEmailBody`, `getEmailHeader`
+  do not filter on `detached_at`, so an assignment notification, a mention link or an activity entry
+  still opens the message and its comments.
+
+### Returning messages re-attach — they must not duplicate
+
+A user can move a message out of the inbox and back again. Both re-attach paths live in
+`ingestEmail` and both clear `detached_at`:
+
+1. **Same provider id** — the `preview` dedupe lookup finds the row.
+2. **New provider id** — Graph reissues the id on a folder move, so only the stable `Message-ID`
+   header recognises it. The `sameFolder` branch refreshes `preview` _and_ clears `detached_at`.
+
+Drop either and the round trip leaves a hidden row behind and inserts a duplicate beside it.
+
+### Storage growth: the retention sweep
+
+Nothing is deleted on the sync path, so `prune_retention` (`lib/jobs/handlers/maintenance.handlers.ts`
+→ `pruneDetachedEmails`) removes detached rows after **90 days** — but only those carrying nothing a
+person added: no comment, no assignee, not starred, status not `closed`. Anything a person touched
+is kept indefinitely. The sweep also purges the body blob and runs attachment files through
+`purgeUnreferencedFiles`, because storage is not covered by the FK cascade.
+
+### The sweep's window invariant (still load-bearing)
+
+Gmail has no deletion tombstones, so both adapters reconcile by comparing what the server returned
+against local rows. **The candidate set must be scoped to the window that was fetched** — join
+`email_headers` and filter `date_sent >= windowStart`.
 
 If you ever remove that filter, "Re-sync recent mail" (which sets `_needs_full_sync`, clearing the
-watermark) will read a tenant's entire older archive as server-side deletions and destroy it. This
-is covered by `google-sync.service.spec.ts` → _"does not delete mail older than the window when the
-watermark is cleared"_. Do not weaken that test.
+watermark) will read a tenant's entire older archive as server-side disappearances. Since 2026-08-01
+that hides the archive instead of destroying it, which is survivable — but a mailbox whose whole
+history has vanished from the inbox is still a serious incident, so keep the filter. Covered by
+`google-sync.service.spec.ts` → _"does not touch mail older than the window when the watermark is
+cleared"_ and its Graph twin. Do not weaken those tests.
+
+There is a known, separate defect the Gmail sweep still carries: it compares a **sender-supplied
+`Date:` header** (what `email_headers.date_sent` holds for Gmail) against **Gmail's own
+received-time** `after:` filter, so a message with a wrong or forged date is a candidate the server
+query can never return. Detaching rather than destroying is what makes that survivable; fixing the
+clock mismatch is its own task.
+
+### What still genuinely destroys
+
+Leave these hard-deleting — each one means the user asked for the data to be gone:
+
+| Path                                                   | Trigger                                            |
+| ------------------------------------------------------ | -------------------------------------------------- |
+| `EmailIngesterService.removeAllLocalEmails`            | mailbox disconnect with "remove local emails"      |
+| `EmailsController.deleteMany` (ids already in Trash)   | deleting from the CRM Trash                        |
+| `EmailRepo.emptyTrash`                                 | Empty Trash                                        |
+| `wipeTenant` in `lib/jobs/handlers/deletions.handlers` | scheduled workspace deletion                       |
+| `pruneDetachedEmails`                                  | 90-day sweep of detached rows carrying no CRM data |
 
 ## Checkpointing
 
@@ -195,6 +279,15 @@ the two can drift. It matches on the parts that matter:
 
 - `google-sync.service.spec.ts` — window bounds, no-unbounded-query, incremental resume, **sweep
   safety**, per-folder checkpointing. Stubs `fetch` and the OAuth service.
+- `ms-sync.service.spec.ts` — the same invariants for Graph, plus the whole detachment story: an
+  `@removed` message keeps its row/comment/assignee/status, leaves the Inbox listing and its badge
+  counts, stays on "Assigned to me", and re-attaches (under the same id and under a new one) instead
+  of duplicating. Its `graphGet` mock receives the requested URL, so a test can answer per folder —
+  stored delta links must keep the real `/mailFolders/<name>/` shape or the matcher misses.
+- `email-ingester.service.spec.ts` — Message-ID dedup, plus detach-vs-destroy: `detachMessage` keeps
+  everything and keeps its original timestamp on repeat, `removeAllLocalEmails` still destroys.
+- `maintenance.detached-emails.spec.ts` — the 90-day sweep deletes an untouched detached row and its
+  body blob, and keeps anything commented on, assigned, closed or starred.
 - `email-ingester.payload.spec.ts` — eager/deferred/spam/trash attachment paths, dedupe-before-upload,
   inline vs offloaded bodies.
 - `email-body-text.spec.ts` — extraction (pure).

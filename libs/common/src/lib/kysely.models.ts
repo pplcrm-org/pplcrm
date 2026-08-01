@@ -891,7 +891,19 @@ interface Emails extends RecordType {
   preview_text: string | null;
   assigned_to: string | null;
   is_favourite: boolean;
+  /**
+   * The user moved this message to the CRM's own Trash folder. Written by the move-to-trash path
+   * and cleared by restore-from-trash; it always travels with `folder_id = Trash`. It does NOT
+   * mean "gone from the mailbox upstream" — that is `detached_at`.
+   */
   deleted_at: Timestamp | null;
+  /**
+   * The provider stopped listing this message in the folder it was synced from — it was archived,
+   * moved to another folder, or filed by a rule. The row and everything the CRM added to it
+   * (comments, assignee, status, favourite flag) are kept; it is only hidden from the mailbox
+   * folder listings. NULL means still present upstream. See the 2026-08-01 detached-at migration.
+   */
+  detached_at: Timestamp | null;
   status: EmailStatus | null;
   /**
    * When the message is dated — denormalized from `email_headers.date_sent`, falling back to this

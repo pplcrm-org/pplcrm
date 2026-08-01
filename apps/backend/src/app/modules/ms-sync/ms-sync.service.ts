@@ -189,9 +189,14 @@ export class MsSyncService {
       // Process all messages fetched in this sync run
       for (const msg of allMessages) {
         if (msg['@removed']) {
+          // `@removed` on a FOLDER-scoped delta means "no longer in this folder", not "deleted".
+          // Archiving a message in Outlook, dragging it elsewhere, or an inbox rule filing it all
+          // produce this on the very next incremental sync. So this detaches the CRM's copy — hides
+          // it from the folder listing, keeps the row and every comment, assignment and status on
+          // it. It used to hard-delete all of that.
           const msId = msg.id;
           if (msId) {
-            await this.ingester.deleteMessage(tenantId, campaignId, msId);
+            await this.ingester.detachMessage(tenantId, campaignId, msId);
           }
           continue;
         }
@@ -211,8 +216,9 @@ export class MsSyncService {
         }
       }
 
-      // Reconcile deletions on an initial/restarted sync: anything local with an `ms:` key that the
-      // server did not return has been deleted or moved.
+      // Reconcile disappearances on an initial/restarted sync: anything local with an `ms:` key that
+      // the server did not return has left this folder — deleted, archived or moved. We cannot tell
+      // which, so it is detached (hidden from the folder, row and CRM data kept), never destroyed.
       //
       // The candidate set MUST be scoped to the window we fetched. `allMessages` only covers mail
       // since `windowStart`, so comparing against every local row would read the whole older archive
@@ -228,6 +234,7 @@ export class MsSyncService {
           .where('emails.campaign_id', '=', campaignId)
           .where('emails.folder_id', '=', folder.pplcrmId)
           .where('emails.preview', 'like', 'ms:%')
+          .where('emails.detached_at', 'is', null)
           .where('email_headers.tenant_id', '=', tenantId)
           .where('email_headers.date_sent', '>=', windowStart)
           .execute();
@@ -236,7 +243,7 @@ export class MsSyncService {
           const previewKey = localEmail.preview ?? '';
           const msId = previewKey.replace(/^ms:/, '');
           if (!serverMsIds.has(msId)) {
-            await this.ingester.deleteMessage(tenantId, campaignId, msId);
+            await this.ingester.detachMessage(tenantId, campaignId, msId);
           }
         }
       }

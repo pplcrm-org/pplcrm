@@ -31,6 +31,7 @@ apps/
           2026-07-29-office-mode-differentiation.ts
           2026-07-30-canvass-person-flags.ts
           2026-07-31-tenant-data-region.ts
+          2026-08-01-emails-detached-at.ts
           schema.sql
         config/
           email-folders.config.ts

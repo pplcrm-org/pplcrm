@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import type { Kysely, Updateable } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { StorageService } from '../../../lib/storage.service';
 import {
@@ -123,50 +123,63 @@ export class EmailIngesterService {
     await this.purgeBodyBlobs(bodyKeys);
   }
 
-  public async deleteMessage(tenantId: string, campaignId: string, remoteId: string): Promise<void> {
+  /**
+   * Record that a message is no longer in the folder we sync from — WITHOUT destroying it.
+   *
+   * This used to hard-delete the `emails` row and every child table. That was wrong, because a
+   * folder-scoped provider view reports a message as gone when it merely LEAVES the folder:
+   * archived in Outlook, dragged to another folder, or filed by a rule. So ordinary mailbox
+   * housekeeping destroyed the CRM's copy along with everything the team had added to it — the
+   * internal comments, the staff member it was assigned to, the open/closed triage status and the
+   * favourite flag — with no activity-log entry and no way to get any of it back.
+   *
+   * Detaching keeps all of that. `EmailRepo.buildFolderPredicate` hides detached rows from the
+   * mailbox folder listings, so a message archived upstream stops sitting in the CRM inbox, while
+   * a direct link (an assignment notification, a mention, an activity entry) still opens it, and
+   * it stays on the "Assigned to me" and "Favourites" worklists if someone put it there.
+   *
+   * `deleted_at` is deliberately NOT reused: that column means "the user put this in the CRM's own
+   * trash", so setting it here would file an archived message into the user's trash — a different
+   * and wrong claim.
+   *
+   * Idempotent, and deliberately so: `where detached_at is null` means an already-detached row
+   * keeps its original detach time, rather than having the retention sweep's age clock reset by
+   * every subsequent sync.
+   *
+   * Genuine destruction still exists and is unchanged — see `removeAllLocalEmails` (mailbox
+   * disconnect), the Trash hard-delete in `EmailsController.deleteMany`, and the tenant wipe in
+   * `lib/jobs/handlers/deletions.handlers.ts`.
+   */
+  public async detachMessage(tenantId: string, campaignId: string, remoteId: string): Promise<void> {
     const dedupeKey = `${this.prefix}:${remoteId}`;
-    const existing = await this.db
-      .selectFrom('emails')
-      .select('id')
+
+    await this.db
+      .updateTable('emails')
+      .set({ detached_at: new Date() })
       .where('tenant_id', '=', tenantId)
       .where('campaign_id', '=', campaignId)
       .where('preview', '=', dedupeKey)
-      .executeTakeFirst();
+      .where('detached_at', 'is', null)
+      .execute();
+  }
 
-    if (!existing) return;
-    const emailId = String(existing.id);
+  /**
+   * Apply a reconciliation patch to one email row, or do nothing when the patch is empty.
+   *
+   * Used by the three "this message is the one we already have" branches, which each need a
+   * different subset of columns (dedupe key, folder, detachment). An empty patch is a normal
+   * outcome — an unchanged message re-synced — and must not issue a pointless UPDATE that bumps
+   * `updated_at` via the row trigger.
+   */
+  private async applyEmailPatch(tenantId: string, emailId: string, patch: Updateable<Models['emails']>): Promise<void> {
+    if (Object.keys(patch).length === 0) return;
 
-    // Capture attachment file and body blob references before the rows are deleted.
-    const fileIds = await this.getAttachmentFileIds(tenantId, [emailId]);
-    const bodyKeys = await this.getBodyStorageKeys(tenantId, [emailId]);
-
-    await this.db.transaction().execute(async (trx) => {
-      // Delete from dependent tables sequentially to prevent foreign key constraint issues
-      await trx
-        .deleteFrom('email_comments')
-        .where('tenant_id', '=', tenantId)
-        .where('email_id', '=', emailId)
-        .execute();
-      await trx.deleteFrom('email_bodies').where('tenant_id', '=', tenantId).where('email_id', '=', emailId).execute();
-      await trx.deleteFrom('email_headers').where('tenant_id', '=', tenantId).where('email_id', '=', emailId).execute();
-      await trx
-        .deleteFrom('email_recipients')
-        .where('tenant_id', '=', tenantId)
-        .where('email_id', '=', emailId)
-        .execute();
-      await trx
-        .deleteFrom('email_attachments')
-        .where('tenant_id', '=', tenantId)
-        .where('email_id', '=', emailId)
-        .execute();
-      await trx.deleteFrom('email_trash').where('tenant_id', '=', tenantId).where('email_id', '=', emailId).execute();
-
-      // Delete from emails table
-      await trx.deleteFrom('emails').where('tenant_id', '=', tenantId).where('id', '=', emailId).execute();
-    });
-
-    await this.purgeOrphanedFiles(tenantId, fileIds);
-    await this.purgeBodyBlobs(bodyKeys);
+    await this.db
+      .updateTable('emails')
+      .set({ ...patch, updated_at: new Date() })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', emailId)
+      .execute();
   }
 
   /** Blob keys for the given emails' bodies, for cleanup after the rows are deleted. */
@@ -290,13 +303,21 @@ export class EmailIngesterService {
     // ingests into each context's Inbox independently (§15).
     const existing = await this.db
       .selectFrom('emails')
-      .select('id')
+      .select(['id', 'detached_at'])
       .where('tenant_id', '=', tenantId)
       .where('campaign_id', '=', campaignId)
       .where('preview', '=', dedupeKey)
       .executeTakeFirst();
 
-    if (existing) return false;
+    if (existing) {
+      // The message is present upstream again. A user can move a message out of the inbox and
+      // straight back in, so re-attach the existing row — with its comments, assignee, status and
+      // favourite flag — instead of leaving a hidden row behind and inserting a second copy.
+      if (existing.detached_at != null) {
+        await this.applyEmailPatch(tenantId, String(existing.id), { detached_at: null });
+      }
+      return false;
+    }
 
     // Try finding by internetMessageId in email_headers to match locally composed
     // & sent emails. The provider may reassign a message's ID when it moves
@@ -307,7 +328,12 @@ export class EmailIngesterService {
       const matches = await this.db
         .selectFrom('emails')
         .innerJoin('email_headers', 'email_headers.email_id', 'emails.id')
-        .select(['emails.id as id', 'emails.folder_id as folder_id', 'emails.preview as preview'])
+        .select([
+          'emails.id as id',
+          'emails.folder_id as folder_id',
+          'emails.preview as preview',
+          'emails.detached_at as detached_at',
+        ])
         .where('emails.tenant_id', '=', tenantId)
         .where('emails.campaign_id', '=', campaignId)
         .where('email_headers.tenant_id', '=', tenantId)
@@ -317,16 +343,18 @@ export class EmailIngesterService {
       // 1. Same message already present in THIS folder. This is the same item
       //    re-synced (possibly under a new provider ID) — refresh the dedupe key
       //    so future syncs match by preview, and skip insertion.
+      //
+      //    This is also the path a message takes when it is moved OUT of the folder and back in:
+      //    the provider issues a new ID on the way back, so the preview-keyed lookup above misses
+      //    and only the stable Message-ID finds the detached row. Clearing `detached_at` here is
+      //    what makes the round trip re-attach the original row — comments, assignee, status and
+      //    all — instead of leaving a hidden row behind and inserting a duplicate beside it.
       const sameFolder = matches.find((m) => String(m.folder_id) === String(folderId));
       if (sameFolder) {
-        if (sameFolder.preview !== dedupeKey) {
-          await this.db
-            .updateTable('emails')
-            .set({ preview: dedupeKey, updated_at: new Date() })
-            .where('tenant_id', '=', tenantId)
-            .where('id', '=', String(sameFolder.id))
-            .execute();
-        }
+        const patch: Updateable<Models['emails']> = {};
+        if (sameFolder.preview !== dedupeKey) patch.preview = dedupeKey;
+        if (sameFolder.detached_at != null) patch.detached_at = null;
+        await this.applyEmailPatch(tenantId, String(sameFolder.id), patch);
         return false;
       }
 
@@ -334,12 +362,11 @@ export class EmailIngesterService {
       //    another folder — claim it: tag with the provider ID and align its folder.
       const untagged = matches.find((m) => !(m.preview?.startsWith('ms:') || m.preview?.startsWith('google:')));
       if (untagged) {
-        await this.db
-          .updateTable('emails')
-          .set({ preview: dedupeKey, folder_id: folderId, updated_at: new Date() })
-          .where('tenant_id', '=', tenantId)
-          .where('id', '=', String(untagged.id))
-          .execute();
+        await this.applyEmailPatch(tenantId, String(untagged.id), {
+          preview: dedupeKey,
+          folder_id: folderId,
+          detached_at: null,
+        });
 
         return false; // prevent duplicate insertion
       }

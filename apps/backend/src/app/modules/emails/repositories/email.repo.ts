@@ -147,12 +147,15 @@ export class EmailRepo extends BaseRepository<'emails'> {
     tenant_id: string,
     campaign_id: string,
   ): Promise<Record<string, number>> {
-    // 1) Regular per-folder counts
+    // 1) Regular per-folder counts. Detached rows are excluded here for the same reason
+    //    buildFolderPredicate hides them: they are not in that mailbox folder any more, so counting
+    //    them would leave a badge number the list cannot account for.
     const regular = await this.getSelect()
       .select(['folder_id'])
       .select((eb) => eb.fn.count('id').as('count'))
       .where('tenant_id', '=', tenant_id)
       .where('campaign_id', '=', campaign_id)
+      .where('detached_at', 'is', null)
       .groupBy('folder_id')
       .execute();
 
@@ -164,19 +167,25 @@ export class EmailRepo extends BaseRepository<'emails'> {
           .on('ers.user_id', '=', user_id)
           .on('ers.tenant_id', '=', tenant_id),
       )
+      // Each filter mirrors the matching branch of buildFolderPredicate, including which ones
+      // count detached messages: "assigned" and "favourites" do, the mailbox-shaped ones do not.
       .select(() => [
-        sql<number>`count(*) filter (where status = 'open' and folder_id = ${ALL_FOLDERS.INBOX})`.as('all_open'),
-        sql<number>`count(*) filter (where status = 'closed' and folder_id = ${ALL_FOLDERS.INBOX})`.as('closed'),
+        sql<number>`count(*) filter (where status = 'open' and folder_id = ${ALL_FOLDERS.INBOX} and detached_at is null)`.as(
+          'all_open',
+        ),
+        sql<number>`count(*) filter (where status = 'closed' and folder_id = ${ALL_FOLDERS.INBOX} and detached_at is null)`.as(
+          'closed',
+        ),
         sql<number>`count(*) filter (where assigned_to = ${user_id} and status = 'open' and folder_id = ${ALL_FOLDERS.INBOX})`.as(
           'assigned',
         ),
-        sql<number>`count(*) filter (where assigned_to is null and status = 'open' and folder_id = ${ALL_FOLDERS.INBOX})`.as(
+        sql<number>`count(*) filter (where assigned_to is null and status = 'open' and folder_id = ${ALL_FOLDERS.INBOX} and detached_at is null)`.as(
           'unassigned',
         ),
         sql<number>`count(*) filter (where is_favourite = true and status = 'open' and folder_id = ${ALL_FOLDERS.INBOX})`.as(
           'favourites',
         ),
-        sql<number>`count(*) filter (where folder_id = ${ALL_FOLDERS.INBOX} and (ers.is_read is not true))`.as(
+        sql<number>`count(*) filter (where folder_id = ${ALL_FOLDERS.INBOX} and detached_at is null and (ers.is_read is not true))`.as(
           'inbox_unread',
         ),
       ])
@@ -337,13 +346,32 @@ export class EmailRepo extends BaseRepository<'emails'> {
     return status;
   }
 
+  /**
+   * Which listings show a DETACHED message — one the provider stopped listing in the folder it was
+   * synced from, because the user archived it, moved it, or a rule filed it.
+   *
+   * A detached row is kept in full (comments, assignee, status, favourite flag), but it must stop
+   * sitting in the CRM's copy of that mailbox folder — a message archived in Outlook is not still
+   * in the inbox. So every listing that mirrors the mailbox excludes it: the real folders, plus the
+   * triage views over the inbox stream (All open, Closed, Unassigned).
+   *
+   * The two exceptions are the worklists that exist only because somebody in the CRM acted on the
+   * message: "Assigned to me" and "Favourites". Those keep showing it, so archiving a message
+   * upstream does not silently drop it off the assignee's list. It also means the comments on such
+   * a message stay reachable through the UI rather than only through a stored link.
+   */
   private buildFolderPredicate(folder_id: string, user_id: string): (eb: any) => any {
+    const attached = (eb: any) => eb('emails.detached_at', 'is', null);
+
     switch (folder_id) {
       case SPECIAL_FOLDERS.ALL_OPEN:
-        return (eb) => eb.and([eb('emails.status', '=', 'open'), eb('emails.folder_id', '=', ALL_FOLDERS.INBOX)]);
+        return (eb) =>
+          eb.and([eb('emails.status', '=', 'open'), eb('emails.folder_id', '=', ALL_FOLDERS.INBOX), attached(eb)]);
       case SPECIAL_FOLDERS.CLOSED:
-        return (eb) => eb.and([eb('emails.status', '=', 'closed'), eb('emails.folder_id', '=', ALL_FOLDERS.INBOX)]);
+        return (eb) =>
+          eb.and([eb('emails.status', '=', 'closed'), eb('emails.folder_id', '=', ALL_FOLDERS.INBOX), attached(eb)]);
       case SPECIAL_FOLDERS.ASSIGNED_TO_ME:
+        // Deliberately not filtered by `detached_at` — see the note above.
         return (eb) =>
           eb.and([
             eb('emails.assigned_to', '=', user_id),
@@ -356,8 +384,10 @@ export class EmailRepo extends BaseRepository<'emails'> {
             eb('emails.assigned_to', 'is', null),
             eb('emails.status', '=', 'open'),
             eb('emails.folder_id', '=', ALL_FOLDERS.INBOX),
+            attached(eb),
           ]);
       case SPECIAL_FOLDERS.FAVOURITES:
+        // Deliberately not filtered by `detached_at` — see the note above.
         return (eb) =>
           eb.and([
             eb('emails.is_favourite', '=', true),
@@ -366,7 +396,7 @@ export class EmailRepo extends BaseRepository<'emails'> {
           ]);
       default:
         // Real folder
-        return (eb) => eb('emails.folder_id', '=', folder_id);
+        return (eb) => eb.and([eb('emails.folder_id', '=', folder_id), attached(eb)]);
     }
   }
 }

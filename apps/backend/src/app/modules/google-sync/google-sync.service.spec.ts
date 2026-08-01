@@ -92,14 +92,19 @@ describe('GoogleSyncService initial window (integration)', () => {
     return String(created.id);
   }
 
-  const survives = async (providerId: string) => {
-    const row = await db
+  const rowFor = async (providerId: string) =>
+    await db
       .selectFrom('emails')
-      .select('id')
+      .select(['id', 'detached_at'])
       .where('tenant_id', '=', tenantId)
       .where('preview', '=', `google:${providerId}`)
       .executeTakeFirst();
-    return !!row;
+
+  const survives = async (providerId: string) => !!(await rowFor(providerId));
+
+  const isDetached = async (providerId: string) => {
+    const row = await rowFor(providerId);
+    return !!row && row.detached_at !== null;
   };
 
   beforeEach(async () => {
@@ -190,7 +195,7 @@ describe('GoogleSyncService initial window (integration)', () => {
     expect(inboxQuery).toContain(`after:${watermark - 60}`);
   });
 
-  it('does not delete mail older than the window when the watermark is cleared', async () => {
+  it('does not touch mail older than the window when the watermark is cleared', async () => {
     // The regression this guards: pressing "Re-sync recent mail" on an established mailbox.
     await seedEmail('OLD_MESSAGE', 24 * 30); // a month old
     await seedEmail('RECENT_MESSAGE', 1); // within the window
@@ -200,10 +205,14 @@ describe('GoogleSyncService initial window (integration)', () => {
 
     await service.syncTenant(tenantId, campaignId, userId);
 
-    // Outside the fetched window, so the sweep has no opinion about it: it must survive.
+    // Outside the fetched window, so the sweep has no opinion about it at all.
     expect(await survives('OLD_MESSAGE')).toBe(true);
-    // Inside the window and absent from the server's response: correctly reconciled away.
-    expect(await survives('RECENT_MESSAGE')).toBe(false);
+    expect(await isDetached('OLD_MESSAGE')).toBe(false);
+    // Inside the window and absent from the server's response: reconciled away by DETACHING it —
+    // hidden from the folder, row and everything the CRM added to it kept. This comparison also
+    // trusts a sender-supplied `Date:` header, so it can be wrong; destroying on it was unsafe.
+    expect(await survives('RECENT_MESSAGE')).toBe(true);
+    expect(await isDetached('RECENT_MESSAGE')).toBe(true);
   });
 
   it('checkpoints after each folder rather than only at the end', async () => {

@@ -354,6 +354,12 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
       {
         kind: 'callout',
         tone: 'info',
+        title: 'Archiving in your mail client tidies up here too',
+        text: 'When you archive a message, move it to another folder, or let a rule file it, it leaves this inbox on the next sync — the same tidy-up, in both places. What you added here is not thrown away with it: comments, the person it was assigned to, its open or closed status and its star all stay on the message, and any link to it (an assignment email, a mention, an activity entry) still opens it. An assigned or starred message also stays on **Assigned to me** and **Favourites**, so archiving it upstream never quietly clears somebody’s list. Messages that left the mailbox and that nobody here ever commented on, assigned, closed or starred are cleaned up after 90 days.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
         title: 'Re-syncing',
         text: '**Re-sync recent mail**, under the mailbox settings, resets the sync position and pulls the last 48 hours again. It is for when a sync failed or looks incomplete. Older mail already in your inbox is untouched.',
       },

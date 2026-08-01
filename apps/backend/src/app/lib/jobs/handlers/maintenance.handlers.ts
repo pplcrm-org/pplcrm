@@ -7,6 +7,7 @@ import { logger } from '../../../logger';
 import { ActivityController } from '../../../modules/activity/controller';
 import { ListsController } from '../../../modules/lists/controller';
 import { DuplicateMaintenanceService } from '../../../modules/persons/services/duplicate-maintenance.service';
+import { purgeUnreferencedFiles } from '../../file-references';
 import { StorageService } from '../../storage.service';
 import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
@@ -71,6 +72,17 @@ const EXPIRED_SESSION_GRACE_DAYS = 30;
  * Changing it means changing all three — see the `pplcrm-website-claims` skill.
  */
 const DATA_EXPORT_RETENTION_DAYS = 30;
+/**
+ * How long a synced message that left the mailbox folder upstream is kept when nobody in the CRM
+ * ever acted on it.
+ *
+ * Such a message is now DETACHED rather than deleted (it used to be hard-deleted, which destroyed
+ * the team's comments along with it — see EmailIngesterService.detachMessage). Keeping every
+ * archived message forever would trade one bug for another: an active mailbox archives constantly,
+ * and each row drags a body blob and its attachments along. So rows that carry nothing the CRM
+ * added are pruned after this window; rows that carry anything are kept indefinitely.
+ */
+const DETACHED_EMAIL_RETENTION_DAYS = 90;
 // Chunk size for the keyset-paginated address-fingerprint recompute below.
 const ADDRESS_FINGERPRINT_PAGE_SIZE = 1000;
 
@@ -145,6 +157,104 @@ export async function pruneExpiredExports(db: Kysely<Models>): Promise<{ rows: n
   return { rows: rowsDeleted, blobFailures };
 }
 
+/**
+ * Delete detached synced messages that nobody in the CRM ever touched, once they are past the
+ * retention window.
+ *
+ * A detached message is one the provider stopped listing in the folder it was synced from — the
+ * user archived it, moved it, or a rule filed it. The sync keeps the row instead of destroying it,
+ * because the row may carry work: internal comments, an assignee, a closed/reopened status, a
+ * favourite flag. This sweep only removes the ones that carry none of that, so nothing a person
+ * wrote or decided is ever pruned, however old it gets.
+ *
+ * The email's child rows (bodies, headers, recipients, attachments, read states, trash provenance)
+ * go with it through `ON DELETE CASCADE`. Storage is not covered by the cascade, so the attachment
+ * `files` rows and the body blobs are cleaned up here, in the same order the other email delete
+ * paths use: capture the references first, delete the rows, then purge storage — a failed blob
+ * delete leaks bytes, whereas purging first would leave a permanently broken download if the row
+ * delete then failed. `purgeUnreferencedFiles` is the shared check that an attachment file is not
+ * also somebody's avatar, person photo or newsletter image.
+ *
+ * Exported so its spec can exercise it alone; calling `handlePruneRetention` in a test would also
+ * sweep jobs, webhooks, sessions and exports across every tenant in the shared test database.
+ */
+export async function pruneDetachedEmails(db: Kysely<Models>): Promise<{ rows: number }> {
+  const storageService = new StorageService();
+  let rowsDeleted = 0;
+
+  for (;;) {
+    // NOTE: intentionally cross-tenant — scheduled platform maintenance with no caller, the same as
+    // the other sweeps in this job. It returns only row ids and the tenant each belongs to, and
+    // every follow-up query below is scoped by the tenant_id it returned.
+    const candidates = await sql<{ id: string; tenant_id: string }>`
+      SELECT e.id, e.tenant_id
+        FROM emails e
+       WHERE e.detached_at IS NOT NULL
+         AND e.detached_at < now() - make_interval(days => ${DETACHED_EMAIL_RETENTION_DAYS})
+         AND e.assigned_to IS NULL
+         AND e.is_favourite = false
+         AND (e.status IS NULL OR e.status <> 'closed')
+         AND NOT EXISTS (
+               SELECT 1 FROM email_comments c
+                WHERE c.email_id = e.id AND c.tenant_id = e.tenant_id)
+       ORDER BY e.id
+       LIMIT ${RETENTION_BATCH}
+    `.execute(db);
+
+    if (candidates.rows.length === 0) break;
+
+    const idsByTenant = new Map<string, string[]>();
+    for (const row of candidates.rows) {
+      const tenantId = String(row.tenant_id);
+      const ids = idsByTenant.get(tenantId) ?? [];
+      ids.push(String(row.id));
+      idsByTenant.set(tenantId, ids);
+    }
+
+    for (const [tenantId, emailIds] of idsByTenant) {
+      const attachmentFiles = await db
+        .selectFrom('email_attachments')
+        .select('file_id')
+        .distinct()
+        .where('tenant_id', '=', tenantId)
+        .where('email_id', 'in', emailIds)
+        .where('file_id', 'is not', null)
+        .execute();
+      const fileIds = attachmentFiles.map((r) => String(r.file_id)).filter((id) => id !== 'null');
+
+      const bodies = await db
+        .selectFrom('email_bodies')
+        .select('storage_key')
+        .where('tenant_id', '=', tenantId)
+        .where('email_id', 'in', emailIds)
+        .where('storage_key', 'is not', null)
+        .execute();
+      const bodyKeys = bodies.map((r) => String(r.storage_key)).filter((k) => k !== 'null');
+
+      const res = await db
+        .deleteFrom('emails')
+        .where('tenant_id', '=', tenantId)
+        .where('id', 'in', emailIds)
+        .executeTakeFirst();
+      rowsDeleted += Number(res.numDeletedRows ?? 0n);
+
+      await purgeUnreferencedFiles(db, storageService, tenantId, fileIds);
+
+      for (const key of bodyKeys) {
+        try {
+          await storageService.delete(key);
+        } catch (err) {
+          logger.error({ err }, `Failed to delete pruned email body blob ${key}`);
+        }
+      }
+    }
+
+    if (candidates.rows.length < RETENTION_BATCH) break;
+  }
+
+  return { rows: rowsDeleted };
+}
+
 export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
   // Completed background jobs older than the retention window — this is the sole owner of
   // routine background_jobs pruning (the scheduled-deletions handler used to also prune
@@ -210,6 +320,10 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
   // this one sweeps the blob too — see pruneExpiredExports.
   const prunedExports = await pruneExpiredExports(db);
 
+  // Synced messages that left the mailbox folder upstream long ago and that nobody in the CRM ever
+  // commented on, assigned, closed or starred — see pruneDetachedEmails.
+  const prunedDetachedEmails = await pruneDetachedEmails(db);
+
   logger.info(
     {
       prunedCompletedJobs: prunedCompletedJobs.toString(),
@@ -218,6 +332,7 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
       prunedSessions: prunedSessions.toString(),
       prunedExports: prunedExports.rows,
       exportBlobDeleteFailures: prunedExports.blobFailures,
+      prunedDetachedEmails: prunedDetachedEmails.rows,
     },
     'Retention prune complete',
   );

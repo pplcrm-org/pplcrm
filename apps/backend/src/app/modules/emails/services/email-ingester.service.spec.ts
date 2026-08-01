@@ -181,4 +181,110 @@ describe('EmailIngesterService dedup (integration)', () => {
     expect(await countByFolder(SENT)).toBe(1);
     expect(await countByFolder(INBOX)).toBe(1);
   });
+
+  // Detaching is what the sync does when a message merely leaves the folder. Disconnecting the
+  // mailbox is different: the user asked for the synced copy to be gone, and that must still
+  // destroy everything, including the comments — otherwise "remove local emails" is a lie.
+  describe('detach vs. destroy', () => {
+    async function seedSyncedInboxEmailWithComment(providerId: string) {
+      const created = await db
+        .insertInto('emails')
+        .values({
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          folder_id: INBOX,
+          from_email: 'sender@example.com',
+          to_email: `user-${userId}@example.com`,
+          subject: 'Synced message',
+          preview: `ms:${providerId}`,
+          assigned_to: userId,
+          is_favourite: true,
+          status: 'closed',
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+
+      const emailId = String(created.id);
+      await db
+        .insertInto('email_comments')
+        .values({
+          tenant_id: tenantId,
+          email_id: emailId,
+          author_id: userId,
+          comment: 'Internal note',
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+
+      return emailId;
+    }
+
+    const emailRow = async (emailId: string) =>
+      await db
+        .selectFrom('emails')
+        .select(['id', 'detached_at', 'assigned_to', 'status', 'is_favourite'])
+        .where('tenant_id', '=', tenantId)
+        .where('id', '=', emailId)
+        .executeTakeFirst();
+
+    const commentCount = async (emailId: string) => {
+      const rows = await db
+        .selectFrom('email_comments')
+        .select('id')
+        .where('tenant_id', '=', tenantId)
+        .where('email_id', '=', emailId)
+        .execute();
+      return rows.length;
+    };
+
+    it('detachMessage keeps the row, its comment, its assignee and its status', async () => {
+      const emailId = await seedSyncedInboxEmailWithComment('GONE_FROM_FOLDER');
+
+      await ingester.detachMessage(tenantId, campaignId, 'GONE_FROM_FOLDER');
+
+      const row = await emailRow(emailId);
+      expect(row).toBeTruthy();
+      expect(row?.detached_at).not.toBeNull();
+      expect(String(row?.assigned_to)).toBe(userId);
+      expect(row?.status).toBe('closed');
+      expect(row?.is_favourite).toBe(true);
+      expect(await commentCount(emailId)).toBe(1);
+    });
+
+    it('detachMessage keeps the original detach time when the sync repeats', async () => {
+      // Every incremental sync re-reports the same message as gone. If each one rewrote the
+      // timestamp, the retention sweep's age clock would reset forever and a row that carries
+      // nothing would never become eligible for pruning.
+      const emailId = await seedSyncedInboxEmailWithComment('REPEATED');
+      // Whole seconds: the row is read back and stringified for comparison, and a stringified JS
+      // Date carries no milliseconds.
+      const hundredDaysAgo = Date.now() - 100 * 24 * 60 * 60 * 1000;
+      const detachedLongAgo = new Date(Math.floor(hundredDaysAgo / 1000) * 1000);
+
+      await db
+        .updateTable('emails')
+        .set({ detached_at: detachedLongAgo })
+        .where('tenant_id', '=', tenantId)
+        .where('id', '=', emailId)
+        .execute();
+
+      await ingester.detachMessage(tenantId, campaignId, 'REPEATED');
+
+      const after = (await emailRow(emailId))?.detached_at;
+      expect(after).toBeTruthy();
+      expect(new Date(String(after)).getTime()).toBe(detachedLongAgo.getTime());
+    });
+
+    it('removeAllLocalEmails (mailbox disconnect) still hard-deletes the row and its comment', async () => {
+      const emailId = await seedSyncedInboxEmailWithComment('DISCONNECTED');
+
+      await ingester.removeAllLocalEmails(tenantId, campaignId);
+
+      expect(await emailRow(emailId)).toBeUndefined();
+      expect(await commentCount(emailId)).toBe(0);
+    });
+  });
 });

@@ -165,8 +165,12 @@ export class GoogleSyncService {
 
       nextDeltaMap[folder.label] = currentSyncTime;
 
-      // Reconcile deletions. Gmail has no tombstones, so the only way to notice a message that
-      // disappeared server-side is to compare against what the server just returned.
+      // Reconcile disappearances. Gmail has no tombstones, so the only way to notice a message that
+      // is no longer in this label is to compare against what the server just returned. "No longer
+      // in this label" covers archiving and moving as well as deleting, and this comparison is
+      // fallible besides (it trusts a sender-supplied `Date:` header against Gmail's own
+      // received-time filter), so a message that fails it is DETACHED — hidden from the folder,
+      // row and CRM comments/assignment/status kept — never destroyed.
       //
       // The candidate set MUST be scoped to the window we actually fetched. `allMessageIds` only
       // describes mail since `windowStart`, so comparing it against every local row would treat the
@@ -182,6 +186,7 @@ export class GoogleSyncService {
           .where('emails.campaign_id', '=', campaignId)
           .where('emails.folder_id', '=', folder.pplcrmId)
           .where('emails.preview', 'like', 'google:%')
+          .where('emails.detached_at', 'is', null)
           .where('email_headers.tenant_id', '=', tenantId)
           .where('email_headers.date_sent', '>=', new Date(windowStart * 1000))
           .execute();
@@ -190,7 +195,7 @@ export class GoogleSyncService {
           const previewKey = localEmail.preview ?? '';
           const googleId = previewKey.replace(/^google:/, '');
           if (!serverGoogleIds.has(googleId)) {
-            await this.ingester.deleteMessage(tenantId, campaignId, googleId);
+            await this.ingester.detachMessage(tenantId, campaignId, googleId);
           }
         }
       }
