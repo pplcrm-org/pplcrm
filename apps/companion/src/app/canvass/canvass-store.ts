@@ -794,8 +794,17 @@ export class CanvassStore {
     this.persistBlocked();
   }
 
-  /** "End shift on this device" — wipe local traces, back to the landing view. */
-  public endShift(): void {
+  /**
+   * "End shift on this device" — sign this phone out and wipe its local traces.
+   *
+   * The sign-out is the part that was missing. Clearing the queue, the overlay and the
+   * two stored keys left the device SESSION untouched: the token stayed in localStorage
+   * and stayed valid on the server for its full 30 days, so whoever opened the app next
+   * was back inside the assigned turf — names, addresses, recorded support levels,
+   * do-not-contact flags — with nothing to re-verify. `endSession` revokes it server-side
+   * as well, so a copied token dies with the shift rather than outliving it.
+   */
+  public async endShift(): Promise<void> {
     // Hand the street back so tomorrow's group isn't told it's taken. The TTL would get
     // there eventually; saying so now is the honest version.
     if (this.segmentKey() != null) void this.postSegmentClaim(null, null);
@@ -815,6 +824,9 @@ export class CanvassStore {
     this.syncStatus.set('idle');
     this.segmentKey.set(null);
     this.view.set({ kind: 'landing' });
+    // Last, so a slow or failed revoke never leaves turf data on screen after the
+    // volunteer has been told the shift ended.
+    await this.session.endSession();
   }
 
   // --------------------------------------------------------------- private --

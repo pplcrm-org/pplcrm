@@ -291,7 +291,9 @@ has been split. **Advisory and nothing else** — read that as a hard rule, not 
 `SEGMENT_CLAIM_TTL_MS` (6 h) is what stops a phone locked at 4pm telling Sunday's group a
 street is taken; `activeForTurf` filters expiry at read time rather than by a sweep job.
 Claims are released explicitly on picking a different street, switching turfs, and
-`endShift()`. `canvasser_name` is denormalized onto the row like `turf_knocks.canvasser_name`,
+`endShift()` (now async — it revokes the device session too, see `pplcrm-companion-access`
+→ `POST /session/end`; the Me tab flushes the queue first so signing out cannot become a
+new way to lose recorded doors). `canvasser_name` is denormalized onto the row like `turf_knocks.canvasser_name`,
 so reading claims never touches `persons`. The payload marks the reader's own claim `mine:
 true` and the store drops those — "Showing" and "You're here" would say the same thing twice.
 

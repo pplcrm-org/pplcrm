@@ -85,9 +85,37 @@ export class CompanionSessionService {
   /** Current device-session token (null until verified on this device). */
   public readonly sessionToken = signal<string | null>(readStoredSession()?.token ?? null);
 
+  /**
+   * Forget the session on THIS browser. Does not revoke it — see `endSession`.
+   *
+   * This is the right call when the server has already told us the session is dead
+   * (a 401/403 on a data request), where asking it to revoke would be noise.
+   */
   public clearSession(): void {
     localStorage.removeItem(SESSION_KEY);
     this.sessionToken.set(null);
+  }
+
+  /**
+   * End the shift on this device: revoke the session server-side, then forget it here.
+   *
+   * Both halves matter, and the order is deliberate. Dropping the localStorage key alone
+   * leaves the token valid for its full 30-day life, so a copied token — or a restored
+   * browser profile — is back inside the turf. The local clear happens even when the
+   * revoke call fails, because a volunteer handing a phone back cannot wait on a network
+   * round-trip and the local half is the part they can see.
+   */
+  public async endSession(): Promise<void> {
+    const token = this.sessionToken();
+    if (token) {
+      try {
+        await fetch('/api/companion/session/end', { method: 'POST', headers: this.headers() });
+      } catch {
+        // Offline or unreachable — the session still expires on its own, and the local
+        // clear below is what this device can honestly promise right now.
+      }
+    }
+    this.clearSession();
   }
 
   /**

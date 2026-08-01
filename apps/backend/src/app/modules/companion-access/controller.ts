@@ -430,6 +430,30 @@ export class CompanionAccessController {
   }
 
   /**
+   * POST /api/companion/session/end — the volunteer ended their shift on this phone.
+   *
+   * Authenticated by the session it revokes and nothing else: the header IS the
+   * credential, so there is no id to guess and no way to end somebody else's shift. The
+   * capability link is deliberately not consulted — a volunteer signing out of a phone
+   * they are handing back should not have to still hold a working link to do it.
+   *
+   * Removing the localStorage key (which is all the client used to do) leaves the token
+   * valid on the server for its full 30 days, so anyone who copied it — or who restores
+   * that browser profile — is back inside the turf with its names, addresses, recorded
+   * support levels and do-not-contact flags. Revoking is what makes the button's own
+   * title, "End shift on this device", true.
+   *
+   * Always resolves quietly, including for a token that is already dead or was never
+   * real: this endpoint must not become a way to test whether a session token is live.
+   */
+  public async endSession(sessionToken: string | null | undefined): Promise<void> {
+    if (!sessionToken) return;
+    const session = await this.sessionsRepo.findByTokenHash(hashToken(sessionToken));
+    if (!session) return;
+    await this.sessionsRepo.revokeById({ tenant_id: session.tenant_id, id: session.id });
+  }
+
+  /**
    * Identify the volunteer from their device session alone, with no capability link.
    *
    * `requireSession` answers "may the holder of this session open THIS link?" — it

@@ -122,10 +122,14 @@ export class RoutePage {
   }
 
   /**
-   * "End shift on this device" — clears the verified device session so this
-   * phone no longer holds access, then drops to a friendly ended screen. There
-   * is no local queue to lose: every action posts immediately, so nothing about
-   * these households is left behind in the browser.
+   * "End shift on this device" — revokes the verified device session so this phone no
+   * longer holds access, then drops to a friendly ended screen. There is no local queue
+   * to lose: every action posts immediately, so nothing about these households is left
+   * behind in the browser.
+   *
+   * `endSession` rather than `clearSession`: dropping the localStorage key alone left the
+   * token valid on the server for its full 30 days, which made the dialog's own promise
+   * ("This signs this device out of the route") only half true.
    */
   protected async endShift(): Promise<void> {
     const confirmed = await this.dialogs.confirm({
@@ -136,7 +140,7 @@ export class RoutePage {
       cancelText: 'Keep going',
     });
     if (!confirmed) return;
-    this.session.clearSession();
+    await this.session.endSession();
     this.state.set('ended');
     this.alerts.showSuccess('Shift ended. Reopen your link anytime');
   }

@@ -96,6 +96,22 @@ const companionPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     }
   });
 
+  // End the shift on this device: revoke the session the header carries, so the token
+  // is dead server-side rather than merely deleted from one browser. Answers 200 for a
+  // missing/expired/unknown token too — it must not double as a "is this token live?"
+  // probe — and the client clears its local copy either way.
+  fastify.post('/session/end', async (req: FastifyRequest, reply: FastifyReply) => {
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    try {
+      await controller.endSession(sessionTokenOf(req));
+    } catch (err: unknown) {
+      // Logged, not surfaced: the phone has already dropped its copy of the token, and a
+      // volunteer handing a device back cannot act on a server-side failure here.
+      fastify.log.error(err, 'Failed to end a companion device session');
+    }
+    return reply.status(200).send({ ok: true });
+  });
+
   // ---- QR join ------------------------------------------------------------
   // The one public endpoint that can write into `persons`. Every refusal answers with
   // the controller's single uniform message, so this cannot be probed for which codes

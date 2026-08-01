@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CompanionHousehold, CompanionOpAck, CompanionPerson, CompanionTurfPayload } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 
+import { CompanionSessionService } from '../gate/companion-api';
 import { CanvassStore } from './canvass-store';
 
 /** A resident with every payload field defaulted, so a test states only what it is about. */
@@ -47,6 +48,8 @@ const QUEUE_KEY = 'pc-canvass-queue';
 const LEGACY_QUEUE_KEY = `pc-canvass-queue:${TOKEN}`;
 /** Results that came off the queue without syncing; survives a reload like the queue. */
 const BLOCKED_KEY = 'pc-canvass-blocked';
+/** The device session — "end shift" has to take this with it, not just the queue. */
+const SESSION_KEY = 'pc-companion-session';
 
 function turfPayload(): CompanionTurfPayload {
   return {
@@ -724,11 +727,41 @@ describe('CanvassStore', () => {
       store.doorOutcome('10', 'no_answer');
       store.view.set({ kind: 'me' });
       expect(JSON.parse(localStorage.getItem(QUEUE_KEY) ?? '[]')).toHaveLength(1);
-      store.endShift();
+      await store.endShift();
       expect(localStorage.getItem(QUEUE_KEY)).toBeNull();
       expect(store.queue()).toHaveLength(0);
       expect(store.householdById('10')?.door_outcome).toBeNull();
       expect(store.view()).toEqual({ kind: 'landing' });
+    });
+
+    it('signs the device out, locally and on the server', async () => {
+      const session = TestBed.inject(CompanionSessionService);
+      session.saveSession('sess-abc', new Date(Date.now() + 86_400_000).toISOString());
+      await store.load(TOKEN);
+
+      await store.endShift();
+
+      // Without this, the token stayed valid for its full 30 days and whoever opened the
+      // app next was back inside the turf with no re-verification.
+      expect(fetchMock).toHaveBeenCalledWith('/api/companion/session/end', expect.objectContaining({ method: 'POST' }));
+      expect(session.sessionToken()).toBeNull();
+      expect(localStorage.getItem(SESSION_KEY)).toBeNull();
+    });
+
+    it('still signs out locally when the revoke call cannot be made', async () => {
+      const session = TestBed.inject(CompanionSessionService);
+      session.saveSession('sess-abc', new Date(Date.now() + 86_400_000).toISOString());
+      await store.load(TOKEN);
+      fetchMock.mockImplementation((url: string) => {
+        if (String(url).endsWith('/session/end')) return Promise.reject(new TypeError('offline'));
+        return Promise.resolve(jsonResponse(turfPayload()));
+      });
+
+      await store.endShift();
+
+      // A volunteer handing a phone back cannot wait on the network, and the local half
+      // is the part this device can honestly promise.
+      expect(session.sessionToken()).toBeNull();
     });
   });
 
@@ -927,11 +960,11 @@ describe('CanvassStore', () => {
       store.chooseSegment(store.segments()[0]?.key ?? null);
       await flushMicrotasks();
 
-      store.endShift();
+      await store.endShift();
       await flushMicrotasks();
 
       // Otherwise tomorrow's group is told a street is taken until the TTL catches up.
-      expect(claimPosts().at(-1)?.street_key).toBeNull();
+      expect(claimPosts().find((c) => c.street_key === null)).toBeDefined();
     });
 
     it('keeps scoping when the claim call fails — it is advisory, not a gate', async () => {

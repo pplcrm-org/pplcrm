@@ -26,8 +26,8 @@ const CLOCK_TICK_MS = 30_000;
 
       <div class="flex flex-col gap-3 rounded-lg border border-base-300 bg-base-100 p-4">
         <p class="text-xs text-base-content/70">
-          Signed in through your assignment link. Your organizer can revoke it. No voter data stays in this browser
-          after your shift.
+          Signed in through your assignment link. Your organizer can revoke it, and ending your shift signs this phone
+          out. No voter data stays in this browser after your shift.
         </p>
         <button type="button" class="btn btn-outline btn-error w-full" (click)="endShift()">
           End shift on this device
@@ -214,22 +214,27 @@ export class CanvassMe {
   }
 
   protected async endShift(): Promise<void> {
-    // Counts held results too — they are recorded work sitting on this phone, and
-    // ending the shift destroys them exactly like a queued one.
+    // Try to save the work before offering to destroy it. Signing out must not become a
+    // new way to lose doors somebody knocked, and the common case — a queue that simply
+    // had not flushed yet — needs no warning at all once it has gone out.
+    if (this.store.queue().length > 0 && this.store.online()) await this.store.flush(true);
+
+    // Counts held results too: they are recorded work sitting on this phone, and ending
+    // the shift destroys them exactly like a queued one.
     const unsynced = this.store.unsyncedCount();
     const confirmed = await this.dialogs.confirm({
       title: 'End shift on this device?',
       message:
         unsynced > 0
-          ? `This clears results stored in this browser. ${unsynced} unsynced ${unsynced === 1 ? 'result' : 'results'} will be lost.`
-          : 'This clears results stored in this browser. Synced results are already in pplCRM.',
+          ? `This signs this phone out and clears the results stored in this browser. ${unsynced} ${unsynced === 1 ? 'result has' : 'results have'} not reached pplCRM yet and will be lost. Sync first if you can.`
+          : 'This signs this phone out and clears the results stored in this browser. Everything you recorded is already in pplCRM. Your organizer can send you a new link whenever you want to walk again.',
       variant: 'danger',
       confirmText: 'End shift',
       cancelText: 'Keep walking',
     });
     if (!confirmed) return;
-    this.store.endShift();
-    this.alerts.showSuccess('Shift ended. Reopen your link anytime');
+    await this.store.endShift();
+    this.alerts.showSuccess('Shift ended. This phone is signed out');
   }
 
   protected retryBlocked(): void {

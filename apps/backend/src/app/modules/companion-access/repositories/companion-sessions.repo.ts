@@ -61,6 +61,23 @@ export class CompanionSessionsRepo extends BaseRepository<'companion_sessions'> 
       .execute();
   }
 
+  /**
+   * Kill ONE device session — "end shift on this device".
+   *
+   * Tenant-scoped, unlike `findByTokenHash` above: the caller has already resolved the
+   * session from its token, so the tenant is known and there is no reason to widen the
+   * write. Idempotent, and the `revoked_at is null` guard keeps the original revocation
+   * time when a second call arrives.
+   */
+  public async revokeById(input: { tenant_id: string; id: string }): Promise<void> {
+    await this.getUpdate()
+      .set({ revoked_at: new Date(), updated_at: new Date() })
+      .where('tenant_id', '=', input.tenant_id)
+      .where('id', '=', input.id)
+      .where('revoked_at', 'is', null)
+      .execute();
+  }
+
   /** Revoking a volunteer dead-ends every device they ever verified. */
   public async revokeForVolunteer(
     input: { tenant_id: string; volunteer_id: string },

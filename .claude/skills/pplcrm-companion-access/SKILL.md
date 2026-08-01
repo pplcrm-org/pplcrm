@@ -83,6 +83,17 @@ Public REST at `/api/companion` (`routes/companion-public.route.ts`, per-IP limi
   emails every tenant admin/owner. The session is minted even while
   `pending_approval` — it is simply unusable until approval, so the gate just polls
   `GET /access` until `ready`; the volunteer never re-enters a code.
+- `POST /session/end` (+ session header) → `{ok:true}` — "End shift on this device".
+  Revokes **that one session row** (`endSession` → `CompanionSessionsRepo.revokeById`,
+  tenant-scoped after the bearer lookup), never the volunteer's other devices, and never
+  the volunteer's approval. Authenticated by the session it revokes and nothing else, so
+  there is no id to guess. Answers 200 for a missing/expired/unknown token as well —
+  it must not double as a "is this token live?" probe. Both companions call it via
+  `CompanionSessionService.endSession()`, which clears the localStorage key afterwards
+  **whether or not the request succeeded**. `clearSession()` still exists and is the
+  right call when the server has already said the session is dead (a 401/403 on data).
+  Before 2026-08-01 both apps only did the local half, so a token stayed valid for its
+  full 30 days after a volunteer "ended" their shift.
 - `POST /join/start {code, first_name, last_name?, email? | mobile?}` → `{masked,
 channel, claim}` — the QR path. See below.
 - `POST /join/attach {code}` (+ session header) → `{turf_id | null}` — an

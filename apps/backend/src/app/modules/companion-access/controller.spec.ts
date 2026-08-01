@@ -331,6 +331,35 @@ describe('CompanionAccessController', () => {
     expect((await controller.getAccess('turf', s.token, confirm.sessionToken)).state).toBe('dead');
   });
 
+  it('ending a shift revokes that device session and only that one', async () => {
+    const link = { tenant_id: s.tenantId, volunteer_person_id: s.personId };
+
+    // Two devices for the same volunteer — the phone being handed back, and one they keep.
+    await controller.verifyStart('turf', s.token, 'email');
+    const phone = await controller.verifyConfirm('turf', s.token, await lastCodeFromOutbox(db, s.tenantId), null);
+    await controller.verifyStart('turf', s.token, 'email');
+    const tablet = await controller.verifyConfirm('turf', s.token, await lastCodeFromOutbox(db, s.tenantId), null);
+    const volunteers = await controller.getAllVolunteers(s.tenantId);
+    await controller.approveVolunteer(adminAuth, String(volunteers[0]?.id));
+    await expect(controller.requireSession(phone.sessionToken, link)).resolves.toBeUndefined();
+
+    await controller.endSession(phone.sessionToken);
+
+    // The token is dead server-side, not merely deleted from one browser — otherwise it
+    // stayed valid for its full 30 days and the next person to open the app was inside
+    // the turf with no re-verification.
+    await expect(controller.requireSession(phone.sessionToken, link)).rejects.toThrow(/verification/i);
+    await expect(controller.resolveSession(phone.sessionToken)).rejects.toThrow(/verification/i);
+    // Ending a shift on one device must not sign the volunteer out everywhere.
+    await expect(controller.requireSession(tablet.sessionToken, link)).resolves.toBeUndefined();
+
+    // Idempotent, and silent about tokens that were never real — this must not become a
+    // way to test whether a session token is live.
+    await expect(controller.endSession(phone.sessionToken)).resolves.toBeUndefined();
+    await expect(controller.endSession('not-a-real-session')).resolves.toBeUndefined();
+    await expect(controller.endSession(null)).resolves.toBeUndefined();
+  });
+
   it('rejects sessions across tenants and expired assignments', async () => {
     await controller.verifyStart('turf', s.token, 'email');
     const code = await lastCodeFromOutbox(db, s.tenantId);

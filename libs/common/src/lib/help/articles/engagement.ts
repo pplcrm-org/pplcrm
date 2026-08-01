@@ -390,6 +390,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
+        text: '**End shift on this device**, on the volunteer’s **Me** tab, signs that phone out: the device session is revoked, so the phone has to verify a fresh one-time code before it can see the turf again. Worth doing on a shared or borrowed phone, and worth knowing before doing it on a personal one. It syncs anything still waiting first, and if something genuinely cannot be sent it says how much will be lost before you confirm. A volunteer who ends a shift by mistake is not locked out — their turf assignment is untouched, and they verify a code and carry on.',
+      },
+      {
+        kind: 'p',
         text: 'Occasionally a result cannot be sent — the turf’s door list changed while the phone was offline, for instance, so the household it names is no longer part of the turf. The Companion never deletes that result. A red bar appears at the top of every screen saying how many results couldn’t sync, and the **Me** tab lists each one by name with the reason. **Try again** re-sends the ones a retry could still fix (useful right after you refresh a turf’s doors from its list), and **Discard this one** removes a result the volunteer decides is not worth keeping. Nothing on that list has reached the CRM, so it is worth clearing before the phone is put away.',
       },
       {
