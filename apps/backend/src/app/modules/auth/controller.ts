@@ -620,31 +620,43 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     const existingProfile = await this.profiles.getOneByAuthId(auth.user_id);
     if (!existingProfile?.avatar_file_id) return { success: true };
 
-    const fileId = existingProfile.avatar_file_id;
+    const fileId = String(existingProfile.avatar_file_id);
+    // Blob key of the removed photo, deleted only after the transaction commits — see below.
+    let removedAvatarKey: string | null = null;
 
     await this.getRepo()
       .db.transaction()
       .execute(async (trx) => {
-        try {
-          const oldFile = await trx
-            .selectFrom('files')
-            .select('storage_key')
-            .where('tenant_id', '=', auth.tenant_id)
-            .where('id', '=', fileId)
-            .executeTakeFirst();
-          if (oldFile?.storage_key) await this.storage.delete(oldFile.storage_key);
-          await trx.deleteFrom('files').where('tenant_id', '=', auth.tenant_id).where('id', '=', fileId).execute();
-        } catch {
-          /* non-critical */
-        }
-
+        // Clear the pointer FIRST. Removing your own photo must always succeed, so this never
+        // refuses; it just stops pointing at the file. Clearing first also means the only holders
+        // the check can still find are genuinely other features.
         await trx
           .updateTable('profiles')
           .set({ avatar_file_id: null, updated_at: new Date(), updatedby_id: auth.user_id })
           .where('tenant_id', '=', auth.tenant_id)
           .where('auth_id', '=', auth.user_id)
           .execute();
+
+        // Uploads are sha256-deduped, so this row can also be an email attachment or a newsletter
+        // image. Deleting it unconditionally destroyed those; now it is kept if anything holds it.
+        try {
+          removedAvatarKey = await deleteFileRowIfUnreferenced(trx, auth.tenant_id, fileId, {
+            includeEntityOwnership: true,
+          });
+        } catch (err) {
+          logger.error({ err }, `Failed to clean up removed avatar file ${fileId}`);
+        }
       });
+
+    // Blob delete only after commit: a rolled-back transaction must never leave the row pointing
+    // at a blob that is already gone. The reverse failure just leaks bytes.
+    if (removedAvatarKey) {
+      try {
+        await this.storage.delete(removedAvatarKey);
+      } catch (err) {
+        logger.error({ err }, `Failed to delete removed avatar blob ${removedAvatarKey}`);
+      }
+    }
 
     return { success: true };
   }
@@ -670,14 +682,19 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       throw new ForbiddenError('Admins cannot delete owner accounts.');
     }
 
-    return await repo.transaction().execute(async (trx) => {
+    let tombstonedAvatarKey: string | null = null;
+    const result = await repo.transaction().execute(async (trx) => {
       // Tombstone, not hard delete: ~61 NO ACTION FKs (createdby_id etc.) reference authusers,
       // so a DELETE 23503s for any user who ever authored content — which reached the admin as a
       // generic 500. The identity (email, name, credentials, avatar, sessions, passkeys) is
       // scrubbed/removed; their contributions stay with the workspace as "Deleted user". Same
       // semantics as self-service scheduled deletion. entity_label below was captured from
       // authUser BEFORE the scrub.
-      await tombstoneAuthUser(trx, { tenantId: auth.tenant_id, userId: userIdToDelete, updatedbyId: auth.user_id });
+      tombstonedAvatarKey = await tombstoneAuthUser(trx, {
+        tenantId: auth.tenant_id,
+        userId: userIdToDelete,
+        updatedbyId: auth.user_id,
+      });
 
       await this.ensureAtLeastOneOwner(auth.tenant_id, trx, false, userIdToDelete);
 
@@ -699,6 +716,18 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
 
       return { success: true };
     });
+
+    // After commit, never before: a blob deleted inside the transaction would be gone even if the
+    // transaction then rolled back and its `files` row came back.
+    if (tombstonedAvatarKey) {
+      try {
+        await this.storage.delete(tombstonedAvatarKey);
+      } catch (err) {
+        logger.error({ err }, `Failed to delete avatar blob ${tombstonedAvatarKey} for a deleted user`);
+      }
+    }
+
+    return result;
   }
 
   public async dismissPasskeyPrompt(auth: IAuthKeyPayload) {

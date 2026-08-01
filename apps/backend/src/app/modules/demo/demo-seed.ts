@@ -3,6 +3,8 @@ import type { Transaction } from 'kysely';
 import { z } from 'zod';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { fingerprintFull, fingerprintStreet } from '../../lib/address-normalize';
+import { deleteFileRowIfUnreferenced } from '../../lib/file-references';
+import { logger } from '../../logger';
 import { hashToken } from '../../lib/token-hash';
 import { hashPassword } from '../../lib/password-hash';
 import { backfillPersonPublicIds } from '../../lib/person-public-id';
@@ -1018,20 +1020,6 @@ export async function deleteDemoData(params: DeleteParams, trx: Transaction<Mode
     await trx.deleteFrom('emails').where('tenant_id', '=', tenant_id).where('id', 'in', m.emails).execute();
   }
 
-  // `files` is NOT reached by that cascade — email_attachments references it, not the
-  // other way round — so the demo attachment files are deleted explicitly here and
-  // their blobs handed back to the caller.
-  if (m.files.length > 0) {
-    const fileRows = await trx
-      .selectFrom('files')
-      .select('storage_key')
-      .where('tenant_id', '=', tenant_id)
-      .where('id', 'in', m.files)
-      .execute();
-    blobKeysToPurge.push(...fileRows.map((f) => f.storage_key).filter((k): k is string => k != null));
-    await trx.deleteFrom('files').where('tenant_id', '=', tenant_id).where('id', 'in', m.files).execute();
-  }
-
   if (m.newsletters.length > 0) {
     await trx
       .deleteFrom('newsletter_events')
@@ -1188,6 +1176,27 @@ export async function deleteDemoData(params: DeleteParams, trx: Transaction<Mode
         .where('id', 'in', demoUserIds)
         .where('role', '!=', 'owner')
         .execute();
+    }
+  }
+
+  // `files` is NOT reached by the emails cascade — email_attachments references it, not the other
+  // way round — so the demo attachment files are deleted explicitly, and their blobs handed back
+  // to the caller to delete after commit.
+  //
+  // This runs LAST, after every other demo row is gone, and each file goes through the shared
+  // reference check. Both parts matter. Exiting demo mode does NOT delete the workspace — it
+  // requires a paid subscription and leaves a live tenant with real data behind — and uploads are
+  // sha256-deduped tenant-wide, so a real record can genuinely come to point at a demo file: a
+  // user uploading a file with the same bytes gets the demo row back from FilesController
+  // .registerFile, and a real synced email with matching bytes reuses it too. Running last means
+  // any holder the check still finds is real user data rather than demo data awaiting deletion.
+  for (const fileId of m.files) {
+    try {
+      const key = await deleteFileRowIfUnreferenced(trx, tenant_id, fileId, { includeEntityOwnership: true });
+      if (key) blobKeysToPurge.push(key);
+    } catch (err) {
+      // Leaving a demo file behind is a small storage leak; failing the exit is a broken workspace.
+      logger.error({ err, tenant_id, fileId }, 'Exit demo: failed to remove a demo attachment file');
     }
   }
 

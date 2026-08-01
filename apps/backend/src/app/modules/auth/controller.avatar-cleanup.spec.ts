@@ -183,4 +183,42 @@ describe('AuthController.uploadAvatar — previous-avatar cleanup', () => {
     expect(await fileExists(oldFileId)).toBe(false);
     expect(storageDeleteSpy).toHaveBeenCalledWith(oldKey);
   });
+
+  // Removing your own photo is a different action from replacing it, and it must never fail
+  // because the row happens to be shared — the pointer is cleared either way.
+  describe('deleteAvatar', () => {
+    const avatarFileIdOnProfile = async () =>
+      (
+        await db
+          .selectFrom('profiles')
+          .select('avatar_file_id')
+          .where('tenant_id', '=', tenantId)
+          .where('auth_id', '=', userId)
+          .executeTakeFirst()
+      )?.avatar_file_id ?? null;
+
+    it('clears the pointer but keeps a file an email attachment still references', async () => {
+      const oldKey = `avatars/${tenantId}/${userId}/old.png`;
+      const oldFileId = await seedExistingAvatar(oldKey);
+      await attachFileToEmail(oldFileId);
+
+      await expect(controller.deleteAvatar(auth)).resolves.toEqual({ success: true });
+
+      expect(await avatarFileIdOnProfile()).toBeNull();
+      expect(await fileExists(oldFileId)).toBe(true);
+      expect(String(await attachmentFileId(oldFileId))).toBe(oldFileId);
+      expect(storageDeleteSpy).not.toHaveBeenCalledWith(oldKey);
+    });
+
+    it('deletes the file and its blob when nothing else references it', async () => {
+      const oldKey = `avatars/${tenantId}/${userId}/old.png`;
+      const oldFileId = await seedExistingAvatar(oldKey);
+
+      await expect(controller.deleteAvatar(auth)).resolves.toEqual({ success: true });
+
+      expect(await avatarFileIdOnProfile()).toBeNull();
+      expect(await fileExists(oldFileId)).toBe(false);
+      expect(storageDeleteSpy).toHaveBeenCalledWith(oldKey);
+    });
+  });
 });

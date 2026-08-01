@@ -256,11 +256,20 @@ export async function saveLocalEmail(
 
       // Persist (or reuse, via sha256 dedup) the file row, then link the
       // attachment to it so downloads can resolve the stored blob.
+      //
+      // The join restricts reuse to a `files` row that is ITSELF an email attachment, matching
+      // EmailIngesterService.storeAttachmentPayload. Matching any row in the tenant gave this
+      // attachment part-ownership of whatever else happened to have the same bytes (an avatar, a
+      // newsletter image), which the email delete sweep then destroyed. Storing identical bytes
+      // twice in that rare case is the cheaper mistake.
       const existingFile = await trx
         .selectFrom('files')
-        .select('id')
-        .where('tenant_id', '=', tenantId)
-        .where('sha256_hex', '=', uFile.sha256_hex)
+        .innerJoin('email_attachments', 'email_attachments.file_id', 'files.id')
+        .select('files.id as id')
+        .where('files.tenant_id', '=', tenantId)
+        .where('email_attachments.tenant_id', '=', tenantId)
+        .where('files.sha256_hex', '=', uFile.sha256_hex)
+        .limit(1)
         .executeTakeFirst();
 
       if (existingFile) {

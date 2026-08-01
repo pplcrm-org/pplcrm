@@ -140,9 +140,14 @@ That lookup **joins `email_attachments`**, so it only ever reuses a `files` row 
 email attachment. Matching any row in the tenant gave an incoming attachment part-ownership of
 whatever else happened to have the same bytes (an avatar, a newsletter image), which the delete
 sweep then destroyed. Storing identical bytes twice in that rare case is the cheaper mistake.
-Covered by _"does not reuse a file that is not an email attachment"_. Note the compose-and-send
-path in `emails/routes/emails-api.route.ts` still dedupes tenant-wide; the reference check makes
-that safe, but narrowing it the same way is the tidier follow-up.
+Covered by _"does not reuse a file that is not an email attachment"_. The compose-and-send path
+(`saveLocalEmail` in `emails/routes/emails-api.route.ts`) carries the same join and has its own
+test of the same name — keep the two in step if you change either.
+
+One deliberate exception: the demo attachment job (`lib/jobs/handlers/demo.handlers.ts`) still
+matches any `files` row in the tenant. That is safe because only rows the job newly INSERTS are
+recorded in the demo manifest, so exit-demo can never delete a row that already belonged to the
+user.
 
 ## Where things are stored
 
@@ -179,7 +184,12 @@ the two can drift. It matches on the parts that matter:
   there adds latency to every signup, turns a storage outage into a signup failure, and strands
   blobs on rollback. It also hung three unrelated spec files that do not stub `StorageService`.
 - `files` is not reached by the emails cascade, so exit-demo deletes the manifest-tracked ids and
-  `deleteDemoData` returns the blob keys for the caller to purge **after** commit.
+  `deleteDemoData` returns the blob keys for the caller to purge **after** commit. That cleanup is
+  the **last** thing `deleteDemoData` does, and each file goes through the shared reference check.
+  Both details are load-bearing: exiting demo mode leaves a live paid tenant behind, so a real
+  record can hold a demo file and must not lose it — but a demo person holding one is no reason to
+  keep it, and running the check before the demo rows are deleted leaks a blob for every such file.
+  Covered by the two `exit-demo … demo attachment file` tests in `demo-seed.spec.ts`.
 
 ## Tests
 

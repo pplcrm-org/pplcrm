@@ -1,7 +1,7 @@
 import type { Transaction } from 'kysely';
 
+import { deleteFileRowIfUnreferenced } from './file-references';
 import { logger } from '../logger';
-import { StorageService } from './storage.service';
 import type { Models } from '../../../../../libs/common/src/lib/kysely.models';
 
 /**
@@ -11,7 +11,9 @@ import type { Models } from '../../../../../libs/common/src/lib/kysely.models';
  * and attribution ("Deleted user" in grids and activity feeds — they render
  * authusers.first_name/last_name); everything personal is scrubbed or removed:
  *
- * - avatar file (storage object + files row), profiles, sessions, passkeys — deleted.
+ * - avatar file (storage object + files row), profiles, sessions, passkeys — deleted. The avatar
+ *   row is kept if anything else still points at it, because uploads are sha256-deduped and that
+ *   row can also be an email attachment or a newsletter image.
  *   (passkeys/profiles/sessions only cascade on a row DELETE, so they go explicitly here.)
  * - email → deleted-<id>@deleted.invalid (satisfies NOT NULL + the global unique key, and
  *   frees the real address for re-signup), name → 'Deleted user', password emptied (argon2
@@ -22,11 +24,15 @@ import type { Models } from '../../../../../libs/common/src/lib/kysely.models';
  * Workspace (tenant) deletion is different — wipeTenant removes all content first and hard
  * deletes for real. Shared by the perform_scheduled_deletions cron and the admin delete-user
  * action so both paths have identical semantics.
+ *
+ * Returns the avatar blob's storage key when the avatar row was deleted, so the CALLER can delete
+ * the blob after its transaction commits. Deleting the blob in here would destroy the payload even
+ * when the transaction later rolls back and the row comes back.
  */
 export async function tombstoneAuthUser(
   trx: Transaction<Models>,
   opts: { tenantId: string; userId: string; updatedbyId: string },
-): Promise<void> {
+): Promise<string | null> {
   const { tenantId, userId, updatedbyId } = opts;
   const now = new Date();
 
@@ -36,29 +42,25 @@ export async function tombstoneAuthUser(
     .where('tenant_id', '=', tenantId)
     .where('auth_id', '=', userId)
     .executeTakeFirst();
-  if (profile?.avatar_file_id) {
+  const avatarFileId = profile?.avatar_file_id ? String(profile.avatar_file_id) : null;
+
+  await trx.deleteFrom('sessions').where('user_id', '=', userId).execute();
+  await trx.deleteFrom('profiles').where('tenant_id', '=', tenantId).where('auth_id', '=', userId).execute();
+  await trx.deleteFrom('passkeys').where('tenant_id', '=', tenantId).where('user_id', '=', userId).execute();
+
+  // After the profiles row is gone, so its own avatar_file_id is no longer a holder. Account
+  // deletion must never fail over this, so a shared file is simply kept and the error swallowed.
+  let avatarBlobKey: string | null = null;
+  if (avatarFileId) {
     try {
-      const avatarFile = await trx
-        .selectFrom('files')
-        .select('storage_key')
-        .where('tenant_id', '=', tenantId)
-        .where('id', '=', String(profile.avatar_file_id))
-        .executeTakeFirst();
-      if (avatarFile?.storage_key) await new StorageService().delete(String(avatarFile.storage_key));
-      await trx
-        .deleteFrom('files')
-        .where('tenant_id', '=', tenantId)
-        .where('id', '=', String(profile.avatar_file_id))
-        .execute();
+      avatarBlobKey = await deleteFileRowIfUnreferenced(trx, tenantId, avatarFileId, {
+        includeEntityOwnership: true,
+      });
     } catch (err) {
       // The blob is orphaned at worst — never fail the deletion over avatar cleanup.
       logger.error({ err, userId }, 'Failed to clean up avatar while tombstoning user');
     }
   }
-
-  await trx.deleteFrom('sessions').where('user_id', '=', userId).execute();
-  await trx.deleteFrom('profiles').where('tenant_id', '=', tenantId).where('auth_id', '=', userId).execute();
-  await trx.deleteFrom('passkeys').where('tenant_id', '=', tenantId).where('user_id', '=', userId).execute();
 
   await trx
     .updateTable('authusers')
@@ -87,4 +89,6 @@ export async function tombstoneAuthUser(
     .where('tenant_id', '=', tenantId)
     .where('id', '=', userId)
     .execute();
+
+  return avatarBlobKey;
 }

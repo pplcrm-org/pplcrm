@@ -743,6 +743,120 @@ describe('demo seeding and exit-demo', () => {
     expect(manifestRow).toBeUndefined();
   });
 
+  it('exit-demo keeps a demo attachment file that a real record still points at', async () => {
+    // Exiting demo mode does NOT delete the workspace — it needs a paid subscription and leaves a
+    // live tenant with real data behind. Uploads are sha256-deduped tenant-wide, so a file the
+    // demo seed created can genuinely end up held by something the user made. Deleting it would
+    // break that record, so it is kept; a demo file nothing holds is still removed.
+    const f = await seedFixture();
+    const trx = ctx.trx;
+
+    const heldKey = `emails/attachments/${rand()}_held.png`;
+    const freeKey = `emails/attachments/${rand()}_free.png`;
+
+    const makeFile = async (storage_key: string) =>
+      String(
+        (
+          await trx
+            .insertInto('files')
+            .values({
+              tenant_id: f.tenant_id,
+              filename: 'demo.png',
+              mime_type: 'image/png',
+              size_bytes: 10,
+              storage_key,
+              sha256_hex: rand() + rand(),
+              uploaded_by: f.user_id,
+            })
+            .returning('id')
+            .executeTakeFirstOrThrow()
+        ).id,
+      );
+
+    const heldFileId = await makeFile(heldKey);
+    const freeFileId = await makeFile(freeKey);
+
+    // A person the user created themselves, using a photo that deduped onto the demo file.
+    await trx
+      .insertInto('persons')
+      .values({
+        tenant_id: f.tenant_id,
+        campaign_id: f.campaign_id,
+        household_id: f.placeholder_household_id,
+        first_name: 'Really',
+        last_name: 'Mine',
+        file_id: heldFileId,
+        createdby_id: f.user_id,
+        updatedby_id: f.user_id,
+      })
+      .execute();
+
+    const purgedBlobKeys = await deleteDemoData(
+      {
+        tenant_id: f.tenant_id,
+        user_id: f.user_id,
+        manifest: { ...f.manifest, files: [heldFileId, freeFileId] },
+        placeholder_household_id: f.placeholder_household_id,
+      },
+      trx,
+    );
+
+    const remaining = await trx.selectFrom('files').select('id').where('tenant_id', '=', f.tenant_id).execute();
+    expect(remaining.map((r) => String(r.id))).toEqual([heldFileId]);
+    expect(purgedBlobKeys).toContain(freeKey);
+    expect(purgedBlobKeys).not.toContain(heldKey);
+  });
+
+  it('exit-demo still removes a demo attachment file that only demo data points at', async () => {
+    // The other half of the rule, and the reason the file cleanup runs LAST inside
+    // deleteDemoData. A demo person holding a demo file is not a reason to keep that file — that
+    // person is being deleted too. Run the check before the demo rows are gone and every such
+    // file leaks instead.
+    const f = await seedFixture();
+    const trx = ctx.trx;
+
+    const demoKey = `emails/attachments/${rand()}_demo-only.png`;
+    const demoFileId = String(
+      (
+        await trx
+          .insertInto('files')
+          .values({
+            tenant_id: f.tenant_id,
+            filename: 'demo.png',
+            mime_type: 'image/png',
+            size_bytes: 10,
+            storage_key: demoKey,
+            sha256_hex: rand() + rand(),
+            uploaded_by: f.user_id,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow()
+      ).id,
+    );
+
+    // A demo person — one the manifest lists, so exit-demo deletes it — points at the demo file.
+    const demoPersonId = f.manifest.persons[0] as string;
+    await trx
+      .updateTable('persons')
+      .set({ file_id: demoFileId })
+      .where('tenant_id', '=', f.tenant_id)
+      .where('id', '=', demoPersonId)
+      .execute();
+
+    const purgedBlobKeys = await deleteDemoData(
+      {
+        tenant_id: f.tenant_id,
+        user_id: f.user_id,
+        manifest: { ...f.manifest, files: [demoFileId] },
+        placeholder_household_id: f.placeholder_household_id,
+      },
+      trx,
+    );
+
+    expect(await trx.selectFrom('files').select('id').where('tenant_id', '=', f.tenant_id).execute()).toHaveLength(0);
+    expect(purgedBlobKeys).toContain(demoKey);
+  });
+
   it('exitDemoMode throws NotFoundError when there is no manifest (already exited)', async () => {
     const controller = new DemoController();
     await expect(

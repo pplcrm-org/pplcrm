@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { Kysely } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { deleteFileRowIfUnreferenced } from '../../file-references';
 import { logger } from '../../../logger';
 import {
   DEMO_ATTACHMENT_ASSETS,
@@ -157,19 +158,21 @@ async function recordFilesInManifest(db: Kysely<Models>, tenant_id: string, file
   }
 }
 
-/** Best-effort cleanup for files whose demo workspace disappeared mid-job. */
+/**
+ * Best-effort cleanup for files whose demo workspace disappeared mid-job.
+ *
+ * Goes through the shared reference check: exiting demo mode leaves a live tenant behind, and
+ * uploads are sha256-deduped tenant-wide, so one of these rows can already be held by real user
+ * data. No transaction is opened here on purpose — the worker may already be running this handler
+ * inside one, and Kysely rejects a nested `transaction()`. The blob is deleted only after the row
+ * delete has succeeded, so the worst case is a leaked blob rather than a broken download.
+ */
 async function purgeUntrackedFiles(db: Kysely<Models>, tenant_id: string, fileIds: string[]): Promise<void> {
   const storage = new StorageService();
   for (const fileId of fileIds) {
     try {
-      const file = await db
-        .selectFrom('files')
-        .select('storage_key')
-        .where('tenant_id', '=', tenant_id)
-        .where('id', '=', fileId)
-        .executeTakeFirst();
-      await db.deleteFrom('files').where('tenant_id', '=', tenant_id).where('id', '=', fileId).execute();
-      if (file?.storage_key) await storage.delete(file.storage_key);
+      const storageKey = await deleteFileRowIfUnreferenced(db, tenant_id, fileId, { includeEntityOwnership: true });
+      if (storageKey) await storage.delete(storageKey);
     } catch (err) {
       logger.error({ err, tenant_id, fileId }, 'Failed to purge an orphaned demo attachment file');
     }

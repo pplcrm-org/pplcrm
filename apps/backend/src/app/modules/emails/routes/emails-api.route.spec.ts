@@ -197,6 +197,63 @@ describe('saveLocalEmail (integration)', () => {
     expect(attachments[0].file_id).toBeTruthy();
     expect(String(attachments[0].file_id)).toBe(String(file?.id));
   });
+
+  it('does not reuse a file that is not an email attachment', async () => {
+    // The dedupe used to match any files row in the tenant with the same hash, which handed a
+    // composed attachment part-ownership of an avatar or a newsletter image whenever the bytes
+    // matched — and the email delete sweep then deleted it. Storing the bytes twice is cheaper.
+    const sharedSha = rand() + rand();
+
+    const avatarFile = await db
+      .insertInto('files')
+      .values({
+        tenant_id: tenantId,
+        filename: 'avatar.png',
+        mime_type: 'image/png',
+        size_bytes: 10,
+        storage_key: `avatars/${tenantId}/${rand()}.png`,
+        sha256_hex: sharedSha,
+        uploaded_by: userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const created = await saveLocalEmail(
+      db,
+      tenantId,
+      campaignId,
+      userId,
+      'sender@example.com',
+      'Test Sender',
+      ['to@example.com'],
+      [],
+      [],
+      'Same bytes as the avatar',
+      '<p>See attached</p>',
+      [
+        {
+          filename: 'same.png',
+          content_type: 'image/png',
+          size_bytes: 10,
+          storage_key: `emails/attachments/${rand()}_same.png`,
+          sha256_hex: sharedSha,
+          cid: null,
+          is_inline: false,
+        },
+      ],
+      'See attached',
+    );
+
+    const attachments = await db
+      .selectFrom('email_attachments')
+      .select('file_id')
+      .where('tenant_id', '=', tenantId)
+      .where('email_id', '=', String(created.id))
+      .execute();
+
+    expect(attachments).toHaveLength(1);
+    expect(String(attachments[0].file_id)).not.toBe(String(avatarFile.id));
+  });
 });
 
 // Recipient lists arrive as JSON strings inside a multipart form and are the only

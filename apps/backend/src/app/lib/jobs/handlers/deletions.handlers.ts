@@ -1,6 +1,7 @@
 import type { Kysely, Transaction } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../../logger';
+import { StorageService } from '../../storage.service';
 import { tombstoneAuthUser } from '../../tombstone-user';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { CRON_JOBS } from '../cron-registry';
@@ -158,9 +159,19 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
       // a DELETE 23503s for anyone who ever acted in the app — which used to make this loop re-fail
       // the same users silently every day, forever. The identity is scrubbed in place and the row
       // stays; authored content remains with the tenant, attributed to "Deleted user".
-      await db.transaction().execute(async (trx) => {
-        await tombstoneAuthUser(trx, { tenantId: String(user.tenant_id), userId, updatedbyId: userId });
-      });
+      const avatarBlobKey = await db
+        .transaction()
+        .execute((trx) => tombstoneAuthUser(trx, { tenantId: String(user.tenant_id), userId, updatedbyId: userId }));
+
+      // After commit, never before: a blob deleted inside the transaction would be gone even if
+      // the transaction then rolled back and its `files` row came back.
+      if (avatarBlobKey) {
+        try {
+          await new StorageService().delete(avatarBlobKey);
+        } catch (err) {
+          logger.error({ err, userId }, 'Failed to delete avatar blob for a tombstoned user');
+        }
+      }
     } catch (err) {
       failures.push(`user ${userId}`);
       logger.error({ err, userId }, 'Failed to tombstone scheduled user; continuing with remaining deletions');
