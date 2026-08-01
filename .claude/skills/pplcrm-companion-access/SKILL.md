@@ -64,6 +64,12 @@ Public REST at `/api/companion` (`routes/companion-public.route.ts`, per-IP limi
   `GET /access` until `ready`; the volunteer never re-enters a code.
 - `POST /join/start {code, first_name, last_name?, email? | mobile?}` → `{masked,
 channel, claim}` — the QR path. See below.
+- `POST /join/attach {code}` (+ session header) → `{turf_id | null}` — an
+  **already-approved** volunteer opened a join link: places them on the turf a
+  turf-scoped code names (idempotent, roam policy not consulted — the code is the
+  organizer's authorization) and answers which turf the app should open. Does not
+  bump `use_count` (that counts sign-ups). `JoinPage` calls it once the gate is
+  ready and hands off to `/canvass?turf=…`.
 - `GET|POST /approve/:token` — approve-by-text. GET says who is asking; POST carries
   `{decision: 'approve'|'decline'}` and delegates to the same `approveVolunteer` /
   `revokeVolunteer` the CRM calls, so logging, session revocation and the join-code
@@ -95,9 +101,13 @@ controller.)
 
 `verifyStart`/`verifyConfirm` with `kind='join'` take the **claim**, not the code —
 `resolveVerifySubject` is the seam. Confirming burns the claim so a screenshotted QR
-cannot be replayed. A turf-scoped code places the volunteer on its turf at
+cannot be replayed. A turf-scoped code places a **stranger** on its turf at
 **approval** time (`placeOnJoinCodeTurf` inside `approveVolunteer`), never at scan
-time — a declined stranger must never have held an assignment.
+time — a declined stranger must never have held an assignment. An
+**already-approved** volunteer never passes through approval again, so their
+placement moment is `attachJoinCode` (`POST /join/attach`) when they open the link;
+both paths share `ensureTurfAssignment`, so "being placed" can never mean two
+different things.
 
 **The guard**: `CompanionAccessController.requireSession(sessionToken, {tenant_id,
 volunteer_person_id})` — call it from any companion data endpoint after resolving the

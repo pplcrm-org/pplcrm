@@ -337,9 +337,16 @@ export class CanvassStore {
    * opens straight into the walk list — the common case after a turf-scoped QR — and
    * anything else goes to the picker, which explains itself either way.
    */
-  public async bootstrapFromSession(): Promise<void> {
+  public async bootstrapFromSession(preferredTurfId: string | null = null): Promise<void> {
     this.restoreQueue();
     this.loadError.set(null);
+    // A join link named this turf — open it directly. Any failure (assignment revoked
+    // since, turf retired, bad id in the URL) falls through to the choices below,
+    // where the picker explains itself instead of dead-ending at an error.
+    if (preferredTurfId) {
+      if (await this.switchTurf(preferredTurfId)) return;
+      this.loadError.set(null);
+    }
     const choices = await this.fetchTurfChoices();
     if (!choices) {
       this.loadError.set('Could not load your turfs. Check your connection and try again.');

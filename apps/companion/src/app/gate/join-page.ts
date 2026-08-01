@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, inject, input } from '@angular/core';
 import { Router } from '@angular/router';
 
+import { CompanionSessionService } from './companion-api';
 import { CompanionGate } from './companion-gate';
 
 /**
@@ -13,7 +14,10 @@ import { CompanionGate } from './companion-gate';
  *
  * Once the gate opens, this hands off to the session-first canvass shell. It cannot
  * route to `/t/:token` — turf tokens are hashed, so the link the volunteer now
- * effectively holds can never be shown back to them.
+ * effectively holds can never be shown back to them. What it CAN carry across is the
+ * turf the code names: `joinAttach` places an already-approved volunteer on that turf
+ * (a fresh joiner was placed at approval) and `/canvass?turf=…` opens it directly
+ * instead of dropping everyone on the picker.
  */
 @Component({
   selector: 'pc-join-page',
@@ -32,8 +36,18 @@ export class JoinPage {
   public readonly code = input.required<string>();
 
   private readonly router = inject(Router);
+  private readonly session = inject(CompanionSessionService);
 
   protected onReady(): void {
-    void this.router.navigate(['/canvass'], { replaceUrl: true });
+    void this.openCanvass();
+  }
+
+  /** A null turf (unscoped code, blip, turf retired) falls back to the plain shell. */
+  private async openCanvass(): Promise<void> {
+    const turfId = await this.session.joinAttach(this.code());
+    await this.router.navigate(['/canvass'], {
+      replaceUrl: true,
+      ...(turfId ? { queryParams: { turf: turfId } } : {}),
+    });
   }
 }

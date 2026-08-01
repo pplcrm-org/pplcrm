@@ -179,10 +179,17 @@ them on the picker above. The volunteer scans, gives a name and one contact, ver
 code, and waits for the same one-time approval every other volunteer waits for — the
 trust model does not move, only the paperwork moves earlier.
 
-Two things worth knowing from the canvassing side:
+Three things worth knowing from the canvassing side:
 
-- The turf assignment is created at **approval**, not at scan (`placeOnJoinCodeTurf`
-  inside `approveVolunteer`), so a declined stranger never held one.
+- For a **stranger**, the turf assignment is created at **approval**, not at scan
+  (`placeOnJoinCodeTurf` inside `approveVolunteer`), so a declined stranger never
+  held one. An **already-approved** volunteer opening a turf-scoped join link is
+  placed by `attachJoinCode` (`POST /api/companion/join/attach`) instead — approval
+  never fires again for them, and without this they landed on the picker with no
+  assignment.
+- The client carries the turf across the handoff: `JoinPage` navigates to
+  `/canvass?turf=…`, and `CanvassStore.bootstrapFromSession(preferredTurfId)` opens
+  that turf directly (falling back to the picker if it can't).
 - Approval can also happen from a text message (`/a/:token`) when the inviter opted in.
 
 Everything else — the code lifecycle, the enumeration guards, the person match-or-create

@@ -131,6 +131,11 @@ export class CanvassPage {
    * hashed and can never be handed back to them.
    */
   public readonly token = input<string | undefined>(undefined);
+  /**
+   * Query param on /canvass?turf=… — the turf a join link named, carried across the
+   * /j/:code handoff so a turf-scoped code opens its turf instead of the picker.
+   */
+  public readonly turf = input<string | undefined>(undefined);
 
   protected readonly store = inject(CanvassStore);
 
@@ -174,6 +179,6 @@ export class CanvassPage {
   /** Link-first when there is a link, session-first otherwise. */
   private open(): Promise<void> {
     const token = this.token();
-    return token ? this.store.load(token) : this.store.bootstrapFromSession();
+    return token ? this.store.load(token) : this.store.bootstrapFromSession(this.turf() ?? null);
   }
 }

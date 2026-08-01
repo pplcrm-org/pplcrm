@@ -4,6 +4,7 @@ import type {
   CompanionAccessKind,
   CompanionAccessPayload,
   CompanionApprovalPayload,
+  CompanionJoinAttachResult,
   CompanionJoinStartResult,
   CompanionJoinStartType,
   CompanionOrganizerPayload,
@@ -116,6 +117,27 @@ export class CompanionSessionService {
    */
   public joinStart(input: CompanionJoinStartType): Promise<CompanionJoinStartResult> {
     return post<CompanionJoinStartResult>('/api/companion/join/start', input);
+  }
+
+  /**
+   * An approved volunteer opened a join link: ask the server to place them on the
+   * turf the code names (a no-op if they're already on it) and say which turf to
+   * open. Every failure resolves to null — the caller falls back to the session-first
+   * shell, whose picker explains itself.
+   */
+  public async joinAttach(code: string): Promise<string | null> {
+    try {
+      const res = await fetch('/api/companion/join/attach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.headers() },
+        body: JSON.stringify({ code }),
+      });
+      if (!res.ok) return null;
+      const payload = (await res.json()) as CompanionJoinAttachResult;
+      return payload.turf_id;
+    } catch {
+      return null;
+    }
   }
 
   /** What an admin sees before tapping approve, straight from an SMS with no session. */

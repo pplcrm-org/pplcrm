@@ -3,6 +3,7 @@ import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastif
 import {
   CompanionAccessQueryObj,
   CompanionApprovalDecisionObj,
+  CompanionJoinAttachObj,
   CompanionJoinStartObj,
   CompanionOrganizerDecisionObj,
   CompanionVerifyConfirmObj,
@@ -110,6 +111,22 @@ const companionPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     } catch (err: unknown) {
       fastify.log.error(err, 'Failed to start a companion join');
       return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to join right now.') });
+    }
+  });
+
+  // An already-approved volunteer opened a join link: place them on the turf it names
+  // (a stranger gets this at approval instead) and answer which turf the app should
+  // open. Session-first — the code alone grants nothing; 401/403 reach the gate
+  // exactly like the data endpoints.
+  fastify.post('/join/attach', async (req: FastifyRequest, reply: FastifyReply) => {
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    const parsed = CompanionJoinAttachObj.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid request.' });
+    try {
+      return reply.status(200).send(await controller.attachJoinCode(parsed.data.code, sessionTokenOf(req)));
+    } catch (err: unknown) {
+      fastify.log.error(err, 'Failed to attach a companion join code');
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to open that link right now.') });
     }
   });
 

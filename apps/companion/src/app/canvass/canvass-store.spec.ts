@@ -172,6 +172,30 @@ describe('CanvassStore', () => {
     });
   });
 
+  describe('session bootstrap with a preferred turf', () => {
+    it('opens the turf a join link named instead of the picker', async () => {
+      await store.bootstrapFromSession(TURF_ID);
+      expect(fetchMock).toHaveBeenCalledWith(`/api/canvass/turf/${TURF_ID}`, expect.anything());
+      expect(store.payload()?.turf_id).toBe(TURF_ID);
+      expect(store.view().kind).toBe('list');
+      // The choices list was never needed — the link already answered "which turf".
+      expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('/my-turfs'))).toBe(false);
+    });
+
+    it('falls back to the picker when the named turf cannot be opened', async () => {
+      const choices = { may_roam: true, mine: [], available: [] };
+      fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>((url) => {
+        if (String(url).includes('/my-turfs')) return Promise.resolve(jsonResponse(choices));
+        return Promise.resolve(jsonResponse({ error: 'nope' }, 404));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      await store.bootstrapFromSession('9');
+      expect(store.view().kind).toBe('picker');
+      // The failed direct open must not leave an error banner on the picker.
+      expect(store.loadError()).toBeNull();
+    });
+  });
+
   describe('actions + optimistic overlay', () => {
     beforeEach(async () => {
       await store.load(TOKEN);

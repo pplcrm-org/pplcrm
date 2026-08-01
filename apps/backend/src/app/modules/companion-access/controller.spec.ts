@@ -494,6 +494,82 @@ describe('CompanionAccessController', () => {
     expect((await controller.getAccess('session', null, confirm.sessionToken)).state).toBe('ready');
   });
 
+  it('places an already-approved volunteer on a turf-scoped join code when they open it, idempotently', async () => {
+    // A second turf the volunteer is NOT on — the join link's promise is this one.
+    const turf2 = rand();
+    await db
+      .insertInto('turfs')
+      .values({
+        id: turf2,
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        name: 'Birch Flats',
+        status: 'active',
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .execute();
+    const code = await makeJoinCode({ turf_id: turf2 });
+
+    // Approve the seeded volunteer the normal way, so the device session is real.
+    await controller.verifyStart('turf', s.token, 'email');
+    const verifyCode = await lastCodeFromOutbox(db, s.tenantId);
+    const confirm = await controller.verifyConfirm('turf', s.token, verifyCode, null);
+    const volunteers = await controller.getAllVolunteers(s.tenantId);
+    await controller.approveVolunteer(adminAuth, String(volunteers[0]?.id));
+
+    // Opening the link places them — approval already happened and never fires again.
+    const attach = await controller.attachJoinCode(code, confirm.sessionToken);
+    expect(attach.turf_id).toBe(turf2);
+    const placed = await db
+      .selectFrom('turf_assignments')
+      .select('id')
+      .where('tenant_id', '=', s.tenantId)
+      .where('turf_id', '=', turf2)
+      .where('volunteer_person_id', '=', s.personId)
+      .where('status', '=', 'active')
+      .execute();
+    expect(placed).toHaveLength(1);
+
+    // A second open (re-scan, reload) is a no-op, not a second assignment.
+    const again = await controller.attachJoinCode(code, confirm.sessionToken);
+    expect(again.turf_id).toBe(turf2);
+    const stillOne = await db
+      .selectFrom('turf_assignments')
+      .select('id')
+      .where('tenant_id', '=', s.tenantId)
+      .where('turf_id', '=', turf2)
+      .where('volunteer_person_id', '=', s.personId)
+      .where('status', '=', 'active')
+      .execute();
+    expect(stillOne).toHaveLength(1);
+  });
+
+  it('refuses join-code attach without an approved session, and answers an unscoped code with no turf', async () => {
+    const scoped = await makeJoinCode({ turf_id: s.turfId });
+
+    // No session at all → the gate must re-verify.
+    await expect(controller.attachJoinCode(scoped, null)).rejects.toThrow(/verify/i);
+
+    // Verified but not yet approved → still waiting.
+    await controller.verifyStart('turf', s.token, 'email');
+    const verifyCode = await lastCodeFromOutbox(db, s.tenantId);
+    const confirm = await controller.verifyConfirm('turf', s.token, verifyCode, null);
+    await expect(controller.attachJoinCode(scoped, confirm.sessionToken)).rejects.toThrow(/approv/i);
+
+    const volunteers = await controller.getAllVolunteers(s.tenantId);
+    await controller.approveVolunteer(adminAuth, String(volunteers[0]?.id));
+
+    // An unscoped code names no turf: the app falls back to the picker.
+    const unscoped = await makeJoinCode();
+    expect((await controller.attachJoinCode(unscoped, confirm.sessionToken)).turf_id).toBeNull();
+
+    // A revoked code answers with the uniform refusal, session or not.
+    const revoked = await controller.createJoinCode(adminAuth, {});
+    await controller.revokeJoinCode(adminAuth, revoked.id);
+    await expect(controller.attachJoinCode(revoked.code, confirm.sessionToken)).rejects.toThrow();
+  });
+
   // -------------------------------------------------------- approve by text --
 
   /**

@@ -17,6 +17,7 @@ import type {
   CompanionAccessPayload,
   CompanionApprovalPayload,
   CompanionContact,
+  CompanionJoinAttachResult,
   CompanionJoinStartResult,
   CompanionJoinStartType,
   CompanionLinkKind,
@@ -588,6 +589,73 @@ export class CompanionAccessController {
     return { masked: channel === 'email' ? maskEmail(destination) : maskPhone(destination), channel, claim };
   }
 
+  /**
+   * An ALREADY-APPROVED volunteer opened a join link: put them on the turf it names
+   * and tell the app which turf to open.
+   *
+   * Approval-time placement (`placeOnJoinCodeTurf`) can never fire for someone the
+   * workspace already trusts — they don't pass through approval again — so without
+   * this, an approved volunteer opening a turf-scoped QR landed on the turf picker
+   * with no assignment, which reads as the link being broken. The code itself is the
+   * organizer's authorization ("everyone who scans this walks this turf"), so the
+   * roam policy is deliberately not consulted, exactly as it isn't at approval time.
+   *
+   * Session-first: the code alone grants nothing. 401/403 reach the client so the
+   * gate can re-verify, same as the data endpoints. `use_count` is not bumped — it
+   * counts sign-ups through the poster, and this volunteer already came through.
+   */
+  public async attachJoinCode(codeValue: string, sessionToken: string | null): Promise<CompanionJoinAttachResult> {
+    const joinCode = await this.joinCodesRepo.resolveByCode(codeValue);
+    if (!joinCode || !this.joinCodeUsable(joinCode)) throw new NotFoundError(JOIN_REFUSAL);
+
+    const resolved = await this.sessionVolunteer(sessionToken);
+    if (!resolved || resolved.tenant_id !== joinCode.tenant_id) {
+      throw new UnauthorizedError('Verify this device first.');
+    }
+    if (resolved.volunteer.status !== 'approved') {
+      throw new ForbiddenError('Waiting for your organizer to approve you.');
+    }
+
+    const turfId = joinCode.turf_id;
+    if (!turfId) return { turf_id: null };
+
+    const volunteer = resolved.volunteer;
+    const placed = await this.volunteersRepo.transaction().execute(async (trx) =>
+      this.ensureTurfAssignment(
+        {
+          tenant_id: joinCode.tenant_id,
+          turf_id: turfId,
+          volunteer_person_id: volunteer.person_id,
+          // A volunteer has no CRM account; the responsible actor is the admin whose
+          // code invited them — the same honest-attribution rule every other
+          // companion write follows (§22.7).
+          acting_user_id: joinCode.created_by,
+        },
+        trx,
+      ),
+    );
+    // Turf gone or retired: the picker is the honest next step, not an error.
+    if (!placed) return { turf_id: null };
+
+    if (placed.created) {
+      const person = await this.personContacts(joinCode.tenant_id, volunteer.person_id);
+      await this.activityRepo.log({
+        tenant_id: joinCode.tenant_id,
+        user_id: joinCode.created_by,
+        activity: 'assign',
+        entity: 'turf',
+        entity_id: turfId,
+        metadata: {
+          action: 'turf_joined_by_code',
+          volunteer_person_id: volunteer.person_id,
+          message: `${person?.first_name ?? 'A volunteer'} joined this turf from its join link`,
+          via: 'Canvass Companion',
+        },
+      });
+    }
+    return { turf_id: turfId };
+  }
+
   // ------------------------------------------------------- approve by text --
 
   /** GET /api/companion/approve/:token — who is asking, so the admin knows what they're deciding. */
@@ -963,7 +1031,9 @@ export class CompanionAccessController {
       await this.volunteersRepo.approve({ tenant_id: auth.tenant_id, id, admin_id: auth.user_id }, trx);
       // A turf-scoped QR promises "scan this and you're walking Maple with us". That
       // promise is kept here rather than at scan time, so a volunteer who is never
-      // approved (or is declined) never holds an assignment.
+      // approved (or is declined) never holds an assignment. An already-approved
+      // volunteer never passes through here again; `attachJoinCode` keeps the same
+      // promise for them when they open the link.
       const placedOn = await this.placeOnJoinCodeTurf(auth, volunteer, trx);
       await this.activityRepo.log(
         {
@@ -1408,35 +1478,57 @@ export class CompanionAccessController {
     if (!volunteer.join_code_id) return null;
     const code = await this.joinCodesRepo.findById({ tenant_id: auth.tenant_id, id: volunteer.join_code_id }, trx);
     if (!code?.turf_id) return null;
+    const placed = await this.ensureTurfAssignment(
+      {
+        tenant_id: auth.tenant_id,
+        turf_id: code.turf_id,
+        volunteer_person_id: volunteer.person_id,
+        acting_user_id: auth.user_id,
+      },
+      trx,
+    );
+    return placed ? code.turf_id : null;
+  }
 
+  /**
+   * Idempotently put a volunteer on a turf: no-op result when the turf is gone or
+   * retired, the existing assignment when they are already on it, a fresh one
+   * otherwise. Shared by approval-time placement and by `attachJoinCode`, so the two
+   * paths can never disagree about what "being placed" means.
+   *
+   * No link is sent either way: the volunteer is already holding the app.
+   */
+  private async ensureTurfAssignment(
+    input: { tenant_id: string; turf_id: string; volunteer_person_id: string; acting_user_id: string },
+    trx: Transaction<Models>,
+  ): Promise<{ created: boolean } | null> {
     const turf = await trx
       .selectFrom('turfs')
       .select(['id', 'status', 'campaign_id'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('id', '=', code.turf_id)
+      .where('tenant_id', '=', input.tenant_id)
+      .where('id', '=', input.turf_id)
       .executeTakeFirst();
     if (!turf || String(turf.status) === 'retired') return null;
 
     const existing = await this.turfAssignmentsRepo.findActiveForVolunteer(
-      { tenant_id: auth.tenant_id, turf_id: code.turf_id, volunteer_person_id: volunteer.person_id },
+      { tenant_id: input.tenant_id, turf_id: input.turf_id, volunteer_person_id: input.volunteer_person_id },
       trx,
     );
-    if (existing) return code.turf_id;
+    if (existing) return { created: false };
 
     await this.turfAssignmentsRepo.create(
       {
-        tenant_id: auth.tenant_id,
-        turf_id: code.turf_id,
+        tenant_id: input.tenant_id,
+        turf_id: input.turf_id,
         team_id: null,
         token: generateTurfToken(),
-        user_id: auth.user_id,
-        volunteer_person_id: volunteer.person_id,
-        expires_at: await turfAssignmentExpiry(trx, auth.tenant_id, String(turf.campaign_id ?? '')),
+        user_id: input.acting_user_id,
+        volunteer_person_id: input.volunteer_person_id,
+        expires_at: await turfAssignmentExpiry(trx, input.tenant_id, String(turf.campaign_id ?? '')),
       },
       trx,
     );
-    // No link is sent: they are already holding the app that this approval opens.
-    return code.turf_id;
+    return { created: true };
   }
 
   /**

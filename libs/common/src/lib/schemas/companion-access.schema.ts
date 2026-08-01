@@ -107,6 +107,23 @@ export const CompanionApprovalDecisionObj = z.object({
 });
 export type CompanionApprovalDecisionType = z.infer<typeof CompanionApprovalDecisionObj>;
 
+/**
+ * POST /api/companion/join/attach — an ALREADY-APPROVED volunteer opened a join link.
+ *
+ * A stranger is placed on a turf-scoped code's turf at approval time; someone the
+ * workspace already trusts never passes through approval again, so this is their
+ * placement moment instead. Session-first: the code alone grants nothing.
+ */
+export const CompanionJoinAttachObj = z.object({
+  code: z.string().trim().min(6).max(32),
+});
+export type CompanionJoinAttachType = z.infer<typeof CompanionJoinAttachObj>;
+
+/** Response of POST /api/companion/join/attach — the turf to open, if the code named one. */
+export interface CompanionJoinAttachResult {
+  turf_id: string | null;
+}
+
 /** A verifiable contact on file, masked for display — never the raw value. */
 export interface CompanionContact {
   channel: CompanionVerifyChannel;
