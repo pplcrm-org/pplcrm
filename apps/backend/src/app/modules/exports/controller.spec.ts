@@ -51,6 +51,7 @@ describe('ExportsController & Recovery', () => {
 
   afterEach(async () => {
     // Clean up
+    await db.deleteFrom('rate_limits').where('key', '=', `queueExport:${tenantId}`).execute();
     await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('data_exports').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
@@ -94,5 +95,62 @@ describe('ExportsController & Recovery', () => {
       .where('tenant_id', '=', tenantId)
       .executeTakeFirst();
     expect(jobAfterDelete).toBeUndefined();
+  });
+
+  describe('who may export the workspace user list', () => {
+    // Entity `users` reads `authusers` — every colleague's address, role, verification and
+    // deactivation state. Every other route to that roster (invite, list users, change a role) is
+    // already admin/owner-only, and no data grid in the Angular app sets exportEntity: 'users',
+    // so nothing shipped asks for it.
+    it('refuses a non-privileged member', async () => {
+      const auth = { tenant_id: tenantId, user_id: userId, role: 'user' } as any;
+
+      await expect(controller.queueExport({ entity: 'users', options: {} }, auth)).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+      });
+
+      const queued = await db
+        .selectFrom('data_exports')
+        .select('id')
+        .where('tenant_id', '=', tenantId)
+        .executeTakeFirst();
+      expect(queued, 'a refused export must not leave a data_exports row behind').toBeUndefined();
+    });
+
+    it('allows an admin', async () => {
+      const auth = { tenant_id: tenantId, user_id: userId, role: 'admin' } as any;
+
+      const res = await controller.queueExport({ entity: 'users', options: {} }, auth);
+      expect(res.status).toBe('pending');
+    });
+
+    it('still allows a non-privileged member to export ordinary records', async () => {
+      const auth = { tenant_id: tenantId, user_id: userId, role: 'user' } as any;
+
+      const res = await controller.queueExport({ entity: 'persons', options: {} }, auth);
+      expect(res.status).toBe('pending');
+    });
+  });
+
+  describe('who may delete an export', () => {
+    async function queueAsOwnerMember(): Promise<string> {
+      const auth = { tenant_id: tenantId, user_id: userId, role: 'user' } as any;
+      const res = await controller.queueExport({ entity: 'persons', options: {} }, auth);
+      return res.id;
+    }
+
+    it('refuses a colleague who did not create it', async () => {
+      const exportId = await queueAsOwnerMember();
+      const colleague = { tenant_id: tenantId, user_id: rand(), role: 'user' } as any;
+
+      await expect(controller.deleteExport(exportId, colleague)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    });
+
+    it('allows an admin who did not create it', async () => {
+      const exportId = await queueAsOwnerMember();
+      const admin = { tenant_id: tenantId, user_id: rand(), role: 'admin' } as any;
+
+      await expect(controller.deleteExport(exportId, admin)).resolves.toEqual({ success: true });
+    });
   });
 });

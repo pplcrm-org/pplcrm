@@ -107,6 +107,10 @@ export const DATA_ARTICLES: HelpArticle[] = [
         text: 'Large exports are prepared in the background. **Import / export** in the sidebar has an **Exports** tab listing every export with its status and a download link when ready. The export-ready notification tells you the moment it is done, so there is no need to wait around. Files stay downloadable for 30 days, and every export lands in the Activity log. Clicking **New export** there is a signpost, not a wizard: it points you back to the People grid or Donations, because that’s where the filters live.',
       },
       {
+        kind: 'p',
+        text: 'The tab lists everyone’s exports so the workspace can see what has been extracted, but the file itself is yours: you can download or delete an export you requested, and organization admins and owners can download or delete any of them. After 30 days the file is deleted and its row leaves the list; the Activity log entry stays. Exporting the workspace **user list** is limited to admins and owners.',
+      },
+      {
         kind: 'callout',
         tone: 'tip',
         title: 'Filter first, export second',

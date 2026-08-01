@@ -4,9 +4,38 @@ import type { LogInstantExportInputType, QueueExportInputType } from '../../../.
 import { ExportsRepo } from './repositories/exports.repo';
 import { StorageService } from '../../lib/storage.service';
 import { logger } from '../../logger';
-import { EXPORT_ENTITY_TABLE } from './export-tables';
+import { EXPORT_ENTITY_TABLE, PRIVILEGED_EXPORT_ENTITIES } from './export-tables';
 import { isPrivilegedRole } from '../../../../../../libs/common/src';
 import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
+
+/** The subset of an export row this module's access rule needs. */
+export interface ExportOwnershipRow {
+  user_id: string | null;
+}
+
+/** The subset of a caller this module's access rule needs — satisfied by both the tRPC
+ *  `IAuthKeyPayload` and the REST `RestAuthContext`. */
+export interface ExportActor {
+  user_id: string;
+  role?: string | null;
+}
+
+/**
+ * May `actor` read or delete `row`?
+ *
+ * An export is the requester's: it holds the data they chose to extract, under their name, in a
+ * file that outlives the request. Only they and a workspace admin/owner may touch it. Export ids
+ * come from a sequence and are therefore guessable within a tenant, so tenant scoping alone is
+ * not a boundary. A row with no `user_id` predates attribution and stays readable tenant-wide.
+ *
+ * Shared by `deleteExport` here and by the download route, which used to authenticate the caller
+ * and then look the export up by tenant only — so any member could fetch a colleague's CSV.
+ */
+export function canAccessExport(row: ExportOwnershipRow, actor: ExportActor): boolean {
+  if (row.user_id == null) return true;
+  if (String(row.user_id) === String(actor.user_id)) return true;
+  return isPrivilegedRole(actor.role);
+}
 
 /** Exports a tenant may have waiting at once. Matches the worker's per-tenant in-flight
  *  cap (job-claim.ts), so a deeper queue would only ever wait anyway. */
@@ -47,6 +76,18 @@ export class ExportsController {
     const entityKey = input.entity?.trim();
     if (!entityKey) {
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'entity is required' });
+    }
+
+    // SECURITY: `queue` is a plain authProcedure, so it is open to every signed-in non-viewer
+    // member. A few entities are workspace administration rather than campaign data — see
+    // PRIVILEGED_EXPORT_ENTITIES — and must follow the same admin/owner rule as the rest of the
+    // user-management surface. FORBIDDEN, not UNAUTHORIZED: the caller is signed in, just not
+    // allowed, and the client force-signs-out on UNAUTHORIZED.
+    if (PRIVILEGED_EXPORT_ENTITIES.has(entityKey) && !isPrivilegedRole(auth.role)) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'Only admins or owners can export the workspace user list.',
+      });
     }
 
     // SECURITY (H6): each export streams a full table to blob storage and then sends an
@@ -179,9 +220,9 @@ export class ExportsController {
     }
 
     // SECURITY (M14): scoped by tenant but not by owner, so any editor could delete a
-    // colleague's queued or finished export. An export is the requester's — it contains
-    // the data they chose to extract, under their name.
-    if (row.user_id != null && String(row.user_id) !== String(auth.user_id) && !isPrivilegedRole(auth.role)) {
+    // colleague's queued or finished export. See canAccessExport, which the download route
+    // shares so the two paths cannot drift.
+    if (!canAccessExport(row, auth)) {
       throw new TRPCError({ code: 'FORBIDDEN', message: 'You can only delete your own exports.' });
     }
 

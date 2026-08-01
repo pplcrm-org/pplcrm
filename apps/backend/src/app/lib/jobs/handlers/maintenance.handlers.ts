@@ -7,6 +7,7 @@ import { logger } from '../../../logger';
 import { ActivityController } from '../../../modules/activity/controller';
 import { ListsController } from '../../../modules/lists/controller';
 import { DuplicateMaintenanceService } from '../../../modules/persons/services/duplicate-maintenance.service';
+import { StorageService } from '../../storage.service';
 import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
 import { scheduleNextRun } from '../reschedule';
@@ -60,6 +61,16 @@ const COMPLETED_JOBS_RETENTION_DAYS = 7;
 const FAILED_JOBS_RETENTION_DAYS = 30;
 const WEBHOOK_EVENTS_RETENTION_DAYS = 90;
 const EXPIRED_SESSION_GRACE_DAYS = 30;
+/**
+ * How long a finished export stays downloadable.
+ *
+ * 30 days is not a new decision — it is the number the product already states in three places and
+ * had never enforced: the privacy policy ("Export files are downloadable for 30 days, then
+ * removed"), the Help Center article on exporting, and the Exports page itself, which greys a row
+ * out with "Expired (30d)" once it passes that age while the file stayed downloadable forever.
+ * Changing it means changing all three — see the `pplcrm-website-claims` skill.
+ */
+const DATA_EXPORT_RETENTION_DAYS = 30;
 // Chunk size for the keyset-paginated address-fingerprint recompute below.
 const ADDRESS_FINGERPRINT_PAGE_SIZE = 1000;
 
@@ -71,6 +82,67 @@ async function deleteInBatches(runOnce: () => Promise<bigint>): Promise<bigint> 
     if (deleted < BigInt(RETENTION_BATCH)) break;
   }
   return total;
+}
+
+/**
+ * Delete expired export files and the rows that point at them.
+ *
+ * Nothing pruned `data_exports` before this: every CSV a workspace ever generated sat in blob
+ * storage indefinitely, and each one is a full extract of the records the requester selected.
+ *
+ * The blob is deleted FIRST, and the row only after that succeeds, because the row holds the only
+ * copy of the storage key — dropping it first would orphan the file permanently, with nothing left
+ * to find it by. A blob delete that fails leaves its row in place so the next daily run retries it,
+ * and the loop moves on to the remaining rows rather than abandoning the batch. `StorageService`
+ * uses `deleteIfExists`, so an already-missing blob is a success, not a failure that wedges a row
+ * forever.
+ *
+ * NOTE: intentionally cross-tenant — this is scheduled platform maintenance with no caller, the
+ * same as the other sweeps in this job, and it selects only the row id and its storage key.
+ *
+ * Exported so its spec can exercise it alone. Calling `handlePruneRetention` in a test would also
+ * sweep background jobs, webhook events and sessions across every tenant in the shared test
+ * database, and would enqueue the next cron run.
+ */
+export async function pruneExpiredExports(db: Kysely<Models>): Promise<{ rows: number; blobFailures: number }> {
+  const storageService = new StorageService();
+  let rowsDeleted = 0;
+  let blobFailures = 0;
+
+  for (;;) {
+    const expired = await sql<{ id: string; storage_key: string | null }>`
+      SELECT id, storage_key FROM data_exports
+      WHERE created_at < now() - make_interval(days => ${DATA_EXPORT_RETENTION_DAYS})
+      ORDER BY id
+      LIMIT ${RETENTION_BATCH}
+    `.execute(db);
+
+    if (expired.rows.length === 0) break;
+
+    let progressed = 0;
+    for (const row of expired.rows) {
+      if (row.storage_key) {
+        try {
+          await storageService.delete(row.storage_key);
+        } catch (err) {
+          blobFailures++;
+          logger.error({ err, exportId: row.id }, `Failed to delete expired export blob ${row.storage_key}`);
+          continue;
+        }
+      }
+
+      const res = await sql`DELETE FROM data_exports WHERE id = ${row.id}`.execute(db);
+      rowsDeleted += Number(res.numAffectedRows ?? 0n);
+      progressed++;
+    }
+
+    // Every row in this batch failed its blob delete, so re-selecting would return the same rows
+    // forever. Stop and let tomorrow's run retry.
+    if (progressed === 0) break;
+    if (expired.rows.length < RETENTION_BATCH) break;
+  }
+
+  return { rows: rowsDeleted, blobFailures };
 }
 
 export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
@@ -134,12 +206,18 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
     return res.numAffectedRows ?? 0n;
   });
 
+  // Expired export files. Deleting the row alone would leave the CSV in blob storage forever, so
+  // this one sweeps the blob too — see pruneExpiredExports.
+  const prunedExports = await pruneExpiredExports(db);
+
   logger.info(
     {
       prunedCompletedJobs: prunedCompletedJobs.toString(),
       prunedFailedJobs: prunedFailedJobs.toString(),
       prunedWebhooks: prunedWebhooks.toString(),
       prunedSessions: prunedSessions.toString(),
+      prunedExports: prunedExports.rows,
+      exportBlobDeleteFailures: prunedExports.blobFailures,
     },
     'Retention prune complete',
   );

@@ -4,6 +4,7 @@ import { Readable } from 'stream';
 import { env } from '../../../../env';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../../logger';
+import type { AnyQB } from '../../base.repo';
 import { ExportsRepo } from '../../../modules/exports/repositories/exports.repo';
 import { CsvTransformStream } from '../../csv-stream';
 import { notificationEnabled } from '../../profile-preferences';
@@ -11,11 +12,57 @@ import { StorageService } from '../../storage.service';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { UserActivityRepo } from '../../user-activity.repo';
 import type { JobPayloadOf } from '../job-payloads';
-import { ALLOWED_EXPORT_TABLES } from '../../../modules/exports/export-tables';
+import { ALLOWED_EXPORT_TABLES, resolveExportColumns } from '../../../modules/exports/export-tables';
+import { isPrivilegedRole } from '../../../../../../../libs/common/src';
 
 const storageService = new StorageService();
 const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
 const userActivityRepo = new UserActivityRepo();
+
+/**
+ * Export tables whose rows belong to exactly one campaign context (Campaigns §15). Mirrors the
+ * campaign-scoped subset of `CAMPAIGN_SCOPED_TABLES` in `lib/base.repo.ts`; the shared rolodex
+ * (persons, households, companies, tags, tasks, teams, workflows) is tenant-wide and unscoped.
+ */
+const CAMPAIGN_SCOPED_EXPORT_TABLES: ReadonlySet<string> = new Set<string>(['lists', 'newsletters', 'web_forms']);
+
+/**
+ * The campaign this export must be restricted to, or null when the requester may read every
+ * campaign in the tenant.
+ *
+ * Ordinary reads get this pin from `runWithTenant(..., pinnedCampaign)` in `src/trpc.ts`, but the
+ * background worker never enters that context — it runs on a raw Kysely handle with no request
+ * behind it. So a campaign-restricted Editor who queued an export of lists, newsletters or forms
+ * received the whole tenant's rows. Re-derive the same pin here, from the requester's stored
+ * assignment (never from the job payload), using the same office-campaign fallback the middleware
+ * uses for an unassigned non-admin.
+ */
+async function resolveExportCampaignPin(
+  db: Kysely<Models>,
+  tenantId: string,
+  userId: string | null | undefined,
+): Promise<string | null> {
+  if (!userId) return null;
+
+  const user = await db
+    .selectFrom('authusers')
+    .select(['role', 'campaign_id'])
+    .where('tenant_id', '=', tenantId)
+    .where('id', '=', userId)
+    .executeTakeFirst();
+
+  if (!user || isPrivilegedRole(user.role)) return null;
+  if (user.campaign_id) return String(user.campaign_id);
+
+  const office = await db
+    .selectFrom('campaigns')
+    .select('id')
+    .where('tenant_id', '=', tenantId)
+    .where('kind', '=', 'office')
+    .executeTakeFirst();
+
+  return office ? String(office.id) : null;
+}
 
 export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: Kysely<Models>): Promise<void> {
   const exportsRepo = new ExportsRepo();
@@ -25,6 +72,17 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
     // Make sure we're exporting one of the allowed tables
     const table = payload.table || payload.entity || '';
     if (!ALLOWED_EXPORT_TABLES.has(table)) throw new Error(`Invalid export entity: ${table}`);
+
+    // Resolve the columns BEFORE building the query: the allow-list gates the SQL select, not
+    // just the CSV header. Gating only the header would still read the forbidden values out of
+    // Postgres, and an explicitly named column (`columns: ['email','password']`) would have been
+    // emitted verbatim.
+    const requestedCols: string[] = Array.isArray(payload.columns) ? payload.columns : [];
+    const { columns: csvColumns, dropped } = resolveExportColumns(table, requestedCols);
+    if (csvColumns.length === 0) throw new Error(`No exportable columns for: ${table}`);
+    if (dropped.length > 0) {
+      logger.warn({ exportId, table, dropped }, 'Export dropped columns that are not exportable');
+    }
 
     // Mark as processing
     await exportsRepo.updateStatus(exportId, tenantId, 'processing');
@@ -74,10 +132,20 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
         );
       }
     } else {
-      query = db
-        .selectFrom(table as keyof Models)
-        .selectAll()
-        .where('tenant_id', '=', tenantId);
+      // The table and its column list are both resolved at runtime, so Kysely cannot type the
+      // selection — hence AnyQB, the workspace's alias for a deliberately untyped query builder.
+      // `csvColumns` is not free-form: it comes from EXPORT_TABLE_COLUMNS, which the export-tables
+      // spec checks against information_schema on every run.
+      const dynamic: AnyQB = db.selectFrom(table as keyof Models);
+      query = dynamic.select(csvColumns).where('tenant_id', '=', tenantId);
+
+      // Campaigns §15 — restrict a campaign-pinned requester to their own campaign's rows.
+      if (CAMPAIGN_SCOPED_EXPORT_TABLES.has(table)) {
+        const campaignPin = await resolveExportCampaignPin(db, tenantId, payload.user_id);
+        if (campaignPin) {
+          query = query.where('campaign_id', '=', campaignPin);
+        }
+      }
 
       // Issues are tags with type='issue'
       if (payload.entity === 'issues') {
@@ -114,14 +182,12 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
       query = query.orderBy(sortCol, 'desc');
     }
 
-    // Determine columns
-    const requestedCols: string[] = payload.columns?.length ? payload.columns : [];
-
     const storageKey = `exports/${tenantId}/${exportId}.csv`;
 
-    // Stream the query results using query.stream()
+    // Stream the query results using query.stream(). The column list is always non-empty, so
+    // csv-stream never falls back to deriving the header from the first row's keys.
     const dbStream = Readable.from(query.stream());
-    const csvStream = new CsvTransformStream(requestedCols);
+    const csvStream = new CsvTransformStream(csvColumns);
 
     await storageService.uploadStream(storageKey, dbStream.pipe(csvStream), 'text/csv');
 
