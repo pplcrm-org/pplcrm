@@ -856,8 +856,10 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         .execute();
       // 6. Re-point child rows with no per-person uniqueness constraint. Without this,
       // deleting the source would SET NULL (donations, donation_pledges, delivery_requests,
-      // delivery_routes.volunteer_person_id, turf_knocks) or CASCADE-delete (form_submissions)
-      // this history — silent data loss.
+      // delivery_routes.volunteer_person_id, tasks, turf_knocks) or CASCADE-delete
+      // (form_submissions) this history — silent data loss. workflow_runs.person_id and
+      // turf_segment_claims.volunteer_person_id carry NO foreign key at all, so nothing in
+      // the database would even null them: they would keep pointing at a row that is gone.
       await trx
         .updateTable('donations')
         .set({ person_id: input.target_id })
@@ -893,6 +895,27 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         .set({ person_id: input.target_id })
         .where('tenant_id', '=', input.tenant_id)
         .where('person_id', '=', input.source_id)
+        .execute();
+      await trx
+        .updateTable('tasks')
+        .set({ person_id: input.target_id, updatedby_id: input.user_id, updated_at: sql`now()` })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('person_id', '=', input.source_id)
+        .execute();
+      // workflow_runs has no updatedby_id/updated_at columns — it is an append-only log.
+      await trx
+        .updateTable('workflow_runs')
+        .set({ person_id: input.target_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('person_id', '=', input.source_id)
+        .execute();
+      // turf_segment_claims is unique on (tenant_id, turf_id, assignment_id) where the claim
+      // is still live — the volunteer is not part of that key, so a plain re-point is safe.
+      await trx
+        .updateTable('turf_segment_claims')
+        .set({ volunteer_person_id: input.target_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('volunteer_person_id', '=', input.source_id)
         .execute();
 
       // 7. Children keyed uniquely per person: keep the TARGET's row when both exist
@@ -987,6 +1010,96 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         .set({ person_id: input.target_id, updated_at: sql`now()` })
         .where('tenant_id', '=', input.tenant_id)
         .where('person_id', '=', input.source_id)
+        .execute();
+
+      // companion_volunteers — unique (tenant_id, person_id), and unlike every other row
+      // here it is an ACCESS GRANT: `status = 'approved'` is what lets someone open the
+      // canvass/deliveries companion apps and read voter data. So the collision rule is
+      // the target's row wins outright, exactly as campaign_person_facts does, and
+      // deliberately NOT "whichever row is further along its lifecycle". Keeping the more
+      // permissive row would let a merge hand out access nobody granted — a target whose
+      // access was explicitly revoked would come back approved because the source happened
+      // to be approved. The cost of choosing this direction is the mirror case: merging an
+      // approved source into a target who was only ever invited takes companion access
+      // away, and that volunteer has to verify a code again on the surviving record. That
+      // is the safe direction to be wrong in, but it IS user-visible, so an admin merging
+      // an active canvasser into another record should expect to re-approve them.
+      const targetVolunteer = await trx
+        .selectFrom('companion_volunteers')
+        .select('id')
+        .where('tenant_id', '=', input.tenant_id)
+        .where('person_id', '=', input.target_id)
+        .executeTakeFirst();
+      if (targetVolunteer) {
+        // The source's volunteer row is about to go. Its device sessions and outstanding
+        // approve-by-text tokens are keyed on that row's id and carry no foreign key, so
+        // nothing else would clean them up; they would sit there naming an id that no
+        // longer exists. They can never authenticate again either way (requireSession
+        // resolves volunteer_id back to a row and refuses when it finds none), so delete
+        // them rather than leave the debris.
+        const sourceVolunteers = await trx
+          .selectFrom('companion_volunteers')
+          .select('id')
+          .where('tenant_id', '=', input.tenant_id)
+          .where('person_id', '=', input.source_id)
+          .execute();
+        const sourceVolunteerIds = sourceVolunteers.map((v) => String(v.id));
+        if (sourceVolunteerIds.length > 0) {
+          await trx
+            .deleteFrom('companion_sessions')
+            .where('tenant_id', '=', input.tenant_id)
+            .where('volunteer_id', 'in', sourceVolunteerIds)
+            .execute();
+          await trx
+            .deleteFrom('companion_approval_tokens')
+            .where('tenant_id', '=', input.tenant_id)
+            .where('volunteer_id', 'in', sourceVolunteerIds)
+            .execute();
+          await trx
+            .deleteFrom('companion_volunteers')
+            .where('tenant_id', '=', input.tenant_id)
+            .where('person_id', '=', input.source_id)
+            .execute();
+        }
+      }
+      // Only the source is a volunteer: move the row wholesale, which keeps its approval
+      // state, its device sessions and its join-code provenance intact under the survivor.
+      await trx
+        .updateTable('companion_volunteers')
+        .set({ person_id: input.target_id, updatedby_id: input.user_id, updated_at: sql`now()` })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('person_id', '=', input.source_id)
+        .execute();
+
+      // turf_assignments.volunteer_person_id — partial unique index
+      // uq_turf_assignments_active_volunteer (tenant_id, turf_id, volunteer_person_id)
+      // WHERE status = 'active', added by 2026-07-28-turf-multiple-canvassers. Revoke rather
+      // than delete the source's active row on a turf the target is already walking: that is
+      // what the migration itself did to collapse duplicates, revoked rows fall outside the
+      // partial index, and the assignment row is history worth keeping.
+      const targetActiveTurfs = await trx
+        .selectFrom('turf_assignments')
+        .select('turf_id')
+        .where('tenant_id', '=', input.tenant_id)
+        .where('volunteer_person_id', '=', input.target_id)
+        .where('status', '=', 'active')
+        .execute();
+      const targetActiveTurfIds = targetActiveTurfs.map((r) => String(r.turf_id));
+      if (targetActiveTurfIds.length > 0) {
+        await trx
+          .updateTable('turf_assignments')
+          .set({ status: 'revoked', updatedby_id: input.user_id, updated_at: sql`now()` })
+          .where('tenant_id', '=', input.tenant_id)
+          .where('volunteer_person_id', '=', input.source_id)
+          .where('status', '=', 'active')
+          .where('turf_id', 'in', targetActiveTurfIds)
+          .execute();
+      }
+      await trx
+        .updateTable('turf_assignments')
+        .set({ volunteer_person_id: input.target_id, updatedby_id: input.user_id, updated_at: sql`now()` })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('volunteer_person_id', '=', input.source_id)
         .execute();
 
       // 8. campaign_subscriptions — unique (tenant_id, campaign_id, person_id). Keep the
