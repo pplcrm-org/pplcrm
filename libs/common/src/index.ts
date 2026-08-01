@@ -387,7 +387,7 @@ export {
   isDataRegionLive,
 } from './lib/data-residency';
 
-export type { OrgMode, TermKey, ModuleId } from './lib/org-mode';
+export type { OrgMode, TermKey, ModuleId, ModuleVisibility } from './lib/org-mode';
 export {
   DEFAULT_ORG_MODE,
   MODULE_VISIBILITY_SETTINGS_KEY,
@@ -403,6 +403,7 @@ export {
   TERM_KEYS,
   isModuleEnabled,
   isOrgMode,
+  moduleVisibility,
   parseModuleOverrides,
   termFor,
 } from './lib/org-mode';

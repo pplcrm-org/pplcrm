@@ -6,10 +6,11 @@ import {
   OPTIONAL_MODULES,
   ORG_MODE_SETTINGS_KEY,
   ORG_MODE_TERMS,
-  isModuleEnabled,
   isOrgMode,
+  moduleVisibility,
   parseModuleOverrides,
   type ModuleId,
+  type ModuleVisibility,
   type OrgMode,
   type TermKey,
 } from '@common';
@@ -60,11 +61,17 @@ export class OrgModeService {
     return this.user()?.tenant_module_overrides ?? {};
   });
 
-  public readonly enabledModules = computed<ReadonlySet<ModuleId>>(() => {
+  /** Per-module resolution including WHO turned it off — the sidebar dims 'offByMode'
+   *  entries but hides 'offByUser' ones. */
+  public readonly moduleVisibilities = computed<ReadonlyMap<ModuleId, ModuleVisibility>>(() => {
     const mode = this.mode();
     const overrides = this.overrides();
-    return new Set(OPTIONAL_MODULES.filter((id) => isModuleEnabled(mode, id, overrides)));
+    return new Map(OPTIONAL_MODULES.map((id) => [id, moduleVisibility(mode, id, overrides)]));
   });
+
+  public readonly enabledModules = computed<ReadonlySet<ModuleId>>(
+    () => new Set([...this.moduleVisibilities()].filter(([, state]) => state === 'on').map(([id]) => id)),
+  );
 
   public term(key: TermKey): string {
     return this.terms()[key];

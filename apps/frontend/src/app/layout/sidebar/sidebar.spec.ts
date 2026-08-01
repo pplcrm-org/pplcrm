@@ -4,6 +4,7 @@ import { Sidebar } from './sidebar';
 import { SidebarService } from './sidebar-service';
 import { SidebarItems, type ISidebarItem } from './sidebar-items';
 import { SettingsService } from '@experiences/settings/services/settings-service';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { AuthService } from '../../auth/auth-service';
 import { TasksService } from '@experiences/tasks/services/tasks-service';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -137,9 +138,11 @@ describe('Sidebar Component', () => {
   });
 
   /**
-   * Module visibility. A module a mode leaves off is HIDDEN, never dropped — the route stays
-   * resolvable and the `g` chord keeps working, because "off" is a default the user can undo,
-   * not a permission.
+   * Module visibility, three states. A module a MODE leaves off by default is DIMMED, not
+   * dropped — it stays visible so the user learns it exists, and clicking it explains
+   * instead of navigating. A module the USER explicitly turned off is HIDDEN. Either way
+   * the route stays resolvable and the `g` chord keeps working, because "off" is a
+   * default the user can undo, not a permission.
    */
   describe('organization mode', () => {
     function buildWith(mode: string, overrides: Record<string, boolean> = {}): Sidebar {
@@ -153,6 +156,7 @@ describe('Sidebar Component', () => {
           { provide: AuthService, useValue: { getUser: () => user(), getUserSignal: () => user } },
           { provide: TasksService, useValue: mockTasksSvc },
           { provide: SettingsService, useValue: { snapshotSignal: signal({}), upsert: vi.fn() } },
+          { provide: AlertService, useValue: { showInfo: vi.fn() } },
           provideRouter([]),
         ],
       });
@@ -164,27 +168,51 @@ describe('Sidebar Component', () => {
       return items.flatMap((i) => (i.children ? [i, ...i.children] : [i])).find((i) => i.name === name);
     }
 
-    it('hides canvassing and deliveries in church mode', () => {
+    it('dims canvassing and deliveries in church mode (off by mode default, still visible)', () => {
       const cmp = buildWith('church');
-      expect(find(cmp, 'Canvassing')?.hidden).toBe(true);
-      expect(find(cmp, 'Deliveries')?.hidden).toBe(true);
+      expect(find(cmp, 'Canvassing')?.dimmed).toBe(true);
+      expect(find(cmp, 'Canvassing')?.hidden).toBeFalsy();
+      expect(find(cmp, 'Deliveries')?.dimmed).toBe(true);
+      expect(find(cmp, 'Deliveries')?.hidden).toBeFalsy();
     });
 
-    it('keeps them visible in campaign mode', () => {
+    it('dims donations in office mode', () => {
+      const cmp = buildWith('office');
+      expect(find(cmp, 'Donations')?.dimmed).toBe(true);
+      expect(find(cmp, 'Donations')?.hidden).toBeFalsy();
+    });
+
+    it('hides a module the user explicitly turned off', () => {
+      const campaign = buildWith('campaign', { donations: false });
+      expect(find(campaign, 'Donations')?.hidden).toBe(true);
+      expect(find(campaign, 'Donations')?.dimmed).toBeFalsy();
+
+      // The user's decision owns the state even when it matches the mode default.
+      const church = buildWith('church', { canvassing: false });
+      expect(find(church, 'Canvassing')?.hidden).toBe(true);
+      expect(find(church, 'Canvassing')?.dimmed).toBeFalsy();
+    });
+
+    it('keeps them fully visible in campaign mode', () => {
       const cmp = buildWith('campaign');
       expect(find(cmp, 'Canvassing')?.hidden).toBeFalsy();
+      expect(find(cmp, 'Canvassing')?.dimmed).toBeFalsy();
       expect(find(cmp, 'Deliveries')?.hidden).toBeFalsy();
+      expect(find(cmp, 'Deliveries')?.dimmed).toBeFalsy();
     });
 
     it('lets an explicit override re-show a module the mode turned off', () => {
       const cmp = buildWith('church', { canvassing: true });
       expect(find(cmp, 'Canvassing')?.hidden).toBeFalsy();
+      expect(find(cmp, 'Canvassing')?.dimmed).toBeFalsy();
     });
 
-    it('never hides an entry that belongs to no optional module', () => {
+    it('never hides or dims an entry that belongs to no optional module', () => {
       const cmp = buildWith('church');
       expect(find(cmp, 'Teams')?.hidden).toBeFalsy();
+      expect(find(cmp, 'Teams')?.dimmed).toBeFalsy();
       expect(find(cmp, 'People')?.hidden).toBeFalsy();
+      expect(find(cmp, 'People')?.dimmed).toBeFalsy();
     });
 
     it('words the mode-sensitive entries from the term table', () => {
@@ -193,6 +221,33 @@ describe('Sidebar Component', () => {
       expect(canvassing).toBeDefined();
       expect((cmp as any).label(canvassing)).toBe('Visitation');
       expect((cmp as any).label(find(cmp, 'Donations'))).toBe('Giving');
+    });
+
+    it('toasts instead of navigating when a dimmed entry is clicked', () => {
+      const cmp = buildWith('office');
+      const donations = find(cmp, 'Donations');
+      const event = { preventDefault: vi.fn() };
+      (cmp as any).onNavClick(donations, event);
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(TestBed.inject(AlertService).showInfo).toHaveBeenCalledWith(
+        'Donations is turned off for this workspace. You can turn it on in Workspace settings.',
+      );
+      expect(mockSidebarSvc.closeMobile).not.toHaveBeenCalled();
+    });
+
+    it('closes the mobile menu, with no toast, when an enabled entry is clicked', () => {
+      const cmp = buildWith('campaign');
+      const donations = find(cmp, 'Donations');
+      const event = { preventDefault: vi.fn() };
+      (cmp as any).onNavClick(donations, event);
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(TestBed.inject(AlertService).showInfo).not.toHaveBeenCalled();
+      expect(mockSidebarSvc.closeMobile).toHaveBeenCalled();
+    });
+
+    it('names the off reason in the dimmed entry tooltip, using the mode wording', () => {
+      const cmp = buildWith('office');
+      expect((cmp as any).tooltipFor(find(cmp, 'Donations'))).toBe('Donations is turned off for this workspace');
     });
   });
 });

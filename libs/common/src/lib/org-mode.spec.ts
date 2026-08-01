@@ -14,6 +14,7 @@ import {
   TERM_KEYS,
   isModuleEnabled,
   isOrgMode,
+  moduleVisibility,
   parseModuleOverrides,
   termFor,
 } from './org-mode';
@@ -117,6 +118,46 @@ describe('org-mode', () => {
 
     it('is unaffected by an override on a different module', () => {
       expect(isModuleEnabled('church', 'canvassing', { deliveries: true })).toBe(false);
+    });
+  });
+
+  /** The three-way split the sidebar renders from: on / dimmed (mode default) / hidden (user). */
+  describe('moduleVisibility', () => {
+    it('reports a module the mode default leaves off as offByMode', () => {
+      expect(moduleVisibility('office', 'donations')).toBe('offByMode');
+      expect(moduleVisibility('church', 'canvassing', {})).toBe('offByMode');
+      expect(moduleVisibility('nonprofit', 'deliveries', null)).toBe('offByMode');
+    });
+
+    it('reports a module the user explicitly turned off as offByUser', () => {
+      expect(moduleVisibility('campaign', 'donations', { donations: false })).toBe('offByUser');
+    });
+
+    /** Even when the override agrees with the mode default, the user's decision owns the state. */
+    it('attributes the off state to the user when their override matches the default', () => {
+      expect(moduleVisibility('church', 'canvassing', { canvassing: false })).toBe('offByUser');
+    });
+
+    it('reports on whether enabled by default or by override', () => {
+      expect(moduleVisibility('campaign', 'canvassing')).toBe('on');
+      expect(moduleVisibility('church', 'canvassing', { canvassing: true })).toBe('on');
+    });
+
+    it('is unaffected by an override on a different module', () => {
+      expect(moduleVisibility('church', 'canvassing', { deliveries: true })).toBe('offByMode');
+    });
+
+    it('agrees with isModuleEnabled for every mode, module, and override shape', () => {
+      const overrideShapes = [undefined, {}, { canvassing: true }, { canvassing: false }, { donations: false }];
+      for (const mode of ORG_MODES) {
+        for (const id of OPTIONAL_MODULES) {
+          for (const overrides of overrideShapes) {
+            expect(isModuleEnabled(mode, id, overrides), `${mode}.${id} ${JSON.stringify(overrides)}`).toBe(
+              moduleVisibility(mode, id, overrides) === 'on',
+            );
+          }
+        }
+      }
     });
   });
 

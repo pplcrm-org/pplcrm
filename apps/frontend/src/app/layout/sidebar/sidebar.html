@@ -1,14 +1,16 @@
 <ng-template #navLink let-nav>
   <a
     *pcAnimateIf="getVisibilitySignal(nav); enter: 'animate-none'; exit: 'animate-exit-left'"
-    class="group/nav hover:text-primary flex flex-auto items-center pb-1 pl-2 pr-2 font-normal hover:rounded-lg !cursor-pointer max-sm:min-h-11 max-sm:pb-0"
+    class="group/nav flex flex-auto items-center pb-1 pl-2 pr-2 font-normal hover:rounded-lg max-sm:min-h-11 max-sm:pb-0"
+    [class]="nav.dimmed ? 'opacity-40 cursor-default' : 'hover:text-primary !cursor-pointer'"
     [class.animate-up]="nav.justPinned"
-    [class.tooltip]="isEffectivelyNarrow()"
-    [class.tooltip-right]="isEffectivelyNarrow()"
-    [attr.data-tip]="isEffectivelyNarrow() ? label(nav) : null"
-    (click)="this.closeMobile()"
+    [class.tooltip]="isEffectivelyNarrow() || nav.dimmed"
+    [class.tooltip-right]="isEffectivelyNarrow() || nav.dimmed"
+    [attr.data-tip]="tooltipFor(nav)"
+    [attr.aria-disabled]="nav.dimmed ? true : null"
+    (click)="onNavClick(nav, $event)"
     [pcTourAnchor]="tourAnchorFor(nav)"
-    [routerLink]="nav.route"
+    [routerLink]="nav.dimmed ? null : nav.route"
     [class.!font-semibold]="isNavActive(nav)"
     [class.!text-primary]="isNavActive(nav)"
   >

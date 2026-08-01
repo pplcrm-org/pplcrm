@@ -141,6 +141,14 @@ export const ORG_MODE_MODULE_DEFAULTS: Record<OrgMode, Record<ModuleId, boolean>
 };
 
 /**
+ * Who decided a module is off: nobody ('on'), the mode's default ('offByMode'), or the
+ * user's explicit override ('offByUser'). The distinction matters to the sidebar:
+ * off-by-mode entries stay visible but dimmed (the user may not know the module exists),
+ * off-by-user entries are hidden (they made that call).
+ */
+export type ModuleVisibility = 'on' | 'offByMode' | 'offByUser';
+
+/**
  * Resolve a module's visibility: an explicit user decision wins, otherwise the mode's
  * default applies.
  *
@@ -149,13 +157,23 @@ export const ORG_MODE_MODULE_DEFAULTS: Record<OrgMode, Record<ModuleId, boolean>
  * they never touched, while still honouring the ones they did. A full snapshot would
  * silently freeze the old mode's defaults forever.
  */
+export function moduleVisibility(
+  mode: OrgMode,
+  id: ModuleId,
+  overrides?: Partial<Record<ModuleId, boolean>> | null,
+): ModuleVisibility {
+  const override = overrides?.[id];
+  if (typeof override === 'boolean') return override ? 'on' : 'offByUser';
+  return ORG_MODE_MODULE_DEFAULTS[mode][id] ? 'on' : 'offByMode';
+}
+
+/** Collapse of `moduleVisibility` for callers that only care whether the module is on. */
 export function isModuleEnabled(
   mode: OrgMode,
   id: ModuleId,
   overrides?: Partial<Record<ModuleId, boolean>> | null,
 ): boolean {
-  const override = overrides?.[id];
-  return typeof override === 'boolean' ? override : ORG_MODE_MODULE_DEFAULTS[mode][id];
+  return moduleVisibility(mode, id, overrides) === 'on';
 }
 
 /** Narrow an untrusted settings value into a sparse override map. */

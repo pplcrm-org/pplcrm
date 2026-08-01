@@ -14,6 +14,10 @@ export interface ISidebarItem {
   badgeCount?: number | null;
   children?: ISidebarItem[];
   collapsed?: boolean;
+  /** Transient: set at runtime by Sidebar when the entry's module is off by the mode's
+   * default (no user override). Rendered dimmed; clicking shows a toast pointing at
+   * Workspace → Modules instead of navigating. */
+  dimmed?: boolean;
   favourite?: boolean;
   hidden?: boolean;
   hiddenByFavourite?: boolean;
@@ -28,9 +32,10 @@ export interface ISidebarItem {
    */
   name: string;
   /**
-   * Optional module this entry belongs to. When the tenant's mode (or their explicit
-   * override) turns the module off, Sidebar sets `hidden` on the entry — the route
-   * still resolves and the `g` chord still works.
+   * Optional module this entry belongs to. When the tenant's MODE leaves the module
+   * off by default, Sidebar sets `dimmed` (still visible, so the feature stays
+   * discoverable); when the user EXPLICITLY switched it off, Sidebar sets `hidden`.
+   * Either way the route still resolves and the `g` chord still works.
    */
   moduleId?: ModuleId;
   parent?: ISidebarItem;

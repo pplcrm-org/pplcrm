@@ -5,6 +5,7 @@ import { NavigationCancel, NavigationEnd, NavigationError, NavigationStart, Rout
 import { filter, map } from 'rxjs';
 import { Icon } from '@icons/icon';
 import { Swap } from '@uxcommon/components/swap/swap';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
 
 import { SidebarService } from 'apps/frontend/src/app/layout/sidebar/sidebar-service';
 import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
@@ -41,6 +42,7 @@ export class Sidebar {
 
   private readonly sidebarSvc = inject(SidebarService);
   private readonly auth = inject(AuthService);
+  private readonly alertSvc = inject(AlertService);
   private readonly orgMode = inject(OrgModeService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
@@ -138,19 +140,44 @@ export class Sidebar {
   });
 
   /**
-   * Hide the entries for modules the tenant's organization mode (or their explicit
-   * override) leaves off.
+   * Apply the tenant's module visibility to the entries.
    *
-   * Sets `hidden` rather than dropping the item, which is the same mechanism Task
-   * board / Households / Companies already use. That keeps the `g` chord working, the
-   * route resolvable, and an existing pin visible in PINS — a module being off is a
-   * default, not a permission, and the user can turn it back on in Workspace → Modules.
+   * Off by the MODE's default (no user override): the entry stays in the sidebar,
+   * dimmed — clicking it explains and points at Workspace → Modules instead of
+   * navigating, so the module stays discoverable. Off by an EXPLICIT user override:
+   * `hidden`, the same mechanism Task board / Households / Companies already use.
+   * Either way the `g` chord keeps working and the route stays resolvable — off is a
+   * default, not a permission. Pinned clones keep their `moduleId` (see
+   * `cloneForFavourite`), so PINS entries get the same treatment for free.
    */
   private applyModuleVisibility(items: ISidebarItem[]): ISidebarItem[] {
-    const enabled = this.orgMode.enabledModules();
-    const scope = (item: ISidebarItem): ISidebarItem =>
-      item.moduleId && !enabled.has(item.moduleId) ? { ...item, hidden: true } : item;
+    const visibilities = this.orgMode.moduleVisibilities();
+    const scope = (item: ISidebarItem): ISidebarItem => {
+      const state = item.moduleId ? visibilities.get(item.moduleId) : undefined;
+      if (state === 'offByUser') return { ...item, hidden: true };
+      if (state === 'offByMode') return { ...item, dimmed: true };
+      return item;
+    };
     return items.map((item) => (item.children ? { ...scope(item), children: item.children.map(scope) } : scope(item)));
+  }
+
+  /** Click on a nav entry. Dimmed = module off by the mode's default: explain, don't navigate. */
+  protected onNavClick(nav: ISidebarItem, event: Event): void {
+    if (nav.dimmed) {
+      event.preventDefault();
+      this.alertSvc.showInfo(
+        `${this.label(nav)} is turned off for this workspace. You can turn it on in Workspace settings.`,
+      );
+      return;
+    }
+    this.closeMobile();
+  }
+
+  /** Tooltip text: the off reason for a dimmed entry (at every width — on the narrow icon
+   *  rail it doubles as the only place the name appears), the label on the narrow rail. */
+  protected tooltipFor(nav: ISidebarItem): string | null {
+    if (nav.dimmed) return `${this.label(nav)} is turned off for this workspace`;
+    return this.isEffectivelyNarrow() ? this.label(nav) : null;
   }
 
   /** Display name under the tenant's organization mode. */
