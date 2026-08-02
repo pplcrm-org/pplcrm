@@ -48,6 +48,11 @@ const MARKETING_PATHS: readonly string[] = [
   'for/nonprofits',
   'for/churches',
   'compare',
+  'switch',
+  'switch/breeze',
+  'switch/planning-center',
+  'switch/nationbuilder',
+  'switch/mailchimp',
   'pricing',
   'about',
   'careers',
@@ -135,7 +140,13 @@ const BUILD_DATE: string = new Date().toISOString().slice(0, 10);
 function sitemapHints(path: string): { changefreq: string; priority: string } {
   if (path === '') return { changefreq: 'weekly', priority: '1.0' };
   if (path === 'pricing') return { changefreq: 'weekly', priority: '0.9' };
-  if (path === 'faq' || path === 'compare' || path.startsWith('for/')) {
+  if (
+    path === 'faq' ||
+    path === 'compare' ||
+    path.startsWith('for/') ||
+    path === 'switch' ||
+    path.startsWith('switch/')
+  ) {
     return { changefreq: 'monthly', priority: '0.8' };
   }
   if (path === 'docs' || path.startsWith('docs/')) return { changefreq: 'monthly', priority: '0.6' };

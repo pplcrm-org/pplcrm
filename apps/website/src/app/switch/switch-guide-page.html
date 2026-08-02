@@ -1,0 +1,141 @@
+<pc-site-header variant="solid" />
+
+<!-- Hero -->
+<section class="border-b border-line bg-base-200 px-5 py-16 sm:px-8">
+  <div class="mx-auto max-w-[760px] text-center">
+    <div class="eyebrow">Switching from {{ guide.name }}</div>
+    <h1 class="mt-3 text-balance text-[clamp(2rem,6vw,2.625rem)] font-bold tracking-[-0.02em]">
+      Moving from {{ guide.name }} to pplCRM
+    </h1>
+    <p class="mx-auto mt-3.5 max-w-[600px] text-[16px] leading-relaxed text-base-content/60">{{ guide.heroSub }}</p>
+  </div>
+</section>
+
+<!-- Get the file out -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="mx-auto max-w-[760px]">
+    <h2 class="text-center text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+      First, get your file out of {{ guide.name }}.
+    </h2>
+    <div class="mx-auto mt-8 flex max-w-[680px] flex-col gap-3.5">
+      @for (step of guide.exportSteps; track $index) {
+      <div class="flex gap-4 rounded-xl border border-line bg-base-50 p-5">
+        <div class="text-[15px] font-bold text-primary">{{ $index + 1 }}</div>
+        <p class="text-[13.5px] leading-relaxed text-base-content/70">{{ step }}</p>
+      </div>
+      }
+    </div>
+    <p class="mx-auto mt-6 max-w-[680px] text-center text-[12px] leading-relaxed text-base-content/40">
+      Menus move. If an export step has drifted, {{ guide.name }}’s own help docs will have the current path — the CSV
+      the export produces is what matters here.
+    </p>
+  </div>
+</section>
+
+<!-- What maps to what -->
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="mx-auto max-w-[880px]">
+    <div class="mx-auto max-w-[620px] text-center">
+      <h2 class="text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">What maps to what.</h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        Where each part of a {{ guide.name }} export lands — including the parts that have nowhere to land.
+      </p>
+    </div>
+    <div class="mt-9 overflow-x-auto rounded-xl border border-line bg-base-100">
+      <table class="w-full min-w-[640px] text-left">
+        <thead>
+          <tr class="border-b border-line">
+            <th class="p-4 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-base-content/45">
+              In {{ guide.name }}
+            </th>
+            <th class="p-4 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-primary">Lands in pplCRM as</th>
+            <th class="p-4 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-base-content/45">
+              Worth knowing
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of guide.mappings; track row.theirs) {
+          <tr class="border-b border-line last:border-b-0">
+            <td class="p-4 align-top text-[13.5px] font-medium">{{ row.theirs }}</td>
+            <td class="p-4 align-top text-[13.5px] text-base-content/70">{{ row.lands }}</td>
+            <td class="p-4 align-top text-[13px] leading-relaxed text-base-content/55">{{ row.note ?? '' }}</td>
+          </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- The import, in four steps -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="mx-auto max-w-[880px]">
+    <h2 class="text-center text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+      Then import it, in four steps.
+    </h2>
+    <div class="mt-9 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      @for (step of steps; track step.title; let i = $index) {
+      <div class="rounded-xl border border-line bg-base-50 p-6">
+        <div class="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-primary">Step {{ i + 1 }}</div>
+        <div class="mt-1.5 text-[15px] font-semibold">{{ step.title }}</div>
+        <p class="mt-1.5 text-[13.5px] leading-relaxed text-base-content/60">{{ step.body }}</p>
+      </div>
+      }
+    </div>
+    <p class="mx-auto mt-7 max-w-[720px] text-center text-[13.5px] leading-relaxed text-base-content/55">
+      {{ emailCheck }}
+    </p>
+  </div>
+</section>
+
+<!-- What does not come across -->
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="mx-auto max-w-[760px]">
+    <div class="mx-auto max-w-[620px] text-center">
+      <h2 class="text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">What does not come across.</h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        Stated here, on the page — not discovered halfway through your move.
+      </p>
+    </div>
+    <div class="mx-auto mt-9 flex max-w-[680px] flex-col gap-4">
+      @for (limit of guide.limits; track limit.title) {
+      <div class="rounded-xl border border-line bg-base-100 p-6">
+        <div class="text-[15px] font-semibold">{{ limit.title }}</div>
+        <p class="mt-1.5 text-[13.5px] leading-relaxed text-base-content/60">{{ limit.body }}</p>
+      </div>
+      }
+    </div>
+    <p class="mx-auto mt-8 max-w-[680px] text-center text-[12px] leading-relaxed text-base-content/40">
+      {{ guide.name }} is a trademark of its owner. pplCRM is independent and not affiliated with or endorsed by them.
+      Also moving from @for (other of others; track other.slug; let last = $last) {
+      <a class="font-semibold text-primary hover:text-secondary" [routerLink]="'/switch/' + other.slug"
+        >{{ other.name }}</a
+      >{{ last ? '?' : ', ' }} }
+    </p>
+  </div>
+</section>
+
+<!-- CTA band -->
+<section class="bg-navy px-5 py-14 text-center sm:px-8">
+  <h2 class="text-[clamp(1.375rem,4vw,1.625rem)] font-bold tracking-[-0.01em] text-white">
+    Run your {{ guide.name }} file on a free workspace.
+  </h2>
+  <p class="mx-auto mt-3.5 max-w-[540px] text-[15px] leading-relaxed text-white/75">
+    Start free, import a test file, and see your own people on the screen before you commit to anything. No card
+    required. Stuck on a column? Email us your header row and we’ll reply with what maps.
+  </p>
+  <div class="mt-6 flex flex-wrap items-center justify-center gap-3.5">
+    <a [href]="signupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">
+      Start free and import a test file
+    </a>
+    <a
+      [href]="mailto"
+      class="rounded-field border border-white/35 px-6 py-2.5 text-[14.5px] font-semibold text-white/85 hover:bg-white/10"
+    >
+      Email us your header row
+    </a>
+  </div>
+</section>
+
+<pc-site-footer />

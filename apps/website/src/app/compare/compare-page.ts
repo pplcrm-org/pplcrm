@@ -1,4 +1,5 @@
 import { Component } from '@angular/core';
+import { RouterLink } from '@angular/router';
 
 import { SiteFooter } from '../ui/site-footer';
 import { SiteHeader } from '../ui/site-header';
@@ -18,7 +19,7 @@ interface PlatformPoint {
 
 @Component({
   selector: 'pc-compare-page',
-  imports: [SiteHeader, SiteFooter],
+  imports: [SiteHeader, SiteFooter, RouterLink],
   templateUrl: './compare-page.html',
 })
 export class ComparePage {

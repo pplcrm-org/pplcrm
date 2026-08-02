@@ -85,6 +85,60 @@ export const appRoutes: Route[] = [
     loadComponent: () => import('./compare/compare-page').then((m) => m.ComparePage),
   },
   {
+    path: 'switch',
+    title: 'Switch to pplCRM from Breeze, Planning Center, NationBuilder or Mailchimp',
+    data: {
+      description:
+        'Step-by-step guides for moving your list to pplCRM: what to export, where every column ' +
+        'lands, and what does not come across — stated as plainly as what does.',
+    },
+    loadComponent: () => import('./switch/switch-page').then((m) => m.SwitchPage),
+  },
+  {
+    path: 'switch/breeze',
+    title: 'Moving from Breeze to pplCRM',
+    data: {
+      guide: 'breeze',
+      description:
+        'Export your people from Breeze, import them through the pplCRM wizard, and see exactly ' +
+        'what maps — people, families, tags and notes in one CSV, limits stated plainly.',
+    },
+    loadComponent: () => import('./switch/switch-guide-page').then((m) => m.SwitchGuidePage),
+  },
+  {
+    path: 'switch/planning-center',
+    title: 'Moving from Planning Center to pplCRM',
+    data: {
+      guide: 'planning-center',
+      description:
+        'Export your Planning Center People list, import it through the pplCRM wizard, and see ' +
+        'exactly what maps — households, tags and notes in one CSV, limits stated plainly.',
+    },
+    loadComponent: () => import('./switch/switch-guide-page').then((m) => m.SwitchGuidePage),
+  },
+  {
+    path: 'switch/nationbuilder',
+    title: 'Moving from NationBuilder to pplCRM',
+    data: {
+      guide: 'nationbuilder',
+      description:
+        'Export your NationBuilder people as a CSV and import them into pplCRM, where contacts ' +
+        'and households are unlimited on every plan. Column-by-column mapping, limits stated plainly.',
+    },
+    loadComponent: () => import('./switch/switch-guide-page').then((m) => m.SwitchGuidePage),
+  },
+  {
+    path: 'switch/mailchimp',
+    title: 'Moving from Mailchimp to pplCRM',
+    data: {
+      guide: 'mailchimp',
+      description:
+        'Export your subscribed Mailchimp audience and import it into pplCRM in four steps — ' +
+        'plus the honest part: how newsletter consent works here and what to do before your first send.',
+    },
+    loadComponent: () => import('./switch/switch-guide-page').then((m) => m.SwitchGuidePage),
+  },
+  {
     path: 'pricing',
     title: 'Pricing — pplCRM',
     data: {

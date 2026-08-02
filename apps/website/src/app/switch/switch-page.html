@@ -1,0 +1,96 @@
+<pc-site-header variant="solid" />
+
+<!-- Hero -->
+<section class="border-b border-line bg-base-200 px-5 py-16 sm:px-8">
+  <div class="mx-auto max-w-[760px] text-center">
+    <div class="eyebrow">Switching</div>
+    <h1 class="mt-3 text-balance text-[clamp(2rem,6vw,2.625rem)] font-bold tracking-[-0.02em]">
+      Bring the list. We’ll tell you exactly what maps.
+    </h1>
+    <p class="mx-auto mt-3.5 max-w-[560px] text-[16px] leading-relaxed text-base-content/60">
+      Every tool below exports a CSV, and pplCRM imports it through a guided four-step wizard. Each guide shows what to
+      export, where every column lands — and what does not come across, stated as plainly as what does.
+    </p>
+  </div>
+</section>
+
+<!-- Guide cards -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="mx-auto grid max-w-[880px] gap-4 sm:grid-cols-2">
+    @for (guide of guides; track guide.slug) {
+    <a
+      class="group rounded-xl border border-line bg-base-50 p-6 transition-colors hover:border-primary/40"
+      [routerLink]="'/switch/' + guide.slug"
+    >
+      <div class="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-base-content/45">{{ guide.kind }}</div>
+      <div class="mt-1.5 text-[17px] font-semibold">Moving from {{ guide.name }}</div>
+      <p class="mt-1.5 text-[13.5px] leading-relaxed text-base-content/60">{{ guide.hubLine }}</p>
+      <div class="mt-3 text-[13.5px] font-semibold text-primary group-hover:text-secondary">Read the guide →</div>
+    </a>
+    }
+  </div>
+</section>
+
+<!-- How the import works -->
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="mx-auto max-w-[880px]">
+    <div class="mx-auto max-w-[620px] text-center">
+      <h2 class="text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">One wizard, four steps.</h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        Whichever tool you are leaving, the import itself is the same guided flow.
+      </p>
+    </div>
+    <div class="mt-9 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      @for (step of steps; track step.title; let i = $index) {
+      <div class="rounded-xl border border-line bg-base-100 p-6">
+        <div class="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-primary">Step {{ i + 1 }}</div>
+        <div class="mt-1.5 text-[15px] font-semibold">{{ step.title }}</div>
+        <p class="mt-1.5 text-[13.5px] leading-relaxed text-base-content/60">{{ step.body }}</p>
+      </div>
+      }
+    </div>
+    <p class="mx-auto mt-7 max-w-[720px] text-center text-[13.5px] leading-relaxed text-base-content/55">
+      {{ emailCheck }}
+    </p>
+  </div>
+</section>
+
+<!-- The honest part -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="mx-auto max-w-[620px] text-center">
+    <h2 class="text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">What we won’t pretend.</h2>
+    <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+      No importer moves everything. Giving history and mailing-list consent never come across — gifts are recorded here
+      gift by gift, and consent is recorded on each person, never assumed from a file. Each guide states what stays
+      behind as plainly as what maps.
+    </p>
+    <p class="mt-6 text-[12px] leading-relaxed text-base-content/40">
+      Breeze, Planning Center, NationBuilder and Mailchimp are trademarks of their respective owners. pplCRM is
+      independent and not affiliated with or endorsed by any of them.
+    </p>
+  </div>
+</section>
+
+<!-- CTA band -->
+<section class="bg-navy px-5 py-14 text-center sm:px-8">
+  <h2 class="text-[clamp(1.375rem,4vw,1.625rem)] font-bold tracking-[-0.01em] text-white">
+    Not moving from one of these four?
+  </h2>
+  <p class="mx-auto mt-3.5 max-w-[540px] text-[15px] leading-relaxed text-white/75">
+    Email us the header row of your export and we’ll reply with exactly what maps and what will not. Or start free and
+    run a test file yourself — no card required.
+  </p>
+  <div class="mt-6 flex flex-wrap items-center justify-center gap-3.5">
+    <a [href]="signupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">
+      Start free and import a test file
+    </a>
+    <a
+      [href]="mailto"
+      class="rounded-field border border-white/35 px-6 py-2.5 text-[14.5px] font-semibold text-white/85 hover:bg-white/10"
+    >
+      Email us your header row
+    </a>
+  </div>
+</section>
+
+<pc-site-footer />
