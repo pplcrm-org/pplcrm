@@ -36,6 +36,20 @@ itself fails safe. A module that sends exclusively one kind declares it once:
 complaint cannot be attributed and no tripwire fires. That is precisely how the C5 abuse stayed
 invisible.
 
+**A blocked send is dropped in the job worker, never retried (2026-08-02).** The gate throws
+`TransactionalSendBlockedError`; none of the conditions behind it (suspension, pause, hourly cap)
+clears inside a retry window, so a retry only burns the job's attempts and dead-letters it. The
+handlers in `lib/jobs/handlers/notifications.handlers.ts` funnel every send through a local
+`sendOrDrop()` that catches it, logs a warning and returns false; `receipts.handlers.ts` does the
+same for receipt/statement mail. Two consequences worth knowing: `handleSendTransactionalEmail`
+drops it too, so every `enqueueMail()` caller inherits the behaviour; and the form-submission
+handlers now **fan out one job per message** (`fanOutMessages`, a single multi-row insert into
+`background_jobs`) instead of sending the audience-facing confirmation and the staff alert inline
+in sequence. Before that, a `contact`-blocked confirmation suppressed the `staff` alert the gate
+would have permitted under its own higher cap, and a staff-side failure re-sent the confirmation
+to a member of the public on every retry. Still uncaught, and still able to fail their jobs:
+`import.handlers.ts`, `export.handlers.ts` and `lib/mail/mentions-util.ts` (all `staff`).
+
 **Build email HTML with the `html` tagged template** (`lib/html-escape.ts`), which escapes
 interpolations by default. These messages carry tenant-controlled strings and go out over the
 platform's own DKIM-signed domain.

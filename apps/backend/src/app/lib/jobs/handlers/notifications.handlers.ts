@@ -1,11 +1,13 @@
 import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
 import { env } from '../../../../env';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../../logger';
 import { html, joinHtml, trustedHtml } from '../../html-escape';
 import { NotificationsRepo } from '../../../modules/notifications/repositories/notifications.repo';
 import { notificationEnabled } from '../../profile-preferences';
-import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { TransactionalEmailService, type SendMailOptions } from '../../mail/transactional-mail.service';
+import { TransactionalSendBlockedError } from '../../mail/transactional-send-guard';
 import { processMentions } from '../../mail/mentions-util';
 import { SmsService } from '../../sms/sms.service';
 import { CRON_JOBS } from '../cron-registry';
@@ -18,6 +20,128 @@ const smsService = new SmsService();
 // Chunk size for the keyset-paginated due-tasks scan below — bounds each page instead of
 // joining every tenant's overdue tasks into memory in one unbounded query.
 const CHECK_DUE_TASKS_PAGE_SIZE = 500;
+
+/** Retry budget for one queued email, matching TransactionalEmailService.enqueueMail. */
+const MAIL_JOB_MAX_ATTEMPTS = 5;
+/** The most restricted audience, so a message that forgot to classify itself is gated, not relayed. */
+const DEFAULT_MAIL_AUDIENCE = 'contact';
+
+/**
+ * Send one transactional message, dropping it if the anti-abuse gate refuses it.
+ *
+ * The gate (lib/mail/transactional-send-guard.ts) throws TransactionalSendBlockedError when the
+ * workspace is suspended, has sending paused, or is over its hourly cap for that audience. Its
+ * own doc comment says callers in the job worker should catch and drop rather than retry —
+ * none of those conditions clears inside a retry window, so retrying only burns the job's
+ * attempts and dead-letters it. Nothing on this path caught it, which had a worse consequence
+ * than a dead-lettered job: the handlers below send an audience-facing message before a
+ * staff-facing one, so a message blocked for the audience also stopped the staff alert, which
+ * the gate would have permitted under its own, higher cap.
+ *
+ * Returns true when the message went out. Every other error propagates so the worker retries.
+ */
+async function sendOrDrop(message: SendMailOptions, context: string): Promise<boolean> {
+  try {
+    await mailService.sendMail(message);
+    return true;
+  } catch (err) {
+    if (err instanceof TransactionalSendBlockedError) {
+      logger.warn(
+        {
+          context,
+          to: message.to,
+          tenantId: message.tenant_id ?? null,
+          audience: message.audience ?? null,
+          reason: err.message,
+        },
+        'Transactional email withheld by the send guard — dropped rather than retried',
+      );
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Hand a set of messages to the outbox as one job each, inside a single transaction.
+ *
+ * The form-submission handlers below produce two messages with different audiences: a
+ * confirmation to the member of the public who submitted the form, and an alert to the
+ * workspace's own staff. Sending them inline one after the other made them share a fate — a
+ * staff-side failure (a mail provider 5xx, a timeout, the 500/hour staff cap) failed the whole
+ * job, which then retried and re-sent the confirmation to the member of the public, up to three
+ * times, each one consuming another slot in the workspace's 200/hour contact budget.
+ *
+ * One job per message gives each message its own retry budget and its own durable record of
+ * having been delivered, so neither can duplicate the other. Enqueuing them in one transaction
+ * keeps this handler all-or-nothing: a partial enqueue never commits, so a retry cannot queue a
+ * message twice. (Residual: a crash in the instant between that commit and the worker marking
+ * this job done re-runs it. That is the outbox's ordinary at-least-once caveat, and it no longer
+ * depends on whether the other message succeeded.)
+ */
+async function fanOutMessages(db: Kysely<Models>, messages: SendMailOptions[], context: string): Promise<void> {
+  if (messages.length === 0) return;
+
+  // One INSERT statement, so the set of messages is queued all-or-nothing without opening a
+  // transaction. (A transaction would be wrong here anyway: this handler is sometimes given a
+  // transaction handle, and Kysely's db.transaction() on one issues a plain BEGIN on the same
+  // connection, whose COMMIT would commit the outer transaction.)
+  await db
+    .insertInto('background_jobs')
+    .values(
+      messages.map((message) => ({
+        tenant_id: message.tenant_id ?? null,
+        queue: 'default',
+        status: 'pending',
+        payload: JSON.stringify({
+          type: 'send-transactional-email',
+          to: message.to,
+          subject: message.subject,
+          text: message.text,
+          html: String(message.html),
+          tenant_id: message.tenant_id ?? null,
+          audience: message.audience ?? DEFAULT_MAIL_AUDIENCE,
+          notificationSettingsLink: message.notificationSettingsLink ?? null,
+        }),
+        run_at: new Date(),
+        max_attempts: MAIL_JOB_MAX_ATTEMPTS,
+      })),
+    )
+    .execute();
+
+  logger.info({ context, queued: messages.length }, 'Queued submission notification emails');
+}
+
+/**
+ * Pick the staff address that receives a "someone submitted your form" alert.
+ *
+ * This used to be `select email from authusers where tenant_id = ? limit 1`. With no ORDER BY,
+ * Postgres is free to return a different row between runs, so the alert could land on a
+ * different person each time. With no soft-delete filter it could also land on a departed user:
+ * this codebase tombstones users (identity scrubbed, row retained because ~61 foreign keys
+ * reference it) and every other read filters `deleted_at is null`.
+ *
+ * Now: live, active users only, owners before admins before everyone else, oldest account first
+ * as a deterministic tie-break.
+ */
+async function findStaffAlertRecipient(
+  db: Kysely<Models>,
+  tenantId: string,
+): Promise<{ email: string; first_name: string } | null> {
+  const recipient = await db
+    .selectFrom('authusers')
+    .select(['email', 'first_name'])
+    .where('tenant_id', '=', tenantId)
+    .where('deleted_at', 'is', null)
+    .where('deactivated_at', 'is', null)
+    .orderBy(sql`case authusers.role when 'owner' then 0 when 'admin' then 1 else 2 end`)
+    .orderBy('authusers.id', 'asc')
+    .limit(1)
+    .executeTakeFirst();
+
+  if (!recipient || !recipient.email) return null;
+  return { email: recipient.email, first_name: recipient.first_name };
+}
 
 export async function handleSendFormNotifications(
   payload: JobPayloadOf<'send-form-notifications'>,
@@ -48,7 +172,11 @@ export async function handleSendFormNotifications(
   const startFormatted = new Date(event.start_time).toLocaleString();
   const endFormatted = new Date(event.end_time).toLocaleString();
 
-  // 1. Send Confirmation Email to the Constituent (if enabled)
+  // Both messages are queued as independent jobs so neither can suppress or duplicate the
+  // other — see fanOutMessages.
+  const messages: SendMailOptions[] = [];
+
+  // 1. Confirmation Email to the Constituent (if enabled)
   if (event.send_signup_confirmation !== false) {
     const coordEmailLine = event.contact_email ? `Email: ${event.contact_email}` : '';
     const coordPhoneLine = event.contact_phone ? `Phone: ${event.contact_phone}` : '';
@@ -60,7 +188,7 @@ export async function handleSendFormNotifications(
     const coordPhoneHtml = event.contact_phone ? html`Phone: ${event.contact_phone}` : '';
     const coordinatorDetailsHtml = [coordEmailHtml, coordPhoneHtml].filter(Boolean);
 
-    await mailService.sendMail({
+    messages.push({
       to: payload.email,
       subject: `You're signed up to volunteer: ${event.name}`,
       text: `Hi ${payload.firstName || 'there'},\n\nThank you for signing up to volunteer for "${event.name}"!\n\nDetails:\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}\n\nEvent coordinator:\n${coordinatorDetails || 'N/A'}\n\nWe look forward to seeing you there!`,
@@ -82,24 +210,16 @@ export async function handleSendFormNotifications(
     });
   }
 
-  // 2. Send Alert Email to the Event Coordinator / Tenant Admin (if enabled)
+  // 2. Alert Email to the Event Coordinator / Tenant Admin (if enabled)
   if (event.send_volunteer_alert !== false) {
     let alertRecipient = event.contact_email || null;
 
     if (!alertRecipient) {
-      const admin = await db
-        .selectFrom('authusers')
-        .select('email')
-        .where('tenant_id', '=', payload.tenantId)
-        .limit(1)
-        .executeTakeFirst();
-      if (admin && admin.email) {
-        alertRecipient = admin.email;
-      }
+      alertRecipient = (await findStaffAlertRecipient(db, payload.tenantId))?.email ?? null;
     }
 
     if (alertRecipient) {
-      await mailService.sendMail({
+      messages.push({
         to: alertRecipient,
         subject: `New volunteer signup: ${event.name}`,
         text: `Hi,\n\nA new constituent has signed up to volunteer for "${event.name}".\n\nName: ${payload.firstName || ''} ${payload.lastName || ''}\nEmail: ${payload.email}\nPhone: ${payload.mobile || 'N/A'}\nNotes: ${payload.notes || 'None'}`,
@@ -117,6 +237,8 @@ export async function handleSendFormNotifications(
       });
     }
   }
+
+  await fanOutMessages(db, messages, 'volunteer signup');
 }
 
 export async function handleSendShiftReminder(
@@ -201,16 +323,21 @@ export async function handleSendShiftReminder(
     </div>
     <p>Thank you for volunteering, and we look forward to seeing you there!</p>`;
 
-  await mailService.sendMail({
-    to: person.email,
-    subject,
-    text,
-    html: body,
-    tenant_id: shift.tenant_id,
-    audience: 'contact',
-  });
+  const sent = await sendOrDrop(
+    {
+      to: person.email,
+      subject,
+      text,
+      html: body,
+      tenant_id: shift.tenant_id,
+      audience: 'contact',
+    },
+    'volunteer shift reminder',
+  );
 
-  logger.info(`Successfully sent shift reminder email to ${person.email} for shift ${shift.id}`);
+  if (sent) {
+    logger.info(`Successfully sent shift reminder email to ${person.email} for shift ${shift.id}`);
+  }
 }
 
 export async function handleSendWebformNotifications(
@@ -231,9 +358,13 @@ export async function handleSendWebformNotifications(
     return;
   }
 
-  // 1. Send Confirmation Email to the Constituent (if enabled)
+  // Both messages are queued as independent jobs so neither can suppress or duplicate the
+  // other — see fanOutMessages.
+  const messages: SendMailOptions[] = [];
+
+  // 1. Confirmation Email to the Constituent (if enabled)
   if (form.send_confirmation !== false) {
-    await mailService.sendMail({
+    messages.push({
       to: payload.email,
       subject: `Thank you for your submission to ${form.name}`,
       text: `Hi ${payload.firstName || 'there'},\n\nThank you for submitting our form "${form.name}". We have received your request and our team will follow up with you soon.`,
@@ -248,17 +379,12 @@ export async function handleSendWebformNotifications(
     });
   }
 
-  // 2. Send Alert Email to the Tenant Admin (if enabled)
+  // 2. Alert Email to the Tenant Admin (if enabled)
   if (form.send_alert !== false) {
-    const admin = await db
-      .selectFrom('authusers')
-      .select(['email', 'first_name'])
-      .where('tenant_id', '=', form.tenant_id)
-      .limit(1)
-      .executeTakeFirst();
+    const admin = await findStaffAlertRecipient(db, form.tenant_id);
 
-    if (admin && admin.email) {
-      await mailService.sendMail({
+    if (admin) {
+      messages.push({
         to: admin.email,
         subject: `New submission on ${form.name}`,
         text: `Hi ${admin.first_name || 'there'},\n\nYou have received a new submission on form "${form.name}" from ${payload.firstName || ''} ${payload.lastName || ''} (${payload.email}).\n\nNotes:\n${payload.notes || 'None'}`,
@@ -276,6 +402,8 @@ export async function handleSendWebformNotifications(
       });
     }
   }
+
+  await fanOutMessages(db, messages, 'web form submission');
 }
 
 export async function handleSendEventRegistrationConfirmation(
@@ -346,24 +474,29 @@ export async function handleSendEventRegistrationConfirmation(
     trustedHtml('<br>'),
   );
 
-  await mailService.sendMail({
-    to: person.email,
-    subject: `Registration confirmed: ${event.name}`,
-    text: `Hi ${person.first_name || 'there'},\n\nYou're registered for "${event.name}"!\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${coordLine ? `\n\nContact:\n${coordLine}` : ''}\n\nWe look forward to seeing you there!`,
-    html: html`<h2>Registration confirmed</h2>
-      <p>Hi ${person.first_name || 'there'},</p>
-      <p>You're registered for <strong>"${event.name}"</strong>!</p>
-      <div class="panel">
-        <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
-        <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
-        ${String(coordHtml) ? html`<p><strong>Contact:</strong><br />${coordHtml}</p>` : ''}
-      </div>
-      <p>We look forward to seeing you there!</p>`,
-    tenant_id: registration.tenant_id,
-    audience: 'contact',
-  });
+  const sent = await sendOrDrop(
+    {
+      to: person.email,
+      subject: `Registration confirmed: ${event.name}`,
+      text: `Hi ${person.first_name || 'there'},\n\nYou're registered for "${event.name}"!\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${coordLine ? `\n\nContact:\n${coordLine}` : ''}\n\nWe look forward to seeing you there!`,
+      html: html`<h2>Registration confirmed</h2>
+        <p>Hi ${person.first_name || 'there'},</p>
+        <p>You're registered for <strong>"${event.name}"</strong>!</p>
+        <div class="panel">
+          <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
+          <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
+          ${String(coordHtml) ? html`<p><strong>Contact:</strong><br />${coordHtml}</p>` : ''}
+        </div>
+        <p>We look forward to seeing you there!</p>`,
+      tenant_id: registration.tenant_id,
+      audience: 'contact',
+    },
+    'event registration confirmation',
+  );
 
-  logger.info(`Sent registration confirmation to ${person.email} for event ${registration.event_id}`);
+  if (sent) {
+    logger.info(`Sent registration confirmation to ${person.email} for event ${registration.event_id}`);
+  }
 }
 
 export async function handleSendEventReminder(
@@ -418,36 +551,47 @@ export async function handleSendEventReminder(
     ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location_address)}`
     : null;
 
-  await mailService.sendMail({
-    to: person.email,
-    subject: `Reminder: ${event.name} is tomorrow`,
-    text: `Hi ${person.first_name || 'there'},\n\nThis is a reminder that you're registered for "${event.name}" tomorrow.\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${mapsUrl ? `\nDirections: ${mapsUrl}` : ''}\n\nWe look forward to seeing you there!`,
-    html: html`<h2>Event reminder</h2>
-      <p>Hi ${person.first_name || 'there'},</p>
-      <p>This is a reminder that you're registered for <strong>"${event.name}"</strong> tomorrow.</p>
-      <div class="panel">
-        <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
-        <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
-        ${mapsUrl ? html`<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}
-      </div>
-      <p>We look forward to seeing you there!</p>`,
-    tenant_id: registration.tenant_id,
-    audience: 'contact',
-  });
+  const sent = await sendOrDrop(
+    {
+      to: person.email,
+      subject: `Reminder: ${event.name} is tomorrow`,
+      text: `Hi ${person.first_name || 'there'},\n\nThis is a reminder that you're registered for "${event.name}" tomorrow.\n\nDate & time: ${startFormatted} - ${endFormatted}\nLocation: ${event.location_address || 'TBD'}${mapsUrl ? `\nDirections: ${mapsUrl}` : ''}\n\nWe look forward to seeing you there!`,
+      html: html`<h2>Event reminder</h2>
+        <p>Hi ${person.first_name || 'there'},</p>
+        <p>This is a reminder that you're registered for <strong>"${event.name}"</strong> tomorrow.</p>
+        <div class="panel">
+          <p><strong>Date &amp; time:</strong> ${startFormatted} - ${endFormatted}</p>
+          <p><strong>Location:</strong> ${event.location_address || 'TBD'}</p>
+          ${mapsUrl ? html`<p><a href="${mapsUrl}" target="_blank">Open in Google Maps</a></p>` : ''}
+        </div>
+        <p>We look forward to seeing you there!</p>`,
+      tenant_id: registration.tenant_id,
+      audience: 'contact',
+    },
+    'event reminder',
+  );
 
-  logger.info(`Sent event reminder to ${person.email} for event ${registration.event_id}`);
+  if (sent) {
+    logger.info(`Sent event reminder to ${person.email} for event ${registration.event_id}`);
+  }
 }
 
 export async function handleSendTransactionalEmail(payload: JobPayloadOf<'send-transactional-email'>): Promise<void> {
-  await mailService.sendMail({
-    to: payload.to,
-    subject: payload.subject ?? '',
-    text: payload.text ?? '',
-    html: payload.html ?? '',
-    tenant_id: payload.tenant_id ?? null,
-    audience: payload.audience ?? undefined,
-    notificationSettingsLink: payload.notificationSettingsLink ?? undefined,
-  });
+  // This is the per-message job the form-submission handlers fan out into, and the one every
+  // enqueueMail() caller lands on. Dropping a gate-blocked message here is what stops a
+  // suspended, paused or capped workspace from burning five attempts and dead-lettering.
+  await sendOrDrop(
+    {
+      to: payload.to,
+      subject: payload.subject ?? '',
+      text: payload.text ?? '',
+      html: payload.html ?? '',
+      tenant_id: payload.tenant_id ?? null,
+      audience: payload.audience ?? undefined,
+      notificationSettingsLink: payload.notificationSettingsLink ?? undefined,
+    },
+    'queued transactional email',
+  );
 }
 
 export async function handleSendSms(payload: JobPayloadOf<'send-sms'>): Promise<void> {
@@ -457,20 +601,23 @@ export async function handleSendSms(payload: JobPayloadOf<'send-sms'>): Promise<
 export async function handleSendSubscriptionConfirmation(
   payload: JobPayloadOf<'send-subscription-confirmation'>,
 ): Promise<void> {
-  await mailService.sendMail({
-    to: payload.email,
-    subject: 'Please confirm your subscription',
-    text: `Hi ${payload.firstName || 'there'},\n\nPlease confirm your subscription by visiting the link below:\n\n${payload.confirmUrl}\n\nIf you did not request this, you can safely ignore this email.`,
-    html: html`<h2>Confirm your subscription</h2>
-      <p>Hi ${payload.firstName || 'there'},</p>
-      <p>Please confirm your subscription by clicking the button below:</p>
-      <div class="btn-container">
-        <a href="${payload.confirmUrl}" class="btn">Confirm subscription</a>
-      </div>
-      <p class="warning">If you did not request this, you can safely ignore this email.</p>`,
-    tenant_id: payload.tenantId ?? null,
-    audience: 'contact',
-  });
+  await sendOrDrop(
+    {
+      to: payload.email,
+      subject: 'Please confirm your subscription',
+      text: `Hi ${payload.firstName || 'there'},\n\nPlease confirm your subscription by visiting the link below:\n\n${payload.confirmUrl}\n\nIf you did not request this, you can safely ignore this email.`,
+      html: html`<h2>Confirm your subscription</h2>
+        <p>Hi ${payload.firstName || 'there'},</p>
+        <p>Please confirm your subscription by clicking the button below:</p>
+        <div class="btn-container">
+          <a href="${payload.confirmUrl}" class="btn">Confirm subscription</a>
+        </div>
+        <p class="warning">If you did not request this, you can safely ignore this email.</p>`,
+      tenant_id: payload.tenantId ?? null,
+      audience: 'contact',
+    },
+    'subscription confirmation',
+  );
 }
 
 export async function handleCheckDueTasks(db: Kysely<Models>): Promise<void> {
@@ -584,13 +731,21 @@ export async function checkDueTasks(db: Kysely<Models>): Promise<void> {
 
         htmlContent += `</ul></div>`;
 
-        await mailService.sendMail({
-          to: userEmail,
-          subject: `You have ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} due or overdue`,
-          text: textContent,
-          html: htmlContent,
-          notificationSettingsLink: true,
-        });
+        // Classified and attributed: this is a notice to one of the workspace's own users, and
+        // the tenant_id is what lets a bounce or complaint be traced back to a workspace at all.
+        // A blocked one is dropped for this user rather than abandoning the remaining users.
+        await sendOrDrop(
+          {
+            to: userEmail,
+            subject: `You have ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} due or overdue`,
+            text: textContent,
+            html: htmlContent,
+            tenant_id: String(firstRow.tenant_id),
+            audience: 'staff',
+            notificationSettingsLink: true,
+          },
+          'task due reminder',
+        );
       }
     }
   } catch (err) {
