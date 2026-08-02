@@ -33,6 +33,7 @@ const KNOWN_APP_ROUTES = new Set([
   '/deliveries/plan',
   '/deliveries/routes',
   '/donations',
+  '/donations/receipts',
   '/forms',
   '/tasks',
   '/tasks/board',

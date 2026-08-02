@@ -170,7 +170,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
           '**Email sync**: connect your email provider so incoming and outgoing email syncs into your pplCRM inbox.',
           '**Domain verification**: the DNS records (SPF, DKIM, DMARC) that let you send email from your own domain.',
           '**Service levels**: response-time targets for email and tasks, working days and hours, and the warning/critical thresholds behind the dashboard status.',
-          '**Donations**: donation limit, residency restrictions, tax credit tiers, and your Stripe connection.',
+          '**Donations**: donation limit, residency restrictions, tax credit tiers, your Stripe connection, and receipt configuration — the receipting regime, registration number, signatory and signature image, numbering prefix, and the auto-issue toggle. See [Donation receipts and giving statements](/help/donation-receipts).',
           '**Deliveries**: the planning defaults the Plan routes page starts from — minutes per stop, average driving speed, how many drivers, and whether the drive back to the start counts. Organizers can still override any of them for a single plan without changing the defaults.',
           '**App**: how the volunteer-facing apps behave, including whether volunteer route links expire after 30 days. Expiry is the secure default (a forwarded or long-lost link goes dead on its own), but you can turn it off if your delivery routes run longer. Volunteers still verify a code and need a one-time approval either way.',
           '**Storage**: your plan quota, live usage, and the files taking up the most space.',

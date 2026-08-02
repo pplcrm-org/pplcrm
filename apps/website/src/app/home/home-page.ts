@@ -125,10 +125,10 @@ export class HomePage {
     {
       icon: 'credit-card',
       title: 'Online giving pages',
-      // "Recorded and tallied", not "receipted": the product does not issue official donation
-      // receipts today (donations carry a receipt flag only). Do not re-add a receipt claim
-      // here without the feature existing — see the website-claims registry.
-      body: 'Share a donation page and gifts land straight on the donor’s record — recorded, tallied and exportable for your books. No third spreadsheet to reconcile.',
+      // "Receipted" is a real claim now: donation_receipts issues numbered official receipts
+      // (CRA charitable + Canadian political regimes) and batch year-end statements. Keep this
+      // copy in step with what the receipts module actually does — see the website-claims registry.
+      body: 'Share a donation page and gifts land straight on the donor’s record — recorded, receipted with numbered official receipts, and summed into year-end giving statements. No third spreadsheet to reconcile.',
     },
     this.copy.oneList,
   ];

@@ -25,7 +25,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       'residency',
       'paused',
     ],
-    related: ['person-profile', 'forms', 'export', 'grid-basics'],
+    related: ['donation-receipts', 'person-profile', 'forms', 'export', 'grid-basics'],
     blocks: [
       { kind: 'h2', id: 'donations', text: 'Donations: money received' },
       {
@@ -38,11 +38,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Most gifts arrive on their own through a fundraising page. For cash, a check, or a bank transfer collected offline, click **Record donation** at the top of the Donations page: pick the donor, enter the amount, and choose a method (Card, Check, Cash, or Bank transfer). A receipt goes out automatically. Configure the sender and template in Workspace settings → Donations.',
+        text: 'Most gifts arrive on their own through a fundraising page. For cash, a check, or a bank transfer collected offline, click **Record donation** at the top of the Donations page: pick the donor, enter the amount and their mailing address (no gift is recorded without one — receipts must print it), and choose a method (Card, Check, Cash, or Bank transfer). Official receipts are covered in [Donation receipts and giving statements](/help/donation-receipts): configure the regime in Workspace settings → Donations, then issue receipts by hand or turn on auto-issue.',
       },
       {
         kind: 'p',
-        text: 'If a card gift is later refunded or charged back through Stripe, the donation updates itself. It shows as **refunded** or **disputed** and stops counting toward the donor’s giving totals and contribution limits, so your reports stay honest without any manual cleanup. A chargeback you later win flips the gift back to succeeded automatically.',
+        text: 'If a card gift is later refunded or charged back through Stripe, the donation updates itself. It shows as **refunded** or **disputed** and stops counting toward the donor’s giving totals and contribution limits, so your reports stay honest without any manual cleanup. Any receipt covering the gift is cancelled at the same moment — a reversed gift never keeps a live receipt. A chargeback you later win flips the gift back to succeeded automatically; its receipt stays cancelled until you reissue it (receipt numbers are never silently reused).',
       },
       { kind: 'h2', id: 'processor', text: 'Choose your payment processor' },
       {
@@ -88,6 +88,62 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         tone: 'tip',
         title: 'Thank fast',
         text: 'Gratitude is a retention strategy. Pair a page with an automation that thanks donors the moment a gift lands. See [Automations](/help/automations).',
+      },
+    ],
+  },
+  {
+    id: 'donation-receipts',
+    category: 'engagement',
+    title: 'Donation receipts and giving statements',
+    summary:
+      'Issue official CRA or political contribution receipts — numbered, immutable, cancel-and-replace — and batch year-end giving statements.',
+    keywords: [
+      'receipt',
+      'official receipt',
+      'tax receipt',
+      'giving statement',
+      'year-end',
+      'CRA',
+      'charity',
+      'political contribution',
+      'registered agent',
+      'cancel receipt',
+      'reissue',
+      'signature',
+      'statement',
+    ],
+    related: ['donations', 'person-profile', 'settings'],
+    blocks: [
+      { kind: 'h2', id: 'setup', text: 'Set up receipting once' },
+      {
+        kind: 'p',
+        text: 'Under [Workspace → Donations](/workspace/donations), choose your **receipting regime**: registered charity (CRA official donation receipts), federal political, or a provincial political regime (Ontario, British Columbia, Alberta, Quebec). The regime decides what a receipt must contain and who may sign it. Then fill in your legal organization name and address, registration number, the signatory’s name and title, an uploaded signature image, a receipt number prefix, and the place of issue. **Preview receipt** shows a SPECIMEN-watermarked sample before anything real is issued.',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'Check who may issue receipts',
+        text: 'Only specific roles may issue contribution receipts — federally a registered agent or official agent; provincially the role your electoral authority prescribes; for charities, someone the charity authorizes. Confirm with your own counsel or electoral authority before issuing. Two special cases the app enforces: Ontario candidate campaigns are receipted by Elections Ontario (gifts are recorded here, not receipted here), and Quebec provincial receipts are issued by Élections Québec, so pplCRM never prints them.',
+      },
+      { kind: 'h2', id: 'issuing', text: 'Issue, cancel, replace' },
+      {
+        kind: 'p',
+        text: 'Open any gift from the [Donations](/donations) grid (or the person’s Donations tab) to issue its receipt, download the PDF, or fix a mistake. Receipts are **numbered gap-free per year** and immutable once issued: corrections go through **cancel and replace**, which cancels the old receipt (kept forever, marked cancelled, with your reason) and issues a successor that prints “cancels and replaces receipt No. …”. Turn on **auto-issue** to receipt every new gift automatically, or choose **one cumulative receipt per donor per year** and issue each donor’s annual receipt in January. If a receipted gift is refunded or charged back, its receipt is cancelled automatically.',
+      },
+      {
+        kind: 'p',
+        text: 'Every gift needs the donor’s **mailing address** — online checkout collects it, and the Record donation dialog requires it. An older gift recorded without one shows “needs donor address”: add an address to the donor’s household, then issue.',
+      },
+      { kind: 'h2', id: 'statements', text: 'Year-end giving statements' },
+      {
+        kind: 'p',
+        text: 'The [Receipts & statements](/donations/receipts) tab batches one **giving statement** per donor covering a calendar year — a summary, not an official receipt. Donors with an email on file receive theirs automatically (large batches send in waves over a few hours); the rest are marked **Print & mail** for you to download. You are notified when the run completes, with counts of emailed and to-print statements. Rerunning a year only fills in donors who do not have a statement yet.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Receipts are records, not legal advice',
+        text: 'pplCRM prepares documents from the details you configure; issuing legally valid receipts remains your organization’s responsibility. When in doubt, ask your counsel, the CRA, or your electoral authority.',
       },
     ],
   },

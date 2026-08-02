@@ -170,6 +170,7 @@ export const PRIVACY_DOC: LegalDoc = {
         '**Synced mail you archive or move** out of a synced folder in your own mail client is hidden from the CRM but kept, so any comments, assignment or triage status your team added to it survive. If nobody ever commented on it, assigned it, starred it or closed it, the copy is deleted 90 days later.',
         '**Synced mail after a move to the Free plan.** The shared inbox is a paid feature. When a workspace moves to the Free plan, mailbox sync stops and its synced email is kept for 30 days, then permanently deleted along with the mailbox connection. Upgrading within those 30 days restores the inbox intact; the originals always remain in your own Gmail or Microsoft mailbox.',
         '**Export files** are downloadable for 30 days, then removed. **Import source files** are kept for 90 days so you can audit an import, then removed.',
+        '**Donation receipts and giving statements** (the PDF documents) are kept for as long as the workspace exists — receipt rules require even cancelled receipts to be retained — and count toward the workspace storage quota. They are permanently deleted with the workspace.',
         '**Sessions** expire after 24 hours, or 30 days if you chose “remember me”. Volunteer device sessions expire after 30 days.',
         '**Suppression records** (unsubscribes, bounces, complaints) are kept while a workspace is active, because keeping them is what honors the opt-out.',
         '**Billing records** are kept as long as tax and accounting law requires.',

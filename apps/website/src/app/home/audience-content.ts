@@ -311,7 +311,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'currency-dollar',
         title: 'Donations, gratefully',
-        body: '611 donors, every gift on its donor’s record. Pledges and running totals without a second spreadsheet.',
+        body: '611 donors, every gift on its donor’s record — with numbered contribution receipts when your regime allows them. Pledges and running totals without a second spreadsheet.',
       },
       IMPORT_CARD,
     ],
@@ -418,7 +418,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'currency-dollar',
         title: 'Giving, gratefully',
-        body: '611 donors, every gift on its donor’s record. Recurring gifts, pledges and running totals without a second spreadsheet.',
+        body: '611 donors, every gift on its donor’s record. Recurring gifts, pledges, official donation receipts and running totals without a second spreadsheet.',
       },
       IMPORT_CARD,
     ],
@@ -533,7 +533,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'currency-dollar',
         title: 'Giving, gratefully',
-        body: 'Tithes, offerings and pledges land on each family’s record — recorded, tallied and exportable for your books, without a second spreadsheet.',
+        body: 'Tithes, offerings and pledges land on each family’s record — receipted with official CRA receipts, and summed into year-end giving statements you can email or print. No second spreadsheet.',
       },
       {
         icon: 'arrow-up-tray',
