@@ -82,6 +82,13 @@ export interface ReceiptRegimeSpec {
   registrationNumberLabel: string;
   /** Settings that must be present before this regime issues any receipt. */
   requiredIssuerFields: readonly ReceiptIssuerField[];
+  /**
+   * Settings this regime prescribes that the product reports as missing but never withholds a
+   * receipt over. The signature image is the only one: a facsimile signature is prescribed, it is
+   * the issuing organization's own decision how it signs, and blocking issuance to enforce it
+   * would substitute our judgement for theirs. We say it is missing; they decide.
+   */
+  advisoryIssuerFields: readonly ReceiptIssuerField[];
   /** Additional settings required when the gift's campaign has kind='election'. */
   candidateExtraFields: readonly ReceiptIssuerField[];
   /**

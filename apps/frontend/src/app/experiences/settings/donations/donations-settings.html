@@ -775,7 +775,7 @@
         </span>
         <button type="button" class="btn btn-ghost btn-xs text-error" (click)="clearSignature()">Remove</button>
         } @else {
-        <span class="text-xs text-base-content/50">No signature yet — official receipts need one.</span>
+        <span class="text-xs text-base-content/50">No signature yet.</span>
         }
         <label class="btn btn-outline btn-xs gap-1" [class.btn-disabled]="uploadingSignature()">
           @if (uploadingSignature()) { <span class="loading loading-spinner loading-xs"></span> } @else {
@@ -784,6 +784,10 @@
           <input type="file" accept="image/*" class="hidden" (change)="onSignatureSelected($event)" />
         </label>
       </div>
+      <p class="text-xs text-base-content/60">
+        Your regime prescribes a signature on official receipts, and a scanned facsimile is accepted. Whether to print
+        one is your organization's call — receipts issue either way, showing the signatory's printed name.
+      </p>
     </div>
 
     <!-- Mode + auto-issue -->

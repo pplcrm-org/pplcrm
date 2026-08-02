@@ -23,6 +23,7 @@ export const POLITICAL_QUEBEC_REGIME: ReceiptRegimeSpec = {
   issuerRole: 'Élections Québec',
   registrationNumberLabel: '',
   requiredIssuerFields: [],
+  advisoryIssuerFields: [],
   candidateExtraFields: [],
   footerLines: [],
   settingsCaveat:

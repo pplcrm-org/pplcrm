@@ -225,11 +225,10 @@ describe('demo datasets', () => {
         expect(spec.issuance, `${mode} seeds receipts under ${regime}, whose receipts are issued externally`).toBe(
           'internal',
         );
+        // Only the blocking fields. The signature image is advisory and a dataset cannot supply
+        // one anyway (it is an uploaded file, not a settings string), which is exactly why
+        // issuance does not depend on it.
         for (const field of spec.requiredIssuerFields) {
-          // signature_file_id is the one required field a dataset cannot supply: the signature is
-          // an uploaded image, and the demo deliberately makes the user provide their own rather
-          // than shipping a fake one under a real workspace's name.
-          if (field === 'signature_file_id') continue;
           expect(dataset.receiptSettings[`receipts.${field}`], `${mode} is missing receipts.${field}`).toBeTruthy();
         }
       });

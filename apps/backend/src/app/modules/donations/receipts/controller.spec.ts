@@ -269,6 +269,29 @@ describe('DonationReceiptsController', () => {
     await expect(controller.issueReceipt(auth(), d1, {})).rejects.toThrow(/Elections Ontario/);
   });
 
+  /**
+   * A facsimile signature is prescribed by every printing regime, but whether to print one is the
+   * issuing organization's decision, not ours. The product reports the empty field and issues the
+   * receipt anyway, with the signatory's printed name in place of the image.
+   */
+  it('issues without a signature image, reporting it as advice rather than blocking', async () => {
+    await db
+      .deleteFrom('settings')
+      .where('tenant_id', '=', seed.tenantId)
+      .where('key', '=', 'receipts.signature_file_id')
+      .execute();
+
+    const status = await controller.getReceiptSettingsStatus(seed.tenantId);
+    expect(status.complete).toBe(true);
+    expect(status.missing).toHaveLength(0);
+    expect(status.advisory).toEqual(['signature image']);
+    expect(status.advisoryMessage).toMatch(/still issue/i);
+
+    const donationId = await insertDonation(db, seed, 10000);
+    const receipt = await controller.issueReceipt(auth(), donationId, {});
+    expect(receipt.receipt_number).toBeTruthy();
+  });
+
   it('holds a legacy gift with no address anywhere as "needs donor address"', async () => {
     // Strip both address sources: the donation snapshot and the household.
     const d1 = await insertDonation(db, seed, 10000, { street: null, city: null, zip: null });

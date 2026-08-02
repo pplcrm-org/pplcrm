@@ -28,7 +28,8 @@ export const POLITICAL_FEDERAL_REGIME: ReceiptRegimeSpec = {
   candidateIssuance: 'internal',
   issuerRole: 'Registered agent / electoral district agent / official agent',
   registrationNumberLabel: 'Elections Canada registry name confirmation (optional reference)',
-  requiredIssuerFields: ['org_legal_name', 'agent_name', 'signature_file_id'],
+  requiredIssuerFields: ['org_legal_name', 'agent_name'],
+  advisoryIssuerFields: ['signature_file_id'],
   candidateExtraFields: ['polling_day'],
   footerLines: ['Issued under the Income Tax Act (Canada) for a monetary contribution.'],
   settingsCaveat:

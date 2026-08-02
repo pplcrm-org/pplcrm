@@ -30,14 +30,8 @@ export const CRA_CHARITY_REGIME: ReceiptRegimeSpec = {
   candidateIssuance: 'internal',
   issuerRole: 'Individual authorized by the charity to acknowledge gifts',
   registrationNumberLabel: 'CRA registration number (e.g. 123456789 RR 0001)',
-  requiredIssuerFields: [
-    'org_legal_name',
-    'org_address',
-    'registration_number',
-    'place_of_issue',
-    'signatory_name',
-    'signature_file_id',
-  ],
+  requiredIssuerFields: ['org_legal_name', 'org_address', 'registration_number', 'place_of_issue', 'signatory_name'],
+  advisoryIssuerFields: ['signature_file_id'],
   candidateExtraFields: [],
   footerLines: ['Canada Revenue Agency · canada.ca/charities-giving'],
   settingsCaveat:

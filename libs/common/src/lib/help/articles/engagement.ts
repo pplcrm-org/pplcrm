@@ -117,7 +117,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'setup', text: 'Set up receipting once' },
       {
         kind: 'p',
-        text: 'Under [Workspace → Donations](/workspace/donations), choose your **receipting regime**: registered charity (CRA official donation receipts), federal political, or a provincial political regime (Ontario, British Columbia, Alberta, Quebec). The regime decides what a receipt must contain and who may sign it. Then fill in your legal organization name and address, registration number, the signatory’s name and title, an uploaded signature image, a receipt number prefix, and the place of issue. **Preview receipt** shows a SPECIMEN-watermarked sample before anything real is issued.',
+        text: 'Under [Workspace → Donations](/workspace/donations), choose your **receipting regime**: registered charity (CRA official donation receipts), federal political, or a provincial political regime (Ontario, British Columbia, Alberta, Quebec). The regime decides what a receipt must contain and who may sign it. Then fill in your legal organization name and address, registration number, the signatory’s name and title, a receipt number prefix, and the place of issue. **Preview receipt** shows a SPECIMEN-watermarked sample before anything real is issued.',
+      },
+      {
+        kind: 'p',
+        text: 'You can also upload a **signature image**, which is printed above the signatory’s name; a scanned facsimile is accepted under every regime here. Uploading one is your organization’s decision, not a requirement pplCRM imposes: if there is none on file the receipts page says so, and receipts still issue, printing the signatory’s name and the words “Authorized signature” without an image above them.',
       },
       {
         kind: 'callout',
@@ -261,6 +265,18 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'The **Responses** tab lists each submission and links straight to the person it created or updated. Every response also applies the form’s tags, including an automatic `Source: <form name>` tag, and joins the lists you chose under **Audience**, so your segmentation stays effortless. Export the responses to CSV anytime.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'What a response may change on someone you already have',
+        text: 'A form is public, so anybody can submit one. When the email matches a person already in your workspace, the response is **linked** to them rather than allowed to rewrite them: it can fill a first name, last name or mobile that is currently blank, and nothing else. It never overwrites a value you already have, never changes their household or address, and never edits their notes. The full answers — address and message included — are kept on the response itself, where you can read them and apply anything worth keeping by hand. A brand-new person is created in full, address and all.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Only the fields your form defines are accepted',
+        text: 'A submission is matched against your form’s own field list. Answers to fields the form doesn’t define are discarded and never reach the person record or the response — so a form with no address inputs cannot receive an address, whoever posts to it.',
       },
       { kind: 'h2', id: 'share', text: 'Share and embed' },
       {

@@ -34,6 +34,14 @@
       <a routerLink="/workspace/donations" class="link font-semibold">Finish it in Workspace settings → Donations.</a>
     </span>
   </div>
+  } @else if (status.advisoryMessage) {
+  <div class="alert alert-info mb-6 text-sm">
+    <pc-icon name="information-circle" [size]="5"></pc-icon>
+    <span>
+      {{ status.advisoryMessage }}
+      <a routerLink="/workspace/donations" class="link font-semibold">Workspace settings → Donations.</a>
+    </span>
+  </div>
   } } @if (_loading.visible()) {
   <progress class="progress w-full text-primary mb-6"></progress>
   }

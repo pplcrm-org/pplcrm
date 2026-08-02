@@ -28,7 +28,8 @@ export const POLITICAL_BC_REGIME: ReceiptRegimeSpec = {
   candidateIssuance: 'internal',
   issuerRole: 'Financial agent',
   registrationNumberLabel: 'Identity number (Election Act s.192)',
-  requiredIssuerFields: ['org_legal_name', 'registration_number', 'agent_name', 'signature_file_id'],
+  requiredIssuerFields: ['org_legal_name', 'registration_number', 'agent_name'],
+  advisoryIssuerFields: ['signature_file_id'],
   candidateExtraFields: ['electoral_district', 'polling_day'],
   footerLines: ['Issued under the Income Tax Act (British Columbia) for a monetary political contribution.'],
   settingsCaveat:

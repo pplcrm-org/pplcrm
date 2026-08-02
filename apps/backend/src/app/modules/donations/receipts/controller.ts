@@ -104,12 +104,24 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     return required.filter((field) => !settings.values[field]).map((field) => RECEIPT_ISSUER_FIELD_LABELS[field]);
   }
 
+  /**
+   * Prescribed fields that are absent but do NOT stop a receipt going out — currently the
+   * signature image. Reported so the workspace knows; never fed to `assertIssuable`.
+   */
+  private advisoryMissingFields(settings: ReceiptWorkspaceSettings, spec: ReceiptRegimeSpec): string[] {
+    return spec.advisoryIssuerFields
+      .filter((field) => !settings.values[field])
+      .map((field) => RECEIPT_ISSUER_FIELD_LABELS[field]);
+  }
+
   public async getReceiptSettingsStatus(tenantId: string): Promise<{
     regime: ReceiptRegimeId | null;
     mode: 'per_gift' | 'annual_cumulative';
     autoIssue: boolean;
     complete: boolean;
     missing: string[];
+    advisory: string[];
+    advisoryMessage: string | null;
     externalIssuance: boolean;
     message: string | null;
   }> {
@@ -121,6 +133,8 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
         autoIssue: settings.autoIssue,
         complete: false,
         missing: ['receipting regime'],
+        advisory: [],
+        advisoryMessage: null,
         externalIssuance: false,
         message: 'Choose a receipting regime in Workspace settings → Donations before issuing receipts.',
       };
@@ -133,17 +147,25 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
         autoIssue: settings.autoIssue,
         complete: false,
         missing: [],
+        advisory: [],
+        advisoryMessage: null,
         externalIssuance: true,
         message: spec.externalExplanation ?? null,
       };
     }
     const missing = this.missingFields(settings, spec, false);
+    const advisory = this.advisoryMissingFields(settings, spec);
     return {
       regime: settings.regime,
       mode: settings.mode,
       autoIssue: settings.autoIssue,
       complete: missing.length === 0,
       missing,
+      advisory,
+      advisoryMessage: advisory.length
+        ? `This regime prescribes a ${advisory.join(', ')} on receipts. Receipts still issue without one — ` +
+          'add it if your organization wants it printed.'
+        : null,
       externalIssuance: false,
       message: missing.length ? `Missing: ${missing.join(', ')}.` : null,
     };
