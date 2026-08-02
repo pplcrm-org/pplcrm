@@ -1,10 +1,74 @@
 import { z } from 'zod';
 import { idSchema, nameSchema, descriptionSchema } from './core.schema';
 
+// ---------------------------------------------------------------------------
+// Post-submit redirect address.
+// ---------------------------------------------------------------------------
+
+/**
+ * Schemes a form's redirect address may use.
+ *
+ * Zod's `.url()` accepts anything `new URL()` can parse, which includes
+ * `javascript:alert(document.domain)`, `data:text/html,<script>…`, `JavaScript:alert(1)` and
+ * `vbscript:msgbox(1)` — all four verified against the zod installed in this repo. The public form
+ * page assigns this value to `window.location.href`, a raw assignment Angular's sanitizer never
+ * sees, so without this list anyone who could edit a form could store script that runs in every
+ * visitor's browser on that page.
+ *
+ * This is deliberately NOT `apps/backend/src/app/lib/outbound-url-guard.ts`, which answers a
+ * different question. That guard protects the SERVER from fetching a tenant-supplied URL, so it
+ * allows `https:` only and blocks private address ranges and DNS rebinding. Here the backend never
+ * fetches the value — the visitor's browser navigates to it — so plain `http:` to a customer's own
+ * site is a legitimate redirect, and a private address belongs to the visitor's network rather
+ * than ours. Sharing one list would reject valid redirects and add a pointless DNS lookup to every
+ * public page load.
+ */
+export const REDIRECT_URL_ALLOWED_PROTOCOLS: readonly string[] = ['http:', 'https:'];
+
+/** True when this value is safe to hand to a browser as a navigation target. */
+export function isSafeRedirectUrl(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return false;
+  }
+
+  if (!REDIRECT_URL_ALLOWED_PROTOCOLS.includes(url.protocol)) return false;
+  // Credentials let a URL read as a host it does not go to: the eye-catching part of
+  // `https://accounts.example.org@evil.test/` is the username, not the site being visited.
+  if (url.username || url.password) return false;
+  return true;
+}
+
+/**
+ * A stored redirect address that is safe to return or redirect to, or null.
+ *
+ * Rows written before the validation below existed are never re-validated when they are read, so
+ * every path that hands a stored value to a browser calls this instead of trusting the column.
+ */
+export function safeRedirectUrl(value: unknown): string | null {
+  return isSafeRedirectUrl(value) ? String(value).trim() : null;
+}
+
+/** The shared field validator for a form's redirect address. */
+export const redirectUrlSchema = z
+  .string()
+  .trim()
+  .url('Redirect URL must be a valid URL')
+  .refine(isSafeRedirectUrl, 'Redirect URL must start with http:// or https://')
+  .or(z.literal(''))
+  .nullable()
+  .optional();
+
 export const AddWebFormObj = z.object({
   name: nameSchema('Web Form name', 100),
   description: descriptionSchema(500),
-  redirect_url: z.string().trim().url('Redirect URL must be a valid URL').or(z.literal('')).nullable().optional(),
+  redirect_url: redirectUrlSchema,
   target_tags: z.array(z.string()).nullable().optional(),
   target_lists: z.array(z.string()).nullable().optional(),
   fields: z.array(z.string()).nullable().optional(),
@@ -19,7 +83,7 @@ export const AddWebFormObj = z.object({
 export const UpdateWebFormObj = z.object({
   name: nameSchema('Web Form name', 100).optional(),
   description: descriptionSchema(500).optional(),
-  redirect_url: z.string().trim().url('Redirect URL must be a valid URL').or(z.literal('')).nullable().optional(),
+  redirect_url: redirectUrlSchema,
   target_tags: z.array(z.string()).nullable().optional(),
   target_lists: z.array(z.string()).nullable().optional(),
   fields: z.array(z.string()).nullable().optional(),
@@ -265,7 +329,7 @@ export const CreateFormObj = z.object({
 export const UpdateFormObj = z.object({
   name: nameSchema('Form name', 100).optional(),
   description: descriptionSchema(2000).optional(),
-  redirect_url: z.string().trim().url('Redirect URL must be a valid URL').or(z.literal('')).nullable().optional(),
+  redirect_url: redirectUrlSchema,
   submit_label: z.string().trim().max(60).optional(),
   thanks_title: z.string().trim().max(120).optional(),
   thanks_body: z.string().trim().max(2000).optional(),

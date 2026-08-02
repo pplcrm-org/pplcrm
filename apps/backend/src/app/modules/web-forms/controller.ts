@@ -11,7 +11,9 @@ import {
   FormSubmissionPayloadObj,
   emailSchema,
   fieldsForTemplate,
+  isSafeRedirectUrl,
   normForm,
+  safeRedirectUrl,
   slugifyRecordName,
 } from '../../../../../../libs/common/src';
 import { BaseController } from '../../lib/base.controller';
@@ -121,6 +123,25 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     return form;
   }
 
+  /**
+   * The value to store in `web_forms.redirect_url`, or a rejection.
+   *
+   * `redirectUrlSchema` already refuses anything that is not http/https on every tRPC input, so
+   * this is the second wall: it catches a caller that reaches a controller method without going
+   * through that schema. Writes reject loudly; the matching read-side guard (`safeRedirectUrl`)
+   * drops quietly instead, because a public page must not fail to load over a bad stored config.
+   */
+  private assertSafeRedirectUrl(value: string | null | undefined): string | null {
+    if (value == null || value.trim() === '') return null;
+    if (!isSafeRedirectUrl(value)) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'Redirect URL must start with http:// or https://',
+      });
+    }
+    return value.trim();
+  }
+
   public async addForm(payload: AddWebFormType, auth: IAuthKeyPayload) {
     const row = {
       tenant_id: auth.tenant_id,
@@ -128,7 +149,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
       slug: await this.uniqueSlug(auth.tenant_id, payload.name),
       name: payload.name,
       description: payload.description ?? null,
-      redirect_url: payload.redirect_url ?? null,
+      redirect_url: this.assertSafeRedirectUrl(payload.redirect_url),
       target_tags: payload.target_tags ? JSON.stringify(payload.target_tags) : null,
       target_lists: payload.target_lists ? JSON.stringify(payload.target_lists) : null,
       fields: payload.fields ? JSON.stringify(payload.fields) : null,
@@ -162,7 +183,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     };
     if (payload.name !== undefined) row.name = payload.name;
     if (payload.description !== undefined) row.description = payload.description;
-    if (payload.redirect_url !== undefined) row.redirect_url = payload.redirect_url;
+    if (payload.redirect_url !== undefined) row.redirect_url = this.assertSafeRedirectUrl(payload.redirect_url);
     if (payload.target_tags !== undefined)
       row.target_tags = payload.target_tags ? JSON.stringify(payload.target_tags) : null;
     if (payload.target_lists !== undefined)
@@ -308,7 +329,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     // 8. Honeypot check
     if (payload[HONEYPOT_FIELD] && payload[HONEYPOT_FIELD].trim().length > 0) {
       logger.warn(`Spam bot detected from IP ${clientIp} for form ${formId}`);
-      return { redirect_url: form.redirect_url || null };
+      return { redirect_url: safeRedirectUrl(form.redirect_url) };
     }
 
     // 9. Validate email. It is the identity key every submission upserts on, so it is checked for
@@ -884,7 +905,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
       }
     }
 
-    return { redirect_url: form.redirect_url || null };
+    return { redirect_url: safeRedirectUrl(form.redirect_url) };
   }
 
   /**
@@ -1070,7 +1091,9 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
         submit_label: normalized.submit_label,
         thanks_title: normalized.thanks_title,
         thanks_body: normalized.thanks_body,
-        redirect_url: normalized.redirect_url,
+        // Re-checked on the way out: a row written before redirectUrlSchema existed (or by any
+        // path that bypassed it) is never re-validated when it is read.
+        redirect_url: safeRedirectUrl(normalized.redirect_url),
         fields: normalized.fields.filter((f) => f.on),
       },
     };
@@ -1152,7 +1175,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     // Slug intentionally stays stable across renames — a published link must never break.
     if (patch.name !== undefined) row['name'] = patch.name;
     if (patch.description !== undefined) row['description'] = patch.description;
-    if (patch.redirect_url !== undefined) row['redirect_url'] = patch.redirect_url;
+    if (patch.redirect_url !== undefined) row['redirect_url'] = this.assertSafeRedirectUrl(patch.redirect_url);
     if (patch.submit_label !== undefined) row['submit_label'] = patch.submit_label;
     if (patch.thanks_title !== undefined) row['thanks_title'] = patch.thanks_title;
     if (patch.thanks_body !== undefined) row['thanks_body'] = patch.thanks_body;

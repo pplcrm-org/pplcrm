@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute } from '@angular/router';
-import { FormField } from '../../../../../../../libs/common/src';
+import { FormField, safeRedirectUrl } from '../../../../../../../libs/common/src';
 
 import { apiBase, tenantQuery } from '../../../shared/public-pages';
 import { PublicPageMeta } from '../../../shared/public-page-meta';
@@ -259,8 +259,13 @@ export class PublicFormComponent implements OnInit {
         this.submitError.set(data?.error || 'Something went wrong. Please try again.');
         return;
       }
-      if (data?.redirect_url) {
-        window.location.href = String(data.redirect_url);
+      // Assigning `window.location.href` is a raw navigation Angular's sanitizer never inspects,
+      // so a `javascript:` or `data:` value coming back from the API would execute here. The
+      // server filters this too; checking again at the sink is what makes the sink itself safe.
+      // Anything refused falls through to the normal thank-you state rather than navigating.
+      const redirect = safeRedirectUrl(data?.redirect_url);
+      if (redirect) {
+        window.location.href = redirect;
         return;
       }
       this.state.set('thanks');

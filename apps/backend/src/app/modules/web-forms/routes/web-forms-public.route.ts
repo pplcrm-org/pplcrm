@@ -8,6 +8,7 @@ import { resolveTenantById, resolveTenantFromRequest } from '../../../lib/public
 import { checkKeyedSubmissionRateLimit, tenantIdFromOptionalApiKey } from '../../../lib/validate-api-key';
 import { env } from '../../../../env';
 import { checkRateLimit } from '../../../lib/rate-limiter';
+import { safeRedirectUrl } from '../../../../../../../libs/common/src';
 import { publicClientMessageOf } from '../../../lib/public-route-errors';
 
 /** Per-IP ceiling on the read-only public pages (form config, donation page). Generous:
@@ -626,8 +627,19 @@ const webFormsPublicRoute: FastifyPluginCallback = (fastify, _, done) => {
           });
         }
 
-        if (result.redirect_url) {
-          return reply.redirect(result.redirect_url);
+        // Re-checked at the sink as well as at the source. A Location header carrying
+        // `javascript:` is not executed by a browser, so this path is an open-redirect problem
+        // rather than script execution — but sending a visitor from the workspace's own address to
+        // an arbitrary one still has phishing value, and a stored value written before
+        // redirectUrlSchema existed is never re-validated when it is read.
+        //
+        // Cross-origin redirects stay allowed: "send people to my own thank-you page" is the whole
+        // point of the field, and confining it to this origin would remove the feature. What is
+        // refused is the part with no legitimate use — a non-http(s) scheme, and a URL carrying
+        // credentials, which makes a link read as a host it does not go to.
+        const redirectTarget = safeRedirectUrl(result.redirect_url);
+        if (redirectTarget) {
+          return reply.redirect(redirectTarget);
         }
 
         return reply.redirect('/api/forms/success');
