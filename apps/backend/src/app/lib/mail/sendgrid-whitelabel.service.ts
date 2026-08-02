@@ -2,6 +2,14 @@ import { DEFAULT_LINK_SUBDOMAIN } from '@common';
 import { promises as dns } from 'dns';
 import { logger } from '../../logger';
 
+// Live DNS checks run inside a user-clicked "Verify" request. Without a bound, a domain
+// whose nameservers answer SERVFAIL holds the request for the OS resolver's full retry
+// cycle (>5s per lookup, and verification does up to five of them). 2s × 2 tries keeps
+// the worst case per lookup at 4s while leaving room for a slow-but-working resolver.
+const DNS_LOOKUP_TIMEOUT_MS = 2000;
+const DNS_LOOKUP_TRIES = 2;
+const dnsResolver = new dns.Resolver({ timeout: DNS_LOOKUP_TIMEOUT_MS, tries: DNS_LOOKUP_TRIES });
+
 export interface DNSVerificationRecord {
   host: string;
   type: string;
@@ -388,7 +396,7 @@ export class SendGridWhitelabelService {
 
   public async verifyDmarc(domain: string): Promise<boolean> {
     try {
-      const records = await dns.resolveTxt(`_dmarc.${domain}`);
+      const records = await dnsResolver.resolveTxt(`_dmarc.${domain}`);
       return records.some((r) => r.join('').toUpperCase().includes('V=DMARC1'));
     } catch {
       return false;
@@ -397,7 +405,7 @@ export class SendGridWhitelabelService {
 
   public async verifyCname(host: string, expectedData?: string): Promise<boolean> {
     try {
-      const records = await dns.resolveCname(host);
+      const records = await dnsResolver.resolveCname(host);
       if (expectedData) {
         return records.some((r) => r.toLowerCase().trim() === expectedData.toLowerCase().trim());
       }
