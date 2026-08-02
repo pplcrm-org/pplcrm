@@ -35,6 +35,7 @@ import {
   handleSendWebformNotifications,
 } from './handlers/notifications.handlers';
 import { handleOpsWatchdog, handleSendBugReportEmail } from './handlers/ops.handlers';
+import { handlePurgeDowngradedInboxes } from './handlers/inbox-purge.handlers';
 import { handleGoogleSync, handleMsSync, handleScheduleSyncJobs } from './handlers/sync.handlers';
 import {
   handleDetectLapsedSupporters,
@@ -164,6 +165,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'perform_scheduled_deletions':
       await handlePerformScheduledDeletions(db);
+      break;
+    case 'purge_downgraded_inboxes':
+      await handlePurgeDowngradedInboxes(db);
       break;
     case 'zapier_trigger':
       await handleZapierTrigger(job);

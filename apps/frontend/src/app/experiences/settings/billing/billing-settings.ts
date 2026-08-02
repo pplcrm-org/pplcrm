@@ -8,6 +8,7 @@ import { Icon } from '@icons/icon';
 import {
   ANNUAL_MONTHS_FREE,
   ANNUAL_PRICE_MULTIPLIER,
+  INBOX_PURGE_DELAY_DAYS,
   PLANS,
   PURCHASABLE_PLAN_KEYS,
   annualPriceForQuantity,
@@ -34,6 +35,8 @@ export interface BillingDetailsSnapshot {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   hasActiveSubscription: boolean;
+  /** A period-end cancellation is scheduled: the plan runs until `endsAt`, then drops to Free. */
+  cancelAtPeriodEnd: boolean;
   isMockMode: boolean;
 }
 
@@ -91,7 +94,8 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
    */
   protected readonly pendingPlan = signal<PlanKey | null>(null);
   protected readonly portalPending = signal(false);
-  protected readonly busy = computed(() => this.pendingPlan() !== null || this.portalPending());
+  protected readonly cancelPending = signal(false);
+  protected readonly busy = computed(() => this.pendingPlan() !== null || this.portalPending() || this.cancelPending());
 
   /** All three priced tiers, side by side: Free, Grassroots, Movement. Free sat in a separate
    * panel below the paid cards until 2026-07-26 and read as an afterthought — you could not
@@ -179,7 +183,9 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     if (this.outgrewFree()) {
       return `Your list is past the ${this.formatCount(this.freeSubscriberCap)}-subscriber Free limit.`;
     }
-    if (!this.canChooseFree()) return 'Cancel your subscription in the billing portal to move back to Free.';
+    if (!this.canChooseFree()) {
+      return 'Cancel your subscription first — use “Downgrade to Free” in the Current plan section above.';
+    }
     return null;
   }
 
@@ -371,9 +377,30 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     if (impact.activeAutomations > 0) {
       losses.push(`${plural(impact.activeAutomations, 'active automation', 'active automations')} will stop sending`);
     }
-    if (losses.length === 0) return null;
 
-    return `On the Free plan, ${losses.join('; ')}. Nothing is deleted — it all resumes if you upgrade again.`;
+    // The shared inbox is Grassroots+, and — unlike everything else on this list — its synced
+    // mail does not merely pause: it is permanently deleted after the grace window, and
+    // re-syncing later can never rebuild history. Say so here, in the last place a warning can
+    // still change the decision.
+    losses.push(
+      `the shared inbox will close, mailbox sync will stop, and any email synced from a connected mailbox will be ` +
+        `permanently deleted ${INBOX_PURGE_DELAY_DAYS} days after the downgrade — re-subscribing later will not ` +
+        `bring it back`,
+    );
+
+    const subscribers = this.usage()?.subscribers ?? 0;
+    if (subscribers > this.freeSubscriberCap) {
+      losses.push(
+        `newsletter sending will be blocked: you have ${this.formatCount(subscribers)} emailable subscribers and ` +
+          `the Free plan includes up to ${this.formatCount(this.freeSubscriberCap)} — you would need to reduce ` +
+          `the list or upgrade again to send`,
+      );
+    }
+
+    return (
+      `On the Free plan, ${losses.join('; ')}. Your contacts, households and other data are not deleted, and ` +
+      `everything except the synced inbox mail resumes if you upgrade again.`
+    );
   }
 
   /** Commit to the Free plan. Not a checkout: Free isn't purchasable, so this records the choice
@@ -403,6 +430,66 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
       );
     } finally {
       this.pendingPlan.set(null);
+    }
+  }
+
+  /**
+   * The in-app cancellation path (decision 2026-08-01). The Stripe portal cannot show our
+   * downgrade education, so cancellation lives here: full impact dialog first, then a
+   * period-end cancellation — the workspace keeps what it paid for until the renewal date,
+   * and can resume any time before it.
+   */
+  protected async startCancelFlow(): Promise<void> {
+    const warning = await this.downgradeWarning();
+    const endsAt = this.details()?.endsAt;
+    const endsClause = endsAt
+      ? `Your plan stays active until ${endsAt.toLocaleDateString('en-US', { dateStyle: 'medium' })}, then this workspace moves to the Free plan.`
+      : 'At the end of the paid period this workspace moves to the Free plan.';
+    const confirmed = await this.dialogs.confirm({
+      title: 'Cancel your subscription?',
+      message: `${endsClause} ${warning ?? ''}`.trim(),
+      variant: 'danger',
+      confirmText: 'Cancel subscription',
+      cancelText: 'Keep my plan',
+      emphasizeCancel: true,
+    });
+    if (!confirmed) return;
+
+    this.cancelPending.set(true);
+    try {
+      const res = await this.api.billing.cancelSubscription.mutate();
+      if (res.immediate) {
+        this.alerts.showSuccess('Your subscription has been canceled and this workspace is on the Free plan.');
+      } else {
+        this.alerts.showSuccess(
+          res.endsAt
+            ? `Your subscription is set to cancel. Your plan stays active until ${new Date(res.endsAt).toLocaleDateString('en-US', { dateStyle: 'medium' })}.`
+            : 'Your subscription is set to cancel at the end of the paid period.',
+        );
+      }
+      await this.loadBilling();
+    } catch (err) {
+      this.alerts.showError(
+        err instanceof Error && err.message ? err.message : 'Could not cancel the subscription. Please try again.',
+      );
+    } finally {
+      this.cancelPending.set(false);
+    }
+  }
+
+  /** Undo a scheduled period-end cancellation — the plan keeps renewing as before. */
+  protected async resumeSubscription(): Promise<void> {
+    this.cancelPending.set(true);
+    try {
+      await this.api.billing.resumeSubscription.mutate();
+      this.alerts.showSuccess('Your subscription will keep renewing as before.');
+      await this.loadBilling();
+    } catch (err) {
+      this.alerts.showError(
+        err instanceof Error && err.message ? err.message : 'Could not resume the subscription. Please try again.',
+      );
+    } finally {
+      this.cancelPending.set(false);
     }
   }
 

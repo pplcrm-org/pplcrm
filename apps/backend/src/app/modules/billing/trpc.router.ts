@@ -26,6 +26,13 @@ export const BillingRouter = router({
 
   createPortal: adminOrOwnerProcedure.mutation(({ ctx }) => controller.createPortalSession(ctx.auth)),
 
+  /** In-app period-end cancellation — the educated path: the billing page shows the downgrade
+   * education dialog first, then calls this. Mock mode downgrades immediately. */
+  cancelSubscription: adminOrOwnerProcedure.mutation(({ ctx }) => controller.cancelSubscription(ctx.auth)),
+
+  /** Undo a scheduled period-end cancellation before it takes effect. */
+  resumeSubscription: adminOrOwnerProcedure.mutation(({ ctx }) => controller.resumeSubscription(ctx.auth)),
+
   /** Choose the Free plan outright. Free is not purchasable, so it has no checkout path — this is
    * the only way a tenant records an active status on it (which is what lets them leave demo
    * mode). Refuses while a paid Stripe subscription is live; that downgrade goes through the

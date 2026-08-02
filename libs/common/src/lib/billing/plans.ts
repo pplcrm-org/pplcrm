@@ -226,7 +226,7 @@ export const PLANS: readonly PlanDef[] = [
       'Up to 1,000 email subscribers',
       '2,000 emails / month',
       '2 staff seats · 1 GB storage',
-      'Shared inbox, people CRM & CSV import/export',
+      'People CRM & CSV import/export',
       'Newsletters, templates, scheduling & dynamic content',
       'AI deliverability check on every newsletter',
       'Custom reports & role-based access',
@@ -251,6 +251,7 @@ export const PLANS: readonly PlanDef[] = [
       'Save 2 months with annual billing',
       'Up to 100,000 email subscribers · 8× emails/month',
       '5 staff seats · 10 GB storage',
+      'Shared inbox with Gmail & Microsoft mailbox sync',
       'Forms & donations',
       'Automations & lists (segments)',
       'API access & 300+ integrations',
@@ -470,6 +471,14 @@ const PLAN_RANK: Record<PlanKey, number> = { free: 0, grassroots: 1, movement: 2
  */
 export const GATED_FEATURES = {
   forms: { minPlan: 'grassroots', label: 'Forms' },
+  // The shared inbox (Gmail / Microsoft mailbox sync). Paid-only since 2026-08-01: a synced
+  // team inbox is a complete standalone product (Front's entry plan is $25/seat/month with no
+  // free tier), its storage and sync cost grow without bound, and a workspace that only wants
+  // an inbox never meets the levers that meter everything else (subscribers, sends) — so on
+  // Free it was a permanent freeload. Unlike other gated features, ACCESS is blocked too, not
+  // just mutations (operator decision 2026-08-01); the demo workspace's seeded inbox is exempt.
+  // Synced mail is purged 30 days after a downgrade to Free (billing/inbox-purge).
+  inbox: { minPlan: 'grassroots', label: 'Shared inbox (mailbox sync)' },
   // API access covers every keyed surface (Zapier, server-side form/RSVP/signup submits) AND
   // key issuance. Paid-only since 2026-07-27: a free workspace with a scriptable write endpoint
   // is the cheapest way to bulk-load a junk list into shared sending infrastructure, and the
@@ -485,6 +494,16 @@ export const GATED_FEATURES = {
 } as const satisfies Record<string, { minPlan: PlanKey; label: string }>;
 
 export type GatedFeature = keyof typeof GATED_FEATURES;
+
+/**
+ * Days between a downgrade to Free and the permanent deletion of the workspace's synced
+ * shared-inbox mail. Access is cut off at downgrade time (GATED_FEATURES.inbox above); this is
+ * only the destruction delay. Upgrading within the window cancels the deletion and restores the
+ * inbox intact; after it, the mail is unrecoverable even on re-upgrade, because a fresh mailbox
+ * connection only backfills the initial-sync window. Stated in the in-app inbox lock panel, the
+ * cancellation email and the Help Center — keep those in sync if this changes.
+ */
+export const INBOX_PURGE_DELAY_DAYS = 30;
 
 /** Whether a (possibly legacy/mixed-case) stored plan value includes a gated feature. */
 export function planAllowsFeature(planName: string | null | undefined, feature: GatedFeature): boolean {
@@ -567,7 +586,7 @@ export const FEATURE_MATRIX: readonly FeatureMatrixGroup[] = [
     category: 'Everything in every plan',
     rows: [
       { label: 'Unlimited contacts & households', values: { free: true, grassroots: true, movement: true } },
-      { label: 'People CRM + shared inbox', values: { free: true, grassroots: true, movement: true } },
+      { label: 'People CRM', values: { free: true, grassroots: true, movement: true } },
       { label: 'CSV import/export', values: { free: true, grassroots: true, movement: true } },
       { label: 'Newsletters', values: { free: true, grassroots: true, movement: true } },
       { label: 'Send from your own verified domain', values: { free: true, grassroots: true, movement: true } },
@@ -584,6 +603,10 @@ export const FEATURE_MATRIX: readonly FeatureMatrixGroup[] = [
   {
     category: 'Grow & engage',
     rows: [
+      {
+        label: 'Shared inbox (Gmail & Microsoft mailbox sync)',
+        values: { free: false, grassroots: true, movement: true },
+      },
       { label: 'Forms', values: { free: false, grassroots: true, movement: true } },
       { label: 'Donations', values: { free: false, grassroots: true, movement: true } },
       { label: 'API access & 300+ integrations', values: { free: false, grassroots: true, movement: true } },
@@ -622,10 +645,12 @@ export const FEATURE_MATRIX: readonly FeatureMatrixGroup[] = [
       },
       // Backed by DATA_RESIDENCY_MIN_PLAN above. Every other plan is stored where the platform
       // runs, which is why the lower cells say "Canada" rather than ✗ — those workspaces still
-      // have a data region, they just do not get to pick it.
+      // have a data region, they just do not get to pick it. The movement cell is a STRING on
+      // purpose: a bare ✓ rendered as "Included" next to two "Canada" cells read as nonsense
+      // (Canada / Canada / Included — included *what*?).
       {
-        label: 'Choose where your data is stored',
-        values: { free: 'Canada', grassroots: 'Canada', movement: true },
+        label: 'Where your data is stored',
+        values: { free: 'Canada', grassroots: 'Canada', movement: 'Choose your region' },
       },
       {
         label: 'Support',

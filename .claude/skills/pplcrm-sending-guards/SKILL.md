@@ -80,6 +80,13 @@ All constants (caps, rates, messages) live at the top of that file. Enforcement 
      deliberately NOT in settings, whose snapshot is client-readable). Requesting a code needs a
      settled plan, not demo removal (see the demo/plan gate section below). UI: Workspace →
      Communications → "Sending phone verification", and step 3 of the go-live wizard.
+   - Free plan and emailable-subscriber count > 1,000 (the live count via
+     `countEmailableSubscribers`, checked against `exceededSubscriberCap`) → PRECONDITION_FAILED
+     (added 2026-08-01). Free only, by decision — paid tiers over their top bracket stay
+     billed-at-max + warned, never blocked. The composer mirrors it via `sendQuota`'s
+     `subscriberCapBlock` (Send now disabled + error card). Known accepted limitation: rotating
+     do-not-contact flags can duck the live count, but total volume stays bounded by the monthly
+     allowance. Stated in EULA §8 + security page.
    - Free plan and tenant younger than 7 days → warm-up cap: ≤100 emails per rolling 24h
      (`warmupDailyCap`, summed from `newsletter_send_log`).
    - Monthly plan email allowance exceeded → TOO_MANY_REQUESTS with the exact numbers and reset
@@ -257,9 +264,10 @@ Apple users look like openers, so the resend under-reaches rather than over-reac
 ## Plan gates — `apps/backend/src/app/modules/billing/plan-gate.ts`
 
 `GATED_FEATURES` in `libs/common/src/lib/billing/plans.ts` is the machine-readable core of
-FEATURE_MATRIX (keep both in sync): forms/donations/automations/lists/volunteers (staff-side
-management: teams, volunteer-events)/**api** → `grassroots`+; canvassing/deliveries/companions
-(companion-access) → `movement`+. `planFeatureGate(feature)` is a tRPC
+FEATURE_MATRIX (keep both in sync): **inbox** (shared inbox / mailbox sync, added
+2026-08-01)/forms/donations/automations/lists/volunteers (staff-side management: teams,
+volunteer-events)/**api** → `grassroots`+; canvassing/deliveries/companions (companion-access) →
+`movement`+. `planFeatureGate(feature)` is a tRPC
 middleware that blocks **mutations only** (reads stay open — disclosure over suppression);
 gated routers rebind locally:
 
@@ -272,6 +280,27 @@ const authProcedure = baseAuthProcedure.use(planFeatureGate('forms'));
 `createCrudRouter` accepts the gated procedure as its 4th argument. Gated routers today:
 web-forms, donations, workflows, lists, canvassing, deliveries, companion-access, teams,
 volunteer-events. Unknown/missing plan values fail closed to `free`.
+
+**The `inbox` gate is deliberately different (2026-08-01):** it blocks READS as well as mutations
+(`inboxAccessGate`/`assertInboxAccess` in plan-gate.ts — a downgraded workspace loses inbox access
+on day 0), exempts demo mode (the seeded demo inbox is part of the free test drive), and is
+enforced in four places: the emails tRPC router (whole-router rebind), the emails REST routes
+(send + attachment downloads), the google-sync/ms-sync routers (`getAuthUrl`/`syncNow`/`resetSync`
+via `assertPlanFeature`; `disconnect` + `getConnectionStatus` stay open), and the sync
+cron/handlers (`sync.handlers.ts` skips unentitled tenants at fan-out AND at run time). A
+downgrade to Free also schedules a **30-day synced-mail purge** —
+`tenants.inbox_purge_scheduled_at`, written only by `syncInboxPurgeSchedule`
+(modules/billing/inbox-purge.ts, called from every `subscription_plan` write path), executed by
+the `purge_downgraded_inboxes` daily cron (`lib/jobs/handlers/inbox-purge.handlers.ts` →
+`EmailIngesterService.purgeAllTenantEmails` + OAuth-token deletion). Upgrading clears the
+schedule; the purge is unrecoverable (re-sync only backfills the initial window). Stated in the
+privacy policy's retention list and the Help Center.
+
+**In-app cancellation (2026-08-01):** `billing.cancelSubscription` (period-end cancel; mock mode
+cancels immediately) + `billing.resumeSubscription`; `getBillingDetails` exposes
+`cancelAtPeriodEnd` (read live from Stripe). The billing page's "Downgrade to Free" button shows
+the education dialog first; landing on Free sends the downgrade education email
+(`sendDowngradeEducationEmail` in billing/controller.ts) with real counts + the purge date.
 
 **Two gates are NOT tRPC middleware, because the traffic they protect is public (2026-07-27):**
 

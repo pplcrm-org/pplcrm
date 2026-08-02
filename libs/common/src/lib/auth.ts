@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { NotificationPreferencesType } from './schemas/auth.schema';
 import { DATA_REGION_CHOICES, DEFAULT_DATA_REGION_CHOICE } from './data-residency';
 import { DEFAULT_ORG_MODE, ORG_MODES, type ModuleId, type OrgMode } from './org-mode';
+import type { PlanKey } from './billing/plans';
 
 export interface IAuthKeyPayload {
   name?: string;
@@ -57,6 +58,14 @@ export interface IAuthUser {
    * round-trip on every page.
    */
   tenant_plan_selected?: boolean;
+
+  /**
+   * Resolved plan key ('free' when unknown/absent — fails closed). Rides on the session so the
+   * sidebar and plan-gated pages (the shared inbox is Grassroots+) can present a lock honestly
+   * before any billing query resolves. Refreshed the same way as `tenant_plan_selected` after a
+   * plan change.
+   */
+  tenant_plan?: PlanKey;
 
   /** The tenant's public subdomain label — used to build public form URLs (`<slug>.<baseDomain>`). */
   tenant_slug?: string | null;

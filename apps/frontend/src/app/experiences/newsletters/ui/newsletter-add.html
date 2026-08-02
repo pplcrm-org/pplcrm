@@ -512,7 +512,17 @@
               </dd>
             </div>
           </dl>
-          @if (quotaShortfall()) {
+          @if (subscriberCapBlock(); as capBlock) {
+          <div class="alert alert-error mt-3 items-start text-sm" role="alert">
+            <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
+            <span>
+              Your workspace has {{ formatCount(capBlock.emailableCount) }} emailable subscribers, and the Free plan
+              includes up to {{ formatCount(capBlock.cap) }}. Sending is blocked while the list is over that limit —
+              reduce your emailable list (remove email addresses or mark people Do Not Contact), or
+              <a routerLink="/workspace/billing" class="link">upgrade your plan</a>.
+            </span>
+          </div>
+          } @else if (quotaShortfall()) {
           <div class="alert alert-warning mt-3 items-start text-sm" role="alert">
             <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
             <span>

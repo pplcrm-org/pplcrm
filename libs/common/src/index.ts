@@ -573,6 +573,7 @@ export {
   SETTLED_SUBSCRIPTION_STATUSES,
   hasSettledPlan,
   GATED_FEATURES,
+  INBOX_PURGE_DELAY_DAYS,
   planAllowsFeature,
   GEOCODING_MIN_PLAN,
   planAllowsGeocoding,

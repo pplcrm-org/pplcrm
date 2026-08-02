@@ -1,11 +1,12 @@
 import type { Kysely, Transaction } from 'kysely';
 import { sql } from 'kysely';
 
-import { emailCapForQuantity, getPlanDef, PLANS_BY_KEY, type PlanKey } from '@common';
+import { emailCapForQuantity, getPlanDef, PLANS_BY_KEY, subscriberCapForQuantity, type PlanKey } from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { ForbiddenError, NotFoundError, PreconditionFailedError, TooManyRequestsError } from '../../errors/app-errors';
 import { logger } from '../../logger';
 import { isOwnSharedSendingAddress, isSharedSendingAddress } from '../../lib/mail/shared-sending-domain';
+import { countEmailableSubscribers } from '../billing/subscriber-count';
 
 /**
  * Anti-abuse guards around bulk (newsletter) sending. Free accounts are the spam vector — a
@@ -223,6 +224,33 @@ export function hasPaymentHold(tenant: SendingTenant): boolean {
 }
 
 /**
+ * The Free-plan subscriber cap, when the given emailable count exceeds it — null when no block
+ * applies. Free only, by decision (2026-08-01): paid tiers over their top bracket stay
+ * billed-at-max and warned (usage-limits.ts) rather than blocked, because a growing paid list is
+ * a sales conversation, not an abuse case. On Free the cap is the enforcement: the pricing page
+ * says "up to 1,000 email subscribers", and without this a downgraded (or bulk-importing) free
+ * workspace could keep emailing an arbitrarily large list inside the monthly allowance.
+ * Deliberately checked against the LIVE count at send time: ducking under by flagging people
+ * Do-Not-Contact is possible but self-limiting, since total volume is still bounded by the
+ * monthly allowance. Pure, so the threshold logic is unit-testable.
+ */
+export function exceededSubscriberCap(plan: PlanKey, billedQuantity: number, emailableCount: number): number | null {
+  if (plan !== 'free') return null;
+  const cap = subscriberCapForQuantity(plan, billedQuantity);
+  return emailableCount > cap ? cap : null;
+}
+
+/** Free-plan over-cap refusal, shown by the pre-send gate and mirrored by the composer. */
+export function subscriberCapMessage(emailableCount: number, cap: number): string {
+  return (
+    `Your workspace has ${emailableCount.toLocaleString()} emailable subscribers, and the Free plan ` +
+    `includes up to ${cap.toLocaleString()}. Sending is blocked while the list is over that limit — ` +
+    `reduce your emailable list (remove email addresses or mark people Do Not Contact) to ` +
+    `${cap.toLocaleString()} or fewer, or upgrade your plan (Workspace → Billing).`
+  );
+}
+
+/**
  * Whether a workspace must verify a mobile number before any tenant-originated email leaves it.
  *
  * Every workspace, on every plan. It was Free-only when Free was the only spam vector worth
@@ -367,6 +395,14 @@ export async function assertTenantMaySendNewsletter(
 ): Promise<void> {
   const tenant = await loadSendingTenant(db, tenantId);
   assertTenantSendingNotBlocked(tenant);
+
+  // Free-plan subscriber cap, ahead of the identity checks: for an over-cap workspace the only
+  // actionable next step is "trim the list or upgrade", and any other message would bury it.
+  const emailableCount = await countEmailableSubscribers(tenantId, db);
+  const exceededCap = exceededSubscriberCap(tenant.plan, tenant.subscription_quantity, emailableCount);
+  if (exceededCap != null) {
+    throw new PreconditionFailedError(subscriberCapMessage(emailableCount, exceededCap));
+  }
 
   if (!(await hasVerifiedSendingDomain(db, tenantId))) {
     throw new PreconditionFailedError(DOMAIN_UNVERIFIED_MESSAGE);

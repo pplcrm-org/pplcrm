@@ -26,6 +26,9 @@ function installMockDb(options: { activeJob?: unknown } = {}) {
       // isAuthed also checks the session is still active (SECURITY-REVIEW.md 1.1).
       if (lastTable === 'sessions') return Promise.resolve({ id: 'sess', expires_at: null });
       if (lastTable === 'background_jobs') return Promise.resolve(options.activeJob);
+      // The shared inbox is Grassroots+ (assertPlanFeature reads the tenant's plan; the gate
+      // fails closed to free) — seed a paid plan or every gated procedure dies on FORBIDDEN.
+      if (lastTable === 'tenants') return Promise.resolve({ subscription_plan: 'movement', demo_mode_at: null });
       return Promise.resolve(undefined);
     }),
   };

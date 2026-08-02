@@ -32,6 +32,8 @@ apps/
           2026-07-30-canvass-person-flags.ts
           2026-07-31-tenant-data-region.ts
           2026-08-01-emails-detached-at.ts
+          2026-08-01-z-companion-op-result.ts
+          2026-08-01-zz-tenants-inbox-purge-scheduled-at.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -53,6 +55,7 @@ apps/
               export.handlers.ts
               import-verification.ts
               import.handlers.ts
+              inbox-purge.handlers.ts
               maintenance.handlers.ts
               newsletter.handlers.ts
               notifications.handlers.ts
@@ -160,7 +163,9 @@ apps/
             routes/
               billing-webhook.route.ts
             controller.ts
+            inbox-purge.ts
             plan-gate.ts
+            subscriber-count.ts
             subscription-sync.ts
             trpc.router.ts
             usage-limits.ts

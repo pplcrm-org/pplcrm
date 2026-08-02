@@ -871,6 +871,10 @@ interface Tenants extends Omit<RecordType, 'createdby_id'>, AddressType {
   phone_verification_code_hash: string | null;
   phone_verification_expires_at: Timestamp | null;
   phone_verification_attempts: Generated<number>;
+  /** When the synced shared-inbox mail is due for permanent deletion (30 days after a downgrade
+   * to Free — the inbox is Grassroots+). NULL = nothing scheduled. Written only by
+   * `syncInboxPurgeSchedule` (billing/inbox-purge.ts); executed by the purge cron. */
+  inbox_purge_scheduled_at: Timestamp | null;
 }
 
 interface WorkspaceApiKeys {

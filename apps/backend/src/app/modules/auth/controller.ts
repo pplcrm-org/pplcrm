@@ -10,6 +10,7 @@ import {
   ORG_MODE_SETTINGS_KEY,
   PLANS_BY_KEY,
   RESERVED_SUBDOMAINS,
+  getPlanDef,
   hasRegionPreference,
   hasSettledPlan,
   hostingRegionFor,
@@ -28,6 +29,7 @@ import type {
   InviteAuthUserType,
   ModuleId,
   OrgMode,
+  PlanKey,
   UpdateAuthUserType,
   getAllOptionsType,
   signInInputType,
@@ -527,13 +529,21 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       let tenant_paused_at: Date | null = null;
       let tenant_demo_mode_at: Date | null = null;
       let tenant_plan_selected = false;
+      let tenant_plan: PlanKey = 'free';
       let tenant_slug: string | null = null;
       let tenant_org_mode: OrgMode = DEFAULT_ORG_MODE;
       let tenant_module_overrides: Partial<Record<ModuleId, boolean>> = {};
       if (auth.tenant_id) {
         const tenant = await this.getRepo()
           .db.selectFrom('tenants')
-          .select(['deletion_scheduled_at', 'paused_at', 'demo_mode_at', 'slug', 'subscription_status'])
+          .select([
+            'deletion_scheduled_at',
+            'paused_at',
+            'demo_mode_at',
+            'slug',
+            'subscription_status',
+            'subscription_plan',
+          ])
           .where('id', '=', auth.tenant_id)
           .executeTakeFirst();
         if (tenant?.deletion_scheduled_at) {
@@ -544,6 +554,9 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         }
         tenant_demo_mode_at = tenant?.demo_mode_at ?? null;
         tenant_plan_selected = hasSettledPlan(tenant?.subscription_status);
+        // Resolved plan key (unknown/absent fails closed to free) — the sidebar and the inbox
+        // page use it to present plan-gated modules honestly instead of erroring on load.
+        tenant_plan = getPlanDef(tenant?.subscription_plan)?.key ?? 'free';
         tenant_slug = tenant?.slug ?? null;
 
         // Organization mode rides on the session so the sidebar can label itself before
@@ -573,6 +586,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
         tenant_paused_at,
         tenant_demo_mode_at,
         tenant_plan_selected,
+        tenant_plan,
         tenant_slug,
         tenant_org_mode,
         tenant_module_overrides,

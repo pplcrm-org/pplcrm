@@ -1,8 +1,13 @@
 import { folderIdSchema, idSchema, regularFolderIdSchema, MAX_BULK_IDS } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 
-import { authProcedure, router } from '../../../trpc';
+import { authProcedure as baseAuthProcedure, router } from '../../../trpc';
+import { inboxAccessGate } from '../billing/plan-gate';
 import { EmailsController } from './controller';
+
+// Shared-inbox access requires Grassroots+ (demo mode exempt) — reads included, see
+// `inboxAccessGate`. Every procedure in this router goes through the gate.
+const authProcedure = baseAuthProcedure.use(inboxAccessGate());
 
 function addComment() {
   return authProcedure

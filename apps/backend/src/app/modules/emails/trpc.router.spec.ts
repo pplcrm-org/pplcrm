@@ -7,7 +7,12 @@ function mockAuthDb() {
   const mockQB: any = {
     select: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
-    executeTakeFirst: vi.fn().mockResolvedValue({ role: 'owner', verified: true }),
+    // One shared row for every table: auth reads role/verified; the shared-inbox gate
+    // (inboxAccessGate — Grassroots+, fails closed to free) reads subscription_plan and
+    // demo_mode_at from the same row, so the plan must be paid or every call is FORBIDDEN.
+    executeTakeFirst: vi
+      .fn()
+      .mockResolvedValue({ role: 'owner', verified: true, subscription_plan: 'movement', demo_mode_at: null }),
   };
   vi.spyOn(BaseRepository, 'dbInstance', 'get').mockReturnValue({
     selectFrom: vi.fn().mockReturnValue(mockQB),

@@ -43,11 +43,16 @@
 
       <h3 class="text-2xl font-extrabold tracking-tight text-base-content">{{ planLabel(details()?.plan) }}</h3>
 
-      @if (details()?.hasActiveSubscription && details()?.endsAt) {
+      @if (details()?.hasActiveSubscription && details()?.endsAt) { @if (details()?.cancelAtPeriodEnd) {
+      <p class="text-xs font-medium text-warning">
+        Set to cancel: your plan stays active until <strong>{{ details()?.endsAt | date:'mediumDate' }}</strong>, then
+        this workspace moves to the Free plan.
+      </p>
+      } @else {
       <p class="text-xs text-base-content/60">
         Renews automatically on <strong>{{ details()?.endsAt | date:'mediumDate' }}</strong>.
       </p>
-      } @else if (details()?.endsAt) {
+      } } @else if (details()?.endsAt) {
       <p class="text-xs font-medium text-error/80">
         Your plan has expired or was canceled. Access ends on {{ details()?.endsAt | date:'mediumDate' }}.
       </p>
@@ -74,7 +79,32 @@
         <pc-icon name="cog-6-tooth" />
         Invoices &amp; payment method }
       </button>
-      } @if (details()?.isMockMode && details()?.hasActiveSubscription) {
+      } @if (!details()?.isMockMode && details()?.hasActiveSubscription && details()?.stripeSubscriptionId) { @if
+      (details()?.cancelAtPeriodEnd) {
+      <button
+        type="button"
+        class="btn btn-outline btn-primary btn-sm"
+        [disabled]="cancelPending()"
+        (click)="resumeSubscription()"
+      >
+        @if (cancelPending()) {
+        <span class="loading loading-spinner loading-xs"></span>
+        Resuming… } @else { Resume subscription }
+      </button>
+      } @else {
+      <!-- The educated cancellation path: shows the full downgrade impact before anything happens.
+           The Stripe portal cannot warn, so cancellation lives here. -->
+      <button
+        type="button"
+        class="btn btn-outline btn-error btn-sm"
+        [disabled]="cancelPending()"
+        (click)="startCancelFlow()"
+      >
+        @if (cancelPending()) {
+        <span class="loading loading-spinner loading-xs"></span>
+        Canceling… } @else { Downgrade to Free }
+      </button>
+      } } @if (details()?.isMockMode && details()?.hasActiveSubscription) {
       <button type="button" class="btn btn-outline btn-error btn-sm" [disabled]="busy()" (click)="cancelMock()">
         Mock cancel subscription
       </button>

@@ -176,6 +176,11 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
         kind: 'p',
         text: 'Every plan includes a monthly newsletter-email allowance tied to its subscriber bracket: **2×** your subscriber cap on Free, **8×** on Grassroots, and **12×** on Movement — enough for a weekly newsletter with plenty of room to spare. The composer’s **Review & send** step shows exactly how much remains, and a send larger than the remainder is declined with the numbers and the reset date rather than partially sent. Emails sent by [automations](/help/automations) count toward the same allowance and limits. The allowance resets every billing month, and because growing your list moves you up a bracket automatically, it grows with your audience — see [Plans and billing](/help/settings).',
       },
+      { kind: 'h2', id: 'subscriber-cap', text: 'The Free-plan subscriber limit' },
+      {
+        kind: 'p',
+        text: 'The Free plan includes up to **1,000 emailable subscribers**, and the limit is enforced at send time: while your workspace has more than 1,000 emailable subscribers, newsletter sends are blocked — the composer says so on **Review & send** instead of surprising you with an error. Nothing is deleted: your contacts all stay, and the block lifts the moment your emailable list is back at 1,000 or fewer (remove email addresses or mark people **Do not contact**) or you upgrade. Only *emailable* people count — contacts without an email address, do-not-contact records and suppressed addresses don’t.',
+      },
       { kind: 'h2', id: 'content-check', text: 'The content check before every send' },
       {
         kind: 'p',
@@ -199,7 +204,7 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'plan-features', text: 'Plan-gated features' },
       {
         kind: 'p',
-        text: 'Some features are enforced by plan: forms, donations, automations, lists, volunteer management (teams and events) and API access (including Zapier) need **Grassroots** or higher; canvassing, deliveries and companion volunteer access need **Movement**. See your options under [Workspace → Billing](/workspace/billing).',
+        text: 'Some features are enforced by plan: the shared inbox (mailbox sync), forms, donations, automations, lists, volunteer management (teams and events) and API access (including Zapier) need **Grassroots** or higher; canvassing, deliveries and companion volunteer access need **Movement**. Moving to the Free plan turns these off — and synced inbox email is permanently deleted 30 days after the downgrade (see [Plans and billing](/help/settings)). See your options under [Workspace → Billing](/workspace/billing).',
       },
     ],
   },
@@ -302,6 +307,12 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'The [Inbox](/inbox) is a full email client inside the CRM. The difference from a personal mailbox: conversations connect to contact records, so an exchange with a supporter shows up on their profile’s **Emails** tab, context nobody has to forward around. When you open a conversation, a **person context rail** on the right shows who you’re talking to: their tags, issues of interest, and a link straight to their record.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'The shared inbox is a Grassroots feature',
+        text: 'Connecting a real Gmail or Microsoft mailbox needs the **Grassroots** plan or higher; the demo workspace’s sample inbox is included free so you can try it. If a workspace moves to the Free plan, the inbox locks immediately, sync stops, and the synced email is permanently deleted **30 days** after the downgrade — upgrading within that window restores everything, but after it the mail cannot be recovered (your originals stay in Gmail or Microsoft either way). See [Plans and billing](/help/settings).',
       },
       {
         kind: 'callout',

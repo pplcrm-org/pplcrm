@@ -27,6 +27,15 @@ Two provider adapters feed one ingester:
 | `apps/backend/src/app/modules/emails/services/email-body-text.ts`         | text extraction + inline-body threshold                |
 | `libs/common/src/lib/emails.ts`                                           | the folder payload policy, shared with the frontend    |
 
+**Plan gate (2026-08-01): the shared inbox is Grassroots+** (`GATED_FEATURES.inbox`, demo mode
+exempt). Connecting, manual sync and ALL emails-module access (reads included) are refused on
+Free; `schedule_sync_jobs` skips unentitled tenants at fan-out and the handlers re-check at run
+time, so a downgrade stops syncing with tokens left in place (an upgrade resumes on the next cron
+tick — no user action). A downgrade to Free also schedules a **30-day purge** of all synced mail +
+the OAuth tokens (`tenants.inbox_purge_scheduled_at` → `purge_downgraded_inboxes` cron →
+`EmailIngesterService.purgeAllTenantEmails`); upgrading within the window cancels it. See
+`pplcrm-sending-guards` → plan gates for the full map.
+
 Jobs: `google_sync` / `ms_sync`, enqueued by the `schedule_sync_jobs` cron every 10 minutes
 (`lib/jobs/cron-registry.ts`) and by the OAuth callback inside the token-upsert transaction.
 

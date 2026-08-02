@@ -6,11 +6,13 @@ import {
   TRIPWIRE_MIN_RECIPIENTS,
   applyAutomationTripwires,
   evaluateTripwires,
+  exceededSubscriberCap,
   hasPaymentHold,
   monthlyEmailCap,
   needsPhoneVerification,
   planKeyOf,
   sendWindow,
+  subscriberCapMessage,
   warmupDailyCap,
   type SendingTenant,
 } from './send-guards';
@@ -86,6 +88,32 @@ describe('monthlyEmailCap', () => {
 
   it('is uncapped for enterprise (no pricing ladder)', () => {
     expect(monthlyEmailCap('enterprise', 1)).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+describe('exceededSubscriberCap', () => {
+  it('blocks a Free workspace over 1,000 emailable subscribers, returning the cap', () => {
+    expect(exceededSubscriberCap('free', 1, 1_001)).toBe(1_000);
+    expect(exceededSubscriberCap('free', 1, 2_000)).toBe(1_000);
+  });
+
+  it('allows a Free workspace at or under the cap', () => {
+    expect(exceededSubscriberCap('free', 1, 1_000)).toBeNull();
+    expect(exceededSubscriberCap('free', 1, 0)).toBeNull();
+  });
+
+  it('never blocks paid or enterprise plans, even far over their top bracket', () => {
+    expect(exceededSubscriberCap('grassroots', 10, 500_000)).toBeNull();
+    expect(exceededSubscriberCap('movement', 11, 500_000)).toBeNull();
+    expect(exceededSubscriberCap('enterprise', 1, 500_000)).toBeNull();
+  });
+
+  it('names the count, the cap and both remedies in the refusal message', () => {
+    const message = subscriberCapMessage(2_000, 1_000);
+    expect(message).toContain('2,000');
+    expect(message).toContain('1,000');
+    expect(message).toContain('Do Not Contact');
+    expect(message).toContain('upgrade');
   });
 });
 

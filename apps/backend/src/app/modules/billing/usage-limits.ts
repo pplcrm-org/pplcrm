@@ -23,7 +23,10 @@ import { TransactionalEmailService } from '../../lib/mail/transactional-mail.ser
 import { logger } from '../../logger';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import { sendWindow } from '../newsletters/send-guards';
+import { countEmailableSubscribers } from './subscriber-count';
 import { syncSubscriptionQuantity } from './subscription-sync';
+
+export { countEmailableSubscribers } from './subscriber-count';
 
 export interface PlanLimits {
   price: string;
@@ -87,33 +90,6 @@ export function getPlanLimits(
 /** Rounds a byte count to GB with one decimal place, for the coarse-grained usage/alerting resources. */
 function bytesToGB(bytes: number): number {
   return Math.round((bytes / GB) * 10) / 10;
-}
-
-/**
- * Count of emailable subscribers for a tenant: has an address, not globally do-not-contact, and
- * the address isn't suppressed (hard bounce / spam complaint). This intentionally undercounts
- * channel-specific DNC, which errs in the customer's favour. Shared by usage-limit checks and
- * checkout (to compute the Stripe bracket quantity) and the `getUsage` tRPC endpoint.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- BigInt tenant_id filter needs an untyped handle; see pplcrm-any-exceptions
-export async function countEmailableSubscribers(tenantId: string, db: Kysely<any>): Promise<number> {
-  // Case-insensitive suppression match: suppressions are stored lowercased but persons keep mixed
-  // case, so compare lower(email) on both sides — otherwise a mixed-case bounced address is counted
-  // as emailable and inflates the Stripe bracket.
-  const suppressedEmails = db
-    .selectFrom('email_suppressions')
-    .select(sql<string>`lower(email)`.as('email'))
-    .where('tenant_id', '=', tenantId);
-  const row = await db
-    .selectFrom('persons')
-    .select(db.fn.countAll().as('cnt'))
-    .where('tenant_id', '=', tenantId)
-    .where('email', 'is not', null)
-    .where('email', '<>', '')
-    .where('do_not_contact', '=', false)
-    .where(sql<boolean>`lower(persons.email) NOT IN ${suppressedEmails}`)
-    .executeTakeFirst();
-  return Number(row?.cnt || 0);
 }
 
 /** Dedup key prefix for the "your list has grown" family of bracket alerts, stored in the same

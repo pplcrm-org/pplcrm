@@ -25,6 +25,7 @@ export const CRON_JOBS = {
   detect_lapsed_supporters: DAY_MS,
   perform_scheduled_deletions: DAY_MS,
   prune_newsletter_events: DAY_MS,
+  purge_downgraded_inboxes: DAY_MS,
   prune_retention: DAY_MS,
   recompute_address_fingerprints: DAY_MS,
   recompute_all_duplicates: DAY_MS,
@@ -53,6 +54,7 @@ const JOB_TIMEOUT_OVERRIDES = {
   google_sync: LONG_JOB_TIMEOUT_MS,
   ms_sync: LONG_JOB_TIMEOUT_MS,
   perform_scheduled_deletions: LONG_JOB_TIMEOUT_MS,
+  purge_downgraded_inboxes: LONG_JOB_TIMEOUT_MS,
 } as const satisfies Partial<Record<JobType, number>>;
 
 export function jobTimeoutMs(type: string | undefined): number {

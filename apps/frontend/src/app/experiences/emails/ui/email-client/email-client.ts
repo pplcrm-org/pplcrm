@@ -12,12 +12,23 @@ import { EmailFolderList } from '../email-folder-list/email-folder-list';
 import { EmailList } from '../email-list/email-list';
 import { EmailPersonRail } from '../email-person-rail/email-person-rail';
 import { ALL_FOLDERS } from '../../../../../../../../libs/common/src/lib/emails';
+import { planAllowsFeature } from '@common';
 import type { EmailFolderType, EmailType } from '../../../../../../../../libs/common/src/lib/models';
 import { AuthService } from '@frontend/auth/auth-service';
+import { RouterLink } from '@angular/router';
 
 @Component({
   selector: 'pc-email-client',
-  imports: [EmailFolderList, EmailList, EmailDetails, EmailBody, ComposeEmailComponent, EmailPersonRail, Icon],
+  imports: [
+    EmailFolderList,
+    EmailList,
+    EmailDetails,
+    EmailBody,
+    ComposeEmailComponent,
+    EmailPersonRail,
+    Icon,
+    RouterLink,
+  ],
   host: {
     class: 'block h-full',
     '(document:keydown)': 'handleDocumentKeydown($event)',
@@ -39,6 +50,18 @@ export class EmailClient {
   protected isComposing = signal(false);
 
   protected mobileView = this.stateStore.mobilePanelView;
+
+  /**
+   * The shared inbox is Grassroots+ (demo workspaces exempt — the seeded demo inbox is part of
+   * the test drive). Mirrors the server's `inboxAccessGate`, which blocks the emails endpoints
+   * outright on Free: rendering the client would only produce a wall of "requires Grassroots"
+   * toasts, so the page swaps to an upgrade panel instead. The `g i` chord and the dimmed
+   * sidebar entry keep the module discoverable.
+   */
+  protected readonly inboxPlanLocked = computed(() => {
+    const user = this.authService.getUserSignal()();
+    return !user?.tenant_demo_mode_at && !planAllowsFeature(user?.tenant_plan, 'inbox');
+  });
 
   protected folderPanelClass = computed(() =>
     this.mobileView() === 'folders' ? 'flex-1 min-w-0 md:flex-none' : 'hidden md:block',

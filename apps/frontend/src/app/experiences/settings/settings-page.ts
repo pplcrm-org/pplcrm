@@ -7,7 +7,12 @@ import { PcIconNameType } from '@icons/icons.index';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
-import { IAuthUserDetail, ORG_MODE_IS_ELECTORAL, SettingsEntryType } from '../../../../../../libs/common/src';
+import {
+  IAuthUserDetail,
+  ORG_MODE_IS_ELECTORAL,
+  SettingsEntryType,
+  planAllowsFeature,
+} from '../../../../../../libs/common/src';
 import { AuthService } from '../../auth/auth-service';
 import { OrgModeService } from '../../services/org-mode.service';
 import { HouseholdsService } from '../households/services/households-service';
@@ -268,6 +273,13 @@ export class SettingsPage implements OnInit {
    *  while the demo data is still in place. */
   protected isPlanLocked(sectionId: string): boolean {
     return !this.planSelected() && sectionId === 'domains';
+  }
+
+  /** Sections gated on a plan TIER (distinct from `isPlanLocked`'s "no plan settled yet"):
+   *  the shared inbox — and so mailbox sync — is Grassroots+. Demo mode wins in the template,
+   *  so a demo workspace sees the demo banner, not this one. */
+  protected isTierLocked(sectionId: string): boolean {
+    return sectionId === 'email-sync' && !planAllowsFeature(this.userSignal()?.tenant_plan, 'inbox');
   }
 
   /** Nav-button classes shared by config-driven and custom section buttons. */

@@ -110,6 +110,7 @@ export class NewslettersService extends AbstractAPIService<'newsletters', Update
     used: number;
     remaining: number | null;
     resetsAt: string | null;
+    subscriberCapBlock: { emailableCount: number; cap: number; message: string } | null;
   }> {
     return this.api.newsletters.sendQuota.query();
   }

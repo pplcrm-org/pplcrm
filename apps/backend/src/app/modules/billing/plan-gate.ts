@@ -49,3 +49,32 @@ export function planFeatureGate(feature: GatedFeature) {
     return opts.next();
   });
 }
+
+/**
+ * The shared-inbox gate deviates from `planFeatureGate` in both directions, by decision
+ * (2026-08-01): it blocks READS as well as mutations — a downgraded workspace loses inbox
+ * access on day 0 (its synced mail is then purged 30 days later; see billing/inbox-purge) —
+ * and it exempts demo mode, because the seeded demo inbox is part of the free test drive and
+ * contains no synced customer mail. Reads-stay-open still applies to every other gated
+ * feature; do not copy this shape without the same operator decision behind it.
+ */
+export async function assertInboxAccess(db: Kysely<Models> | Transaction<Models>, tenant_id: string): Promise<void> {
+  const tenant = await db
+    .selectFrom('tenants')
+    .select(['subscription_plan', 'demo_mode_at'])
+    .where('id', '=', tenant_id)
+    .executeTakeFirst();
+  if (tenant?.demo_mode_at == null && !planAllowsFeature(tenant?.subscription_plan, 'inbox')) {
+    throw new ForbiddenError(planGateMessage('inbox'));
+  }
+}
+
+/** tRPC middleware form of `assertInboxAccess`, for rebinding the emails router's procedures. */
+export function inboxAccessGate() {
+  return middleware(async (opts) => {
+    const tenantId = opts.ctx.auth?.tenant_id;
+    if (!tenantId) throw new TRPCError({ code: 'UNAUTHORIZED' });
+    await assertInboxAccess(BaseRepository.dbInstance, tenantId);
+    return opts.next();
+  });
+}

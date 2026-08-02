@@ -187,8 +187,8 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       {
         kind: 'list',
         items: [
-          '**Free**: $0 forever. Up to 1,000 emailable subscribers, 2,000 emails a month, 2 staff seats, and 1 GB of storage. Includes the full people CRM and newsletters. No companion volunteers.',
-          '**Grassroots**: starts at $29 a month for up to 1,000 emailable subscribers, then rises in steps as your list grows, up to $359 a month at its 100,000-subscriber ceiling. Adds web forms, donations, automations, lists, volunteer management (teams and events), and API access with 300+ integrations.',
+          '**Free**: $0 forever. Up to 1,000 emailable subscribers, 2,000 emails a month, 2 staff seats, and 1 GB of storage. Includes the people CRM and newsletters. No shared inbox and no companion volunteers.',
+          '**Grassroots**: starts at $29 a month for up to 1,000 emailable subscribers, then rises in steps as your list grows, up to $359 a month at its 100,000-subscriber ceiling. Adds the shared inbox (Gmail and Microsoft mailbox sync), web forms, donations, automations, lists, volunteer management (teams and events), and API access with 300+ integrations.',
           '**Movement**: starts at $55 a month for up to 1,000 emailable subscribers, then rises in steps up to $665 a month at its 200,000-subscriber ceiling. Adds the canvassing and deliveries companion apps with unlimited companion volunteers: turf cutting, walk lists and routes, field reports, yard signs, and route optimization, plus priority support.',
           '**Enterprise**: for federations, parties, and multi-office operations with custom needs. Pricing is negotiated directly. Reach out from the [Billing](/workspace/billing) page.',
         ],
@@ -209,6 +209,11 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'When your emailable-subscriber count crosses into a higher price bracket, every admin and owner is notified, the subscription moves to the new bracket, and the prorated difference for the remainder of your current billing period is charged right away — on **either** interval. Growth never interrupts sending, and your monthly email allowance rises with the new bracket the moment it applies. If your list shrinks back below a bracket, the lower price reconciles at the next renewal rather than refunding the current period. If a payment fails, newsletter sending goes on hold until the payment method is updated on the [Billing](/workspace/billing) page — everything else keeps working.',
+      },
+      { kind: 'h2', id: 'cancel-downgrade', text: 'Canceling a paid plan (moving to Free)' },
+      {
+        kind: 'p',
+        text: 'To cancel, use **Downgrade to Free** on the [Billing](/workspace/billing) page. It first shows exactly what will change in your workspace, then schedules the cancellation for the end of the period you have already paid for — and you can **Resume subscription** any time before that date. When the downgrade lands, Grassroots and Movement features turn off: published forms stop accepting submissions, API keys stop working, automations stop processing, and the shared inbox locks. If your workspace has more than **1,000 emailable subscribers**, newsletter sending is blocked until the list is reduced to the Free limit or you upgrade again. Your contacts and other data are never deleted, with one exception: email synced from a connected mailbox is permanently deleted **30 days** after the downgrade, and re-subscribing later cannot restore it — the workspace owner gets an email spelling out all of this, with the exact deletion date, when the downgrade takes effect.',
       },
       {
         kind: 'callout',

@@ -22,7 +22,9 @@ import { WorkflowsController } from '../workflows/controller';
 import { WebhookEventsRepo } from './repositories/webhook-events.repo';
 import { assertMockModeAllowed, getStripe, isMockMode, stripe } from '../../lib/stripe-platform-client';
 import { syncSubscriptionQuantity } from './subscription-sync';
+import { syncInboxPurgeSchedule } from './inbox-purge';
 import { countEmailableSubscribers, getPlanLimits } from './usage-limits';
+import { exceededSubscriberCap } from '../newsletters/send-guards';
 
 /** Stripe price ID configured for each self-serve plan × billing interval (undefined in mock
  * mode / when unset). The annual prices are exactly 10× the monthly unit amounts — see the
@@ -219,6 +221,19 @@ export class BillingController {
       throw new Error('Tenant not found');
     }
 
+    // Whether a period-end cancellation is already scheduled. Read live from Stripe (we do not
+    // store the flag) so the page can show "your plan ends on X" and offer to resume; a Stripe
+    // hiccup degrades to `false` rather than failing the whole billing page.
+    let cancelAtPeriodEnd = false;
+    if (!isMockMode && stripe && tenant.stripe_subscription_id && hasSettledPlan(tenant.subscription_status)) {
+      try {
+        const subscription = await getStripe().subscriptions.retrieve(String(tenant.stripe_subscription_id));
+        cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
+      } catch (err) {
+        logger.warn({ err }, `[getBillingDetails] Could not read cancel_at_period_end for tenant ${auth.tenant_id}`);
+      }
+    }
+
     return {
       plan: tenant.subscription_plan || 'free',
       status: tenant.subscription_status || 'inactive',
@@ -227,8 +242,59 @@ export class BillingController {
       stripeCustomerId: tenant.stripe_customer_id || null,
       stripeSubscriptionId: tenant.stripe_subscription_id || null,
       hasActiveSubscription: hasSettledPlan(tenant.subscription_status),
+      cancelAtPeriodEnd,
       isMockMode,
     };
+  }
+
+  /**
+   * Cancel the live paid subscription at period end, from inside the app. This is the educated
+   * cancellation path (decision 2026-08-01): the billing page shows the full downgrade-impact
+   * dialog BEFORE calling this — which the Stripe portal cannot do — and the workspace keeps
+   * what it paid for until the period ends. The `customer.subscription.deleted` webhook then
+   * lands the tenant on Free, schedules the synced-inbox purge and sends the education email.
+   * Mock mode has no billing period, so it downgrades immediately via the mock cancel path.
+   */
+  public async cancelSubscription(auth: { tenant_id: string }): Promise<{ endsAt: string | null; immediate: boolean }> {
+    if (isMockMode) {
+      await this.cancelMockPlan(auth);
+      return { endsAt: null, immediate: true };
+    }
+
+    const tenant = asTenantBillingRow(
+      await tenantsRepo.getOneBy('id', { tenant_id: auth.tenant_id, value: auth.tenant_id }),
+    );
+    if (!tenant) {
+      throw new NotFoundError('Tenant not found');
+    }
+    if (
+      !tenant.stripe_subscription_id ||
+      !['active', 'trialing', 'past_due'].includes(tenant.subscription_status ?? '')
+    ) {
+      throw new BadRequestError('There is no active paid subscription to cancel.');
+    }
+
+    const subscription = await getStripe().subscriptions.update(String(tenant.stripe_subscription_id), {
+      cancel_at_period_end: true,
+    });
+    logger.info(`[cancelSubscription] Tenant ${auth.tenant_id} scheduled a period-end cancellation`);
+    return { endsAt: subscriptionPeriodEnd(subscription), immediate: false };
+  }
+
+  /** Undo a scheduled period-end cancellation — the subscription keeps renewing as before. */
+  public async resumeSubscription(auth: { tenant_id: string }): Promise<{ resumed: boolean }> {
+    if (isMockMode) {
+      throw new BadRequestError('Mock subscriptions cancel immediately, so there is nothing to resume.');
+    }
+    const tenant = asTenantBillingRow(
+      await tenantsRepo.getOneBy('id', { tenant_id: auth.tenant_id, value: auth.tenant_id }),
+    );
+    if (!tenant?.stripe_subscription_id) {
+      throw new BadRequestError('There is no subscription to resume.');
+    }
+    await getStripe().subscriptions.update(String(tenant.stripe_subscription_id), { cancel_at_period_end: false });
+    logger.info(`[resumeSubscription] Tenant ${auth.tenant_id} resumed their subscription`);
+    return { resumed: true };
   }
 
   /** Live usage snapshot for the billing page: emailable-subscriber count against the tenant's
@@ -444,6 +510,7 @@ export class BillingController {
         },
       });
       logger.info(`[syncSubscriptionFromStripe] No live subscription — tenant ${tenant.id} set to free`);
+      await syncInboxPurgeSchedule(tenantsRepo.db, tenant.id);
       return { synced: true, plan: 'free' };
     }
 
@@ -471,6 +538,7 @@ export class BillingController {
       },
     });
     logger.info(`[syncSubscriptionFromStripe] Tenant ${tenant.id} synced to plan '${planName}' (${live.status})`);
+    await syncInboxPurgeSchedule(tenantsRepo.db, tenant.id);
     return { synced: true, plan: planName };
   }
 
@@ -832,6 +900,7 @@ export class BillingController {
       },
     });
     logger.info(`[selectFreePlan] Tenant ${auth.tenant_id} chose the Free plan`);
+    await syncInboxPurgeSchedule(tenantsRepo.db, auth.tenant_id);
 
     return { success: true, plan: 'free' };
   }
@@ -919,6 +988,14 @@ export class BillingController {
 
     if (!tenant) return;
 
+    // 0. Keep the synced-inbox purge schedule in step with the plan: a downgrade to Free starts
+    // the 30-day deletion clock, an upgrade (including inside the window) cancels it.
+    try {
+      await syncInboxPurgeSchedule(tenantsRepo.db, tenantId);
+    } catch (err) {
+      logger.error({ err }, `Failed to sync inbox purge schedule for tenant ${tenantId}`);
+    }
+
     // 1. Reset limit alert settings
     await tenantsRepo.db
       .deleteFrom('settings')
@@ -934,7 +1011,17 @@ export class BillingController {
       .where('id', '=', String(tenant.admin_id))
       .executeTakeFirst();
 
-    if (admin && admin.email) {
+    if (!admin?.email) return;
+
+    // A landing on Free is a downgrade, not a welcome: the email's job is to say exactly what
+    // just shut off and what happens next — the Stripe-portal cancel path shows no warning
+    // beforehand, so this message is the education (decision 2026-08-01).
+    if ((getPlanDef(planName)?.key ?? 'free') === 'free') {
+      await this.sendDowngradeEducationEmail(tenantId, admin, isMock);
+      return;
+    }
+
+    {
       const planLimits = getPlanLimits(planName, quantity, interval);
       const billingPageUrl = `${env.appUrl}/workspace/billing`;
       const mockPrefix = isMock ? '[MOCK] ' : '';
@@ -962,5 +1049,94 @@ export class BillingController {
 </div>`,
       });
     }
+  }
+
+  /**
+   * Sent whenever a workspace lands on the Free plan — Stripe cancellation webhook, the in-app
+   * downgrade flow's period-end cancellation, or a mock-mode cancel. The Stripe billing portal
+   * shows no warning of its own, so this email is the education (decision 2026-08-01): which
+   * paid features just shut off (with the workspace's real counts), whether newsletter sending
+   * is blocked by the Free plan's 1,000-emailable-subscriber cap, and the exact date any synced
+   * inbox mail will be permanently deleted.
+   */
+  private async sendDowngradeEducationEmail(
+    tenantId: string,
+    admin: { email: string | null; first_name: string | null },
+    isMock: boolean,
+  ): Promise<void> {
+    if (!admin.email) return;
+    const db = tenantsRepo.db;
+
+    const impact = await this.getDowngradeImpact({ tenant_id: tenantId });
+    const subscribers = await countEmailableSubscribers(tenantId, db);
+    const overCap = exceededSubscriberCap('free', 1, subscribers);
+    const tenantRow = await db
+      .selectFrom('tenants')
+      .select('inbox_purge_scheduled_at')
+      .where('id', '=', tenantId)
+      .executeTakeFirst();
+    const purgeAt = tenantRow?.inbox_purge_scheduled_at ? new Date(tenantRow.inbox_purge_scheduled_at) : null;
+    const purgeDateLabel = purgeAt
+      ? purgeAt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+      : null;
+
+    const changes: string[] = [];
+    if (overCap != null) {
+      changes.push(
+        `Newsletter sending is blocked: your workspace has ${subscribers.toLocaleString()} emailable subscribers, ` +
+          `and the Free plan includes up to ${overCap.toLocaleString()}. Reduce your emailable list to ` +
+          `${overCap.toLocaleString()} or fewer (remove email addresses or mark people Do Not Contact), or upgrade, ` +
+          `to send again.`,
+      );
+    }
+    if (purgeDateLabel) {
+      changes.push(
+        `The shared inbox is closed, mailbox sync has stopped, and the email synced from your mailbox will be ` +
+          `permanently deleted on ${purgeDateLabel}. Upgrading before then restores the inbox intact; after that ` +
+          `date the mail cannot be recovered, even if you subscribe again.`,
+      );
+    }
+    if (impact.publishedForms > 0) {
+      const s = impact.publishedForms === 1 ? '' : 's';
+      changes.push(`Your ${impact.publishedForms} published form${s} no longer accept${s ? '' : 's'} submissions.`);
+    }
+    if (impact.apiKeys > 0) {
+      const s = impact.apiKeys === 1 ? '' : 's';
+      changes.push(`Your ${impact.apiKeys} API key${s} stopped working, and integrations using them will fail.`);
+    }
+    if (impact.activeAutomations > 0) {
+      const s = impact.activeAutomations === 1 ? '' : 's';
+      changes.push(`Your ${impact.activeAutomations} active automation${s} stopped processing and will not send.`);
+    }
+
+    const keeps =
+      'Everything else stays in place: your contacts, households, newsletters and reports are untouched. ' +
+      'The Free plan includes up to 1,000 emailable subscribers, 2,000 emails per month, 2 staff seats and 1 GB of storage.';
+    const billingPageUrl = `${env.appUrl}/workspace/billing`;
+    const mockPrefix = isMock ? '[MOCK] ' : '';
+    const mailService = new TransactionalEmailService({ defaultAudience: 'account' });
+
+    const changesText = changes.length > 0 ? `What changed:\n${changes.map((c) => `- ${c}`).join('\n')}\n\n` : '';
+    const changesHtml = changes.length > 0 ? `<ul>${changes.map((c) => `<li>${c}</li>`).join('')}</ul>` : '';
+
+    await mailService.sendMail({
+      to: admin.email,
+      subject: `${mockPrefix}Your workspace is now on the Free plan — here is what changed`,
+      text: `Hi ${admin.first_name || 'there'},
+
+${mockPrefix}Your paid subscription has ended and your workspace is now on the Free plan.
+
+${changesText}${keeps}
+
+Resubscribe any time here: ${billingPageUrl}`,
+      html: `<h2>Your workspace is now on the Free plan</h2>
+<p>Hi ${admin.first_name || 'there'},</p>
+<p>${mockPrefix}Your paid subscription has ended and your workspace is now on the Free plan.</p>
+${changes.length > 0 ? `<div class="panel"><p><strong>What changed:</strong></p>${changesHtml}</div>` : ''}
+<p>${keeps}</p>
+<div class="btn-container">
+  <a href="${billingPageUrl}" class="btn">Manage billing</a>
+</div>`,
+    });
   }
 }

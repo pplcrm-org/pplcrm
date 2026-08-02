@@ -76,6 +76,9 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
 
   // ── External account sync ───────────────────────────────────────────────
   z.object({ type: z.literal('schedule_sync_jobs') }),
+  /** Permanently delete synced inbox mail for workspaces 30+ days past a downgrade to Free
+   * (the shared inbox is Grassroots+) — see billing/inbox-purge.ts for the scheduling rules. */
+  z.object({ type: z.literal('purge_downgraded_inboxes') }),
   z.object({
     type: z.literal('google_sync'),
     tenantId: idSchema,

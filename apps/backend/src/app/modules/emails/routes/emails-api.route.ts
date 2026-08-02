@@ -9,6 +9,7 @@ import { env } from '../../../../env';
 import { BadRequestError } from '../../../errors/app-errors';
 import { authenticateRest } from '../../../lib/rest-auth';
 import { verifyEmailAttachmentToken } from '../../../lib/signed-download';
+import { assertInboxAccess, planGateMessage } from '../../billing/plan-gate';
 import { BaseRepository } from '../../../lib/base.repo';
 import { attachmentDisposition } from '../../../lib/download-headers';
 import { sanitizeHtml } from '../../../lib/mail/sanitize-util';
@@ -376,6 +377,16 @@ export async function saveLocalEmail(
 }
 
 const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
+  /** REST mirror of the tRPC `inboxAccessGate`: the shared inbox is Grassroots+ (demo exempt). */
+  async function inboxLocked(tenantId: string): Promise<boolean> {
+    try {
+      await assertInboxAccess(BaseRepository.dbInstance, tenantId);
+      return false;
+    } catch (_err) {
+      return true;
+    }
+  }
+
   // Send composed email
   fastify.post('/send', async (req: FastifyRequest, reply) => {
     // Mutating endpoint: enforce session revocation and block read-only viewers.
@@ -387,6 +398,9 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
     const tenantId = authResult.auth.tenant_id;
     const userId = authResult.auth.user_id;
     const db = BaseRepository.dbInstance;
+    if (await inboxLocked(tenantId)) {
+      return reply.status(403).send({ error: planGateMessage('inbox') });
+    }
 
     // Retrieve sender user details
     const user = await db
@@ -779,6 +793,9 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
         tenantId = authResult.auth.tenant_id;
       }
       const db = BaseRepository.dbInstance;
+      if (await inboxLocked(tenantId)) {
+        return reply.status(403).send({ error: planGateMessage('inbox') });
+      }
 
       const attachment = await db
         .selectFrom('email_attachments')
@@ -849,6 +866,9 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
         tenantId = authResult.auth.tenant_id;
       }
       const db = BaseRepository.dbInstance;
+      if (await inboxLocked(tenantId)) {
+        return reply.status(403).send({ error: planGateMessage('inbox') });
+      }
 
       const attachment = await db
         .selectFrom('email_attachments')

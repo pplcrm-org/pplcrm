@@ -216,6 +216,7 @@ export class NewsletterAddComponent implements OnInit {
     used: number;
     remaining: number | null;
     resetsAt: string | null;
+    subscriberCapBlock: { emailableCount: number; cap: number; message: string } | null;
   } | null>(null);
   /** True when the selected audience is larger than what's left of the monthly allowance. */
   protected readonly quotaShortfall = computed(() => {
@@ -223,6 +224,10 @@ export class NewsletterAddComponent implements OnInit {
     if (!quota || quota.remaining == null) return false;
     return this.estimatedAudienceCount() > quota.remaining;
   });
+  /** Free-plan subscriber-cap block, mirrored from the server's pre-send gate: set when the
+   * workspace has more emailable subscribers than its plan allows, so no audience narrowing
+   * fixes it — only trimming the list or upgrading does. */
+  protected readonly subscriberCapBlock = computed(() => this.sendQuota()?.subscriberCapBlock ?? null);
   protected readonly quotaResetLabel = computed(() => {
     const resetsAt = this.sendQuota()?.resetsAt;
     return resetsAt ? this.dateFormatter.format(new Date(resetsAt)) : '';
@@ -234,6 +239,10 @@ export class NewsletterAddComponent implements OnInit {
     if (this.isDemo()) return this.demoSendTooltip;
     if (!this.orgAddressSet()) {
       return 'Set your organization’s mailing address under Settings → Organization — it appears in the footer of every newsletter';
+    }
+    const capBlock = this.subscriberCapBlock();
+    if (capBlock && this.regularPayload().timingMode === 'now') {
+      return `Your workspace has ${this.numberFormatter.format(capBlock.emailableCount)} emailable subscribers — over the ${this.numberFormatter.format(capBlock.cap)} the Free plan includes`;
     }
     if (this.quotaShortfall() && this.regularPayload().timingMode === 'now') {
       const remaining = this.sendQuota()?.remaining ?? 0;

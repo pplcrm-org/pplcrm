@@ -232,6 +232,7 @@ describe('planAllowsFeature', () => {
 describe('FEATURE_MATRIX ↔ GATED_FEATURES', () => {
   /** Every matrix row that describes a gated feature, by the feature that gates it. */
   const ROWS_BY_FEATURE: Record<GatedFeature, readonly string[]> = {
+    inbox: ['Shared inbox (Gmail & Microsoft mailbox sync)'],
     forms: ['Forms'],
     donations: ['Donations'],
     api: ['API access & 300+ integrations'],

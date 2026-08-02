@@ -26,11 +26,14 @@ import { assertNotDemoMode } from '../demo/demo-guard';
 import {
   assertTenantMaySendNewsletter,
   assertTenantSendingNotBlocked,
+  exceededSubscriberCap,
   loadSendingTenant,
   monthlyEmailCap,
   sendWindow,
   sentEmailsSince,
+  subscriberCapMessage,
 } from './send-guards';
+import { countEmailableSubscribers } from '../billing/subscriber-count';
 import { checkRateLimit } from '../../lib/rate-limiter';
 import { NewsletterEmailService } from '../../lib/mail/newsletter-mail.service';
 import {
@@ -63,6 +66,10 @@ export interface SendQuota {
   remaining: number | null;
   /** ISO timestamp of the next allowance reset; null when unlimited. */
   resetsAt: string | null;
+  /** Free-plan subscriber-cap block (send-guards `exceededSubscriberCap`): set when the
+   * workspace's emailable-subscriber count exceeds its plan cap, with the same message the
+   * pre-send gate would refuse with — so the composer can disable Send instead of erroring. */
+  subscriberCapBlock: { emailableCount: number; cap: number; message: string } | null;
 }
 
 export class NewslettersController extends BaseController<'newsletters', NewslettersRepo> {
@@ -694,10 +701,24 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
     const cap = monthlyEmailCap(tenant.plan, tenant.subscription_quantity);
     const window = sendWindow(tenant.subscription_ends_at, new Date());
     const used = await sentEmailsSince(db, tenant_id, window.start);
+
+    const emailableCount = await countEmailableSubscribers(tenant_id, db);
+    const exceededCap = exceededSubscriberCap(tenant.plan, tenant.subscription_quantity, emailableCount);
+    const subscriberCapBlock =
+      exceededCap == null
+        ? null
+        : { emailableCount, cap: exceededCap, message: subscriberCapMessage(emailableCount, exceededCap) };
+
     if (!Number.isFinite(cap)) {
-      return { cap: null, used, remaining: null, resetsAt: null };
+      return { cap: null, used, remaining: null, resetsAt: null, subscriberCapBlock };
     }
-    return { cap, used, remaining: Math.max(0, cap - used), resetsAt: window.resetsAt.toISOString() };
+    return {
+      cap,
+      used,
+      remaining: Math.max(0, cap - used),
+      resetsAt: window.resetsAt.toISOString(),
+      subscriberCapBlock,
+    };
   }
 
   public async sendTestEmail(

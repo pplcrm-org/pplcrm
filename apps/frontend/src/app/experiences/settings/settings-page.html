@@ -410,8 +410,21 @@
             page to verify a sending domain. Free counts, and you don't have to remove the demo data first.
           </p>
         </div>
+        } @else if (isTierLocked(custom.id)) {
+        <!-- Tier guard: the shared inbox (mailbox sync) is Grassroots+ -->
+        <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
+          <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+          <p class="text-xs leading-relaxed text-base-content/80">
+            The shared inbox — and mailbox sync with it — is part of the Grassroots plan and higher. Upgrade on the
+            <button type="button" class="link text-primary" (click)="selectSection('billing')">Billing</button>
+            page to connect Gmail or Microsoft.
+          </p>
+        </div>
         }
-        <fieldset class="min-w-0 space-y-5" [disabled]="isDemoLocked(custom.id) || isPlanLocked(custom.id)">
+        <fieldset
+          class="min-w-0 space-y-5"
+          [disabled]="isDemoLocked(custom.id) || isPlanLocked(custom.id) || isTierLocked(custom.id)"
+        >
           @switch (custom.id) { @case ('modules') {
           <pc-modules-settings></pc-modules-settings>
           } @case ('email-sync') {

@@ -124,6 +124,63 @@ export class EmailIngesterService {
   }
 
   /**
+   * Permanently delete the tenant's ENTIRE shared inbox — every campaign, every provider,
+   * including locally saved outbound copies — plus drafts, read states, and the attachment files
+   * and body blobs behind it all. This is the 30-day post-downgrade purge (the shared inbox is
+   * Grassroots+; scheduling lives in modules/billing/inbox-purge.ts): access was already cut off
+   * at downgrade time, and this destruction runs only once the grace window has passed.
+   *
+   * Deliberately NOT prefix-scoped like `removeAllLocalEmails` — the emails module is the inbox,
+   * so a purged workspace keeps no partial mailbox. Files go through the same shared
+   * reference check (`purgeUnreferencedFiles`), so bytes shared with avatars or newsletter images
+   * survive. Chunked, with one transaction per chunk: a crash mid-purge resumes on the next cron
+   * tick because the schedule column is only cleared after the whole purge succeeds.
+   */
+  public async purgeAllTenantEmails(tenantId: string): Promise<{ deletedEmails: number }> {
+    const CHUNK_SIZE = 2_000;
+    let deletedEmails = 0;
+
+    // Loop until no rows remain rather than paginating: each chunk deletes what it selected.
+    for (;;) {
+      const rows = await this.db
+        .selectFrom('emails')
+        .select('id')
+        .where('tenant_id', '=', tenantId)
+        .limit(CHUNK_SIZE)
+        .execute();
+      if (rows.length === 0) break;
+      const emailIds = rows.map((r) => String(r.id));
+
+      const fileIds = await this.getAttachmentFileIds(tenantId, emailIds);
+      const bodyKeys = await this.getBodyStorageKeys(tenantId, emailIds);
+
+      await this.db.transaction().execute(async (trx) => {
+        for (const table of [
+          'email_comments',
+          'email_bodies',
+          'email_headers',
+          'email_recipients',
+          'email_attachments',
+          'email_trash',
+          'email_read_states',
+        ] as const) {
+          await trx.deleteFrom(table).where('tenant_id', '=', tenantId).where('email_id', 'in', emailIds).execute();
+        }
+        await trx.deleteFrom('emails').where('tenant_id', '=', tenantId).where('id', 'in', emailIds).execute();
+      });
+
+      await this.purgeOrphanedFiles(tenantId, fileIds);
+      await this.purgeBodyBlobs(bodyKeys);
+      deletedEmails += emailIds.length;
+    }
+
+    // Inbox drafts are campaign-scoped rather than email-scoped, so they are swept separately.
+    await this.db.deleteFrom('email_drafts').where('tenant_id', '=', tenantId).execute();
+
+    return { deletedEmails };
+  }
+
+  /**
    * Record that a message is no longer in the folder we sync from — WITHOUT destroying it.
    *
    * This used to hard-delete the `emails` row and every child table. That was wrong, because a

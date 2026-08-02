@@ -39,6 +39,7 @@ describe('BillingSettingsComponent', () => {
     stripeCustomerId: 'cus_123',
     stripeSubscriptionId: 'sub_123',
     hasActiveSubscription: true,
+    cancelAtPeriodEnd: false,
     isMockMode: false,
     ...over,
   });
@@ -139,8 +140,16 @@ describe('BillingSettingsComponent', () => {
       await render();
     });
 
-    it('says nothing when a downgrade would break nothing', async () => {
-      expect(await warn({})).toBeNull();
+    // Since 2026-08-01 the warning is never empty: the shared inbox is Grassroots+ and its synced
+    // mail is permanently purged 30 days after a downgrade, so that line is always at stake.
+    it('always warns about the synced-inbox purge, even when nothing else breaks', async () => {
+      const message = await warn({});
+
+      expect(message).toContain('shared inbox will close');
+      expect(message).toContain('permanently deleted 30 days after the downgrade');
+      expect(message).not.toContain('published form');
+      expect(message).not.toContain('API key');
+      expect(message).not.toContain('automation');
     });
 
     it('names published forms as losing submissions, not merely "disabled"', async () => {
@@ -169,11 +178,22 @@ describe('BillingSettingsComponent', () => {
       expect(message).toContain('4 active automations');
     });
 
-    it('joins several losses into one sentence and reassures that nothing is deleted', async () => {
+    it('joins several losses into one sentence and states exactly what is and is not deleted', async () => {
       const message = await warn({ publishedForms: 1, apiKeys: 1, activeAutomations: 1 });
 
       expect(message).toMatch(/^On the Free plan, .+; .+; .+\./);
-      expect(message).toContain('Nothing is deleted — it all resumes if you upgrade again.');
+      expect(message).toContain(
+        'Your contacts, households and other data are not deleted, and everything except the synced inbox mail resumes if you upgrade again.',
+      );
+    });
+
+    it('adds the send block when the list is over the Free subscriber cap', async () => {
+      component['usage'].set(usageFor({ subscribers: FREE_CAP + 500 }));
+
+      const message = await warn({});
+
+      expect(message).toContain('newsletter sending will be blocked');
+      expect(message).toContain((FREE_CAP + 500).toLocaleString('en-US'));
     });
 
     // A broken advisory query must not become a broken billing page: the user is entitled to
@@ -187,12 +207,20 @@ describe('BillingSettingsComponent', () => {
   });
 
   describe('continueOnFree', () => {
-    it('switches straight to Free when there is nothing to lose', async () => {
+    // The education dialog always fires now — the inbox-purge consequence is always at stake —
+    // so even a "nothing else to lose" tenant confirms before landing on Free.
+    it('educates first, then switches to Free once confirmed', async () => {
       await render({ details: { plan: 'free', hasActiveSubscription: false, stripeSubscriptionId: null } });
+      mockDialogs.confirm.mockResolvedValue(true);
 
       await component['continueOnFree']();
 
-      expect(mockDialogs.confirm).not.toHaveBeenCalled();
+      expect(mockDialogs.confirm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Move to the Free plan?',
+          message: expect.stringContaining('shared inbox'),
+        }),
+      );
       expect(mockApi.billing.selectFree.mutate).toHaveBeenCalled();
       expect(mockAlerts.showSuccess).toHaveBeenCalled();
       // The page re-reads afterwards, so the card reflects the new plan without a manual reload.
@@ -248,6 +276,7 @@ describe('BillingSettingsComponent', () => {
 
     it('surfaces a failed switch and releases the card', async () => {
       await render({ details: { plan: 'free', hasActiveSubscription: false, stripeSubscriptionId: null } });
+      mockDialogs.confirm.mockResolvedValue(true);
       mockApi.billing.selectFree.mutate.mockRejectedValue(new Error('Plan change rejected.'));
 
       await component['continueOnFree']();
@@ -271,12 +300,24 @@ describe('BillingSettingsComponent', () => {
       expect(mockApi.billing.createPortal.mutate).toHaveBeenCalled();
     });
 
-    it('does not prompt a paid tenant with nothing to lose', async () => {
+    // The inbox purge means a paid tenant always has something to lose on the way to Free, so
+    // the way into the portal always warns (declining stays put; card-only changes are named as
+    // unaffected in the dialog copy).
+    it('warns a paid tenant even when no forms/keys/automations would break', async () => {
       await render();
 
       await component['openPortal']();
 
-      expect(mockDialogs.confirm).not.toHaveBeenCalled();
+      expect(mockDialogs.confirm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: 'Before you change your plan',
+          message: expect.stringContaining('shared inbox'),
+        }),
+      );
+      expect(redirects).toEqual([]);
+
+      mockDialogs.confirm.mockResolvedValue(true);
+      await component['openPortal']();
       expect(redirects).toEqual(['https://portal.stripe.test/session']);
     });
 
@@ -322,6 +363,7 @@ describe('BillingSettingsComponent', () => {
 
     it('releases the button when the portal cannot be opened', async () => {
       await render();
+      mockDialogs.confirm.mockResolvedValue(true);
       mockApi.billing.createPortal.mutate.mockResolvedValue({ url: null });
 
       await component['openPortal']();
@@ -346,7 +388,7 @@ describe('BillingSettingsComponent', () => {
 
       expect(component['canChooseFree']()).toBe(false);
       expect(component['blockedReason'](freePlan())).toBe(
-        'Cancel your subscription in the billing portal to move back to Free.',
+        'Cancel your subscription first — use “Downgrade to Free” in the Current plan section above.',
       );
       expect(component['ctaDisabled'](freePlan())).toBe(true);
     });

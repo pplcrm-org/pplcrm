@@ -8,6 +8,7 @@ import { idSchema } from '@common';
 import { sql } from 'kysely';
 import { encodeOAuthState } from '../../lib/oauth-state';
 import { assertNotDemoMode } from '../demo/demo-guard';
+import { assertPlanFeature } from '../billing/plan-gate';
 import { BadRequestError } from '../../errors/app-errors';
 
 let _oauthSvc: MsOAuthService | null = null;
@@ -46,8 +47,11 @@ function getAuthUrl() {
   return authProcedure
     .input(z.object({ campaignId: idSchema, returnTo: z.string().optional() }))
     .query(async ({ ctx, input }) => {
-      // Mailbox sync is configuration — locked during the demo test drive.
+      // Mailbox sync is configuration — locked during the demo test drive, and paid-only
+      // (the shared inbox is Grassroots+; connecting is the entry point, so the query form
+      // of the gate matters here even though planFeatureGate would only catch mutations).
       await assertNotDemoMode(BaseRepository.dbInstance, ctx.auth.tenant_id);
+      await assertPlanFeature(BaseRepository.dbInstance, ctx.auth.tenant_id, 'inbox');
       const { oauthSvc } = getServices();
       const state = encodeOAuthState({
         userId: ctx.auth.user_id,
@@ -99,6 +103,7 @@ function getConnectionStatus() {
 function syncNow() {
   return authProcedure.input(campaignInput).mutation(async ({ ctx, input }) => {
     const db = BaseRepository.dbInstance;
+    await assertPlanFeature(db, ctx.auth.tenant_id, 'inbox');
 
     const existing = await db
       .selectFrom('background_jobs')
@@ -154,11 +159,15 @@ function disconnect() {
 
 function resetSync() {
   return authProcedure.input(campaignInput).mutation(async ({ ctx, input }) => {
+    await assertPlanFeature(BaseRepository.dbInstance, ctx.auth.tenant_id, 'inbox');
     const { oauthSvc } = getServices();
     await oauthSvc.saveDeltaLink(ctx.auth.tenant_id, input.campaignId, NEEDS_FULL_SYNC);
     return { success: true };
   });
 }
+// `disconnect` and `getConnectionStatus` are deliberately NOT plan-gated: taking a credential
+// out of service must never require an upgrade (same principle as revokeApiKey), and the
+// settings page renders the status section on every plan.
 
 export const MsSyncRouter = router({
   getAuthUrl: getAuthUrl(),

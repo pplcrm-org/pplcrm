@@ -3,6 +3,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { NgTemplateOutlet } from '@angular/common';
 import { NavigationCancel, NavigationEnd, NavigationError, NavigationStart, Router, RouterLink } from '@angular/router';
 import { filter, map } from 'rxjs';
+import { planAllowsFeature } from '@common';
 import { Icon } from '@icons/icon';
 import { Swap } from '@uxcommon/components/swap/swap';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -122,7 +123,7 @@ export class Sidebar {
     const role = this.auth.getUser()?.role;
     const allItems = this.sidebarSvc.getItems()();
     const withBadges = this.applyBadges(allItems);
-    const scoped = this.applyModuleVisibility(withBadges);
+    const scoped = this.applyPlanGates(this.applyModuleVisibility(withBadges));
     if (role === 'user') {
       return scoped
         .filter((item) => !item.adminOnly)
@@ -160,8 +161,29 @@ export class Sidebar {
     return items.map((item) => (item.children ? { ...scope(item), children: item.children.map(scope) } : scope(item)));
   }
 
-  /** Click on a nav entry. Dimmed = the module is off: explain, don't navigate. */
+  /**
+   * Plan-gate the shared inbox (Grassroots+; demo workspaces exempt — their seeded inbox is
+   * part of the test drive). Same dimmed rendering as an off module so there is one visual
+   * idiom for "present but not available", but the explanation points at Billing.
+   */
+  private applyPlanGates(items: ISidebarItem[]): ISidebarItem[] {
+    const user = this.auth.getUser();
+    const inboxLocked = !user?.tenant_demo_mode_at && !planAllowsFeature(user?.tenant_plan, 'inbox');
+    if (!inboxLocked) return items;
+    const scope = (item: ISidebarItem): ISidebarItem =>
+      item.route === '/inbox' ? { ...item, dimmed: true, planLocked: true } : item;
+    return items.map((item) => (item.children ? { ...scope(item), children: item.children.map(scope) } : scope(item)));
+  }
+
+  /** Click on a nav entry. Dimmed = the module is off (or above the plan): explain, don't navigate. */
   protected onNavClick(nav: ISidebarItem, event: Event): void {
+    if (nav.planLocked) {
+      event.preventDefault();
+      this.alertSvc.showInfo(
+        `${this.label(nav)} requires the Grassroots plan or higher. Upgrade on the Billing page to unlock it.`,
+      );
+      return;
+    }
     if (nav.dimmed) {
       event.preventDefault();
       this.alertSvc.showInfo(
@@ -175,6 +197,7 @@ export class Sidebar {
   /** Tooltip text: the off reason for a dimmed entry (at every width — on the narrow icon
    *  rail it doubles as the only place the name appears), the label on the narrow rail. */
   protected tooltipFor(nav: ISidebarItem): string | null {
+    if (nav.planLocked) return `${this.label(nav)} requires the Grassroots plan or higher`;
     if (nav.dimmed) return `${this.label(nav)} is turned off for this workspace`;
     return this.isEffectivelyNarrow() ? this.label(nav) : null;
   }

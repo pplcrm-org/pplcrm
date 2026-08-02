@@ -18,6 +18,10 @@ export interface ISidebarItem {
    * default (no user override). Rendered dimmed; clicking shows a toast pointing at
    * Workspace → Modules instead of navigating. */
   dimmed?: boolean;
+  /** Transient: set at runtime by Sidebar when the entry's feature is above the tenant's
+   * plan (the shared inbox on Free). Rendered dimmed like an off module, but the click
+   * toast and tooltip point at Billing rather than Workspace → Modules. */
+  planLocked?: boolean;
   favourite?: boolean;
   hidden?: boolean;
   hiddenByFavourite?: boolean;

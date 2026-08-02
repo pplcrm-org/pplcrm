@@ -1,3 +1,22 @@
+@if (inboxPlanLocked()) {
+<!-- Plan gate (Grassroots+): the server refuses the emails endpoints on Free, so guide
+     instead of rendering a client that can only error. -->
+<div class="flex h-full items-center justify-center p-6">
+  <div class="max-w-md rounded-xl border border-base-200 bg-base-100 p-8 text-center">
+    <pc-icon name="envelope" [size]="10" class="text-base-content/40"></pc-icon>
+    <h2 class="mt-4 text-lg font-semibold">The shared inbox is part of Grassroots</h2>
+    <p class="mt-2 text-sm text-base-content/70">
+      Connect your Gmail or Microsoft mailbox and work every conversation as a team — assignments, comments and tasks on
+      real email. Available on the Grassroots plan and higher.
+    </p>
+    <p class="mt-2 text-sm text-base-content/70">
+      If this workspace recently moved to the Free plan, previously synced email stays stored for 30 days from the
+      downgrade and is then permanently deleted. Upgrading within that window brings it all back.
+    </p>
+    <a routerLink="/workspace/billing" class="btn btn-primary mt-5">See plans on the Billing page</a>
+  </div>
+</div>
+} @else {
 <div class="flex text-sm h-full overflow-hidden">
   <!-- Folder list panel: full-width on mobile when active, narrow sidebar on desktop -->
   <div [class]="folderPanelClass()">
@@ -78,3 +97,4 @@
   </div>
   }
 </div>
+}
