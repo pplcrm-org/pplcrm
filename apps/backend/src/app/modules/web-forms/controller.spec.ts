@@ -1008,3 +1008,222 @@ describe('WebFormsController lifecycle', () => {
     expect(submissions).toHaveLength(0);
   });
 });
+
+// ------------------------------------------------------------------------------------------------
+// A form's post-submit redirect address.
+//
+// The stored value ends up in a browser's address bar: the public form page assigns it to
+// `window.location.href` and the public REST route puts it in a Location header. Anyone who can
+// edit a form in a workspace can set it, so `http:`/`https:` is the whole boundary.
+//
+// Two halves, tested separately:
+//   * WRITE — addForm / updateForm / updateFormLive refuse a bad value loudly (BAD_REQUEST).
+//   * READ  — every path that hands a stored value back drops a bad one quietly. This is the half
+//     that matters most: rows written before the check existed are never re-validated, so these
+//     tests write straight into `web_forms`, bypassing the controller, the way such a row exists.
+// ------------------------------------------------------------------------------------------------
+
+describe('WebFormsController redirect URL safety', () => {
+  const controller = new WebFormsController();
+  const db = (BaseRepository as any)._db;
+  let tenantId: string;
+  let tenantSlug: string;
+  let userId: string;
+  let campaignId: string;
+
+  const auth = () => ({ tenant_id: tenantId, user_id: userId, session_id: 'test-session', name: 'Test User' });
+  const tenant = () => ({ id: tenantId, slug: tenantSlug });
+
+  const UNSAFE = 'javascript:alert(document.domain)';
+  const SAFE = 'https://example.org/thanks';
+
+  /** A published form row written straight to the table — no controller, so no validation ran. */
+  async function seedFormRow(slug: string, redirectUrl: string | null): Promise<string> {
+    const formId = randomUUID();
+    await db
+      .insertInto('web_forms')
+      .values({
+        id: formId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: `Legacy ${slug}`,
+        slug,
+        status: 'published',
+        form_type: 'standard',
+        redirect_url: redirectUrl,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    return formId;
+  }
+
+  const storedRedirect = async (id: string): Promise<string | null> => {
+    const row = await db
+      .selectFrom('web_forms')
+      .select('redirect_url')
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+    return row.redirect_url;
+  };
+
+  beforeEach(async () => {
+    const seed = await createTestSeed(db);
+    tenantId = seed.tenantId;
+    tenantSlug = seed.tenantSlug;
+    userId = seed.userId;
+    campaignId = seed.campaignId;
+  });
+
+  afterEach(async () => {
+    await db.deleteFrom('form_submissions').where('tenant_id', '=', tenantId).execute();
+    await cleanTenant(db, tenantId);
+  });
+
+  // -- WRITE ------------------------------------------------------------------------------------
+
+  describe('write path', () => {
+    it('addForm refuses a javascript: redirect with BAD_REQUEST and stores nothing', async () => {
+      await expect(
+        controller.addForm({ name: 'Bad redirect form', redirect_url: UNSAFE } as any, auth() as any),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+      const rows = await db
+        .selectFrom('web_forms')
+        .select('id')
+        .where('tenant_id', '=', tenantId)
+        .where('name', '=', 'Bad redirect form')
+        .execute();
+      expect(rows).toHaveLength(0);
+    });
+
+    it('addForm stores an ordinary https redirect', async () => {
+      const created = await controller.addForm(
+        { name: 'Good redirect form', redirect_url: `  ${SAFE}  ` } as any,
+        auth() as any,
+      );
+      expect(await storedRedirect(String((created as any).id))).toBe(SAFE);
+    });
+
+    it('updateForm refuses a javascript: redirect and leaves the stored value alone', async () => {
+      const formId = await seedFormRow('update-guard', SAFE);
+
+      await expect(controller.updateForm(formId, { redirect_url: UNSAFE } as any, auth() as any)).rejects.toMatchObject(
+        { code: 'BAD_REQUEST' },
+      );
+
+      expect(await storedRedirect(formId)).toBe(SAFE);
+    });
+
+    it('updateForm stores an ordinary https redirect', async () => {
+      const formId = await seedFormRow('update-accept', null);
+      await controller.updateForm(formId, { redirect_url: 'http://example.org/done' } as any, auth() as any);
+      expect(await storedRedirect(formId)).toBe('http://example.org/done');
+    });
+
+    it('the live-edit patch refuses a javascript: redirect and leaves the stored value alone', async () => {
+      const formId = await seedFormRow('live-guard', SAFE);
+
+      await expect(
+        controller.updateFormLive(formId, { redirect_url: UNSAFE } as any, auth() as any),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+      expect(await storedRedirect(formId)).toBe(SAFE);
+    });
+
+    it('the live-edit patch stores an ordinary https redirect', async () => {
+      const formId = await seedFormRow('live-accept', null);
+      await controller.updateFormLive(formId, { redirect_url: SAFE } as any, auth() as any);
+      expect(await storedRedirect(formId)).toBe(SAFE);
+    });
+
+    it('still accepts clearing the redirect (empty string and null both mean "no redirect")', async () => {
+      const formId = await seedFormRow('clear-redirect', SAFE);
+      await controller.updateFormLive(formId, { redirect_url: '' } as any, auth() as any);
+      expect(await storedRedirect(formId)).toBeNull();
+
+      await controller.updateForm(formId, { redirect_url: null } as any, auth() as any);
+      expect(await storedRedirect(formId)).toBeNull();
+    });
+  });
+
+  // -- READ -------------------------------------------------------------------------------------
+
+  describe('read path (a row that predates the check)', () => {
+    it('drops it from the public form config', async () => {
+      await seedFormRow('legacy-config', UNSAFE);
+
+      const res = await controller.getPublicFormBySlug('legacy-config', tenantId);
+      expect(res.status).toBe('open');
+      if (res.status === 'open') expect(res.form.redirect_url).toBeNull();
+
+      // The poisoned value really is in the column — the null above is the guard, not an empty row.
+      const row = await db
+        .selectFrom('web_forms')
+        .select('redirect_url')
+        .where('tenant_id', '=', tenantId)
+        .where('slug', '=', 'legacy-config')
+        .executeTakeFirstOrThrow();
+      expect(row.redirect_url).toBe(UNSAFE);
+    });
+
+    it('drops it from a normal submission response', async () => {
+      await seedFormRow('legacy-submit', UNSAFE);
+
+      const res = await controller.submitFormPublic(
+        tenant(),
+        'legacy-submit',
+        { email: 'visitor@example.com', full_name: 'Vi Sitor' },
+        '127.0.1.1',
+      );
+      expect(res.redirect_url).toBeNull();
+    });
+
+    it('drops it from the honeypot early return', async () => {
+      await seedFormRow('legacy-honeypot', UNSAFE);
+
+      const res = await controller.submitFormPublic(
+        tenant(),
+        'legacy-honeypot',
+        { email: 'bot@example.com', _hp: 'i-am-a-bot' },
+        '127.0.1.2',
+      );
+      expect(res.redirect_url).toBeNull();
+
+      // Honeypot still swallows the submission entirely.
+      const person = await db
+        .selectFrom('persons')
+        .select('id')
+        .where('tenant_id', '=', tenantId)
+        .where('email', '=', 'bot@example.com')
+        .executeTakeFirst();
+      expect(person).toBeUndefined();
+    });
+
+    it('still returns a legitimate stored redirect on all three read paths', async () => {
+      await seedFormRow('legit-config', SAFE);
+      await seedFormRow('legit-submit', SAFE);
+      await seedFormRow('legit-honeypot', SAFE);
+
+      const config = await controller.getPublicFormBySlug('legit-config', tenantId);
+      if (config.status === 'open') expect(config.form.redirect_url).toBe(SAFE);
+
+      const submitted = await controller.submitFormPublic(
+        tenant(),
+        'legit-submit',
+        { email: 'happy@example.com', full_name: 'Hap Py' },
+        '127.0.1.3',
+      );
+      expect(submitted.redirect_url).toBe(SAFE);
+
+      const trapped = await controller.submitFormPublic(
+        tenant(),
+        'legit-honeypot',
+        { email: 'bot2@example.com', _hp: 'bot' },
+        '127.0.1.4',
+      );
+      expect(trapped.redirect_url).toBe(SAFE);
+    });
+  });
+});

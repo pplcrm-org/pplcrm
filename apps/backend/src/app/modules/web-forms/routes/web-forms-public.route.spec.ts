@@ -5,6 +5,7 @@ import webFormsPublicRoute from './web-forms-public.route';
 import { BaseRepository } from '../../../lib/base.repo';
 import { generateApiKey, getKeyPreview, hashApiKey } from '../../../lib/api-key';
 import { DonationsController } from '../../donations/controller';
+import { WebFormsController } from '../controller';
 import { env } from '../../../../env';
 
 /**
@@ -325,6 +326,36 @@ describe('web-forms public route (/api/forms)', () => {
     it('404s donation forms — they only render on the server-rendered /d/:slug page', async () => {
       const res = await getForm(seed.donationSlug, seed.tenantSlug);
       expect(res.statusCode).toBe(404);
+    });
+
+    // The public page assigns redirect_url to window.location.href, so a row written before the
+    // http/https check existed must not reach the browser at all.
+    it('returns redirect_url as null when the stored value is a javascript: URL', async () => {
+      await db
+        .updateTable('web_forms')
+        .set({ redirect_url: 'javascript:alert(document.domain)' })
+        .where('tenant_id', '=', seed.tenantId)
+        .where('id', '=', seed.publishedFormId)
+        .execute();
+
+      const res = await getForm(seed.publishedSlug, seed.tenantSlug);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().form.redirect_url).toBeNull();
+    });
+
+    it('returns an ordinary https redirect_url unchanged', async () => {
+      await db
+        .updateTable('web_forms')
+        .set({ redirect_url: 'https://example.org/thanks' })
+        .where('tenant_id', '=', seed.tenantId)
+        .where('id', '=', seed.publishedFormId)
+        .execute();
+
+      const res = await getForm(seed.publishedSlug, seed.tenantSlug);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().form.redirect_url).toBe('https://example.org/thanks');
     });
   });
 
@@ -680,6 +711,119 @@ describe('web-forms public route (/api/forms)', () => {
         }
         // The anonymous per-IP cap is 5/minute; all six keyed submissions landed.
         expect(await submissions()).toHaveLength(6);
+      });
+    });
+
+    // ------------------------------------------------------------------------------------------
+    // The post-submit redirect address.
+    //
+    // A browser submission answers with a Location header built from the form's stored
+    // redirect_url. The value is set by anyone who can edit a form, and rows written before the
+    // http/https check existed are never re-validated when read, so the route re-checks at the
+    // sink. Sending a visitor from the workspace's own form address to an arbitrary one is worth
+    // refusing on its own, quite apart from the script-execution problem on the SPA page.
+    // ------------------------------------------------------------------------------------------
+
+    describe('post-submit redirect', () => {
+      const UNSAFE = 'javascript:alert(document.domain)';
+
+      /** A published form written straight to the table, so no validation ever ran on it. */
+      async function seedFormWithRedirect(slug: string, redirectUrl: string): Promise<void> {
+        await db
+          .insertInto('web_forms')
+          .values({
+            tenant_id: seed.tenantId,
+            campaign_id: seed.campaignId,
+            name: `Legacy ${slug}`,
+            slug,
+            status: 'published',
+            form_type: 'standard',
+            type: 'signup',
+            redirect_url: redirectUrl,
+            fields: JSON.stringify(PUBLISHED_FIELDS),
+            target_tags: JSON.stringify([]),
+            createdby_id: seed.userId,
+            updatedby_id: seed.userId,
+          })
+          .execute();
+      }
+
+      const postForm = (slug: string) =>
+        app.inject({
+          method: 'POST',
+          url: `/api/forms/submit/${slug}?t=${seed.tenantSlug}`,
+          remoteAddress: nextIp(),
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          payload: 'full_name=Vi+Sitor&email=vi%40example.com&_hp=',
+        });
+
+      it('sends a browser to the success page instead of a stored javascript: value', async () => {
+        await seedFormWithRedirect('legacy-bad-redirect', UNSAFE);
+
+        const res = await postForm('legacy-bad-redirect');
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe('/api/forms/success');
+        // The submission itself still succeeded — the refusal drops the redirect, not the response.
+        expect(await submissions()).toHaveLength(1);
+      });
+
+      it('still honours a stored https redirect, cross-origin included', async () => {
+        await seedFormWithRedirect('legacy-good-redirect', 'https://someone-elses-site.example/thanks');
+
+        const res = await postForm('legacy-good-redirect');
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe('https://someone-elses-site.example/thanks');
+      });
+
+      it('returns null rather than the stored javascript: value to a JSON caller', async () => {
+        await seedFormWithRedirect('legacy-json-redirect', UNSAFE);
+
+        const res = await postJson('legacy-json-redirect', seed.tenantSlug, {
+          full_name: 'Vi Sitor',
+          email: 'vi-json@example.com',
+          _hp: '',
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual({ success: true, redirect_url: null });
+      });
+
+      // The controller already filters on read, so the route's own re-check is unreachable through
+      // a stored row. These two drive it directly: the controller is stubbed to hand back a raw
+      // value, which is what the route would face if the controller guard were ever bypassed.
+      it('refuses a javascript: value handed to it by the controller', async () => {
+        vi.spyOn(WebFormsController.prototype, 'submitFormPublic').mockResolvedValue({
+          redirect_url: UNSAFE,
+        } as never);
+
+        const res = await postForm(seed.publishedSlug);
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe('/api/forms/success');
+      });
+
+      it('refuses a credential-carrying URL handed to it by the controller', async () => {
+        vi.spyOn(WebFormsController.prototype, 'submitFormPublic').mockResolvedValue({
+          redirect_url: 'https://accounts.example.org@evil.test/',
+        } as never);
+
+        const res = await postForm(seed.publishedSlug);
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe('/api/forms/success');
+      });
+
+      it('passes through an http(s) value handed to it by the controller', async () => {
+        vi.spyOn(WebFormsController.prototype, 'submitFormPublic').mockResolvedValue({
+          redirect_url: 'http://example.org/done',
+        } as never);
+
+        const res = await postForm(seed.publishedSlug);
+
+        expect(res.statusCode).toBe(302);
+        expect(res.headers.location).toBe('http://example.org/done');
       });
     });
 
