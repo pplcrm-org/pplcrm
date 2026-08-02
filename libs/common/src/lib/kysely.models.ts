@@ -60,6 +60,10 @@ export interface Models {
   donations: Donations;
   donation_periods: DonationPeriods;
   donation_pledges: DonationPledges;
+  donation_receipts: DonationReceipts;
+  donation_receipt_items: DonationReceiptItems;
+  receipt_counters: ReceiptCounters;
+  receipt_statement_runs: ReceiptStatementRuns;
   emails: Emails;
   newsletters: Newsletters;
   newsletter_templates: NewsletterTemplates;
@@ -721,7 +725,90 @@ export interface Donations extends Omit<RecordType, 'createdby_id' | 'updatedby_
   zip: string | null;
   country: string | null;
   method: Generated<string>;
-  receipt_sent: Generated<boolean>;
+}
+
+/**
+ * Official donation/contribution receipts and year-end giving statements. Immutable once issued —
+ * corrections go through cancel-and-replace (`replaces_receipt_id`); the only fields code may
+ * update after issue are `file_id`, `emailed_at`, `reissue_required` and the cancel fields.
+ * Donations link through `donation_receipt_items` for every kind (per-gift receipts have one item).
+ */
+export interface DonationReceipts extends RecordType {
+  kind: string;
+  regime: string;
+  /** Numbering year (issue-date year) for official receipts; the covered year for statements. */
+  year: number;
+  /** Gap-free per (tenant, year) via receipt_counters; NULL for statements (unnumbered). */
+  serial: number | null;
+  receipt_number: string | null;
+  status: Generated<string>;
+  person_id: string;
+  /** Set for per-gift receipts (from the donation); NULL for cumulative receipts and statements. */
+  campaign_id: string | null;
+  donor_name: string;
+  donor_email: string | null;
+  donor_address_line1: string | null;
+  donor_address_line2: string | null;
+  donor_city: string | null;
+  donor_province: string | null;
+  donor_postal_code: string | null;
+  donor_country: string | null;
+  amount_cents: number;
+  advantage_cents: Generated<number>;
+  eligible_cents: number;
+  advantage_description: string | null;
+  /** Per-gift receipts only; cumulative/statement gift dates live on the items. */
+  gift_date: ColumnType<Date, Date | string, Date | string> | null;
+  /** Issuer details frozen at issue time (org name/address/registration/signatory/agent fields). */
+  issuer_snapshot: Json;
+  /** Successor → predecessor pointer; "replaced by" is the reverse lookup. */
+  replaces_receipt_id: string | null;
+  /** A covered donation was refunded after a cumulative receipt was issued — human must reissue. */
+  reissue_required: Generated<boolean>;
+  cancelled_reason: string | null;
+  cancelled_at: Timestamp | null;
+  cancelled_by: string | null;
+  /** files.id of the rendered PDF; NULL until the render job completes ("PDF pending"). */
+  file_id: string | null;
+  issued_at: Generated<Timestamp>;
+  emailed_at: Timestamp | null;
+}
+
+/** Gifts covered by a receipt/statement; amounts and dates are frozen snapshots. */
+export interface DonationReceiptItems {
+  id: Generated<string>;
+  tenant_id: string;
+  receipt_id: string;
+  donation_id: string;
+  amount_cents: number;
+  gift_date: ColumnType<Date, Date | string, Date | string>;
+  created_at: Generated<Timestamp>;
+}
+
+/**
+ * Gap-free receipt numbering: one row per (tenant, year, kind), bumped with
+ * `INSERT … ON CONFLICT DO UPDATE … RETURNING n` inside the issue transaction.
+ */
+export interface ReceiptCounters {
+  tenant_id: string;
+  year: number;
+  kind: string;
+  n: number;
+}
+
+/** Progress row for a year-end statement batch run (one live run per tenant-year). */
+export interface ReceiptStatementRuns extends RecordType {
+  year: number;
+  status: Generated<string>;
+  /** Keyset resume point — last person_id fully processed. */
+  cursor_person_id: string | null;
+  donors_total: number | null;
+  generated_count: Generated<number>;
+  emailed_count: Generated<number>;
+  skipped_no_email: Generated<number>;
+  failed_count: Generated<number>;
+  error: string | null;
+  requested_by: string;
 }
 
 export interface DonationPeriods extends RecordType {

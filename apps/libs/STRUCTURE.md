@@ -35,6 +35,15 @@ libs/
           help-markdown.ts
           help-search.ts
           help-types.ts
+        receipt-regimes/
+          cra-charity.ts
+          index.ts
+          political-alberta.ts
+          political-bc.ts
+          political-federal.ts
+          political-ontario.ts
+          political-quebec.ts
+          receipt-regime.types.ts
         schemas/
           activity.schema.ts
           auth.schema.ts
@@ -47,6 +56,7 @@ libs/
           content-check.schema.ts
           core.schema.ts
           deliveries.schema.ts
+          donation-receipts.schema.ts
           donations.schema.ts
           emails.schema.ts
           events.schema.ts

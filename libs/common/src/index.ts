@@ -297,7 +297,21 @@ export {
   DONATION_METHODS,
   DONATION_METHOD_LABELS,
   donationMethodSchema,
+  donationAddressSchema,
   RecordDonationObj,
+  RECEIPT_KINDS,
+  RECEIPT_KIND_LABELS,
+  RECEIPT_STATUSES,
+  receiptKindSchema,
+  receiptStatusSchema,
+  receiptRegimeIdSchema,
+  IssueReceiptObj,
+  IssueCumulativeReceiptObj,
+  CancelReceiptObj,
+  ReissueReceiptObj,
+  ListReceiptsObj,
+  RunYearEndStatementsObj,
+  StatementRunIdObj,
   INTERACTION_TYPES,
   INTERACTION_TYPE_LABELS,
   interactionTypeSchema,
@@ -411,8 +425,31 @@ export {
 
 export type { InteractionType, LogInteractionType } from './lib/schemas/activity.schema';
 
-export type { DonationMethod, RecordDonationType, StripeConnectCountry } from './lib/schemas/donations.schema';
+export type {
+  DonationAddressType,
+  DonationMethod,
+  RecordDonationType,
+  StripeConnectCountry,
+} from './lib/schemas/donations.schema';
 export { STRIPE_CONNECT_COUNTRIES } from './lib/schemas/donations.schema';
+export type {
+  ReceiptKind,
+  ReceiptStatus,
+  IssueReceiptType,
+  IssueCumulativeReceiptType,
+  CancelReceiptType,
+  ReissueReceiptType,
+  ListReceiptsType,
+  RunYearEndStatementsType,
+  StatementRunIdType,
+} from './lib/schemas/donation-receipts.schema';
+export type { ReceiptRegimeId, ReceiptIssuerField, ReceiptRegimeSpec } from './lib/receipt-regimes';
+export {
+  RECEIPT_REGIMES,
+  RECEIPT_REGIME_IDS,
+  RECEIPT_ISSUER_FIELDS,
+  RECEIPT_ISSUER_FIELD_LABELS,
+} from './lib/receipt-regimes';
 
 export type { FormType, FormStatus, FormField } from './lib/schemas/web-forms.schema';
 export type { TaskStatus, TaskBoardStatus, ReorderTasksType, ReorderSubtasksType } from './lib/schemas/tasks.schema';

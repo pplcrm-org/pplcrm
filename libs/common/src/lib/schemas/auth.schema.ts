@@ -32,6 +32,9 @@ export const NotificationPreferencesObj = z.object({
   email_assigned_in_app: z.boolean().default(true),
   export_ready: z.boolean().default(true),
   export_ready_in_app: z.boolean().default(true),
+  /** Year-end giving statement batch finished (email + bell) — sent to the admin who ran it. */
+  statements_ready: z.boolean().default(true),
+  statements_ready_in_app: z.boolean().default(true),
   // No `import_summary_in_app` twin: imports have never produced an in-app notification, only
   // the email (see import.handlers.ts). A toggle governing nothing is worse than no toggle.
   import_summary: z.boolean().default(true),
