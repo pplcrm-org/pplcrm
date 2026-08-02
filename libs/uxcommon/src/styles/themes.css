@@ -20,6 +20,15 @@
 @plugin "daisyui/theme" {
   name: 'light';
   default: true;
+
+  /* Tells the browser which appearance its OWN surfaces should use — scrollbars, form
+     controls it draws natively, and the canvas behind the page. Must be declared here:
+     these two blocks are named 'light' and 'dark', the same names as DaisyUI's built-in
+     themes, so they override those under the identical selector. DaisyUI emits
+     `color-scheme: normal` for any theme that does not state one, which silently replaced
+     the built-ins' correct value and also cancels the <meta name="color-scheme"> tag in
+     apps/frontend/src/index.html. */
+  color-scheme: light;
   --color-primary: #3498db;
   --color-primary-content: #ffffff;
   --color-secondary: #22a6b3;
@@ -64,15 +73,44 @@
 @plugin "daisyui/theme" {
   name: 'dark';
 
+  /* See the note on the light theme's color-scheme above. Without this the browser drew
+     light scrollbars and light native controls on top of the dark UI. */
+  color-scheme: dark;
+
   /* Brand / accent */
   --color-primary: #3ea6ff; /* bright azure */
   --color-secondary: #20d7a7; /* teal pop (optional) */
   --color-accent: #3ea6ff;
   --color-accent-content: #0b1220; /* dark text on bright azure */
 
+  /* Text ON a filled primary/secondary (button labels, badge text). Set explicitly
+     because DaisyUI's derivation picked a near-white for both — oklch(96%) on the
+     #3ea6ff primary is 2.2:1 and oklch(94%) on the #20d7a7 secondary is 1.6:1, well
+     under the 4.5:1 AA floor. The theme had already made this exact call one line
+     above for the accent, which is the same azure as the primary; primary and
+     secondary just never got the same treatment. Dark ink on a bright fill instead:
+     7.2:1 and 8.7:1. */
+  --color-primary-content: #0b1220;
+  --color-secondary-content: #04261d;
+
   /* Text + neutrals */
   --color-neutral: #0e182b; /* chrome / panels */
   --color-neutral-content: #c7d1e5; /* default text on dark */
+
+  /* Default text colour. Set explicitly rather than left to DaisyUI, which derived
+     oklch(97.807% .029 256.847) — near-white. Near-white text on a dark background
+     halates (the light bleeds into the surrounding dark and the glyph edges soften),
+     and this app's default size is 12px, where that is most visible. ~93% lightness
+     instead, which still leaves `text-base-content/50` — the app's most common
+     secondary-text opacity — at 4.6:1 against the base-100 page, above the 4.5:1 AA
+     floor for small text. Do not lower it further without recomputing that. */
+  --color-base-content: #e6ecf5;
+
+  /* Input placeholders. Previously undefined here, so it fell through to the light
+     theme's #9ca3af (DaisyUI emits the light block under :where(:root) as well). That
+     was legible but a warm grey inside a cool-blue palette. 5.4:1 on base-100: clearly
+     readable, clearly weaker than real entered text at 15.8:1. */
+  --color-placeholder: #7e8ba3;
 
   /* Surfaces */
   --color-base-50: #0f1729; /* card wash — between base-100 and base-200 */

@@ -37,12 +37,51 @@
       content="One list for constituents, voters, donors and volunteers. Shared inbox, canvassing, donations and field apps."
     />
     <meta name="twitter:image" content="https://pplcrm.com/assets/og-card.png" />
+
+    <!-- Tells the browser this document is styled for both appearances, so native
+         surfaces it draws itself (scrollbars, form controls, the canvas behind the
+         page) follow the resolved theme instead of defaulting to light. -->
+    <meta name="color-scheme" content="light dark" />
+
+    <!-- Resolve the theme BEFORE the first paint.
+
+         ThemeService (apps/frontend/src/app/layout/theme/theme-service.ts) is an Angular
+         service, so it cannot run until the JS bundle has downloaded, parsed and booted.
+         Everything painted before that — the browser canvas and the boot skeleton in the
+         body below — used the light theme, which is a full-page white flash for anyone
+         on the dark theme.
+
+         This mirrors ThemeService's resolution order with one omission: the workspace
+         default (`appearance.theme`) needs a server round-trip, so a user who has never
+         stated a personal preference gets the OS preference here and ThemeService
+         re-stamps the element with the workspace value once settings arrive. If either
+         localStorage or matchMedia is unavailable the attribute is simply not set, and
+         DaisyUI's light theme applies as before.
+
+         Keep the storage key ('pc-theme') and the accepted values in step with
+         ThemeService.updateTheme(). -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('pc-theme');
+          var resolved =
+            stored === 'light' || stored === 'dark'
+              ? stored
+              : window.matchMedia('(prefers-color-scheme:dark)').matches
+                ? 'dark'
+                : 'light';
+          document.documentElement.setAttribute('data-theme', resolved);
+        } catch {
+          /* Storage blocked (private mode, embedded webview): keep the light default. */
+        }
+      })();
+    </script>
   </head>
 
   <body class="min-h-full grid">
     <pc-root class="min-h-screen">
       <div class="flex flex-row">
-        <div class="w-64 animate-pulse flex-col space-y-5 border-gray-200 p-4 shadow dark:border-gray-700">
+        <div class="w-64 animate-pulse flex-col space-y-5 p-4 shadow">
           <div class="skeleton mb-4 mt-2 h-6 rounded-md"></div>
           <div class="flex flex-row gap-6">
             <div class="skeleton avatar h-6 w-6"></div>
@@ -105,30 +144,26 @@
             <div class="skeleton h-6 grow rounded-md"></div>
           </div>
         </div>
-        <div class="h-14 grow animate-pulse border-gray-200 shadow dark:border-gray-700">
+        <div class="h-14 grow animate-pulse shadow">
           <div class="flex flex-row justify-end gap-4 p-4 align-middle">
             <div class="avatar skeleton h-6 w-6"></div>
             <div class="avatar skeleton h-6 w-6"></div>
             <div class="avatar skeleton h-6 w-6"></div>
             <div class="avatar skeleton h-8 w-8"></div>
           </div>
-          <div
-            class="skeleton flex h-10 max-w-screen-md animate-pulse flex-row gap-10 rounded-none border-gray-200 shadow dark:border-gray-700"
-          ></div>
-          <div
-            class="h-10 max-w-screen-md animate-pulse justify-evenly border-gray-200 align-middle shadow dark:border-gray-700"
-          ></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
-          <div class="h-10 max-w-screen-md animate-pulse border-gray-200 shadow dark:border-gray-700"></div>
+          <div class="skeleton flex h-10 max-w-screen-md animate-pulse flex-row gap-10 rounded-none shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse justify-evenly align-middle shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
+          <div class="h-10 max-w-screen-md animate-pulse shadow"></div>
         </div>
       </div>
     </pc-root>

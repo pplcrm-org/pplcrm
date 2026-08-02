@@ -18,6 +18,17 @@ export class ThemeService {
       this.updateTheme();
     });
 
+    // Keep <html data-theme> in step with the resolved theme. app.ts already puts the
+    // theme on a div inside <pc-root>, which covers everything Angular renders — but not
+    // the document canvas, the scrollbars, or native form controls, which follow the root
+    // element's theme and its `color-scheme`. index.html stamps a first value before the
+    // bundle boots (from localStorage or the OS); this keeps that value correct
+    // afterwards, including once the workspace default arrives, which index.html cannot
+    // see.
+    effect(() => {
+      document.documentElement.setAttribute('data-theme', this.theme());
+    });
+
     const svc = this.settingsSvc;
     if (svc) {
       effect(() => {

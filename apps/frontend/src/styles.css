@@ -54,6 +54,14 @@ label.input input:-webkit-autofill:active {
 html,
 body {
   height: 100vh;
+  /* The document canvas has to carry the theme itself, not just the themed div that
+     app.ts renders inside <pc-root>. That div only exists once the JS bundle has
+     booted; until then the browser paints its own default white, so a dark-theme user
+     saw a full-page white flash on every load. The inline script in index.html stamps
+     data-theme on <html> before first paint, so these two tokens already resolve to
+     the right theme when this stylesheet applies. */
+  background-color: var(--color-base-100);
+  color: var(--color-base-content);
 }
 
 body {
