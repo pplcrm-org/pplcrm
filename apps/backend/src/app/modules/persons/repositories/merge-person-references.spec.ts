@@ -25,6 +25,7 @@ interface Seed {
   householdId: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function createSeed(db: any): Promise<Seed> {
   const tenantId = rand();
   const userId = rand();
@@ -72,6 +73,7 @@ async function createSeed(db: any): Promise<Seed> {
   return { tenantId, userId, campaignId, householdId };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function cleanTenant(db: any, tenantId: string): Promise<void> {
   await db
     .updateTable('tenants')
@@ -102,6 +104,7 @@ async function cleanTenant(db: any, tenantId: string): Promise<void> {
 
 describe('mergePersons re-points everything that names the source person', () => {
   const repo = new PersonsRepo();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = (BaseRepository as any)._db;
   let seed: Seed;
 
