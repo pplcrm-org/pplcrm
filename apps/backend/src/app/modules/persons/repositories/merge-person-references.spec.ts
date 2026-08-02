@@ -90,6 +90,9 @@ async function cleanTenant(db: any, tenantId: string): Promise<void> {
     'workflow_runs',
     'workflows',
     'tasks',
+    'donation_receipt_items',
+    'donation_receipts',
+    'donations',
     'potential_duplicates',
     'persons',
     'households',
@@ -228,6 +231,68 @@ describe('mergePersons re-points everything that names the source person', () =>
     expect(task).toBeDefined();
     expect(task.person_id).not.toBeNull();
     expect(String(task.person_id)).toBe(String(target.id));
+  });
+
+  it('re-points official receipts and cancels the source’s live statement (unique per donor-year)', async () => {
+    const target = await addPerson('Target');
+    const source = await addPerson('Source');
+    const year = new Date().getFullYear();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const addReceipt = async (personId: string, kind: string, serial: number | null): Promise<string> => {
+      const row = await db
+        .insertInto('donation_receipts')
+        .values({
+          tenant_id: seed.tenantId,
+          kind,
+          regime: 'cra_charity',
+          year,
+          serial,
+          receipt_number: serial == null ? null : `M-${year}-${String(serial).padStart(5, '0')}`,
+          status: 'issued',
+          person_id: personId,
+          donor_name: 'Merge Donor',
+          amount_cents: 1000,
+          advantage_cents: 0,
+          eligible_cents: 1000,
+          issuer_snapshot: JSON.stringify({}),
+          createdby_id: seed.userId,
+          updatedby_id: seed.userId,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      return String(row.id);
+    };
+
+    const officialId = await addReceipt(source.id, 'per_gift', 1);
+    const sourceStatementId = await addReceipt(source.id, 'statement', null);
+    const targetStatementId = await addReceipt(target.id, 'statement', null); // would collide on a plain re-point
+
+    await repo.mergePersons({
+      tenant_id: seed.tenantId,
+      target_id: target.id,
+      source_id: source.id,
+      user_id: seed.userId,
+    });
+
+    const rows = await db
+      .selectFrom('donation_receipts')
+      .select(['id', 'person_id', 'status', 'cancelled_reason'])
+      .where('tenant_id', '=', seed.tenantId)
+      .execute();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const byId = new Map(rows.map((r: any) => [String(r.id), r]));
+
+    // The official receipt follows the surviving donor; its printed snapshot is untouched.
+    expect(String((byId.get(officialId) as any).person_id)).toBe(String(target.id));
+    expect((byId.get(officialId) as any).status).toBe('issued');
+    // The source's statement is cancelled (a merged donor's statement is wrong anyway) and
+    // re-pointed without tripping the one-live-statement-per-donor-year index.
+    expect((byId.get(sourceStatementId) as any).status).toBe('cancelled');
+    expect((byId.get(sourceStatementId) as any).cancelled_reason).toContain('merged');
+    expect(String((byId.get(sourceStatementId) as any).person_id)).toBe(String(target.id));
+    // The target's own statement stands.
+    expect((byId.get(targetStatementId) as any).status).toBe('issued');
   });
 
   it('moves workflow run history and street claims, which no foreign key would have protected', async () => {
@@ -427,6 +492,10 @@ describe('mergePersons re-points everything that names the source person', () =>
       'Duplicate-detection scratch data, ON DELETE CASCADE on purpose. The groups are ' +
       'recomputed by DuplicateMaintenanceService after the merge, so carrying stale rows ' +
       'across would be worse than losing them.',
+    'receipt_statement_runs.cursor_person_id':
+      'A keyset resume position for the year-end statement batch, not a reference to a ' +
+      'person’s data. Ids are monotonic, so `person_id > cursor` still resumes correctly ' +
+      'when the cursor id was merged away — the missing id simply never matches.',
   };
 
   it('fails when a new column names a person and the merge was not taught about it', async () => {

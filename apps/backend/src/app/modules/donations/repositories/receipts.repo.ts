@@ -1,0 +1,335 @@
+import { sql, type Insertable, type Selectable, type Transaction } from 'kysely';
+
+import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
+import { BaseRepository } from '../../../lib/base.repo';
+
+/** Fields the issue flow inserts (id/serial defaults come from the caller building the row). */
+export type NewReceiptRow = Insertable<Models['donation_receipts']>;
+export type ReceiptRow = Selectable<Models['donation_receipts']>;
+
+export interface ReceiptItemInput {
+  donation_id: string;
+  amount_cents: number;
+  /** YYYY-MM-DD — the date the gift was received. */
+  gift_date: string;
+}
+
+export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
+  constructor() {
+    super('donation_receipts');
+  }
+
+  /**
+   * Take the next gap-free serial for (tenant, year). MUST run inside the same transaction as
+   * the receipt insert: a rollback returns the number, and concurrent issuers serialize on the
+   * counter row lock. `INSERT … ON CONFLICT DO UPDATE` is the one statement that atomically
+   * handles insert-if-absent — plain FOR UPDATE locks nothing when the row does not exist yet
+   * (see lib/jobs/reschedule.ts for the worked explanation).
+   */
+  public async nextSerial(trx: Transaction<Models>, tenantId: string, year: number): Promise<number> {
+    const result = await sql<{ n: number }>`
+      INSERT INTO receipt_counters (tenant_id, year, kind, n)
+      VALUES (${tenantId}, ${year}, 'official', 1)
+      ON CONFLICT (tenant_id, year, kind)
+      DO UPDATE SET n = receipt_counters.n + 1
+      RETURNING n
+    `.execute(trx);
+    const n = result.rows[0]?.n;
+    if (!n) throw new Error('receipt counter returned no value');
+    return Number(n);
+  }
+
+  /** Insert a receipt plus its covered gifts in one shot (caller supplies the open transaction). */
+  public async insertReceiptWithItems(
+    trx: Transaction<Models>,
+    receipt: NewReceiptRow,
+    items: ReceiptItemInput[],
+  ): Promise<ReceiptRow> {
+    const inserted = await trx.insertInto('donation_receipts').values(receipt).returningAll().executeTakeFirstOrThrow();
+    if (items.length > 0) {
+      await trx
+        .insertInto('donation_receipt_items')
+        .values(
+          items.map((item) => ({
+            tenant_id: receipt.tenant_id,
+            receipt_id: inserted.id,
+            donation_id: item.donation_id,
+            amount_cents: item.amount_cents,
+            gift_date: item.gift_date,
+          })),
+        )
+        .execute();
+    }
+    return inserted;
+  }
+
+  /** Official (non-statement) receipts covering a donation, live ones first. */
+  public async getOfficialReceiptsForDonation(
+    tenantId: string,
+    donationId: string,
+    trx?: Transaction<Models>,
+  ): Promise<ReceiptRow[]> {
+    return (trx ?? this.db)
+      .selectFrom('donation_receipt_items as dri')
+      .innerJoin('donation_receipts as dr', 'dr.id', 'dri.receipt_id')
+      .selectAll('dr')
+      .where('dri.tenant_id', '=', tenantId)
+      .where('dr.tenant_id', '=', tenantId)
+      .where('dri.donation_id', '=', donationId)
+      .where('dr.kind', '!=', 'statement')
+      .orderBy(sql`CASE WHEN dr.status = 'issued' THEN 0 ELSE 1 END`)
+      .orderBy('dr.issued_at', 'desc')
+      .execute();
+  }
+
+  /** ALL receipts (statements included) covering a donation and still issued — the refund hook's input. */
+  public async getLiveReceiptsForDonation(
+    tenantId: string,
+    donationId: string,
+    trx?: Transaction<Models>,
+  ): Promise<ReceiptRow[]> {
+    return (trx ?? this.db)
+      .selectFrom('donation_receipt_items as dri')
+      .innerJoin('donation_receipts as dr', 'dr.id', 'dri.receipt_id')
+      .selectAll('dr')
+      .where('dri.tenant_id', '=', tenantId)
+      .where('dr.tenant_id', '=', tenantId)
+      .where('dri.donation_id', '=', donationId)
+      .where('dr.status', '=', 'issued')
+      .execute();
+  }
+
+  public async getReceiptById(tenantId: string, receiptId: string): Promise<ReceiptRow | undefined> {
+    return this.getSelect()
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', receiptId)
+      .executeTakeFirst();
+  }
+
+  /** Items (covered gifts) for one receipt, oldest gift first — the PDF's line-item table. */
+  public async getItems(tenantId: string, receiptId: string): Promise<Selectable<Models['donation_receipt_items']>[]> {
+    return this.db
+      .selectFrom('donation_receipt_items')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('receipt_id', '=', receiptId)
+      .orderBy('gift_date', 'asc')
+      .execute();
+  }
+
+  /**
+   * Post-issue setters. Issued receipts are immutable by rule — these five narrow updates
+   * (PDF file, emailed stamp, cancel fields, reissue flag) are the ONLY writes this repo exposes,
+   * so nothing can quietly rewrite an issued receipt's contents.
+   */
+  public async setFile(tenantId: string, receiptId: string, fileId: string): Promise<void> {
+    await this.db
+      .updateTable('donation_receipts')
+      .set({ file_id: fileId, updated_at: new Date() })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', receiptId)
+      .execute();
+  }
+
+  public async markEmailed(tenantId: string, receiptId: string): Promise<void> {
+    await this.db
+      .updateTable('donation_receipts')
+      .set({ emailed_at: new Date(), updated_at: new Date() })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', receiptId)
+      .execute();
+  }
+
+  public async cancelReceipt(
+    tenantId: string,
+    receiptId: string,
+    userId: string,
+    reason: string,
+    options?: { reissueRequired?: boolean; trx?: Transaction<Models> },
+  ): Promise<void> {
+    await (options?.trx ?? this.db)
+      .updateTable('donation_receipts')
+      .set({
+        status: 'cancelled',
+        cancelled_reason: reason,
+        cancelled_at: new Date(),
+        cancelled_by: userId,
+        reissue_required: options?.reissueRequired ?? false,
+        updated_at: new Date(),
+        updatedby_id: userId,
+      })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', receiptId)
+      .where('status', '=', 'issued')
+      .execute();
+  }
+
+  public async clearReissueRequired(trx: Transaction<Models>, tenantId: string, receiptId: string): Promise<void> {
+    await trx
+      .updateTable('donation_receipts')
+      .set({ reissue_required: false, updated_at: new Date() })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', receiptId)
+      .execute();
+  }
+
+  /**
+   * Succeeded gifts for a person-year not yet covered by a live official receipt — what an
+   * annual cumulative receipt gathers. Runs inside the issue transaction (after the counter
+   * lock serialized concurrent issuers) so two racing cumulative issues cannot double-cover.
+   */
+  public async getUnreceiptedSucceededDonations(
+    tenantId: string,
+    personId: string,
+    year: number,
+    trx?: Transaction<Models>,
+  ): Promise<Selectable<Models['donations']>[]> {
+    const startOfYear = new Date(year, 0, 1);
+    const endOfYear = new Date(year, 11, 31, 23, 59, 59, 999);
+    return (trx ?? this.db)
+      .selectFrom('donations')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('person_id', '=', personId)
+      .where('status', '=', 'succeeded')
+      .where('created_at', '>=', startOfYear)
+      .where('created_at', '<=', endOfYear)
+      .where(({ eb, not, exists }) =>
+        not(
+          exists(
+            eb
+              .selectFrom('donation_receipt_items as dri')
+              .innerJoin('donation_receipts as dr', 'dr.id', 'dri.receipt_id')
+              .select('dri.id')
+              .whereRef('dri.donation_id', '=', 'donations.id')
+              .whereRef('dri.tenant_id', '=', 'donations.tenant_id')
+              .where('dr.status', '=', 'issued')
+              .where('dr.kind', '!=', 'statement'),
+          ),
+        ),
+      )
+      .orderBy('created_at', 'asc')
+      .execute();
+  }
+
+  /** The receipts/statements list with donor names, filterable; newest first. */
+  public async listReceipts(
+    tenantId: string,
+    filters: {
+      donationId?: string;
+      personId?: string;
+      year?: number;
+      status?: string;
+      kind?: string;
+      needsAttention?: boolean;
+      limit?: number;
+      offset?: number;
+    },
+  ) {
+    let query = this.db
+      .selectFrom('donation_receipts')
+      .selectAll('donation_receipts')
+      .where('donation_receipts.tenant_id', '=', tenantId);
+
+    if (filters.donationId) {
+      query = query.where(({ eb, exists }) =>
+        exists(
+          eb
+            .selectFrom('donation_receipt_items as dri')
+            .select('dri.id')
+            .whereRef('dri.receipt_id', '=', 'donation_receipts.id')
+            .whereRef('dri.tenant_id', '=', 'donation_receipts.tenant_id')
+            .where('dri.donation_id', '=', String(filters.donationId)),
+        ),
+      );
+    }
+    if (filters.personId) query = query.where('person_id', '=', filters.personId);
+    if (filters.year) query = query.where('year', '=', filters.year);
+    if (filters.status) query = query.where('status', '=', filters.status);
+    if (filters.kind) query = query.where('kind', '=', filters.kind);
+    if (filters.needsAttention) query = query.where('reissue_required', '=', true);
+
+    return query
+      .orderBy('issued_at', 'desc')
+      .limit(Math.min(filters.limit ?? 50, 200))
+      .offset(filters.offset ?? 0)
+      .execute();
+  }
+
+  /**
+   * Statement batch: the next donors (ascending person_id keyset — never OFFSET, so donors
+   * appearing/disappearing mid-run cannot skip a boundary) with ≥1 succeeded gift in the year
+   * and no live statement yet.
+   */
+  public async listStatementDonors(
+    tenantId: string,
+    year: number,
+    afterPersonId: string | null,
+    limit: number,
+  ): Promise<{ person_id: string }[]> {
+    const startOfYear = new Date(year, 0, 1);
+    const endOfYear = new Date(year, 11, 31, 23, 59, 59, 999);
+    let query = this.db
+      .selectFrom('donations')
+      .select('person_id')
+      .distinct()
+      .where('tenant_id', '=', tenantId)
+      .where('status', '=', 'succeeded')
+      .where('person_id', 'is not', null)
+      .where('created_at', '>=', startOfYear)
+      .where('created_at', '<=', endOfYear)
+      .where(({ eb, not, exists }) =>
+        not(
+          exists(
+            eb
+              .selectFrom('donation_receipts as dr')
+              .select('dr.id')
+              .whereRef('dr.tenant_id', '=', 'donations.tenant_id')
+              .whereRef('dr.person_id', '=', 'donations.person_id')
+              .where('dr.kind', '=', 'statement')
+              .where('dr.status', '=', 'issued')
+              .where('dr.year', '=', year),
+          ),
+        ),
+      );
+    if (afterPersonId) query = query.where('person_id', '>', afterPersonId);
+    return query.orderBy('person_id', 'asc').limit(limit).execute() as Promise<{ person_id: string }[]>;
+  }
+
+  /** How many donors gave (succeeded) in a year — the run's donors_total denominator. */
+  public async countStatementDonors(tenantId: string, year: number): Promise<number> {
+    const startOfYear = new Date(year, 0, 1);
+    const endOfYear = new Date(year, 11, 31, 23, 59, 59, 999);
+    const result = await this.db
+      .selectFrom('donations')
+      .select(({ fn }) => [fn.count<string | number>(sql`DISTINCT person_id`).as('total')])
+      .where('tenant_id', '=', tenantId)
+      .where('status', '=', 'succeeded')
+      .where('person_id', 'is not', null)
+      .where('created_at', '>=', startOfYear)
+      .where('created_at', '<=', endOfYear)
+      .executeTakeFirst();
+    return Number(result?.total ?? 0);
+  }
+
+  /** A person's succeeded gifts inside a calendar year, oldest first — statement line items. */
+  public async getSucceededDonationsForPersonYear(
+    tenantId: string,
+    personId: string,
+    year: number,
+  ): Promise<Selectable<Models['donations']>[]> {
+    const startOfYear = new Date(year, 0, 1);
+    const endOfYear = new Date(year, 11, 31, 23, 59, 59, 999);
+    return this.db
+      .selectFrom('donations')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('person_id', '=', personId)
+      .where('status', '=', 'succeeded')
+      .where('created_at', '>=', startOfYear)
+      .where('created_at', '<=', endOfYear)
+      .orderBy('created_at', 'asc')
+      .execute();
+  }
+}

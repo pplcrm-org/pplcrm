@@ -34,6 +34,7 @@ apps/
           2026-08-01-emails-detached-at.ts
           2026-08-01-z-companion-op-result.ts
           2026-08-01-zz-tenants-inbox-purge-scheduled-at.ts
+          2026-08-01-zzz-donation-receipts.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -60,6 +61,7 @@ apps/
               newsletter.handlers.ts
               notifications.handlers.ts
               ops.handlers.ts
+              receipts.handlers.ts
               sync.handlers.ts
               workflows.handlers.ts
             cron-registry.ts
@@ -83,6 +85,10 @@ apps/
             transactional-mail.service.ts
             transactional-send-guard.ts
             volunteer-link-notify.ts
+          pdf/
+            pdf-common.ts
+            receipt-pdf.ts
+            statement-pdf.ts
           routing/
             geo.ts
             plan-routes.ts
@@ -241,10 +247,14 @@ apps/
           donations/
             processors/
               stripe-processor.ts
+            receipts/
+              controller.ts
+              trpc.router.ts
             repositories/
               donations.repo.ts
               periods.repo.ts
               pledges.repo.ts
+              receipts.repo.ts
             routes/
               donations-webhook.route.ts
             controller.ts

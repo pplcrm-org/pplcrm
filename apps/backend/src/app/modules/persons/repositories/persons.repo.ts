@@ -917,6 +917,33 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         .where('tenant_id', '=', input.tenant_id)
         .where('volunteer_person_id', '=', input.source_id)
         .execute();
+      // donation_receipts: official receipts (per_gift/cumulative) have no per-person
+      // uniqueness — plain re-point; the donor name/address PRINTED on an issued receipt is a
+      // frozen snapshot and stays exactly as issued. Live STATEMENTS are unique per
+      // (person, year), and a merged donor's statement is wrong anyway (it must cover both
+      // histories), so the source's live statements are cancelled first — rerunning the year
+      // regenerates one combined statement — and then every receipt row is re-pointed.
+      await trx
+        .updateTable('donation_receipts')
+        .set({
+          status: 'cancelled',
+          cancelled_reason: 'Donor records merged — rerun year-end statements',
+          cancelled_at: sql`now()`,
+          cancelled_by: input.user_id,
+          updated_at: sql`now()`,
+          updatedby_id: input.user_id,
+        })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('person_id', '=', input.source_id)
+        .where('kind', '=', 'statement')
+        .where('status', '=', 'issued')
+        .execute();
+      await trx
+        .updateTable('donation_receipts')
+        .set({ person_id: input.target_id, updatedby_id: input.user_id, updated_at: sql`now()` })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('person_id', '=', input.source_id)
+        .execute();
 
       // 7. Children keyed uniquely per person: keep the TARGET's row when both exist
       // (delete the source's duplicate instead of violating the constraint), re-point the rest.

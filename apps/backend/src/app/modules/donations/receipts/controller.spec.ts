@@ -1,0 +1,388 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { BaseRepository } from '../../../lib/base.repo';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../../lib/test-utils/exclusive-db-lock';
+import { DonationsController } from '../controller';
+import { DonationReceiptsController } from './controller';
+
+// Issue flows commit real transactions against the shared Postgres (the counter's row lock IS
+// the thing under test), so this file takes the receipt-counter lock and cleans up per test.
+useExclusiveDbLock(DB_TEST_LOCKS.RECEIPT_COUNTERS);
+
+const rand = () => String(Math.floor(Math.random() * 100000000) + 1000000);
+
+async function cleanTenant(db: any, tenantId: string) {
+  await db
+    .updateTable('tenants')
+    .set({ admin_id: null, createdby_id: null, placeholder_household_id: null })
+    .where('id', '=', tenantId)
+    .execute();
+  for (const table of [
+    'background_jobs',
+    'donation_receipt_items',
+    'donation_receipts',
+    'receipt_counters',
+    'receipt_statement_runs',
+    'donations',
+    'settings',
+    'persons',
+    'households',
+    'campaigns',
+    'user_activity',
+    'authusers',
+  ]) {
+    await db.deleteFrom(table).where('tenant_id', '=', tenantId).execute();
+  }
+  await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
+}
+
+/** CRA-complete receipts.* settings; individual tests unset keys to exercise the guards. */
+async function seedReceiptSettings(db: any, tenantId: string, userId: string, overrides: Record<string, unknown> = {}) {
+  const values: Record<string, unknown> = {
+    'receipts.regime': 'cra_charity',
+    'receipts.mode': 'per_gift',
+    'receipts.org_legal_name': 'Test Charity',
+    'receipts.org_address': '1 Test Way, Ottawa, ON',
+    'receipts.registration_number': '123456789 RR 0001',
+    'receipts.place_of_issue': 'Ottawa',
+    'receipts.signatory_name': 'Pat Signer',
+    'receipts.signature_file_id': '1',
+    'receipts.number_prefix': 'T',
+    ...overrides,
+  };
+  await db
+    .insertInto('settings')
+    .values(
+      Object.entries(values)
+        .filter(([, v]) => v !== undefined)
+        .map(([key, value]) => ({
+          tenant_id: tenantId,
+          key,
+          value: JSON.stringify(value),
+          createdby_id: userId,
+          updatedby_id: userId,
+        })),
+    )
+    .execute();
+}
+
+async function createSeed(db: any) {
+  const tenantId = rand();
+  const userId = rand();
+  const campaignId = rand();
+  const householdId = rand();
+  const personId = rand();
+
+  await db.insertInto('tenants').values({ id: tenantId, name: 'Receipts Test Tenant' }).execute();
+  await db
+    .insertInto('authusers')
+    .values({
+      id: userId,
+      tenant_id: tenantId,
+      email: `receipts-${userId}@example.com`,
+      password: 'password',
+      first_name: 'Test',
+      last_name: 'Admin',
+      verified: true,
+      createdby_id: userId,
+      updatedby_id: userId,
+    })
+    .execute();
+  await db
+    .insertInto('campaigns')
+    .values({
+      id: campaignId,
+      tenant_id: tenantId,
+      admin_id: userId,
+      name: 'Office',
+      kind: 'office',
+      createdby_id: userId,
+      updatedby_id: userId,
+    })
+    .execute();
+  await db
+    .insertInto('households')
+    .values({
+      id: householdId,
+      tenant_id: tenantId,
+      campaign_id: campaignId,
+      street_num: '12',
+      street1: 'Maple Ave',
+      city: 'Ottawa',
+      state: 'ON',
+      zip: 'K1A 0A1',
+      country: 'Canada',
+      createdby_id: userId,
+      updatedby_id: userId,
+    })
+    .execute();
+  await db
+    .updateTable('tenants')
+    .set({ admin_id: userId, createdby_id: userId, placeholder_household_id: householdId })
+    .where('id', '=', tenantId)
+    .execute();
+  await db
+    .insertInto('persons')
+    .values({
+      id: personId,
+      tenant_id: tenantId,
+      campaign_id: campaignId,
+      household_id: householdId,
+      first_name: 'Dana',
+      last_name: 'Donor',
+      email: 'dana@example.com',
+      createdby_id: userId,
+      updatedby_id: userId,
+    })
+    .execute();
+
+  return { tenantId, userId, campaignId, householdId, personId };
+}
+
+async function insertDonation(
+  db: any,
+  seed: { tenantId: string; campaignId: string; personId: string },
+  amountCents: number,
+  extras: Record<string, unknown> = {},
+): Promise<string> {
+  const row = await db
+    .insertInto('donations')
+    .values({
+      tenant_id: seed.tenantId,
+      campaign_id: seed.campaignId,
+      person_id: seed.personId,
+      amount: amountCents,
+      status: 'succeeded',
+      method: 'cash',
+      first_name: 'Dana',
+      last_name: 'Donor',
+      email: 'dana@example.com',
+      street: '12 Maple Ave',
+      city: 'Ottawa',
+      state: 'ON',
+      zip: 'K1A 0A1',
+      country: 'Canada',
+      ...extras,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  return String(row.id);
+}
+
+describe('DonationReceiptsController', () => {
+  const controller = new DonationReceiptsController();
+  const db = (BaseRepository as any)._db;
+  let seed: Awaited<ReturnType<typeof createSeed>>;
+  const auth = () => ({ tenant_id: seed.tenantId, user_id: seed.userId });
+
+  beforeEach(async () => {
+    seed = await createSeed(db);
+    await seedReceiptSettings(db, seed.tenantId, seed.userId);
+  });
+
+  afterEach(async () => {
+    await cleanTenant(db, seed.tenantId);
+  });
+
+  it('issues numbered receipts sequentially and refuses a second live receipt for the same gift', async () => {
+    const d1 = await insertDonation(db, seed, 10000);
+    const d2 = await insertDonation(db, seed, 5000);
+
+    const r1 = await controller.issueReceipt(auth(), d1, {});
+    const r2 = await controller.issueReceipt(auth(), d2, {});
+    expect(r1.serial).toBe(1);
+    expect(r2.serial).toBe(2);
+    expect(r1.receipt_number).toMatch(/^T-\d{4}-00001$/);
+    expect(r1.eligible_cents).toBe(10000);
+    expect(r1.donor_address_line1).toBe('12 Maple Ave');
+
+    await expect(controller.issueReceipt(auth(), d1, {})).rejects.toThrow(/already has a receipt/);
+  });
+
+  it('reuses a rolled-back serial — the sequence stays gap-free', async () => {
+    const d1 = await insertDonation(db, seed, 10000);
+    await controller.issueReceipt(auth(), d1, {});
+    // Second issue on the same gift takes serial 2 inside its transaction, then rolls back.
+    await expect(controller.issueReceipt(auth(), d1, {})).rejects.toThrow();
+    const d2 = await insertDonation(db, seed, 2000);
+    const r = await controller.issueReceipt(auth(), d2, {});
+    expect(r.serial).toBe(2);
+  });
+
+  it('cancel keeps the receipt (with reason) and reissue prints/records both serials', async () => {
+    const d1 = await insertDonation(db, seed, 10000);
+    const original = await controller.issueReceipt(auth(), d1, {});
+
+    const cancelled = await controller.cancelReceipt(auth(), original.id, 'Wrong donor address');
+    expect(cancelled.status).toBe('cancelled');
+    expect(cancelled.cancelled_reason).toBe('Wrong donor address');
+
+    const successor = await controller.reissueReceipt(auth(), original.id);
+    expect(successor.replaces_receipt_id).toBe(original.id);
+    expect(successor.serial).toBe(2);
+    expect(successor.status).toBe('issued');
+
+    // Cancelling an already-cancelled receipt conflicts rather than double-writing.
+    await expect(controller.cancelReceipt(auth(), original.id, 'again')).rejects.toThrow(/already cancelled/);
+  });
+
+  it('replacing a still-issued receipt requires a reason and cancels the predecessor', async () => {
+    const d1 = await insertDonation(db, seed, 10000);
+    const original = await controller.issueReceipt(auth(), d1, {});
+
+    await expect(controller.reissueReceipt(auth(), original.id)).rejects.toThrow(/reason/i);
+
+    const successor = await controller.reissueReceipt(auth(), original.id, 'Donor name misspelled');
+    expect(successor.replaces_receipt_id).toBe(original.id);
+    const predecessor = await db
+      .selectFrom('donation_receipts')
+      .select(['status', 'cancelled_reason'])
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', original.id)
+      .executeTakeFirstOrThrow();
+    expect(predecessor.status).toBe('cancelled');
+    expect(predecessor.cancelled_reason).toBe('Donor name misspelled');
+  });
+
+  it('blocks issuance when settings are incomplete, Quebec, or an Ontario candidate campaign', async () => {
+    const d1 = await insertDonation(db, seed, 10000);
+
+    await db
+      .deleteFrom('settings')
+      .where('tenant_id', '=', seed.tenantId)
+      .where('key', '=', 'receipts.regime')
+      .execute();
+    await expect(controller.issueReceipt(auth(), d1, {})).rejects.toThrow(/regime/i);
+
+    await db.deleteFrom('settings').where('tenant_id', '=', seed.tenantId).where('key', 'like', 'receipts.%').execute();
+    await seedReceiptSettings(db, seed.tenantId, seed.userId, {
+      'receipts.regime': 'political_qc',
+    });
+    await expect(controller.issueReceipt(auth(), d1, {})).rejects.toThrow(/Élections Québec/);
+
+    await db.deleteFrom('settings').where('tenant_id', '=', seed.tenantId).where('key', 'like', 'receipts.%').execute();
+    await seedReceiptSettings(db, seed.tenantId, seed.userId, {
+      'receipts.regime': 'political_on',
+      'receipts.agent_name': 'CFO Person',
+    });
+    await db.updateTable('campaigns').set({ kind: 'election' }).where('id', '=', seed.campaignId).execute();
+    await expect(controller.issueReceipt(auth(), d1, {})).rejects.toThrow(/Elections Ontario/);
+  });
+
+  it('holds a legacy gift with no address anywhere as "needs donor address"', async () => {
+    // Strip both address sources: the donation snapshot and the household.
+    const d1 = await insertDonation(db, seed, 10000, { street: null, city: null, zip: null });
+    await db
+      .updateTable('households')
+      .set({ street_num: null, street1: null, city: null })
+      .where('id', '=', seed.householdId)
+      .execute();
+    await expect(controller.issueReceipt(auth(), d1, {})).rejects.toThrow(/mailing address/);
+  });
+
+  it('refuses a refunded gift and validates the advantage', async () => {
+    const refunded = await insertDonation(db, seed, 10000, { status: 'refunded' });
+    await expect(controller.issueReceipt(auth(), refunded, {})).rejects.toThrow(/refunded or disputed/);
+
+    const d1 = await insertDonation(db, seed, 10000);
+    await expect(controller.issueReceipt(auth(), d1, { advantageCents: 10000 })).rejects.toThrow(/advantage/i);
+    const r = await controller.issueReceipt(auth(), d1, { advantageCents: 2500, advantageDescription: 'Dinner' });
+    expect(r.eligible_cents).toBe(7500);
+  });
+
+  it('cumulative receipts gather only un-receipted succeeded gifts', async () => {
+    const d1 = await insertDonation(db, seed, 10000);
+    const d2 = await insertDonation(db, seed, 5000);
+    await insertDonation(db, seed, 7000, { status: 'refunded' });
+    await controller.issueReceipt(auth(), d1, {});
+
+    const year = new Date().getFullYear();
+    const cumulative = await controller.issueCumulativeReceipt(auth(), seed.personId, year, {});
+    expect(cumulative.kind).toBe('cumulative');
+    expect(cumulative.amount_cents).toBe(5000); // only d2 — d1 receipted, d3 refunded
+
+    const items = await db
+      .selectFrom('donation_receipt_items')
+      .select('donation_id')
+      .where('tenant_id', '=', seed.tenantId)
+      .where('receipt_id', '=', cumulative.id)
+      .execute();
+    expect(items.map((i: { donation_id: string }) => String(i.donation_id))).toEqual([d2]);
+
+    await expect(controller.issueCumulativeReceipt(auth(), seed.personId, year, {})).rejects.toThrow(/already covered/);
+  });
+
+  it('reverseDonation cancels a per-gift receipt; a won chargeback does not auto-reissue', async () => {
+    const paymentIntentId = `pi_test_${seed.tenantId}`;
+    const d1 = await insertDonation(db, seed, 10000, { stripe_payment_intent_id: paymentIntentId });
+    const receipt = await controller.issueReceipt(auth(), d1, {});
+
+    const donations = new DonationsController();
+    await donations.reverseDonation(seed.tenantId, seed.userId, {
+      paymentIntentId,
+      invoiceId: null,
+      status: 'disputed',
+    });
+    const afterReverse = await db
+      .selectFrom('donation_receipts')
+      .select(['status', 'cancelled_reason'])
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', receipt.id)
+      .executeTakeFirstOrThrow();
+    expect(afterReverse.status).toBe('cancelled');
+    expect(afterReverse.cancelled_reason).toContain('disputed');
+
+    await donations.restoreDisputedDonation(seed.tenantId, seed.userId, { paymentIntentId, invoiceId: null });
+    const afterRestore = await db
+      .selectFrom('donation_receipts')
+      .select('status')
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', receipt.id)
+      .executeTakeFirstOrThrow();
+    expect(afterRestore.status).toBe('cancelled'); // serial burned; reissue is a human decision
+  });
+
+  it('reverseDonation flags a cumulative receipt for reissue instead of silently shrinking it', async () => {
+    const paymentIntentId = `pi_cumul_${seed.tenantId}`;
+    await insertDonation(db, seed, 10000);
+    await insertDonation(db, seed, 5000, { stripe_payment_intent_id: paymentIntentId });
+    const cumulative = await controller.issueCumulativeReceipt(auth(), seed.personId, new Date().getFullYear(), {});
+    expect(cumulative.amount_cents).toBe(15000);
+
+    await new DonationsController().reverseDonation(seed.tenantId, seed.userId, {
+      paymentIntentId,
+      invoiceId: null,
+      status: 'refunded',
+    });
+    const flagged = await db
+      .selectFrom('donation_receipts')
+      .select(['status', 'reissue_required'])
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', cumulative.id)
+      .executeTakeFirstOrThrow();
+    expect(flagged.status).toBe('cancelled');
+    expect(flagged.reissue_required).toBe(true);
+
+    // Reissue rebuilds from the surviving gift only.
+    const successor = await controller.reissueReceipt(auth(), cumulative.id);
+    expect(successor.amount_cents).toBe(10000);
+    expect(successor.replaces_receipt_id).toBe(cumulative.id);
+  });
+
+  it('generateStatementForDonor is idempotent per donor-year and statements carry no serial', async () => {
+    await insertDonation(db, seed, 10000);
+    const year = new Date().getFullYear();
+
+    const statement = await controller.generateStatementForDonor(seed.tenantId, seed.personId, year, seed.userId);
+    expect(statement).not.toBeNull();
+    expect(statement?.kind).toBe('statement');
+    expect(statement?.serial).toBeNull();
+    expect(statement?.receipt_number).toBeNull();
+
+    const again = await controller.generateStatementForDonor(seed.tenantId, seed.personId, year, seed.userId);
+    expect(again).toBeNull(); // unique live statement per donor-year
+
+    const status = await controller.getReceiptSettingsStatus(seed.tenantId);
+    expect(status.complete).toBe(true);
+  });
+});

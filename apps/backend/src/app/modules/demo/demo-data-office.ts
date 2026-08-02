@@ -601,4 +601,7 @@ export const OFFICE_DEMO_DATASET: DemoDataset = {
   // An office does not fundraise — its riding association does, on its own books.
   pledges: [],
   donations: [],
+  receipts: [],
+  receiptSettings: {},
+  statementRun: null,
 };

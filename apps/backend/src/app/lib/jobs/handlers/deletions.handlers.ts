@@ -45,6 +45,10 @@ export const TENANT_SCOPED_TABLES = [
   'dismissed_duplicate_groups',
   'donation_periods',
   'donation_pledges',
+  'donation_receipt_items',
+  'donation_receipts',
+  'receipt_counters',
+  'receipt_statement_runs',
   'donations',
   'email_attachments',
   'email_bodies',
@@ -198,9 +202,31 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
         .where('role', '=', 'owner')
         .execute();
 
+      // Receipt PDFs are the one per-feature blob set the wipe removes from storage ("delete
+      // means deleted"): collect the keys BEFORE the rows vanish, delete blobs after commit
+      // (avatar-tombstone ordering — a blob deleted inside the trx would be gone on rollback).
+      const receiptBlobKeys = (
+        await db
+          .selectFrom('donation_receipts')
+          .innerJoin('files', 'files.id', 'donation_receipts.file_id')
+          .select('files.storage_key')
+          .where('donation_receipts.tenant_id', '=', tenantId)
+          .where('files.tenant_id', '=', tenantId)
+          .where('donation_receipts.file_id', 'is not', null)
+          .execute()
+      ).map((row) => row.storage_key);
+
       logger.info(`Hard-deleting tenant ${tenantId} (deletion_scheduled_at <= now)…`);
       await db.transaction().execute((trx) => wipeTenant(trx, tenantId));
       logger.info(`Tenant ${tenantId} fully hard-deleted.`);
+
+      for (const key of receiptBlobKeys) {
+        try {
+          await new StorageService().delete(key);
+        } catch (err) {
+          logger.error({ err, tenantId, key }, 'Failed to delete a receipt PDF blob for a wiped tenant');
+        }
+      }
     } catch (err) {
       failures.push(`tenant ${tenantId}`);
       logger.error({ err, tenantId }, 'Failed to hard-delete scheduled tenant; continuing with remaining deletions');

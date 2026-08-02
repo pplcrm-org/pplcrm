@@ -30,6 +30,33 @@ const exportOptionsSchema = z.object({
 });
 
 export const jobPayloadSchema = z.discriminatedUnion('type', [
+  // ── Donation receipts ───────────────────────────────────────────────────
+  // Auto-issue after a gift commits (outbox insert in recordSuccessfulDonation). The handler
+  // re-validates settings and skips-without-retry when they are incomplete.
+  z.object({
+    type: z.literal('issue-donation-receipt'),
+    tenant_id: idSchema,
+    donation_id: idSchema,
+    user_id: idSchema,
+  }),
+  // Render a receipt/statement PDF, store it via the files service, email it to the donor.
+  // Attachments only exist on the direct sendMail path, so this MUST run in the worker.
+  z.object({
+    type: z.literal('render-receipt-pdf'),
+    tenant_id: idSchema,
+    receipt_id: idSchema,
+    email: z.boolean().default(true),
+    user_id: idSchema.nullish(),
+  }),
+  // Year-end giving statement batch; cursor carries the keyset resume point on continuation.
+  z.object({
+    type: z.literal('run-year-end-statements'),
+    tenant_id: idSchema,
+    run_id: idSchema,
+    user_id: idSchema,
+    year: z.number().int(),
+    cursor: idSchema.nullish(),
+  }),
   // ── Lists / companies / maintenance ─────────────────────────────────────
   z.object({
     type: z.literal('refresh_list'),

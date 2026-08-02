@@ -13,6 +13,8 @@ import type {
   DemoVolunteerEventDef,
   DemoDonationDef,
   DemoPledgeDef,
+  DemoReceiptDef,
+  DemoStatementRunDef,
 } from './demo-data-types';
 import { DEMO_CITY, DEMO_COUNTRY, DEMO_STATE, allSites } from './demo-data-places';
 
@@ -739,7 +741,8 @@ const TASKS: DemoTaskDef[] = [
   },
   {
     name: 'Send the giving statements',
-    details: 'Margaret ran the numbers. Print for the seven households with no email on file.',
+    details:
+      'Ran last year from Giving → Receipts & statements. Two households have no email — download theirs from the same page and mail them.',
     status: 'done',
     priority: 'high',
     position: 9,
@@ -915,8 +918,8 @@ const NEWSLETTERS: DemoNewsletterDef[] = [
       '<p><strong>Hope Street</strong> is the third Saturday — six of us cook and serve, home by eight. ' +
       '<a href="https://example.org/hope-street">Sign up</a>.</p>' +
       '<p>The Tuesday study is at the Ramos house as usual, 7:30. Park on the street.</p>' +
-      '<p>Giving statements went out last week; if yours did not arrive, tell Gordon. ' +
-      'You can also <a href="https://example.org/give">give online</a>.</p>',
+      '<p>Giving statements went out by email last week; if yours did not arrive, tell Gordon ' +
+      'and he will print you one. You can also <a href="https://example.org/give">give online</a>.</p>',
     plain_text_content:
       'Walter Hume comes home Thursday. Sunday school needs two teachers before September — https://example.org/serve. ' +
       'Hope Street cook-and-serve is the third Saturday — https://example.org/hope-street. ' +
@@ -1179,7 +1182,6 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 30000,
     method: 'card',
     createdDaysAgo: 8,
-    receiptSent: true,
     pledge: 'pl-benning',
   },
   {
@@ -1187,7 +1189,6 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 30000,
     method: 'card',
     createdDaysAgo: 38,
-    receiptSent: true,
     pledge: 'pl-benning',
   },
   {
@@ -1195,7 +1196,6 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 20000,
     method: 'card',
     createdDaysAgo: 3,
-    receiptSent: true,
     pledge: 'pl-liu',
   },
   {
@@ -1203,7 +1203,6 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 20000,
     method: 'card',
     createdDaysAgo: 33,
-    receiptSent: true,
     pledge: 'pl-liu',
   },
   {
@@ -1211,7 +1210,6 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 12500,
     method: 'card',
     createdDaysAgo: 15,
-    receiptSent: true,
     pledge: 'pl-ramos',
   },
   {
@@ -1219,21 +1217,63 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 10000,
     method: 'card',
     createdDaysAgo: 22,
-    receiptSent: true,
     pledge: 'pl-okafor',
   },
-  { person: 'june-benning', amountCents: 5000, method: 'cash', createdDaysAgo: 6, receiptSent: false },
-  { person: 'joseph-kimani', amountCents: 15000, method: 'check', createdDaysAgo: 11, receiptSent: true },
-  { person: 'karen-whelan', amountCents: 7500, method: 'card', createdDaysAgo: 14, receiptSent: true },
-  { person: 'thomas-nkemelu', amountCents: 10000, method: 'bank_transfer', createdDaysAgo: 18, receiptSent: true },
-  { person: 'samuel-boateng', amountCents: 6000, method: 'cash', createdDaysAgo: 20, receiptSent: false },
-  { person: 'alan-forsyth', amountCents: 25000, method: 'check', createdDaysAgo: 27, receiptSent: true },
-  { person: 'mei-lin-chow', amountCents: 8000, method: 'card', createdDaysAgo: 31, receiptSent: true },
-  { person: 'paul-doucette', amountCents: 5000, method: 'card', createdDaysAgo: 36, receiptSent: true },
-  { person: 'ade-balogun', amountCents: 4000, method: 'cash', createdDaysAgo: 41, receiptSent: false },
-  { person: 'grace-adeyemi', amountCents: 9000, method: 'card', createdDaysAgo: 49, receiptSent: true },
-  { person: 'brian-whelan', amountCents: 12000, method: 'check', createdDaysAgo: 55, receiptSent: true },
+  { person: 'june-benning', amountCents: 5000, method: 'cash', createdDaysAgo: 6 },
+  { person: 'joseph-kimani', amountCents: 15000, method: 'check', createdDaysAgo: 11 },
+  { person: 'karen-whelan', amountCents: 7500, method: 'card', createdDaysAgo: 14 },
+  { person: 'thomas-nkemelu', amountCents: 10000, method: 'bank_transfer', createdDaysAgo: 18 },
+  { person: 'samuel-boateng', amountCents: 6000, method: 'cash', createdDaysAgo: 20 },
+  { person: 'alan-forsyth', amountCents: 25000, method: 'check', createdDaysAgo: 27 },
+  { person: 'mei-lin-chow', amountCents: 8000, method: 'card', createdDaysAgo: 31 },
+  { person: 'paul-doucette', amountCents: 5000, method: 'card', createdDaysAgo: 36 },
+  { person: 'ade-balogun', amountCents: 4000, method: 'cash', createdDaysAgo: 41 },
+  { person: 'grace-adeyemi', amountCents: 9000, method: 'card', createdDaysAgo: 49 },
+  { person: 'brian-whelan', amountCents: 12000, method: 'check', createdDaysAgo: 55 },
 ];
+
+/**
+ * Official receipts over DONATIONS (by index). Most one-time gifts are receipted (auto-issue is
+ * on); a few cash gifts are deliberately not, so the "Receipts" stat is honest work-in-progress,
+ * and Alan Forsyth's check carries the cancel-and-replace pair the receipts page demonstrates.
+ */
+const RECEIPTS: DemoReceiptDef[] = [
+  { donation: 7, serial: 1, issuedDaysAgo: 11, emailed: true }, // joseph-kimani, check
+  { donation: 8, serial: 2, issuedDaysAgo: 14, emailed: true }, // karen-whelan, card
+  { donation: 9, serial: 3, issuedDaysAgo: 18, emailed: false }, // thomas-nkemelu, bank transfer
+  {
+    donation: 11, // alan-forsyth, check — the misspelled-name receipt…
+    serial: 4,
+    issuedDaysAgo: 27,
+    status: 'cancelled',
+    cancelledReason: 'Donor name was misspelled',
+  },
+  { donation: 11, serial: 5, issuedDaysAgo: 26, replacesSerial: 4, emailed: true }, // …and its replacement
+  { donation: 12, serial: 6, issuedDaysAgo: 31, emailed: true }, // mei-lin-chow, card
+];
+
+/** CRA charitable receipting, configured the way a real church office would. */
+const RECEIPT_SETTINGS: Record<string, string | boolean> = {
+  'receipts.regime': 'cra_charity',
+  'receipts.mode': 'per_gift',
+  'receipts.auto_issue': true,
+  'receipts.org_legal_name': 'Riverside Community Church',
+  'receipts.org_address': `41 Chapel Street, ${DEMO_CITY}, ${DEMO_STATE}`,
+  'receipts.registration_number': '123456789 RR 0001',
+  'receipts.signatory_name': 'Margaret Liu',
+  'receipts.signatory_title': 'Treasurer',
+  'receipts.number_prefix': 'RCC',
+  'receipts.place_of_issue': DEMO_CITY,
+};
+
+/** Last year's statement run — the "giving statements went out" the newsletter mentions. */
+const STATEMENT_RUN: DemoStatementRunDef = {
+  yearsAgo: 1,
+  donorsTotal: 14,
+  generated: 14,
+  emailed: 12,
+  toPrint: 2,
+};
 
 export const CHURCH_DEMO_DATASET: DemoDataset = {
   city: DEMO_CITY,
@@ -1257,4 +1297,7 @@ export const CHURCH_DEMO_DATASET: DemoDataset = {
   deliveryRoutes: [],
   pledges: PLEDGES,
   donations: DONATIONS,
+  receipts: RECEIPTS,
+  receiptSettings: RECEIPT_SETTINGS,
+  statementRun: STATEMENT_RUN,
 };

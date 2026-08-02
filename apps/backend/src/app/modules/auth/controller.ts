@@ -2667,6 +2667,8 @@ ${waitlistNote}
       email_assigned_in_app: true,
       export_ready: true,
       export_ready_in_app: true,
+      statements_ready: true,
+      statements_ready_in_app: true,
       import_summary: true,
       companion_approval_sms: true,
     };

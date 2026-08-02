@@ -178,6 +178,23 @@ export const FILE_REFERENCE_COLUMNS: readonly ColumnReference[] = [
           .executeTakeFirst(),
       ),
   },
+  {
+    // Receipts are legal records kept forever (cancelled ones included) — their PDFs must not be
+    // deletable from the Files page while the receipt row points at them.
+    table: 'donation_receipts',
+    column: 'file_id',
+    label: 'a donation receipt PDF',
+    isReferenced: async (db, tenantId, fileId) =>
+      Boolean(
+        await db
+          .selectFrom('donation_receipts')
+          .select('id')
+          .where('tenant_id', '=', tenantId)
+          .where('file_id', '=', fileId)
+          .limit(1)
+          .executeTakeFirst(),
+      ),
+  },
 ];
 
 /** Plain-English name for each `files.entity_type` tag written by registerFile. */
@@ -185,6 +202,7 @@ const ENTITY_OWNER_LABELS: Readonly<Record<string, string>> = {
   bug_report: 'a bug report',
   newsletter: 'a newsletter',
   team: 'a team',
+  receipt_signature: 'the receipt signature',
 };
 
 /**
@@ -200,6 +218,7 @@ async function entityOwnerExists(
   tenantId: string,
   entityType: string,
   entityId: string,
+  fileId: string,
 ): Promise<boolean> {
   switch (entityType) {
     case 'bug_report':
@@ -229,6 +248,17 @@ async function entityOwnerExists(
           .where('id', '=', entityId)
           .executeTakeFirst(),
       );
+    case 'receipt_signature': {
+      // Owned by workspace settings, not a record: live while `receipts.signature_file_id`
+      // still points at this file. A replaced signature becomes deletable.
+      const setting = await db
+        .selectFrom('settings')
+        .select('value')
+        .where('tenant_id', '=', tenantId)
+        .where('key', '=', 'receipts.signature_file_id')
+        .executeTakeFirst();
+      return typeof setting?.value === 'string' && setting.value === fileId;
+    }
     default:
       return true;
   }
@@ -259,7 +289,7 @@ async function findEntityOwnerReference(
   // Tagged with a type but no id: nothing to look up, so keep the file.
   if (row?.entity_id == null) return hit;
 
-  return (await entityOwnerExists(db, tenantId, entityType, String(row.entity_id))) ? hit : null;
+  return (await entityOwnerExists(db, tenantId, entityType, String(row.entity_id), fileId)) ? hit : null;
 }
 
 /** Everything that currently points at this file. Empty means the row is safe to delete. */

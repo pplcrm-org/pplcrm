@@ -39,6 +39,8 @@ describe('StripeDonationProcessor.createOneTimeCheckout (Connect direct charge)'
     expect(state.createSession).toHaveBeenCalledWith(
       {
         payment_method_types: ['card'],
+        // Receipts need the donor's mailing address, so Checkout must collect it.
+        billing_address_collection: 'required',
         line_items: [
           {
             price_data: {

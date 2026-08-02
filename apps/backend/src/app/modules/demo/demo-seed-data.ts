@@ -1923,4 +1923,7 @@ export const CAMPAIGN_DEMO_DATASET: DemoDataset = {
   deliveryRoutes: DEMO_DELIVERY_ROUTES,
   pledges: DEMO_PLEDGES,
   donations: DEMO_DONATIONS,
+  receipts: [],
+  receiptSettings: {},
+  statementRun: null,
 };

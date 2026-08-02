@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import type { Transaction } from 'kysely';
+import { sql, type Transaction } from 'kysely';
 import { z } from 'zod';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { fingerprintFull, fingerprintStreet } from '../../lib/address-normalize';
@@ -64,6 +64,15 @@ export const DemoSeedManifestObj = z.object({
   // survive exit (they are starter forms); these recorded gifts do not.
   donations: z.array(z.string()).default([]),
   donation_pledges: z.array(z.string()).default([]),
+  // Official receipts over the demo gifts + last year's statement run. Counter rows are
+  // deliberately NOT tracked: deleting them would reset numbering under receipts a user issued
+  // during demo mode, and a leftover counter row is harmless.
+  donation_receipts: z.array(z.string()).default([]),
+  donation_receipt_items: z.array(z.string()).default([]),
+  receipt_statement_runs: z.array(z.string()).default([]),
+  /** True when seeding wrote receipts.* settings — exit-demo removes them so a workspace never
+   *  issues REAL receipts under the demo church's name and registration number. */
+  receipt_settings_seeded: z.boolean().default(false),
 });
 export type DemoSeedManifest = z.infer<typeof DemoSeedManifestObj>;
 
@@ -848,7 +857,6 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
               amount: d.amountCents,
               status: 'succeeded',
               method: d.method,
-              receipt_sent: d.receiptSent ?? true,
               pledge_id: d.pledge ? (pledgeIdByKey.get(d.pledge) ?? null) : null,
               first_name: person?.first_name ?? null,
               last_name: person?.last_name ?? null,
@@ -861,6 +869,148 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         .returning('id')
         .execute();
   const donationIds = donationRows.map((r) => String(r.id));
+
+  // ── Official receipts over the demo gifts ─────────────────────────────────
+  //    Rows are inserted directly (not through the issue flow) so the demo can carry a
+  //    cancel-and-replace pair and historic dates; the real render job then draws each PDF
+  //    after commit, with email:false — demo donors are never emailed. The counter is advanced
+  //    past the seeded serials so live issuing in demo mode cannot collide.
+  const receiptIds: string[] = [];
+  const receiptItemIds: string[] = [];
+  const statementRunIds: string[] = [];
+  if (dataset.receipts.length > 0) {
+    await trx
+      .insertInto('settings')
+      .values(
+        Object.entries(dataset.receiptSettings).map(([key, value]) => ({
+          tenant_id,
+          key,
+          value: JSON.stringify(value),
+          createdby_id: user_id,
+          updatedby_id: user_id,
+        })),
+      )
+      .onConflict((oc) => oc.columns(['tenant_id', 'key']).doUpdateSet({ value: (eb) => eb.ref('excluded.value') }))
+      .execute();
+
+    const prefix = String(dataset.receiptSettings['receipts.number_prefix'] ?? 'R');
+    const regime = String(dataset.receiptSettings['receipts.regime'] ?? 'cra_charity');
+    const issuerSnapshot = JSON.stringify({
+      org_legal_name: dataset.receiptSettings['receipts.org_legal_name'],
+      org_address: dataset.receiptSettings['receipts.org_address'],
+      registration_number: dataset.receiptSettings['receipts.registration_number'],
+      place_of_issue: dataset.receiptSettings['receipts.place_of_issue'],
+      signatory_name: dataset.receiptSettings['receipts.signatory_name'],
+      signatory_title: dataset.receiptSettings['receipts.signatory_title'],
+    });
+
+    const receiptIdBySerial = new Map<number, string>();
+    for (const def of dataset.receipts) {
+      const donationDef = dataset.donations[def.donation];
+      const donationId = donationIds[def.donation];
+      const person = donationDef ? personByKey.get(donationDef.person) : undefined;
+      const personId = donationDef ? personIdByKey.get(donationDef.person) : undefined;
+      if (!donationDef || !donationId || !person || !personId) continue;
+      const issuedAt = daysAgo(def.issuedDaysAgo);
+      const cancelled = def.status === 'cancelled';
+      const receipt = await trx
+        .insertInto('donation_receipts')
+        .values({
+          tenant_id,
+          kind: 'per_gift',
+          regime,
+          year: issuedAt.getFullYear(),
+          serial: def.serial,
+          receipt_number: `${prefix}-${issuedAt.getFullYear()}-${String(def.serial).padStart(5, '0')}`,
+          status: def.status ?? 'issued',
+          person_id: personId,
+          campaign_id,
+          donor_name: `${person.first_name} ${person.last_name}`.trim(),
+          donor_email: person.email ?? null,
+          amount_cents: donationDef.amountCents,
+          advantage_cents: 0,
+          eligible_cents: donationDef.amountCents,
+          gift_date: daysAgo(donationDef.createdDaysAgo),
+          issuer_snapshot: issuerSnapshot,
+          replaces_receipt_id: def.replacesSerial ? (receiptIdBySerial.get(def.replacesSerial) ?? null) : null,
+          cancelled_reason: cancelled ? (def.cancelledReason ?? 'Cancelled') : null,
+          cancelled_at: cancelled ? issuedAt : null,
+          cancelled_by: cancelled ? user_id : null,
+          issued_at: issuedAt,
+          emailed_at: def.emailed ? issuedAt : null,
+          createdby_id: user_id,
+          updatedby_id: user_id,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      receiptIdBySerial.set(def.serial, String(receipt.id));
+      receiptIds.push(String(receipt.id));
+
+      const item = await trx
+        .insertInto('donation_receipt_items')
+        .values({
+          tenant_id,
+          receipt_id: receipt.id,
+          donation_id: donationId,
+          amount_cents: donationDef.amountCents,
+          gift_date: daysAgo(donationDef.createdDaysAgo),
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      receiptItemIds.push(String(item.id));
+
+      await trx
+        .insertInto('background_jobs')
+        .values({
+          tenant_id,
+          queue: 'default',
+          status: 'pending',
+          payload: JSON.stringify({
+            type: 'render-receipt-pdf',
+            tenant_id,
+            receipt_id: receipt.id,
+            email: false,
+            user_id,
+          }),
+          run_at: new Date(),
+          max_attempts: 3,
+        })
+        .execute();
+    }
+
+    const maxSerialByYear = new Map<number, number>();
+    for (const def of dataset.receipts) {
+      const year = daysAgo(def.issuedDaysAgo).getFullYear();
+      maxSerialByYear.set(year, Math.max(maxSerialByYear.get(year) ?? 0, def.serial));
+    }
+    for (const [year, n] of maxSerialByYear) {
+      await sql`
+        INSERT INTO receipt_counters (tenant_id, year, kind, n)
+        VALUES (${tenant_id}, ${year}, 'official', ${n})
+        ON CONFLICT (tenant_id, year, kind) DO UPDATE SET n = GREATEST(receipt_counters.n, ${n})
+      `.execute(trx);
+    }
+  }
+
+  if (dataset.statementRun) {
+    const run = await trx
+      .insertInto('receipt_statement_runs')
+      .values({
+        tenant_id,
+        year: new Date().getFullYear() - dataset.statementRun.yearsAgo,
+        status: 'completed',
+        donors_total: dataset.statementRun.donorsTotal,
+        generated_count: dataset.statementRun.generated,
+        emailed_count: dataset.statementRun.emailed,
+        skipped_no_email: dataset.statementRun.toPrint,
+        requested_by: user_id,
+        createdby_id: user_id,
+        updatedby_id: user_id,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    statementRunIds.push(String(run.id));
+  }
 
   // ── Duplicates queue (§9.3) ───────────────────────────────────────────────
   //    The dataset deliberately contains the leftovers of a March CSV import
@@ -899,6 +1049,10 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     delivery_route_stops: deliveryStopIds,
     donations: donationIds,
     donation_pledges: donationPledgeIds,
+    donation_receipts: receiptIds,
+    donation_receipt_items: receiptItemIds,
+    receipt_statement_runs: statementRunIds,
+    receipt_settings_seeded: Object.keys(dataset.receiptSettings).length > 0,
   };
 
   await trx
@@ -1076,6 +1230,47 @@ export async function deleteDemoData(params: DeleteParams, trx: Transaction<Mode
     await trx.deleteFrom('turfs').where('tenant_id', '=', tenant_id).where('id', 'in', m.turfs).execute();
   }
 
+  // Receipts before donations: items point at both. The receipt PDFs (files rows created by
+  // the render job, untracked by the manifest) are queued into m.files' purge loop below by
+  // collecting their ids BEFORE the receipt rows vanish.
+  const receiptFileIds: string[] = [];
+  if (m.donation_receipts.length > 0) {
+    const fileRows = await trx
+      .selectFrom('donation_receipts')
+      .select('file_id')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', m.donation_receipts)
+      .where('file_id', 'is not', null)
+      .execute();
+    receiptFileIds.push(...fileRows.map((r) => String(r.file_id)));
+  }
+  if (m.donation_receipt_items.length > 0) {
+    await trx
+      .deleteFrom('donation_receipt_items')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', m.donation_receipt_items)
+      .execute();
+  }
+  if (m.donation_receipts.length > 0) {
+    await trx
+      .deleteFrom('donation_receipts')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', m.donation_receipts)
+      .execute();
+  }
+  if (m.receipt_statement_runs.length > 0) {
+    await trx
+      .deleteFrom('receipt_statement_runs')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', m.receipt_statement_runs)
+      .execute();
+  }
+  // The demo church's name and registration number must never end up on a REAL receipt: the
+  // seeded receipts.* configuration goes with the demo data.
+  if (m.receipt_settings_seeded) {
+    await trx.deleteFrom('settings').where('tenant_id', '=', tenant_id).where('key', 'like', 'receipts.%').execute();
+  }
+
   // Fundraising (§12) — gifts reference pledges (ON DELETE SET NULL), so drop
   // gifts first, then pledges. Both reference persons (SET NULL) but are demo
   // data, so delete them explicitly before persons below.
@@ -1190,7 +1385,7 @@ export async function deleteDemoData(params: DeleteParams, trx: Transaction<Mode
   // user uploading a file with the same bytes gets the demo row back from FilesController
   // .registerFile, and a real synced email with matching bytes reuses it too. Running last means
   // any holder the check still finds is real user data rather than demo data awaiting deletion.
-  for (const fileId of m.files) {
+  for (const fileId of [...m.files, ...receiptFileIds]) {
     try {
       const key = await deleteFileRowIfUnreferenced(trx, tenant_id, fileId, { includeEntityOwnership: true });
       if (key) blobKeysToPurge.push(key);

@@ -5,7 +5,7 @@ import type { Models } from '../../../../../../libs/common/src/lib/kysely.models
 import { env } from '../../../env';
 import { BillingController } from '../../modules/billing/controller';
 import { WebhookEventsRepo } from '../../modules/billing/repositories/webhook-events.repo';
-import { DonationsController } from '../../modules/donations/controller';
+import { DonationsController, mapStripeBillingAddress } from '../../modules/donations/controller';
 import { updateCachedAccountStatus } from '../../modules/donations/stripe-connect';
 import { sql } from 'kysely';
 import { getStripe, isMockMode } from '../stripe-platform-client';
@@ -418,6 +418,7 @@ export class WebhookEventWorker {
               'card',
               undefined,
               paymentIntentId,
+              mapStripeBillingAddress(stripeObj.customer_details?.address),
             );
           } else if (isRecurringCheckoutComplete) {
             // Subscription checkout completed — create the pledge record.
@@ -489,6 +490,8 @@ export class WebhookEventWorker {
                   'card',
                   undefined,
                   invoicePaymentIntentId,
+                  // Invoices carry the customer's billing address once Checkout collected it.
+                  mapStripeBillingAddress(stripeObj.customer_address),
                 );
               }
             }

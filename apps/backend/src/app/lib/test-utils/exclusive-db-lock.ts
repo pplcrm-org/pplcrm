@@ -13,6 +13,9 @@ export const DB_TEST_LOCKS = {
   /** The `background_jobs` table as a whole queue: any spec that asserts against global claim
    *  order, or leaves a `pending` row visible to a claimer, must hold this. */
   BACKGROUND_JOB_QUEUE: 81_400_001,
+  /** The `receipt_counters` table: counter-concurrency specs commit real transactions and read
+   *  the counter globally, so they must not interleave with another file doing the same. */
+  RECEIPT_COUNTERS: 81_400_002,
 } as const;
 
 /** A spec file may sit behind a contended lock for as long as the other holder's whole run takes. */

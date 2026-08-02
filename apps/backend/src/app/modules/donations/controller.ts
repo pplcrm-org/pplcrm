@@ -1,5 +1,5 @@
 import { TRPCError } from '@trpc/server';
-import { toStripeCurrency, toWorkspaceCurrency } from '@common';
+import { toStripeCurrency, toWorkspaceCurrency, type DonationAddressType } from '@common';
 import { env } from '../../../env';
 import { BadRequestError, PreconditionFailedError } from '../../errors/app-errors';
 import { getStripe, isMockMode } from '../../lib/stripe-platform-client';
@@ -16,6 +16,7 @@ import type { Selectable, Updateable } from 'kysely';
 import { logger } from '../../logger';
 import { assertTenantMayAcceptDonations, tenantMayAcceptDonations, type SettingsLookup } from './donation-guards';
 import { StripeDonationProcessor } from './processors/stripe-processor';
+import { DonationReceiptsController } from './receipts/controller';
 
 // Donation lifecycle statuses. Only 'succeeded' counts toward cumulative/contribution totals,
 // so flipping a reversed gift to one of the terminal states drops it out of those sums.
@@ -25,6 +26,35 @@ const DONATION_STATUS = {
   disputed: 'disputed',
 } as const;
 type ReversedStatus = typeof DONATION_STATUS.refunded | typeof DONATION_STATUS.disputed;
+
+/**
+ * Stripe billing address → donation address snapshot. Returns null when Stripe collected nothing
+ * usable (pre-address-collection sessions, some wallet payments) — issuance then falls back to
+ * the household address or holds with "needs donor address".
+ */
+export function mapStripeBillingAddress(
+  addr:
+    | {
+        line1?: string | null;
+        line2?: string | null;
+        city?: string | null;
+        state?: string | null;
+        postal_code?: string | null;
+        country?: string | null;
+      }
+    | null
+    | undefined,
+): DonationAddressType | null {
+  if (!addr?.line1 || !addr.city || !addr.country) return null;
+  return {
+    street: addr.line1,
+    apt: addr.line2 || null,
+    city: addr.city,
+    state: addr.state || '',
+    zip: addr.postal_code || '',
+    country: addr.country,
+  };
+}
 
 export class DonationsController extends BaseController<'donations', DonationsRepo> {
   private settingsRepo = new SettingsRepo();
@@ -50,6 +80,29 @@ export class DonationsController extends BaseController<'donations', DonationsRe
 
   public async getTenantDonationsList(tenantId: string) {
     return this.getRepo().getTenantDonationsList(tenantId);
+  }
+
+  /** One gift with its receipt state and campaign label — the donation detail page. */
+  public async getDonationDetail(tenantId: string, donationId: string) {
+    const row = await this.getRepo()
+      .db.selectFrom('donations')
+      .leftJoin('persons', 'persons.id', 'donations.person_id')
+      .leftJoin('campaigns', 'campaigns.id', 'donations.campaign_id')
+      .selectAll('donations')
+      .select((eb) => [
+        eb.fn.coalesce('persons.first_name', 'donations.first_name').as('person_first_name'),
+        eb.fn.coalesce('persons.last_name', 'donations.last_name').as('person_last_name'),
+        eb.fn.coalesce('persons.email', 'donations.email').as('person_email'),
+        'campaigns.name as campaign_name',
+      ])
+      .where('donations.tenant_id', '=', tenantId)
+      .where('donations.id', '=', donationId)
+      .executeTakeFirst();
+    if (!row) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Donation not found' });
+    }
+    const [withState] = await this.getRepo().withReceiptState(tenantId, [row]);
+    return withState;
   }
 
   // ── Donation Periods ────────────────────────────────────────────────────────
@@ -449,6 +502,8 @@ export class DonationsController extends BaseController<'donations', DonationsRe
     const session = await getStripe().checkout.sessions.create(
       {
         payment_method_types: ['card'],
+        // Same rule as one-time gifts: no donation without a mailing address (receipts print it).
+        billing_address_collection: 'required',
         line_items: [
           {
             price_data: {
@@ -536,6 +591,11 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       province,
       country,
       userId,
+      undefined,
+      'card',
+      undefined,
+      session.payment_intent ? String(session.payment_intent) : null,
+      mapStripeBillingAddress(session.customer_details?.address),
     );
     return { success: true, donation: record };
   }
@@ -676,7 +736,8 @@ export class DonationsController extends BaseController<'donations', DonationsRe
     personId: string,
     amountCents: number,
     method: 'card' | 'check' | 'cash' | 'bank_transfer',
-    campaignId?: string,
+    campaignId: string | undefined,
+    address: DonationAddressType,
   ): Promise<Selectable<Models['donations']>> {
     const person = await this.getRepo()
       .db.selectFrom('persons')
@@ -686,6 +747,11 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       .executeTakeFirst();
     if (!person) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Choose who gave this gift. Receipts need a name.' });
+    }
+    // Zod enforces the shape; this guards direct callers. No gift without a mailing address —
+    // official receipts must print one.
+    if (!address?.street || !address.city || !address.state || !address.zip || !address.country) {
+      throw new BadRequestError('Enter the donor’s mailing address — receipts need it.');
     }
 
     return this.recordSuccessfulDonation(
@@ -699,6 +765,8 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       undefined,
       method,
       campaignId,
+      undefined,
+      address,
     );
   }
 
@@ -714,6 +782,13 @@ export class DonationsController extends BaseController<'donations', DonationsRe
     method: 'card' | 'check' | 'cash' | 'bank_transfer' = 'card',
     campaignId?: string,
     stripePaymentIntentId?: string | null,
+    /**
+     * Donor mailing address (Stripe billing address or the manual-entry dialog). Written onto
+     * the row so receipts print the address as it was at gift time. Nullable only for legacy
+     * callers (old pledge installments without a Stripe address) — receipt issuance then falls
+     * back to the household address, or holds with "needs donor address".
+     */
+    address?: DonationAddressType | null,
   ): Promise<Selectable<Models['donations']>> {
     // Which fund the gift belongs to (§15); Stripe-path gifts without an
     // explicit campaign land in the office context.
@@ -728,6 +803,13 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       .where('id', '=', personId)
       .where('tenant_id', '=', tenantId)
       .executeTakeFirst();
+
+    // Auto-issue is read before the transaction; the job itself re-validates settings, so a
+    // half-configured workspace records the gift and simply gets no receipt (visible as
+    // "No receipt" in the ledger), never a failed donation.
+    const autoIssueReceipts =
+      Boolean(await this.getSettingVal(tenantId, 'receipts.auto_issue')) &&
+      Boolean(await this.getSettingVal(tenantId, 'receipts.regime'));
 
     const record = await this.getRepo()
       .db.transaction()
@@ -745,14 +827,37 @@ export class DonationsController extends BaseController<'donations', DonationsRe
             status: 'succeeded',
             stripe_session_id: sessionId,
             stripe_payment_intent_id: stripePaymentIntentId ?? null,
-            state: province || null,
-            country: country || null,
+            street: address?.street || null,
+            apt: address?.apt || null,
+            city: address?.city || null,
+            state: address?.state || province || null,
+            zip: address?.zip || null,
+            country: address?.country || country || null,
             pledge_id: pledgeId ? pledgeId : null,
             method,
-            receipt_sent: true,
           })
           .returningAll()
           .executeTakeFirstOrThrow()) as Selectable<Models['donations']>;
+
+        if (autoIssueReceipts) {
+          // Transactional outbox: the issue job exists only if the gift committed.
+          await trx
+            .insertInto('background_jobs')
+            .values({
+              tenant_id: tenantId,
+              queue: 'default',
+              status: 'pending',
+              payload: JSON.stringify({
+                type: 'issue-donation-receipt',
+                tenant_id: tenantId,
+                donation_id: inserted.id,
+                user_id: userId,
+              }),
+              run_at: new Date(),
+              max_attempts: 3,
+            })
+            .execute();
+        }
 
         // "Donor" is derived from donations data (§15) — no tag to maintain.
 
@@ -820,6 +925,17 @@ export class DonationsController extends BaseController<'donations', DonationsRe
           .where('tenant_id', '=', tenantId)
           .execute();
 
+        // A reversed gift may not keep an uncancelled receipt (per-gift receipts cancel; a
+        // cumulative receipt covering it cancels + flags reissue; statements regenerate on rerun).
+        const receiptsController = new DonationReceiptsController();
+        await receiptsController.cancelReceiptsForReversedDonation(
+          trx,
+          tenantId,
+          userId,
+          donation.id,
+          opts.status === DONATION_STATUS.refunded ? 'refunded' : 'disputed (chargeback)',
+        );
+
         if (donation.person_id) {
           const verb = opts.status === DONATION_STATUS.refunded ? 'refunded' : 'disputed (chargeback)';
           try {
@@ -868,6 +984,9 @@ export class DonationsController extends BaseController<'donations', DonationsRe
           .where('tenant_id', '=', tenantId)
           .execute();
 
+        // Deliberately NO automatic receipt reissue on a won chargeback: the cancelled receipt's
+        // serial is burned (a successor must print "cancels and replaces"), so a human reissues
+        // from the receipts list where the cancelled receipt is surfaced.
         if (donation.person_id) {
           try {
             await trx

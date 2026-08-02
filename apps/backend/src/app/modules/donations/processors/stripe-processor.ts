@@ -59,6 +59,9 @@ export class StripeDonationProcessor {
     const session = await getStripe().checkout.sessions.create(
       {
         payment_method_types: ['card'],
+        // No donation without a mailing address — official receipts must print one, so Stripe
+        // collects the billing address and the confirm path snapshots it onto the donation row.
+        billing_address_collection: 'required',
         line_items: [
           {
             price_data: {

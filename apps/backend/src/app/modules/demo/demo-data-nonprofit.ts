@@ -979,14 +979,13 @@ const PLEDGES: DemoPledgeDef[] = [
 ];
 
 const DONATIONS: DemoDonationDef[] = [
-  { person: 'margaret-shore', amountCents: 100000, method: 'check', createdDaysAgo: 4, receiptSent: true },
-  { person: 'priya-raman', amountCents: 250000, method: 'bank_transfer', createdDaysAgo: 14, receiptSent: true },
+  { person: 'margaret-shore', amountCents: 100000, method: 'check', createdDaysAgo: 4 },
+  { person: 'priya-raman', amountCents: 250000, method: 'bank_transfer', createdDaysAgo: 14 },
   {
     person: 'eleanor-vance',
     amountCents: 5000,
     method: 'card',
     createdDaysAgo: 6,
-    receiptSent: true,
     pledge: 'pl-vance',
   },
   {
@@ -994,7 +993,6 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 5000,
     method: 'card',
     createdDaysAgo: 36,
-    receiptSent: true,
     pledge: 'pl-vance',
   },
   {
@@ -1002,7 +1000,6 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 2500,
     method: 'card',
     createdDaysAgo: 12,
-    receiptSent: true,
     pledge: 'pl-abbott',
   },
   {
@@ -1010,7 +1007,6 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 2500,
     method: 'card',
     createdDaysAgo: 42,
-    receiptSent: true,
     pledge: 'pl-abbott',
   },
   {
@@ -1018,18 +1014,17 @@ const DONATIONS: DemoDonationDef[] = [
     amountCents: 1000,
     method: 'card',
     createdDaysAgo: 19,
-    receiptSent: true,
     pledge: 'pl-brant',
   },
-  { person: 'daniel-brant', amountCents: 7500, method: 'card', createdDaysAgo: 9, receiptSent: true },
-  { person: 'simon-adeyemi', amountCents: 15000, method: 'card', createdDaysAgo: 22, receiptSent: true },
-  { person: 'helen-carr', amountCents: 5000, method: 'card', createdDaysAgo: 27, receiptSent: true },
-  { person: 'grace-mbeki', amountCents: 3000, method: 'cash', createdDaysAgo: 31, receiptSent: false },
-  { person: 'peter-mbeki', amountCents: 3000, method: 'cash', createdDaysAgo: 31, receiptSent: false },
-  { person: 'wei-zhang', amountCents: 20000, method: 'card', createdDaysAgo: 45, receiptSent: true },
-  { person: 'colin-vance', amountCents: 10000, method: 'check', createdDaysAgo: 52, receiptSent: true },
-  { person: 'yuki-sato', amountCents: 2500, method: 'card', createdDaysAgo: 58, receiptSent: true },
-  { person: 'tom-farrell', amountCents: 50000, method: 'bank_transfer', createdDaysAgo: 66, receiptSent: true },
+  { person: 'daniel-brant', amountCents: 7500, method: 'card', createdDaysAgo: 9 },
+  { person: 'simon-adeyemi', amountCents: 15000, method: 'card', createdDaysAgo: 22 },
+  { person: 'helen-carr', amountCents: 5000, method: 'card', createdDaysAgo: 27 },
+  { person: 'grace-mbeki', amountCents: 3000, method: 'cash', createdDaysAgo: 31 },
+  { person: 'peter-mbeki', amountCents: 3000, method: 'cash', createdDaysAgo: 31 },
+  { person: 'wei-zhang', amountCents: 20000, method: 'card', createdDaysAgo: 45 },
+  { person: 'colin-vance', amountCents: 10000, method: 'check', createdDaysAgo: 52 },
+  { person: 'yuki-sato', amountCents: 2500, method: 'card', createdDaysAgo: 58 },
+  { person: 'tom-farrell', amountCents: 50000, method: 'bank_transfer', createdDaysAgo: 66 },
 ];
 
 export const NONPROFIT_DEMO_DATASET: DemoDataset = {
@@ -1054,4 +1049,7 @@ export const NONPROFIT_DEMO_DATASET: DemoDataset = {
   deliveryRoutes: [],
   pledges: PLEDGES,
   donations: DONATIONS,
+  receipts: [],
+  receiptSettings: {},
+  statementRun: null,
 };

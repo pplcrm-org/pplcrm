@@ -23,12 +23,24 @@ export const DonationsRouter = router({
   recordDonation: authProcedure
     .input(RecordDonationObj)
     .mutation(({ ctx, input }) =>
-      controller.recordManualDonation(ctx.auth, input.personId, input.amountCents, input.method, input.campaign_id),
+      controller.recordManualDonation(
+        ctx.auth,
+        input.personId,
+        input.amountCents,
+        input.method,
+        input.campaign_id,
+        input.address,
+      ),
     ),
 
   getPersonDonationHistory: authProcedure
     .input(z.string())
     .query(({ ctx, input }) => controller.getPersonDonationsList(ctx.auth.tenant_id, input)),
+
+  /** One gift + receipt state, for the /donations/:id detail page. */
+  getDonation: authProcedure
+    .input(z.string())
+    .query(({ ctx, input }) => controller.getDonationDetail(ctx.auth.tenant_id, input)),
 
   getDonationStats: authProcedure
     .input(z.string())

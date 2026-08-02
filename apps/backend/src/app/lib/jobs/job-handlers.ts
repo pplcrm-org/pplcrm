@@ -35,6 +35,11 @@ import {
   handleSendWebformNotifications,
 } from './handlers/notifications.handlers';
 import { handleOpsWatchdog, handleSendBugReportEmail } from './handlers/ops.handlers';
+import {
+  handleIssueDonationReceipt,
+  handleRenderReceiptPdf,
+  handleRunYearEndStatements,
+} from './handlers/receipts.handlers';
 import { handlePurgeDowngradedInboxes } from './handlers/inbox-purge.handlers';
 import { handleGoogleSync, handleMsSync, handleScheduleSyncJobs } from './handlers/sync.handlers';
 import {
@@ -70,6 +75,15 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
 
   const job = typed.data;
   switch (job.type) {
+    case 'issue-donation-receipt':
+      await handleIssueDonationReceipt(job);
+      break;
+    case 'render-receipt-pdf':
+      await handleRenderReceiptPdf(job, db);
+      break;
+    case 'run-year-end-statements':
+      await handleRunYearEndStatements(job, db);
+      break;
     case 'refresh_list':
       await handleRefreshList(job);
       break;

@@ -279,9 +279,31 @@ export interface DemoDonationDef {
   amountCents: number;
   method: 'card' | 'check' | 'cash' | 'bank_transfer';
   createdDaysAgo: number;
-  receiptSent?: boolean;
   /** Pledge key — set when this gift is a monthly recurring charge. */
   pledge?: string;
+}
+
+/** A seeded official donation receipt. `donation` is an INDEX into the dataset's donations array. */
+export interface DemoReceiptDef {
+  donation: number;
+  /** Serial within the issue year — keep these unique and gap-free per dataset. */
+  serial: number;
+  issuedDaysAgo: number;
+  status?: 'issued' | 'cancelled';
+  cancelledReason?: string;
+  /** Serial of the receipt this one replaces (the cancel-and-replace demo pair). */
+  replacesSerial?: number;
+  emailed?: boolean;
+}
+
+/** A finished year-end statement batch, so the statements panel tells a story on day one. */
+export interface DemoStatementRunDef {
+  /** Years back from the current year (1 = last year). */
+  yearsAgo: number;
+  donorsTotal: number;
+  generated: number;
+  emailed: number;
+  toPrint: number;
 }
 
 /**
@@ -316,4 +338,9 @@ export interface DemoDataset {
   readonly deliveryRoutes: readonly DemoDeliveryRouteDef[];
   readonly pledges: readonly DemoPledgeDef[];
   readonly donations: readonly DemoDonationDef[];
+  /** Official receipts over `donations` (empty when the mode's story has no receipting). */
+  readonly receipts: readonly DemoReceiptDef[];
+  /** `receipts.*` settings seeded with the receipts (removed again on exit-demo). */
+  readonly receiptSettings: Readonly<Record<string, string | boolean>>;
+  readonly statementRun: DemoStatementRunDef | null;
 }
