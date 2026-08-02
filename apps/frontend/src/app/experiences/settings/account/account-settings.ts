@@ -62,7 +62,10 @@ export class AccountSettingsComponent extends TRPCService<any> implements OnInit
     this.actionPending.set(true);
     try {
       await this.api.auth.pauseTenant.mutate();
-      await this.auth.signOut();
+      // A sign-out that could not reach the server leaves the user on this page (it says so in
+      // its own dialog), so give them the buttons back instead of a permanently pending page.
+      const result = await this.auth.signOut();
+      if (result.status === 'still-signed-in') this.actionPending.set(false);
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to pause account.');
       this.actionPending.set(false);
@@ -126,8 +129,11 @@ export class AccountSettingsComponent extends TRPCService<any> implements OnInit
     this.actionPending.set(true);
     try {
       await this.api.auth.scheduleTenantDeletion.mutate();
-      // All sessions are wiped server-side — sign out locally and redirect to login
-      await this.auth.signOut();
+      // All sessions are wiped server-side; this closes the one in this browser and redirects to
+      // the sign-in page. If it cannot reach the server it says so and the user stays here, so
+      // give them the buttons back.
+      const result = await this.auth.signOut();
+      if (result.status === 'still-signed-in') this.actionPending.set(false);
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to schedule account deletion.');
       this.actionPending.set(false);

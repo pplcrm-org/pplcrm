@@ -1,5 +1,6 @@
 import { signal } from '@angular/core';
 import { TRPCError } from '@trpc/server';
+import { TRPCClientError } from '@trpc/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from './auth-service';
 
@@ -8,13 +9,47 @@ vi.mock('@simplewebauthn/browser', () => ({
   startRegistration: vi.fn(),
 }));
 
+// The real module opens a network connection to mint an access token from the refresh cookie.
+// `refreshLink` is only read inside the TRPCService constructor, which these tests never run.
+vi.mock('../services/api/trpc-refreshlink', () => ({
+  silentRefresh: vi.fn(() => Promise.resolve(null)),
+  refreshLink: vi.fn(),
+}));
+
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
+import { silentRefresh } from '../services/api/trpc-refreshlink';
+
+/**
+ * A tRPC error that reached the server and came back: it carries a server-authored `data`
+ * payload. The sign-out route clears the refresh cookie before the handler runs, so even an
+ * error answer means the session in this browser is closed.
+ */
+function serverAnsweredError(code = 'INTERNAL_SERVER_ERROR'): TRPCClientError<never> {
+  const err = new TRPCClientError('boom');
+  (err as unknown as { data: unknown }).data = { code, httpStatus: 500 };
+  return err;
+}
+
+/** A tRPC error that never got an answer: no `data` anywhere in the chain. */
+function transportError(): TRPCClientError<never> {
+  return new TRPCClientError('Failed to fetch');
+}
 
 describe('AuthService', () => {
   let service: AuthService;
   let mockApi: any;
-  let mockTokenService: { set: ReturnType<typeof vi.fn>; clearAll: ReturnType<typeof vi.fn> };
+  let mockTokenService: {
+    set: ReturnType<typeof vi.fn>;
+    clearAll: ReturnType<typeof vi.fn>;
+    markSignOutPending: ReturnType<typeof vi.fn>;
+    clearSignOutPending: ReturnType<typeof vi.fn>;
+    isSignOutPending: ReturnType<typeof vi.fn>;
+  };
   let mockRouter: { navigate: ReturnType<typeof vi.fn> };
+  let mockDialog: { choose: ReturnType<typeof vi.fn> };
+  let mockAlerts: { showWarn: ReturnType<typeof vi.fn>; showError: ReturnType<typeof vi.fn> };
+  /** Backing store for the mocked TokenService pending-sign-out flag. */
+  let signOutPending: boolean;
 
   const mockUser = { id: '1', email: 'a@b.com', role: 'admin' };
 
@@ -44,17 +79,34 @@ describe('AuthService', () => {
         updatePasskeyName: { mutate: vi.fn() },
       },
     };
-    mockTokenService = { set: vi.fn(), clearAll: vi.fn() };
+    signOutPending = false;
+    mockTokenService = {
+      set: vi.fn(),
+      clearAll: vi.fn(),
+      markSignOutPending: vi.fn(() => {
+        signOutPending = true;
+      }),
+      clearSignOutPending: vi.fn(() => {
+        signOutPending = false;
+      }),
+      isSignOutPending: vi.fn(() => signOutPending),
+    };
     mockRouter = { navigate: vi.fn() };
+    mockDialog = { choose: vi.fn() };
+    mockAlerts = { showWarn: vi.fn(), showError: vi.fn() };
 
     // Create a bare instance without invoking Angular inject()s
     service = Object.create(AuthService.prototype) as AuthService;
     (service as any).api = mockApi;
     (service as any).tokenService = mockTokenService;
     (service as any).router = mockRouter;
+    (service as any).dialog = mockDialog;
+    (service as any).alerts = mockAlerts;
     (service as any).user = signal(null);
+    (service as any).signOutInFlight = null;
 
     vi.clearAllMocks();
+    vi.mocked(silentRefresh).mockResolvedValue(null);
   });
 
   describe('getCurrentUser / getUser / getUserSignal', () => {
@@ -152,24 +204,212 @@ describe('AuthService', () => {
   });
 
   describe('signOut', () => {
-    it('clears the user, clears tokens, and navigates to /signin even if the api call fails', async () => {
-      mockApi.auth.signOut.mutate.mockRejectedValue(new Error('network error'));
+    it('clears the user, clears tokens, and navigates to /signin when the server answers', async () => {
+      mockApi.auth.signOut.mutate.mockResolvedValue({ success: true });
       (service as any).user.set(mockUser);
 
       const result = await service.signOut();
 
-      expect(result).toBeNull();
+      expect(result).toEqual({ status: 'signed-out' });
       expect(service.getUser()).toBeNull();
       expect(mockTokenService.clearAll).toHaveBeenCalled();
+      expect(mockTokenService.clearSignOutPending).toHaveBeenCalled();
       expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin']);
+      expect(mockDialog.choose).not.toHaveBeenCalled();
     });
 
-    it('returns the api response on success', async () => {
-      mockApi.auth.signOut.mutate.mockResolvedValue({ success: true });
+    it('marks a sign-out as pending before the request leaves, so a closed tab cannot resume it', async () => {
+      let pendingWhenRequestWasMade = false;
+      mockApi.auth.signOut.mutate.mockImplementation(() => {
+        pendingWhenRequestWasMade = mockTokenService.isSignOutPending();
+        return Promise.resolve({ success: true });
+      });
+
+      await service.signOut();
+
+      expect(pendingWhenRequestWasMade).toBe(true);
+    });
+
+    it('does NOT navigate or clear tokens when the request never reached the server', async () => {
+      mockApi.auth.signOut.mutate.mockRejectedValue(transportError());
+      mockDialog.choose.mockResolvedValue(null); // "Stay signed in"
+      (service as any).user.set(mockUser);
 
       const result = await service.signOut();
 
-      expect(result).toEqual({ success: true });
+      expect(result).toEqual({ status: 'still-signed-in' });
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+      expect(mockTokenService.clearAll).not.toHaveBeenCalled();
+      expect(service.getUser()).toEqual(mockUser);
+    });
+
+    it('tells the user the sign-out did not happen instead of failing silently', async () => {
+      mockApi.auth.signOut.mutate.mockRejectedValue(transportError());
+      mockDialog.choose.mockResolvedValue(null);
+
+      await service.signOut();
+
+      expect(mockDialog.choose).toHaveBeenCalledTimes(1);
+      const opts = mockDialog.choose.mock.calls[0][0];
+      expect(opts.title).toBe('You are still signed in');
+      expect(opts.choices.map((c: { value: string }) => c.value)).toEqual(['retry', 'this-device']);
+    });
+
+    it('leaves the pending marker set when the request never reached the server', async () => {
+      mockApi.auth.signOut.mutate.mockRejectedValue(transportError());
+      mockDialog.choose.mockResolvedValue(null);
+
+      await service.signOut();
+
+      expect(mockTokenService.isSignOutPending()).toBe(true);
+      expect(mockTokenService.clearSignOutPending).not.toHaveBeenCalled();
+    });
+
+    it('retries the request when the user picks "Try again", and completes on success', async () => {
+      mockApi.auth.signOut.mutate.mockRejectedValueOnce(transportError()).mockResolvedValueOnce({ success: true });
+      mockDialog.choose.mockResolvedValueOnce('retry');
+
+      const result = await service.signOut();
+
+      expect(mockApi.auth.signOut.mutate).toHaveBeenCalledTimes(2);
+      expect(mockDialog.choose).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ status: 'signed-out' });
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin']);
+    });
+
+    it('keeps offering the choice while retries keep failing', async () => {
+      mockApi.auth.signOut.mutate.mockRejectedValue(transportError());
+      mockDialog.choose.mockResolvedValueOnce('retry').mockResolvedValueOnce(null);
+
+      const result = await service.signOut();
+
+      expect(mockApi.auth.signOut.mutate).toHaveBeenCalledTimes(2);
+      expect(mockDialog.choose).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ status: 'still-signed-in' });
+    });
+
+    it('lets the user leave the device, warns that the session is still open, and keeps the marker', async () => {
+      mockApi.auth.signOut.mutate.mockRejectedValue(transportError());
+      mockDialog.choose.mockResolvedValue('this-device');
+      (service as any).user.set(mockUser);
+
+      const result = await service.signOut();
+
+      expect(result).toEqual({ status: 'signed-out-locally' });
+      expect(service.getUser()).toBeNull();
+      expect(mockTokenService.clearAll).toHaveBeenCalled();
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin']);
+      expect(mockAlerts.showWarn).toHaveBeenCalled();
+      // Only the server can clear the refresh cookie, so the marker has to survive to stop the
+      // next cold load resuming the session.
+      expect(mockTokenService.isSignOutPending()).toBe(true);
+    });
+
+    it('counts a server-authored error as signed out — the reply clears the refresh cookie anyway', async () => {
+      mockApi.auth.signOut.mutate.mockRejectedValue(serverAnsweredError());
+
+      const result = await service.signOut();
+
+      expect(result).toEqual({ status: 'signed-out' });
+      expect(mockDialog.choose).not.toHaveBeenCalled();
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin']);
+    });
+
+    it('counts an already-dead session (UNAUTHORIZED) as signed out', async () => {
+      mockApi.auth.signOut.mutate.mockRejectedValue(serverAnsweredError('UNAUTHORIZED'));
+
+      const result = await service.signOut();
+
+      expect(result).toEqual({ status: 'signed-out' });
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin']);
+    });
+
+    it('skips the request entirely when the browser says it is offline', async () => {
+      const onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+      mockDialog.choose.mockResolvedValue(null);
+
+      const result = await service.signOut();
+
+      expect(mockApi.auth.signOut.mutate).not.toHaveBeenCalled();
+      expect(mockDialog.choose).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ status: 'still-signed-in' });
+      onLine.mockRestore();
+    });
+
+    it('joins a sign-out that is already in flight instead of starting a second one', async () => {
+      let release: (value: unknown) => void = () => undefined;
+      mockApi.auth.signOut.mutate.mockReturnValue(
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      );
+
+      const first = service.signOut();
+      const second = service.signOut();
+      release({ success: true });
+
+      expect(await first).toEqual({ status: 'signed-out' });
+      expect(await second).toEqual({ status: 'signed-out' });
+      expect(mockApi.auth.signOut.mutate).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows a fresh attempt once the previous one has finished', async () => {
+      mockApi.auth.signOut.mutate.mockResolvedValue({ success: true });
+
+      await service.signOut();
+      await service.signOut();
+
+      expect(mockApi.auth.signOut.mutate).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('discardSession', () => {
+    it('drops local session state and navigates without asking the server', () => {
+      (service as any).user.set(mockUser);
+
+      service.discardSession();
+
+      expect(service.getUser()).toBeNull();
+      expect(mockTokenService.clearAll).toHaveBeenCalled();
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin']);
+      expect(mockApi.auth.signOut.mutate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('init with an unfinished sign-out', () => {
+    it('does not resume the session from the surviving refresh cookie', async () => {
+      mockTokenService.markSignOutPending();
+      vi.mocked(silentRefresh).mockResolvedValue(null);
+
+      const result = await service.init();
+
+      expect(result).toBeNull();
+      expect(mockApi.auth.currentUser.query).not.toHaveBeenCalled();
+    });
+
+    it('retries the revoke in the background and clears the marker once the server answers', async () => {
+      mockTokenService.markSignOutPending();
+      vi.mocked(silentRefresh).mockResolvedValue('fresh-access-token');
+      mockApi.auth.signOut.mutate.mockResolvedValue({ success: true });
+
+      await service.init();
+      // The retry is deliberately not awaited by init(); let its microtasks drain.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockApi.auth.signOut.mutate).toHaveBeenCalledTimes(1);
+      expect(mockTokenService.isSignOutPending()).toBe(false);
+      expect(mockTokenService.clearAll).toHaveBeenCalled();
+    });
+
+    it('keeps the marker when the background retry still cannot reach the server', async () => {
+      mockTokenService.markSignOutPending();
+      vi.mocked(silentRefresh).mockResolvedValue('fresh-access-token');
+      mockApi.auth.signOut.mutate.mockRejectedValue(transportError());
+
+      await service.init();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockTokenService.isSignOutPending()).toBe(true);
     });
   });
 

@@ -54,6 +54,30 @@ describe('TokenService', () => {
     expect(localStorage.getItem('pc-persistence')).toBe('0');
   });
 
+  it('records a pending sign-out in localStorage so it outlives the tab that started it', () => {
+    const service = new TokenService();
+    expect(service.isSignOutPending()).toBe(false);
+
+    service.markSignOutPending();
+    expect(service.isSignOutPending()).toBe(true);
+    // A new instance (a fresh page load) must still see it — that is the whole point.
+    expect(new TokenService().isSignOutPending()).toBe(true);
+
+    service.clearSignOutPending();
+    expect(service.isSignOutPending()).toBe(false);
+  });
+
+  it('a fresh sign-in clears a pending sign-out, but a silent token refresh does not', () => {
+    const service = new TokenService();
+    service.markSignOutPending();
+
+    service.setAuthToken('refreshed');
+    expect(service.isSignOutPending()).toBe(true);
+
+    service.set({ auth_token: 'a1' });
+    expect(service.isSignOutPending()).toBe(false);
+  });
+
   it('picks up an existing persistence flag from localStorage on construction', () => {
     localStorage.setItem('pc-persistence', '1');
 

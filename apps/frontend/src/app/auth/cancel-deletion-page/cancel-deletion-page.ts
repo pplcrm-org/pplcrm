@@ -66,8 +66,11 @@ export class CancelDeletionPage extends TRPCService<any> implements OnInit, OnDe
 
   private async pollSession(): Promise<void> {
     const user = await this.auth.getCurrentUser().catch(() => null);
+    // The account was deleted under us, so the session is already gone server-side. Drop the local
+    // state rather than asking the server to sign us out: `signOut()` treats an unanswered request
+    // as a failure and opens a dialog, and this poll runs every five seconds.
     if (!user) {
-      await this.auth.signOut();
+      this.auth.discardSession();
     }
   }
 

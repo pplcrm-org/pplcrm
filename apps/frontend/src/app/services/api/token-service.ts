@@ -22,6 +22,30 @@ export class TokenService {
     this.authToken = null;
   }
 
+  /**
+   * Remember that the user asked to sign out but the server has not confirmed it yet.
+   *
+   * Only the server can delete the HttpOnly refresh cookie and revoke the session row, so a
+   * sign-out request that never arrives leaves a usable session behind. This flag is the local
+   * record of that intent. While it is set, {@link AuthService.init} refuses to mint a new access
+   * token from the surviving cookie and retries the revoke instead, so an interrupted sign-out
+   * (tab closed mid-request, machine offline) cannot silently resume on the next page load.
+   *
+   * It lives in localStorage because it has to outlive the tab that set it, and it is scoped to
+   * the same browser profile as the cookie it guards against.
+   */
+  public markSignOutPending(): void {
+    localStorage.setItem(PENDING_SIGNOUT_KEY, '1');
+  }
+
+  public clearSignOutPending(): void {
+    localStorage.removeItem(PENDING_SIGNOUT_KEY);
+  }
+
+  public isSignOutPending(): boolean {
+    return localStorage.getItem(PENDING_SIGNOUT_KEY) === '1';
+  }
+
   public getAuthToken(): string | null {
     return this.authToken;
   }
@@ -35,9 +59,15 @@ export class TokenService {
   }
 
   /** Accepts the token-issuing response shape ({ auth_token }); the refresh token is not returned
-   * to JS anymore (it's in the HttpOnly cookie). */
+   * to JS anymore (it's in the HttpOnly cookie).
+   *
+   * Only the credentialed sign-in paths call this, so it is the right place to drop a stale
+   * pending-sign-out flag: a fresh sign-in supersedes whatever the previous session was doing.
+   * `setAuthToken` deliberately does not, because a silent refresh must not cancel a sign-out
+   * that is still being retried. */
   public set(token: { auth_token?: string | null }): void {
     this.authToken = token.auth_token ?? null;
+    this.clearSignOutPending();
   }
 
   public setAuthToken(token: string | null): void {
@@ -51,3 +81,5 @@ export class TokenService {
 }
 
 const PERSISTENCE_KEY = 'pc-persistence';
+
+const PENDING_SIGNOUT_KEY = 'pc-signout-pending';

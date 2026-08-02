@@ -17,6 +17,9 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       'mobile number',
       'phone number',
       'text me',
+      'sign out',
+      'signing out',
+      'log out',
     ],
     related: ['users-roles', 'settings', 'getting-around'],
     blocks: [
@@ -44,6 +47,17 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         tone: 'info',
         title: 'Verify your email',
         text: 'If a “verification pending” notice sits at the top of your profile, click the link in the verification email. Some features stay limited until your address is confirmed.',
+      },
+      { kind: 'h2', id: 'signing-out', text: 'Signing out' },
+      {
+        kind: 'p',
+        text: 'Sign out from the avatar menu in the top-right corner. Closing a session is something only the server can do, so the app waits for the server to confirm before it takes you to the sign-in page. If your connection drops at that moment you are told the sign-out did not go through and offered a retry, rather than being shown a sign-in page while your session is quietly still open.',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'If sign-out cannot reach the server',
+        text: 'Choose **Try again** once you are back online. If you have to leave the computer straight away, choose **Sign out on this device**: the app locks you out here immediately and finishes signing you out from the server as soon as this device reconnects. On a shared or public computer, change your password afterwards so the session is closed right away.',
       },
       { kind: 'h2', id: 'impact', text: 'Your activity and impact' },
       {
