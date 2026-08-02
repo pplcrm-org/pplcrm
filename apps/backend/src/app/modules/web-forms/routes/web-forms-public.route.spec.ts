@@ -36,6 +36,7 @@ const PUBLISHED_FIELDS = [
   { key: 'full_name', label: 'Full name', type: 'text', on: true, required: true },
   { key: 'email', label: 'Email', type: 'text', on: true, required: true },
   { key: 'mobile', label: 'Mobile / Phone', type: 'text', on: true, required: false },
+  { key: 'favorite_color', label: 'Favourite colour', type: 'text', on: true, required: false },
 ];
 
 interface Seed {
@@ -381,6 +382,8 @@ describe('web-forms public route (/api/forms)', () => {
         email: 'Anne@Example.com',
         mobile: '555-0101',
         favorite_color: 'teal',
+        // Not one of this form's fields — must never reach the person record or the answers.
+        street1: '1 Nowhere Lane',
       });
 
       expect(res.statusCode).toBe(200);
@@ -394,13 +397,15 @@ describe('web-forms public route (/api/forms)', () => {
       expect(people[0].last_name).toBe('Smith');
       expect(String(people[0].household_id)).toBe(seed.householdId); // placeholder household (no address given)
 
-      // Durable response record: every payload key except the honeypot lands in answers.
+      // Durable response record: every payload key the form DEFINES, except the honeypot, lands in
+      // answers. Keys the form does not define are dropped before anything reads them.
       const subs = await submissions();
       expect(subs).toHaveLength(1);
       expect(String(subs[0].form_id)).toBe(seed.publishedFormId);
       expect(String(subs[0].person_id)).toBe(String(people[0].id));
       const answers = parseJson(subs[0].answers);
       expect(answers['favorite_color']).toBe('teal');
+      expect(answers['street1']).toBeUndefined();
       expect(answers['email']).toBe('Anne@Example.com');
       expect(answers['_hp']).toBeUndefined();
 

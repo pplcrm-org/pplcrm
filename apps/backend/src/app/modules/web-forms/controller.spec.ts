@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { WebFormsController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
 import { sql } from 'kysely';
+import { FORM_SUBMISSION_MAX_FIELDS, FORM_SUBMISSION_MAX_VALUE_LENGTH } from '../../../../../../libs/common/src';
 
 async function createTestSeed(db: any) {
   const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
@@ -86,6 +87,9 @@ async function cleanTenant(db: any, tenantId: string) {
     .set({ admin_id: null, createdby_id: null, placeholder_household_id: null })
     .where('id', '=', tenantId)
     .execute();
+  // The durable submit limiter keys its Postgres buckets on tenant + client IP, and those rows
+  // outlive the test unless they are cleared here.
+  await db.deleteFrom('rate_limits').where('key', 'like', `web-form-submit:${tenantId}:%`).execute();
   await db.deleteFrom('map_peoples_tags').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('map_lists_persons').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
@@ -238,7 +242,7 @@ describe('WebFormsController Integration', () => {
     expect(assignedLists).toContain(listId);
   });
 
-  it('should non-destructively merge details when email already exists', async () => {
+  it('fills only blank name/mobile fields when the email already exists, and never the notes', async () => {
     // 1. Pre-insert an existing person with minimal details
     const existingPersonId = String(Math.floor(Math.random() * 100000000) + 10000000);
     await db
@@ -290,11 +294,346 @@ describe('WebFormsController Integration', () => {
       .where('id', '=', existingPersonId)
       .executeTakeFirst();
 
-    expect(person.first_name).toBe('Existing'); // Unchanged
-    expect(person.last_name).toBe('Submitter'); // Filled in
-    expect(person.mobile).toBe('12345678'); // Filled in
-    expect(person.notes).toContain('Original notes'); // Appended
-    expect(person.notes).toContain('New form signup.');
+    expect(person.first_name).toBe('Existing'); // Already set — never overwritten
+    expect(person.last_name).toBe('Submitter'); // Was blank — filled in
+    expect(person.mobile).toBe('12345678'); // Was blank — filled in
+
+    // The submitted message is NOT appended to the contact's notes. An anonymous submitter must
+    // not get append access to a text column on someone else's record, and the message is already
+    // kept on the submission row (asserted next), so appending it only duplicated it.
+    expect(person.notes).toBe('Original notes');
+
+    const submission = await db
+      .selectFrom('form_submissions')
+      .select('answers')
+      .where('tenant_id', '=', tenantId)
+      .where('form_id', '=', formId)
+      .executeTakeFirst();
+    expect(submission.answers.notes).toBe('New form signup.');
+  });
+
+  // --------------------------------------------------------------------------------------------
+  // A public form submission is unauthenticated. Matching an existing contact by email links the
+  // response to them; it is not permission to rewrite their record.
+  // --------------------------------------------------------------------------------------------
+
+  it('never moves an existing contact to an address the submitter typed', async () => {
+    const existingPersonId = String(Math.floor(Math.random() * 100000000) + 10000000);
+    await db
+      .insertInto('persons')
+      .values({
+        id: existingPersonId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        household_id: householdId,
+        email: 'known.supporter@example.com',
+        first_name: 'Known',
+        last_name: 'Supporter',
+        mobile: '555-0100',
+        notes: 'Long-standing volunteer.',
+        createdby_id: userId,
+        // Left null so an unnecessary no-op UPDATE is detectable: the submit path stamps
+        // updatedby_id on every write it makes.
+        updatedby_id: null,
+      })
+      .execute();
+
+    // A "request" form that legitimately renders address inputs — so the address is not being
+    // rejected because the field is undefined; it is being rejected because the person exists.
+    const formId = randomUUID();
+    await db
+      .insertInto('web_forms')
+      .values({
+        id: formId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Yard Sign Request',
+        slug: 'address-repoint-test',
+        status: 'published',
+        fields: JSON.stringify([
+          { key: 'full_name', label: 'Full name', type: 'text', on: true, required: false },
+          { key: 'email', label: 'Email', type: 'text', on: true, required: true },
+          { key: 'street1', label: 'Street address', type: 'text', on: true, required: false },
+          { key: 'city', label: 'City', type: 'text', on: true, required: false },
+          { key: 'zip', label: 'ZIP code', type: 'text', on: true, required: false },
+          { key: 'notes', label: 'Notes', type: 'area', on: true, required: false },
+        ]),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    await controller.submitFormPublic(
+      tenant(),
+      'address-repoint-test',
+      {
+        email: 'known.supporter@example.com',
+        full_name: 'Impostor Name',
+        street1: '1 Attacker Way',
+        city: 'Nowhere',
+        zip: 'X0X0X0',
+        notes: 'Injected note.',
+      },
+      '127.0.0.10',
+    );
+
+    const person = await db
+      .selectFrom('persons')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', existingPersonId)
+      .executeTakeFirst();
+
+    expect(person.household_id).toBe(householdId); // Not re-pointed
+    expect(person.first_name).toBe('Known'); // Not overwritten
+    expect(person.last_name).toBe('Supporter');
+    expect(person.mobile).toBe('555-0100');
+    expect(person.notes).toBe('Long-standing volunteer.'); // Not appended to
+    // Nothing needed filling, so no UPDATE ran at all. This is what the change guard decides; the
+    // old guard counted map keys instead of real changes.
+    expect(person.updatedby_id).toBeNull();
+
+    // No household was created for the submitted address either.
+    const strangerHousehold = await db
+      .selectFrom('households')
+      .select('id')
+      .where('tenant_id', '=', tenantId)
+      .where('street1', '=', '1 Attacker Way')
+      .executeTakeFirst();
+    expect(strangerHousehold).toBeUndefined();
+
+    // The answers are still captured in full on the response, which is where staff read them.
+    const submission = await db
+      .selectFrom('form_submissions')
+      .select('answers')
+      .where('tenant_id', '=', tenantId)
+      .where('form_id', '=', formId)
+      .executeTakeFirst();
+    expect(submission.answers.street1).toBe('1 Attacker Way');
+    expect(submission.answers.notes).toBe('Injected note.');
+  });
+
+  it('writes a single blank field on an existing contact', async () => {
+    const existingPersonId = String(Math.floor(Math.random() * 100000000) + 10000000);
+    await db
+      .insertInto('persons')
+      .values({
+        id: existingPersonId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        household_id: householdId,
+        email: 'half.known@example.com',
+        first_name: 'Half',
+        mobile: '555-0111',
+        createdby_id: userId,
+        updatedby_id: null,
+      })
+      .execute();
+
+    const formId = randomUUID();
+    await db
+      .insertInto('web_forms')
+      .values({
+        id: formId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Single Blank Form',
+        slug: 'single-blank-fill-test',
+        status: 'published',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    await controller.submitFormPublic(
+      tenant(),
+      'single-blank-fill-test',
+      { email: 'half.known@example.com', last_name: 'Known', mobile: '555-9999' },
+      '127.0.0.11',
+    );
+
+    const person = await db
+      .selectFrom('persons')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', existingPersonId)
+      .executeTakeFirst();
+
+    // Exactly one field was blank, and it was filled. A guard that counts map keys rather than
+    // real changes silently skips this write.
+    expect(person.last_name).toBe('Known');
+    expect(person.mobile).toBe('555-0111'); // Already set — not overwritten
+    expect(person.updatedby_id).toBe(userId);
+  });
+
+  it('drops answers to fields the form does not define', async () => {
+    // A signup form with nothing but a name and an email. Anyone can POST to the public endpoint,
+    // so the address and message below are keys this form never renders.
+    const formId = randomUUID();
+    await db
+      .insertInto('web_forms')
+      .values({
+        id: formId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Name And Email Only',
+        slug: 'undefined-fields-test',
+        status: 'published',
+        fields: JSON.stringify([
+          { key: 'full_name', label: 'Full name', type: 'text', on: true, required: false },
+          { key: 'email', label: 'Email', type: 'text', on: true, required: true },
+        ]),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    await controller.submitFormPublic(
+      tenant(),
+      'undefined-fields-test',
+      {
+        email: 'brand.new@example.com',
+        full_name: 'Brand New',
+        street1: '99 Unrendered Street',
+        city: 'Ghost Town',
+        zip: 'Z9Z9Z9',
+        mobile: '555-0222',
+        notes: 'Never asked for.',
+      },
+      '127.0.0.12',
+    );
+
+    const person = await db
+      .selectFrom('persons')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('email', '=', 'brand.new@example.com')
+      .executeTakeFirst();
+
+    expect(person.first_name).toBe('Brand');
+    expect(person.last_name).toBe('New');
+    expect(person.mobile).toBeNull();
+    expect(person.notes).toBeNull();
+    // Still on the tenant placeholder household — no address was accepted, so none was created.
+    expect(person.household_id).toBe(householdId);
+
+    const ghostHousehold = await db
+      .selectFrom('households')
+      .select('id')
+      .where('tenant_id', '=', tenantId)
+      .where('street1', '=', '99 Unrendered Street')
+      .executeTakeFirst();
+    expect(ghostHousehold).toBeUndefined();
+
+    // The stored answers snapshot is filtered too, so undefined keys are not persisted anywhere.
+    const submission = await db
+      .selectFrom('form_submissions')
+      .select('answers')
+      .where('tenant_id', '=', tenantId)
+      .where('form_id', '=', formId)
+      .executeTakeFirst();
+    expect(Object.keys(submission.answers).sort()).toEqual(['email', 'full_name']);
+  });
+
+  it('still creates a brand-new person with their own household when the form asks for an address', async () => {
+    const formId = randomUUID();
+    await db
+      .insertInto('web_forms')
+      .values({
+        id: formId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Sign Request',
+        slug: 'new-person-household-test',
+        status: 'published',
+        fields: JSON.stringify([
+          { key: 'full_name', label: 'Full name', type: 'text', on: true, required: false },
+          { key: 'email', label: 'Email', type: 'text', on: true, required: true },
+          { key: 'street1', label: 'Street address', type: 'text', on: true, required: false },
+          { key: 'city', label: 'City', type: 'text', on: true, required: false },
+          { key: 'zip', label: 'ZIP code', type: 'text', on: true, required: false },
+        ]),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    await controller.submitFormPublic(
+      tenant(),
+      'new-person-household-test',
+      {
+        email: 'new.neighbour@example.com',
+        full_name: 'New Neighbour',
+        street1: '42 Real Street',
+        city: 'Springfield',
+        zip: 'A1A1A1',
+      },
+      '127.0.0.13',
+    );
+
+    const person = await db
+      .selectFrom('persons')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('email', '=', 'new.neighbour@example.com')
+      .executeTakeFirst();
+
+    expect(person).toBeDefined();
+    expect(person.first_name).toBe('New');
+    expect(person.last_name).toBe('Neighbour');
+    expect(person.household_id).not.toBe(householdId);
+
+    const household = await db
+      .selectFrom('households')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', person.household_id)
+      .executeTakeFirst();
+    expect(household.street1).toBe('42 Real Street');
+    expect(household.city).toBe('Springfield');
+    expect(household.zip).toBe('A1A1A1');
+  });
+
+  it('rejects a payload with too many fields or an over-long answer', async () => {
+    const formId = randomUUID();
+    await db
+      .insertInto('web_forms')
+      .values({
+        id: formId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Oversize Test Form',
+        slug: 'oversize-payload-test',
+        status: 'published',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    const tooManyFields: Record<string, string> = { email: 'flood@example.com' };
+    for (let i = 0; i < FORM_SUBMISSION_MAX_FIELDS + 5; i++) tooManyFields[`k${i}`] = 'x';
+
+    await expect(
+      controller.submitFormPublic(tenant(), 'oversize-payload-test', tooManyFields, '127.0.0.14'),
+    ).rejects.toThrow(/more than/i);
+
+    await expect(
+      controller.submitFormPublic(
+        tenant(),
+        'oversize-payload-test',
+        { email: 'flood@example.com', notes: 'z'.repeat(FORM_SUBMISSION_MAX_VALUE_LENGTH + 1) },
+        '127.0.0.15',
+      ),
+    ).rejects.toThrow(/characters or fewer/i);
+
+    // Neither attempt created anything.
+    const person = await db
+      .selectFrom('persons')
+      .select('id')
+      .where('tenant_id', '=', tenantId)
+      .where('email', '=', 'flood@example.com')
+      .executeTakeFirst();
+    expect(person).toBeUndefined();
   });
 
   it('should block submissions if honeypot field is filled', async () => {

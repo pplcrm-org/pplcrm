@@ -6,7 +6,14 @@ import type {
   UpdateFormType,
   UpdateWebFormType,
 } from '../../../../../../libs/common/src';
-import { FORM_TEMPLATES, fieldsForTemplate, normForm, slugifyRecordName } from '../../../../../../libs/common/src';
+import {
+  FORM_TEMPLATES,
+  FormSubmissionPayloadObj,
+  emailSchema,
+  fieldsForTemplate,
+  normForm,
+  slugifyRecordName,
+} from '../../../../../../libs/common/src';
 import { BaseController } from '../../lib/base.controller';
 import { uniqueSlug } from '../../lib/slug';
 import { WebFormsRepo } from './repositories/web-forms.repo';
@@ -24,6 +31,7 @@ import { WorkflowsController } from '../workflows/controller';
 import { DonationsController } from '../donations/controller';
 import { logger } from '../../logger';
 import { isRateLimited } from '../../lib/rate-limiter';
+import { checkDurableRateLimit } from '../../lib/durable-rate-limiter';
 import { assertPlanFeature } from '../billing/plan-gate';
 
 // Sliding-window per-IP submission limit. Counters live in the shared limiter (lib/rate-limiter),
@@ -31,8 +39,61 @@ import { assertPlanFeature } from '../billing/plan-gate';
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 
+// Second, slower ceiling with counters in Postgres (lib/durable-rate-limiter), so it survives a
+// deploy and is shared by every replica. The in-memory window above smooths bursts but resets on
+// every restart, which is not an abuse ceiling for a path that creates contact rows, sends
+// confirmation mail and runs workflows. Keyed per tenant AND per IP so one workspace's traffic
+// cannot exhaust another's allowance. The durable limiter fails OPEN on a database error, which is
+// exactly why the in-memory window is kept in front of it rather than replaced by it.
+const DURABLE_RATE_LIMIT_MAX = 30;
+const DURABLE_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+/** Bot trap. Never a real answer, never stored, never counted as a configured field. */
+const HONEYPOT_FIELD = '_hp';
+
+/**
+ * Alternative payload spellings accepted for one configured field key. This mirrors the alias
+ * handling in `getPayloadValue` — a form that configures `first_name` also accepts `firstName`
+ * from an older embed. A key that no configured field claims is dropped before anything reads it.
+ */
+const PAYLOAD_KEY_ALIASES: Record<string, readonly string[]> = {
+  amount: ['amount', 'donation_amount'],
+  country: ['country', 'residency_country'],
+  first_name: ['first_name', 'firstName'],
+  full_name: ['full_name', 'name'],
+  last_name: ['last_name', 'lastName'],
+  mobile: ['mobile', 'phone'],
+  monthly_amount: ['monthly_amount', 'amount', 'donation_amount'],
+  name: ['full_name', 'name'],
+  notes: ['notes', 'message'],
+  state: ['state', 'province', 'residency_province'],
+  street1: ['street1', 'street_address'],
+  zip: ['zip', 'postal_code'],
+};
+
+/**
+ * Fields the server-rendered donation page always renders regardless of the form's stored
+ * `fields`, so they must be accepted even though they are not in that list. Kept in step with
+ * `alwaysEnabled` in routes/web-forms-public.route.ts.
+ */
+const DONATION_ALWAYS_FIELDS = [
+  'first_name',
+  'last_name',
+  'street1',
+  'city',
+  'state',
+  'zip',
+  'country',
+  'amount',
+  'monthly_amount',
+] as const;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isDonationType(formType: unknown): boolean {
+  return formType === 'donation' || formType === 'recurring_donation';
 }
 
 export class WebFormsController extends BaseController<'web_forms', WebFormsRepo> {
@@ -130,10 +191,41 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     return updated;
   }
 
+  /**
+   * Every payload key this form will read. Built from the form's own configured field list plus
+   * the alias spellings of each, so a submission cannot reach a field the form does not render —
+   * which is what previously let a signup form with no address inputs carry a full address.
+   */
+  private allowedPayloadKeys(formType: unknown, fieldArray: readonly unknown[]): Set<string> {
+    // Email is the identity key on every form and the honeypot is always accepted (and always
+    // discarded), so both are allowed regardless of what the field list says.
+    const allowed = new Set<string>(['email', HONEYPOT_FIELD]);
+
+    const allow = (key: string): void => {
+      const trimmed = key.trim();
+      if (!trimmed) return;
+      allowed.add(trimmed);
+      for (const alias of PAYLOAD_KEY_ALIASES[trimmed] ?? []) allowed.add(alias);
+    };
+
+    for (const raw of fieldArray) {
+      // Legacy string[] shape used by donation and older forms ("mobile:required").
+      if (typeof raw === 'string') allow(raw.replace(/:required$/, ''));
+      // New FormField[] shape. Keys of fields switched off are still accepted: `on` controls what
+      // the page renders, and rejecting a stale embed's answer would be a silent data loss.
+      else if (isRecord(raw) && typeof raw['key'] === 'string') allow(raw['key']);
+    }
+
+    if (isDonationType(formType)) {
+      for (const key of DONATION_ALWAYS_FIELDS) allow(key);
+    }
+    return allowed;
+  }
+
   public async submitFormPublic(
     tenant: PublicTenant,
     slug: string,
-    payload: Record<string, string>,
+    rawBody: unknown,
     clientIp: string,
     opts?: { skipIpRateLimit?: boolean },
   ): Promise<{ redirect_url?: string | null }> {
@@ -150,7 +242,21 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
       }
     }
 
-    // 2. Fetch the form — tenant-scoped by slug; the tenant was resolved from the subdomain
+    // 2. Shape the body before anything touches the database. Bounds the number of answers, the
+    // key length and each answer's length; the route declared `Record<string, string>` as a
+    // TypeScript generic only, so until now nothing checked any of that at runtime. Deliberately
+    // ahead of every person lookup: an oversized or malformed body is refused identically whether
+    // or not its email matches an existing contact.
+    const parsedBody = FormSubmissionPayloadObj.safeParse(rawBody ?? {});
+    if (!parsedBody.success) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: parsedBody.error.issues[0]?.message ?? 'That submission could not be accepted.',
+      });
+    }
+    const submittedValues = parsedBody.data;
+
+    // 3. Fetch the form — tenant-scoped by slug; the tenant was resolved from the subdomain
     const tenantId = tenant.id;
     const form = await this.getRepo().getBySlugPublic(tenantId, slug);
     if (!form || form.status !== 'published') {
@@ -160,7 +266,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
       });
     }
 
-    // 3. Plan gate. The web-forms tRPC router already gates authoring, but a downgrade left every
+    // 4. Plan gate. The web-forms tRPC router already gates authoring, but a downgrade left every
     // already-embedded form quietly accepting submissions — the gate only stopped you editing.
     // Enforced here rather than on the route so the keyless embed and the keyed server-side
     // submit are covered by one check. `assertPlanFeature` throws FORBIDDEN, which the public
@@ -169,13 +275,44 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     await assertPlanFeature(this.getRepo().db, tenantId, 'forms');
     const formId = String(form.id);
 
-    // 4. Honeypot check
-    if (payload['_hp'] && payload['_hp'].trim().length > 0) {
+    // 5. Durable per-tenant-per-IP ceiling. Runs after the form is known (it needs the tenant) but
+    // still before any write. Fails open on a database outage — see the constant's comment.
+    if (!opts?.skipIpRateLimit) {
+      await checkDurableRateLimit(
+        `web-form-submit:${tenantId}:${clientIp}`,
+        DURABLE_RATE_LIMIT_MAX,
+        DURABLE_RATE_LIMIT_WINDOW_MS,
+        'Rate limit exceeded. Please try again later.',
+      );
+    }
+
+    // 6. Parse configured fields. Supports both the legacy string[] shape ("mobile:required") used
+    // by donation/older forms and the new-model FormField[] objects ({ key, on, required, label }).
+    const rawFields: unknown = form.fields
+      ? Array.isArray(form.fields)
+        ? form.fields
+        : JSON.parse(String(form.fields))
+      : ['first_name', 'last_name', 'email', 'mobile', 'notes'];
+    const fieldArray: unknown[] = Array.isArray(rawFields) ? rawFields : [];
+
+    // 7. Drop every key the form does not define. Silently, not with an error: a stale embed
+    // carrying an extra hidden input is not an attack, and an error here would tell a probe which
+    // keys a form accepts. Everything below — required-field checks, the address block, the notes,
+    // the stored answers snapshot — reads only this filtered object.
+    const allowedKeys = this.allowedPayloadKeys(form.form_type, fieldArray);
+    const payload: Record<string, string> = {};
+    for (const [key, value] of Object.entries(submittedValues)) {
+      if (allowedKeys.has(key)) payload[key] = value;
+    }
+
+    // 8. Honeypot check
+    if (payload[HONEYPOT_FIELD] && payload[HONEYPOT_FIELD].trim().length > 0) {
       logger.warn(`Spam bot detected from IP ${clientIp} for form ${formId}`);
       return { redirect_url: form.redirect_url || null };
     }
 
-    // 5. Validate email
+    // 9. Validate email. It is the identity key every submission upserts on, so it is checked for
+    // shape here rather than stored as whatever arrived.
     const email = payload['email']?.trim();
     if (!email) {
       throw new TRPCError({
@@ -183,15 +320,12 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
         message: 'Email address is required.',
       });
     }
-
-    // Parse configured fields. Supports both the legacy string[] shape ("mobile:required") used by
-    // donation/older forms and the new-model FormField[] objects ({ key, on, required, label }).
-    const rawFields: unknown = form.fields
-      ? Array.isArray(form.fields)
-        ? form.fields
-        : JSON.parse(String(form.fields))
-      : ['first_name', 'last_name', 'email', 'mobile', 'notes'];
-    const fieldArray: unknown[] = Array.isArray(rawFields) ? rawFields : [];
+    if (!emailSchema.safeParse(email).success) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'Enter a valid email address.',
+      });
+    }
 
     // Map payload key aliases helper
     const getPayloadValue = (key: string): string => {
@@ -387,7 +521,19 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
 
         const hasAddress = !!(street1 || city || zip || country || state);
 
-        if (hasAddress) {
+        // Look the person up BEFORE resolving a household, because whether a household is created
+        // at all now depends on the answer. Matching an existing contact by email is a LINK, not
+        // permission to edit them: an anonymous submission must never move someone who is already
+        // in this workspace to an address a stranger typed. A household is therefore created and
+        // attached only for a genuinely new person — the case this code exists for.
+        const existing = await trx
+          .selectFrom('persons')
+          .select(['id', 'first_name', 'last_name', 'mobile'])
+          .where('tenant_id', '=', tenantId)
+          .where(sql`lower(email)`, '=', email.toLowerCase())
+          .executeTakeFirst();
+
+        if (!existing && hasAddress) {
           const fp_street = fingerprintStreet({ street1 });
           const fp_full = fingerprintFull({
             street1,
@@ -435,38 +581,36 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
           }
         }
 
-        // Check if email already exists
-        const existing = await trx
-          .selectFrom('persons')
-          .select(['id', 'first_name', 'last_name', 'mobile', 'notes'])
-          .where('tenant_id', '=', tenantId)
-          .where(sql`lower(email)`, '=', email.toLowerCase())
-          .executeTakeFirst();
-
         let personId: string;
 
         if (existing) {
           personId = String(existing.id);
-          const updateRow: any = {
-            updatedby_id: creatorId,
-            updated_at: sql`now()`,
-          };
+
+          // The ONLY writes an anonymous submission may make to a contact who already exists:
+          // fill a name or mobile that is currently empty. It can never overwrite a value that is
+          // already there, never move the person's household, and never touch their notes.
+          //
+          // Filling blanks is kept deliberately. Email is this feature's identity key, so a
+          // supporter imported from a voter file with nothing but an address signing up here is
+          // the normal case, and refusing to record their name would gut the feature. It is
+          // strictly additive, bounded by the per-answer length cap, and reversible by staff.
+          //
+          // The submitted notes are NOT appended. They are already stored verbatim on the
+          // form_submissions row below and shown in the Responses tab, so appending them to the
+          // contact duplicated the data while giving an anonymous stranger unbounded append access
+          // to a text column on someone else's record.
+          const updateRow: OperationDataType<'persons', 'update'> = {};
           if (!existing.first_name && firstName) updateRow.first_name = firstName;
           if (!existing.last_name && lastName) updateRow.last_name = lastName;
           if (!existing.mobile && mobile) updateRow.mobile = mobile;
-          if (form.form_type === 'donation' || hasAddress) {
-            updateRow.household_id = finalHouseholdId;
-          }
-          if (!existing.notes && notes) {
-            updateRow.notes = notes;
-          } else if (existing.notes && notes) {
-            updateRow.notes = `${existing.notes}\n\nSubmission notes: ${notes}`;
-          }
 
-          if (Object.keys(updateRow).length > 2) {
+          // Count real field changes rather than map keys. The old guard was
+          // `Object.keys(updateRow).length > 2`, correct only because exactly two keys were always
+          // seeded — any future unconditional field would have made every submission write.
+          if (Object.keys(updateRow).length > 0) {
             await trx
               .updateTable('persons')
-              .set(updateRow)
+              .set({ ...updateRow, updatedby_id: creatorId, updated_at: new Date() })
               .where('tenant_id', '=', tenantId)
               .where('id', '=', existing.id)
               .execute();
@@ -641,7 +785,15 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
           logger.error({ err }, 'Failed to trigger web_form_submitted workflow in WebFormsController');
         }
 
-        // Log user activity
+        // Log user activity.
+        //
+        // `user_id` still names the form's creator, and that is a schema limit rather than a
+        // choice: `user_activity.user_id` is `bigint NOT NULL` and lib/user-activity.repo.ts
+        // INNER JOINs `authusers` on it to render the actor's name, so a null would both break the
+        // constraint and drop the row from the timeline. Recording the provenance in `metadata`
+        // is what the current columns can express — it marks the row as an anonymous public
+        // submission rather than an action that staff member took, and it is what a later change
+        // (nullable column + LEFT JOIN + a timeline label for an anonymous actor) would key on.
         await trx
           .insertInto('user_activity')
           .values({
@@ -651,7 +803,12 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
             entity: 'web_forms',
             entity_id: formId,
             quantity: 1,
-            metadata: JSON.stringify({ person_id: personId, email }),
+            metadata: JSON.stringify({
+              person_id: personId,
+              email,
+              source: 'public_form',
+              actor: 'anonymous_visitor',
+            }),
             createdby_id: creatorId,
             updatedby_id: creatorId,
           })
@@ -659,10 +816,12 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
 
         // Persist a durable response record (answers snapshot + person FK) for the Responses tab.
         // Donation forms are a separate flow (Stripe/webhook) and are not part of this model.
-        if (form.form_type !== 'donation' && form.form_type !== 'recurring_donation') {
+        if (!isDonationType(form.form_type)) {
+          // `payload` is already filtered to the form's own configured keys, so the snapshot no
+          // longer stores whatever arbitrary keys a submitter chose to send.
           const answers: Record<string, unknown> = {};
           for (const [key, value] of Object.entries(payload)) {
-            if (key === '_hp') continue;
+            if (key === HONEYPOT_FIELD) continue;
             answers[key] = value;
           }
           await trx

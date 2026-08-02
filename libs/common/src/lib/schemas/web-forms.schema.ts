@@ -278,6 +278,44 @@ export const UpdateFormObj = z.object({
   target_lists: z.array(z.string()).optional(),
 });
 
+// ---------------------------------------------------------------------------
+// Public submission payload (unauthenticated POST /api/forms/submit/:slug).
+//
+// This body arrives from anyone on the internet, so it is bounded here rather than
+// trusted: a field count ceiling, a key length ceiling and a per-answer length
+// ceiling. Before this schema existed the body was typed `Record<string, string>`
+// as a TypeScript generic only — no runtime shape at all — and the sole ceiling was
+// the server's global 1 MiB body limit.
+// ---------------------------------------------------------------------------
+
+/** Most answers a single submission may carry. Comfortably above the largest template. */
+export const FORM_SUBMISSION_MAX_FIELDS = 60;
+/** Longest accepted answer key. Field keys are short identifiers. */
+export const FORM_SUBMISSION_MAX_KEY_LENGTH = 64;
+/** Longest accepted answer value. Roomy for a long-form textarea, far short of unbounded. */
+export const FORM_SUBMISSION_MAX_VALUE_LENGTH = 2000;
+
+/**
+ * One answer. Scalars are coerced to a string so a JSON integration sending
+ * `{"seats": 2}` still works, while objects and arrays are rejected outright —
+ * every consumer downstream treats an answer as text.
+ */
+const FormSubmissionValueObj = z
+  .union([z.string(), z.number(), z.boolean(), z.null()])
+  .transform((value) => (value == null ? '' : String(value)))
+  .refine((value) => value.length <= FORM_SUBMISSION_MAX_VALUE_LENGTH, {
+    message: `Each answer must be ${FORM_SUBMISSION_MAX_VALUE_LENGTH} characters or fewer.`,
+  });
+
+/** The whole submission body, bounded in both directions. */
+export const FormSubmissionPayloadObj = z
+  .record(z.string().trim().min(1).max(FORM_SUBMISSION_MAX_KEY_LENGTH), FormSubmissionValueObj)
+  .refine((body) => Object.keys(body).length <= FORM_SUBMISSION_MAX_FIELDS, {
+    message: `A submission cannot contain more than ${FORM_SUBMISSION_MAX_FIELDS} fields.`,
+  });
+
+export type FormSubmissionPayloadType = z.infer<typeof FormSubmissionPayloadObj>;
+
 /** One row in the Responses tab. */
 export const FormSubmissionObj = z.object({
   id: z.string(),

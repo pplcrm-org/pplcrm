@@ -61,6 +61,31 @@ grid + form-editor model is gone; `forms-grid.ts` and `form-editor.ts` were dele
 
 ## Non-obvious traps
 
+- **The public submit body is validated and then filtered to the form's own fields.**
+  `POST /api/forms/submit/:slug` is unauthenticated, so `submitFormPublic` now (a) parses the body
+  with `FormSubmissionPayloadObj` (`libs/common/src/lib/schemas/web-forms.schema.ts`: at most
+  `FORM_SUBMISSION_MAX_FIELDS` answers, `FORM_SUBMISSION_MAX_KEY_LENGTH` per key,
+  `FORM_SUBMISSION_MAX_VALUE_LENGTH` per answer; scalars coerced to string, objects/arrays
+  rejected) and (b) **drops every key the form's own `fields` list does not claim**, via
+  `allowedPayloadKeys` + the `PAYLOAD_KEY_ALIASES` table. Consequences: adding a field to a
+  template is not enough for its answer to be stored — the key must be in that form's saved
+  `fields`; and a stale embed's extra hidden input is discarded silently rather than erroring.
+  `email` and the `_hp` honeypot are always accepted; donation forms additionally always accept
+  `DONATION_ALWAYS_FIELDS`, which must stay in step with `alwaysEnabled` in
+  `routes/web-forms-public.route.ts`. The route also caps the body at 64 KiB, under the server-wide
+  1 MiB limit.
+- **Matching an existing person is a LINK, not permission to edit them.** When the submitted email
+  matches a contact, the submit path may only fill a `first_name`, `last_name` or `mobile` that is
+  currently empty. It does **not** re-point their `household_id` (so no household is created for an
+  existing person's submitted address), does **not** append to their `notes` (the answers are on
+  the `form_submissions` row instead), and does not run an UPDATE at all when nothing needs
+  filling. A brand-new person is still created with a household resolved or created from the
+  submitted address — that path must not be broken while tightening this one.
+- **Two rate limits, on purpose.** The in-memory per-IP window (5/minute, `lib/rate-limiter.ts`)
+  smooths bursts; a durable per-tenant-per-IP window (30/hour, `lib/durable-rate-limiter.ts`,
+  counters in Postgres) bounds sustained abuse across deploys and replicas. The durable one fails
+  OPEN on a database error, which is why the in-memory one is kept in front of it. Specs that
+  submit repeatedly must clear `rate_limits` rows keyed `web-form-submit:<tenantId>:%`.
 - **Two field shapes coexist.** New forms store `FormField[]` objects; donation/older forms store the
   legacy `string[]` (`"mobile:required"`). Any code reading `web_forms.fields` must handle both — see
   the required-field validation in `submitFormPublic` and `normForm` (which silently drops non-object

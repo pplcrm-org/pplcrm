@@ -16,6 +16,12 @@ const PUBLIC_PAGE_MAX = 60;
 const PUBLIC_PAGE_WINDOW_MS = 60 * 1000;
 /** The mock-donation confirmation can WRITE, so it gets a tighter ceiling. */
 const PUBLIC_WRITE_MAX = 10;
+/**
+ * Per-route body ceiling for a public form submission, well below the server-wide 1 MiB limit in
+ * fastify.server.ts. The answer count and per-answer length are bounded again in the controller by
+ * FormSubmissionPayloadObj; this stops an oversized body being buffered and parsed at all.
+ */
+const SUBMIT_BODY_LIMIT_BYTES = 64 * 1024;
 
 const webFormsController = new WebFormsController();
 const donationsController = new DonationsController();
@@ -576,63 +582,74 @@ const webFormsPublicRoute: FastifyPluginCallback = (fastify, _, done) => {
     }
   });
 
-  fastify.post<{ Params: { slug: string }; Body: Record<string, string> }>('/submit/:slug', async (req, reply) => {
-    const { slug } = req.params;
-    // req.ip is derived from X-Forwarded-For per the trusted-proxy config; never
-    // read the raw header, which a client can spoof to defeat rate limiting.
-    const clientIp = req.ip;
-    const isJsonExpected =
-      req.headers.accept?.includes('application/json') || req.headers['content-type'] === 'application/json';
+  // The body is deliberately typed `unknown`: it arrives from anyone on the internet, and the
+  // shape is enforced at runtime by FormSubmissionPayloadObj inside the controller (field count,
+  // key length, per-answer length). The old `Record<string, string>` generic was a compile-time
+  // claim about untrusted input that nothing checked.
+  //
+  // `bodyLimit` overrides the server-wide 1 MiB ceiling for this route only. A form submission is
+  // a few kilobytes; refusing anything larger at the socket keeps a flood of megabyte bodies from
+  // being buffered and parsed before validation ever runs.
+  fastify.post<{ Params: { slug: string }; Body: unknown }>(
+    '/submit/:slug',
+    { bodyLimit: SUBMIT_BODY_LIMIT_BYTES },
+    async (req, reply) => {
+      const { slug } = req.params;
+      // req.ip is derived from X-Forwarded-For per the trusted-proxy config; never
+      // read the raw header, which a client can spoof to defeat rate limiting.
+      const clientIp = req.ip;
+      const isJsonExpected =
+        req.headers.accept?.includes('application/json') || req.headers['content-type'] === 'application/json';
 
-    try {
-      // Optional workspace API key (server-side "bring your own form" integrations): the key
-      // identifies the tenant and swaps the anonymous per-IP limit for a per-tenant one.
-      // Anonymous browser/embed submissions carry no key and take the subdomain/?t= path.
-      const keyTenantId = await tenantIdFromOptionalApiKey(req);
-      if (keyTenantId) checkKeyedSubmissionRateLimit(keyTenantId, 'forms');
+      try {
+        // Optional workspace API key (server-side "bring your own form" integrations): the key
+        // identifies the tenant and swaps the anonymous per-IP limit for a per-tenant one.
+        // Anonymous browser/embed submissions carry no key and take the subdomain/?t= path.
+        const keyTenantId = await tenantIdFromOptionalApiKey(req);
+        if (keyTenantId) checkKeyedSubmissionRateLimit(keyTenantId, 'forms');
 
-      const tenant = keyTenantId ? await resolveTenantById(keyTenantId) : await resolveTenantFromRequest(req);
-      if (!tenant) {
-        if (isJsonExpected) return reply.status(404).send({ error: 'Web form not found or inactive.' });
-        reply.status(404).type('text/html');
-        return reply.send(errorHtml('Web form not found or inactive.'));
-      }
-      const body = req.body || {};
-      const result = await webFormsController.submitFormPublic(tenant, String(slug), body, clientIp, {
-        skipIpRateLimit: keyTenantId != null,
-      });
-
-      if (isJsonExpected) {
-        // The SPA/JSON caller follows `redirect_url` (Stripe hosted checkout / plain form redirect).
-        return reply.status(200).send({
-          success: true,
-          redirect_url: result.redirect_url ?? null,
+        const tenant = keyTenantId ? await resolveTenantById(keyTenantId) : await resolveTenantFromRequest(req);
+        if (!tenant) {
+          if (isJsonExpected) return reply.status(404).send({ error: 'Web form not found or inactive.' });
+          reply.status(404).type('text/html');
+          return reply.send(errorHtml('Web form not found or inactive.'));
+        }
+        const result = await webFormsController.submitFormPublic(tenant, String(slug), req.body, clientIp, {
+          skipIpRateLimit: keyTenantId != null,
         });
+
+        if (isJsonExpected) {
+          // The SPA/JSON caller follows `redirect_url` (Stripe hosted checkout / plain form redirect).
+          return reply.status(200).send({
+            success: true,
+            redirect_url: result.redirect_url ?? null,
+          });
+        }
+
+        if (result.redirect_url) {
+          return reply.redirect(result.redirect_url);
+        }
+
+        return reply.redirect('/api/forms/success');
+      } catch (err) {
+        fastify.log.error(err);
+        const statusCode = httpStatusOf(err) ?? 500;
+        // Client errors (4xx: validation, rate limit) carry user-actionable copy; anything 5xx is an
+        // unexpected internal failure whose detail must not leak to the public (SECURITY-REVIEW 5.2).
+        // Gate on the error's TYPE, not just its status: a framework error with a sub-500
+        // statusCode is not client copy.
+        const fallback = 'An unexpected error occurred during submission.';
+        const message = statusCode < 500 ? publicClientMessageOf(err, fallback) : fallback;
+
+        if (isJsonExpected) {
+          return reply.status(statusCode).send({ error: message });
+        }
+
+        reply.status(statusCode).type('text/html');
+        return reply.send(errorHtml(message));
       }
-
-      if (result.redirect_url) {
-        return reply.redirect(result.redirect_url);
-      }
-
-      return reply.redirect('/api/forms/success');
-    } catch (err) {
-      fastify.log.error(err);
-      const statusCode = httpStatusOf(err) ?? 500;
-      // Client errors (4xx: validation, rate limit) carry user-actionable copy; anything 5xx is an
-      // unexpected internal failure whose detail must not leak to the public (SECURITY-REVIEW 5.2).
-      // Gate on the error's TYPE, not just its status: a framework error with a sub-500
-      // statusCode is not client copy.
-      const fallback = 'An unexpected error occurred during submission.';
-      const message = statusCode < 500 ? publicClientMessageOf(err, fallback) : fallback;
-
-      if (isJsonExpected) {
-        return reply.status(statusCode).send({ error: message });
-      }
-
-      reply.status(statusCode).type('text/html');
-      return reply.send(errorHtml(message));
-    }
-  });
+    },
+  );
 
   done();
 };
