@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { ORG_MODES, ORG_MODE_IS_ELECTORAL, ORG_MODE_MODULE_DEFAULTS, ORG_MODE_SEEDS_DEMO } from '@common';
-import type { OrgMode } from '@common';
+import {
+  ORG_MODES,
+  ORG_MODE_IS_ELECTORAL,
+  ORG_MODE_MODULE_DEFAULTS,
+  ORG_MODE_SEEDS_DEMO,
+  RECEIPT_REGIMES,
+} from '@common';
+import type { OrgMode, ReceiptRegimeId } from '@common';
 
 import {
   CAMPAIGN_STARTER_TAGS,
@@ -142,6 +148,89 @@ describe('demo datasets', () => {
         ];
         for (const [where, key] of peopleRefs) {
           expect(people.has(key), `${where} references unknown person "${key}"`).toBe(true);
+        }
+      });
+
+      /**
+       * Receipts are the one part of a dataset that points at gifts BY ARRAY INDEX, so inserting
+       * a donation in the middle of the list silently re-points every receipt after it at the
+       * wrong donor. The seeder skips an out-of-range index without complaining, which makes a
+       * shifted index look like a receipt that merely failed to seed.
+       */
+      it('issues receipts against gifts that exist, for donors it can address', () => {
+        const refs = new Set<number>();
+        for (const r of dataset.receipts) {
+          const gift = dataset.donations[r.donation];
+          expect(
+            gift,
+            `${mode} receipt ref ${r.ref} points at donation index ${r.donation}, which does not exist`,
+          ).toBeDefined();
+          if (!gift) continue;
+
+          expect(refs.has(r.ref), `${mode} reuses receipt ref ${r.ref}`).toBe(false);
+          refs.add(r.ref);
+
+          // A CRA/political receipt prints the donor's mailing address; the live issue path
+          // refuses to issue without one, so seeded receipts must not depict what it forbids.
+          const donor = dataset.persons.find((p) => p.key === gift.person);
+          expect(
+            donor?.household,
+            `${mode} receipts ${gift.person}, who has no household to address it to`,
+          ).toBeTruthy();
+
+          const advantage = r.advantageCents ?? 0;
+          expect(
+            advantage >= 0 && advantage < gift.amountCents,
+            `${mode} receipt ref ${r.ref} has a bad advantage`,
+          ).toBe(true);
+        }
+
+        // A replacement must be issued AFTER the receipt it replaces, or the seeder's date-ordered
+        // numbering gives it the lower serial and the pair reads backwards on the page.
+        for (const r of dataset.receipts) {
+          if (r.replacesRef == null) continue;
+          const predecessor = dataset.receipts.find((p) => p.ref === r.replacesRef);
+          expect(predecessor, `${mode} receipt ref ${r.ref} replaces unknown ref ${r.replacesRef}`).toBeDefined();
+          expect(predecessor?.status, `${mode} receipt ref ${r.replacesRef} is replaced but not cancelled`).toBe(
+            'cancelled',
+          );
+          expect(
+            (predecessor?.issuedDaysAgo ?? 0) > r.issuedDaysAgo,
+            `${mode} receipt ref ${r.ref} is dated before the receipt it replaces`,
+          ).toBe(true);
+        }
+      });
+
+      /**
+       * Seeding receipts writes `receipts.*` workspace settings, and the receipts page refuses to
+       * issue anything while a field the regime prescribes is blank. A dataset that seeds receipts
+       * under a half-configured regime hands the user a page that only shows an error.
+       */
+      it('configures the regime its receipts are issued under', () => {
+        if (dataset.receipts.length === 0) {
+          expect(
+            Object.keys(dataset.receiptSettings),
+            `${mode} seeds no receipts, so its receipts.* settings would never be used`,
+          ).toHaveLength(0);
+          return;
+        }
+
+        const regime = dataset.receiptSettings['receipts.regime'];
+        expect(typeof regime === 'string' && regime in RECEIPT_REGIMES, `${mode} regime "${regime}" is not real`).toBe(
+          true,
+        );
+        if (typeof regime !== 'string' || !(regime in RECEIPT_REGIMES)) return;
+
+        const spec = RECEIPT_REGIMES[regime as ReceiptRegimeId];
+        expect(spec.issuance, `${mode} seeds receipts under ${regime}, whose receipts are issued externally`).toBe(
+          'internal',
+        );
+        for (const field of spec.requiredIssuerFields) {
+          // signature_file_id is the one required field a dataset cannot supply: the signature is
+          // an uploaded image, and the demo deliberately makes the user provide their own rather
+          // than shipping a fake one under a real workspace's name.
+          if (field === 'signature_file_id') continue;
+          expect(dataset.receiptSettings[`receipts.${field}`], `${mode} is missing receipts.${field}`).toBeTruthy();
         }
       });
     });

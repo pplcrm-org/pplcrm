@@ -168,6 +168,9 @@ describe('demo seeding and exit-demo', () => {
       | 'delivery_route_stops'
       | 'donations'
       | 'donation_pledges'
+      | 'donation_receipts'
+      | 'donation_receipt_items'
+      | 'receipt_statement_runs'
       | 'potential_duplicates',
     tenant_id: string,
   ): Promise<number> => {
@@ -1046,6 +1049,13 @@ describe('demo seeding and exit-demo', () => {
         expect(await count('campaign_person_facts', f.tenant_id)).toBe(0);
       }
       expect(await count('campaign_subscriptions', f.tenant_id)).toBeGreaterThan(0);
+
+      // Every receipt the dataset describes becomes a receipt row and exactly one item row; a
+      // receipt whose donation index is out of range is skipped in silence, so counting is the
+      // only way to notice.
+      expect(await count('donation_receipts', f.tenant_id)).toBe(dataset.receipts.length);
+      expect(await count('donation_receipt_items', f.tenant_id)).toBe(dataset.receipts.length);
+      expect(await count('receipt_statement_runs', f.tenant_id)).toBe(dataset.statementRun ? 1 : 0);
     });
 
     it('exits demo mode leaving the starter vocabulary behind', async () => {
@@ -1062,9 +1072,97 @@ describe('demo seeding and exit-demo', () => {
 
       expect(await count('persons', f.tenant_id)).toBe(0);
       expect(await count('donations', f.tenant_id)).toBe(0);
+      expect(await count('donation_receipts', f.tenant_id)).toBe(0);
+      expect(await count('receipt_statement_runs', f.tenant_id)).toBe(0);
+      // The demo organization's registration number must not stay behind on a workspace that
+      // goes on to issue real receipts.
+      const receiptSettings = await ctx.trx
+        .selectFrom('settings')
+        .select('key')
+        .where('tenant_id', '=', f.tenant_id)
+        .where('key', 'like', 'receipts.%')
+        .execute();
+      expect(receiptSettings).toHaveLength(0);
       // Starter tags/issues and starter forms are not demo data — they survive.
       expect(await count('tags', f.tenant_id)).toBeGreaterThan(0);
       expect(await count('web_forms', f.tenant_id)).toBeGreaterThan(0);
     });
+  });
+
+  /**
+   * Numbering is the part of receipting an auditor checks first, and it is the part a fixed
+   * serial in a dataset cannot get right: the issue year depends on the day the workspace was
+   * created, so a receipt dated 65 days ago belongs to last year for anyone signing up in
+   * January. The seeder therefore numbers by issue date, restarting at 1 in each year.
+   */
+  it('numbers seeded receipts gap-free and forward in time, per issue year', async () => {
+    const f = await seedFixture('nonprofit');
+    const receipts = await ctx.trx
+      .selectFrom('donation_receipts')
+      .select(['year', 'serial', 'receipt_number', 'issued_at', 'donor_address_line1', 'donor_city'])
+      .where('tenant_id', '=', f.tenant_id)
+      .orderBy('issued_at', 'asc')
+      .execute();
+    expect(receipts.length).toBeGreaterThan(0);
+
+    const nextByYear = new Map<number, number>();
+    for (const r of receipts) {
+      const expected = (nextByYear.get(r.year) ?? 0) + 1;
+      nextByYear.set(r.year, expected);
+      expect(r.serial, `receipt ${r.receipt_number} breaks the ${r.year} sequence`).toBe(expected);
+      expect(r.receipt_number).toBe(`RCT-${r.year}-${String(expected).padStart(5, '0')}`);
+      // The donor's mailing address is prescribed content — it comes off their household.
+      expect(r.donor_address_line1).toBeTruthy();
+      expect(r.donor_city).toBe('Ottawa');
+    }
+
+    // The live counter has to start above what was seeded, or the first receipt a user issues
+    // collides with a demo one on the (tenant, year, serial) unique index.
+    const counters = await ctx.trx
+      .selectFrom('receipt_counters')
+      .select(['year', 'n'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    for (const [year, highest] of nextByYear) {
+      expect(counters.find((c) => c.year === year)?.n).toBe(highest);
+    }
+  });
+
+  /**
+   * A benefit-dinner seat is partly a purchase: the donor got a meal back, and only the rest is
+   * receiptable. No other dataset seeds a gift where those three numbers differ.
+   */
+  it('splits gift, advantage and eligible amount on the benefit-dinner receipt', async () => {
+    const f = await seedFixture('nonprofit');
+    const receipt = await ctx.trx
+      .selectFrom('donation_receipts')
+      .select(['amount_cents', 'advantage_cents', 'eligible_cents', 'advantage_description'])
+      .where('tenant_id', '=', f.tenant_id)
+      .where('advantage_cents', '>', 0)
+      .executeTakeFirstOrThrow();
+
+    expect(receipt.amount_cents).toBe(25000);
+    expect(receipt.advantage_cents).toBe(6000);
+    expect(receipt.eligible_cents).toBe(19000);
+    expect(receipt.advantage_description).toBe('Dinner at the fall benefit');
+  });
+
+  /** Church mode is the dataset that carries the cancel-and-replace pair CRA requires. */
+  it('links a replacement receipt to the cancelled one it supersedes, with the higher number', async () => {
+    const f = await seedFixture('church');
+    const receipts = await ctx.trx
+      .selectFrom('donation_receipts')
+      .select(['id', 'serial', 'status', 'cancelled_at', 'cancelled_reason', 'replaces_receipt_id'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+
+    const replacement = receipts.find((r) => r.replaces_receipt_id !== null);
+    expect(replacement).toBeDefined();
+    const cancelled = receipts.find((r) => String(r.id) === String(replacement?.replaces_receipt_id));
+    expect(cancelled?.status).toBe('cancelled');
+    expect(cancelled?.cancelled_at).not.toBeNull();
+    expect(cancelled?.cancelled_reason).toBe('Donor name was misspelled');
+    // A replacement is issued after the receipt it replaces, so it carries the later serial.
+    expect(Number(replacement?.serial)).toBeGreaterThan(Number(cancelled?.serial));
   });
 });

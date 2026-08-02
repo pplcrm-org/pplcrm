@@ -1923,6 +1923,12 @@ export const CAMPAIGN_DEMO_DATASET: DemoDataset = {
   deliveryRoutes: DEMO_DELIVERY_ROUTES,
   pledges: DEMO_PLEDGES,
   donations: DEMO_DONATIONS,
+  // No receipts, and that is not an omission. This is a MUNICIPAL race (Somerset, Kitchissippi
+  // and Capital are City of Ottawa wards), and a municipal candidate in Ontario issues plain
+  // contribution receipts under the Municipal Elections Act — not an income-tax receipt. None of
+  // the six regimes in libs/common/src/lib/receipt-regimes covers that, so configuring one here
+  // would print a document claiming a tax treatment these contributions do not get. The gifts are
+  // recorded in the ledger; receipting stays off until there is a regime that fits.
   receipts: [],
   receiptSettings: {},
   statementRun: null,

@@ -598,7 +598,8 @@ export const OFFICE_DEMO_DATASET: DemoDataset = {
   turfs: OFFICE_TURFS,
   deliveryRequests: OFFICE_DELIVERY_REQUESTS,
   deliveryRoutes: OFFICE_DELIVERY_ROUTES,
-  // An office does not fundraise — its riding association does, on its own books.
+  // An office does not fundraise — its riding association does, on its own books. No gifts means
+  // nothing to receipt, and office mode hides Donations at signup anyway.
   pledges: [],
   donations: [],
   receipts: [],

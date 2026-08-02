@@ -1236,20 +1236,23 @@ const DONATIONS: DemoDonationDef[] = [
  * Official receipts over DONATIONS (by index). Most one-time gifts are receipted (auto-issue is
  * on); a few cash gifts are deliberately not, so the "Receipts" stat is honest work-in-progress,
  * and Alan Forsyth's check carries the cancel-and-replace pair the receipts page demonstrates.
+ *
+ * `ref` is a label for the cancel-and-replace link below, not the printed number — the seeder
+ * numbers these by issue date (see DemoReceiptDef).
  */
 const RECEIPTS: DemoReceiptDef[] = [
-  { donation: 7, serial: 1, issuedDaysAgo: 11, emailed: true }, // joseph-kimani, check
-  { donation: 8, serial: 2, issuedDaysAgo: 14, emailed: true }, // karen-whelan, card
-  { donation: 9, serial: 3, issuedDaysAgo: 18, emailed: false }, // thomas-nkemelu, bank transfer
+  { donation: 7, ref: 1, issuedDaysAgo: 11, emailed: true }, // joseph-kimani, check
+  { donation: 8, ref: 2, issuedDaysAgo: 14, emailed: true }, // karen-whelan, card
+  { donation: 9, ref: 3, issuedDaysAgo: 18, emailed: false }, // thomas-nkemelu, bank transfer
   {
     donation: 11, // alan-forsyth, check — the misspelled-name receipt…
-    serial: 4,
+    ref: 4,
     issuedDaysAgo: 27,
     status: 'cancelled',
     cancelledReason: 'Donor name was misspelled',
   },
-  { donation: 11, serial: 5, issuedDaysAgo: 26, replacesSerial: 4, emailed: true }, // …and its replacement
-  { donation: 12, serial: 6, issuedDaysAgo: 31, emailed: true }, // mei-lin-chow, card
+  { donation: 11, ref: 5, issuedDaysAgo: 26, replacesRef: 4, emailed: true }, // …and its replacement
+  { donation: 12, ref: 6, issuedDaysAgo: 31, emailed: true }, // mei-lin-chow, card
 ];
 
 /** CRA charitable receipting, configured the way a real church office would. */

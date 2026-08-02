@@ -145,6 +145,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         title: 'Receipts are records, not legal advice',
         text: 'pplCRM prepares documents from the details you configure; issuing legally valid receipts remains your organization’s responsibility. When in doubt, ask your counsel, the CRA, or your electoral authority.',
       },
+      { kind: 'h2', id: 'demo-receipts', text: 'The sample receipts in a new workspace' },
+      {
+        kind: 'p',
+        text: 'A charity or church workspace starts with sample receipts over some of its sample gifts, so this page is not empty on day one. They are configured under the sample organization’s name and registration number, which are cleared along with everything else when you remove the demo data — your own details replace them, and nothing real is ever issued under the sample ones. See [Demo mode and sample data](/help/demo-mode).',
+      },
     ],
   },
   {

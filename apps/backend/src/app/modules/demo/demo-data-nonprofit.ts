@@ -6,6 +6,8 @@ import type {
   DemoListDef,
   DemoNewsletterDef,
   DemoPersonDef,
+  DemoReceiptDef,
+  DemoStatementRunDef,
   DemoSubmissionDef,
   DemoTaskDef,
   DemoTeamDef,
@@ -617,6 +619,17 @@ const TASKS: DemoTaskDef[] = [
     completedDaysAgo: 19,
     assignToUser: 'u-volunteers',
   },
+  {
+    name: 'Get a mailing address for Claudia Reyes',
+    details:
+      'She gave $150 through the website and left the address blank. A CRA receipt has to print the ' +
+      'donor’s address, so hers is the one gift this week we cannot receipt. Call before Friday.',
+    status: 'todo',
+    priority: 'high',
+    position: 11,
+    dueInDays: 2,
+    assignToUser: 'u-giving',
+  },
 ];
 
 const LISTS: DemoListDef[] = [
@@ -1016,8 +1029,14 @@ const DONATIONS: DemoDonationDef[] = [
     createdDaysAgo: 19,
     pledge: 'pl-brant',
   },
+  // Gave through the website and never filled in an address — the giving desk cannot receipt
+  // this one until someone gets it, which is what the "Get a mailing address" task is about.
+  { person: 'claudia-reyes', amountCents: 15000, method: 'card', createdDaysAgo: 8 },
   { person: 'daniel-brant', amountCents: 7500, method: 'card', createdDaysAgo: 9 },
   { person: 'simon-adeyemi', amountCents: 15000, method: 'card', createdDaysAgo: 22 },
+  // A $250 seat at the fall benefit dinner. The $60 meal is an advantage the donor received
+  // back, so only $190 is receiptable — the one gift in any demo that splits the two.
+  { person: 'nadia-petrov', amountCents: 25000, method: 'card', createdDaysAgo: 24 },
   { person: 'helen-carr', amountCents: 5000, method: 'card', createdDaysAgo: 27 },
   { person: 'grace-mbeki', amountCents: 3000, method: 'cash', createdDaysAgo: 31 },
   { person: 'peter-mbeki', amountCents: 3000, method: 'cash', createdDaysAgo: 31 },
@@ -1026,6 +1045,63 @@ const DONATIONS: DemoDonationDef[] = [
   { person: 'yuki-sato', amountCents: 2500, method: 'card', createdDaysAgo: 58 },
   { person: 'tom-farrell', amountCents: 50000, method: 'bank_transfer', createdDaysAgo: 66 },
 ];
+
+/**
+ * Official CRA receipts over DONATIONS (by index).
+ *
+ * The desk rule this data encodes: Bea issues a receipt by hand for every one-time gift of $100
+ * or more, and everything below that — plus every monthly pledge charge — rolls into the year-end
+ * giving statement instead. So the unreceipted gifts in the ledger are unreceipted for a reason a
+ * user can work out, rather than looking like data someone forgot to finish.
+ *
+ * Two of them carry the cases a charity actually runs into: Nadia Petrov's benefit-dinner seat is
+ * split into gift, advantage and eligible amount, and Claudia Reyes' $150 online gift is the one
+ * the desk CANNOT receipt, because she has no mailing address on file and a CRA receipt requires
+ * one. Church mode covers the cancel-and-replace pair; this dataset deliberately does not repeat it.
+ */
+const RECEIPTS: DemoReceiptDef[] = [
+  { donation: 0, ref: 1, issuedDaysAgo: 3, emailed: false }, // margaret-shore $1,000 — prefers paper, gets mailed
+  { donation: 1, ref: 2, issuedDaysAgo: 13, emailed: true }, // priya-raman $2,500 — the credit-union match
+  { donation: 9, ref: 3, issuedDaysAgo: 21, emailed: true }, // simon-adeyemi $150
+  {
+    donation: 10, // nadia-petrov — $250 benefit-dinner seat, $60 of it a meal she received
+    ref: 4,
+    issuedDaysAgo: 23,
+    advantageCents: 6000,
+    advantageDescription: 'Dinner at the fall benefit',
+    emailed: true,
+  },
+  { donation: 14, ref: 5, issuedDaysAgo: 44, emailed: true }, // wei-zhang $200
+  { donation: 15, ref: 6, issuedDaysAgo: 51, emailed: true }, // colin-vance $100
+  { donation: 17, ref: 7, issuedDaysAgo: 65, emailed: true }, // tom-farrell $500
+];
+
+/**
+ * CRA charitable receipting for a small charity that issues by hand rather than automatically:
+ * `auto_issue` is off, so gifts land in the ledger unreceipted and Bea works through them. (Church
+ * mode is the auto-issue example — running both ways across the datasets is deliberate.)
+ */
+const RECEIPT_SETTINGS: Record<string, string | boolean> = {
+  'receipts.regime': 'cra_charity',
+  'receipts.mode': 'per_gift',
+  'receipts.auto_issue': false,
+  'receipts.org_legal_name': 'Rideau Community Table',
+  'receipts.org_address': `1064 Wellington Street West, ${DEMO_CITY}, ${DEMO_STATE}`,
+  'receipts.registration_number': '867539021 RR 0001',
+  'receipts.signatory_name': 'Bea Solomon',
+  'receipts.signatory_title': 'Director of Giving',
+  'receipts.number_prefix': 'RCT',
+  'receipts.place_of_issue': DEMO_CITY,
+};
+
+/** Last year's giving statements — where every gift too small to receipt individually ended up. */
+const STATEMENT_RUN: DemoStatementRunDef = {
+  yearsAgo: 1,
+  donorsTotal: 26,
+  generated: 26,
+  emailed: 22,
+  toPrint: 4,
+};
 
 export const NONPROFIT_DEMO_DATASET: DemoDataset = {
   city: DEMO_CITY,
@@ -1049,7 +1125,7 @@ export const NONPROFIT_DEMO_DATASET: DemoDataset = {
   deliveryRoutes: [],
   pledges: PLEDGES,
   donations: DONATIONS,
-  receipts: [],
-  receiptSettings: {},
-  statementRun: null,
+  receipts: RECEIPTS,
+  receiptSettings: RECEIPT_SETTINGS,
+  statementRun: STATEMENT_RUN,
 };

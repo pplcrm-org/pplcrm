@@ -156,7 +156,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
     title: 'Demo mode and sample data',
     summary: 'What the pre-loaded demo data includes, why it exists, and how to remove it when you are ready.',
     keywords: ['demo', 'sample data', 'test drive', 'seed', 'exit demo', 'remove demo data', 'example contacts'],
-    related: ['welcome', 'add-people', 'import'],
+    related: ['welcome', 'add-people', 'import', 'donation-receipts'],
     blocks: [
       {
         kind: 'p',
@@ -178,6 +178,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
           '**Three newsletters**, including a sent one with a full engagement report: opens over time, top links, bounces, and unsubscribes.',
           '**Sample form responses** on two of the starter forms, so the Forms page shows what collected submissions look like.',
           '**A donations ledger**: recorded one-time gifts across this month and last, plus a few active monthly pledges, so the [Donations](/donations) page shows real totals and trends. The two fundraising forms live on that page too, not on the Forms page.',
+          '**Issued receipts**, in charity and church workspaces: official receipts over some of the recorded gifts, last year’s finished giving-statement run, and the receipting settings already filled in under the sample organization’s name and registration number. The remaining gifts are left unreceipted on purpose, so there is something for you to issue. See [Donation receipts and giving statements](/help/donation-receipts).',
         ],
       },
       {

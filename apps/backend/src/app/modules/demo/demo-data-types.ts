@@ -286,13 +286,25 @@ export interface DemoDonationDef {
 /** A seeded official donation receipt. `donation` is an INDEX into the dataset's donations array. */
 export interface DemoReceiptDef {
   donation: number;
-  /** Serial within the issue year — keep these unique and gap-free per dataset. */
-  serial: number;
+  /**
+   * A dataset-local label, NOT the number that gets printed. The seeder assigns the real serials
+   * itself — 1..n per ISSUE YEAR, oldest receipt first — so the printed sequence is gap-free and
+   * runs forward in time no matter what day of the year the workspace is created on. Keep these
+   * unique within a dataset; `replacesRef` points at one of them.
+   */
+  ref: number;
   issuedDaysAgo: number;
   status?: 'issued' | 'cancelled';
   cancelledReason?: string;
-  /** Serial of the receipt this one replaces (the cancel-and-replace demo pair). */
-  replacesSerial?: number;
+  /** `ref` of the receipt this one replaces (the cancel-and-replace demo pair). */
+  replacesRef?: number;
+  /**
+   * Value the donor received back for the gift (a meal at a benefit dinner, an auction item).
+   * Only the remainder is tax-receiptable, so the receipt prints gift, advantage and eligible
+   * amount separately. Must be greater than zero and smaller than the gift.
+   */
+  advantageCents?: number;
+  advantageDescription?: string;
   emailed?: boolean;
 }
 

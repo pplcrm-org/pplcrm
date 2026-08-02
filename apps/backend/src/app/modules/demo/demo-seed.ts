@@ -71,7 +71,7 @@ export const DemoSeedManifestObj = z.object({
   donation_receipt_items: z.array(z.string()).default([]),
   receipt_statement_runs: z.array(z.string()).default([]),
   /** True when seeding wrote receipts.* settings — exit-demo removes them so a workspace never
-   *  issues REAL receipts under the demo church's name and registration number. */
+   *  issues REAL receipts under the demo organization's name and registration number. */
   receipt_settings_seeded: z.boolean().default(false),
 });
 export type DemoSeedManifest = z.infer<typeof DemoSeedManifestObj>;
@@ -208,6 +208,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     .returning('id')
     .execute();
   const householdIdByKey = new Map(dataset.households.map((h, i) => [h.key, String(householdRows[i]?.id)]));
+  const householdByKey = new Map(dataset.households.map((h) => [h.key, h]));
 
   // ── Persons (created_at staggered so the dashboard growth chart is real) ──
   const personRows = await trx
@@ -875,6 +876,12 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   //    cancel-and-replace pair and historic dates; the real render job then draws each PDF
   //    after commit, with email:false — demo donors are never emailed. The counter is advanced
   //    past the seeded serials so live issuing in demo mode cannot collide.
+  //
+  //    Serials are assigned HERE rather than written into the datasets, because the issue year
+  //    depends on the day the workspace is created: a receipt dated 60 days ago falls in last
+  //    year for anyone signing up in January. Numbering therefore restarts at 1 in each year the
+  //    seeded receipts land in, oldest first, which is what "gap-free, forward in time" means to
+  //    the auditor a real charity answers to.
   const receiptIds: string[] = [];
   const receiptItemIds: string[] = [];
   const statementRunIds: string[] = [];
@@ -904,35 +911,50 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
       signatory_title: dataset.receiptSettings['receipts.signatory_title'],
     });
 
-    const receiptIdBySerial = new Map<number, string>();
-    for (const def of dataset.receipts) {
+    const receiptIdByRef = new Map<number, string>();
+    const nextSerialByYear = new Map<number, number>();
+    const oldestFirst = [...dataset.receipts].sort((a, b) => b.issuedDaysAgo - a.issuedDaysAgo);
+    for (const def of oldestFirst) {
       const donationDef = dataset.donations[def.donation];
       const donationId = donationIds[def.donation];
       const person = donationDef ? personByKey.get(donationDef.person) : undefined;
       const personId = donationDef ? personIdByKey.get(donationDef.person) : undefined;
       if (!donationDef || !donationId || !person || !personId) continue;
       const issuedAt = daysAgo(def.issuedDaysAgo);
+      const year = issuedAt.getFullYear();
+      const serial = (nextSerialByYear.get(year) ?? 0) + 1;
+      nextSerialByYear.set(year, serial);
       const cancelled = def.status === 'cancelled';
+      const advantageCents = def.advantageCents ?? 0;
+      // The donor's mailing address is prescribed content on a CRA receipt, and the live issue
+      // path freezes it onto the row from the person's household — so the demo does the same.
+      const home = person.household ? householdByKey.get(person.household) : undefined;
       const receipt = await trx
         .insertInto('donation_receipts')
         .values({
           tenant_id,
           kind: 'per_gift',
           regime,
-          year: issuedAt.getFullYear(),
-          serial: def.serial,
-          receipt_number: `${prefix}-${issuedAt.getFullYear()}-${String(def.serial).padStart(5, '0')}`,
+          year,
+          serial,
+          receipt_number: `${prefix}-${year}-${String(serial).padStart(5, '0')}`,
           status: def.status ?? 'issued',
           person_id: personId,
           campaign_id,
           donor_name: `${person.first_name} ${person.last_name}`.trim(),
           donor_email: person.email ?? null,
+          donor_address_line1: home ? `${home.street_num} ${home.street1}` : null,
+          donor_city: home ? dataset.city : null,
+          donor_province: home ? dataset.state : null,
+          donor_postal_code: home?.zip ?? null,
+          donor_country: home ? dataset.country : null,
           amount_cents: donationDef.amountCents,
-          advantage_cents: 0,
-          eligible_cents: donationDef.amountCents,
+          advantage_cents: advantageCents,
+          eligible_cents: donationDef.amountCents - advantageCents,
+          advantage_description: def.advantageDescription ?? null,
           gift_date: daysAgo(donationDef.createdDaysAgo),
           issuer_snapshot: issuerSnapshot,
-          replaces_receipt_id: def.replacesSerial ? (receiptIdBySerial.get(def.replacesSerial) ?? null) : null,
+          replaces_receipt_id: def.replacesRef ? (receiptIdByRef.get(def.replacesRef) ?? null) : null,
           cancelled_reason: cancelled ? (def.cancelledReason ?? 'Cancelled') : null,
           cancelled_at: cancelled ? issuedAt : null,
           cancelled_by: cancelled ? user_id : null,
@@ -943,7 +965,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         })
         .returning('id')
         .executeTakeFirstOrThrow();
-      receiptIdBySerial.set(def.serial, String(receipt.id));
+      receiptIdByRef.set(def.ref, String(receipt.id));
       receiptIds.push(String(receipt.id));
 
       const item = await trx
@@ -978,12 +1000,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         .execute();
     }
 
-    const maxSerialByYear = new Map<number, number>();
-    for (const def of dataset.receipts) {
-      const year = daysAgo(def.issuedDaysAgo).getFullYear();
-      maxSerialByYear.set(year, Math.max(maxSerialByYear.get(year) ?? 0, def.serial));
-    }
-    for (const [year, n] of maxSerialByYear) {
+    for (const [year, n] of nextSerialByYear) {
       await sql`
         INSERT INTO receipt_counters (tenant_id, year, kind, n)
         VALUES (${tenant_id}, ${year}, 'official', ${n})
@@ -1265,8 +1282,8 @@ export async function deleteDemoData(params: DeleteParams, trx: Transaction<Mode
       .where('id', 'in', m.receipt_statement_runs)
       .execute();
   }
-  // The demo church's name and registration number must never end up on a REAL receipt: the
-  // seeded receipts.* configuration goes with the demo data.
+  // The demo organization's name and registration number must never end up on a REAL receipt:
+  // the seeded receipts.* configuration goes with the demo data.
   if (m.receipt_settings_seeded) {
     await trx.deleteFrom('settings').where('tenant_id', '=', tenant_id).where('key', 'like', 'receipts.%').execute();
   }
