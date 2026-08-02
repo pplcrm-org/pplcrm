@@ -72,6 +72,14 @@ const NOTIF_ROWS: NotifRow[] = [
     defaultOn: true,
   },
   {
+    key: 'statements_ready',
+    label: 'Giving statements ready',
+    helper: 'Summary when a year-end statement run you started finishes',
+    emailKey: 'statements_ready',
+    inAppKey: 'statements_ready_in_app',
+    defaultOn: true,
+  },
+  {
     key: 'import_summary',
     label: 'Import summary',
     helper: 'Completion stats after a spreadsheet import',
@@ -209,6 +217,8 @@ export class PersonalSettingsDialog {
         email_assigned_in_app: p['email_assigned_in_app'] ?? true,
         export_ready: p['export_ready'] ?? true,
         export_ready_in_app: p['export_ready_in_app'] ?? true,
+        statements_ready: p['statements_ready'] ?? true,
+        statements_ready_in_app: p['statements_ready_in_app'] ?? true,
         import_summary: p['import_summary'] ?? true,
         companion_approval_sms: p['companion_approval_sms'] ?? true,
       },

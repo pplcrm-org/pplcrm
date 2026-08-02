@@ -1,5 +1,5 @@
 import { Service } from '@angular/core';
-import type { StripeConnectCountry } from '@common';
+import type { DonationAddressType, StripeConnectCountry } from '@common';
 import { TRPCService } from './trpc-service';
 
 @Service()
@@ -12,6 +12,11 @@ export class DonationsService extends TRPCService<'donations'> {
 
   public getHistory(personId: string) {
     return this.api.donations.getPersonDonationHistory.query(personId);
+  }
+
+  /** One gift + receipt state, for the /donations/:id detail page. */
+  public getDonation(donationId: string) {
+    return this.api.donations.getDonation.query(donationId);
   }
 
   public getStats(personId: string) {
@@ -40,11 +45,13 @@ export class DonationsService extends TRPCService<'donations'> {
     return this.api.donations.confirmDonation.mutate({ sessionId });
   }
 
-  /** Record an offline gift (Fig. 15 "Record donation" dialog) — cash, check, or bank transfer. */
+  /** Record an offline gift (Fig. 15 "Record donation" dialog) — cash, check, or bank transfer.
+   * The mailing address is required: receipts must print one, so no gift is recorded without it. */
   public recordDonation(payload: {
     personId: string;
     amountCents: number;
     method: 'card' | 'check' | 'cash' | 'bank_transfer';
+    address: DonationAddressType;
   }) {
     return this.api.donations.recordDonation.mutate(payload);
   }

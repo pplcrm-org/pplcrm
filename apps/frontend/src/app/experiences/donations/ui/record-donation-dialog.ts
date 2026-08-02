@@ -8,7 +8,20 @@ import { DONATION_METHODS, DONATION_METHOD_LABELS, type DonationMethod } from '.
 import { DonationsService } from '../../../services/api/donations-service';
 import { PersonsService } from '../../persons/services/persons-service';
 
-type DonorSearchResult = { id: string; first_name: string | null; last_name: string | null; email: string | null };
+type DonorSearchResult = {
+  id: string;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  /** Household address fields when the search row carries them — prefills the address block. */
+  street_num?: string | null;
+  street1?: string | null;
+  apt?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  country?: string | null;
+};
 
 /**
  * Fig. 15 "Record donation" dialog — records an offline gift (cash, check, bank transfer, or a
@@ -50,6 +63,36 @@ export class RecordDonationDialog {
   protected readonly submitting = signal(false);
   protected readonly isLoading = this._loading.visible;
 
+  // Donor mailing address — required (no gift without an address; receipts must print one).
+  // Prefilled from the donor's household when the search row carries it; staff can edit.
+  protected readonly street = signal('');
+  protected readonly apt = signal('');
+  protected readonly city = signal('');
+  protected readonly province = signal('');
+  protected readonly postal = signal('');
+  protected readonly country = signal('Canada');
+  protected readonly touchedAddress = signal(false);
+
+  protected readonly addressInvalid = (): boolean =>
+    this.touchedAddress() &&
+    !(
+      this.street().trim() &&
+      this.city().trim() &&
+      this.province().trim() &&
+      this.postal().trim() &&
+      this.country().trim()
+    );
+
+  private addressComplete(): boolean {
+    return Boolean(
+      this.street().trim() &&
+      this.city().trim() &&
+      this.province().trim() &&
+      this.postal().trim() &&
+      this.country().trim(),
+    );
+  }
+
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
 
   protected readonly donorInvalid = () => this.touchedDonor() && !this.selectedDonor();
@@ -84,8 +127,20 @@ export class RecordDonationDialog {
       const rows = (result as { rows?: unknown[] })?.rows ?? [];
       this.donorResults.set(
         rows.map((raw) => {
-          const p = raw as { id: string; first_name: string | null; last_name: string | null; email: string | null };
-          return { id: String(p.id), first_name: p.first_name, last_name: p.last_name, email: p.email };
+          const p = raw as DonorSearchResult & { id: string };
+          return {
+            id: String(p.id),
+            first_name: p.first_name,
+            last_name: p.last_name,
+            email: p.email,
+            street_num: p.street_num,
+            street1: p.street1,
+            apt: p.apt,
+            city: p.city,
+            state: p.state,
+            zip: p.zip,
+            country: p.country,
+          };
         }),
       );
     } catch {
@@ -99,6 +154,14 @@ export class RecordDonationDialog {
     this.selectedDonor.set(p);
     this.donorSearch.set('');
     this.donorResults.set([]);
+    // Prefill the mailing address from the donor's household; leave staff edits alone otherwise.
+    const streetLine = [p.street_num, p.street1].filter(Boolean).join(' ');
+    if (streetLine) this.street.set(streetLine);
+    if (p.apt) this.apt.set(p.apt);
+    if (p.city) this.city.set(p.city);
+    if (p.state) this.province.set(p.state);
+    if (p.zip) this.postal.set(p.zip);
+    if (p.country) this.country.set(p.country);
   }
 
   protected clearDonor(): void {
@@ -113,10 +176,11 @@ export class RecordDonationDialog {
 
   protected async submit(): Promise<void> {
     this.touchedDonor.set(true);
+    this.touchedAddress.set(true);
     this.amountForm().markAsTouched();
     const donor = this.selectedDonor();
     const amt = this.amount();
-    if (!donor || amt === null || amt <= 0 || this.amountForm().invalid()) return;
+    if (!donor || amt === null || amt <= 0 || this.amountForm().invalid() || !this.addressComplete()) return;
 
     this.submitting.set(true);
     const end = this._loading.begin();
@@ -125,8 +189,16 @@ export class RecordDonationDialog {
         personId: donor.id,
         amountCents: Math.round(amt * 100),
         method: this.method(),
+        address: {
+          street: this.street().trim(),
+          apt: this.apt().trim() || null,
+          city: this.city().trim(),
+          state: this.province().trim(),
+          zip: this.postal().trim(),
+          country: this.country().trim(),
+        },
       });
-      this.alertSvc.showSuccess(`Saved. $${amt.toFixed(2)} from ${this.donorName(donor)} recorded and receipted`);
+      this.alertSvc.showSuccess(`Saved. $${amt.toFixed(2)} from ${this.donorName(donor)} recorded`);
       this.saved.emit();
       this.close();
     } catch (err) {
@@ -152,5 +224,12 @@ export class RecordDonationDialog {
     this.amountForm().reset();
     this.method.set('card');
     this.submitting.set(false);
+    this.street.set('');
+    this.apt.set('');
+    this.city.set('');
+    this.province.set('');
+    this.postal.set('');
+    this.country.set('Canada');
+    this.touchedAddress.set(false);
   }
 }

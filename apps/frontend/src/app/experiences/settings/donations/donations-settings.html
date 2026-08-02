@@ -605,6 +605,226 @@
     </div>
   </div>
 
+  <!-- Receipts configuration -->
+  <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6">
+    <h3 class="text-lg font-semibold flex items-center gap-2 border-b border-base-200 pb-3">
+      <pc-icon name="document-check" class="text-primary" [size]="5"></pc-icon>
+      Donation receipts
+    </h3>
+    <p class="text-xs text-base-content/60">
+      Official receipts are numbered per year, immutable once issued (corrections go through cancel-and-replace), and
+      kept even when cancelled. Issuer details below are frozen onto each receipt at issue time.
+    </p>
+
+    <!-- Regime -->
+    <div class="flex flex-col gap-1.5 max-w-xl">
+      <label for="receipt-regime" class="text-xs font-semibold text-base-content/95">Receipting regime</label>
+      <select
+        id="receipt-regime"
+        class="select select-bordered w-full text-xs font-semibold"
+        (change)="setReceiptRegime($any($event.target).value)"
+      >
+        <option value="" [selected]="!receiptRegime()">Not configured — receipts off</option>
+        @for (spec of receiptRegimes; track spec.id) {
+        <option [value]="spec.id" [selected]="spec.id === receiptRegime()">{{ spec.label }}</option>
+        }
+      </select>
+    </div>
+
+    @if (regimeSpec(); as spec) {
+    <!-- Counsel caveat: plain language, never printed on receipts -->
+    <div class="alert alert-warning text-xs">
+      <pc-icon name="exclamation-triangle" [size]="4"></pc-icon>
+      <span>{{ spec.settingsCaveat }}</span>
+    </div>
+
+    @if (regimeIsExternal()) {
+    <div class="alert alert-info text-xs">
+      <pc-icon name="information-circle" [size]="4"></pc-icon>
+      <span>{{ spec.externalExplanation }}</span>
+    </div>
+    } @else {
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-org-name" class="text-xs font-semibold text-base-content/95"
+          >Legal organization name (as registered)</label
+        >
+        <input
+          id="receipt-org-name"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          [value]="receiptOrgName()"
+          (input)="receiptOrgName.set($any($event.target).value)"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-org-address" class="text-xs font-semibold text-base-content/95"
+          >Registered organization address</label
+        >
+        <input
+          id="receipt-org-address"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          [value]="receiptOrgAddress()"
+          (input)="receiptOrgAddress.set($any($event.target).value)"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-reg-number" class="text-xs font-semibold text-base-content/95"
+          >{{ spec.registrationNumberLabel || 'Registration number' }}</label
+        >
+        <input
+          id="receipt-reg-number"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          [value]="receiptRegNumber()"
+          (input)="receiptRegNumber.set($any($event.target).value)"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-place" class="text-xs font-semibold text-base-content/95"
+          >Place of issue (city / town)</label
+        >
+        <input
+          id="receipt-place"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          [value]="receiptPlaceOfIssue()"
+          (input)="receiptPlaceOfIssue.set($any($event.target).value)"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-agent" class="text-xs font-semibold text-base-content/95">{{ spec.issuerRole }}</label>
+        <input
+          id="receipt-agent"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          placeholder="Full name"
+          [value]="receiptAgentName()"
+          (input)="receiptAgentName.set($any($event.target).value)"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-signatory" class="text-xs font-semibold text-base-content/95">Signatory name</label>
+        <input
+          id="receipt-signatory"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          [value]="receiptSignatoryName()"
+          (input)="receiptSignatoryName.set($any($event.target).value)"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-signatory-title" class="text-xs font-semibold text-base-content/95">Signatory title</label>
+        <input
+          id="receipt-signatory-title"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          placeholder="e.g. Treasurer"
+          [value]="receiptSignatoryTitle()"
+          (input)="receiptSignatoryTitle.set($any($event.target).value)"
+        />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-prefix" class="text-xs font-semibold text-base-content/95">Receipt number prefix</label>
+        <input
+          id="receipt-prefix"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          placeholder="R"
+          [value]="receiptNumberPrefix()"
+          (input)="receiptNumberPrefix.set($any($event.target).value)"
+        />
+      </div>
+      @if (spec.candidateExtraFields.includes('electoral_district')) {
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-district" class="text-xs font-semibold text-base-content/95">Electoral district</label>
+        <input
+          id="receipt-district"
+          type="text"
+          class="input input-bordered w-full text-xs font-semibold"
+          [value]="receiptElectoralDistrict()"
+          (input)="receiptElectoralDistrict.set($any($event.target).value)"
+        />
+      </div>
+      } @if (spec.candidateExtraFields.includes('polling_day')) {
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-polling-day" class="text-xs font-semibold text-base-content/95"
+          >Polling day / final voting day</label
+        >
+        <input
+          id="receipt-polling-day"
+          type="date"
+          class="input input-bordered w-full text-xs font-semibold"
+          [value]="receiptPollingDay()"
+          (input)="receiptPollingDay.set($any($event.target).value)"
+        />
+      </div>
+      }
+    </div>
+
+    <!-- Signature image (facsimile signatures are permitted on official receipts) -->
+    <div class="flex flex-col gap-1.5 max-w-xl">
+      <span class="text-xs font-semibold text-base-content/95">Signature image</span>
+      <div class="flex items-center gap-3">
+        @if (receiptSignatureFileId()) {
+        <span class="badge badge-success badge-outline gap-1 font-semibold">
+          <pc-icon name="check-circle" [size]="3"></pc-icon>
+          Uploaded
+        </span>
+        <button type="button" class="btn btn-ghost btn-xs text-error" (click)="clearSignature()">Remove</button>
+        } @else {
+        <span class="text-xs text-base-content/50">No signature yet — official receipts need one.</span>
+        }
+        <label class="btn btn-outline btn-xs gap-1" [class.btn-disabled]="uploadingSignature()">
+          @if (uploadingSignature()) { <span class="loading loading-spinner loading-xs"></span> } @else {
+          <pc-icon name="arrow-up-tray" [size]="3"></pc-icon>
+          } {{ receiptSignatureFileId() ? 'Replace' : 'Upload' }}
+          <input type="file" accept="image/*" class="hidden" (change)="onSignatureSelected($event)" />
+        </label>
+      </div>
+    </div>
+
+    <!-- Mode + auto-issue -->
+    <div class="flex flex-col sm:flex-row gap-6 pt-2">
+      <div class="flex flex-col gap-1.5">
+        <label for="receipt-mode" class="text-xs font-semibold text-base-content/95">Receipting style</label>
+        <select
+          id="receipt-mode"
+          class="select select-bordered select-sm text-xs font-semibold"
+          (change)="setReceiptMode($any($event.target).value)"
+        >
+          <option value="per_gift" [selected]="receiptMode() === 'per_gift'">One receipt per gift</option>
+          <option value="annual_cumulative" [selected]="receiptMode() === 'annual_cumulative'">
+            One cumulative receipt per donor per year
+          </option>
+        </select>
+      </div>
+      <label class="label cursor-pointer gap-3 self-end">
+        <input
+          type="checkbox"
+          class="toggle toggle-primary toggle-sm"
+          [checked]="receiptAutoIssue()"
+          (change)="receiptAutoIssue.set($any($event.target).checked)"
+        />
+        <span class="text-xs font-semibold text-base-content/95">Auto-issue receipts on new gifts</span>
+      </label>
+      <button
+        type="button"
+        class="btn btn-outline btn-sm gap-2 self-end"
+        [disabled]="previewingReceipt()"
+        (click)="previewReceipt()"
+        title="Opens a SPECIMEN-watermarked sample rendered from the saved settings"
+      >
+        @if (previewingReceipt()) { <span class="loading loading-spinner loading-xs"></span> } @else {
+        <pc-icon name="eye" [size]="4"></pc-icon>
+        } Preview receipt
+      </button>
+    </div>
+    } }
+  </div>
+
   <!-- Action buttons footer -->
   <div class="border-t border-base-200 pt-6 mt-8 flex items-center justify-between">
     <div>

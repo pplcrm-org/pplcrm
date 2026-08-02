@@ -51,10 +51,32 @@ describe('RecordDonationDialog', () => {
     expect(component['donorInvalid']()).toBe(true);
   });
 
-  it('should record the donation with the selected donor, amount in cents, and method', async () => {
+  /** Fill the required mailing-address block — no gift is recorded without one (receipts print it). */
+  const fillAddress = () => {
+    component['street'].set('12 Maple Ave');
+    component['city'].set('Ottawa');
+    component['province'].set('ON');
+    component['postal'].set('K1A 0A1');
+    component['country'].set('Canada');
+  };
+
+  it('should not submit without the donor mailing address', async () => {
+    component['selectDonor'](donor);
+    component['amount'].set(50);
+    component['street'].set('');
+    component['city'].set('');
+
+    await component['submit']();
+
+    expect(mockDonationsSvc.recordDonation).not.toHaveBeenCalled();
+    expect(component['addressInvalid']()).toBe(true);
+  });
+
+  it('should record the donation with the donor, amount in cents, method, and mailing address', async () => {
     component['selectDonor'](donor);
     component['amount'].set(50);
     component['method'].set('cash');
+    fillAddress();
 
     await component['submit']();
 
@@ -62,14 +84,17 @@ describe('RecordDonationDialog', () => {
       personId: 'p1',
       amountCents: 5000,
       method: 'cash',
+      address: { street: '12 Maple Ave', apt: null, city: 'Ottawa', state: 'ON', zip: 'K1A 0A1', country: 'Canada' },
     });
-    expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Saved. $50.00 from Jane Doe recorded and receipted');
+    // No receipt claim in the toast: whether a receipt is issued depends on workspace settings.
+    expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Saved. $50.00 from Jane Doe recorded');
   });
 
   it('should show an error alert when the save fails', async () => {
     mockDonationsSvc.recordDonation.mockRejectedValue(new Error('Choose who gave this gift. Receipts need a name.'));
     component['selectDonor'](donor);
     component['amount'].set(50);
+    fillAddress();
 
     await component['submit']();
 

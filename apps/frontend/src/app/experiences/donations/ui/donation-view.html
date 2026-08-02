@@ -1,0 +1,169 @@
+<pc-detail-layout
+  [title]="donorName() ? 'Gift from ' + donorName() : 'Gift'"
+  [eyebrow]="'Donation'"
+  [crumbs]="crumbs()"
+  [isLoading]="isLoading() && !donation()"
+  [hasRecord]="!initialized() || !!donation()"
+  [showDelete]="false"
+>
+  @if (donation(); as d) {
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Left: the gift itself -->
+    <div class="lg:col-span-1 flex flex-col gap-6">
+      <pc-profile-card iconName="currency-dollar">
+        <h2 class="text-2xl font-bold text-base-content text-center mb-1 leading-tight tabular-nums">
+          {{ formatCurrency(d.amount) }}
+        </h2>
+        <p class="text-center text-xs text-base-content/50 mb-4">{{ formatDate(d.created_at) }}</p>
+
+        <div class="w-full flex flex-col gap-3 text-sm border-t border-base-200 pt-4">
+          <pc-detail-row icon="user-circle" iconClass="text-primary">
+            <span>Donor:</span>
+            <a pc-row-action class="font-bold text-primary hover:underline" [routerLink]="['/people', d.person_id]">
+              {{ donorName() || 'Deleted contact' }}
+            </a>
+          </pc-detail-row>
+          <pc-detail-row icon="credit-card" iconClass="text-primary">
+            <span>Method:</span>
+            <span pc-row-action class="font-bold">
+              {{ methodLabel(d.method) }} @if (d.pledge_id) {
+              <span class="badge badge-outline badge-primary badge-sm ml-1">Monthly</span> }
+            </span>
+          </pc-detail-row>
+          <pc-detail-row icon="information-circle" iconClass="text-primary">
+            <span>Status:</span>
+            <span pc-row-action>
+              @switch (d.status) { @case ('succeeded') {
+              <span class="badge badge-success badge-outline font-semibold">Succeeded</span>
+              } @case ('refunded') {
+              <span class="badge badge-error badge-outline font-semibold">Refunded</span>
+              } @case ('disputed') {
+              <span class="badge badge-warning badge-outline font-semibold">Disputed</span>
+              } @default {
+              <span class="badge badge-ghost font-semibold capitalize">{{ d.status }}</span>
+              } }
+            </span>
+          </pc-detail-row>
+          @if (d.campaign_name) {
+          <pc-detail-row icon="megaphone" iconClass="text-primary">
+            <span>Campaign:</span>
+            <span pc-row-action class="font-bold">{{ d.campaign_name }}</span>
+          </pc-detail-row>
+          } @if (d.street) {
+          <div class="p-3 bg-base-200/30 rounded-lg text-xs text-base-content/70">
+            <span class="pc-eyebrow block mb-1">Address at gift time</span>
+            {{ d.street }}@if (d.apt) {, {{ d.apt }}}<br />
+            {{ d.city }}, {{ d.state }} {{ d.zip }}<br />
+            {{ d.country }}
+          </div>
+          }
+        </div>
+      </pc-profile-card>
+    </div>
+
+    <!-- Right: receipts -->
+    <div class="lg:col-span-2 flex flex-col gap-6">
+      <div class="card border border-base-200 bg-base-100 shadow-sm">
+        <div class="card-body p-5">
+          <div class="flex items-center justify-between gap-3 mb-2">
+            <h3 class="font-bold text-base-content">Receipt</h3>
+            @if (canIssue()) {
+            <button class="btn btn-primary btn-sm gap-2" [disabled]="acting()" (click)="issueReceipt()">
+              <pc-icon name="document-check" [size]="4"></pc-icon>
+              Issue receipt
+            </button>
+            }
+          </div>
+
+          @if (!isAdmin()) {
+          <!-- Non-admins see state only: issuing belongs to the workspace's declared signatory. -->
+          @switch (d.receipt_status) { @case ('receipted') {
+          <p class="text-sm text-base-content/70">
+            Receipted — <span class="font-semibold">{{ d.receipt_number }}</span>. An admin can download or replace it.
+          </p>
+          } @case ('cancelled') {
+          <p class="text-sm text-base-content/70">The receipt for this gift was cancelled. An admin can reissue it.</p>
+          } @default {
+          <p class="text-sm text-base-content/70">No receipt has been issued for this gift.</p>
+          } } } @else { @if (receipts().length === 0) {
+          <p class="text-sm text-base-content/60">
+            No receipt has been issued for this gift. @if (d.status !== 'succeeded') { A refunded or disputed gift
+            cannot be receipted. }
+          </p>
+          } @else {
+          <div class="overflow-x-auto">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Number</th>
+                  <th>Kind</th>
+                  <th>Status</th>
+                  <th>Issued</th>
+                  <th class="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (r of receipts(); track r.id) {
+                <tr>
+                  <td class="font-semibold tabular-nums">{{ r.receipt_number || '—' }}</td>
+                  <td>{{ kindLabel(r.kind) }}</td>
+                  <td>
+                    @if (r.status === 'issued') {
+                    <span class="badge badge-success badge-outline badge-sm font-semibold">Issued</span>
+                    } @else {
+                    <span
+                      class="badge badge-warning badge-outline badge-sm font-semibold"
+                      [title]="r.cancelled_reason || ''"
+                      >Cancelled</span
+                    >
+                    } @if (r.reissue_required) {
+                    <span class="badge badge-error badge-outline badge-sm font-semibold ml-1">Reissue required</span>
+                    }
+                  </td>
+                  <td class="text-xs tabular-nums">{{ formatDate(r.issued_at) }}</td>
+                  <td class="text-right">
+                    <div class="flex justify-end gap-1">
+                      <button
+                        class="btn btn-ghost btn-xs gap-1"
+                        [disabled]="!r.file_id"
+                        [title]="r.file_id ? 'Download PDF' : 'PDF is being generated'"
+                        (click)="downloadReceipt(r)"
+                      >
+                        <pc-icon name="arrow-down-tray" [size]="3"></pc-icon>
+                        PDF
+                      </button>
+                      @if (r.status === 'issued') {
+                      <button class="btn btn-ghost btn-xs" [disabled]="acting()" (click)="reissueReceipt(r)">
+                        Replace
+                      </button>
+                      <button class="btn btn-ghost btn-xs text-error" [disabled]="acting()" (click)="cancelReceipt(r)">
+                        Cancel
+                      </button>
+                      } @else if (r.reissue_required || r.status === 'cancelled') {
+                      <button class="btn btn-ghost btn-xs" [disabled]="acting()" (click)="reissueReceipt(r)">
+                        Reissue
+                      </button>
+                      }
+                    </div>
+                  </td>
+                </tr>
+                @if (r.cancelled_reason) {
+                <tr>
+                  <td colspan="5" class="text-xs text-base-content/50 pt-0">
+                    Cancelled {{ formatDate(r.cancelled_at) }} — {{ r.cancelled_reason }}
+                  </td>
+                </tr>
+                } }
+              </tbody>
+            </table>
+          </div>
+          } }
+        </div>
+      </div>
+
+      <!-- Activity log (mandatory on every mutating view) -->
+      <pc-record-activities [entity]="'persons'" [entityId]="d.person_id ?? ''"></pc-record-activities>
+    </div>
+  </div>
+  }
+</pc-detail-layout>

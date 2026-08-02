@@ -172,13 +172,31 @@ describe('PersonView', () => {
     expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Email copied to clipboard');
   });
 
-  it('derives donation method and receipt from existing columns', () => {
+  it('derives donation method from existing columns and receipt from REAL receipt coverage', () => {
     expect(component['donationMethod']({ stripe_session_id: 'cs_1', pledge_id: 'pl_1' })).toBe('Card · monthly');
     expect(component['donationMethod']({ stripe_session_id: 'cs_1', pledge_id: null })).toBe('Card');
     expect(component['donationMethod']({ stripe_session_id: null, pledge_id: null })).toBe('Manual');
 
-    expect(component['donationReceipt']({ status: 'succeeded' })).toEqual({ label: 'Receipted', type: 'success' });
-    expect(component['donationReceipt']({ status: 'pending' })).toEqual({ label: 'Pending', type: 'warning' });
+    // A succeeded gift is NOT "Receipted" until a receipt actually covers it.
+    expect(component['donationReceipt']({ status: 'succeeded', receipt_status: 'none' })).toEqual({
+      label: 'No receipt',
+      type: 'neutral',
+    });
+    expect(
+      component['donationReceipt']({
+        status: 'succeeded',
+        receipt_status: 'receipted',
+        receipt_number: 'R-2026-00007',
+      }),
+    ).toEqual({ label: 'R-2026-00007', type: 'success' });
+    expect(component['donationReceipt']({ status: 'succeeded', receipt_status: 'cancelled' })).toEqual({
+      label: 'Receipt cancelled',
+      type: 'warning',
+    });
+    expect(component['donationReceipt']({ status: 'refunded', receipt_status: 'none' })).toEqual({
+      label: 'Refunded',
+      type: 'error',
+    });
   });
 
   it('shows a Monthly donor chip when the person has an active pledge', async () => {

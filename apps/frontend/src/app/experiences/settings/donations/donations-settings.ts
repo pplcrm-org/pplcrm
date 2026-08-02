@@ -1,15 +1,23 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormField, form, max, min } from '@angular/forms/signals';
 import { ActivatedRoute } from '@angular/router';
-import { STRIPE_CONNECT_COUNTRIES, type StripeConnectCountry } from '@common';
+import {
+  RECEIPT_REGIMES,
+  RECEIPT_REGIME_IDS,
+  STRIPE_CONNECT_COUNTRIES,
+  type ReceiptRegimeId,
+  type StripeConnectCountry,
+} from '@common';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
 import { Table } from '@uxcommon/components/table/table';
 import { createLoadingGate } from '@uxcommon/loading-gate';
+import { DonationReceiptsService } from '../../../services/api/donation-receipts-service';
 import { DonationsService } from '../../../services/api/donations-service';
 import { TokenService } from '../../../services/api/token-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { FilesService } from '../../files/services/files.service';
 import { SettingsService } from '../services/settings-service';
 
 /** Where donations are processed and payment data stored, derived from the Stripe Connect state. */
@@ -58,6 +66,8 @@ export class DonationsSettingsComponent implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly tokenSvc = inject(TokenService);
   private readonly donationsSvc = inject(DonationsService);
+  private readonly receiptsSvc = inject(DonationReceiptsService);
+  private readonly filesSvc = inject(FilesService);
   private readonly dialogs = inject(ConfirmDialogService);
   private readonly route = inject(ActivatedRoute);
 
@@ -84,6 +94,32 @@ export class DonationsSettingsComponent implements OnInit {
   protected readonly donationLimit = signal(1000);
   protected readonly restrictResidency = signal(false);
   protected readonly taxCreditTiers = signal<TaxCreditTier[]>([]);
+
+  // ── Receipts (CRA charitable / Canadian political regimes) ──────────────────
+  protected readonly receiptRegimes = RECEIPT_REGIME_IDS.map((id) => RECEIPT_REGIMES[id]);
+  protected readonly receiptRegime = signal<'' | ReceiptRegimeId>('');
+  protected readonly receiptMode = signal<'per_gift' | 'annual_cumulative'>('per_gift');
+  protected readonly receiptAutoIssue = signal(false);
+  protected readonly receiptOrgName = signal('');
+  protected readonly receiptOrgAddress = signal('');
+  protected readonly receiptRegNumber = signal('');
+  protected readonly receiptSignatoryName = signal('');
+  protected readonly receiptSignatoryTitle = signal('');
+  protected readonly receiptSignatureFileId = signal('');
+  protected readonly receiptNumberPrefix = signal('R');
+  protected readonly receiptPlaceOfIssue = signal('');
+  protected readonly receiptAgentName = signal('');
+  protected readonly receiptElectoralDistrict = signal('');
+  protected readonly receiptPollingDay = signal('');
+  protected readonly uploadingSignature = signal(false);
+  protected readonly previewingReceipt = signal(false);
+
+  /** The chosen regime's data file — drives which fields show and the counsel caveat. */
+  protected readonly regimeSpec = computed(() => {
+    const id = this.receiptRegime();
+    return id ? RECEIPT_REGIMES[id] : null;
+  });
+  protected readonly regimeIsExternal = computed(() => this.regimeSpec()?.issuance === 'external');
 
   // Donation periods
   protected readonly donationPeriods = signal<DonationPeriod[]>([]);
@@ -478,6 +514,62 @@ export class DonationsSettingsComponent implements OnInit {
     return new Date(dateStr).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' });
   }
 
+  /** Regime select change — narrow the raw DOM string to a known regime id (or none). */
+  protected setReceiptRegime(value: string): void {
+    this.receiptRegime.set(RECEIPT_REGIME_IDS.includes(value as ReceiptRegimeId) ? (value as ReceiptRegimeId) : '');
+  }
+
+  protected setReceiptMode(value: string): void {
+    this.receiptMode.set(value === 'annual_cumulative' ? 'annual_cumulative' : 'per_gift');
+  }
+
+  /** Upload the signatory's signature image; the file id is stored as a receipts.* setting. */
+  protected async onSignatureSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      this.alerts.showError('Choose an image file (PNG or JPEG works best).');
+      return;
+    }
+    this.uploadingSignature.set(true);
+    try {
+      // entityId '0': the signature belongs to workspace settings, not a record — the files
+      // service tracks liveness through the receipts.signature_file_id setting itself.
+      const registered = await this.filesSvc.uploadFileDirectly(file, {
+        entityType: 'receipt_signature',
+        entityId: '0',
+      });
+      this.receiptSignatureFileId.set(String(registered?.id ?? ''));
+      this.alerts.showSuccess('Signature uploaded. Save the configuration to apply it.');
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to upload the signature');
+    } finally {
+      this.uploadingSignature.set(false);
+    }
+  }
+
+  protected clearSignature(): void {
+    this.receiptSignatureFileId.set('');
+  }
+
+  /** Open a SPECIMEN-watermarked sample PDF rendered from the saved settings. */
+  protected async previewReceipt(): Promise<void> {
+    this.previewingReceipt.set(true);
+    try {
+      const { pdfBase64 } = await this.receiptsSvc.previewReceipt();
+      const bytes = Uint8Array.from(atob(pdfBase64), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+      window.open(url, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Save the configuration first');
+    } finally {
+      this.previewingReceipt.set(false);
+    }
+  }
+
   protected isPeriodActive(period: DonationPeriod): boolean {
     const today = new Date().toISOString().slice(0, 10);
     return period.is_active && period.start_date <= today && (!period.end_date || period.end_date >= today);
@@ -503,6 +595,27 @@ export class DonationsSettingsComponent implements OnInit {
       .map((r) => r.trim())
       .filter(Boolean);
     this.selectedRegions.set(parsedRegions);
+
+    // Receipts
+    const regime = this.settingsSvc.getValue<string>('receipts.regime', '');
+    this.receiptRegime.set(RECEIPT_REGIME_IDS.includes(regime as ReceiptRegimeId) ? (regime as ReceiptRegimeId) : '');
+    this.receiptMode.set(
+      this.settingsSvc.getValue<string>('receipts.mode', 'per_gift') === 'annual_cumulative'
+        ? 'annual_cumulative'
+        : 'per_gift',
+    );
+    this.receiptAutoIssue.set(this.settingsSvc.getValue<boolean>('receipts.auto_issue', false));
+    this.receiptOrgName.set(this.settingsSvc.getValue<string>('receipts.org_legal_name', ''));
+    this.receiptOrgAddress.set(this.settingsSvc.getValue<string>('receipts.org_address', ''));
+    this.receiptRegNumber.set(this.settingsSvc.getValue<string>('receipts.registration_number', ''));
+    this.receiptSignatoryName.set(this.settingsSvc.getValue<string>('receipts.signatory_name', ''));
+    this.receiptSignatoryTitle.set(this.settingsSvc.getValue<string>('receipts.signatory_title', ''));
+    this.receiptSignatureFileId.set(this.settingsSvc.getValue<string>('receipts.signature_file_id', ''));
+    this.receiptNumberPrefix.set(this.settingsSvc.getValue<string>('receipts.number_prefix', 'R'));
+    this.receiptPlaceOfIssue.set(this.settingsSvc.getValue<string>('receipts.place_of_issue', ''));
+    this.receiptAgentName.set(this.settingsSvc.getValue<string>('receipts.agent_name', ''));
+    this.receiptElectoralDistrict.set(this.settingsSvc.getValue<string>('receipts.electoral_district', ''));
+    this.receiptPollingDay.set(this.settingsSvc.getValue<string>('receipts.polling_day', ''));
 
     // Load tax tiers
     const tiersRaw = this.settingsSvc.getValue<any>('donations.tax_credit_tiers', []);
@@ -654,6 +767,22 @@ export class DonationsSettingsComponent implements OnInit {
         // Saving the residency card — restricting or allowing everyone — is the explicit choice that
         // lifts the "donations paused" gate, so record the acknowledgment alongside it.
         { key: 'donations.residency_acknowledged', value: true },
+        // Receipts: issuer details are snapshotted onto each receipt at issue time, so editing
+        // these never rewrites an already-issued receipt.
+        { key: 'receipts.regime', value: this.receiptRegime() },
+        { key: 'receipts.mode', value: this.receiptMode() },
+        { key: 'receipts.auto_issue', value: this.receiptAutoIssue() },
+        { key: 'receipts.org_legal_name', value: this.receiptOrgName().trim() },
+        { key: 'receipts.org_address', value: this.receiptOrgAddress().trim() },
+        { key: 'receipts.registration_number', value: this.receiptRegNumber().trim() },
+        { key: 'receipts.signatory_name', value: this.receiptSignatoryName().trim() },
+        { key: 'receipts.signatory_title', value: this.receiptSignatoryTitle().trim() },
+        { key: 'receipts.signature_file_id', value: this.receiptSignatureFileId() },
+        { key: 'receipts.number_prefix', value: this.receiptNumberPrefix().trim() || 'R' },
+        { key: 'receipts.place_of_issue', value: this.receiptPlaceOfIssue().trim() },
+        { key: 'receipts.agent_name', value: this.receiptAgentName().trim() },
+        { key: 'receipts.electoral_district', value: this.receiptElectoralDistrict().trim() },
+        { key: 'receipts.polling_day', value: this.receiptPollingDay().trim() },
       ];
 
       await this.settingsSvc.upsert(entries);

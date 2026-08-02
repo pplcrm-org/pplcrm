@@ -412,9 +412,11 @@
                     <td class="font-bold text-base-content tabular-nums">${{ (donation.amount / 100).toFixed(2) }}</td>
                     <td class="text-base-content/65">{{ donationMethod(donation) }}</td>
                     <td>
-                      <pc-status-badge [type]="donationReceipt(donation).type">
-                        {{ donationReceipt(donation).label }}
-                      </pc-status-badge>
+                      <a [routerLink]="['/donations', donation.id]" class="inline-flex" title="Open this gift">
+                        <pc-status-badge [type]="donationReceipt(donation).type">
+                          {{ donationReceipt(donation).label }}
+                        </pc-status-badge>
+                      </a>
                     </td>
                   </tr>
                   }

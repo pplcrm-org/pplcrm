@@ -87,7 +87,9 @@ export class DonationsGridComponent implements OnInit {
 
   protected readonly monthlyDonorCount = computed(() => this.pledges().filter((p) => p.status === 'active').length);
 
-  protected readonly receiptsSentThisMonth = computed(() => this.thisMonthGifts().filter((d) => d.receipt_sent).length);
+  protected readonly receiptedThisMonth = computed(
+    () => this.thisMonthGifts().filter((d) => d.receipt_status === 'receipted').length,
+  );
 
   /** The All tab answers "how much have we raised?" for good — the one-time tab stays on the
    * month, which is the number that moves there. */

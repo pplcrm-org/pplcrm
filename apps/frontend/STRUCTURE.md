@@ -119,7 +119,11 @@ apps/
               yard-sign-standing.ts
           donations/
             ui/
+              donation-receipts-page.html
+              donation-receipts-page.ts
               donation-tabs.ts
+              donation-view.html
+              donation-view.ts
               donations-grid.html
               donations-grid.ts
               pledges-grid.html
@@ -473,6 +477,7 @@ apps/
             api-error.ts
             bug-reports-service.ts
             connections-service.ts
+            donation-receipts-service.ts
             donations-service.ts
             events-service.ts
             http-download.ts

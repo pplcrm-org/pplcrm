@@ -9,6 +9,7 @@ export const DONATION_TABS: PcTabOption[] = [
   { id: 'all', label: 'All', route: '/donations', exact: true },
   { id: 'one-time', label: 'One-time', route: '/donations/one-time' },
   { id: 'pledges', label: 'Monthly pledges', route: '/donations/pledges' },
+  { id: 'receipts', label: 'Receipts & statements', route: '/donations/receipts' },
 ];
 
 /** Which slice of the ledger a donations page is showing. */

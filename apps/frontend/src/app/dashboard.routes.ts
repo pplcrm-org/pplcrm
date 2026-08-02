@@ -270,6 +270,17 @@ export const dashboardRoutes: Routes = [
         loadComponent: () => import('./experiences/donations/ui/pledges-grid').then((m) => m.PledgesGridComponent),
         data: { shouldReuse: true, key: 'pledgesgridroot', breadcrumb: 'Monthly pledges' },
       },
+      {
+        path: 'receipts',
+        loadComponent: () =>
+          import('./experiences/donations/ui/donation-receipts-page').then((m) => m.DonationReceiptsPageComponent),
+        data: { shouldReuse: true, key: 'donationreceiptspage', breadcrumb: 'Receipts & statements' },
+      },
+      {
+        path: ':id',
+        loadComponent: () => import('./experiences/donations/ui/donation-view').then((m) => m.DonationViewComponent),
+        data: { breadcrumb: 'Gift' },
+      },
     ],
   },
 

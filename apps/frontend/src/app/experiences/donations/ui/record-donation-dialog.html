@@ -106,9 +106,80 @@
       </select>
     </div>
 
+    <!-- Mailing address (required — receipts must print one, so gifts are not recorded without it) -->
+    <div class="flex flex-col gap-1.5">
+      <label class="text-sm font-semibold text-base-content/80" for="rd-street">Mailing address</label>
+      <input
+        id="rd-street"
+        type="text"
+        class="input input-bordered w-full text-sm"
+        [class.input-error]="addressInvalid() && !street().trim()"
+        placeholder="Street address"
+        [value]="street()"
+        (input)="street.set($any($event.target).value)"
+        (blur)="touchedAddress.set(true)"
+      />
+      <input
+        id="rd-apt"
+        type="text"
+        class="input input-bordered w-full text-sm"
+        placeholder="Unit / apt (optional)"
+        [value]="apt()"
+        (input)="apt.set($any($event.target).value)"
+      />
+      <div class="grid grid-cols-2 gap-2">
+        <input
+          id="rd-city"
+          type="text"
+          class="input input-bordered w-full text-sm"
+          [class.input-error]="addressInvalid() && !city().trim()"
+          placeholder="City"
+          [value]="city()"
+          (input)="city.set($any($event.target).value)"
+          (blur)="touchedAddress.set(true)"
+        />
+        <input
+          id="rd-province"
+          type="text"
+          class="input input-bordered w-full text-sm"
+          [class.input-error]="addressInvalid() && !province().trim()"
+          placeholder="Province / state"
+          [value]="province()"
+          (input)="province.set($any($event.target).value)"
+          (blur)="touchedAddress.set(true)"
+        />
+        <input
+          id="rd-postal"
+          type="text"
+          class="input input-bordered w-full text-sm"
+          [class.input-error]="addressInvalid() && !postal().trim()"
+          placeholder="Postal code"
+          [value]="postal()"
+          (input)="postal.set($any($event.target).value)"
+          (blur)="touchedAddress.set(true)"
+        />
+        <input
+          id="rd-country"
+          type="text"
+          class="input input-bordered w-full text-sm"
+          [class.input-error]="addressInvalid() && !country().trim()"
+          placeholder="Country"
+          [value]="country()"
+          (input)="country.set($any($event.target).value)"
+          (blur)="touchedAddress.set(true)"
+        />
+      </div>
+      @if (addressInvalid()) {
+      <p class="text-xs text-error mt-1 flex items-center gap-1">
+        <pc-icon name="exclamation-triangle" [size]="3"></pc-icon>
+        Enter the donor's mailing address — receipts need it.
+      </p>
+      }
+    </div>
+
     <p class="text-xs text-base-content/50 flex items-start gap-1.5">
       <pc-icon name="information-circle" [size]="4" class="flex-shrink-0 mt-0.5"></pc-icon>
-      A receipt goes out automatically. That's set in Workspace settings → Donations.
+      Receipts follow your Workspace settings → Donations configuration (auto-issue or manual).
     </p>
   </form>
 

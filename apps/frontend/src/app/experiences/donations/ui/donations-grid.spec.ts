@@ -27,7 +27,9 @@ describe('DonationsGridComponent', () => {
       amount: 5000,
       status: 'succeeded',
       method: 'card',
-      receipt_sent: true,
+      receipt_status: 'receipted',
+      receipt_id: 'r1',
+      receipt_number: 'R-2026-00001',
       country: 'CA',
       state: 'ON',
       created_at: thisMonthIso,
@@ -42,7 +44,9 @@ describe('DonationsGridComponent', () => {
       amount: 2500,
       status: 'failed',
       method: 'cash',
-      receipt_sent: false,
+      receipt_status: 'none',
+      receipt_id: null,
+      receipt_number: null,
       country: 'US',
       state: null,
       created_at: thisMonthIso,
@@ -58,7 +62,9 @@ describe('DonationsGridComponent', () => {
       amount: 10000,
       status: 'succeeded',
       method: 'check',
-      receipt_sent: true,
+      receipt_status: 'receipted',
+      receipt_id: 'r3',
+      receipt_number: 'R-2026-00003',
       country: 'CA',
       state: 'ON',
       created_at: lastMonthIso,
@@ -101,7 +107,7 @@ describe('DonationsGridComponent', () => {
     expect(component['thisMonthCount']()).toBe(1);
     expect(component['averageGift']()).toBe(50);
     expect(component['monthlyDonorCount']()).toBe(2);
-    expect(component['receiptsSentThisMonth']()).toBe(1);
+    expect(component['receiptedThisMonth']()).toBe(1);
   });
 
   it('should total every gift ever received on the All tab', async () => {

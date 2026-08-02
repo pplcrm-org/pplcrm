@@ -235,13 +235,16 @@ export class PersonView {
     return donation?.pledge_id ? `${base} · monthly` : base;
   }
 
-  /** Receipt status for a donation row (§3), derived from the donation status. */
+  /** Receipt status for a donation row — REAL receipt coverage from donation_receipts, not a
+   * guess from the payment status (a succeeded gift with no issued receipt reads "No receipt"). */
   protected donationReceipt(donation: any): { label: string; type: 'success' | 'warning' | 'error' | 'neutral' } {
+    const receiptStatus = String(donation?.receipt_status || '');
+    if (receiptStatus === 'receipted') return { label: donation?.receipt_number || 'Receipted', type: 'success' };
+    if (receiptStatus === 'cancelled') return { label: 'Receipt cancelled', type: 'warning' };
     const s = String(donation?.status || '').toLowerCase();
-    if (s === 'succeeded') return { label: 'Receipted', type: 'success' };
-    if (s === 'pending') return { label: 'Pending', type: 'warning' };
-    if (s === 'failed') return { label: 'Failed', type: 'error' };
-    return { label: donation?.status || '—', type: 'neutral' };
+    if (s === 'refunded') return { label: 'Refunded', type: 'error' };
+    if (s === 'disputed') return { label: 'Disputed', type: 'warning' };
+    return { label: 'No receipt', type: 'neutral' };
   }
 
   protected getMailStatusType(status: string | null | undefined): any {
