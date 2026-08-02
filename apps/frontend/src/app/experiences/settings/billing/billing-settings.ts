@@ -8,16 +8,20 @@ import { Icon } from '@icons/icon';
 import {
   ANNUAL_MONTHS_FREE,
   ANNUAL_PRICE_MULTIPLIER,
+  GATED_FEATURES,
   INBOX_PURGE_DELAY_DAYS,
   PLANS,
   PURCHASABLE_PLAN_KEYS,
   annualPriceForQuantity,
   bracketIndexForSubscribers,
+  getPlanDef,
   maxQuantity,
+  planAllowsFeature,
   planDisplayName,
   priceLabelAt,
   subscriberCapForQuantity,
   type BillingInterval,
+  type GatedFeature,
   type PlanDef,
   type PlanKey,
   type PurchasablePlanKey,
@@ -114,6 +118,12 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
    * cancellation and belongs in the Stripe portal. */
   protected readonly canChooseFree = computed(() => !this.details()?.stripeSubscriptionId);
 
+  /** A paid subscription is live. Plan changes must then go through `switchPlan` (updates the
+   * existing subscription); Checkout would CREATE a second subscription and double-bill. */
+  protected readonly hasLiveSubscription = computed(
+    () => !!this.details()?.hasActiveSubscription && !!this.details()?.stripeSubscriptionId,
+  );
+
   /** The Free tier's hard subscriber ceiling, read from the ladder rather than restated. */
   protected readonly freeSubscriberCap = subscriberCapForQuantity('free', 1);
 
@@ -190,22 +200,44 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   }
 
   protected ctaLabel(plan: PlanDef): string {
-    if (this.isCurrentPlan(plan)) return 'Current plan';
+    if (this.isCurrentPlan(plan)) {
+      if (this.canSwitchInterval(plan)) {
+        return this.billingInterval() === 'year' ? 'Switch to annual billing' : 'Switch to monthly billing';
+      }
+      return 'Current plan';
+    }
     if (plan.key === 'free') return 'Switch to Free';
-    if (!this.details()?.hasActiveSubscription) return `Choose ${plan.name}`;
+    if (!this.hasLiveSubscription()) return `Choose ${plan.name}`;
     return this.isUpgrade(plan) ? `Upgrade to ${plan.name}` : `Switch to ${plan.name}`;
   }
 
   protected ctaDisabled(plan: PlanDef): boolean {
-    return this.isCurrentPlan(plan) || this.pendingPlan() === plan.key || this.blockedReason(plan) !== null;
+    if (this.pendingPlan() === plan.key || this.blockedReason(plan) !== null) return true;
+    if (!this.isCurrentPlan(plan)) return false;
+    // The current plan's card doubles as the monthly↔annual switch when the toggle points at
+    // the other interval; with the toggle on the subscribed interval it stays a disabled marker.
+    return !this.canSwitchInterval(plan);
   }
 
-  /** Picking a tier. Free records a choice directly (it isn't purchasable); the paid tiers go
-   * through Stripe Checkout. One entry point so the cards stay uniform. */
+  /** The current plan's card can switch billing interval when the Monthly/Annual toggle points
+   * at the interval the subscription is NOT on. Free has nothing to bill, so never. */
+  private canSwitchInterval(plan: PlanDef): boolean {
+    return (
+      isPurchasablePlan(plan.key) && this.hasLiveSubscription() && this.billingInterval() !== this.details()?.interval
+    );
+  }
+
+  /** Picking a tier. Free records a choice directly (it isn't purchasable); a first paid plan
+   * goes through Stripe Checkout; with a live subscription the switch happens in place — using
+   * Checkout there would create a second subscription. One entry point so the cards stay uniform. */
   protected async choosePlan(plan: PlanDef): Promise<void> {
     if (this.ctaDisabled(plan)) return;
     if (plan.key === 'free') {
       await this.continueOnFree();
+      return;
+    }
+    if (this.hasLiveSubscription()) {
+      await this.switchTo(plan);
       return;
     }
     await this.subscribe(plan);
@@ -341,6 +373,100 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
       }
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Checkout failed. Please try again.');
+      this.pendingPlan.set(null);
+    }
+  }
+
+  /** Gated features the current plan includes and the target plan does not, as user-facing
+   * labels. Empty on an upgrade or a same-rank move. */
+  private featuresLostOn(target: PurchasablePlanKey): string[] {
+    const current = this.details()?.plan;
+    return (Object.keys(GATED_FEATURES) as GatedFeature[])
+      .filter((feature) => planAllowsFeature(current, feature) && !planAllowsFeature(target, feature))
+      .map((feature) => GATED_FEATURES[feature].label);
+  }
+
+  /** The education dialog before an in-place plan/interval switch. Downgrades name every gated
+   * feature that turns off and the email-allowance drop; every direction states exactly when the
+   * change applies and what Stripe charges or credits. Returns whether the user confirmed. */
+  private async confirmSwitch(plan: PlanDef, interval: BillingInterval): Promise<boolean> {
+    const intervalOnly = this.isCurrentPlan(plan);
+    const isDowngrade = !intervalOnly && !this.isUpgrade(plan);
+    const lines: string[] = [];
+
+    if (intervalOnly) {
+      if (interval === 'year') {
+        lines.push(
+          `Stripe invoices the annual price now (10× monthly — ${this.annualBadge}), minus a credit for the unused part of the current monthly period.`,
+        );
+      } else {
+        lines.push(
+          'Your billing changes to monthly. The unused part of your annual payment becomes a credit that covers future monthly invoices.',
+        );
+      }
+    } else if (isDowngrade) {
+      const lost = this.featuresLostOn(plan.key as PurchasablePlanKey);
+      if (lost.length) {
+        lines.push(`These features turn off immediately: ${lost.join(', ')}.`);
+      }
+      const fromMultiplier = getPlanDef(this.details()?.plan)?.pricing?.emailsPerSubscriber;
+      const toMultiplier = plan.pricing?.emailsPerSubscriber;
+      if (fromMultiplier != null && toMultiplier != null && toMultiplier < fromMultiplier) {
+        lines.push(
+          `Your monthly email allowance drops from ${fromMultiplier}× to ${toMultiplier}× your billed subscribers.`,
+        );
+      }
+      lines.push(
+        'The switch applies immediately; the unused part of what you already paid becomes a credit on future invoices.',
+      );
+    } else {
+      lines.push(
+        `The upgrade applies immediately and unlocks ${plan.name}’s features right away. Stripe charges the prorated difference for the rest of the current billing period now.`,
+      );
+    }
+
+    if (this.details()?.cancelAtPeriodEnd) {
+      lines.push('This also removes the scheduled cancellation — the subscription keeps renewing.');
+    }
+
+    return this.dialogs.confirm({
+      title: intervalOnly
+        ? `Switch to ${interval === 'year' ? 'annual' : 'monthly'} billing?`
+        : isDowngrade
+          ? `Switch to ${plan.name}?`
+          : `Upgrade to ${plan.name}?`,
+      message: lines.join(' '),
+      variant: isDowngrade ? 'danger' : 'warning',
+      confirmText: intervalOnly
+        ? 'Change billing interval'
+        : isDowngrade
+          ? `Switch to ${plan.name}`
+          : `Upgrade to ${plan.name}`,
+      cancelText: 'Keep my current plan',
+      emphasizeCancel: isDowngrade,
+    });
+  }
+
+  /** Change the live subscription in place (plan and/or interval). Checkout is only for
+   * first-time subscribers — it CREATES a subscription, so using it here would double-bill. */
+  protected async switchTo(plan: PlanDef): Promise<void> {
+    if (!isPurchasablePlan(plan.key)) return;
+    const planKey = plan.key;
+    const interval = this.billingInterval();
+
+    const confirmed = await this.confirmSwitch(plan, interval);
+    if (!confirmed) return;
+
+    this.pendingPlan.set(planKey);
+    try {
+      await this.api.billing.switchPlan.mutate({ plan: planKey, interval });
+      this.alerts.showSuccess(`You’re on ${plan.name} (${interval === 'year' ? 'annual' : 'monthly'} billing) now.`);
+      await this.loadBilling();
+    } catch (err) {
+      this.alerts.showError(
+        err instanceof Error && err.message ? err.message : 'Could not switch plans. Please try again.',
+      );
+    } finally {
       this.pendingPlan.set(null);
     }
   }

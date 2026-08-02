@@ -302,6 +302,17 @@ cancels immediately) + `billing.resumeSubscription`; `getBillingDetails` exposes
 the education dialog first; landing on Free sends the downgrade education email
 (`sendDowngradeEducationEmail` in billing/controller.ts) with real counts + the purge date.
 
+**In-app plan/interval switching (2026-08-01):** `billing.switchPlan` updates the EXISTING live
+subscription in place (`subscriptions.update`, `proration_behavior: 'always_invoice'`, quantity
+recomputed from the real emailable-subscriber count, clears `cancel_at_period_end`).
+`createCheckoutSession` now REFUSES while a subscription is live — Checkout always creates a new
+subscription and nothing cancels the old one, so "switching" through it double-billed. The
+billing page's plan cards call switchPlan when subscribed (confirm dialog first: paid downgrades
+list the gated features that turn off, danger variant); the current plan's card doubles as the
+monthly↔annual interval switch when the toggle points at the other interval. Mock mode delegates
+to `activateMockPlan`. Ops intent: Stripe billing-portal plan switching is to be disabled once
+this ships, leaving the portal for invoices/payment methods only.
+
 **Two gates are NOT tRPC middleware, because the traffic they protect is public (2026-07-27):**
 
 - **`api`** — enforced in `lib/validate-api-key.ts` `lookupTenantByApiKey()`, the single chokepoint

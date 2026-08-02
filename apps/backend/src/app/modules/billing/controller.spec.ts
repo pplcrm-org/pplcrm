@@ -498,11 +498,30 @@ describe('BillingController.createCheckoutSession — Stripe Tax parameters', ()
     vi.restoreAllMocks();
     stripeCheckoutSessionsCreate.mockReset();
     stripeCustomersCreate.mockReset();
-    ({ tenantId, customerId } = await seedBillingTenant(db));
+    // Checkout is the first-time-subscriber path: it refuses while a subscription is live, so
+    // these tests seed a tenant with a Stripe customer but no subscription.
+    ({ tenantId, customerId } = await seedBillingTenant(db, {
+      subscription_plan: 'free',
+      subscription_status: null,
+      stripe_subscription_id: null,
+    }));
   });
 
   afterEach(async () => {
     await cleanBillingTenant(db, tenantId);
+  });
+
+  it('refuses to create a Checkout session while a subscription is live (double-billing guard)', async () => {
+    await db
+      .updateTable('tenants')
+      .set({ subscription_plan: 'grassroots', subscription_status: 'active', stripe_subscription_id: 'sub_live_1' })
+      .where('id', '=', tenantId)
+      .execute();
+
+    await expect(
+      controller.createCheckoutSession({ tenant_id: tenantId, user_id: tenantId }, 'movement'),
+    ).rejects.toThrow(/already has an active subscription/);
+    expect(stripeCheckoutSessionsCreate).not.toHaveBeenCalled();
   });
 
   it('creates the Checkout session with automatic tax, address collection, and tax ID collection', async () => {
@@ -537,6 +556,97 @@ describe('BillingController.createCheckoutSession — Stripe Tax parameters', ()
         line_items: [{ price: 'price_test_movement_annual', quantity: 1 }],
       }),
     );
+  });
+});
+
+describe('BillingController.switchPlan — in-place subscription change', () => {
+  const db = (BaseRepository as any)._db;
+  let controller: BillingController;
+  let tenantId: string;
+
+  beforeEach(async () => {
+    controller = new BillingController();
+    vi.restoreAllMocks();
+    stripeSubscriptionsRetrieve.mockReset();
+    stripeSubscriptionsUpdate.mockReset();
+    stripeCheckoutSessionsCreate.mockReset();
+    // Grassroots monthly, live subscription — the switch candidate.
+    ({ tenantId } = await seedBillingTenant(db, { subscription_interval: 'month' }));
+  });
+
+  afterEach(async () => {
+    await cleanBillingTenant(db, tenantId);
+  });
+
+  it('updates the existing subscription in place — never a second Checkout', async () => {
+    stripeSubscriptionsRetrieve.mockResolvedValue({
+      id: `sub_${tenantId}`,
+      items: { data: [{ id: 'si_switch', current_period_end: 1_900_000_000 }] },
+    });
+    stripeSubscriptionsUpdate.mockResolvedValue({
+      id: `sub_${tenantId}`,
+      status: 'active',
+      items: { data: [{ id: 'si_switch', current_period_end: 1_900_000_000 }] },
+    });
+
+    const result = await controller.switchPlan({ tenant_id: tenantId, user_id: tenantId }, 'movement');
+
+    expect(result.plan).toBe('movement');
+    expect(stripeCheckoutSessionsCreate).not.toHaveBeenCalled();
+    expect(stripeSubscriptionsUpdate).toHaveBeenCalledWith(`sub_${tenantId}`, {
+      items: [{ id: 'si_switch', price: 'price_test_movement', quantity: 1 }],
+      proration_behavior: 'always_invoice',
+      cancel_at_period_end: false,
+    });
+
+    const tenant = await db.selectFrom('tenants').selectAll().where('id', '=', tenantId).executeTakeFirst();
+    expect(tenant.subscription_plan).toBe('movement');
+    expect(tenant.subscription_quantity).toBe(1);
+    expect(tenant.subscription_interval).toBe('month');
+  });
+
+  it('switches the billing interval of the same plan using the annual price id', async () => {
+    stripeSubscriptionsRetrieve.mockResolvedValue({
+      id: `sub_${tenantId}`,
+      items: { data: [{ id: 'si_switch', current_period_end: 1_900_000_000 }] },
+    });
+    stripeSubscriptionsUpdate.mockResolvedValue({
+      id: `sub_${tenantId}`,
+      status: 'active',
+      items: { data: [{ id: 'si_switch', current_period_end: 1_900_000_000 }] },
+    });
+
+    await controller.switchPlan({ tenant_id: tenantId, user_id: tenantId }, 'grassroots', 'year');
+
+    expect(stripeSubscriptionsUpdate).toHaveBeenCalledWith(
+      `sub_${tenantId}`,
+      expect.objectContaining({
+        items: [{ id: 'si_switch', price: 'price_test_grassroots_annual', quantity: 1 }],
+      }),
+    );
+
+    const tenant = await db.selectFrom('tenants').selectAll().where('id', '=', tenantId).executeTakeFirst();
+    expect(tenant.subscription_interval).toBe('year');
+  });
+
+  it('refuses without a live subscription', async () => {
+    await db
+      .updateTable('tenants')
+      .set({ subscription_status: 'canceled', stripe_subscription_id: null })
+      .where('id', '=', tenantId)
+      .execute();
+
+    await expect(controller.switchPlan({ tenant_id: tenantId, user_id: tenantId }, 'movement')).rejects.toThrow(
+      /no active subscription/,
+    );
+    expect(stripeSubscriptionsUpdate).not.toHaveBeenCalled();
+  });
+
+  it('refuses a switch to the plan and interval already subscribed', async () => {
+    await expect(
+      controller.switchPlan({ tenant_id: tenantId, user_id: tenantId }, 'grassroots', 'month'),
+    ).rejects.toThrow(/already on this plan/);
+    expect(stripeSubscriptionsUpdate).not.toHaveBeenCalled();
   });
 });
 

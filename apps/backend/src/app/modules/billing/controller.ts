@@ -364,6 +364,18 @@ export class BillingController {
       return { url: mockSuccessUrl };
     }
 
+    // Checkout always CREATES a subscription and nothing cancels the previous one, so reaching
+    // this with a live subscription would leave the tenant paying for two at once. A subscribed
+    // tenant changes plans through `switchPlan`, which updates the existing subscription.
+    const hasLiveSubscription =
+      !!tenant.stripe_subscription_id &&
+      ['active', 'trialing', 'past_due'].includes(String(tenant.subscription_status ?? ''));
+    if (hasLiveSubscription) {
+      throw new BadRequestError(
+        'This workspace already has an active subscription. Use the plan card’s Switch button, which changes your existing subscription instead of starting a second one.',
+      );
+    }
+
     // Live Stripe Mode
     let stripeCustomerId = tenant.stripe_customer_id as string | undefined;
     if (!stripeCustomerId) {
@@ -423,6 +435,92 @@ export class BillingController {
     });
 
     return { url: session.url };
+  }
+
+  /**
+   * Change the plan (or billing interval) of the EXISTING live subscription, in place. This is
+   * the only correct switch path for a subscribed tenant: `createCheckoutSession` always creates
+   * a brand-new subscription and nothing cancels the old one, so "switching" through Checkout
+   * left the tenant with two active subscriptions, both charging (bug fixed 2026-08-01).
+   *
+   * Proration is invoiced immediately (`always_invoice`) — an upgrade charges the prorated
+   * difference now; a downgrade's unused amount becomes a customer credit applied to future
+   * invoices. The quantity is recomputed from the tenant's real emailable-subscriber count, so
+   * the new plan's bracket is honest from the first invoice. A scheduled period-end cancellation
+   * is cleared: switching plans is a decision to stay.
+   */
+  public async switchPlan(
+    auth: { tenant_id: string; user_id: string },
+    plan: PurchasablePlanKey,
+    interval: BillingInterval = 'month',
+  ): Promise<{ plan: PurchasablePlanKey; interval: BillingInterval; endsAt: string | null }> {
+    const tenant = asTenantBillingRow(
+      await tenantsRepo.getOneBy('id', { tenant_id: auth.tenant_id, value: auth.tenant_id }),
+    );
+    if (!tenant) {
+      throw new NotFoundError('Tenant not found');
+    }
+
+    const hasLiveSubscription =
+      !!tenant.stripe_subscription_id && ['active', 'trialing', 'past_due'].includes(tenant.subscription_status ?? '');
+    if (!hasLiveSubscription) {
+      throw new BadRequestError('There is no active subscription to change — choose a plan to subscribe first.');
+    }
+    if (tenant.subscription_plan === plan && tenant.subscription_interval === interval) {
+      throw new BadRequestError('You are already on this plan and billing interval.');
+    }
+
+    // The billed quantity is the app-managed subscriber bracket — recompute it for the target
+    // plan's ladder from the real list, and refuse a tier the list has outgrown.
+    const subscribers = await countEmailableSubscribers(auth.tenant_id, tenantsRepo.db);
+    const quantity = bracketIndexForSubscribers(plan, subscribers);
+    if (quantity === null) {
+      throw new BadRequestError('Your list is too large for this tier — contact us so we can find a plan that fits.');
+    }
+
+    if (isMockMode) {
+      await this.activateMockPlan(auth, plan, quantity, interval);
+      return { plan, interval, endsAt: null };
+    }
+
+    const priceId = PRICE_ID_BY_PLAN[plan][interval];
+    if (!priceId) {
+      throw new Error(`Stripe Price ID is not configured for plan: ${plan} (${interval})`);
+    }
+
+    const subscriptionId = String(tenant.stripe_subscription_id);
+    const current = await getStripe().subscriptions.retrieve(subscriptionId);
+    const item = current.items.data[0];
+    if (!item) {
+      throw new BadRequestError('The subscription has no line item to change — contact support.');
+    }
+
+    const updated = await getStripe().subscriptions.update(subscriptionId, {
+      items: [{ id: item.id, price: priceId, quantity }],
+      proration_behavior: 'always_invoice',
+      cancel_at_period_end: false,
+    });
+
+    await tenantsRepo.update({
+      tenant_id: auth.tenant_id,
+      id: auth.tenant_id,
+      row: {
+        subscription_plan: plan,
+        subscription_status: updated.status,
+        subscription_ends_at: subscriptionPeriodEnd(updated),
+        subscription_quantity: quantity,
+        subscription_interval: interval,
+      },
+    });
+    logger.info(`[switchPlan] Tenant ${auth.tenant_id} switched to ${plan} (${interval}), quantity ${quantity}`);
+
+    try {
+      await this.handleSubscriptionChange(auth.tenant_id, plan, quantity, false, interval);
+    } catch (mailErr) {
+      logger.error({ err: mailErr }, 'Failed to run subscription-change side effects after a plan switch');
+    }
+
+    return { plan, interval, endsAt: subscriptionPeriodEnd(updated) };
   }
 
   public async createPortalSession(auth: { tenant_id: string }) {

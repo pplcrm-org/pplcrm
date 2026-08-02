@@ -24,6 +24,13 @@ export const BillingRouter = router({
     .input(z.object({ plan: z.enum(PURCHASABLE_PLAN_KEYS), interval: z.enum(BILLING_INTERVALS).default('month') }))
     .mutation(({ ctx, input }) => controller.createCheckoutSession(ctx.auth, input.plan, input.interval)),
 
+  /** Change the live subscription in place — plan and/or billing interval. The subscribed path:
+   * createCheckout CREATES a subscription, so calling it while one is live would double-bill
+   * (and now refuses); this updates the existing subscription with immediate proration. */
+  switchPlan: adminOrOwnerProcedure
+    .input(z.object({ plan: z.enum(PURCHASABLE_PLAN_KEYS), interval: z.enum(BILLING_INTERVALS).default('month') }))
+    .mutation(({ ctx, input }) => controller.switchPlan(ctx.auth, input.plan, input.interval)),
+
   createPortal: adminOrOwnerProcedure.mutation(({ ctx }) => controller.createPortalSession(ctx.auth)),
 
   /** In-app period-end cancellation — the educated path: the billing page shows the downgrade

@@ -90,6 +90,7 @@ describe('BillingSettingsComponent', () => {
         selectFree: { mutate: vi.fn().mockResolvedValue(undefined) },
         createPortal: { mutate: vi.fn().mockResolvedValue({ url: 'https://portal.stripe.test/session' }) },
         createCheckout: { mutate: vi.fn().mockResolvedValue({ url: 'https://checkout.stripe.test/session' }) },
+        switchPlan: { mutate: vi.fn().mockResolvedValue({ plan: 'movement', interval: 'month', endsAt: null }) },
         syncSubscription: { mutate: vi.fn().mockResolvedValue({ synced: false }) },
         activateMockPlan: { mutate: vi.fn().mockResolvedValue(undefined) },
         cancelMockPlan: { mutate: vi.fn().mockResolvedValue(undefined) },
@@ -425,6 +426,74 @@ describe('BillingSettingsComponent', () => {
 
       expect(mockDialogs.confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Move to the Free plan?' }));
       expect(mockApi.billing.selectFree.mutate).not.toHaveBeenCalled();
+    });
+  });
+
+  /** With a live subscription, a plan change must UPDATE it in place. Routing it through
+   * Checkout created a second subscription that nothing canceled — double-billing. */
+  describe('in-place plan switch for a live subscription', () => {
+    const paidPlan = (key: 'grassroots' | 'movement'): PlanDef => {
+      const plan = component['plans'].find((p) => p.key === key);
+      if (!plan) throw new Error(`${key} should be one of the displayed plan cards.`);
+      return plan;
+    };
+
+    it('confirms, then switches in place — never through Checkout', async () => {
+      await render();
+      mockDialogs.confirm.mockResolvedValue(true);
+
+      await component['choosePlan'](paidPlan('movement'));
+
+      expect(mockDialogs.confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Upgrade to Movement?' }));
+      expect(mockApi.billing.switchPlan.mutate).toHaveBeenCalledWith({ plan: 'movement', interval: 'month' });
+      expect(mockApi.billing.createCheckout.mutate).not.toHaveBeenCalled();
+      expect(redirects).toEqual([]);
+    });
+
+    it('does nothing when the dialog is declined', async () => {
+      await render();
+
+      await component['choosePlan'](paidPlan('movement'));
+
+      expect(mockDialogs.confirm).toHaveBeenCalled();
+      expect(mockApi.billing.switchPlan.mutate).not.toHaveBeenCalled();
+    });
+
+    it('names the Movement-only features that turn off before a paid downgrade', async () => {
+      await render({ details: { plan: 'movement' } });
+      mockDialogs.confirm.mockResolvedValue(true);
+
+      await component['choosePlan'](paidPlan('grassroots'));
+
+      const dialog = mockDialogs.confirm.mock.calls[0][0];
+      expect(dialog.title).toBe('Switch to Grassroots?');
+      expect(dialog.variant).toBe('danger');
+      expect(dialog.message).toContain('Canvassing');
+      expect(dialog.message).toContain('Deliveries');
+      expect(mockApi.billing.switchPlan.mutate).toHaveBeenCalledWith({ plan: 'grassroots', interval: 'month' });
+    });
+
+    it('offers the current plan card as a billing-interval switch', async () => {
+      await render();
+      mockDialogs.confirm.mockResolvedValue(true);
+      component['billingInterval'].set('year');
+
+      expect(component['ctaDisabled'](paidPlan('grassroots'))).toBe(false);
+      expect(component['ctaLabel'](paidPlan('grassroots'))).toBe('Switch to annual billing');
+
+      await component['choosePlan'](paidPlan('grassroots'));
+
+      expect(mockApi.billing.switchPlan.mutate).toHaveBeenCalledWith({ plan: 'grassroots', interval: 'year' });
+    });
+
+    it('still uses Checkout for a first-time subscriber', async () => {
+      await render({ details: { plan: 'free', hasActiveSubscription: false, stripeSubscriptionId: null } });
+
+      await component['choosePlan'](paidPlan('grassroots'));
+
+      expect(mockApi.billing.createCheckout.mutate).toHaveBeenCalledWith({ plan: 'grassroots', interval: 'month' });
+      expect(mockApi.billing.switchPlan.mutate).not.toHaveBeenCalled();
+      expect(redirects).toEqual(['https://checkout.stripe.test/session']);
     });
   });
 });

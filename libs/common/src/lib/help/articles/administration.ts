@@ -199,7 +199,11 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Paid plans can be billed **monthly or annually**. Annual billing costs exactly 10× the monthly price at every bracket — **2 months free** — paid up front for the year. Pick the interval with the Monthly/Annual toggle on the [Billing](/workspace/billing) page before upgrading; existing subscribers can switch interval from the Stripe billing portal (**Manage subscription**). Monthly is the default — if your campaign wraps up mid-year, don’t prepay twelve months.',
+        text: 'Paid plans can be billed **monthly or annually**. Annual billing costs exactly 10× the monthly price at every bracket — **2 months free** — paid up front for the year. Pick the interval with the Monthly/Annual toggle on the [Billing](/workspace/billing) page before upgrading. Already subscribed? Set the toggle to the other interval and your current plan’s card offers the switch; a dialog states what Stripe charges or credits before anything changes. Monthly is the default — if your campaign wraps up mid-year, don’t prepay twelve months.',
+      },
+      {
+        kind: 'p',
+        text: 'Moving between the paid tiers (Grassroots ↔ Movement) happens right on the plan cards too: click the other tier’s button and confirm. The change applies immediately to your existing subscription — an upgrade charges the prorated difference for the rest of the current period and unlocks the new features right away; a downgrade turns the higher tier’s features off immediately and credits the unused amount toward future invoices. The confirmation dialog lists exactly which features turn off before you commit. Moving to **Free** is different — it is a cancellation; see [Canceling a paid plan](#cancel-downgrade).',
       },
       {
         kind: 'p',
