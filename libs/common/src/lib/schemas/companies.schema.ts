@@ -7,8 +7,24 @@ import { z } from 'zod';
  */
 export const CompanyEnrichmentObj = z
   .object({
+    /** Set only when Google actually answered — either with a place, or with "no such place". */
     google_enriched: z.boolean().optional(),
     place_details: z.unknown().optional(),
+    /**
+     * How the last lookup ended, so a failure is never mistaken for a successful empty result.
+     * 'denied' (Google refused the request — usually a bad or blocked API key) is recorded
+     * WITHOUT google_enriched: it parks the company so the daily sweep stops re-queueing it,
+     * while leaving it obvious that no data was ever retrieved. Pressing "Re-check Google"
+     * clears it. Transient failures are not recorded at all — they just retry.
+     */
+    google_lookup: z
+      .object({
+        status: z.enum(['ok', 'no_match', 'denied']),
+        /** ISO timestamp of the lookup. */
+        at: z.string(),
+        detail: z.string().optional(),
+      })
+      .optional(),
   })
   .catchall(z.unknown());
 

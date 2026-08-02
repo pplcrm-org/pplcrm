@@ -1,6 +1,11 @@
 import { BaseController } from '../../lib/base.controller';
 import { CompaniesRepo } from './repositories/companies.repo';
-import { CompaniesEnrichmentService, type CompanyLookupResult } from './services/companies-enrichment.service';
+import {
+  CompaniesEnrichmentService,
+  enrichmentIsSettled,
+  parseEnrichment,
+  type CompanyLookupResult,
+} from './services/companies-enrichment.service';
 import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
 import type {
   Models,
@@ -62,30 +67,54 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
   public override async getOneById(input: { tenant_id: string; id: string }): Promise<any> {
     const company = (await super.getOneById(input)) as any;
     if (company) {
-      let enrichment: Record<string, unknown> = {};
-      if (company.enrichment) {
-        enrichment = typeof company.enrichment === 'string' ? JSON.parse(company.enrichment) : company.enrichment;
-      }
-      if (!enrichment || !enrichment['google_enriched']) {
-        await this.getRepo()
-          .db.insertInto('background_jobs')
-          .values({
-            tenant_id: input.tenant_id,
-            queue: 'default',
-            status: 'pending',
-            payload: JSON.stringify({
-              type: 'enrich_company_google',
-              company_id: String(company.id),
-              tenant_id: String(input.tenant_id),
-            }),
-            run_at: new Date(),
-            max_attempts: 3,
-          })
-          .execute()
-          .catch((err) => logger.error({ err }, 'Failed to queue google enrichment job on getOneById'));
-      }
+      await this.queueEnrichmentOnView(input.tenant_id, String(company.id), company.enrichment);
     }
     return company;
+  }
+
+  /**
+   * Opening a company's page queues a Google Places lookup when we have no answer on file yet.
+   *
+   * This runs on every single detail-page load and each lookup costs two billable Google calls
+   * (a text search, then a place-details fetch), so it is guarded three ways:
+   *
+   * 1. we already have Google's answer, or Google refused the request — nothing to gain;
+   * 2. no API key is configured — the job could only no-op;
+   * 3. a job for this company is already pending or running.
+   *
+   * Guard 3 is the one that was missing. Without it, every view between the first one and the
+   * first job completing queued another job for the same company. The daily sweep in
+   * CompaniesEnrichmentService has always had this check, for the same reason.
+   *
+   * It is a check-then-insert, not a lock, so two page loads landing at the same instant can
+   * still both queue. That bounds duplicates to genuinely concurrent requests instead of every
+   * request in the window, which is what this needs to do.
+   */
+  private async queueEnrichmentOnView(tenantId: string, companyId: string, rawEnrichment: unknown): Promise<void> {
+    if (enrichmentIsSettled(parseEnrichment(rawEnrichment))) return;
+    if (!CompaniesEnrichmentService.isConfigured()) return;
+
+    try {
+      if (await CompaniesEnrichmentService.hasPendingEnrichmentJob(this.getRepo().db, tenantId, companyId)) return;
+      await this.getRepo()
+        .db.insertInto('background_jobs')
+        .values({
+          tenant_id: tenantId,
+          queue: 'default',
+          status: 'pending',
+          payload: JSON.stringify({
+            type: 'enrich_company_google',
+            company_id: companyId,
+            tenant_id: String(tenantId),
+          }),
+          run_at: new Date(),
+          max_attempts: 3,
+        })
+        .execute();
+    } catch (err) {
+      // Viewing a company must never fail because enrichment could not be queued.
+      logger.error({ err }, 'Failed to queue google enrichment job on getOneById');
+    }
   }
 
   /**

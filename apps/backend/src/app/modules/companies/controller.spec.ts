@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CompaniesController } from './controller';
+import { BaseRepository } from '../../lib/base.repo';
+import { CompaniesEnrichmentService } from './services/companies-enrichment.service';
 
 describe('CompaniesController', () => {
   let controller: CompaniesController;
@@ -74,5 +76,96 @@ describe('CompaniesController', () => {
 
     expect(spy).toHaveBeenCalledWith('tenant-1', { limit: 10 });
     expect(result).toEqual({ rows: mockCompanies, count: mockCompanies.length });
+  });
+});
+
+/**
+ * Opening a company's detail page auto-queues a Google Places lookup. Each lookup is two
+ * billable Google calls, and the page-view path had no check for a job that was already
+ * queued — so every view between the first one and the first job finishing queued another job
+ * for the same company.
+ */
+describe('CompaniesController.getOneById enrichment queueing', () => {
+  let controller: CompaniesController;
+  let insertInto: ReturnType<typeof vi.fn>;
+  let queuedValues: unknown;
+
+  const mockDb = () => {
+    queuedValues = undefined;
+    insertInto = vi.fn(() => ({
+      values: vi.fn((v: unknown) => {
+        queuedValues = v;
+        return { execute: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }));
+    return { insertInto };
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    controller = new CompaniesController();
+    vi.spyOn(BaseRepository.prototype, 'db', 'get').mockReturnValue(mockDb() as never);
+  });
+
+  const viewCompany = async (enrichment: unknown) => {
+    vi.spyOn(BaseRepository.prototype, 'getOneById').mockResolvedValue({ id: '55', enrichment } as never);
+    return controller.getOneById({ tenant_id: 'tenant-1', id: '55' });
+  };
+
+  it('queues one lookup when the company has never been looked up and nothing is in flight', async () => {
+    vi.spyOn(CompaniesEnrichmentService, 'hasPendingEnrichmentJob').mockResolvedValue(false);
+
+    await viewCompany(null);
+
+    expect(insertInto).toHaveBeenCalledTimes(1);
+    expect(insertInto).toHaveBeenCalledWith('background_jobs');
+    expect(JSON.parse(String((queuedValues as { payload: string }).payload))).toMatchObject({
+      type: 'enrich_company_google',
+      company_id: '55',
+    });
+  });
+
+  it('queues nothing when a lookup for this company is already pending or running', async () => {
+    const pending = vi.spyOn(CompaniesEnrichmentService, 'hasPendingEnrichmentJob').mockResolvedValue(true);
+
+    await viewCompany(null);
+
+    expect(pending).toHaveBeenCalledWith(expect.anything(), 'tenant-1', '55');
+    expect(insertInto).not.toHaveBeenCalled();
+  });
+
+  it('queues nothing for a company Google has already answered about', async () => {
+    const pending = vi.spyOn(CompaniesEnrichmentService, 'hasPendingEnrichmentJob').mockResolvedValue(false);
+
+    await viewCompany({ google_enriched: true });
+
+    expect(pending).not.toHaveBeenCalled();
+    expect(insertInto).not.toHaveBeenCalled();
+  });
+
+  it('queues nothing for a company parked on a request Google refused', async () => {
+    vi.spyOn(CompaniesEnrichmentService, 'hasPendingEnrichmentJob').mockResolvedValue(false);
+
+    await viewCompany({ google_lookup: { status: 'denied', at: '2026-08-01T00:00:00.000Z' } });
+
+    expect(insertInto).not.toHaveBeenCalled();
+  });
+
+  it('still returns the company when the enrichment column holds unparseable JSON', async () => {
+    vi.spyOn(CompaniesEnrichmentService, 'hasPendingEnrichmentJob').mockResolvedValue(false);
+
+    const company = await viewCompany('{not json');
+
+    expect(company).toMatchObject({ id: '55' });
+    expect(insertInto).toHaveBeenCalledTimes(1);
+  });
+
+  it('still returns the company when queueing the lookup fails', async () => {
+    vi.spyOn(CompaniesEnrichmentService, 'hasPendingEnrichmentJob').mockRejectedValue(new Error('db down'));
+
+    const company = await viewCompany(null);
+
+    expect(company).toMatchObject({ id: '55' });
+    expect(insertInto).not.toHaveBeenCalled();
   });
 });
