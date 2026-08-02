@@ -13,6 +13,8 @@ import { ImportsRepo } from '../../../modules/imports/repositories/imports.repo'
 import { PersonsService } from '../../../modules/persons/services/persons.service';
 import { serializeRowsToNdjson } from '../../ndjson';
 import { StorageService } from '../../storage.service';
+import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { TransactionalSendBlockedError } from '../../mail/transactional-send-guard';
 import { runImportEmailVerification } from './import-verification';
 import { handleImportJob } from './import.handlers';
 
@@ -118,5 +120,94 @@ describe('handleImportJob payload formats', () => {
 
     // Companies imports never run email verification.
     expect(vi.mocked(runImportEmailVerification)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Chainable stand-in that answers each `executeTakeFirst()` from a queue, so a test can script
+ * the handler's three single-row reads in order: the already-completed guard, the user lookup for
+ * the summary email, and the row counts that email reports.
+ */
+function makeScriptedDb(results: unknown[]): Kysely<Models> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- hand-rolled query-builder stub
+  const b: any = {};
+  for (const m of ['selectFrom', 'leftJoin', 'select', 'where']) b[m] = vi.fn(() => b);
+  let call = 0;
+  b.executeTakeFirst = vi.fn(async () => results[call++]);
+  return b as Kysely<Models>;
+}
+
+describe('handleImportJob completion summary email', () => {
+  beforeEach(() => {
+    vi.spyOn(ImportsRepo.prototype, 'update').mockResolvedValue({} as never);
+    vi.spyOn(StorageService.prototype, 'download').mockResolvedValue(serializeRowsToNdjson(ROWS) as never);
+    vi.spyOn(StorageService.prototype, 'delete').mockResolvedValue(undefined);
+    vi.spyOn(PersonsService.prototype, 'processImportRows').mockResolvedValue({} as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The guard read, then the user lookup, then the import's row counts. */
+  const scripted = () =>
+    makeScriptedDb([
+      { status: 'processing' },
+      { email: 'importer@example.com', first_name: 'Ivy', profile_preferences: null },
+      { inserted_count: 3, error_count: 0, skipped_count: 1 },
+    ]);
+
+  it('attributes the summary to the workspace so a bounce can be traced back to it', async () => {
+    // Without a tenant_id the anti-abuse gate has nothing to check and Postmark cannot report a
+    // bounce against a workspace, which is how abuse through this pipe stayed invisible before.
+    const sendMail = vi.spyOn(TransactionalEmailService.prototype, 'sendMail').mockResolvedValue(undefined);
+
+    await handleImportJob(personsPayload(), scripted());
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0]?.[0].tenant_id).toBe('1');
+  });
+
+  it('completes the import even when the gate withholds the summary email', async () => {
+    vi.spyOn(TransactionalEmailService.prototype, 'sendMail').mockRejectedValue(
+      new TransactionalSendBlockedError('Tenant 1 is suspended — transactional mail withheld.'),
+    );
+
+    await expect(handleImportJob(personsPayload(), scripted())).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * Re-importing rows is the one failure in this job with a lasting cost: only the persons importer
+ * dedupes (its default `duplicate_decision: 'skip'`), so a second run of a companies, households
+ * or tasks import writes every row again. The job can still be re-run after the rows land — a
+ * worker crash or an execution timeout hands it back to stale-job recovery.
+ */
+describe('handleImportJob re-run protection', () => {
+  let processImportRows: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.spyOn(ImportsRepo.prototype, 'update').mockResolvedValue({} as never);
+    vi.spyOn(StorageService.prototype, 'download').mockResolvedValue(serializeRowsToNdjson(ROWS) as never);
+    vi.spyOn(StorageService.prototype, 'delete').mockResolvedValue(undefined);
+    vi.spyOn(TransactionalEmailService.prototype, 'sendMail').mockResolvedValue(undefined);
+    processImportRows = vi.fn().mockResolvedValue({});
+    vi.spyOn(PersonsService.prototype, 'processImportRows').mockImplementation(processImportRows as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('writes no rows when the import it was given already finished', async () => {
+    await handleImportJob(personsPayload(), makeScriptedDb([{ status: 'completed' }]));
+
+    expect(processImportRows).not.toHaveBeenCalled();
+  });
+
+  it('still imports when the previous attempt did not finish', async () => {
+    await handleImportJob(personsPayload(), makeScriptedDb([{ status: 'processing' }, undefined, undefined]));
+
+    expect(processImportRows).toHaveBeenCalledTimes(1);
   });
 });

@@ -3,6 +3,7 @@ import type { Models } from '../../../../../../libs/common/src/lib/kysely.models
 import { logger } from '../../logger';
 import { NotificationsRepo } from '../../modules/notifications/repositories/notifications.repo';
 import { notificationEnabled } from '../profile-preferences';
+import { sendMailOrDrop } from './send-or-drop';
 import { TransactionalEmailService } from './transactional-mail.service';
 
 /** In-app notification links are app-relative paths; comment links arrive absolute. */
@@ -46,6 +47,10 @@ export async function processMentions(
         'profiles.preferences as profile_preferences',
       ])
       .where('authusers.tenant_id', '=', tenantId)
+      // Deleted users keep their row for foreign-key integrity, with their identity scrubbed in
+      // place. Matching an @mention against a tombstone would address a scrubbed value, so they
+      // are excluded here exactly as they are from the users grid and assignee pickers.
+      .where('authusers.deleted_at', 'is', null)
       .execute();
 
     const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
@@ -61,34 +66,50 @@ export async function processMentions(
 
       // Match either @first_name or the email username prefix (e.g. @john)
       const isMentioned = matches.includes(firstNameLower) || matches.includes(emailPrefix);
+      if (!isMentioned) continue;
 
-      if (isMentioned && notificationEnabled(user.profile_preferences, 'mention_in_comment_in_app')) {
-        await notificationsRepo.pushNotification({
-          tenant_id: tenantId,
-          user_id: userIdStr,
-          title: 'Mentioned in a Comment',
-          message: `You were mentioned in a comment: "${truncateComment(commentText)}"`,
-          type: 'mention',
-          link: toRelativeLink(commentLink),
-        });
-      }
+      // One recipient at a time. Everything here used to sit directly under the function-level
+      // catch below, so the first failure — a mail provider fault, or the anti-abuse gate
+      // refusing to send for this workspace — abandoned every person mentioned after them in the
+      // same comment, silently. Notifying four of five people is strictly better than notifying
+      // one, so a failure is recorded against that recipient and the loop carries on.
+      try {
+        if (notificationEnabled(user.profile_preferences, 'mention_in_comment_in_app')) {
+          await notificationsRepo.pushNotification({
+            tenant_id: tenantId,
+            user_id: userIdStr,
+            title: 'Mentioned in a Comment',
+            message: `You were mentioned in a comment: "${truncateComment(commentText)}"`,
+            type: 'mention',
+            link: toRelativeLink(commentLink),
+          });
+        }
 
-      if (isMentioned && user.email) {
-        if (notificationEnabled(user.profile_preferences, 'mention_in_comment')) {
-          await mailService.sendMail({
-            to: user.email,
-            subject: 'You were mentioned in pplCRM',
-            notificationSettingsLink: true,
-            text: `Hi ${user.first_name || 'there'},\n\nYou were mentioned in a comment:\n\n"${commentText}"\n\nView the comment: ${commentLink}`,
-            html: `<h2>You were mentioned</h2>
+        if (user.email && notificationEnabled(user.profile_preferences, 'mention_in_comment')) {
+          await sendMailOrDrop(
+            mailService,
+            {
+              to: user.email,
+              subject: 'You were mentioned in pplCRM',
+              tenant_id: tenantId,
+              notificationSettingsLink: true,
+              text: `Hi ${user.first_name || 'there'},\n\nYou were mentioned in a comment:\n\n"${commentText}"\n\nView the comment: ${commentLink}`,
+              html: `<h2>You were mentioned</h2>
 <p>Hi ${user.first_name || 'there'},</p>
 <p>You were mentioned in a comment:</p>
 <div class="panel"><p>"${commentText}"</p></div>
 <div class="btn-container">
   <a href="${commentLink}" class="btn">View comment</a>
 </div>`,
-          });
+            },
+            'comment mention',
+          );
         }
+      } catch (perUserError) {
+        logger.error(
+          { err: perUserError, tenantId, userId: userIdStr },
+          'Failed to notify one mentioned user; continuing with the rest',
+        );
       }
     }
   } catch (error) {

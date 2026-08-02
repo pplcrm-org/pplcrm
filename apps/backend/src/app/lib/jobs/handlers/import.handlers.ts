@@ -15,6 +15,7 @@ import {
   type StoredImportRow,
 } from '../../ndjson';
 import { notificationEnabled } from '../../profile-preferences';
+import { sendMailOrDrop } from '../../mail/send-or-drop';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
 import type { LegacyImportJobPayload } from '../job-payloads';
@@ -103,6 +104,36 @@ ${tripwireBlock}`;
 }
 
 export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysely<Models>): Promise<void> {
+  // 0. Refuse to re-import rows that already landed.
+  //
+  // Inserting the rows is not idempotent for every source: only the persons importer dedupes
+  // (its default `duplicate_decision: 'skip'` drops rows whose email already exists), while the
+  // companies, households and tasks importers issue plain inserts. So a second run of a job that
+  // already finished writes the rows again.
+  //
+  // Nothing after the insert can fail this job any more — the storage cleanup and the summary
+  // email are each wrapped in their own catch — but the job can still be re-run by stale-job
+  // recovery after a worker crash or an execution timeout. If the previous run got as far as
+  // marking the import completed, the rows are in and there is nothing left to do.
+  //
+  // This does NOT make the import idempotent in general: a crash partway through the insert
+  // still leaves the import 'processing', and that retry does re-import. Closing that would need
+  // per-chunk resume state, which is a much larger change.
+  const priorState = await db
+    .selectFrom('data_imports')
+    .select('status')
+    .where('id', '=', payload.import_id)
+    .where('tenant_id', '=', payload.tenant_id)
+    .executeTakeFirst();
+
+  if (priorState?.status === 'completed') {
+    logger.warn(
+      { importId: payload.import_id, tenantId: payload.tenant_id },
+      'Import job re-ran after it had already completed; skipping so its rows are not written twice',
+    );
+    return;
+  }
+
   // 1. Mark import status as 'processing' in data_imports
   await importsRepo.update({
     tenant_id: payload.tenant_id,
@@ -237,12 +268,18 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
           const errors = importRecord.error_count || 0;
           const skipped = importRecord.skipped_count || 0;
 
-          await mailService.sendMail({
-            to: user.email,
-            subject: `Spreadsheet import complete: ${payload.file_name || 'import.csv'}`,
-            notificationSettingsLink: true,
-            text: `Hi ${user.first_name || 'there'},\n\nYour contact spreadsheet import has completed.\n\nStatistics:\n- Inserted: ${inserted}\n- Errors: ${errors}\n- Skipped: ${skipped}\n${verificationText(verification)}\nView imported rows: ${env.appUrl}/imports/${payload.import_id}`,
-            html: `<h2>Spreadsheet import complete</h2>
+          await sendMailOrDrop(
+            mailService,
+            {
+              to: user.email,
+              subject: `Spreadsheet import complete: ${payload.file_name || 'import.csv'}`,
+              // Postmark round-trips this to the bounce webhook. Without it a bounce or complaint
+              // on this message cannot be attributed to a workspace, and the anti-abuse gate has
+              // no tenant to check, so the message was never gated at all.
+              tenant_id: payload.tenant_id,
+              notificationSettingsLink: true,
+              text: `Hi ${user.first_name || 'there'},\n\nYour contact spreadsheet import has completed.\n\nStatistics:\n- Inserted: ${inserted}\n- Errors: ${errors}\n- Skipped: ${skipped}\n${verificationText(verification)}\nView imported rows: ${env.appUrl}/imports/${payload.import_id}`,
+              html: `<h2>Spreadsheet import complete</h2>
 <p>Hi ${user.first_name || 'there'},</p>
 <p>Your contact spreadsheet import has completed.</p>
 <div class="panel"><p><strong>Inserted:</strong> ${inserted}</p><p><strong>Errors:</strong> ${errors}</p><p><strong>Skipped:</strong> ${skipped}</p></div>
@@ -250,7 +287,9 @@ ${verificationHtml(verification)}
 <div class="btn-container">
   <a href="${env.appUrl}/imports/${payload.import_id}" class="btn">View imported rows</a>
 </div>`,
-          });
+            },
+            'import completion summary',
+          );
         }
       }
     }

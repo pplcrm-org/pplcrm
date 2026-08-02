@@ -39,16 +39,36 @@ invisible.
 **A blocked send is dropped in the job worker, never retried (2026-08-02).** The gate throws
 `TransactionalSendBlockedError`; none of the conditions behind it (suspension, pause, hourly cap)
 clears inside a retry window, so a retry only burns the job's attempts and dead-letters it. The
-handlers in `lib/jobs/handlers/notifications.handlers.ts` funnel every send through a local
-`sendOrDrop()` that catches it, logs a warning and returns false; `receipts.handlers.ts` does the
-same for receipt/statement mail. Two consequences worth knowing: `handleSendTransactionalEmail`
-drops it too, so every `enqueueMail()` caller inherits the behaviour; and the form-submission
-handlers now **fan out one job per message** (`fanOutMessages`, a single multi-row insert into
-`background_jobs`) instead of sending the audience-facing confirmation and the staff alert inline
-in sequence. Before that, a `contact`-blocked confirmation suppressed the `staff` alert the gate
-would have permitted under its own higher cap, and a staff-side failure re-sent the confirmation
-to a member of the public on every retry. Still uncaught, and still able to fail their jobs:
-`import.handlers.ts`, `export.handlers.ts` and `lib/mail/mentions-util.ts` (all `staff`).
+shared helper is **`lib/mail/send-or-drop.ts` → `sendMailOrDrop(mailService, message, context)`**:
+it logs a warning and returns false on a refusal, and rethrows everything else so a genuine
+delivery failure still retries. It takes the service as an argument rather than being a method on
+`TransactionalEmailService`, because dropping is right for a background job and wrong for a
+request path, and because each job keeps its own `defaultAudience`. Callers: the handlers in
+`lib/jobs/handlers/notifications.handlers.ts` (via a one-line local binding), `import.handlers.ts`,
+`export.handlers.ts` and `lib/mail/mentions-util.ts`. `receipts.handlers.ts` predates it and
+catches the error inline.
+
+Two consequences worth knowing: `handleSendTransactionalEmail` drops it too, so every
+`enqueueMail()` caller inherits the behaviour; and the form-submission handlers **fan out one job
+per message** (`fanOutMessages`, a single multi-row insert into `background_jobs`) instead of
+sending the audience-facing confirmation and the staff alert inline in sequence. Before that, a
+`contact`-blocked confirmation suppressed the `staff` alert the gate would have permitted under
+its own higher cap, and a staff-side failure re-sent the confirmation to a member of the public on
+every retry.
+
+**A gate refusal was never able to fail the import or export job**, contrary to what an earlier
+revision of this file said: both already wrapped their notification email in a catch-all. What
+changed for them is classification — a deliberate refusal is now a warning rather than an error —
+and that all three of these staff messages (import summary, export-ready notice, @mention) now
+carry `tenant_id`. They had none, so the gate had no tenant to check and skipped them entirely,
+and Postmark could not attribute a bounce on them to any workspace.
+
+**@mention delivery is per-recipient.** `processMentions` used to run its whole recipient loop
+under one try/catch, so the first refusal or provider fault abandoned everyone mentioned after
+that person in the same comment. Each recipient now has its own catch, and the query filters
+`deleted_at is null` so a tombstoned account is never addressed. Delivery here is at-most-once by
+design: the outer catch means the job never retries, so a transient fault loses that one
+recipient's email.
 
 **Build email HTML with the `html` tagged template** (`lib/html-escape.ts`), which escapes
 interpolations by default. These messages carry tenant-controlled strings and go out over the

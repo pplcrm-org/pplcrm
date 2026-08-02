@@ -9,6 +9,7 @@ import { ExportsRepo } from '../../../modules/exports/repositories/exports.repo'
 import { CsvTransformStream } from '../../csv-stream';
 import { notificationEnabled } from '../../profile-preferences';
 import { StorageService } from '../../storage.service';
+import { sendMailOrDrop } from '../../mail/send-or-drop';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { UserActivityRepo } from '../../user-activity.repo';
 import type { JobPayloadOf } from '../job-payloads';
@@ -258,19 +259,27 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
           }
 
           if (emailOptedIn && user.email) {
-            await mailService.sendMail({
-              to: user.email,
-              subject: `Your export is ready: ${payload.file_name || 'export.csv'}`,
-              notificationSettingsLink: true,
-              text: `Hi ${user.first_name || 'there'},\n\nYour export of ${count} records from the ${displayLabel} table is ready.\n\nFile name: ${payload.file_name || 'export.csv'}\nDownload it from the Exports page: ${env.appUrl}/exports`,
-              html: `<h2>Your export is ready</h2>
+            await sendMailOrDrop(
+              mailService,
+              {
+                to: user.email,
+                subject: `Your export is ready: ${payload.file_name || 'export.csv'}`,
+                // Postmark round-trips this to the bounce webhook. Without it a bounce or
+                // complaint on this message cannot be attributed to a workspace, and the
+                // anti-abuse gate has no tenant to check, so it was never gated at all.
+                tenant_id: tenantId,
+                notificationSettingsLink: true,
+                text: `Hi ${user.first_name || 'there'},\n\nYour export of ${count} records from the ${displayLabel} table is ready.\n\nFile name: ${payload.file_name || 'export.csv'}\nDownload it from the Exports page: ${env.appUrl}/exports`,
+                html: `<h2>Your export is ready</h2>
 <p>Hi ${user.first_name || 'there'},</p>
 <p>Your export of <strong>${count}</strong> records from the <strong>${displayLabel}</strong> table is ready.</p>
 <div class="panel"><p><strong>File name:</strong> ${payload.file_name || 'export.csv'}</p></div>
 <div class="btn-container">
   <a href="${env.appUrl}/exports" class="btn">Go to exports</a>
 </div>`,
-            });
+              },
+              'export ready notice',
+            );
           }
         }
       } catch (notifErr) {

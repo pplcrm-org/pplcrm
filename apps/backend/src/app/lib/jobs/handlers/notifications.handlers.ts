@@ -7,7 +7,7 @@ import { html, joinHtml, trustedHtml } from '../../html-escape';
 import { NotificationsRepo } from '../../../modules/notifications/repositories/notifications.repo';
 import { notificationEnabled } from '../../profile-preferences';
 import { TransactionalEmailService, type SendMailOptions } from '../../mail/transactional-mail.service';
-import { TransactionalSendBlockedError } from '../../mail/transactional-send-guard';
+import { sendMailOrDrop } from '../../mail/send-or-drop';
 import { processMentions } from '../../mail/mentions-util';
 import { SmsService } from '../../sms/sms.service';
 import { CRON_JOBS } from '../cron-registry';
@@ -27,39 +27,14 @@ const MAIL_JOB_MAX_ATTEMPTS = 5;
 const DEFAULT_MAIL_AUDIENCE = 'contact';
 
 /**
- * Send one transactional message, dropping it if the anti-abuse gate refuses it.
+ * Send one message, dropping it if the anti-abuse gate refuses it.
  *
- * The gate (lib/mail/transactional-send-guard.ts) throws TransactionalSendBlockedError when the
- * workspace is suspended, has sending paused, or is over its hourly cap for that audience. Its
- * own doc comment says callers in the job worker should catch and drop rather than retry —
- * none of those conditions clears inside a retry window, so retrying only burns the job's
- * attempts and dead-letters it. Nothing on this path caught it, which had a worse consequence
- * than a dead-lettered job: the handlers below send an audience-facing message before a
- * staff-facing one, so a message blocked for the audience also stopped the staff alert, which
- * the gate would have permitted under its own, higher cap.
- *
- * Returns true when the message went out. Every other error propagates so the worker retries.
+ * Thin binding of the shared lib/mail/send-or-drop.ts helper to this file's mail service, so the
+ * ~8 call sites below don't each have to pass the service in. See that module for why a gate
+ * refusal is dropped rather than retried.
  */
-async function sendOrDrop(message: SendMailOptions, context: string): Promise<boolean> {
-  try {
-    await mailService.sendMail(message);
-    return true;
-  } catch (err) {
-    if (err instanceof TransactionalSendBlockedError) {
-      logger.warn(
-        {
-          context,
-          to: message.to,
-          tenantId: message.tenant_id ?? null,
-          audience: message.audience ?? null,
-          reason: err.message,
-        },
-        'Transactional email withheld by the send guard — dropped rather than retried',
-      );
-      return false;
-    }
-    throw err;
-  }
+function sendOrDrop(message: SendMailOptions, context: string): Promise<boolean> {
+  return sendMailOrDrop(mailService, message, context);
 }
 
 /**

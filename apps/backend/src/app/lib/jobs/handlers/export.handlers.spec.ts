@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BaseRepository } from '../../base.repo';
 import { StorageService } from '../../storage.service';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { TransactionalSendBlockedError } from '../../mail/transactional-send-guard';
 import { handleExportCsv } from './export.handlers';
 
 /**
@@ -168,6 +169,35 @@ describe('handleExportCsv column allow-list', () => {
     // Dropping (not rejecting) is deliberate: the Exports page renders a failure as a bare red
     // "Failed" badge with no reason, and the shipped People grid legitimately asks for display-only
     // columns ("name", "address") that are not columns of `persons`.
+    expect(record.status).toBe('completed');
+    expect(record.error).toBeNull();
+  });
+
+  it('attributes the "export ready" email to the workspace so a bounce can be traced back to it', async () => {
+    // Without a tenant_id the anti-abuse gate has nothing to check and Postmark cannot report a
+    // bounce against a workspace.
+    const sendMail = vi.mocked(TransactionalEmailService.prototype.sendMail);
+
+    await runUsersExport(null);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0]?.[0].tenant_id).toBe(tenantId);
+  });
+
+  it('records the export as completed even when the gate withholds the "export ready" email', async () => {
+    vi.mocked(TransactionalEmailService.prototype.sendMail).mockRejectedValue(
+      new TransactionalSendBlockedError('Tenant is suspended — transactional mail withheld.'),
+    );
+
+    await runUsersExport(null);
+
+    const record = await db
+      .selectFrom('data_exports')
+      .select(['status', 'error'])
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', exportId)
+      .executeTakeFirstOrThrow();
+
     expect(record.status).toBe('completed');
     expect(record.error).toBeNull();
   });

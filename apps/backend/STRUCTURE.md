@@ -80,6 +80,7 @@ apps/
             newsletter-mail.service.ts
             newsletter-render.ts
             sanitize-util.ts
+            send-or-drop.ts
             sendgrid-whitelabel.service.ts
             shared-sending-domain.ts
             transactional-mail.service.ts
