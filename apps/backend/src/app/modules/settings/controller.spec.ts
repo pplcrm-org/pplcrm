@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SettingsController } from './controller';
+import { SendGridWhitelabelService } from '../../lib/mail/sendgrid-whitelabel.service';
 import { BaseRepository } from '../../lib/base.repo';
 import { TRPCError } from '@trpc/server';
 import { createSigner } from 'fast-jwt';
@@ -68,12 +69,19 @@ describe('SettingsController Integration', () => {
   let userId: string;
 
   beforeEach(async () => {
+    // verifyDmarc/verifyCname do live DNS against third-party nameservers with no timeout —
+    // ratelimit.com started answering SERVFAIL (2026-08-01) and blew the 5s test budget.
+    // These specs assert controller behaviour, not real DNS; `false` is exactly what an
+    // unresolvable record yields, so the fail-closed spec keeps its meaning.
+    vi.spyOn(SendGridWhitelabelService.prototype, 'verifyDmarc').mockResolvedValue(false);
+    vi.spyOn(SendGridWhitelabelService.prototype, 'verifyCname').mockResolvedValue(false);
     const seed = await createTestSeed(db);
     tenantId = seed.tenantId;
     userId = seed.userId;
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await cleanTenant(db, tenantId);
   });
 
