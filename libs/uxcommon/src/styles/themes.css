@@ -44,6 +44,13 @@
   /* Hairline border token — one line color app-wide, per theme (design §5). */
   --color-line: #e7e5e4;
 
+  /* Floating-overlay elevation — see the .pc-overlay utility at the bottom of this
+     file for why these are per-theme tokens and not `bg-base-100 + shadow-lg`. */
+  --color-overlay: #ffffff;
+  --color-overlay-line: rgb(15 23 42 / 0.1);
+  --overlay-shadow: 0 10px 32px rgb(15 23 42 / 0.18);
+  --color-scrim: rgb(15 23 42 / 0.35);
+
   /* Button/input rounding — the app-wide "slight rounded edge". Pinned explicitly so the
      look survives DaisyUI default changes; per-button rounded-* utilities are forbidden
      (UX-GUIDELINES "Buttons"). */
@@ -76,6 +83,15 @@
   /* Hairline border token — one line color app-wide, per theme (design §5). */
   --color-line: #1a2b45;
 
+  /* Floating-overlay elevation. Deliberately LIGHTER than base-100/200/300: on a dark
+     page a raised surface is read by how much light it catches, not by its shadow.
+     The border is a white hairline (a dark border would vanish) and the shadow adds an
+     inset top highlight, the standard "lit from above" cue. */
+  --color-overlay: #1e2c48;
+  --color-overlay-line: rgb(255 255 255 / 0.16);
+  --overlay-shadow: 0 16px 44px rgb(0 0 0 / 0.62), inset 0 1px 0 rgb(255 255 255 / 0.07);
+  --color-scrim: rgb(0 0 0 / 0.55);
+
   /* Button/input rounding — keep identical to the light theme (UX-GUIDELINES "Buttons"). */
   --radius-field: 0.25rem;
 
@@ -91,4 +107,25 @@
   /* Tooltips */
   --tooltip-bg: #0e1626;
   --tooltip-color: #e6edf7;
+}
+
+/* The one recipe for a surface that FLOATS OVER the page — toasts, the tour bubble,
+   and anything else that is not part of the document flow. Lives here rather than in
+   apps/frontend/styles.css because the companion app renders <pc-alerts> too and only
+   imports this file.
+ *
+ * Deliberately separate from .pc-panel: a panel sits IN the page, an overlay sits
+ * ABOVE it, and in the dark theme those two need opposite treatments. The panel recipe
+ * (`bg-base-100` + a black shadow) silently fails on dark because --color-base-100 IS
+ * the dark page background — an overlay painted with it has zero fill contrast, and a
+ * black drop shadow is invisible against a near-black page. The result is a card that
+ * reads as a faint outline and gets lost. Raising a surface therefore means "lighten
+ * it" in dark and "whiten + shadow it" in light, which is what the per-theme
+ * --color-overlay / --color-overlay-line / --overlay-shadow tokens above encode.
+ *
+ * Pair with radius, padding and layout utilities only. */
+@utility pc-overlay {
+  background-color: var(--color-overlay);
+  border: 1px solid var(--color-overlay-line);
+  box-shadow: var(--overlay-shadow);
 }

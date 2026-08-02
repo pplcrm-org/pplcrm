@@ -13,7 +13,7 @@
 >
   @for (alert of alerts(); track alert.id) {
   <div
-    class="pointer-events-auto relative flex max-w-[520px] cursor-pointer items-start gap-3 overflow-hidden rounded-[12px] border border-base-300 bg-base-100 py-3 pl-4 pr-3.5 shadow-[0_8px_30px_rgba(0,0,0,.16)]"
+    class="pc-overlay pointer-events-auto relative flex max-w-[520px] cursor-pointer items-start gap-3 overflow-hidden rounded-[12px] py-3 pl-4 pr-3.5"
     role="alert"
     tabindex="0"
     [attr.aria-label]="'Dismiss notification: ' + alert.text"
