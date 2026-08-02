@@ -90,12 +90,14 @@ export class HomePage {
     void this.router.navigate([audiencePath(id)]);
   }
 
-  /** The three comparative claims in the "Why pplCRM" band — each one names a real alternative and beats it. */
+  /** The three comparative claims in the "Why pplCRM" band — each one names a real alternative
+   * and beats it. The long-game body is per-audience (audience-content.ts): the compounding arc
+   * a campaign brags about is not the one a church or an office lives. */
   protected readonly whyPillars: readonly Feature[] = [
     {
       icon: 'clock',
       title: 'Built for the long game',
-      body: 'A sales pipeline forgets a deal the day it closes. Your work compounds: this year’s case becomes next year’s volunteer becomes next cycle’s donor. pplCRM keeps that whole story on one record, however long you work the same streets.',
+      body: this.copy.longGameBody,
     },
     {
       icon: 'lock-closed',
@@ -123,33 +125,18 @@ export class HomePage {
     {
       icon: 'credit-card',
       title: 'Online giving pages',
-      body: 'Share a donation page and gifts land straight on the donor’s record: receipted, thanked and counted. No third spreadsheet to reconcile.',
+      // "Recorded and tallied", not "receipted": the product does not issue official donation
+      // receipts today (donations carry a receipt flag only). Do not re-add a receipt claim
+      // here without the feature existing — see the website-claims registry.
+      body: 'Share a donation page and gifts land straight on the donor’s record — recorded, tallied and exportable for your books. No third spreadsheet to reconcile.',
     },
-    {
-      icon: 'rectangle-stack',
-      title: 'One list, every campaign',
-      body: 'Run this season and the next from one shared rolodex. Each campaign keeps its own supporters, mail and routes; admins decide who works in which, and the whole workspace follows.',
-    },
+    this.copy.oneList,
   ];
 
-  /** The three claims beside the constellation animation in the network band. */
-  protected readonly networkPoints: readonly Feature[] = [
-    {
-      icon: 'user-group',
-      title: 'See the web, not the spreadsheet',
-      body: 'Households, workplaces, tags and shared causes tie your list together. pplCRM keeps every thread.',
-    },
-    {
-      icon: 'route',
-      title: 'Warm paths beat cold lists',
-      body: 'Reach new people through the neighbour who already knows you. An introduction opens doors a cold call never will.',
-    },
-    {
-      icon: 'presentation-chart-line',
-      title: 'Every touch sharpens the map',
-      body: 'Visits, notes, gifts and RSVPs each add a datapoint. The longer you organize, the smarter your network gets.',
-    },
-  ];
+  /** The three claims beside the constellation animation in the network band — per-audience
+   * (audience-content.ts): the organizing framing that reads as strategy to a campaign reads
+   * as surveillance to a church or a constituency office. */
+  protected readonly networkPoints: readonly Feature[] = this.copy.networkPoints;
 
   protected readonly faqs: readonly Qa[] = [
     {

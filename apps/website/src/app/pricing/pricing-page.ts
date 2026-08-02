@@ -24,9 +24,15 @@ const SLIDER_STOPS: readonly number[] = [
   1_000, 2_500, 5_000, 10_000, 15_000, 20_000, 25_000, 50_000, 75_000, 100_000, 200_000,
 ];
 
-/** Default slider position: 2,500 subscribers (the first count past the Free tier's 1,000 cap). */
-const DEFAULT_STOP_INDEX = 1;
-const DEFAULT_STOP = 2_500;
+/**
+ * Default slider position: 1,000 subscribers — the FIRST stop, so the page opens on the same
+ * "from $29 / from $55" numbers the FAQ quotes everywhere else. It defaulted to 2,500 until
+ * 2026-08-01, which greeted every visitor with prices higher than the ones the FAQ had just
+ * promised; for a site whose pitch is "no tricks", the first impression contradicted the copy.
+ * People slide up from the honest floor instead of down to it.
+ */
+const DEFAULT_STOP_INDEX = 0;
+const DEFAULT_STOP = 1_000;
 
 /** The plan keys `FEATURE_MATRIX` carries values for (exactly the displayed plans). */
 type MatrixPlanKey = keyof FeatureMatrixRow['values'];
@@ -44,8 +50,9 @@ function isAllTrueRow(row: FeatureMatrixRow): boolean {
 /** One-line "what this tier adds" summary per plan card. Mirrors the GATED_FEATURES split in
  * plans.ts; if a feature moves between tiers, update this wording too (pplcrm-website-claims). */
 const STEP_UP_LABELS: Readonly<Record<string, string>> = {
-  free: 'The full CRM: people, households, shared inbox and newsletters from your own domain.',
-  grassroots: 'Everything in Free, plus forms, donations, automations, lists and volunteer management.',
+  free: 'The core CRM: people, households and newsletters from your own domain.',
+  grassroots:
+    'Everything in Free, plus the shared inbox, forms, donations, automations, lists and volunteer management.',
   movement:
     'Everything in Grassroots, plus the field: canvassing, deliveries, companion volunteers and priority support.',
 };

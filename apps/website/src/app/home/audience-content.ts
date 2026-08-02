@@ -9,9 +9,13 @@ import type { OrgMode } from '@common';
  * field" to "Volunteers in the field" would still spend a prime card on the thing a food bank
  * cares least about, so slots are REPLACED rather than relabelled.
  *
- * Blocks that stayed shared (in home-page.ts): the "Why pplCRM" pillars, the network-effect
- * points, the FAQ and the pricing teasers. Those claims are true for everyone, and duplicating
- * them four times would only invite drift.
+ * Blocks that stayed shared (in home-page.ts): most "Why pplCRM" pillars, the FAQ and the
+ * pricing teasers. Three spots proved to be per-audience after all (2026-08-01): the long-game
+ * pillar's body, the "one list" grow card, and the whole network band — a church administrator
+ * reading "however long you work the same streets" or "every touch sharpens the map" hears the
+ * campaign template underneath, and outside the organizing context the network copy read as
+ * relationship surveillance. Those three now live here, per audience, and must describe things
+ * the app actually shows that audience.
  *
  * `AUDIENCE_CONTENT` is a TOTAL Record, so adding a fifth organization type is a compile error
  * until every cell is filled — the same discipline `ORG_MODE_TERMS` uses in libs/common.
@@ -82,6 +86,16 @@ export interface AudienceCopy {
   readonly companionFeatures: readonly Feature[];
   readonly field: FieldPreview;
   readonly closing: Closing;
+  /** Body of the "Built for the long game" pillar — the compounding story in this audience's
+   * own arc (case → volunteer → donor is a campaign's arc, not a congregation's). */
+  readonly longGameBody: string;
+  /** The fourth "grow" card: what "one list" means here (a campaign season, a program year,
+   * a set of ministries) — replaces the old shared "One list, every campaign" card. */
+  readonly oneList: Feature;
+  /** The three claims beside the constellation animation. Same graphic on every audience; the
+   * text must describe visible product behavior (households, records, logs) in this
+   * audience's terms — never abstract network-building. */
+  readonly networkPoints: readonly Feature[];
   /** SoftwareApplication JSON-LD description; each /for/… URL declares its own. */
   readonly jsonLdDescription: string;
 }
@@ -128,6 +142,30 @@ const IMPORT_STEP: Step = {
 export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
   office: {
     pickerLabel: 'Constituency office',
+    longGameBody:
+      'A sales pipeline forgets a deal the day it closes. Casework compounds: the file you closed two years ago is the context for today’s call, and the resident you helped is the volunteer who shows up next term. pplCRM keeps that whole story on one record, for as long as you serve the riding.',
+    oneList: {
+      icon: 'rectangle-stack',
+      title: 'One list, office and election',
+      body: 'The office’s records carry on year-round; when an election comes, the campaign runs alongside in its own context with its own supporters, mail and routes. Admins decide who works in which.',
+    },
+    networkPoints: [
+      {
+        icon: 'user-group',
+        title: 'Households, not just names',
+        body: 'The Ramos household is one address, three residents and one open case. Records connect, so the office sees the whole picture before it calls back.',
+      },
+      {
+        icon: 'route',
+        title: 'Context follows the resident',
+        body: 'Every case, note and email lives on the resident’s record. Whoever picks up the file sees what the office already knows — nobody asks a resident to tell their story twice.',
+      },
+      {
+        icon: 'presentation-chart-line',
+        title: 'Memory that survives turnover',
+        body: 'Staff change; the record stays. The activity log keeps who did what and when, so the next caseworker starts where the last one stopped.',
+      },
+    ],
     hero: {
       h1: 'Every case answered. Every constituent remembered.',
       sub: 'A shared inbox, tasks with due dates, and an activity log that remembers every touch. Casework that survives staff turnover and election cycles.',
@@ -210,6 +248,30 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
 
   campaign: {
     pickerLabel: 'Campaign',
+    longGameBody:
+      'A sales pipeline forgets a deal the day it closes. Your work compounds: this year’s case becomes next year’s volunteer becomes next cycle’s donor. pplCRM keeps that whole story on one record, however long you work the same streets.',
+    oneList: {
+      icon: 'rectangle-stack',
+      title: 'One list, every campaign',
+      body: 'Run this season and the next from one shared rolodex. Each campaign keeps its own supporters, mail and routes; admins decide who works in which, and the whole workspace follows.',
+    },
+    networkPoints: [
+      {
+        icon: 'user-group',
+        title: 'See the web, not the spreadsheet',
+        body: 'Households, workplaces, tags and shared causes tie your list together. pplCRM keeps every thread.',
+      },
+      {
+        icon: 'route',
+        title: 'Warm paths beat cold lists',
+        body: 'Reach new people through the neighbour who already knows you. An introduction opens doors a cold call never will.',
+      },
+      {
+        icon: 'presentation-chart-line',
+        title: 'Every touch sharpens the map',
+        body: 'Visits, notes, gifts and RSVPs each add a datapoint. The longer you organize, the smarter your network gets.',
+      },
+    ],
     hero: {
       h1: 'Built for the people who knock and win campaigns.',
       sub: 'Turf cutting, live field reports, donations and yard-sign routes. A campaign HQ that keeps score.',
@@ -249,7 +311,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'currency-dollar',
         title: 'Donations, gratefully',
-        body: '611 donors, each one thanked on time. Pledges, receipts and totals without a second spreadsheet.',
+        body: '611 donors, every gift on its donor’s record. Pledges and running totals without a second spreadsheet.',
       },
       IMPORT_CARD,
     ],
@@ -290,6 +352,30 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
 
   nonprofit: {
     pickerLabel: 'Non-profit',
+    longGameBody:
+      'A sales pipeline forgets a deal the day it closes. Your work compounds: this year’s event guest becomes next year’s monthly donor becomes the volunteer who runs the drive. pplCRM keeps that whole story on one record, for as long as the mission runs.',
+    oneList: {
+      icon: 'rectangle-stack',
+      title: 'One list, every appeal',
+      body: 'The spring appeal, the fall drive and next year’s gala all draw on the same supporter list — one record per person, never copies drifting apart in separate spreadsheets.',
+    },
+    networkPoints: [
+      {
+        icon: 'user-group',
+        title: 'Households and workplaces connect',
+        body: 'A family’s giving, volunteering and event history reads as one relationship, not four rows. Households and employers link records together, so you see who you already know.',
+      },
+      {
+        icon: 'route',
+        title: 'One person, many roles',
+        body: 'The same supporter can be a donor, a volunteer and an event guest. One record holds all of it, so nobody gets three conflicting emails from three different lists.',
+      },
+      {
+        icon: 'presentation-chart-line',
+        title: 'History informs the next ask',
+        body: 'Gifts, RSVPs and notes sit on the record where anyone on the team can read them, so the next request goes to the right person, for the right thing, at a respectful moment.',
+      },
+    ],
     hero: {
       h1: 'Donors, volunteers and neighbours. One list.',
       sub: 'Stop reconciling three spreadsheets. Gifts, drives and newsletters live on one person’s record.',
@@ -332,7 +418,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'currency-dollar',
         title: 'Giving, gratefully',
-        body: '611 donors, each one thanked on time. Recurring gifts, pledges and receipts without a second spreadsheet.',
+        body: '611 donors, every gift on its donor’s record. Recurring gifts, pledges and running totals without a second spreadsheet.',
       },
       IMPORT_CARD,
     ],
@@ -373,6 +459,30 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
 
   church: {
     pickerLabel: 'Church',
+    longGameBody:
+      'A sales pipeline forgets a deal the day it closes. A congregation compounds: a first-time visitor becomes a member, and a member becomes the volunteer who leads the food drive. pplCRM keeps that whole story on one record, for as long as you serve the parish.',
+    oneList: {
+      icon: 'rectangle-stack',
+      title: 'One list, every ministry',
+      body: 'Sunday services, the youth group and the food drive all draw on the same family list — one record per person, however many ministries they touch. No copies drifting apart in separate spreadsheets.',
+    },
+    networkPoints: [
+      {
+        icon: 'user-group',
+        title: 'Families, not just names',
+        body: 'The Chen family is one household: two members, three kids, one address. Records connect, so a note about the family is one note — not five records to keep in step.',
+      },
+      {
+        icon: 'route',
+        title: 'Care that follows the person',
+        body: 'Visitation notes and drop-offs live on the member’s record, so whoever visits next knows what was said last time — and no one has to re-explain a hard season.',
+      },
+      {
+        icon: 'presentation-chart-line',
+        title: 'A memory that outlasts volunteers',
+        body: 'Serving teams change with the seasons; the record stays. A new volunteer sees the history, and no family slips through a handover.',
+      },
+    ],
     hero: {
       h1: 'Know every family by name.',
       sub: 'Members, visitors and volunteers on one list. Giving, groups and follow-up visits all live on the family’s record.',
@@ -423,7 +533,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'currency-dollar',
         title: 'Giving, gratefully',
-        body: 'Tithes, offerings and pledges land on each family’s record — receipted, thanked and counted, without a second spreadsheet.',
+        body: 'Tithes, offerings and pledges land on each family’s record — recorded, tallied and exportable for your books, without a second spreadsheet.',
       },
       {
         icon: 'arrow-up-tray',
