@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { cutTurfs, previewCut, type DoorPoint } from './cutting-engine';
 
-/** Build a grid of geocoded doors in a single ward. */
-function grid(count: number, ward: string | null = 'W1'): DoorPoint[] {
+/** Build a grid of geocoded doors inside a single boundary area. */
+function grid(count: number, boundaryName: string | null = 'W1'): DoorPoint[] {
   const doors: DoorPoint[] = [];
   const side = Math.ceil(Math.sqrt(count));
   for (let i = 0; i < count; i++) {
@@ -11,7 +11,7 @@ function grid(count: number, ward: string | null = 'W1'): DoorPoint[] {
       household_id: String(i + 1),
       lat: 41.85 + Math.floor(i / side) * 0.001,
       lng: -87.69 + (i % side) * 0.001,
-      ward,
+      boundaryName,
     });
   }
   return doors;
@@ -35,10 +35,10 @@ describe('cutting-engine', () => {
     expect(new Set(ids).size).toBe(57);
   });
 
-  it('never lets a turf span two wards (barrier proxy)', () => {
+  it('never lets a turf span two boundaries (barrier proxy)', () => {
     const doors = [...grid(40, 'W1'), ...grid(40, 'W2').map((d) => ({ ...d, household_id: `b${d.household_id}` }))];
     const plan = cutTurfs(doors, 40);
-    // Each ward yields its own turf(s); no turf mixes W1 and W2 ids.
+    // Each area yields its own turf(s); no turf mixes W1 and W2 ids.
     for (const turf of plan.turfs) {
       const hasW1 = turf.households.some((id) => !id.startsWith('b'));
       const hasW2 = turf.households.some((id) => id.startsWith('b'));
@@ -50,12 +50,37 @@ describe('cutting-engine', () => {
   it('reports ungeocoded households as unplaced instead of dropping them', () => {
     const doors: DoorPoint[] = [
       ...grid(10),
-      { household_id: 'x1', lat: null, lng: null, ward: 'W1' },
-      { household_id: 'x2', lat: 41.85, lng: null, ward: 'W1' },
+      { household_id: 'x1', lat: null, lng: null, boundaryName: 'W1' },
+      { household_id: 'x2', lat: 41.85, lng: null, boundaryName: 'W1' },
     ];
     const plan = cutTurfs(doors, 10);
     expect(plan.unplaced.sort()).toEqual(['x1', 'x2']);
     expect(plan.placedCount).toBe(10);
+  });
+
+  /**
+   * Doors with no boundary share ONE bucket rather than getting one each. Without this a
+   * workspace holding no boundary map — the ordinary case until one is imported, uploaded or
+   * drawn — would get one turf per door instead of walkable turfs.
+   */
+  it('collapses every door with no boundary into one bucket, cut on geography alone', () => {
+    const plan = cutTurfs(grid(100, null), 25);
+    expect(plan.placedCount).toBe(100);
+    expect(plan.turfs.length).toBe(4);
+    // And every resulting turf reports itself as unbounded, so the UI can label it.
+    for (const turf of plan.turfs) expect(turf.boundaryName).toBeNull();
+  });
+
+  it('keeps the unbounded bucket separate from named areas', () => {
+    const doors = [...grid(40, 'W1'), ...grid(40, null).map((d) => ({ ...d, household_id: `u${d.household_id}` }))];
+    const plan = cutTurfs(doors, 40);
+    for (const turf of plan.turfs) {
+      const hasNamed = turf.households.some((id) => !id.startsWith('u'));
+      const hasUnbounded = turf.households.some((id) => id.startsWith('u'));
+      expect(hasNamed && hasUnbounded).toBe(false);
+    }
+    expect(plan.turfs.some((t) => t.boundaryName === 'W1')).toBe(true);
+    expect(plan.turfs.some((t) => t.boundaryName === null)).toBe(true);
   });
 
   it('produces contiguous, compact turfs (neighbouring doors stay together)', () => {

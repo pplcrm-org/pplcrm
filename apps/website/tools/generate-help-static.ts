@@ -48,6 +48,7 @@ const MARKETING_PATHS: readonly string[] = [
   'for/nonprofits',
   'for/churches',
   'compare',
+  'districts',
   'switch',
   'switch/breeze',
   'switch/planning-center',

@@ -1,45 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  isPointInPolygon,
-  isPointInMultiPolygon,
-  matchCoordinatesToDistrict,
-  geocodeAndMapHousehold,
-} from './geocoding';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock fs to control boundaries GeoJSON file loading
-vi.mock('fs', () => ({
-  promises: {
-    readFile: vi.fn().mockResolvedValue(
-      JSON.stringify({
-        type: 'FeatureCollection',
-        features: [
-          {
-            type: 'Feature',
-            properties: {
-              district: 'District 1',
-              precinct: 'Precinct A',
-              ward: 'Ward 1',
-            },
-            geometry: {
-              type: 'Polygon',
-              coordinates: [
-                [
-                  [-87.64, 41.87],
-                  [-87.62, 41.87],
-                  [-87.62, 41.89],
-                  [-87.64, 41.89],
-                  [-87.64, 41.87],
-                ],
-              ],
-            },
-          },
-        ],
-      }),
-    ),
-  },
-}));
+import * as boundaryMatch from './boundary-match';
+import * as geocodeCache from './geocode-cache';
+import { geocodeAndMapHousehold, isPointInMultiPolygon, isPointInPolygon } from './geocoding';
 
-describe('GIS Boundary Math & Matching', () => {
+describe('point-in-polygon math', () => {
   const loopPolygon = [
     [
       [-87.64, 41.87],
@@ -50,39 +15,38 @@ describe('GIS Boundary Math & Matching', () => {
     ],
   ];
 
-  it('isPointInPolygon should return true for a point inside the bounds', () => {
-    // Inside: lat 41.88, lng -87.63
+  it('returns true for a point inside the bounds', () => {
     expect(isPointInPolygon(-87.63, 41.88, loopPolygon)).toBe(true);
   });
 
-  it('isPointInPolygon should return false for a point outside the bounds', () => {
-    // Outside: lat 41.88, lng -87.65
+  it('returns false for a point outside the bounds', () => {
     expect(isPointInPolygon(-87.65, 41.88, loopPolygon)).toBe(false);
   });
 
-  it('isPointInMultiPolygon should return true if inside any of the polygons', () => {
-    const multi = [loopPolygon];
-    expect(isPointInMultiPolygon(-87.63, 41.88, multi)).toBe(true);
+  it('excludes a point that falls inside an interior ring (a hole)', () => {
+    const withHole = [
+      ...loopPolygon,
+      [
+        [-87.636, 41.876],
+        [-87.624, 41.876],
+        [-87.624, 41.884],
+        [-87.636, 41.884],
+        [-87.636, 41.876],
+      ],
+    ];
+    expect(isPointInPolygon(-87.63, 41.88, withHole)).toBe(false);
   });
 
-  it('matchCoordinatesToDistrict should return mapped properties for matching point', async () => {
-    const result = await matchCoordinatesToDistrict(41.88, -87.63);
-    expect(result.district).toBe('District 1');
-    expect(result.precinct).toBe('Precinct A');
-    expect(result.ward).toBe('Ward 1');
-  });
-
-  it('matchCoordinatesToDistrict should return nulls if outside of any boundaries', async () => {
-    const result = await matchCoordinatesToDistrict(45.0, -90.0);
-    expect(result.district).toBeNull();
-    expect(result.precinct).toBeNull();
-    expect(result.ward).toBeNull();
+  it('returns true if the point is inside any part of a multi-part area', () => {
+    expect(isPointInMultiPolygon(-87.63, 41.88, [loopPolygon])).toBe(true);
   });
 });
 
-describe('geocodeAndMapHousehold Background Job', () => {
+describe('geocodeAndMapHousehold', () => {
+  /* eslint-disable @typescript-eslint/no-explicit-any -- hand-rolled Kysely stub, see below */
   let dbMock: any;
   let updateMock: any;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -100,33 +64,24 @@ describe('geocodeAndMapHousehold Background Job', () => {
       executeTakeFirst: vi.fn(),
       updateTable: vi.fn().mockReturnValue(updateMock),
     };
+
+    // Boundary matching has its own specs and its own database tables; these tests are about the
+    // geocoding flow, so the two matcher entry points are stubbed rather than mocked in SQL.
+    vi.spyOn(boundaryMatch, 'applyHouseholdMatches').mockResolvedValue(undefined);
+    vi.spyOn(boundaryMatch, 'matchHouseholdBoundaries').mockResolvedValue([]);
   });
 
-  it('should mark status as failed if the address is blank', async () => {
-    // Return a blank household
-    dbMock.executeTakeFirst.mockResolvedValue({
-      id: '100',
-      tenant_id: '1',
-      street_num: '',
-      street1: '',
-      city: '',
-    });
+  it('marks a blank address failed without calling the geocoder', async () => {
+    const cached = vi.spyOn(geocodeCache, 'geocodeAddressCached');
+    dbMock.executeTakeFirst.mockResolvedValue({ id: '100', tenant_id: '1', street_num: '', street1: '', city: '' });
 
     await geocodeAndMapHousehold('100', '1', dbMock);
 
-    expect(dbMock.updateTable).toHaveBeenCalledWith('households');
-    expect(updateMock.set).toHaveBeenCalledWith(
-      expect.objectContaining({
-        geocoding_status: 'failed',
-        district: null,
-        precinct: null,
-        ward: null,
-      }),
-    );
+    expect(cached).not.toHaveBeenCalled();
+    expect(updateMock.set).toHaveBeenCalledWith(expect.objectContaining({ geocoding_status: 'failed' }));
   });
 
-  it('should mark status as failed if the address is incomplete', async () => {
-    // Return an incomplete household address (missing street1)
+  it('marks an incomplete address failed', async () => {
     dbMock.executeTakeFirst.mockResolvedValue({
       id: '100',
       tenant_id: '1',
@@ -137,19 +92,10 @@ describe('geocodeAndMapHousehold Background Job', () => {
 
     await geocodeAndMapHousehold('100', '1', dbMock);
 
-    expect(dbMock.updateTable).toHaveBeenCalledWith('households');
-    expect(updateMock.set).toHaveBeenCalledWith(
-      expect.objectContaining({
-        geocoding_status: 'failed',
-        district: null,
-        precinct: null,
-        ward: null,
-      }),
-    );
+    expect(updateMock.set).toHaveBeenCalledWith(expect.objectContaining({ geocoding_status: 'failed' }));
   });
 
-  it('should geocode successfully and map boundaries in mock/test mode', async () => {
-    // Return a valid household address
+  it('stores coordinates and then matches boundaries', async () => {
     dbMock.executeTakeFirst.mockResolvedValue({
       id: '100',
       tenant_id: '1',
@@ -158,11 +104,11 @@ describe('geocodeAndMapHousehold Background Job', () => {
       city: 'Chicago',
       state: 'IL',
       zip: '60601',
+      address_fp_full: '123 main st chicago il 60601',
     });
 
     await geocodeAndMapHousehold('100', '1', dbMock);
 
-    expect(dbMock.updateTable).toHaveBeenCalledWith('households');
     expect(updateMock.set).toHaveBeenCalledWith(
       expect.objectContaining({
         geocoding_status: 'success',
@@ -170,5 +116,30 @@ describe('geocodeAndMapHousehold Background Job', () => {
         lng: expect.any(Number),
       }),
     );
+    expect(boundaryMatch.matchHouseholdBoundaries).toHaveBeenCalledWith(
+      dbMock,
+      '1',
+      '100',
+      expect.any(Number),
+      expect.any(Number),
+    );
+  });
+
+  it('marks failed and clears stored areas when the address resolves to nothing', async () => {
+    vi.spyOn(geocodeCache, 'geocodeAddressCached').mockResolvedValue(null);
+    dbMock.executeTakeFirst.mockResolvedValue({
+      id: '100',
+      tenant_id: '1',
+      street_num: '123',
+      street1: 'Nowhere Rd',
+      city: 'Chicago',
+      state: 'IL',
+      address_fp_full: '123 nowhere rd chicago il',
+    });
+
+    await geocodeAndMapHousehold('100', '1', dbMock);
+
+    expect(updateMock.set).toHaveBeenCalledWith(expect.objectContaining({ geocoding_status: 'failed' }));
+    expect(boundaryMatch.applyHouseholdMatches).toHaveBeenCalledWith(dbMock, '1', '100', []);
   });
 });

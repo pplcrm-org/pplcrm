@@ -14,7 +14,7 @@ const person1 = {
   last_name: 'Doe',
   email: 'john@example.com',
   mobile: null,
-  ward: null,
+  any_electoral_area: null,
   tags: [],
   created_at: '2024-01-01T00:00:00Z',
 };
@@ -25,7 +25,7 @@ const person2 = {
   last_name: 'Doe',
   email: 'john@example.com',
   mobile: null,
-  ward: null,
+  any_electoral_area: null,
   tags: [],
   created_at: '2024-02-01T00:00:00Z',
 };

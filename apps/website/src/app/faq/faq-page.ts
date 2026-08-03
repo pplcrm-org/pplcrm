@@ -64,6 +64,42 @@ export class FaqPage {
       ],
     },
     {
+      // Every claim in this group is backed by the jurisdiction registry in libs/common and the
+      // boundary tables; see the pplcrm-website-claims registry before editing any of it. The
+      // last two answers deliberately say what pplCRM does NOT do for US campaigns.
+      label: 'Ridings & districts',
+      items: [
+        {
+          q: 'Does pplCRM work for US campaigns?',
+          a: 'Yes. It covers seven jurisdictions: Canadian federal, provincial and municipal races, US federal, state and local races, and an "anything else" option for the races nobody models. Pick yours when you set up the campaign and the rest of the product follows.',
+        },
+        {
+          q: 'Do you say riding, ward or district?',
+          a: 'Whichever your race uses. A Canadian federal campaign sees riding, a Toronto council campaign sees ward, an Ohio congressional campaign sees congressional district. Regional exceptions are automatic: Alberta and Saskatchewan get constituency, Quebec gets circonscription, New York calls a precinct an election district. If your race uses a word we did not predict, set your own and every screen uses it.',
+        },
+        {
+          q: 'What about a race with no district, like the US Senate?',
+          a: 'An at-large seat is a supported answer, not a blank field. Say the seat is elected at large and the seat-name question disappears; organizing runs on the precincts or polls underneath instead. The same applies to mayors, at-large council seats and the single at-large House seat in states such as Wyoming and Vermont.',
+        },
+        {
+          q: 'Do the boundary maps come with pplCRM?',
+          a: 'No. pplCRM does not ship riding, congressional district or precinct maps for anyone, and a new workspace does not already know your city’s lines. A map arrives in exactly three ways: you import the district columns your voter file already carries, you upload a GeoJSON from an open data portal, or you draw the areas yourself.',
+        },
+        {
+          q: 'My town publishes nothing usable. Now what?',
+          a: 'Draw it, which is the normal path rather than a fallback. Open the boundaries page, draw the areas on a map that already has your households on it, and name them. Drawing and redrawing cost nothing and never call a paid lookup service, because deciding which area a door falls in is arithmetic on coordinates already on file. Hand-drawn boundaries are approximate, so they are for organizing work rather than anything legal.',
+        },
+        {
+          q: 'My voter file already has district columns. Do I have to geocode?',
+          a: 'Not for the columns themselves. Headers such as CD, LD, District, Riding, Ward, Precinct, Poll, Polling division and Election district are recognized on import and written straight to the household, with no address lookup at all — ready to filter, list, count and export right away. Bare SD and HD are the deliberate exception: SD is the state code for South Dakota as often as it is a senate district, so the wizard asks you to point those two at the right field instead of quietly guessing wrong. Turf cutting is the one job that still needs coordinates, because a walk list is built from located doors. If you have the shapes instead, upload a GeoJSON and tell us which property holds each area name.',
+        },
+        {
+          q: 'Do you issue US donation receipts or file FEC reports?',
+          a: 'No, to both, and we would rather say so here than after you moved your list. US political contributions are not tax-deductible federally, so there is no receipt to issue and pplCRM does not issue one. We also do not prepare or submit FEC or state campaign-finance reports. Canadian political and charitable receipting is unaffected: numbered official receipts on the regimes that allow them.',
+        },
+      ],
+    },
+    {
       label: 'Your data',
       items: [
         {

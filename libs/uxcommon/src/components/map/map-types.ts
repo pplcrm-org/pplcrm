@@ -53,5 +53,30 @@ export interface PcMapPolygon<T = unknown> {
   label?: string;
   dashed?: boolean;
   id?: string;
+  /**
+   * Set `false` to keep this polygon view-only even in drawing mode: no vertex
+   * handles, no dragging. A host uses this for a shape too detailed to reshape
+   * on the map (thousands of handles, and a saved edit would exceed the server's
+   * request-body limit). Defaults to editable. A polygon without an `id` is
+   * always view-only regardless — an edit cannot be reported without an
+   * identity, and handles whose edits go nowhere would be a lie.
+   */
+  editable?: boolean;
   payload?: T;
+}
+
+/**
+ * One saved polygon whose shape was changed on the map — a vertex dragged, a
+ * vertex added or removed, or the whole shape dragged. Emitted by `<pc-map>`'s
+ * `polygonEdited` output.
+ *
+ * `path` is the new vertex ring in the same plain `PcLatLng[]` form
+ * `PcMapPolygon.path` accepts, so an edited shape goes straight back into the
+ * `polygons` input with no conversion, and straight into a GeoJSON coordinate
+ * ring with no conversion either.
+ */
+export interface PcMapPolygonEdit {
+  /** The `id` of the `PcMapPolygon` whose shape changed. */
+  id: string;
+  path: PcLatLng[];
 }

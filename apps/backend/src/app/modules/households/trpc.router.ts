@@ -10,6 +10,7 @@ import { z } from 'zod';
 
 import { authProcedure, router } from '../../../trpc';
 import { HouseholdsController } from './controller';
+import { ELECTORAL_IMPORT_ROW_FIELDS } from './electoral-import-schema';
 import { createCrudRouter } from '../../lib/crud-router';
 
 const households = new HouseholdsController();
@@ -39,6 +40,12 @@ export const HouseholdsRouter = router({
               country: z.string().trim().max(100).optional().nullable(),
               home_phone: z.string().trim().max(50).optional().nullable(),
               notes: z.string().trim().max(10000).optional().nullable(),
+              // Electoral columns the file itself named — district, ward, precinct and the US
+              // legislative district numbers. They MUST be listed: a Zod object drops every key it
+              // does not name, so a column the wizard mapped and sent would be discarded here and
+              // the controller behind this endpoint would never see it. Shared with the people
+              // importer so the two accept exactly the same columns.
+              ...ELECTORAL_IMPORT_ROW_FIELDS,
             }),
           )
           .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
@@ -102,7 +109,12 @@ export const HouseholdsRouter = router({
 
   getLastCanvass: authProcedure.input(idSchema).query(({ input, ctx }) => households.getLastCanvass(input, ctx.auth)),
 
-  countDistinctWards: authProcedure.query(({ ctx }) => households.countDistinctWards(ctx.auth)),
+  // `campaignId` scopes the distinct-area count to that campaign's seat map, matching the
+  // campaign-worded grain sentence around it. Absent (older clients), the workspace fallback
+  // set is used.
+  countDistinctWards: authProcedure
+    .input(z.object({ campaignId: z.string().optional() }).optional())
+    .query(({ input, ctx }) => households.countDistinctWards(ctx.auth, input?.campaignId)),
 
   getUnhoused: authProcedure.query(({ ctx }) => households.getUnhoused(ctx.auth)),
 

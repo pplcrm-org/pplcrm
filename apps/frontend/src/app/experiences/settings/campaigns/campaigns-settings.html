@@ -59,6 +59,12 @@
             </span>
             }
           </p>
+          <!-- The office it contests, so several campaigns in one workspace are told apart at a glance. -->
+          @if (officeLine(campaign); as office) {
+          <p class="mt-1 truncate text-xs text-base-content/70">{{ office }}</p>
+          } @else {
+          <p class="mt-1 text-xs text-base-content/45" i18n>No office recorded</p>
+          }
         </div>
         @if (campaign.kind === 'office') {
         <span class="badge badge-ghost shrink-0 gap-1">
@@ -108,6 +114,9 @@
             </span>
             }
           </p>
+          @if (officeLine(campaign); as office) {
+          <p class="mt-1 truncate text-xs text-base-content/60">{{ office }}</p>
+          }
         </div>
         <span class="badge badge-ghost shrink-0 gap-1">
           <pc-icon name="archive-box" [size]="3"></pc-icon>

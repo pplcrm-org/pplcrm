@@ -265,11 +265,13 @@ export class TurfDetailPage {
   }
 
   protected async refreshFromList(): Promise<void> {
-    const listName = this.detail()?.list_name;
-    if (!listName) return;
+    const detail = this.detail();
+    const listName = detail?.list_name;
+    if (!detail || !listName) return;
+    const mapMissing = detail.boundary_name != null && detail.boundary_set_id == null;
     const ok = await this.confirm.confirm({
       title: `Re-read "${listName}"?`,
-      message: refreshFromListExplainer(listName),
+      message: refreshFromListExplainer(listName, mapMissing),
       confirmText: 'Refresh doors',
     });
     if (!ok) return;

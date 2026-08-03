@@ -36,6 +36,7 @@ import { DeliveriesRouter } from './deliveries/trpc.router';
 import { CompanionAccessRouter, JoinCodesRouter } from './companion-access/trpc.router';
 import { DemoRouter } from './demo/trpc.router';
 import { BugReportsRouter } from './bug-reports/trpc.router';
+import { BoundariesRouter } from './boundaries/trpc.router';
 
 export type TRPCRouter = typeof trpcRouter;
 
@@ -79,6 +80,7 @@ export const trpcRouter = router({
   joinCodes: JoinCodesRouter,
   demo: DemoRouter,
   bugReports: BugReportsRouter,
+  boundaries: BoundariesRouter,
 });
 
 // Re-export individual routers for convenience.

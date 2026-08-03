@@ -51,12 +51,24 @@ export const TURF_STATUS_MAP_VARIANT: Record<TurfStatus, PcMapVariant> = {
  * "Refresh from list" is the least self-evident action on the page: it silently
  * adds and removes doors. So it explains itself before it runs, in the user's terms,
  * naming the list it is about to re-read (§3 guide, don't error).
+ *
+ * `mapMissing` is the turf whose named area's map is gone (boundary_name set,
+ * boundary_set_id null — deleted map, or a turf that predates boundary maps). Such a
+ * turf can lose doors but cannot take new ones, and promising growth here would be false.
  */
-export function refreshFromListExplainer(listName: string): string {
+export function refreshFromListExplainer(listName: string, mapMissing = false): string {
+  if (mapMissing) {
+    return (
+      `Doors that are still in "${listName}" stay exactly as they are, and doors that have left the list ` +
+      'are taken off the turf. No new doors can be added automatically: the boundary map this turf was cut ' +
+      'against is no longer available, so there is no way to tell which new addresses belong here. ' +
+      'Knocks already logged are kept either way, so nothing is lost from the field report.'
+    );
+  }
   return (
     `Doors that are still in "${listName}" stay exactly as they are. ` +
-    "Any new address in the list that falls inside this turf's ward is added, and doors that have left the list are " +
-    'taken off the turf. Knocks already logged are kept either way, so nothing is lost from the field report.'
+    "Any new address in the list that falls inside this turf's own area is added, and doors that have left the list " +
+    'are taken off the turf. Knocks already logged are kept either way, so nothing is lost from the field report.'
   );
 }
 
@@ -70,8 +82,8 @@ export const TURF_NAME_MAX_LENGTH = 120;
  * The name is not decoration: it is what canvassers already walking the turf see in the
  * Companion and what the field report files it under, so the prompt says where the new
  * name will turn up rather than only asking for one (§3 guide, don't error). Turfs come
- * out of the cutter with generated names ("Ward 12 — 3"), and the first thing an organizer
- * wants is to call them what the neighbourhood calls them.
+ * out of the cutter numbered ("Turf 7"), and the first thing an organizer wants is to call
+ * them what the neighbourhood calls them.
  */
 export function renameTurfPrompt(currentName: string): PromptOptions {
   return {
@@ -81,7 +93,7 @@ export function renameTurfPrompt(currentName: string): PromptOptions {
       `under that name — both follow the new one straight away. Nothing else changes: its doors, the knocks ` +
       `already logged and every link that has been handed out all keep working.`,
     defaultValue: currentName,
-    inputPlaceholder: 'e.g. Ward 12 — north of Elm',
+    inputPlaceholder: 'e.g. North of Elm',
     confirmText: 'Rename turf',
   };
 }
@@ -111,8 +123,25 @@ export function renameResultMessage(from: string, to: string): string {
   return `Renamed "${from}" to "${to}". Canvassers see the new name the next time their Companion refreshes.`;
 }
 
-/** What actually changed, in doors rather than row counts. */
-export function refreshResultMessage(listName: string, res: { added: number; removed: number }): string {
+/**
+ * What actually changed, in doors rather than row counts.
+ *
+ * `boundary_map_missing` comes from the refresh response: the turf's named area belongs to a
+ * map that no longer exists, so additions were impossible — saying "already matches" there
+ * would misreport an exclusion as a match.
+ */
+export function refreshResultMessage(
+  listName: string,
+  res: { added: number; removed: number; boundary_map_missing?: boolean },
+): string {
+  if (res.boundary_map_missing) {
+    const removed =
+      res.removed > 0 ? `${res.removed} ${res.removed === 1 ? 'door' : 'doors'} removed.` : 'No doors were removed.';
+    return (
+      `Refreshed from "${listName}": ${removed} This turf keeps its doors but cannot take new ones — ` +
+      'the boundary map it was cut against is no longer available. Knocks already logged were kept.'
+    );
+  }
   if (res.added === 0 && res.removed === 0) return `This turf already matches "${listName}". Nothing changed.`;
   const parts: string[] = [];
   if (res.added > 0) parts.push(`${res.added} ${res.added === 1 ? 'door' : 'doors'} added`);

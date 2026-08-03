@@ -24,8 +24,11 @@ the 2026-07-27 audit (`docs/security/abuse-threat-report-2026-07-27.md`):
 
 ## Two layers, not one: the lint rule AND Postgres RLS (S-1)
 
-Since the S-1 rollout (migration `2026-07-26-s1-row-level-security.ts`) the lint rule is **no
-longer the only tenant wall.** Every base table with a `tenant_id` column (61 of them) has
+Since the S-1 rollout (2026-07-26; the policies now live in the squashed baseline
+`apps/backend/src/app/_migrations/schema.sql` — the dated S-1 migration file no longer exists
+post-squash, see `pplcrm-migrations`) the lint rule is **no
+longer the only tenant wall.** Every base table with a `tenant_id` column (61 at that rollout; every
+table added since carries the same policy, including the four added 2026-08-02 below) has
 `ENABLE + FORCE ROW LEVEL SECURITY` and a `tenant_isolation` policy:
 
 ```sql
@@ -239,6 +242,32 @@ e.g. `duplicates.repo.ts#getLastSweepAt`. That was judged acceptable because eve
 is queue machinery keyed by row id / status, and the rows' business payloads are only acted on
 by handlers that scope their own queries. A tenant-facing feature that LISTS a tenant's jobs
 must still hand-add the `tenant_id` filter — the linter will not remind you.
+
+### Four tables added 2026-08-02 that are deliberately NOT on the list
+
+Electoral geography and the geocoding memo added four workspace-scoped tables. All four carry
+`tenant_id`, all four got the standard `tenant_isolation` RLS policy, and **none** of them belongs
+on `ignoreTables` — uploaded, drawn and imported boundaries are tenant-private data, so every query
+must carry its own `.where('tenant_id', …)`.
+
+| Table                 | Added by                               | Note                                                       |
+| --------------------- | -------------------------------------- | ---------------------------------------------------------- |
+| `boundary_sets`       | `2026-08-02-b-boundary-sets.ts`        | One named map layer                                        |
+| `boundary_features`   | `2026-08-02-b-boundary-sets.ts`        | Its polygons                                               |
+| `household_districts` | `2026-08-02-b-boundary-sets.ts`        | One row per household per layer                            |
+| `geocode_cache`       | `2026-08-02-c-geocode-cost-control.ts` | Address fingerprint → coordinates, **no FK to households** |
+
+**`geocode_cache` has no foreign key to `households` on purpose, and that is a security-relevant
+design choice, not an oversight.** It must survive household deletion: surviving deletion is what
+stops a repeated import-then-delete cycle from re-buying the same paid address lookups. It is also
+**per tenant, never global** — a shared cache would disclose that another workspace holds a given
+street address.
+
+Surviving household deletion is **not** surviving workspace deletion. `geocode_cache` is in
+`TENANT_SCOPED_TABLES` in `apps/backend/src/app/lib/jobs/handlers/deletions.handlers.ts`, so a full
+tenant wipe clears it, and `deletions.handlers.spec.ts` asserts that list stays in sync with every
+live `tenant_id` table. The three boundary tables are in the same list, ordered children first
+(`boundary_features`, `household_districts`, then `boundary_sets`).
 
 ### Bearer-credential lookups: intentional, per-method, NOT allow-listed
 

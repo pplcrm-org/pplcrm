@@ -67,9 +67,27 @@
           <p class="pc-eyebrow">Campaign</p>
           <p class="text-base-content/80">{{ d.campaign_name || '—' }}</p>
         </div>
+        <!-- The eyebrow is the campaign's own word for the area, resolved on the server. A turf
+             with no area of its own is a normal state with two distinct causes, told apart by
+             whether the turf records a map: cut against one but outside every area of it, or cut
+             with no map at all. Each is named and explained rather than left as a dash. -->
         <div>
-          <p class="pc-eyebrow">Ward</p>
-          <p class="text-base-content/80">{{ d.ward || '—' }}</p>
+          <p class="pc-eyebrow">{{ d.boundary_label }}</p>
+          @if (d.boundary_name) {
+          <p class="text-base-content/80">{{ d.boundary_name }}</p>
+          } @else if (d.boundary_set_id) {
+          <p class="text-base-content/80">Outside every {{ d.boundary_label.toLowerCase() }}</p>
+          <p class="mt-0.5 text-xs text-base-content/50">
+            Cut against a boundary map, but its doors fall outside every area of it, so they were grouped by how close
+            they are to each other.
+          </p>
+          } @else {
+          <p class="text-base-content/80">Unbounded</p>
+          <p class="mt-0.5 text-xs text-base-content/50">
+            Cut with no boundary map, so its doors were grouped by how close they are to each other.
+            <a class="text-primary" [routerLink]="['/help', 'district-boundaries']">Get a boundary map</a>
+          </p>
+          }
         </div>
         <div>
           <p class="pc-eyebrow">Cut from list</p>

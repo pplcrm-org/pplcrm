@@ -1,4 +1,4 @@
-import type { Selectable, Transaction } from 'kysely';
+import type { ExpressionBuilder, JoinBuilder, Selectable, Transaction } from 'kysely';
 import type { AnyQB } from '../../../lib/base.repo';
 import { sql } from 'kysely';
 
@@ -6,6 +6,79 @@ import type { Models, OperationDataType, TypeTenantId } from '../../../../../../
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
 import { HouseholdRepo } from '../../households/repositories/households.repo';
+import {
+  anyElectoralAreaSubquery,
+  electoralAreaSelects,
+  referencesElectoralAreas,
+  resolveSeatSetId,
+} from '../../households/electoral-areas';
+
+/** persons columns the grid may sort on — prefixed `persons.` in ORDER BY. */
+const SORTABLE_PERSON_COLUMNS: readonly string[] = [
+  'id',
+  'first_name',
+  'last_name',
+  'email',
+  'mobile',
+  'notes',
+  'household_id',
+  'company_id',
+  'created_at',
+  'updated_at',
+  'tenant_id',
+  'createdby_id',
+  'updatedby_id',
+  'volunteer_status',
+  'staff_status',
+  'do_not_contact',
+  'deceased_at',
+  'senior',
+];
+
+/** households columns reachable through the join — prefixed `households.` in ORDER BY. */
+const SORTABLE_PERSON_HOUSEHOLD_COLUMNS: readonly string[] = [
+  'country',
+  'zip',
+  'state',
+  'home_phone',
+  'city',
+  'street1',
+  'street2',
+  'street_num',
+  'apt',
+];
+
+/**
+ * Output aliases the data query selects, which Postgres resolves bare in ORDER BY. The two
+ * electoral columns belong to the lateral `hd_areas` relation; the fact/consent columns come off
+ * the `cpf`/`csub` joins; the rest are computed selections with no bare `persons.` column.
+ */
+const SORTABLE_PERSON_ALIASES: readonly string[] = [
+  'electoral_area',
+  'any_electoral_area',
+  'support_level',
+  'voting_status',
+  'subscription_status',
+  'household_is_placeholder',
+  'tags',
+  'issues',
+];
+
+/**
+ * Resolve a grid sortModel colId to an ORDER BY target, or null for anything unknown. A saved sort
+ * from a dropped column (the old `ward`/`district`/`precinct` text columns), a mistyped id or a
+ * dotted reference must be SKIPPED, not passed through: an unknown identifier makes Postgres
+ * reject the whole query and the grid never loads.
+ */
+function resolvePersonSortColumn(colId: unknown): string | null {
+  if (typeof colId !== 'string') return null;
+  if (SORTABLE_PERSON_COLUMNS.includes(colId)) return `persons.${colId}`;
+  if (SORTABLE_PERSON_HOUSEHOLD_COLUMNS.includes(colId)) return `households.${colId}`;
+  if (colId === 'company_name') return 'companies.name';
+  if (colId === 'address') return 'households.street1';
+  if (SORTABLE_PERSON_ALIASES.includes(colId)) return colId;
+  return null;
+}
 
 export class PersonsRepo extends BaseRepository<'persons'> {
   constructor() {
@@ -165,19 +238,42 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     // Campaign-scoped facts join (§15): '0' matches no rows, so without an active
     // campaign the support/voting columns are simply NULL ("Unknown").
     const campaignId = options.campaignId ?? '0';
+    // Which boundary set the single-valued `electoral_area` column reads — the campaign's own seat
+    // set where it has one. Resolved once per request; null when the workspace has no map yet.
+    const seatSetId = await resolveSeatSetId(trx ?? this.db, tenantId, options.campaignId ?? null);
     const searchStr = this.normalizeSearch(options.searchStr);
     const tags = input.tags?.map((t) => t.trim().toLowerCase()).filter(Boolean);
     const issues = (input.issues || options.issues)?.map((i) => i.trim().toLowerCase()).filter(Boolean);
-    const filterModel = (options.filterModel ?? {}) as Record<string, { value: unknown } | undefined>;
+    const filterModel = (options.filterModel ?? {}) as Record<string, { op?: string; value?: unknown } | undefined>;
+    const advModel =
+      options.advancedFilterModel || (options.filterModel?.['tags_expression'] as typeof options.advancedFilterModel);
 
-    // Shared where clause builder
-    const applyFilters = <QB extends AnyQB>(qb: QB) => {
+    // Shared where clause builder. `includeLateral` controls the electoral lateral join: the data
+    // query always carries it (the columns are selected), the count query only when a filter
+    // actually reads them — see the count below.
+    const applyFilters = <QB extends AnyQB>(qb: QB, includeLateral: boolean) => {
       let q = qb
         .leftJoin('households', 'persons.household_id', 'households.id')
         .leftJoin('map_peoples_tags', 'map_peoples_tags.person_id', 'persons.id')
         .leftJoin('tags', 'tags.id', 'map_peoples_tags.tag_id')
         .leftJoin('companies', 'persons.company_id', 'companies.id')
         .leftJoin('tenants', 'tenants.id', 'persons.tenant_id')
+        // The person's household's electoral geography. Lateral rather than a plain join because a
+        // household is in several boundaries at once and a plain join would multiply the person row
+        // by that number, which would make the tag/issue `array_agg` below repeat every tag. The
+        // subquery aggregates with no GROUP BY, so it always returns exactly one row.
+        .$if(includeLateral, (qb2) =>
+          qb2.leftJoinLateral(
+            (eb: ExpressionBuilder<Models, 'households'>) =>
+              eb
+                .selectFrom('household_districts as hd')
+                .whereRef('hd.household_id', '=', 'households.id')
+                .whereRef('hd.tenant_id', '=', 'households.tenant_id')
+                .select(electoralAreaSelects(seatSetId))
+                .as('hd_areas'),
+            (join: JoinBuilder<Models, 'households'>) => join.onTrue(),
+          ),
+        )
         .leftJoin('campaign_person_facts as cpf', (join) =>
           join
             .onRef('cpf.person_id', '=', 'persons.id')
@@ -236,6 +332,13 @@ export class PersonsRepo extends BaseRepository<'persons'> {
       q = this.applyColumnFilter(q, 'households.street1', filterModel['street1'] ?? {});
       q = this.applyCastColumnFilter(q, sql`households.street_num::text`, filterModel['street_num'] ?? {});
       q = this.applyColumnFilter(q, 'households.zip', filterModel['zip'] ?? {});
+      if (includeLateral) {
+        // The grid's "+ Add filter" on the two electoral columns lands here. Outer-query
+        // references to a lateral alias are valid Postgres, so the operator-aware helper works
+        // against `hd_areas` directly. Guarded because without the lateral the aliases don't exist.
+        q = this.applyColumnFilter(q, 'hd_areas.electoral_area', filterModel['electoral_area'] ?? {});
+        q = this.applyColumnFilter(q, 'hd_areas.any_electoral_area', filterModel['any_electoral_area'] ?? {});
+      }
       if (filterModel['tags']?.value && filterModel['issues']?.value) {
         // Both filters present — use OR grouping to avoid contradictory AND on tags.type
         const tagVal = `%${String(filterModel['tags'].value).replace(/\*/g, '%')}%`;
@@ -291,23 +394,40 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         // Booleans have to go through a text cast for the ILIKE-based operators;
         // the values a rule compares against are 'true' / 'false'.
         do_not_contact: { col: 'persons.do_not_contact::text', isCast: true },
+        // Where the person lives, electorally. Two fields, because they answer two different
+        // questions: `electoral_area` is the household's area in the campaign's own seat set, a
+        // single value that compares exactly; `any_electoral_area` is every area the household is
+        // in, joined together, which is what makes "everyone in precinct 12" expressible when
+        // precincts are not the seat set. The second is a concatenation, so it answers `contains`
+        // honestly and `equals` only for a household in exactly one area.
+        //
+        // Mapped only while the lateral join is present: without it a rule on these fields is
+        // dropped by buildGroupExpression instead of producing a query naming a missing alias.
+        ...(includeLateral
+          ? {
+              electoral_area: { col: 'hd_areas.electoral_area' },
+              any_electoral_area: { col: 'hd_areas.any_electoral_area' },
+            }
+          : {}),
       };
-      const advModel =
-        options.advancedFilterModel || (options.filterModel?.['tags_expression'] as typeof options.advancedFilterModel);
       q = this.applyAdvancedFilters(q, advModel, columnMapping);
 
       return q;
     };
 
-    // Count query
-    const countResult = await applyFilters(this.getSelect(trx))
+    // Count query. It never reads the electoral columns, and the lateral aggregate over
+    // household_districts is per-row work Postgres cannot eliminate — so the join rides along
+    // only when an active filter or rule actually references those fields, which keeps the
+    // count's predicate identical to the data query's.
+    const countNeedsElectoral = referencesElectoralAreas(filterModel, advModel);
+    const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral)
       .select(({ fn }) => [fn.count(sql`DISTINCT persons.id`).as('total')])
       .execute();
 
     const count = Number(countResult[0]?.['total'] || 0);
 
     // Data query
-    const rows = await applyFilters(this.getSelect(trx))
+    const rows = await applyFilters(this.getSelect(trx), true)
       .select((eb) => [
         'persons.id',
         'persons.first_name',
@@ -344,6 +464,10 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'persons.deceased_at',
         'persons.senior',
         'csub.status as subscription_status',
+        // Selected as well as filtered on, because the list builder's live preview evaluates the
+        // same rules client-side against these rows (see the pplcrm-lists skill).
+        'hd_areas.electoral_area',
+        'hd_areas.any_electoral_area',
         sql<string[]>`coalesce(array_remove(array_agg(CASE WHEN tags.type = 'tag' THEN tags.name END), null), '{}')`.as(
           'tags',
         ),
@@ -384,49 +508,13 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'persons.deceased_at',
         'persons.senior',
         'csub.status',
+        'hd_areas.electoral_area',
+        'hd_areas.any_electoral_area',
       ])
       .$if(!!options.sortModel?.length, (qb) =>
         (options.sortModel ?? []).reduce((acc, sort) => {
-          let col = sort.colId;
-          if (typeof col === 'string' && !col.includes('.')) {
-            const personsCols = [
-              'id',
-              'first_name',
-              'last_name',
-              'email',
-              'mobile',
-              'notes',
-              'household_id',
-              'company_id',
-              'created_at',
-              'updated_at',
-              'tenant_id',
-              'createdby_id',
-              'updatedby_id',
-            ];
-            if (personsCols.includes(col)) {
-              col = `persons.${col}`;
-            } else {
-              const hhCols = [
-                'country',
-                'zip',
-                'state',
-                'home_phone',
-                'city',
-                'street1',
-                'street2',
-                'street_num',
-                'apt',
-              ];
-              if (hhCols.includes(col)) {
-                col = `households.${col}`;
-              } else if (col === 'company_name') {
-                col = `companies.name`;
-              } else if (col === 'address') {
-                col = `households.street1`;
-              }
-            }
-          }
+          const col = resolvePersonSortColumn(sort.colId);
+          if (col == null) return acc;
           return acc.orderBy(col, sort.sort);
         }, qb),
       )
@@ -621,7 +709,12 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'persons.company_id',
         'persons.household_id',
         'persons.created_at',
-        'households.ward',
+        // Replaces `households.ward`. The field-grid comparison shows where each candidate lives,
+        // and a household is now in several boundaries at once, so this is every area it falls in
+        // rather than one column that only ever held the last geocoding pass's answer. Named
+        // `any_electoral_area` because that key means "all boundaries, joined" everywhere else,
+        // while `electoral_area` means the single seat-set value.
+        anyElectoralAreaSubquery().as('any_electoral_area'),
       ])
       .where('potential_duplicates.tenant_id', '=', tenant_id)
       .where('potential_duplicates.group_key', 'in', groupKeys)

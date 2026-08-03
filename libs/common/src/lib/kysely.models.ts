@@ -125,6 +125,10 @@ export interface Models {
   companion_approval_tokens: CompanionApprovalTokens;
   companion_organizer_tokens: CompanionOrganizerTokens;
   turf_segment_claims: TurfSegmentClaims;
+  boundary_sets: BoundarySets;
+  boundary_features: BoundaryFeatures;
+  household_districts: HouseholdDistricts;
+  geocode_cache: GeocodeCache;
 }
 
 export type AuthUsersType = Omit<AuthUsers, 'id'> & { id: string };
@@ -291,6 +295,30 @@ interface Campaigns extends Omit<RecordType, 'createdby_id'> {
   canvass_issues: Generated<string[]>;
   /** Door script shown (collapsible) at the top of the companion survey. */
   canvass_script: string | null;
+
+  // ---- What office this campaign is contesting. See libs/common/src/lib/jurisdictions. ----
+
+  /** Country and level of government: 'ca_federal' | … | 'other'. Defaults to 'other'. */
+  jurisdiction: Generated<string>;
+  /** Province, territory or state code — 'AB', 'OH'. NULL for a Canadian federal riding. */
+  office_region: string | null;
+  /** Municipality or county, required for the two local jurisdictions — 'Toronto'. */
+  office_locality: string | null;
+  /**
+   * 'upper' | 'lower' | NULL. Only US state legislatures set it, because their two houses are
+   * drawn on two different district maps and neither can be derived from the other.
+   */
+  chamber: string | null;
+  /** 'district' (its own seat area) | 'at_large' (elected across the whole region or locality). */
+  seat_type: Generated<string>;
+  /** The seat's name — 'Ottawa Centre', 'OH-3', 'Ward 14'. NULL when the seat is at large. */
+  seat_name: string | null;
+  /** Which seat, where one area elects several — 'Position 2', 'Seat B', 'Place 4'. */
+  seat_position: string | null;
+  /** Replaces the word shown for the seat area, beating the automatic regional word. */
+  seat_label_override: string | null;
+  /** What the seat-holder is called — 'MP', 'Councillor', 'State Representative'. */
+  office_title: string | null;
 }
 
 export interface Households extends Omit<RecordType, 'createdby_id'>, AddressType {
@@ -303,12 +331,153 @@ export interface Households extends Omit<RecordType, 'createdby_id'>, AddressTyp
   address_fp_street: string | null;
   address_fp_full: string | null;
   is_placeholder?: boolean;
-  district: string | null;
-  precinct: string | null;
-  ward: string | null;
+  /**
+   * Electoral geography is NOT here. An address sits inside several boundaries at once — a
+   * congressional district AND two legislative districts AND a council district AND a precinct —
+   * so it lives in `household_districts`, one row per household per map. The three text columns
+   * that used to sit at this spot (district, precinct, ward) held one answer each and were dropped
+   * by the 2026-08-02-e-drop-legacy-geography migration.
+   */
   geocoding_status: string | null;
+  /**
+   * When a boundary match pass last examined this household, matched or not. NULL until the first
+   * pass. The nightly sweep re-checks a household only when this is NULL or older than the newest
+   * `boundary_sets.updated_at` among the layers being matched — the marker that lets the sweep
+   * converge on households that sit outside every polygon.
+   */
+  boundary_checked_at: Timestamp | null;
   /** URL slug, unique per tenant (spec §1). Generated app-side — see lib/slug.ts. */
   slug: string | null;
+}
+
+/**
+ * One named collection of boundaries — "Congressional districts (119th Congress)", "Ottawa wards
+ * 2022", "the three neighbourhoods we are targeting".
+ *
+ * `role` is where the meaning lives, and it is never taken from the features' names. A Toronto ward
+ * set has role 'seat_area' because a ward elects a councillor; a Boston ward set has role
+ * 'subdivision' because a Massachusetts ward only groups precincts and elects nobody. Both are
+ * called "ward". Any code that decides what an area means from its name is wrong in one of those
+ * two cities.
+ *
+ * Where the polygons actually live depends on `source`: 'bundled' sets are build assets and have no
+ * `boundary_features` rows, 'upload' and 'drawn' sets are rows so an admin can rename and reshape
+ * individual features, and 'import' sets have no polygons at all because the area name arrived
+ * already assigned per household in a CSV.
+ *
+ * There is no `updatedby_id`: a set's own row is created once and its features are what get edited.
+ */
+export interface BoundarySets {
+  id: Generated<string>;
+  tenant_id: string;
+  /** Stable per-tenant identifier — 'ca-fed-2023', 'us-cd-119', 'us-sldl-az-2022'. */
+  slug: string;
+  /** What a person sees — 'Congressional districts (119th Congress)'. */
+  label: string;
+  /** Which jurisdiction this set serves: 'ca_federal' | … | 'other'. */
+  jurisdiction: string;
+  /** 'seat_area' | 'subdivision' | 'locality'. The meaning of the areas, independent of their names. */
+  role: string;
+  /** 'upper' | 'lower' | NULL. Set only for US state legislative sets, which exist once per chamber. */
+  chamber: string | null;
+  /** Province, territory or state this set covers. NULL when the set is national. */
+  region: string | null;
+  /**
+   * Which edition of the boundaries these are — '2023 representation order', '2020 Census VTD'.
+   * Redistricting means old and new maps must coexist, so a bundled set is versioned and never
+   * updated in place: a campaign may need the outgoing map for comparison and the incoming map for
+   * targeting at the same time.
+   */
+  vintage: string | null;
+  /** 'bundled' | 'upload' | 'import' | 'drawn'. */
+  source: string;
+  /** The uploaded original in `files`, retained after parsing. NULL for every other source. */
+  file_id: string | null;
+  /** Uploads only: which GeoJSON feature property held the area name. */
+  name_property: string | null;
+  /** Uploads only: which GeoJSON feature property held the area code. */
+  code_property: string | null;
+  feature_count: number | null;
+  createdby_id: string;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
+/**
+ * One area inside a boundary set — 'Ward 12', 'OH-3'.
+ *
+ * Rows exist only for sets a human can edit ('upload' and 'drawn'). Bundled reference data — 435
+ * congressional districts, tens of thousands of precincts — stays in build assets, because it is
+ * never edited and is versioned as a whole.
+ *
+ * `geometry` holds the GeoJSON Polygon or MultiPolygon coordinates and `bbox` holds
+ * [minLng, minLat, maxLng, maxLat]. The bounding box is not derived data for convenience: it is the
+ * pre-filter that runs before the ray cast, without which matching a point against a large set
+ * walks every feature.
+ */
+export interface BoundaryFeatures {
+  id: Generated<string>;
+  tenant_id: string;
+  set_id: string;
+  name: string;
+  code: string | null;
+  /** GeoJSON Polygon / MultiPolygon coordinates. */
+  geometry: Json;
+  /** [minLng, minLat, maxLng, maxLat] — tested before the point-in-polygon ray cast. */
+  bbox: Json;
+  createdby_id: string;
+  updatedby_id: string | null;
+  created_at: Generated<Timestamp>;
+  updated_at: Generated<Timestamp>;
+}
+
+/**
+ * Every boundary that covers one household, one row per set.
+ *
+ * This replaces the three fixed text columns on `households` (district, precinct, ward), which
+ * could hold only three answers and so had each geocoding pass overwrite the previous campaign's
+ * geography. A single US household sits inside a congressional district AND a state senate district
+ * AND a state house district AND a city council district AND a precinct at the same time.
+ *
+ * The unique key is (household_id, set_id) rather than (household_id, level, kind), and that is
+ * forced by two facts. A Massachusetts household is in a ward and a precinct, both voting
+ * subdivisions of the same city, which no `kind` enum can hold twice. And redistricting means two
+ * vintages of the same layer must coexist.
+ *
+ * `name` and `code` are copied from the matched feature rather than joined, so a grid can sort and
+ * filter on them without reaching into the boundary set.
+ */
+export interface HouseholdDistricts {
+  id: Generated<string>;
+  tenant_id: string;
+  household_id: string;
+  set_id: string;
+  name: string;
+  code: string | null;
+  matched_at: Generated<Timestamp>;
+}
+
+/**
+ * Address to coordinates, remembered so the same address is never paid for twice.
+ *
+ * Geocoding is billed per request; point-in-polygon matching is free CPU. This table exists for the
+ * billed half. It is keyed on the address fingerprint and **survives household deletion on
+ * purpose**: importing five thousand rows, deleting them and importing them again costs nothing the
+ * second time. `zero_results` is cached as well as `success`, or an address that no geocoder can
+ * resolve gets re-billed on every single import.
+ */
+export interface GeocodeCache {
+  id: Generated<string>;
+  tenant_id: string;
+  /** The same value as households.address_fp_full. */
+  address_fp: string;
+  /** 'success' | 'zero_results'. */
+  status: string;
+  lat: number | null;
+  lng: number | null;
+  formatted_address: string | null;
+  type: string | null;
+  looked_up_at: Generated<Timestamp>;
 }
 
 interface MapCampaignsUsers extends Omit<JunctionRecordType, 'createdby_id' | 'updatedby_id'> {
@@ -413,7 +582,21 @@ interface Turfs extends RecordType {
   target_doors: number | null;
   centroid_lat: number | null;
   centroid_lng: number | null;
-  ward: string | null;
+  /**
+   * Which boundary map this turf was cut against — a `boundary_sets` row.
+   *
+   * NULL means the workspace held no usable map for the turf's campaign, so the doors were
+   * clustered on geography alone. That is a supported state, not a failure, and the surfaces that
+   * show a turf say "unbounded" rather than naming an area that does not exist.
+   */
+  boundary_set_id: string | null;
+  /**
+   * The name of the one area inside that map the turf sits in — 'Ward 12', 'Poll 043'.
+   *
+   * Text rather than a reference to a `boundary_features` row, so redrawing or deleting the map
+   * does not erase the record of what the turf was cut around.
+   */
+  boundary_name: string | null;
   notes: string | null;
 }
 

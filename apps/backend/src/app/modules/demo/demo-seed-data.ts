@@ -4,9 +4,14 @@
  * One of several — see `demo-datasets.ts` for the per-mode registry and
  * `demo-data-types.ts` for the shapes and the ground rules every dataset obeys.
  *
- * This is a fictional municipal campaign in Ottawa: wards, turfs, lawn signs, a donor ledger and
- * an issues survey. It is deliberately NOT the dataset for a church or a non-profit, whose signups
- * hide canvassing and deliveries and whose starter vocabulary never contains "lawn sign location".
+ * This is a fictional municipal campaign for a seat on a city council: seat areas, turfs, lawn
+ * signs, a donor ledger and an issues survey. It is deliberately NOT the dataset for a church or a
+ * non-profit, whose signups hide canvassing and deliveries and whose starter vocabulary never
+ * contains "lawn sign location".
+ *
+ * The city is NOT in this file. Every household, event venue and route start below names a key in
+ * the place pack chosen from the signup country (`demo-data-places.ts`), so the same campaign runs
+ * in Ottawa for a Canadian workspace and in Chicago for a United States one.
  *
  * `office` mode DERIVES from this file rather than sharing it (see demo-data-office.ts): the same
  * people at the same addresses, with casework in place of the sign operation and no donor ledger.
@@ -34,7 +39,7 @@ import type {
   DemoVolunteerEventDef,
   DemoDonationDef,
 } from './demo-data-types';
-import { DEMO_CITY, DEMO_COUNTRY, DEMO_STATE, allSites } from './demo-data-places';
+import { allSites } from './demo-data-places';
 
 export const DEMO_COMPANIES: DemoCompanyDef[] = [
   {
@@ -708,7 +713,7 @@ export const DEMO_PERSONS: DemoPersonDef[] = [
     email: 'omar.khalil@example.com',
     mobile: '613-555-0121',
     createdDaysAgo: 4,
-    tags: ['new to riding'],
+    tags: ['new resident'],
     subscribed: true,
   },
   {
@@ -748,7 +753,7 @@ export const DEMO_PERSONS: DemoPersonDef[] = [
     last_name: 'Oduya',
     email: 'david.oduya@example.com',
     createdDaysAgo: 16,
-    tags: ['new to riding'],
+    tags: ['new resident'],
     supportLevel: 'undecided',
   },
   {
@@ -818,7 +823,7 @@ export const DEMO_PERSONS: DemoPersonDef[] = [
     last_name: 'Tanaka',
     email: 'aiko.tanaka@example.com',
     createdDaysAgo: 3,
-    tags: ['new to riding'],
+    tags: ['new resident'],
     subscribed: true,
   },
   {
@@ -838,7 +843,7 @@ export const DEMO_PERSONS: DemoPersonDef[] = [
     email: 'lucia.mendes@example.com',
     mobile: '613-555-0126',
     createdDaysAgo: 2,
-    tags: ['new to riding'],
+    tags: ['new resident'],
     subscribed: true,
   },
   {
@@ -1098,7 +1103,7 @@ export const DEMO_VOLUNTEER_EVENTS: DemoVolunteerEventDef[] = [
     name: 'Saturday canvass launch',
     description:
       'Kick-off canvass for the season. Meet at the Hintonburg Community Centre for a 30-minute training, then pairs head out with turf packets. Coffee and snacks provided.',
-    location_address: '1064 Wellington St W, Ottawa, ON K1Y 2Y3',
+    venue: 'hq',
     slug: 'saturday-canvass-launch',
     startInDays: 18,
     durationHours: 3,
@@ -1116,7 +1121,7 @@ export const DEMO_VOLUNTEER_EVENTS: DemoVolunteerEventDef[] = [
     key: 'ev-cleanup',
     name: 'Brewer Park cleanup morning',
     description: 'Community cleanup along the canal side of Brewer Park, followed by coffee. Gloves and bags provided.',
-    location_address: '100 Brewer Way, Ottawa, ON K1S 5T1',
+    venue: 'park',
     slug: 'brewer-park-cleanup-morning',
     startInDays: -20,
     durationHours: 2,
@@ -1509,9 +1514,10 @@ export const DEMO_EMAILS: DemoEmailDef[] = [
 
 // ── Canvassing (§13) ────────────────────────────────────────────────────────
 // Pre-cut turfs over the demo households so the /canvassing page opens with a
-// real field operation instead of an empty state. Turfs never cross a ward
+// real field operation instead of an empty state. Turfs never cross a boundary
 // (the cutting engine's only barrier), so each turf's households all share one
-// ward. Progress ("In field now", "Complete") is DERIVED from the knocks at
+// area of the seeded boundary set, and the turf's name comes from that area —
+// 'The Glebe (Capital)' in Ottawa, 'Wicker Park (Ward 1)' in Chicago. Progress ("In field now", "Complete") is DERIVED from the knocks at
 // read time — we store only the lifecycle status + the knock rows, never
 // counters. Timings are relative to seed time (`knockedHoursAgo`) so the
 // derived state is the same however long after signup the user looks:
@@ -1522,9 +1528,8 @@ export const DEMO_EMAILS: DemoEmailDef[] = [
 
 export const DEMO_TURFS: DemoTurfDef[] = [
   {
-    key: 'turf-somerset',
-    name: 'Centretown core (Somerset)',
-    ward: 'Somerset',
+    key: 'turf-core',
+    area: 'core',
     status: 'active',
     assigned: true,
     households: ['hh-cooper', 'hh-maclaren', 'hh-frank', 'hh-arlington', 'hh-gladstone', 'hh-bay'],
@@ -1581,9 +1586,8 @@ export const DEMO_TURFS: DemoTurfDef[] = [
     ],
   },
   {
-    key: 'turf-kitchissippi',
-    name: 'Westboro east (Kitchissippi)',
-    ward: 'Kitchissippi',
+    key: 'turf-west',
+    area: 'west',
     status: 'active',
     assigned: true,
     households: ['hh-byron', 'hh-kirkwood', 'hh-java', 'hh-armstrong', 'hh-huron'],
@@ -1623,9 +1627,8 @@ export const DEMO_TURFS: DemoTurfDef[] = [
     ],
   },
   {
-    key: 'turf-capital',
-    name: 'The Glebe (Capital)',
-    ward: 'Capital',
+    key: 'turf-south',
+    area: 'south',
     status: 'active',
     assigned: true,
     households: ['hh-fifth', 'hh-holmwood', 'hh-sunnyside', 'hh-powell', 'hh-aylmer'],
@@ -1633,9 +1636,8 @@ export const DEMO_TURFS: DemoTurfDef[] = [
     knocks: [],
   },
   {
-    key: 'turf-rideau-vanier',
-    name: 'Sandy Hill (Rideau-Vanier)',
-    ward: 'Rideau-Vanier',
+    key: 'turf-east',
+    area: 'east',
     status: 'active',
     assigned: true,
     households: ['hh-sweetland', 'hh-marlborough', 'hh-blackburn', 'hh-charlotte'],
@@ -1661,9 +1663,8 @@ export const DEMO_TURFS: DemoTurfDef[] = [
     ],
   },
   {
-    key: 'turf-alta-vista',
-    name: 'Alta Vista',
-    ward: 'Alta Vista',
+    key: 'turf-southeast',
+    area: 'southeast',
     status: 'draft',
     assigned: false,
     households: ['hh-kilborn', 'hh-pleasantpark', 'hh-halifax', 'hh-featherston'],
@@ -1831,9 +1832,7 @@ export const DEMO_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
     name: 'Westboro run',
     status: 'completed',
     volunteerPerson: 'jake-morrison',
-    startAddress: '1064 Wellington St W, Ottawa, ON K1Y 2Y3',
-    startLat: 45.4012,
-    startLng: -75.7196,
+    start: 'west',
     scheduledInDays: -3,
     stops: [
       { request: 'dr-byron', status: 'delivered', actedVia: 'volunteer_link', actedHoursAgo: 72 },
@@ -1846,9 +1845,7 @@ export const DEMO_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
     name: 'Glebe & Old Ottawa South run',
     status: 'in_progress',
     volunteerPerson: 'julie-lavoie',
-    startAddress: '175 Third Ave, Ottawa, ON K1S 2K2',
-    startLat: 45.4009,
-    startLng: -75.6889,
+    start: 'south',
     shared: true,
     scheduledInDays: 0,
     stops: [
@@ -1899,13 +1896,8 @@ export const DEMO_DONATIONS: DemoDonationDef[] = [
   { person: 'mai-nguyen', amountCents: 2000, method: 'card', createdDaysAgo: 37, pledge: 'pledge-mai' },
 ];
 
-export { DEMO_CITY, DEMO_STATE, DEMO_COUNTRY };
-
 /** The electoral dataset, bundled for `demo-datasets.ts`. */
 export const CAMPAIGN_DEMO_DATASET: DemoDataset = {
-  city: DEMO_CITY,
-  state: DEMO_STATE,
-  country: DEMO_COUNTRY,
   companies: DEMO_COMPANIES,
   households: DEMO_HOUSEHOLDS,
   persons: DEMO_PERSONS,
@@ -1923,9 +1915,9 @@ export const CAMPAIGN_DEMO_DATASET: DemoDataset = {
   deliveryRoutes: DEMO_DELIVERY_ROUTES,
   pledges: DEMO_PLEDGES,
   donations: DEMO_DONATIONS,
-  // No receipts, and that is not an omission. This is a MUNICIPAL race (Somerset, Kitchissippi
-  // and Capital are City of Ottawa wards), and a municipal candidate in Ontario issues plain
-  // contribution receipts under the Municipal Elections Act — not an income-tax receipt. None of
+  // No receipts, and that is not an omission. This is a MUNICIPAL race, and a municipal candidate
+  // in Ontario issues plain contribution receipts under the Municipal Elections Act — not an
+  // income-tax receipt. A United States municipal candidate issues none at all. None of
   // the six regimes in libs/common/src/lib/receipt-regimes covers that, so configuring one here
   // would print a document claiming a tax treatment these contributions do not get. The gifts are
   // recorded in the ledger; receipting stays off until there is a regime that fits.

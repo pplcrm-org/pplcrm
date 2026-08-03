@@ -6,6 +6,7 @@ import {
   DATA_RESIDENCY_MIN_PLAN,
   DEFAULT_DATA_REGION_CHOICE,
   DEFAULT_ORG_MODE,
+  JURISDICTIONS,
   MODULE_VISIBILITY_SETTINGS_KEY,
   ORG_MODE_SETTINGS_KEY,
   PLANS_BY_KEY,
@@ -16,20 +17,25 @@ import {
   hostingRegionFor,
   isChoicePendingRegion,
   isDataRegionChoice,
+  isJurisdictionId,
   isOrgMode,
   parseModuleOverrides,
+  regionsForCountry,
   slugifyHandle,
 } from '../../../../../../libs/common/src';
 import { signedFileDownloadUrl } from '../../lib/signed-download';
 
 import type {
+  Chamber,
   DataRegionChoice,
   IAuthKeyPayload,
   INow,
   InviteAuthUserType,
+  JurisdictionId,
   ModuleId,
   OrgMode,
   PlanKey,
+  SeatType,
   UpdateAuthUserType,
   getAllOptionsType,
   signInInputType,
@@ -100,6 +106,78 @@ import { TenantsRepo } from './repositories/tenants.repo';
 /** How long a scheduled-deletion cancellation link stays valid. Comfortably longer than
  *  the deletion grace period, so the link never dies before the window it belongs to. */
 const DELETION_CANCEL_TOKEN_TTL_MS = 45 * 24 * 60 * 60 * 1000;
+
+/** Trimmed text, or null when the value is absent, empty or only whitespace. */
+function trimmedOrNull(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * The office columns for the tenant's permanent office campaign, from the signup wizard's step 2.
+ *
+ * Every answer is optional — the step carries a "Skip for now" — so this always produces a
+ * complete, self-consistent row: jurisdiction 'other' and seat type 'district' when nothing was
+ * chosen, matching the column defaults on `campaigns`.
+ *
+ * It also drops answers that contradict the chosen jurisdiction rather than trusting the input.
+ * `signUpInputObj` already refuses those combinations, but `signUp` is reachable from tests and
+ * internal callers that build the input by hand (the same reason `mode` and `data_region` are
+ * re-defaulted above), and a contradictory row would be rejected the first time anyone opened the
+ * campaign edit form.
+ */
+function resolveSignUpOffice(input: signUpInputType): {
+  jurisdiction: JurisdictionId;
+  office_region: string | null;
+  office_locality: string | null;
+  chamber: Chamber | null;
+  seat_type: SeatType;
+  seat_name: string | null;
+  office_title: string | null;
+} {
+  const jurisdiction: JurisdictionId = isJurisdictionId(input.jurisdiction) ? input.jurisdiction : 'other';
+  const spec = JURISDICTIONS[jurisdiction];
+  const seatType: SeatType = input.seat_type === 'at_large' && spec.supportsAtLarge ? 'at_large' : 'district';
+  const region = trimmedOrNull(input.office_region);
+
+  return {
+    jurisdiction,
+    // A region the country's list does not contain is dropped, not stored: it would fail the
+    // campaign form's own check the moment the campaign was edited.
+    office_region: region != null && regionsForCountry(spec.country).some((r) => r.code === region) ? region : null,
+    office_locality: trimmedOrNull(input.office_locality),
+    // Only US state legislatures have two chambers on two different district maps.
+    chamber: spec.usesChamber && (input.chamber === 'upper' || input.chamber === 'lower') ? input.chamber : null,
+    seat_type: seatType,
+    // An at-large seat covers the whole region or locality, so it has no seat area to name.
+    seat_name: seatType === 'at_large' ? null : trimmedOrNull(input.seat_name),
+    office_title: trimmedOrNull(input.office_title),
+  };
+}
+
+/**
+ * The workspace settings rows for the signup wizard's step 3, skipping anything left blank.
+ *
+ * The address is written twice, to two keys that already exist and are already read:
+ * `organization.address` backs the Organization section of Workspace settings, and
+ * `receipts.org_address` is the registered address every receipt regime prescribes
+ * (RECEIPT_ISSUER_FIELDS in libs/common/src/lib/receipt-regimes). Writing both is the point of
+ * asking at signup — a workspace that answers step 3 starts with part of its receipt configuration
+ * already filled in rather than meeting the requirement the first time it tries to issue a receipt.
+ */
+function resolveSignUpContactSettings(input: signUpInputType): { key: string; value: string }[] {
+  const entries: { key: string; value: string }[] = [];
+  const address = trimmedOrNull(input.organization_address);
+  if (address) {
+    entries.push({ key: 'organization.address', value: address });
+    entries.push({ key: 'receipts.org_address', value: address });
+  }
+  const phone = trimmedOrNull(input.organization_phone);
+  if (phone) entries.push({ key: 'organization.phone', value: phone });
+  const contactEmail = trimmedOrNull(input.organization_contact_email);
+  if (contactEmail) entries.push({ key: 'organization.contact_email', value: contactEmail.toLowerCase() });
+  return entries;
+}
 
 export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
   private static readonly AVATAR_ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -1573,6 +1651,11 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
     const dataRegion: DataRegionChoice = isDataRegionChoice(input.data_region)
       ? input.data_region
       : DEFAULT_DATA_REGION_CHOICE;
+    // Steps 2 and 3 of the signup wizard are skippable, so both of these are allowed to come back
+    // empty. Resolved once, before the transaction, and used in three places inside it: the office
+    // campaign's columns, the workspace settings rows, and the starter tag wording.
+    const office = resolveSignUpOffice(input);
+    const contactSettings = resolveSignUpContactSettings(input);
     let token: { auth_token: string; refresh_token: string; refresh_expires_at: Date | null } = {
       auth_token: '',
       refresh_token: '',
@@ -1607,6 +1690,11 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
 
         // Create the tenant's permanent office context (Campaigns §15). Election
         // campaigns are added later by the user; this one always exists.
+        //
+        // The office answers from step 2 of the signup wizard land here rather than in a
+        // workspace setting, because the office being contested is a property of a campaign:
+        // an election campaign added later contests a different seat, and may sit in a
+        // different jurisdiction entirely.
         const campaign = await trx
           .insertInto('campaigns')
           .values({
@@ -1617,6 +1705,7 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
             name: `${input.organization} Office`,
             kind: 'office',
             status: 'active',
+            ...office,
           })
           .returning('id')
           .executeTakeFirstOrThrow();
@@ -1649,6 +1738,13 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
               createdby_id: user.id,
               updatedby_id: user.id,
             },
+            ...contactSettings.map((entry) => ({
+              tenant_id,
+              key: entry.key,
+              value: JSON.stringify(entry.value),
+              createdby_id: user.id,
+              updatedby_id: user.id,
+            })),
           ])
           .execute();
 
@@ -1673,7 +1769,21 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
 
         // Starter tags/issues and forms survive exit-demo; the demo dataset does
         // not — see modules/demo. Tags first: the demo seeder attaches to them by name.
-        await seedStarterTags({ tenant_id, user_id: userId, mode: orgMode }, trx);
+        await seedStarterTags(
+          {
+            tenant_id,
+            user_id: userId,
+            mode: orgMode,
+            // So a Toronto ward campaign is not handed a tag about ridings, and an Ohio
+            // congressional campaign is not either.
+            office: {
+              jurisdiction: office.jurisdiction,
+              region: office.office_region,
+              seatLabelOverride: null,
+            },
+          },
+          trx,
+        );
         const starterForms = await seedStarterForms(
           { tenant_id, user_id: userId, campaign_id: campaign.id, mode: orgMode },
           trx,

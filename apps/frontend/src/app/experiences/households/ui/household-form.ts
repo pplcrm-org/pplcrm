@@ -17,6 +17,7 @@ import { GeocodeChip } from '@uxcommon/components/geocode-chip/geocode-chip';
 
 import type { Selectable } from 'kysely';
 import { HouseholdsService } from '../services/households-service';
+import { readHouseholdAreas } from '../services/household-areas';
 import { Households, AddressType } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
@@ -58,6 +59,14 @@ export class HouseholdForm implements OnInit {
 
   /** Member count for the Overview rail — loaded alongside the household (§6). */
   protected readonly peopleCount = signal(0);
+
+  /**
+   * Every boundary this address falls inside, one entry per map the workspace holds. There is no
+   * fixed number of them: an address can be in a federal riding, a provincial riding, a city ward
+   * and a precinct all at once, which is why the rail used to show three fixed rows and now shows a
+   * list.
+   */
+  protected readonly electoralAreas = computed(() => readHouseholdAreas(this.household()));
 
   protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
     const households: PcBreadcrumb = { label: 'Households', route: '/households' };

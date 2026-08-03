@@ -13,7 +13,14 @@ interface PersonDuplicateItem {
   last_name: string | null;
   email: string | null;
   mobile: string | null;
-  ward: string | null;
+  /**
+   * Every electoral boundary the person's household falls inside, joined into one string by the
+   * backend. It replaces the old single `ward` text column, because an address is normally inside a
+   * riding AND a ward AND a precinct at once and one column could only ever show one of them.
+   * Keyed `any_electoral_area` — everywhere in the app that key means "all boundaries, joined",
+   * while `electoral_area` means the single value from the campaign's seat set.
+   */
+  any_electoral_area: string | null;
   tags: string[];
   created_at: string | Date;
 }

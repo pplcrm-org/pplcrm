@@ -57,6 +57,23 @@ export const DECEASED_CHOICES: RuleChoice[] = [
   { value: 'false', label: 'No' },
 ];
 
+/**
+ * The two electoral geography fields, which are separate because a household is inside several
+ * boundaries at the same time: a federal riding AND a provincial riding AND a municipal ward AND a
+ * precinct. One field cannot answer both questions people ask.
+ *
+ * `electoral_area` is the household's area on the ACTIVE CAMPAIGN'S OWN map, one value per
+ * household, so it compares exactly and is the one to use for "everyone in Ward 4".
+ *
+ * `any_electoral_area` is every area the household falls in at any level, joined into one string by
+ * the backend. It is what makes "everyone in precinct 12" answerable when precincts are not the
+ * campaign's own map. Because it is a concatenation it must never be offered `equals`: a household
+ * in three boundaries would never equal any single area name. See the operator sets in
+ * `list-form.ts` and the backend note in `modules/households/electoral-areas.ts`.
+ */
+export const ELECTORAL_AREA_FIELD = 'electoral_area';
+export const ANY_ELECTORAL_AREA_FIELD = 'any_electoral_area';
+
 /** Field name → the label shown in the picker and in the definition sentence. */
 export const RULE_FIELD_LABELS: Record<string, string> = {
   tags: 'Tags',
@@ -74,6 +91,10 @@ export const RULE_FIELD_LABELS: Record<string, string> = {
   email: 'Email',
   mobile: 'Mobile',
   company_name: 'Company',
+  // Fallback wording for a workspace whose campaign declares no jurisdiction. When one is
+  // declared, `ruleFieldLabel` swaps in that campaign's own word (Ward, Riding, Precinct).
+  [ELECTORAL_AREA_FIELD]: 'Electoral area',
+  [ANY_ELECTORAL_AREA_FIELD]: 'Any electoral boundary',
   city: 'City',
   state: 'State/Province',
   street1: 'Street 1',
@@ -97,7 +118,28 @@ export const RULE_FIELD_CHOICES: Record<string, RuleChoice[]> = {
   deceased: DECEASED_CHOICES,
 };
 
-export function ruleFieldLabel(field: string): string {
+/**
+ * Fields where an absent value means "nobody has recorded one", so the operators read
+ * "is set" / "is not set" rather than "is empty" / "is not empty".
+ *
+ * Every field with a fixed choice list already qualifies (an absent volunteer status means "not a
+ * volunteer", not "an empty string"). The two electoral fields qualify for the same reason: a
+ * household with no boundary has not been placed on a map yet.
+ */
+export function ruleOpUsesSetWording(field: string): boolean {
+  return RULE_FIELD_CHOICES[field] != null || field === ELECTORAL_AREA_FIELD || field === ANY_ELECTORAL_AREA_FIELD;
+}
+
+/**
+ * The label shown in the picker and in the definition sentence.
+ *
+ * `seatLabel` is the active campaign's own word for the seat it contests, resolved by
+ * `CampaignContextService`. Passing it makes the single-valued electoral field read "Ward" for a
+ * Toronto council race and "Congressional district" for an Ohio one. It is deliberately NOT applied
+ * to `any_electoral_area`, which spans every level at once and so belongs to no single word.
+ */
+export function ruleFieldLabel(field: string, seatLabel?: string | null): string {
+  if (field === ELECTORAL_AREA_FIELD && seatLabel) return seatLabel;
   return RULE_FIELD_LABELS[field] ?? field.replace(/_/g, ' ');
 }
 

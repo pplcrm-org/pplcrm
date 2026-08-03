@@ -50,8 +50,83 @@ Inputs:
 | `mapId`       | `string`           | `'DEMO_MAP_ID'` | Cloud Map ID for dark tiles                                                              |
 | `ariaLabel`   | `string`           | `'Map'`         | Placeholder/aria label                                                                   |
 
+Drawing inputs (see **Drawing mode** below):
+
+| Input               | Type             | Default | Notes                                                            |
+| ------------------- | ---------------- | ------- | ---------------------------------------------------------------- |
+| `drawingEnabled`    | `boolean`        | `false` | On: map clicks place vertices and saved polygons become editable |
+| `selectedPolygonId` | `string \| null` | `null`  | The `PcMapPolygon.id` to highlight (heavier stroke, denser fill) |
+
 Outputs: `markerClicked: PcMapMarker`, `polygonClicked: PcMapPolygon` (each
-carries its `payload` back).
+carries its `payload` back), plus the four drawing outputs below.
+
+## Drawing mode
+
+`drawingEnabled` is `false` by default, so an existing `<pc-map>` behaves
+exactly as it did before drawing existed. Turned on:
+
+- A click on the map places a vertex of the shape in progress. A vertex that
+  lands within **`VERTEX_SNAP_TOLERANCE_PX = 12`** screen pixels of a vertex
+  already on the map snaps onto it exactly — that is how two neighbouring areas
+  come to share an edge instead of leaving slivers. The constant is exported
+  from `map.ts`; `snapToleranceInDegrees(zoom)` converts it to degrees of
+  longitude, and the comparison corrects for the Mercator 1/cos(latitude)
+  stretch so the tolerance stays honest at Canadian latitudes.
+- Clicking the first vertex again — or calling `finishDrawing()` — closes the
+  ring and emits `polygonDrawn`. A shape needs **at least three** vertices.
+- Saved polygons become `editable` and `draggable`, so their vertices can be
+  moved; every shape change emits `polygonEdited`. Shapes above the component's
+  vertex threshold stay view-only in edit mode, with a note explaining why.
+- Clicking a saved polygon emits `polygonSelected` with its `id` (and, as
+  always, `polygonClicked` with the whole polygon).
+- Right-clicking the **body** of a saved polygon emits `polygonDeleted` with its
+  `id`. Right-clicking one of its **vertices** removes that vertex — the
+  component implements the gesture itself, because Google provides no
+  remove-a-vertex gesture of its own.
+- **Escape** cancels the trace in progress; **Enter** finishes a closable one
+  (three or more vertices).
+
+Drawing outputs:
+
+| Output            | Payload               | Fires when                                             |
+| ----------------- | --------------------- | ------------------------------------------------------ |
+| `polygonDrawn`    | `PcLatLng[]`          | A new ring is closed (the ring is not repeated at end) |
+| `polygonEdited`   | `PcMapPolygonEdit`    | A saved polygon's shape changed: `{ id, path }`        |
+| `polygonDeleted`  | `string` (polygon id) | Right-click on a saved polygon's body                  |
+| `polygonSelected` | `string` (polygon id) | A saved polygon was clicked                            |
+
+Every drawing payload is plain `PcLatLng` values and string ids — never a Google
+SDK object — so a host can hold and post the result without loading the SDK.
+
+Public methods and signals a host drives the toolbar with:
+
+| Member               | Kind                | What it does                                            |
+| -------------------- | ------------------- | ------------------------------------------------------- |
+| `finishDrawing()`    | method              | Closes and emits the shape; no-op under three vertices  |
+| `cancelDrawing()`    | method              | Discards the shape in progress, emitting nothing        |
+| `undoLastVertex()`   | method              | Removes the most recently placed vertex                 |
+| `draftVertexCount()` | `computed<number>`  | Vertices placed so far; `0` when nothing is in progress |
+| `canFinishDrawing()` | `computed<boolean>` | True once the shape has at least three vertices         |
+
+Turning `drawingEnabled` off discards whatever was half-traced.
+
+### Two things that will otherwise be got wrong
+
+**There is no `DrawingManager`.** Google removed it: `@types/google.maps`
+(pinned at Maps JS API **3.65**) marks `google.maps.drawing.DrawingManager`
+`@deprecated` with "The DrawingManager functionality in the Maps JavaScript API
+is no longer available in the Maps JavaScript API as of version 3.65." That is
+why `<pc-map>` places vertices from raw map `click` events itself, keeps the
+ring in a `draft` signal, and draws the shape in progress as a `Polyline` plus
+one `AdvancedMarkerElement` per vertex. Do not "simplify" this back onto the
+drawing library — it is gone.
+
+**`<pc-map>` renders no drawing toolbar.** The component draws only the map
+surface and the shape in progress. The finish, undo and cancel controls are the
+**host page's** job: call `finishDrawing()` / `undoLastVertex()` /
+`cancelDrawing()` on a `viewChild(PcMap)` and gate the buttons on
+`canFinishDrawing()` and `draftVertexCount()`. The live example is the boundary
+map editor (`apps/frontend/src/app/experiences/settings/boundaries/`).
 
 ## Consumption patterns
 

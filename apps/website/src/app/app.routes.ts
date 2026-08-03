@@ -85,6 +85,17 @@ export const appRoutes: Route[] = [
     loadComponent: () => import('./compare/compare-page').then((m) => m.ComparePage),
   },
   {
+    path: 'districts',
+    title: 'Ridings, wards and districts — pplCRM',
+    data: {
+      description:
+        'One CRM for seven North American jurisdictions: Canadian federal, provincial and ' +
+        'municipal races, US federal, state and local races, and at-large seats with no district. ' +
+        'Import your voter file’s district columns or draw your own boundaries.',
+    },
+    loadComponent: () => import('./districts/districts-page').then((m) => m.DistrictsPage),
+  },
+  {
     path: 'switch',
     title: 'Switch to pplCRM from Breeze, Planning Center, NationBuilder or Mailchimp',
     data: {

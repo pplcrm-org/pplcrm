@@ -52,9 +52,10 @@ export class TagsController extends BaseController<'tags', TagsRepo> {
   }
 
   /** §9.1 Tags admin / §9.2 Issues admin: the full, unpaginated list with counts, last-applied,
-   * creator, trend and top-ward — see `TagsRepo.getAdminList`. */
-  public getAdminList(type: 'tag' | 'issue', auth: IAuthKeyPayload): Promise<TagAdminRow[]> {
-    return this.getRepo().getAdminList({ tenant_id: auth.tenant_id, type });
+   * creator, trend and top-ward — see `TagsRepo.getAdminList`. `campaignId` makes the top-area
+   * column rank inside that campaign's own seat set, matching the campaign-worded heading. */
+  public getAdminList(type: 'tag' | 'issue', auth: IAuthKeyPayload, campaignId?: string): Promise<TagAdminRow[]> {
+    return this.getRepo().getAdminList({ tenant_id: auth.tenant_id, type, campaignId: campaignId ?? null });
   }
 
   /** §9.2 Issues admin sentence: "N people shared what they care about". */

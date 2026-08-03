@@ -30,6 +30,12 @@ export const CRON_JOBS = {
   recompute_address_fingerprints: DAY_MS,
   recompute_all_duplicates: DAY_MS,
   refresh_companies_google: DAY_MS,
+  // Re-matches households that hold no boundary row yet — ones geocoded before a map existed, or
+  // imported with coordinates and no district columns. Pure processor work with no external call,
+  // so it is safe to run over every workspace nightly. There is deliberately NO companion
+  // `sweep_pending_geocodes` entry: geocoding costs money and the geocode queue already schedules
+  // its own work by spreading each job's run_at across days (lib/gis/geocode-queue.ts).
+  sweep_unmatched_boundaries: DAY_MS,
 } as const satisfies Partial<Record<JobType, number>>;
 
 export type CronJobType = keyof typeof CRON_JOBS;

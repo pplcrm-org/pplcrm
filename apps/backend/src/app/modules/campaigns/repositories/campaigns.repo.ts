@@ -11,11 +11,34 @@ export class CampaignsRepo extends BaseRepository<'campaigns'> {
     super('campaigns');
   }
 
-  /** Lightweight list for the header context switcher — office first, newest elections after. */
+  /**
+   * Lightweight list for the header context switcher — office first, newest elections after.
+   *
+   * Carries the office columns as well as the name, because the frontend resolves every geography
+   * word it prints (riding, ward, congressional district, constituency) from the active campaign's
+   * jurisdiction, region and override. Without them the context payload cannot label anything, and
+   * the alternative is a second round trip on every page that shows a district.
+   */
   public async getSwitcherList(input: { tenant_id: string }, trx?: Transaction<Models>) {
     return this.getSelect(trx)
       .where('tenant_id', '=', input.tenant_id)
-      .select(['id', 'name', 'kind', 'status', 'startdate', 'enddate'])
+      .select([
+        'id',
+        'name',
+        'kind',
+        'status',
+        'startdate',
+        'enddate',
+        'jurisdiction',
+        'office_region',
+        'office_locality',
+        'chamber',
+        'seat_type',
+        'seat_name',
+        'seat_position',
+        'seat_label_override',
+        'office_title',
+      ])
       .orderBy(sql`CASE WHEN kind = 'office' THEN 0 ELSE 1 END`)
       .orderBy('created_at', 'desc')
       .execute();

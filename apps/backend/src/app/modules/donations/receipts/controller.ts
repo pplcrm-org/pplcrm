@@ -46,6 +46,27 @@ type IssueOptions = {
   mode: 'manual' | 'auto';
 };
 
+/**
+ * What the gift's own campaign contributes to a receipt.
+ *
+ * Two unrelated questions are answered from one row, which is why this is a single fetch:
+ *
+ * - `isElection` picks the issuance rule. Some regimes hand candidate receipting to the electoral
+ *   authority (Ontario) and some require extra fields for candidates (British Columbia).
+ * - `electoralDistrict` is the seat this campaign is contesting (`campaigns.seat_name`). It beats
+ *   the workspace `receipts.electoral_district` setting, because that setting is ONE value for the
+ *   whole workspace: a workspace running two campaigns in two seats can only store one of them, so
+ *   for at least one of those campaigns the workspace value is simply wrong.
+ */
+interface ReceiptCampaignFacts {
+  isElection: boolean;
+  /** `campaigns.seat_name`, trimmed. Null when the seat is at large, unnamed, or there is no campaign. */
+  electoralDistrict: string | null;
+}
+
+/** The answer for a gift with no campaign, and the default everywhere a campaign cannot apply. */
+const NO_CAMPAIGN: ReceiptCampaignFacts = { isElection: false, electoralDistrict: null };
+
 const SERIAL_PAD = 5;
 
 /** Calendar year in Toronto — the numbering year for official receipts (issue-date year). */
@@ -96,12 +117,51 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     };
   }
 
-  /** Which regime fields are still missing (labels), for the settings banner and issue guards. */
-  private missingFields(settings: ReceiptWorkspaceSettings, spec: ReceiptRegimeSpec, forCandidate: boolean): string[] {
-    const required = forCandidate
+  /**
+   * One issuer field's value at issue time: the gift's campaign if it can answer, else the
+   * workspace setting.
+   *
+   * The electoral district is the only field a campaign answers, and the reasons the other nine
+   * stay workspace-level are worth stating so nobody adds a tenth by analogy:
+   *
+   * - `polling_day` has no campaign column. A campaign's `enddate` is the end of the campaign, not
+   *   a declared voting day, and a receipt that prints a guessed polling day is a compliance
+   *   problem rather than a small inaccuracy.
+   * - `place_of_issue` is where the issuing organization signs the receipt. `office_locality` is
+   *   the municipality of the seat being contested — a different fact that happens to look similar.
+   * - The remaining seven (legal name, address, registration number, signatory name and title,
+   *   signature image, agent name) describe the organization that issues receipts. A campaign
+   *   record holds none of them.
+   */
+  private resolvedIssuerValue(
+    settings: ReceiptWorkspaceSettings,
+    campaign: ReceiptCampaignFacts,
+    field: ReceiptIssuerField,
+  ): string {
+    if (field === 'electoral_district' && campaign.electoralDistrict) return campaign.electoralDistrict;
+    return settings.values[field] ?? '';
+  }
+
+  /**
+   * Which regime fields are still missing (labels), for the settings banner and issue guards.
+   *
+   * This checks the RESOLVED value rather than the raw setting, so the guard and the printed
+   * receipt can never disagree — a field the campaign answered is a field the receipt carries. It
+   * changes nothing for the workspace settings banner: no regime lists `electoral_district` in
+   * `requiredIssuerFields`. British Columbia asks for it in `candidateExtraFields` alone, and a
+   * candidate gift always arrives with its campaign already loaded.
+   */
+  private missingFields(
+    settings: ReceiptWorkspaceSettings,
+    spec: ReceiptRegimeSpec,
+    campaign: ReceiptCampaignFacts,
+  ): string[] {
+    const required = campaign.isElection
       ? [...spec.requiredIssuerFields, ...spec.candidateExtraFields]
       : spec.requiredIssuerFields;
-    return required.filter((field) => !settings.values[field]).map((field) => RECEIPT_ISSUER_FIELD_LABELS[field]);
+    return required
+      .filter((field) => !this.resolvedIssuerValue(settings, campaign, field))
+      .map((field) => RECEIPT_ISSUER_FIELD_LABELS[field]);
   }
 
   /**
@@ -153,7 +213,9 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
         message: spec.externalExplanation ?? null,
       };
     }
-    const missing = this.missingFields(settings, spec, false);
+    // Workspace-level status: no gift, so no campaign. NO_CAMPAIGN also means the candidate-only
+    // extras are not reported here — they are checked per gift, against that gift's campaign.
+    const missing = this.missingFields(settings, spec, NO_CAMPAIGN);
     const advisory = this.advisoryMissingFields(settings, spec);
     return {
       regime: settings.regime,
@@ -270,7 +332,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
    */
   private async assertIssuable(
     tenantId: string,
-    forCandidateCampaign: boolean,
+    campaign: ReceiptCampaignFacts,
   ): Promise<{ settings: ReceiptWorkspaceSettings; spec: ReceiptRegimeSpec }> {
     const settings = await this.loadSettings(tenantId);
     if (!settings.regime) {
@@ -285,13 +347,13 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           'This regime’s receipts are issued by the electoral authority, not by this workspace.',
       );
     }
-    if (forCandidateCampaign && spec.candidateIssuance === 'external') {
+    if (campaign.isElection && spec.candidateIssuance === 'external') {
       throw new PreconditionFailedError(
         spec.candidateExternalExplanation ??
           'Candidate-campaign contributions are receipted by the electoral authority.',
       );
     }
-    const missing = this.missingFields(settings, spec, forCandidateCampaign);
+    const missing = this.missingFields(settings, spec, campaign);
     if (missing.length > 0) {
       throw new PreconditionFailedError(
         `Finish receipt setup in Workspace settings → Donations. Missing: ${missing.join(', ')}.`,
@@ -300,19 +362,33 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     return { settings, spec };
   }
 
-  /** The issuer details frozen onto the receipt row (and printed) — from settings, at issue time. */
-  private issuerSnapshot(settings: ReceiptWorkspaceSettings): ReceiptIssuerSnapshot {
-    const v = settings.values;
+  /**
+   * The issuer details frozen onto the receipt row (and printed), taken at issue time.
+   *
+   * Every value comes from the workspace `receipts.*` settings except the electoral district, which
+   * the gift's campaign answers first — see {@link resolvedIssuerValue} for why that one field and
+   * no other.
+   *
+   * Receipts already issued are untouched by any of this. The values are frozen into
+   * `issuer_snapshot` here and re-read from the row when the PDF renders, so changing what the
+   * resolution reads changes future receipts only. Nothing backfills or rewrites a stored snapshot.
+   */
+  private issuerSnapshot(
+    settings: ReceiptWorkspaceSettings,
+    campaign: ReceiptCampaignFacts = NO_CAMPAIGN,
+  ): ReceiptIssuerSnapshot {
+    const value = (field: ReceiptIssuerField): string | undefined =>
+      this.resolvedIssuerValue(settings, campaign, field) || undefined;
     return {
-      org_legal_name: v.org_legal_name || undefined,
-      org_address: v.org_address || undefined,
-      registration_number: v.registration_number || undefined,
-      place_of_issue: v.place_of_issue || undefined,
-      signatory_name: v.signatory_name || undefined,
-      signatory_title: v.signatory_title || undefined,
-      agent_name: v.agent_name || undefined,
-      electoral_district: v.electoral_district || undefined,
-      polling_day: v.polling_day || undefined,
+      org_legal_name: value('org_legal_name'),
+      org_address: value('org_address'),
+      registration_number: value('registration_number'),
+      place_of_issue: value('place_of_issue'),
+      signatory_name: value('signatory_name'),
+      signatory_title: value('signatory_title'),
+      agent_name: value('agent_name'),
+      electoral_district: value('electoral_district'),
+      polling_day: value('polling_day'),
     };
   }
 
@@ -326,15 +402,24 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     }
   }
 
-  private async isElectionCampaign(tenantId: string, campaignId: string | null): Promise<boolean> {
-    if (!campaignId) return false;
+  /**
+   * Load the gift's campaign once, for both the issuance rule and the electoral district.
+   *
+   * One query on purpose: the candidate-issuance check already had to read this row, so reading the
+   * seat costs nothing extra. A gift with no campaign, or a campaign row that has since been
+   * deleted, falls back to the workspace settings via {@link NO_CAMPAIGN}.
+   */
+  private async loadCampaignFacts(tenantId: string, campaignId: string | null): Promise<ReceiptCampaignFacts> {
+    if (!campaignId) return NO_CAMPAIGN;
     const campaign = await this.donationsRepo.db
       .selectFrom('campaigns')
-      .select('kind')
+      .select(['kind', 'seat_name'])
       .where('tenant_id', '=', tenantId)
       .where('id', '=', campaignId)
       .executeTakeFirst();
-    return campaign?.kind === 'election';
+    if (!campaign) return NO_CAMPAIGN;
+    const seat = campaign.seat_name?.trim();
+    return { isElection: campaign.kind === 'election', electoralDistrict: seat ? seat : null };
   }
 
   /** Issue one official per-gift receipt. The manual path; the auto path wraps it (tryAutoIssue). */
@@ -387,8 +472,8 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       throw new PreconditionFailedError('This gift has no donor on file — link it to a person first.');
     }
 
-    const forCandidate = await this.isElectionCampaign(tenantId, donation.campaign_id);
-    const { settings, spec } = await this.assertIssuable(tenantId, forCandidate);
+    const campaign = await this.loadCampaignFacts(tenantId, donation.campaign_id);
+    const { settings, spec } = await this.assertIssuable(tenantId, campaign);
 
     if (opts.mode === 'auto') {
       if (settings.mode === 'annual_cumulative') {
@@ -442,7 +527,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           advantageCents,
           advantageDescription: opts.advantageDescription ?? null,
           giftDate,
-          issuerSnapshot: this.issuerSnapshot(settings),
+          issuerSnapshot: this.issuerSnapshot(settings, campaign),
           replacesReceiptId: null,
           items: [{ donation_id: donationId, amount_cents: donation.amount, gift_date: giftDate }],
         });
@@ -466,7 +551,9 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     opts: { advantageCents?: number; advantageDescription?: string },
   ): Promise<ReceiptRow> {
     const tenantId = auth.tenant_id;
-    const { settings } = await this.assertIssuable(tenantId, false);
+    // A cumulative receipt covers a donor's gifts across every campaign in the year, so no single
+    // campaign can answer for it. The workspace setting is the only correct source here.
+    const { settings } = await this.assertIssuable(tenantId, NO_CAMPAIGN);
 
     const { donor, hasAddress } = await this.resolveDonor(tenantId, personId);
     if (!donor) throw new NotFoundError('Person not found');
@@ -505,6 +592,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           advantageCents,
           advantageDescription: opts.advantageDescription ?? null,
           giftDate: null,
+          // No campaign argument: this receipt spans campaigns (see assertIssuable above).
           issuerSnapshot: this.issuerSnapshot(settings),
           replacesReceiptId: null,
           items: donations.map((d) => ({
@@ -648,8 +736,8 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       throw new BadRequestError('Give a short reason — it is recorded on the cancelled receipt.');
     }
 
-    const forCandidate = await this.isElectionCampaign(tenantId, predecessor.campaign_id);
-    const { settings } = await this.assertIssuable(tenantId, forCandidate);
+    const campaign = await this.loadCampaignFacts(tenantId, predecessor.campaign_id);
+    const { settings } = await this.assertIssuable(tenantId, campaign);
     if (settings.regime !== predecessor.regime) {
       throw new PreconditionFailedError(
         'The workspace regime changed since this receipt was issued. Cancel it and issue a fresh receipt instead.',
@@ -716,7 +804,9 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           advantageCents,
           advantageDescription: predecessor.advantage_description,
           giftDate: perGiftDonation ? torontoDateString(new Date(perGiftDonation.created_at)) : null,
-          issuerSnapshot: this.issuerSnapshot(settings),
+          // A reissue re-freezes today's values, the campaign's seat included — the predecessor's
+          // own snapshot is left exactly as it was issued.
+          issuerSnapshot: this.issuerSnapshot(settings, campaign),
           replacesReceiptId: predecessor.id,
           items: surviving.map((d) => ({
             donation_id: d.id,
@@ -810,6 +900,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       advantageDescription: null,
       donorName: 'Sample Donor',
       donorAddressLines: ['123 Example Street', 'Sampletown, ON, A1A 1A1', 'Canada'],
+      // A specimen has no gift and therefore no campaign: it previews the workspace settings alone.
       issuer: this.issuerSnapshot(settings),
       specimen: true,
       signatureImage,

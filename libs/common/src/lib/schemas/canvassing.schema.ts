@@ -385,7 +385,15 @@ export interface CompanionHousehold {
 export interface CompanionTurfChoice {
   turf_id: string;
   name: string;
-  ward: string | null;
+  /**
+   * The area this turf covers — 'Ward 12', 'Poll 043'. Null means the turf has no area of its
+   * own: no boundary map applied when it was cut, or its doors fell outside every area of the
+   * map used; either way the doors were grouped on geography alone. The picker deliberately
+   * shows nothing in its place (no blank line, no "unbounded" note): an area name is a locator
+   * there, and how a turf was cut is the organizer's business, not something a volunteer at a
+   * door can act on.
+   */
+  boundary_name: string | null;
   doors: number;
   attempted: number;
   /** Volunteers already walking it — joining a busy turf is the group-canvass case. */
@@ -401,6 +409,18 @@ export interface CompanionTurfChoices {
   may_roam: boolean;
   mine: CompanionTurfChoice[];
   available: CompanionTurfChoice[];
+  /**
+   * The word for one boundary area — 'Polling division', 'Precinct', 'Ward', 'Riding'.
+   *
+   * The companion has no signed-in user and therefore no campaign context of its own, so the word
+   * has to travel with the payload. It is resolved once for the workspace rather than per turf:
+   * the picker uses it for a single heading ("Turfs are listed by polling division"), and a
+   * workspace running races in two different jurisdictions at once is not a case this heading
+   * tries to serve.
+   */
+  boundary_label: string;
+  /** Plural of the same word. */
+  boundary_label_plural: string;
 }
 
 /**

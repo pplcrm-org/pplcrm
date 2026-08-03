@@ -10,7 +10,15 @@ export interface TurfRow {
   status: string;
   list_id: string | null;
   list_name: string | null;
-  ward: string | null;
+  /** The named area this turf covers, or null when its doors sit inside no area — see turf-boundary.ts. */
+  boundary_name: string | null;
+  /**
+   * The boundary map the turf was cut against. The two columns are independent:
+   * set + name = inside that named area; set without name = cut against that map but outside
+   * every area of it; both null = cut with no map at all; name without set = the map was
+   * deleted (FK is ON DELETE SET NULL) or the turf predates boundary maps.
+   */
+  boundary_set_id: string | null;
   target_doors: number | null;
   centroid_lat: number | null;
   centroid_lng: number | null;
@@ -44,7 +52,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
         'turfs.status as status',
         'turfs.list_id as list_id',
         'lists.name as list_name',
-        'turfs.ward as ward',
+        'turfs.boundary_name as boundary_name',
+        'turfs.boundary_set_id as boundary_set_id',
         'turfs.target_doors as target_doors',
         'turfs.centroid_lat as centroid_lat',
         'turfs.centroid_lng as centroid_lng',
@@ -76,7 +85,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
         'turfs.status as status',
         'turfs.list_id as list_id',
         'lists.name as list_name',
-        'turfs.ward as ward',
+        'turfs.boundary_name as boundary_name',
+        'turfs.boundary_set_id as boundary_set_id',
         'turfs.target_doors as target_doors',
         'turfs.centroid_lat as centroid_lat',
         'turfs.centroid_lng as centroid_lng',
@@ -97,7 +107,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       status: unknown;
       list_id: unknown;
       list_name: unknown;
-      ward: unknown;
+      boundary_name: unknown;
+      boundary_set_id: unknown;
       target_doors: unknown;
       centroid_lat: unknown;
       centroid_lng: unknown;
@@ -112,7 +123,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       status: String(r.status),
       list_id: r.list_id == null ? null : String(r.list_id),
       list_name: r.list_name ? String(r.list_name) : null,
-      ward: r.ward ? String(r.ward) : null,
+      boundary_name: r.boundary_name ? String(r.boundary_name) : null,
+      boundary_set_id: r.boundary_set_id == null ? null : String(r.boundary_set_id),
       target_doors: r.target_doors == null ? null : Number(r.target_doors),
       centroid_lat: r.centroid_lat == null ? null : Number(r.centroid_lat),
       centroid_lng: r.centroid_lng == null ? null : Number(r.centroid_lng),
@@ -131,14 +143,15 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     name: string;
     status: string;
     list_id: string | null;
-    ward: string | null;
+    boundary_name: string | null;
+    boundary_set_id: string | null;
     campaign_id: string | null;
     /** Staff account that cut the turf — the responsible actor for volunteer-driven
      *  activity, which has no CRM user of its own (§22.7: never a fabricated user). */
     createdby_id: string;
   } | null> {
     const row = await this.getSelect(trx)
-      .select(['id', 'name', 'status', 'list_id', 'ward', 'campaign_id', 'createdby_id'])
+      .select(['id', 'name', 'status', 'list_id', 'boundary_name', 'boundary_set_id', 'campaign_id', 'createdby_id'])
       .where('tenant_id', '=', input.tenant_id)
       .where('id', '=', input.id)
       .executeTakeFirst();
@@ -148,7 +161,8 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
       name: String(row.name),
       status: String(row.status),
       list_id: row.list_id == null ? null : String(row.list_id),
-      ward: row.ward == null ? null : String(row.ward),
+      boundary_name: row.boundary_name == null ? null : String(row.boundary_name),
+      boundary_set_id: row.boundary_set_id == null ? null : String(row.boundary_set_id),
       campaign_id: row.campaign_id == null ? null : String(row.campaign_id),
       createdby_id: String(row.createdby_id),
     };
@@ -174,23 +188,58 @@ export class TurfsRepo extends BaseRepository<'turfs'> {
     return map;
   }
 
-  /** Geocoded doors for a set of households, feeding the cutting engine. */
+  /**
+   * Geocoded doors for a set of households, feeding the cutting engine.
+   *
+   * `boundary_set_id` names the map the doors are placed against. A household's area comes from
+   * `household_districts`, which holds one row per household per map — so a household in a
+   * congressional district AND a state house district AND a precinct returns whichever of those
+   * this cut is bounded by, and the other two are untouched.
+   *
+   * The join is a LEFT join on purpose: a household that matched no area of the map still returns
+   * a door, with a null boundary. Dropping it would silently shrink the universe the organizer
+   * chose, and the engine already has a defined behaviour for unmatched doors (they cluster
+   * together on geography alone). A null `boundary_set_id` means no map applies at all, and every
+   * door comes back unbounded.
+   */
   public async getHouseholdsGeo(
-    input: { tenant_id: string; household_ids: string[] },
+    input: { tenant_id: string; household_ids: string[]; boundary_set_id: string | null },
     trx?: Transaction<Models>,
   ): Promise<DoorPoint[]> {
     if (input.household_ids.length === 0) return [];
+    const setId = input.boundary_set_id;
+    if (setId == null) {
+      const rows = await this.conn(trx)
+        .selectFrom('households')
+        .where('tenant_id', '=', input.tenant_id)
+        .where('id', 'in', input.household_ids)
+        .select(['id', 'lat', 'lng'])
+        .execute();
+      return rows.map((r) => ({
+        household_id: String(r.id),
+        lat: r.lat ?? null,
+        lng: r.lng ?? null,
+        boundaryName: null,
+      }));
+    }
+
     const rows = await this.conn(trx)
       .selectFrom('households')
-      .where('tenant_id', '=', input.tenant_id)
-      .where('id', 'in', input.household_ids)
-      .select(['id', 'lat', 'lng', 'ward'])
+      .leftJoin('household_districts as hd', (join) =>
+        join
+          .onRef('hd.household_id', '=', 'households.id')
+          .on('hd.tenant_id', '=', input.tenant_id)
+          .on('hd.set_id', '=', setId),
+      )
+      .where('households.tenant_id', '=', input.tenant_id)
+      .where('households.id', 'in', input.household_ids)
+      .select(['households.id as id', 'households.lat as lat', 'households.lng as lng', 'hd.name as boundary_name'])
       .execute();
     return rows.map((r) => ({
       household_id: String(r.id),
       lat: r.lat ?? null,
       lng: r.lng ?? null,
-      ward: r.ward ?? null,
+      boundaryName: r.boundary_name == null ? null : String(r.boundary_name),
     }));
   }
 

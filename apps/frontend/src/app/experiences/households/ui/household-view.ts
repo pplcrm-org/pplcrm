@@ -13,6 +13,7 @@ import { PeopleInHousehold } from '../../persons/ui/people-in-household';
 import { UserService } from '../../../services/user.service';
 import type { Selectable } from 'kysely';
 import { HouseholdsService } from '../services/households-service';
+import { electoralAreaSuffix, readPrimaryElectoralArea } from '../services/household-areas';
 import { Households } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
@@ -131,12 +132,28 @@ export class HouseholdView {
     return [{ position: { lat: Number(h.lat), lng: Number(h.lng) }, tooltip: this.addressString() }];
   });
 
+  /**
+   * The household's area on the active campaign's own boundary map, e.g. "Ward 4" or
+   * "Ottawa Centre", or null when this address has not been placed on a map.
+   */
+  protected readonly electoralArea = computed<string | null>(() => readPrimaryElectoralArea(this.household()));
+
+  /**
+   * The area with the campaign's own word in front of it, unless the area name already says it.
+   * "Ward 4" stays as it is; "Ottawa Centre" becomes "Riding Ottawa Centre". Used for the map badge
+   * and the header subtitle.
+   */
+  protected readonly electoralAreaLabel = computed<string | null>(() =>
+    electoralAreaSuffix(this.household(), this.campaignContext.seatLabel()),
+  );
+
   /** Header subtitle — "Ward 4 · 3 people · Canvassed May 2" (§6). Parts drop out honestly when absent. */
   protected readonly subtitle = computed(() => {
     const h = this.household();
     if (!h || h.is_placeholder) return null;
     const parts: string[] = [];
-    if (h.ward) parts.push(`Ward ${h.ward}`);
+    const area = this.electoralAreaLabel();
+    if (area) parts.push(area);
     const n = this.peopleCount();
     parts.push(`${n} ${n === 1 ? 'person' : 'people'}`);
     const canvass = this.lastCanvass();

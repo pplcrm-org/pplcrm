@@ -9,6 +9,9 @@ import { useTestTransaction } from '../../lib/test-utils/db-test-isolation';
 import { ORG_MODE_IS_ELECTORAL, ORG_MODE_MODULE_DEFAULTS, SYSTEM_LISTS } from '@common';
 import { STARTER_ISSUES, STARTER_TAGS, seedStarterForms, seedStarterTags } from '../auth/onboarding-seed';
 import { ensureSystemLists } from '../lists/system-lists';
+import { boundaryGeometrySchema } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
+import { cutTurfs } from '../canvassing/lib/cutting-engine';
+import { resolveTurfBoundary } from '../canvassing/lib/turf-boundary';
 import { DemoController } from './controller';
 import { assertNotDemoMode } from './demo-guard';
 import type { OrgMode } from '@common';
@@ -49,6 +52,15 @@ describe('demo seeding and exit-demo', () => {
     manifest: DemoSeedManifest;
   }
 
+  /** The office columns signup writes onto the workspace's office campaign, for the pack tests. */
+  interface SignUpOffice {
+    jurisdiction: string;
+    office_region?: string | null;
+    office_locality?: string | null;
+    seat_type?: string;
+    seat_name?: string | null;
+  }
+
   /** `settings.value` is jsonb: pg returns it parsed, but a string is valid too. */
   const parseManifestValue = (value: unknown): Record<string, unknown> =>
     typeof value === 'string' ? JSON.parse(value) : (value as Record<string, unknown>);
@@ -69,7 +81,7 @@ describe('demo seeding and exit-demo', () => {
    * ledger), so it is the one the DEMO_* imports below describe and the widest exercise of the
    * seeder. The per-mode suite at the bottom covers the other three against their own datasets.
    */
-  async function seedFixture(mode: OrgMode = 'campaign'): Promise<Fixture> {
+  async function seedFixture(mode: OrgMode = 'campaign', office?: SignUpOffice): Promise<Fixture> {
     const dataset = DEMO_DATASETS[mode];
     if (!dataset) throw new Error(`No demo dataset for mode "${mode}"`);
     const trx = ctx.trx;
@@ -105,6 +117,9 @@ describe('demo seeding and exit-demo', () => {
         status: 'active',
         createdby_id: user_id,
         updatedby_id: user_id,
+        // Mirrors signup: the office campaign carries whatever step 2 of the wizard answered, and
+        // the column defaults ('other' / 'district') when it was skipped.
+        ...(office ?? {}),
       })
       .execute();
     await trx
@@ -171,6 +186,9 @@ describe('demo seeding and exit-demo', () => {
       | 'donation_receipts'
       | 'donation_receipt_items'
       | 'receipt_statement_runs'
+      | 'boundary_sets'
+      | 'boundary_features'
+      | 'household_districts'
       | 'potential_duplicates',
     tenant_id: string,
   ): Promise<number> => {
@@ -256,17 +274,28 @@ describe('demo seeding and exit-demo', () => {
     const days = new Set(persons.map((p) => new Date(p.created_at as unknown as string).toDateString()));
     expect(days.size).toBeGreaterThan(10);
 
-    // Geocoding is pre-baked: located, with coordinates and a real ward.
+    // Geocoding is pre-baked: located, with coordinates and a named area.
     const households = await trx
       .selectFrom('households')
-      .select(['geocoding_status', 'lat', 'lng', 'ward', 'slug'])
+      .select(['id', 'geocoding_status', 'lat', 'lng', 'slug'])
       .where('tenant_id', '=', f.tenant_id)
       .where('is_placeholder', '=', false)
       .execute();
     expect(households).toHaveLength(DEMO_HOUSEHOLDS.length);
     expect(households.every((h) => h.geocoding_status === 'success')).toBe(true);
-    expect(households.every((h) => h.lat != null && h.lng != null && h.ward != null)).toBe(true);
+    expect(households.every((h) => h.lat != null && h.lng != null)).toBe(true);
     expect(households.every((h) => h.slug != null)).toBe(true);
+
+    // Every one of those doors sits in a named area of the sample boundary map. This used to be the
+    // single households.ward text column; it is now one household_districts row per household per
+    // map, so the check is that each household has a row and that the row names an area.
+    const placements = await trx
+      .selectFrom('household_districts')
+      .select(['household_id', 'name'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    const areaByHousehold = new Map(placements.map((p) => [String(p.household_id), p.name]));
+    expect(households.every((h) => (areaByHousehold.get(String(h.id)) ?? '').length > 0)).toBe(true);
 
     // The flag and the manifest are written atomically with the data.
     const tenant = await trx
@@ -564,6 +593,258 @@ describe('demo seeding and exit-demo', () => {
     const topLinks: unknown = typeof sent.top_links === 'string' ? JSON.parse(sent.top_links) : sent.top_links;
     expect(Array.isArray(topLinks)).toBe(true);
     expect((topLinks as { url: string; clicks: number }[]).length).toBeGreaterThan(0);
+  });
+
+  /**
+   * The demo workspace has to match the country the workspace signed up in, and it has to arrive
+   * with a map it can cut turfs against — both without a single paid address lookup.
+   */
+  describe('place packs and the sample boundary map', () => {
+    /** Doors as the canvassing controller reads them: coordinates plus the matched area name. */
+    async function doorsFor(tenant_id: string, set_id: string) {
+      const rows = await ctx.trx
+        .selectFrom('households')
+        .innerJoin('household_districts', (join) =>
+          join
+            .onRef('household_districts.household_id', '=', 'households.id')
+            .on('household_districts.set_id', '=', set_id),
+        )
+        .select(['households.id as household_id', 'households.lat', 'households.lng', 'household_districts.name'])
+        .where('households.tenant_id', '=', tenant_id)
+        .where('households.is_placeholder', '=', false)
+        .execute();
+      return rows.map((r) => ({
+        household_id: String(r.household_id),
+        lat: r.lat == null ? null : Number(r.lat),
+        lng: r.lng == null ? null : Number(r.lng),
+        boundaryName: r.name,
+      }));
+    }
+
+    it('seeds Ottawa streets and Ottawa wards when the workspace declared no country', async () => {
+      const f = await seedFixture();
+      const households = await ctx.trx
+        .selectFrom('households')
+        .select(['id', 'city', 'state', 'country'])
+        .where('tenant_id', '=', f.tenant_id)
+        .where('is_placeholder', '=', false)
+        .execute();
+      expect(households.every((h) => h.city === 'Ottawa' && h.state === 'ON' && h.country === 'Canada')).toBe(true);
+
+      // The area each door is in comes from household_districts now, not from a households column.
+      const areas = await ctx.trx
+        .selectFrom('household_districts')
+        .select(['household_id', 'name'])
+        .where('tenant_id', '=', f.tenant_id)
+        .execute();
+      expect(new Set(areas.map((a) => String(a.household_id)))).toEqual(new Set(households.map((h) => String(h.id))));
+      expect(new Set(areas.map((a) => a.name))).toEqual(
+        new Set(['Somerset', 'Kitchissippi', 'Capital', 'Rideau-Vanier', 'Alta Vista']),
+      );
+    });
+
+    it('seeds Chicago streets and Chicago wards for a United States workspace', async () => {
+      const f = await seedFixture('campaign', {
+        jurisdiction: 'us_local',
+        office_region: 'IL',
+        office_locality: 'Chicago',
+        seat_name: 'Ward 49',
+      });
+      const households = await ctx.trx
+        .selectFrom('households')
+        .select(['id', 'city', 'state', 'country', 'home_phone'])
+        .where('tenant_id', '=', f.tenant_id)
+        .where('is_placeholder', '=', false)
+        .execute();
+      expect(households.every((h) => h.city === 'Chicago' && h.state === 'IL' && h.country === 'United States')).toBe(
+        true,
+      );
+
+      // The area each door is in comes from household_districts now, not from a households column.
+      const areas = await ctx.trx
+        .selectFrom('household_districts')
+        .select(['household_id', 'name'])
+        .where('tenant_id', '=', f.tenant_id)
+        .execute();
+      expect(new Set(areas.map((a) => String(a.household_id)))).toEqual(new Set(households.map((h) => String(h.id))));
+      expect(new Set(areas.map((a) => a.name))).toEqual(
+        new Set(['Ward 49', 'Ward 43', 'Ward 1', 'Ward 47', 'Ward 25']),
+      );
+      // Phone numbers move with the pack, or a Chicago workspace opens on a page of Ottawa numbers.
+      const phones = households.map((h) => h.home_phone).filter((p): p is string => p != null);
+      expect(phones.length).toBeGreaterThan(0);
+      expect(phones.every((p) => p.startsWith('773-'))).toBe(true);
+    });
+
+    it('fills in the office the demo depicts when signup left it undeclared', async () => {
+      const f = await seedFixture();
+      const campaign = await ctx.trx
+        .selectFrom('campaigns')
+        .select(['jurisdiction', 'office_region', 'office_locality', 'seat_type', 'seat_name', 'office_title'])
+        .where('tenant_id', '=', f.tenant_id)
+        .where('id', '=', f.campaign_id)
+        .executeTakeFirstOrThrow();
+      expect(campaign.jurisdiction).toBe('ca_municipal');
+      expect(campaign.office_region).toBe('ON');
+      expect(campaign.office_locality).toBe('Ottawa');
+      expect(campaign.seat_type).toBe('district');
+      expect(campaign.seat_name).toBe('Somerset');
+      expect(campaign.office_title).toBe('Councillor');
+    });
+
+    it('never overwrites an office the workspace declared for itself', async () => {
+      const f = await seedFixture('campaign', {
+        jurisdiction: 'ca_federal',
+        office_region: null,
+        seat_name: 'Ottawa Centre',
+      });
+      const campaign = await ctx.trx
+        .selectFrom('campaigns')
+        .select(['jurisdiction', 'seat_name'])
+        .where('tenant_id', '=', f.tenant_id)
+        .where('id', '=', f.campaign_id)
+        .executeTakeFirstOrThrow();
+      expect(campaign.jurisdiction).toBe('ca_federal');
+      expect(campaign.seat_name).toBe('Ottawa Centre');
+    });
+
+    it('seeds a drawn boundary set, its polygons, and one area row per household', async () => {
+      const f = await seedFixture();
+      const trx = ctx.trx;
+
+      const set = await trx
+        .selectFrom('boundary_sets')
+        .selectAll()
+        .where('tenant_id', '=', f.tenant_id)
+        .executeTakeFirstOrThrow();
+      expect(set.source).toBe('drawn');
+      expect(set.role).toBe('seat_area');
+      expect(set.jurisdiction).toBe('ca_municipal');
+      expect(set.label).toContain('sample');
+      expect(f.manifest.boundary_sets).toEqual([String(set.id)]);
+
+      const features = await trx
+        .selectFrom('boundary_features')
+        .selectAll()
+        .where('tenant_id', '=', f.tenant_id)
+        .where('set_id', '=', String(set.id))
+        .execute();
+      expect(features).toHaveLength(Number(set.feature_count));
+      for (const feature of features) {
+        const geometry: unknown =
+          typeof feature.geometry === 'string' ? JSON.parse(feature.geometry) : feature.geometry;
+        expect(boundaryGeometrySchema.safeParse(geometry).success, `${feature.name} geometry`).toBe(true);
+        const bbox: unknown = typeof feature.bbox === 'string' ? JSON.parse(feature.bbox) : feature.bbox;
+        expect(Array.isArray(bbox) && bbox.length === 4, `${feature.name} bbox`).toBe(true);
+      }
+
+      const districts = await trx
+        .selectFrom('household_districts')
+        .select(['household_id', 'name'])
+        .where('tenant_id', '=', f.tenant_id)
+        .where('set_id', '=', String(set.id))
+        .execute();
+      expect(districts).toHaveLength(DEMO_HOUSEHOLDS.length);
+      expect(new Set(districts.map((d) => d.name))).toEqual(new Set(features.map((ft) => ft.name)));
+    });
+
+    it('records which map each pre-cut turf was bounded by', async () => {
+      const f = await seedFixture();
+      const set = await ctx.trx
+        .selectFrom('boundary_sets')
+        .select('id')
+        .where('tenant_id', '=', f.tenant_id)
+        .executeTakeFirstOrThrow();
+      const turfs = await ctx.trx
+        .selectFrom('turfs')
+        .select(['name', 'boundary_set_id', 'boundary_name'])
+        .where('tenant_id', '=', f.tenant_id)
+        .execute();
+      expect(turfs).toHaveLength(DEMO_TURFS.length);
+      expect(turfs.every((t) => String(t.boundary_set_id) === String(set.id))).toBe(true);
+      expect(turfs.every((t) => t.boundary_name != null && t.name.includes(t.boundary_name))).toBe(true);
+    });
+
+    /** The point of seeding a map: the workspace can cut its own turfs on day one. */
+    it('lets the workspace cut turfs against the seeded map, with no turf spanning two areas', async () => {
+      const f = await seedFixture();
+      const boundary = await resolveTurfBoundary(ctx.trx, { tenant_id: f.tenant_id, campaign_id: f.campaign_id });
+      expect(boundary.set_id, 'the demo workspace resolves a boundary set to cut against').not.toBeNull();
+      expect(boundary.label).toBe('Ward');
+      if (!boundary.set_id) return;
+
+      const doors = await doorsFor(f.tenant_id, boundary.set_id);
+      expect(doors).toHaveLength(DEMO_HOUSEHOLDS.length);
+      expect(doors.every((d) => d.boundaryName != null)).toBe(true);
+
+      const plan = cutTurfs(doors, 4);
+      expect(plan.unplaced).toHaveLength(0);
+      expect(plan.turfs.length).toBeGreaterThan(0);
+      const areaOf = new Map(doors.map((d) => [d.household_id, d.boundaryName]));
+      for (const cluster of plan.turfs) {
+        const names = new Set(cluster.households.map((id) => areaOf.get(id)));
+        expect(names.size, `a cut turf spans areas [${[...names].join(', ')}]`).toBe(1);
+      }
+    });
+
+    it('says "Council district" for a United States workspace and still cuts clean turfs', async () => {
+      const f = await seedFixture('campaign', {
+        jurisdiction: 'us_local',
+        office_region: 'IL',
+        office_locality: 'Chicago',
+        seat_name: 'Ward 49',
+      });
+      const boundary = await resolveTurfBoundary(ctx.trx, { tenant_id: f.tenant_id, campaign_id: f.campaign_id });
+      expect(boundary.set_id).not.toBeNull();
+      // The workspace declared its own office, so the pack's seat_label_override was not applied
+      // and the jurisdiction's own default word is what shows.
+      expect(boundary.label).toBe('Council district');
+      if (!boundary.set_id) return;
+
+      const doors = await doorsFor(f.tenant_id, boundary.set_id);
+      const plan = cutTurfs(doors, 4);
+      const areaOf = new Map(doors.map((d) => [d.household_id, d.boundaryName]));
+      for (const cluster of plan.turfs) {
+        expect(new Set(cluster.households.map((id) => areaOf.get(id))).size).toBe(1);
+      }
+    });
+
+    it('seeds no Canadian charity receipts into a United States workspace', async () => {
+      const f = await seedFixture('nonprofit', {
+        jurisdiction: 'us_local',
+        office_region: 'IL',
+        office_locality: 'Chicago',
+        seat_name: 'Ward 49',
+      });
+      expect(f.manifest.donation_receipts).toHaveLength(0);
+      expect(f.manifest.receipt_settings_seeded).toBe(false);
+      // The gifts themselves are still there — only the official receipts are withheld.
+      expect(f.manifest.donations.length).toBeGreaterThan(0);
+      const settings = await ctx.trx
+        .selectFrom('settings')
+        .select('key')
+        .where('tenant_id', '=', f.tenant_id)
+        .where('key', 'like', 'receipts.%')
+        .execute();
+      expect(settings).toHaveLength(0);
+    });
+
+    it('exit-demo removes the sample map, its polygons and its household area rows', async () => {
+      const f = await seedFixture();
+      const trx = ctx.trx;
+      await deleteDemoData(
+        {
+          tenant_id: f.tenant_id,
+          user_id: f.user_id,
+          manifest: f.manifest,
+          placeholder_household_id: f.placeholder_household_id,
+        },
+        trx,
+      );
+      expect(await count('boundary_sets', f.tenant_id)).toBe(0);
+      expect(await count('boundary_features', f.tenant_id)).toBe(0);
+      expect(await count('household_districts', f.tenant_id)).toBe(0);
+    });
   });
 
   it('exit-demo deletes exactly the manifest rows and keeps forms, starter tags/issues, and user data', async () => {

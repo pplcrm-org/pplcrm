@@ -8,6 +8,7 @@ import { TagOptionsService } from '@frontend/shared/components/datagrid/services
 import { signal } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { DATA_GRID_CONFIG } from '@frontend/shared/components/datagrid/datagrid.tokens';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -16,6 +17,21 @@ class MockApiService {
   getAll = vi.fn().mockResolvedValue({ rows: [], totalCount: 0 });
   abort = vi.fn();
 }
+
+/**
+ * The Definition column renders a stored rule set as a sentence, and a rule on the single-valued
+ * electoral field is named with the active campaign's own word, so the grid needs the context.
+ */
+const mockCampaignContext = {
+  ensureLoaded: vi.fn().mockResolvedValue(undefined),
+  activeCampaignId: () => 'c1',
+  activeCampaign: () => ({ id: 'c1', name: 'Office' }),
+  isArchivedContext: () => false,
+  seatLabel: () => 'Ward',
+  seatLabelPlural: () => 'Wards',
+  subdivisionLabel: () => 'Poll',
+  subdivisionLabelPlural: () => 'Polls',
+};
 
 describe('ListsGridComponent', () => {
   let component: ListsGridComponent;
@@ -60,6 +76,7 @@ describe('ListsGridComponent', () => {
         { provide: ListsService, useValue: mockListsSvc },
         { provide: AbstractAPIService, useValue: mockApiSvc },
         { provide: TagOptionsService, useValue: mockTagOptionsSvc },
+        { provide: CampaignContextService, useValue: mockCampaignContext },
       ],
     })
       .overrideComponent(ListsGridComponent, {

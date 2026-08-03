@@ -27,6 +27,11 @@ const mailService = new TransactionalEmailService({ defaultAudience: 'account' }
  */
 export const TENANT_SCOPED_TABLES = [
   'background_jobs',
+  // Boundary layers and their polygons. Children first: boundary_features and household_districts
+  // both point at boundary_sets, and household_districts also points at households.
+  'boundary_features',
+  'household_districts',
+  'boundary_sets',
   'bug_reports',
   'companion_organizer_tokens',
   'campaign_join_codes',
@@ -65,6 +70,10 @@ export const TENANT_SCOPED_TABLES = [
   'events',
   'files',
   'form_submissions',
+  // The address-to-coordinates memo. It deliberately survives HOUSEHOLD deletion, because that is
+  // the whole defence against paying twice for a re-imported file — but it must not survive
+  // WORKSPACE deletion, which is a promise to remove the workspace's data.
+  'geocode_cache',
   'google_oauth_tokens',
   'lists',
   'map_campaigns_users',

@@ -451,13 +451,81 @@ export type {
   RunYearEndStatementsType,
   StatementRunIdType,
 } from './lib/schemas/donation-receipts.schema';
-export type { ReceiptRegimeId, ReceiptIssuerField, ReceiptRegimeSpec } from './lib/receipt-regimes';
+export type {
+  BoundaryGeometryType,
+  BoundaryBBoxType,
+  AddDrawnBoundarySetType,
+  UploadBoundarySetType,
+  AddBoundaryFeatureType,
+  UpdateBoundaryFeatureType,
+  BoundarySetRowType,
+  BoundaryFeatureRowType,
+  BoundaryValidationType,
+} from './lib/schemas/boundaries.schema';
+export {
+  BOUNDARY_ROLES,
+  BOUNDARY_SOURCES,
+  BOUNDARY_ROLE_LABELS,
+  BOUNDARY_SOURCE_LABELS,
+  BOUNDARY_UPLOAD_MAX_BYTES,
+  BOUNDARY_UPLOAD_MAX_LABEL,
+  BOUNDARY_MAX_FEATURES_PER_SET,
+  BOUNDARY_MAX_VERTICES_PER_FEATURE,
+  BOUNDARY_MAX_SETS_PER_TENANT,
+  boundaryGeometrySchema,
+  boundaryBBoxOf,
+  countBoundaryVertices,
+  AddDrawnBoundarySetObj,
+  UploadBoundarySetObj,
+  AddBoundaryFeatureObj,
+  UpdateBoundaryFeatureObj,
+  BoundarySetObj,
+  BoundaryFeatureObj,
+  BoundaryValidationObj,
+} from './lib/schemas/boundaries.schema';
+
+export type {
+  ReceiptRegimeId,
+  ReceiptIssuerField,
+  ReceiptRegimeSpec,
+  CampaignReceiptRegimeHint,
+} from './lib/receipt-regimes';
 export {
   RECEIPT_REGIMES,
   RECEIPT_REGIME_IDS,
   RECEIPT_ISSUER_FIELDS,
   RECEIPT_ISSUER_FIELD_LABELS,
+  receiptRegimeHintForCampaign,
+  US_POLITICAL_CONTRIBUTIONS_NOT_RECEIPTED,
 } from './lib/receipt-regimes';
+
+export type {
+  BoundaryLayerSpec,
+  BoundaryRole,
+  BoundarySource,
+  Chamber,
+  JurisdictionId,
+  JurisdictionSpec,
+  Region,
+  SeatType,
+} from './lib/jurisdictions';
+export {
+  CA_PROVINCES,
+  CHAMBERS,
+  CHAMBER_LABELS,
+  JURISDICTIONS,
+  JURISDICTION_IDS,
+  SEAT_TYPES,
+  SEAT_TYPE_LABELS,
+  US_AT_LARGE_CONGRESSIONAL_STATES,
+  US_STATES,
+  isJurisdictionId,
+  regionsForCountry,
+  seatLabelFor,
+  seatLabelPluralFor,
+  subdivisionLabelFor,
+  subdivisionLabelPluralFor,
+} from './lib/jurisdictions';
 
 export type { FormType, FormStatus, FormField } from './lib/schemas/web-forms.schema';
 export type { TaskStatus, TaskBoardStatus, ReorderTasksType, ReorderSubtasksType } from './lib/schemas/tasks.schema';

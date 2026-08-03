@@ -1,7 +1,30 @@
-<!-- Template for user sign-up, capturing account and organization details. -->
+<!-- Sign-up wizard. Three steps, every answer held in a signal, one call at the very end: the
+     starter tags, starter forms and demo data are all seeded inside the signup transaction, so
+     nothing exists until the last step is submitted. Only step 1 refuses to be left incomplete. -->
 <pc-auth-layout>
-  <form (submit)="join($event)" novalidate class="flex flex-col gap-3">
-    <label class="label text-neutral-100">Enter basic info to create your account </label>
+  <!-- Where am I, and how much is left. Steps already passed can be reopened; answers survive. -->
+  <ul class="steps steps-horizontal w-full mb-3">
+    @for (s of steps; track s; let idx = $index) {
+    <li
+      class="step text-xs text-neutral-100"
+      [class.step-primary]="idx <= stepIndex()"
+      [class.cursor-pointer]="canReachStep(s)"
+      (click)="goToStep(s)"
+    >
+      {{ stepLabels[s] }}
+    </li>
+    }
+  </ul>
+
+  <form (submit)="onFormSubmit($event)" novalidate class="flex flex-col gap-3">
+    <!-- ============================ STEP 1 — YOUR ACCOUNT ============================ -->
+    @if (step() === 1) {
+    <div class="flex flex-col gap-1">
+      <span class="text-neutral-100 font-semibold">Your account</span>
+      <span class="label-text-alt text-neutral-100 opacity-70"
+        >This is the login you will use, and it makes you the first administrator of the workspace.</span
+      >
+    </div>
 
     <label class="input w-full validator">
       <pc-icon [size]="4" name="user-circle" />
@@ -34,57 +57,6 @@
     >
     }
 
-    <!-- Organization type. Sets the wording and the starting module set; everything stays
-         changeable later in Workspace -> Modules, so this is a head start, not a commitment.
-         A select rather than a card grid: it carries the same visual weight as the input rows
-         around it, which is the weight this reversible answer actually deserves.
-         `ms-0 ps-0` undoes DaisyUI's negative start margin on `.select > select`, which is sized
-         to fill the whole shell and would otherwise paint its opaque background over the icon. -->
-    <label class="select w-full" [class.select-error]="submitAttempted() && !modeChosen()">
-      <pc-icon [size]="4" name="house-modern" />
-      <select class="ms-0 ps-0" [class.text-base-content/50]="!modeChosen()" (change)="onModeChange($event)">
-        <option value="" disabled [selected]="!modeChosen()">What kind of organization is this?</option>
-        @for (m of modes; track m) {
-        <option [value]="m" [selected]="m === signUpData().mode">{{ modeLabels[m] }}</option>
-        }
-      </select>
-    </label>
-    @if (submitAttempted() && !modeChosen()) {
-    <span class="label-text-alt text-error -my-2 pb-2">Please choose what kind of organization this is</span>
-    }
-
-    <!-- Data residency. Sits with the other workspace questions because it is decided when the
-         workspace is provisioned, not later: once records exist, changing region is a data
-         migration. Starts on "Does not matter" — the honest state of an organization that has
-         no residency requirement, and the only answer that needs no paid plan. The same
-         `ms-0 ps-0` note applies here as on the select above. -->
-    <label class="select w-full">
-      <pc-icon [size]="4" name="globe-americas" />
-      <select class="ms-0 ps-0" (change)="onRegionChange($event)">
-        <!-- Bare labels, like the org-type select above. The description carries the detail on
-             the line below instead: a native select clips rather than wraps, and the full
-             sentence does not fit this card at any width worth designing for. -->
-        @for (r of regions; track r) {
-        <option [value]="r" [selected]="r === signUpData().data_region">{{ regionLabels[r] }}</option>
-        }
-      </select>
-    </label>
-    <!-- Two separate facts, and naming a region can trigger both. The plan requirement applies to
-         every region including Canada (choosing at all is the paid part). The availability note
-         applies only to regions with no hosting yet (LIVE_DATA_REGIONS in data-residency.ts).
-         Stating them here is not optional: the alternative is taking a residency choice we
-         cannot honour, on a plan the user has not bought, and letting them find out later. -->
-    @if (regionPreferenceStated()) {
-    <span class="label-text-alt text-warning -my-2 pb-2">
-      Choosing where your data lives is part of the {{ residencyMinPlanName }} plan. On any other plan your data is
-      stored in {{ defaultRegionLabel }} and this choice does not apply. @if (regionNotLiveYet()) { {{
-      chosenRegionLabel() }} hosting is also not open yet — for now every workspace is created in {{ actualRegionLabel()
-      }}, and we have recorded that you asked for {{ chosenRegionLabel() }}. }
-    </span>
-    } @else {
-    <span class="label-text-alt text-neutral-100 -my-2 pb-2 opacity-70">{{ chosenRegionDescription() }}</span>
-    }
-
     <label class="input w-full validator">
       <pc-icon [size]="4" name="at-symbol" />
       <input
@@ -95,7 +67,6 @@
         autocomplete="email"
       />
     </label>
-
     @if (email.dirty() && email.invalid()) {
     <span class="label-text-alt text-warning -my-2 pb-2">Please enter a valid email</span>
     }
@@ -128,20 +99,279 @@
     >
     }
 
-    <button type="submit" class="btn btn-primary" [disabled]="isLoading()">
-      @if (isLoading()) {
-      <span class="loading loading-spinner loading-lg text-primary"></span>
-      } @else { JOIN → }
-    </button>
+    <button type="submit" class="btn btn-primary">Continue →</button>
+
     <span class="label-text-alt -my-2 pb-2 text-center text-neutral-100 text-xs"
-      >By joining, you agree to the
+      >By creating your workspace, you agree to the
       <a href="https://pplcrm.com/eula" target="_blank" rel="noopener" class="link hover:text-neutral-300">EULA</a>
       and
       <a href="https://pplcrm.com/privacy" target="_blank" rel="noopener" class="link hover:text-neutral-300"
         >Privacy Policy</a
-      >.</span
+      >. Your name and organization name can be changed later in Workspace settings.</span
     >
+    }
+
+    <!-- ========================= STEP 2 — WHAT YOU ORGANIZE ========================= -->
+    @if (step() === 2) {
+    <div class="flex flex-col gap-1">
+      <span class="text-neutral-100 font-semibold">What you organize</span>
+      <span class="label-text-alt text-neutral-100 opacity-70"
+        >This decides whether the app says riding or ward, which modules start in your sidebar, and which sample data
+        your workspace opens with.</span
+      >
+    </div>
+
+    <!-- A select rather than a card grid: it carries the same visual weight as the input rows
+         around it, which is the weight this reversible answer actually deserves.
+         `ms-0 ps-0` undoes DaisyUI's negative start margin on `.select > select`, which is sized
+         to fill the whole shell and would otherwise paint its opaque background over the icon. -->
+    <label class="select w-full" [class.select-error]="submitAttempted() && !modeChosen()">
+      <pc-icon [size]="4" name="house-modern" />
+      <select class="ms-0 ps-0" [class.text-base-content/50]="!modeChosen()" (change)="onModeChange($event)">
+        <option value="" disabled [selected]="!modeChosen()">What kind of organization is this?</option>
+        @for (m of modes; track m) {
+        <option [value]="m" [selected]="m === signUpData().mode">{{ modeLabels[m] }}</option>
+        }
+      </select>
+    </label>
+    @if (submitAttempted() && !modeChosen()) {
+    <span class="label-text-alt text-error -my-2 pb-2">Please choose what kind of organization this is</span>
+    } @else if (signUpData().mode; as chosenMode) {
+    <span class="label-text-alt text-neutral-100 -my-2 pb-2 opacity-70">{{ modeDescriptions[chosenMode] }}</span>
+    }
+
+    <!-- Electoral questions, and only for the kinds of organization that hold elections. A church
+         or a non-profit is never asked any of this, because none of it means anything for them.
+         Each question appears only once the answer above it has made it meaningful. -->
+    @if (isElectoral()) {
+    <div class="divider my-0 text-neutral-100 text-xs opacity-70">The office you organize around</div>
+
+    <label class="select w-full">
+      <pc-icon [size]="4" name="globe-americas" />
+      <select class="ms-0 ps-0" [class.text-base-content/50]="country() == null" (change)="onCountryChange($event)">
+        <option value="" disabled [selected]="country() == null">Which country?</option>
+        @for (c of countries; track c.code) {
+        <option [value]="c.code" [selected]="c.code === country()">{{ c.name }}</option>
+        }
+      </select>
+    </label>
+
+    @if (levels().length > 0) {
+    <label class="select w-full">
+      <pc-icon [size]="4" name="building-office" />
+      <select class="ms-0 ps-0" [class.text-base-content/50]="jurisdiction() == null" (change)="onLevelChange($event)">
+        <option value="" disabled [selected]="jurisdiction() == null">Which level of government?</option>
+        @for (id of levels(); track id) {
+        <option [value]="id" [selected]="id === jurisdiction()">{{ jurisdictions[id].label }}</option>
+        }
+      </select>
+    </label>
+    } @if (spec(); as chosenSpec) {
+    <span class="label-text-alt text-neutral-100 -my-2 pb-2 opacity-70">{{ chosenSpec.description }}</span>
+    }
+    <!-- Only levels that are actually identified by a province or state ask for one. A federal
+         riding is named nationally, so Canada federal never shows this. -->
+    @if (showRegion()) {
+    <label class="select w-full">
+      <pc-icon [size]="4" name="map" />
+      <select class="ms-0 ps-0" [class.text-base-content/50]="!officeRegion()" (change)="onOfficeRegionChange($event)">
+        <option value="" disabled [selected]="!officeRegion()">{{ regionQuestion() }}</option>
+        @for (r of regionOptions(); track r.code) {
+        <option [value]="r.code" [selected]="r.code === officeRegion()">{{ r.name }}</option>
+        }
+      </select>
+    </label>
+    }
+
+    <!-- Municipal and county races only. -->
+    @if (showLocality()) {
+    <label class="input w-full">
+      <pc-icon [size]="4" name="home" />
+      <input type="text" placeholder="City or county" [formField]="officeForm.office_locality" class="grow w-full" />
+    </label>
+    }
+
+    <!-- Offered only where at-large seats can exist. Canada federal and provincial have none. It
+         sits above the chamber question because its answer decides whether that question exists. -->
+    @if (showAtLarge()) {
+    <label class="select w-full">
+      <pc-icon [size]="4" name="adjustments-horizontal" />
+      <select class="ms-0 ps-0" (change)="onSeatTypeChange($event)">
+        @for (t of seatTypes; track t) {
+        <option [value]="t" [selected]="t === seatType()">{{ seatTypeLabels[t] }}</option>
+        }
+      </select>
+    </label>
+    @if (atLargeIsLikely()) {
+    <span class="label-text-alt text-neutral-100 -my-2 pb-2 opacity-70"
+      >This state elects its single member of the US House statewide, so a House race here has no district.</span
+    >
+    } }
+
+    <!-- US state legislatures only, and only for a district seat: the two houses are two different
+         district maps, so the answer decides which map households match. A statewide office sits
+         in neither chamber, so it is never asked. -->
+    @if (showChamber()) {
+    <label class="select w-full">
+      <pc-icon [size]="4" name="rectangle-stack" />
+      <select class="ms-0 ps-0" [class.text-base-content/50]="chamber() == null" (change)="onChamberChange($event)">
+        <option value="" [selected]="chamber() == null">Which chamber? (optional)</option>
+        @for (c of chambers; track c) {
+        <option [value]="c" [selected]="c === chamber()">{{ chamberLabels[c] }}</option>
+        }
+      </select>
+    </label>
+    }
+
+    <!-- An at-large seat covers the whole area, so it has no seat area to name. -->
+    @if (showSeatName()) {
+    <label class="input w-full">
+      <pc-icon [size]="4" name="map-pin" />
+      <input
+        type="text"
+        [placeholder]="seatLabel() + ' name (optional)'"
+        [formField]="officeForm.seat_name"
+        class="grow w-full"
+      />
+    </label>
+    } @if (jurisdiction() != null) {
+    <label class="input w-full">
+      <pc-icon [size]="4" name="identification" />
+      <input
+        type="text"
+        placeholder="What the seat-holder is called (optional)"
+        list="pc-office-titles"
+        [formField]="officeForm.office_title"
+        class="grow w-full"
+      />
+    </label>
+    <datalist id="pc-office-titles">
+      @for (t of officeTitles(); track t) {
+      <option [value]="t"></option>
+      }
+    </datalist>
+    } }
+
+    <span class="label-text-alt text-neutral-100 opacity-70 text-xs">
+      You can change this later in Workspace settings.
+      <a
+        href="https://pplcrm.com/docs/campaign-jurisdictions"
+        target="_blank"
+        rel="noopener"
+        class="link hover:text-neutral-300"
+        >How the office you run for changes the wording</a
+      >.
+    </span>
+
+    <div class="flex gap-2">
+      <button type="button" class="btn btn-ghost text-neutral-100 flex-none" (click)="back()">← Back</button>
+      <button type="button" class="btn btn-ghost text-neutral-100 grow" (click)="skipOrganizationStep()">
+        Skip for now
+      </button>
+      <button type="submit" class="btn btn-primary grow">Continue →</button>
+    </div>
+    }
+
+    <!-- ========================== STEP 3 — HOW TO REACH YOU ========================== -->
+    @if (step() === 3) {
+    <div class="flex flex-col gap-1">
+      <span class="text-neutral-100 font-semibold">How to reach you</span>
+      <span class="label-text-alt text-neutral-100 opacity-70"
+        >Your address pre-fills the issuer details every donation receipt has to carry, and centres your map on the area
+        you work in. The phone number and public email are what appears on the forms people fill in.</span
+      >
+    </div>
+
+    <label class="input w-full">
+      <pc-icon [size]="4" name="map-pin" />
+      <pc-address-autocomplete
+        class="grow w-full"
+        placeholder="Organization address (optional)"
+        [regionCodes]="addressRegionCodes()"
+        [value]="contactData().organization_address"
+        (textChange)="onAddressTextChange($event)"
+      />
+    </label>
+
+    <label class="input w-full">
+      <pc-icon [size]="4" name="phone" />
+      <input
+        type="tel"
+        placeholder="Organization phone (optional)"
+        [formField]="contactForm.organization_phone"
+        class="grow w-full"
+        autocomplete="tel"
+      />
+    </label>
+
+    <label class="input w-full validator">
+      <pc-icon [size]="4" name="at-symbol" />
+      <input
+        type="email"
+        placeholder="Public contact email (optional)"
+        [formField]="contactForm.organization_contact_email"
+        class="grow w-full"
+      />
+    </label>
+    @if (contactEmail.dirty() && contactEmail.invalid()) {
+    <span class="label-text-alt text-warning -my-2 pb-2">Please enter a valid email, or leave this blank</span>
+    }
+
+    <!-- Data residency. Asked before the workspace exists because it is decided when the workspace
+         is provisioned: once records exist, changing region is a data migration. Starts on "Does
+         not matter", the honest state of an organization with no residency requirement and the
+         only answer that needs no paid plan. -->
+    <label class="select w-full">
+      <pc-icon [size]="4" name="globe-americas" />
+      <select class="ms-0 ps-0" (change)="onRegionChange($event)">
+        <!-- Bare labels. The description carries the detail on the line below instead: a native
+             select clips rather than wraps, and the full sentence does not fit this card. -->
+        @for (r of regions; track r) {
+        <option [value]="r" [selected]="r === signUpData().data_region">{{ regionLabels[r] }}</option>
+        }
+      </select>
+    </label>
+    <!-- Two separate facts, and naming a region can trigger both. The plan requirement applies to
+         every region including Canada (choosing at all is the paid part). The availability note
+         applies only to regions with no hosting yet (LIVE_DATA_REGIONS in data-residency.ts).
+         Stating them here is not optional: the alternative is taking a residency choice we
+         cannot honour, on a plan the user has not bought, and letting them find out later. -->
+    @if (regionPreferenceStated()) {
+    <span class="label-text-alt text-warning -my-2 pb-2">
+      Choosing where your data lives is part of the {{ residencyMinPlanName }} plan. On any other plan your data is
+      stored in {{ defaultRegionLabel }} and this choice does not apply. @if (regionNotLiveYet()) { {{
+      chosenRegionLabel() }} hosting is also not open yet — for now every workspace is created in {{ actualRegionLabel()
+      }}, and we have recorded that you asked for {{ chosenRegionLabel() }}. }
+    </span>
+    } @else {
+    <span class="label-text-alt text-neutral-100 -my-2 pb-2 opacity-70">{{ chosenRegionDescription() }}</span>
+    }
+
+    <span class="label-text-alt text-neutral-100 opacity-70 text-xs"
+      >You can change all of this later in Workspace settings.</span
+    >
+
+    <div class="flex gap-2">
+      <button type="button" class="btn btn-ghost text-neutral-100 flex-none" [disabled]="isLoading()" (click)="back()">
+        ← Back
+      </button>
+      <button
+        type="button"
+        class="btn btn-ghost text-neutral-100 grow"
+        [disabled]="isLoading()"
+        (click)="skipContactStep()"
+      >
+        Skip for now
+      </button>
+      <button type="submit" class="btn btn-primary grow" [disabled]="isLoading()">
+        @if (isLoading()) {
+        <span class="loading loading-spinner loading-md text-primary"></span>
+        } @else { Create workspace }
+      </button>
+    </div>
+    }
   </form>
+
   <span class="label-text py-3 text-center text-neutral-100"
     >Already have an account? <a routerLink="/signin" class="font-bold hover:underline">Sign In</a>.</span
   >

@@ -139,7 +139,7 @@
               @if (householdId() && !isPlaceholderHousehold()) {
               <div class="flex items-center gap-3 rounded-lg border border-base-300 bg-base-200 p-3 text-sm">
                 <pc-icon name="map-pin" [size]="4" class="shrink-0 text-base-content/40"></pc-icon>
-                <span class="flex-grow font-medium text-base-content">{{ addressWithWard() }}</span>
+                <span class="flex-grow font-medium text-base-content">{{ addressWithArea() }}</span>
                 <button type="button" class="link link-primary shrink-0 text-xs" (click)="navigateToHousehold()">
                   Edit on household
                 </button>

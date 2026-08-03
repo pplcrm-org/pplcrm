@@ -188,7 +188,13 @@ describe('CanvassStore', () => {
     });
 
     it('falls back to the picker when the named turf cannot be opened', async () => {
-      const choices = { may_roam: true, mine: [], available: [] };
+      const choices = {
+        may_roam: true,
+        mine: [],
+        available: [],
+        boundary_label: 'Polling division',
+        boundary_label_plural: 'Polling divisions',
+      };
       fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>((url) => {
         if (String(url).includes('/my-turfs')) return Promise.resolve(jsonResponse(choices));
         return Promise.resolve(jsonResponse({ error: 'nope' }, 404));

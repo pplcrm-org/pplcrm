@@ -220,6 +220,17 @@ export class GridStoreService {
     this._loadFromStorage(key);
   }
 
+  /**
+   * Column ids the attached table actually has. Null when no table is attached yet — the grid
+   * attaches the table before setting the persist key (datagrid.ts ngOnInit), so restores normally
+   * have it; a null just skips validation rather than dropping everything.
+   */
+  private _knownColumnIds(): Set<string> | null {
+    const cols = this._table?.getAllLeafColumns();
+    if (!cols || cols.length === 0) return null;
+    return new Set(cols.map((c) => c.id));
+  }
+
   private _loadFromStorage(key: string) {
     try {
       const raw = localStorage.getItem(key);
@@ -236,9 +247,27 @@ export class GridStoreService {
       };
       const parsed: unknown = JSON.parse(raw || '{}');
       const data: Persisted = isRecord(parsed) ? parsed : {};
-      if (data.sorting) this.sorting.set(data.sorting);
-      if (data.visibility) this.colVisibility.set({ ...untracked(() => this.colVisibility()), ...data.visibility });
-      if (data.filters) this.filterValues.set(data.filters);
+
+      // Saved state can name columns this grid no longer registers (a saved sort on the removed
+      // `ward` column, for example). Restoring such an entry verbatim would send an unknown colId
+      // to the backend, whose query then fails and the grid never loads — so anything naming an
+      // unknown column is dropped here, not carried along.
+      const known = this._knownColumnIds();
+      const keepId = (id: unknown): boolean => typeof id === 'string' && (known == null || known.has(id));
+      const dropUnknownKeys = <V>(obj: Record<string, V> | undefined): Record<string, V> | undefined => {
+        if (!obj) return obj;
+        return Object.fromEntries(Object.entries(obj).filter(([id]) => keepId(id)));
+      };
+      const sorting = Array.isArray(data.sorting)
+        ? data.sorting.filter((entry) => isRecord(entry) && keepId(entry['id']))
+        : undefined;
+      const visibility = dropUnknownKeys(data.visibility);
+      const filters = dropUnknownKeys(data.filters);
+      const order = Array.isArray(data.order) ? data.order.filter((id) => keepId(id)) : undefined;
+
+      if (sorting) this.sorting.set(sorting);
+      if (visibility) this.colVisibility.set({ ...untracked(() => this.colVisibility()), ...visibility });
+      if (filters) this.filterValues.set(filters);
       if (typeof data.selectionWidth === 'number') this.selectionStickyWidth.set(data.selectionWidth);
       if (typeof data.pageSize === 'number' && data.pageSize > 0) this.pageSize.set(data.pageSize);
       const sizing = data.sizing || {};
@@ -248,11 +277,11 @@ export class GridStoreService {
             ...prev,
             state: {
               ...prev.state,
-              sorting: (data.sorting as unknown as typeof prev.state.sorting) || prev.state?.sorting,
-              columnVisibility: data.visibility || prev.state?.columnVisibility,
+              sorting: (sorting as unknown as typeof prev.state.sorting) || prev.state?.sorting,
+              columnVisibility: visibility || prev.state?.columnVisibility,
               columnPinning: data.pinning || prev.state?.columnPinning,
               columnSizing: sizing || prev.state?.columnSizing,
-              columnOrder: data.order || prev.state?.columnOrder,
+              columnOrder: order || prev.state?.columnOrder,
             },
           }));
         }

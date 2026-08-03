@@ -28,7 +28,9 @@ export interface CoverageDoorRow {
   household_id: string;
   turf_id: string;
   turf_name: string;
-  ward: string | null;
+  /** The named area of the door's turf, or null when that turf has no area of its own
+   *  (cut with no map, or its doors fell outside every area of the map used). */
+  boundary_name: string | null;
   lat: number;
   lng: number;
   conversations: number;
@@ -141,6 +143,13 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
    * they're excluded here (the report's numeric tiles still count them). Knocks
    * are left-joined within the range so an un-knocked door still returns a row
    * (its counts are zero → "not yet knocked" once the controller derives status).
+   *
+   * The area a door rolls up under is read from its TURF (`turfs.boundary_name`), not from the
+   * household. Two reasons. A turf never spans two areas, so the turf's area is the household's
+   * area for every door the cutter placed — the two answers agree. And this report is workspace-
+   * wide across every campaign, while a household's areas are one row per boundary map: choosing
+   * which of a household's maps to read would need a campaign, and there isn't one here. The turf
+   * already recorded which map it was cut against, so the honest answer is on the turf.
    */
   public async getCoverageRows(
     input: { tenant_id: string; from: Date; to: Date },
@@ -160,12 +169,12 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
       .where('turf_households.tenant_id', '=', input.tenant_id)
       .where('h.lat', 'is not', null)
       .where('h.lng', 'is not', null)
-      .groupBy(['turf_households.household_id', 't.id', 't.name', 'h.ward', 'h.lat', 'h.lng'])
+      .groupBy(['turf_households.household_id', 't.id', 't.name', 't.boundary_name', 'h.lat', 'h.lng'])
       .select([
         'turf_households.household_id as household_id',
         't.id as turf_id',
         't.name as turf_name',
-        'h.ward as ward',
+        't.boundary_name as boundary_name',
         'h.lat as lat',
         'h.lng as lng',
         sql<number>`COUNT(k.id) FILTER (WHERE k.outcome = ${CONVERSATION})`.as('conversations'),
@@ -177,7 +186,7 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
       household_id: String(r.household_id),
       turf_id: String(r.turf_id),
       turf_name: String(r.turf_name),
-      ward: r.ward ? String(r.ward) : null,
+      boundary_name: r.boundary_name ? String(r.boundary_name) : null,
       lat: Number(r.lat),
       lng: Number(r.lng),
       conversations: Number(r.conversations ?? 0),

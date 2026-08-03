@@ -1,7 +1,9 @@
 import { Component, type OnInit, computed, inject, output, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { Icon } from '@icons/icon';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 
 import { DOORS_PER_TURF_PRESETS } from '../../../../../../../libs/common/src';
@@ -21,7 +23,7 @@ const MIN_PER_HOUR = 60;
 
 @Component({
   selector: 'pc-cut-turfs-dialog',
-  imports: [ModalShell],
+  imports: [Icon, ModalShell, RouterLink],
   templateUrl: './cut-turfs-dialog.html',
 })
 export class CutTurfsDialog implements OnInit {
@@ -41,8 +43,31 @@ export class CutTurfsDialog implements OnInit {
   protected readonly doorsPerTurf = signal<number>(40);
   protected readonly preview = signal<CutPreview | null>(null);
 
+  /**
+   * Whether the workspace holds any boundary map. `null` means the question has not been answered
+   * yet, or the read failed.
+   *
+   * This flag never decides whether a cut will be bounded — the preview's own `bounded` field,
+   * resolved by the server for this cut, decides that. It plays two smaller parts: `false` shows
+   * the up-front "no map yet" note (provable: with no boundary set on file, these turfs will
+   * certainly be unbounded), and `true` lets an unbounded preview say the more useful thing —
+   * that the map the workspace holds does not apply to this campaign's office.
+   */
+  protected readonly hasBoundaryMap = signal<boolean | null>(null);
+
   ngOnInit(): void {
     void this.loadUniverses();
+    void this.loadBoundaryState();
+  }
+
+  private async loadBoundaryState(): Promise<void> {
+    try {
+      this.hasBoundaryMap.set(await this.svc.workspaceHasBoundaryMap());
+    } catch {
+      // A failed read must not put a claim about the workspace on screen. It stays unknown, the
+      // note simply does not appear, and nothing about cutting is blocked.
+      this.hasBoundaryMap.set(null);
+    }
   }
 
   protected readonly selectedUniverse = computed<UniverseOption | null>(

@@ -5,6 +5,7 @@ import type { IAuthKeyPayload } from '@common';
 import { BaseRepository } from '../../lib/base.repo';
 import { hashToken } from '../../lib/token-hash';
 import { CanvassingController } from './controller';
+import { resolveTurfBoundary } from './lib/turf-boundary';
 
 type Db = typeof BaseRepository.dbInstance;
 
@@ -15,6 +16,8 @@ interface Seed {
   userId: string;
   campaignId: string;
   listId: string;
+  /** The boundary map the seeded doors' area rows point at. */
+  boundarySetId: string;
   householdIds: string[];
   /** The volunteer the Companion link is assigned to (not a list member). */
   volunteerPersonId: string;
@@ -24,7 +27,13 @@ interface Seed {
   residentIds: string[];
 }
 
-/** Seed a tenant + a static household list of geocoded doors across two wards. */
+/**
+ * Seed a tenant plus a static household list of geocoded doors spread across two boundary areas.
+ *
+ * The areas come from a `boundary_sets` row and one `household_districts` row per household, which
+ * is where the turf cutter reads them from. `households.ward` is not written at all — it is the
+ * column this change stopped using.
+ */
 async function seed(db: Db, opts: { geocoded: number; ungeocoded: number }): Promise<Seed> {
   const tenantId = rand();
   const userId = rand();
@@ -72,6 +81,28 @@ async function seed(db: Db, opts: { geocoded: number; ungeocoded: number }): Pro
     })
     .execute();
 
+  // The map the turfs are cut against. `jurisdiction: 'other'` and a null region match the seeded
+  // campaign, which declares no office — the default every campaign that predates jurisdictions
+  // has. Role 'subdivision' is what the resolver prefers.
+  //
+  // `boundary_sets.id` is GENERATED ALWAYS, so unlike the older tables in this seed it cannot be
+  // given an id; the generated one is read back instead.
+  const boundarySet = await db
+    .insertInto('boundary_sets')
+    .values({
+      tenant_id: tenantId,
+      slug: `test-areas-${rand()}`,
+      label: 'Test areas',
+      jurisdiction: 'other',
+      role: 'subdivision',
+      source: 'drawn',
+      feature_count: 2,
+      createdby_id: userId,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const boundarySetId = String(boundarySet.id);
+
   const householdIds: string[] = [];
   for (let i = 0; i < opts.geocoded; i++) {
     const hid = rand();
@@ -91,8 +122,16 @@ async function seed(db: Db, opts: { geocoded: number; ungeocoded: number }): Pro
         zip: '62701',
         lat: 41.85 + (i % 8) * 0.001,
         lng: -87.69 + Math.floor(i / 8) * 0.001,
-        ward: i % 2 === 0 ? 'W1' : 'W2',
         geocoding_status: 'success',
+      })
+      .execute();
+    await db
+      .insertInto('household_districts')
+      .values({
+        tenant_id: tenantId,
+        household_id: hid,
+        set_id: boundarySetId,
+        name: i % 2 === 0 ? 'W1' : 'W2',
       })
       .execute();
     await db
@@ -178,7 +217,72 @@ async function seed(db: Db, opts: { geocoded: number; ungeocoded: number }): Pro
       .execute();
   }
 
-  return { tenantId, userId, campaignId, listId, householdIds, volunteerPersonId, volunteer2PersonId, residentIds };
+  return {
+    tenantId,
+    userId,
+    campaignId,
+    listId,
+    boundarySetId,
+    householdIds,
+    volunteerPersonId,
+    volunteer2PersonId,
+    residentIds,
+  };
+}
+
+/**
+ * A geocoded household added to the universe list after a cut — the "new list member" every
+ * refresh test needs. `area` files it in a named area of the seeded map; null leaves it with no
+ * `household_districts` row, which is what "outside every area" means to the matcher.
+ */
+async function addListedHousehold(db: Db, s: Seed, opts: { area: string | null }): Promise<string> {
+  const hid = rand();
+  await db
+    .insertInto('households')
+    .values({
+      id: hid,
+      tenant_id: s.tenantId,
+      campaign_id: s.campaignId,
+      createdby_id: s.userId,
+      updatedby_id: s.userId,
+      street_num: '900',
+      street1: 'New St',
+      city: 'Springfield',
+      state: 'IL',
+      zip: '62701',
+      lat: 41.86,
+      lng: -87.7,
+      geocoding_status: 'success',
+    })
+    .execute();
+  if (opts.area != null) {
+    await db
+      .insertInto('household_districts')
+      .values({ tenant_id: s.tenantId, household_id: hid, set_id: s.boundarySetId, name: opts.area })
+      .execute();
+  }
+  await db
+    .insertInto('map_lists_households')
+    .values({
+      tenant_id: s.tenantId,
+      list_id: s.listId,
+      household_id: hid,
+      createdby_id: s.userId,
+      updatedby_id: s.userId,
+    })
+    .execute();
+  return hid;
+}
+
+/** The household ids currently on one turf. */
+async function doorsOf(db: Db, tenantId: string, turfId: string): Promise<string[]> {
+  const rows = await db
+    .selectFrom('turf_households')
+    .select('household_id')
+    .where('tenant_id', '=', tenantId)
+    .where('turf_id', '=', turfId)
+    .execute();
+  return rows.map((r) => String(r.household_id));
 }
 
 /**
@@ -267,6 +371,10 @@ async function cleanup(db: Db, tenantId: string): Promise<void> {
   await db.deleteFrom('map_lists_households').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('lists').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
+  // The boundary map the turfs were cut against: the per-household rows reference both the
+  // household and the set, so they go before either.
+  await db.deleteFrom('household_districts').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('boundary_sets').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
   await db.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
@@ -295,9 +403,11 @@ describe('CanvassingController', () => {
     expect(preview.unplaced).toBe(3);
     expect(preview.turfCount).toBeGreaterThanOrEqual(2);
     expect(preview.avgDoorsPerTurf).toBeGreaterThan(0);
+    // The seeded map applies to this campaign, so the preview promises a bounded cut.
+    expect(preview.bounded).toBe(true);
   });
 
-  it('cuts turfs (draft, unassigned) with doors, never crossing a ward', async () => {
+  it('cuts turfs (draft, unassigned) with doors, never crossing a boundary', async () => {
     const res = await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 20 });
     expect(res.created).toBeGreaterThanOrEqual(2);
     expect(res.unplaced).toBe(3);
@@ -308,7 +418,7 @@ describe('CanvassingController', () => {
       expect(t.status).toBe('draft');
       expect(t.canvassers).toEqual([]);
       expect(t.door_count).toBeGreaterThan(0);
-      expect(['W1', 'W2', null]).toContain(t.ward);
+      expect(['W1', 'W2', null]).toContain(t.boundary_name);
     }
     // Every geocoded door placed exactly once across turfs.
     const total = turfs.reduce((n, t) => n + t.door_count, 0);
@@ -349,7 +459,7 @@ describe('CanvassingController', () => {
 
   it('puts several volunteers on one turf, each with their own working link', async () => {
     await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
-    // Turfs never cross a ward, so the cut yields more than one; hold on to the
+    // Turfs never cross a boundary, so the cut yields more than one; hold on to the
     // shape before assigning so the roster can be shown not to disturb it.
     const before = await controller.getTurfs(auth);
     const [turf] = before;
@@ -1297,7 +1407,7 @@ describe('CanvassingController', () => {
     expect(report.topCanvassers[0]?.name).toBe('Sam Volunteer');
   });
 
-  it('maps coverage: a door per geocoded household, coloured by its knock status, with turf hulls and by-ward roll-up', async () => {
+  it('maps coverage: a door per geocoded household, coloured by its knock status, with turf hulls and a by-boundary roll-up', async () => {
     await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
     const [turf] = await controller.getTurfs(auth);
     if (!turf) throw new Error('expected a turf');
@@ -1346,10 +1456,13 @@ describe('CanvassingController', () => {
     expect(cov.turfs.length).toBeGreaterThanOrEqual(1);
     for (const t of cov.turfs) expect(t.path.length).toBeGreaterThanOrEqual(3);
 
-    // By-ward roll-up covers every mapped door exactly once.
-    const wardDoors = cov.byWard.reduce((n, w) => n + w.doors, 0);
-    expect(wardDoors).toBe(40);
-    expect(cov.byWard.map((w) => w.ward).sort()).toEqual(['W1', 'W2']);
+    // By-boundary roll-up covers every mapped door exactly once.
+    const areaDoors = cov.byBoundary.reduce((n, a) => n + a.doors, 0);
+    expect(areaDoors).toBe(40);
+    expect(cov.byBoundary.map((a) => a.boundary_name).sort()).toEqual(['W1', 'W2']);
+    // The campaign declares no office, so the word is the neutral default rather than a guess.
+    expect(cov.boundary_label).toBe('Subdivision');
+    expect(cov.boundary_label_plural).toBe('Subdivisions');
   });
 
   it('refreshes a turf from its list, dropping members that left (knocks preserved)', async () => {
@@ -1391,6 +1504,8 @@ describe('CanvassingController', () => {
 
     const result = await controller.refreshFromList(auth, turf.id);
     expect(result.removed).toBe(1);
+    // An ordinary turf still knows its map, so the response does not claim otherwise.
+    expect(result.boundary_map_missing).toBe(false);
 
     // The knock history survives even though the door was removed.
     const knocks = await db
@@ -1400,6 +1515,156 @@ describe('CanvassingController', () => {
       .where('household_id', '=', droppedDoor)
       .execute();
     expect(knocks.length).toBe(1);
+  });
+
+  it('a turf cut outside every area of the map records the map, and refresh cannot steal doors from named areas', async () => {
+    // Three doors lose their area rows: still geocoded, still in the list, but outside every
+    // area of the map the cut resolves.
+    const outside = s.householdIds.slice(0, 3);
+    await db
+      .deleteFrom('household_districts')
+      .where('tenant_id', '=', s.tenantId)
+      .where('household_id', 'in', outside)
+      .execute();
+
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const turfs = await controller.getTurfs(auth);
+    const leftover = turfs.find((t) => t.boundary_name == null);
+    const w1 = turfs.find((t) => t.boundary_name === 'W1');
+    if (!leftover || !w1) throw new Error('expected a leftover turf and a W1 turf');
+    expect(leftover.door_count).toBe(3);
+
+    // "Cut against map S, outside every area of it" (set kept, name null) is stored as a state
+    // of its own, distinct from "cut with no map" (both null).
+    const stored = await db
+      .selectFrom('turfs')
+      .select(['boundary_set_id', 'boundary_name'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', leftover.id)
+      .executeTakeFirstOrThrow();
+    expect(String(stored.boundary_set_id)).toBe(s.boundarySetId);
+    expect(stored.boundary_name).toBeNull();
+
+    // The coverage roll-up files those doors under 'Unbounded' — the same word the turf pages
+    // use — never under 'Unassigned', which on the canvassing page means "no canvasser".
+    const cov = await controller.getCoverage(auth, { range: 'campaign' });
+    const bucket = cov.byBoundary.find((a) => a.boundary_name === 'Unbounded');
+    expect(bucket?.doors).toBe(3);
+    expect(cov.byBoundary.map((a) => a.boundary_name)).not.toContain('Unassigned');
+
+    // Two new list members: one inside W1, one outside every area.
+    const insideNew = await addListedHousehold(db, s, { area: 'W1' });
+    const outsideNew = await addListedHousehold(db, s, { area: null });
+
+    // Refreshing the leftover turf FIRST takes only the door that is still outside every area.
+    // Before the map id was stored, this turf read as "no map", every unassigned door matched,
+    // and it permanently swallowed doors that belonged inside named areas.
+    const leftoverRes = await controller.refreshFromList(auth, leftover.id);
+    expect(leftoverRes).toEqual({ added: 1, removed: 0, boundary_map_missing: false });
+    const leftoverDoors = await doorsOf(db, s.tenantId, leftover.id);
+    expect(leftoverDoors).toContain(outsideNew);
+    expect(leftoverDoors).not.toContain(insideNew);
+
+    // The W1 door is still free, and the W1 turf picks it up.
+    const w1Res = await controller.refreshFromList(auth, w1.id);
+    expect(w1Res.added).toBe(1);
+    expect(await doorsOf(db, s.tenantId, w1.id)).toContain(insideNew);
+  });
+
+  it('a turf cut with no map at all matches any unassigned door on refresh, and the preview owns up to it', async () => {
+    // The workspace loses its map entirely before the cut.
+    await db.deleteFrom('household_districts').where('tenant_id', '=', s.tenantId).execute();
+    await db.deleteFrom('boundary_sets').where('tenant_id', '=', s.tenantId).execute();
+
+    const preview = await controller.previewCut(auth, { list_id: s.listId, doors_per_turf: 40 });
+    expect(preview.bounded).toBe(false);
+
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const [turf] = await controller.getTurfs(auth);
+    if (!turf) throw new Error('expected a turf');
+    const stored = await db
+      .selectFrom('turfs')
+      .select(['boundary_set_id', 'boundary_name'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', turf.id)
+      .executeTakeFirstOrThrow();
+    expect(stored.boundary_set_id).toBeNull();
+    expect(stored.boundary_name).toBeNull();
+
+    // One bucket, so any unassigned list member joins — the same rule the cutter used.
+    const newDoor = await addListedHousehold(db, s, { area: null });
+    const res = await controller.refreshFromList(auth, turf.id);
+    expect(res).toEqual({ added: 1, removed: 0, boundary_map_missing: false });
+    expect(await doorsOf(db, s.tenantId, turf.id)).toContain(newDoor);
+  });
+
+  it('is honest about a turf whose boundary map is gone: doors still leave, none are added, and the response says why', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const w1 = (await controller.getTurfs(auth)).find((t) => t.boundary_name === 'W1');
+    if (!w1) throw new Error('expected a W1 turf');
+
+    // Migration d's backfill shape — an area name with no map behind it. Deleting the map
+    // produces the same state through the FK's ON DELETE SET NULL; writing it directly keeps
+    // the other turf out of this test.
+    await db
+      .updateTable('turfs')
+      .set({ boundary_set_id: null })
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', w1.id)
+      .execute();
+
+    // One member leaves the list, one W1 member joins it.
+    const [leaving] = await doorsOf(db, s.tenantId, w1.id);
+    if (!leaving) throw new Error('expected the W1 turf to have doors');
+    await db
+      .deleteFrom('map_lists_households')
+      .where('tenant_id', '=', s.tenantId)
+      .where('household_id', '=', leaving)
+      .execute();
+    const joining = await addListedHousehold(db, s, { area: 'W1' });
+
+    const res = await controller.refreshFromList(auth, w1.id);
+    // The removal is work the refresh still does; the add phase is skipped because 'W1' can no
+    // longer be resolved against any map — and the flag says so instead of the response reading
+    // as "this turf already matches its list".
+    expect(res).toEqual({ added: 0, removed: 1, boundary_map_missing: true });
+    const doors = await doorsOf(db, s.tenantId, w1.id);
+    expect(doors).not.toContain(leaving);
+    expect(doors).not.toContain(joining);
+  });
+
+  it('picks the boundary map for the campaign’s chamber, not the finer map of the other chamber', async () => {
+    // A two-chamber workspace: the seeded map becomes the upper-house map, and a FINER
+    // lower-house map arrives. Finest-wins must not cross the chamber line.
+    await db
+      .updateTable('campaigns')
+      .set({ chamber: 'upper' })
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', s.campaignId)
+      .execute();
+    await db
+      .updateTable('boundary_sets')
+      .set({ chamber: 'upper' })
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', s.boundarySetId)
+      .execute();
+    await db
+      .insertInto('boundary_sets')
+      .values({
+        tenant_id: s.tenantId,
+        slug: `house-map-${rand()}`,
+        label: 'House districts',
+        jurisdiction: 'other',
+        role: 'subdivision',
+        source: 'drawn',
+        chamber: 'lower',
+        feature_count: 99,
+        createdby_id: s.userId,
+      })
+      .execute();
+
+    const boundary = await resolveTurfBoundary(db, { tenant_id: s.tenantId, campaign_id: s.campaignId });
+    expect(boundary.set_id).toBe(s.boundarySetId);
   });
 
   it('opens one turf: every door with what happened at it, and the roster with their work', async () => {

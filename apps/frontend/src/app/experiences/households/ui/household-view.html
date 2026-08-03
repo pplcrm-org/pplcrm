@@ -60,9 +60,11 @@
             [deepLink]="true"
             ariaLabel="Household location"
           ></pc-map>
-          <!-- Ward chip -->
-          @if (h.ward) {
-          <span class="absolute left-2 top-2 badge badge-sm badge-neutral font-semibold shadow">Ward {{ h.ward }}</span>
+          <!-- The household's area on this campaign's own boundary map, named in that campaign's
+               own word (Ward, Riding, Congressional district). Absent until the address has been
+               placed on a map. -->
+          @if (electoralAreaLabel(); as area) {
+          <span class="absolute left-2 top-2 badge badge-sm badge-neutral font-semibold shadow">{{ area }}</span>
           }
           <!-- Address + Maps affordance -->
           <div class="absolute inset-x-2 bottom-2 flex items-end justify-between gap-2">

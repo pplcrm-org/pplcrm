@@ -17,8 +17,8 @@ import type { Models } from '../../../../../libs/common/src/lib/kysely.models';
  *
  * Two kinds of pointer exist, and they are NOT the same thing:
  *
- * 1. A foreign-key-shaped column on another table (the seven listed in FILE_REFERENCE_COLUMNS).
- *    Only two of those seven have an actual database foreign key; the other five would be left
+ * 1. A foreign-key-shaped column on another table (the nine listed in FILE_REFERENCE_COLUMNS).
+ *    Only three of those nine have an actual database foreign key; the other six would be left
  *    dangling by a delete, with nothing in Postgres objecting. That is precisely why the check
  *    has to live in application code.
  * 2. The `files.entity_type` / `files.entity_id` ownership tag, written by
@@ -68,9 +68,10 @@ interface ColumnReference {
 /**
  * Every column in the schema that holds a `files.id`.
  *
- * Verified against the live schema on 2026-07-31: seven columns, of which only
- * `email_attachments.file_id` and `profiles.avatar_file_id` carry a real foreign key
- * (both `ON DELETE SET NULL`). The remaining five are plain bigints.
+ * Verified against the live schema on 2026-08-02: nine columns, of which three carry a real
+ * foreign key — `email_attachments.file_id` and `profiles.avatar_file_id` (both
+ * `ON DELETE SET NULL`) and `boundary_sets.file_id` (also `ON DELETE SET NULL`). The remaining
+ * six are plain bigints.
  */
 export const FILE_REFERENCE_COLUMNS: readonly ColumnReference[] = [
   {
@@ -114,6 +115,24 @@ export const FILE_REFERENCE_COLUMNS: readonly ColumnReference[] = [
           .select('id')
           .where('tenant_id', '=', tenantId)
           .where('screenshot_file_id', '=', fileId)
+          .limit(1)
+          .executeTakeFirst(),
+      ),
+  },
+  {
+    // The uploaded GeoJSON a boundary set was parsed from. Kept after parsing so a bad parse can
+    // be re-run against the source instead of asking the admin to find the file again, which is
+    // exactly why deleting it out from under the set must be refused.
+    table: 'boundary_sets',
+    column: 'file_id',
+    label: 'a boundary set',
+    isReferenced: async (db, tenantId, fileId) =>
+      Boolean(
+        await db
+          .selectFrom('boundary_sets')
+          .select('id')
+          .where('tenant_id', '=', tenantId)
+          .where('file_id', '=', fileId)
           .limit(1)
           .executeTakeFirst(),
       ),
@@ -385,9 +404,9 @@ export async function deleteFileRowIfUnreferenced(
  * storage leak.
  *
  * Residual race, accepted knowingly: between the reference check and the commit another request
- * could attach the same file to a new record. The window is one short transaction and the two
+ * could attach the same file to a new record. The window is one short transaction and the three
  * columns with a foreign key are `ON DELETE SET NULL`, so the loser sees an empty attachment
- * rather than a broken pointer. Closing it properly needs row locks on all eight write paths.
+ * rather than a broken pointer. Closing it properly needs row locks on all nine write paths.
  */
 export async function purgeUnreferencedFiles(
   db: Kysely<Models>,

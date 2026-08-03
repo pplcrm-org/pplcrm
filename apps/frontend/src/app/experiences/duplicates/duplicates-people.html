@@ -85,9 +85,12 @@
             <td></td>
           </tr>
           <tr>
-            <td class="text-xs text-base-content/50 uppercase tracking-wide">Ward</td>
-            <td>{{ left.ward || '—' }}</td>
-            <td>{{ right.ward || '—' }}</td>
+            <!-- Every boundary each address falls inside, not one ward column. Two people in the
+                 same ward but different ridings are not obviously the same person, so showing all
+                 of them is what makes this row useful for deciding a merge. -->
+            <td class="text-xs text-base-content/50 uppercase tracking-wide">Electoral boundaries</td>
+            <td>{{ left.any_electoral_area || '—' }}</td>
+            <td>{{ right.any_electoral_area || '—' }}</td>
             <td></td>
           </tr>
           <tr>

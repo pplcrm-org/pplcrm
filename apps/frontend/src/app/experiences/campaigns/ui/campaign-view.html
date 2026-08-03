@@ -128,8 +128,95 @@
       }
     </div>
 
-    <!-- Right: activity log -->
+    <!-- Right: the office, then the activity log -->
     <div class="lg:col-span-2 flex flex-col gap-6">
+      <!--
+        What this campaign is contesting, and where. Everything reads in the jurisdiction's own
+        words: an Alberta campaign says Constituency, an Ohio one says Congressional district.
+      -->
+      <div class="pc-panel p-5">
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <h3 class="pc-eyebrow" i18n>The office</h3>
+          @if (!isArchived()) {
+          <a [routerLink]="['/campaigns', id(), 'edit']" class="btn btn-ghost btn-xs gap-1">
+            <pc-icon name="pencil-square" [size]="3"></pc-icon>
+            <span i18n>Edit office</span>
+          </a>
+          }
+        </div>
+
+        @if (hasOffice()) {
+        <p class="text-sm font-medium text-base-content">{{ officeSummary() }}</p>
+
+        <dl class="mt-4 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+          <div class="flex flex-col">
+            <dt class="text-[11px] uppercase tracking-wide text-base-content/50" i18n>Level of government</dt>
+            <dd class="text-xs text-base-content/80">{{ spec().label }}</dd>
+          </div>
+
+          @if (officePlace()) {
+          <div class="flex flex-col">
+            <dt class="text-[11px] uppercase tracking-wide text-base-content/50" i18n>Where</dt>
+            <dd class="text-xs text-base-content/80">{{ officePlace() }}</dd>
+          </div>
+          } @if (chamberLabel()) {
+          <div class="flex flex-col">
+            <dt class="text-[11px] uppercase tracking-wide text-base-content/50" i18n>Chamber</dt>
+            <dd class="text-xs text-base-content/80">{{ chamberLabel() }}</dd>
+          </div>
+          } @if (!isAtLarge() && seatName()) {
+          <div class="flex flex-col">
+            <dt class="text-[11px] uppercase tracking-wide text-base-content/50">{{ seatWord() }}</dt>
+            <dd class="text-xs text-base-content/80">{{ seatName() }}</dd>
+          </div>
+          } @if (seatPosition()) {
+          <div class="flex flex-col">
+            <dt class="text-[11px] uppercase tracking-wide text-base-content/50" i18n>Seat</dt>
+            <dd class="text-xs text-base-content/80">{{ seatPosition() }}</dd>
+          </div>
+          } @if (officeTitle()) {
+          <div class="flex flex-col">
+            <dt class="text-[11px] uppercase tracking-wide text-base-content/50" i18n>Office holder is called</dt>
+            <dd class="text-xs text-base-content/80">{{ officeTitle() }}</dd>
+          </div>
+          }
+        </dl>
+        } @else {
+        <!-- Guide, don't error: no office recorded is a normal state, so this is an offer. -->
+        <p class="text-xs leading-relaxed text-base-content/70">
+          <ng-container i18n>
+            No office recorded yet. Tell this campaign its country, level of government and seat, and every screen
+            starts using your area's own word for it: riding, ward, constituency or congressional district.
+          </ng-container>
+          <a routerLink="/help/campaign-jurisdictions" class="link text-primary" i18n>How this works</a>.
+        </p>
+        @if (!isArchived()) {
+        <a [routerLink]="['/campaigns', id(), 'edit']" class="btn btn-outline btn-primary btn-sm mt-3 gap-1">
+          <pc-icon name="map-pin" [size]="4"></pc-icon>
+          <span i18n>Set the office</span>
+        </a>
+        } }
+
+        <!--
+          Receipting hint. It states what this office usually implies and links to the setting; it
+          never selects a regime, because which one a workspace may issue under depends on how the
+          organization is registered, not on which seat it contests.
+        -->
+        @if (receiptHint(); as hint) {
+        <div class="mt-4 flex items-start gap-2.5 border-t border-base-200 pt-3">
+          <pc-icon name="information-circle" [size]="4" class="mt-0.5 shrink-0 text-base-content/40"></pc-icon>
+          <p class="text-[11px] leading-relaxed text-base-content/65">
+            @if (hint.kind === 'suggested') {
+            <span class="font-medium text-base-content/80"
+              >{{ suggestedRegimeLabel() }} <ng-container i18n>is the usual fit.</ng-container></span
+            >
+            } {{ hint.message }}
+            <a routerLink="/workspace/donations" class="link text-primary" i18n>Donation settings</a>.
+          </p>
+        </div>
+        }
+      </div>
+
       <pc-record-activities [entity]="'campaigns'" [entityId]="id()"></pc-record-activities>
     </div>
   </div>

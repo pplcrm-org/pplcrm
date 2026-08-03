@@ -1,0 +1,683 @@
+<div class="space-y-5">
+  @if (!loaded()) {
+  <!-- First paint: skeletons, never the empty state (which would claim "no maps" before we know). -->
+  <div class="space-y-3">
+    <div class="skeleton h-4 w-2/3"></div>
+    <div class="skeleton h-24 w-full"></div>
+    <div class="skeleton h-24 w-full"></div>
+  </div>
+  } @else { @switch (mode()) {
+
+  <!-- ────────────────────────────── The list of maps ────────────────────────────── -->
+  @case ('list') {
+  <p class="text-xs leading-relaxed text-base-content/70">
+    A boundary map is one named set of areas drawn over your households: wards, ridings, districts, precincts, or your
+    own organizing areas. Every household holds its area in each map you add, so a federal riding and a city ward never
+    overwrite each other, and canvassing turfs can be cut along real lines.
+    <a routerLink="/help/district-boundaries" class="link text-primary">How boundary maps work</a>
+  </p>
+
+  <!-- The single most common wrong assumption on this page, answered before it is made. -->
+  <div class="flex items-start gap-2.5 rounded-lg border border-info/30 bg-info/10 px-3.5 py-2.5">
+    <pc-icon name="information-circle" [size]="5" class="mt-0.5 shrink-0 text-info"></pc-icon>
+    <p class="text-xs leading-relaxed text-base-content/80">
+      Adding a map, drawing on it, and re-matching your households all cost nothing and call no paid service. They only
+      re-read coordinates already stored on each household. The step that does cost money is geocoding, which turns a
+      brand-new address into coordinates.
+      <a routerLink="/help/geocoding-and-costs" class="link text-primary">What costs money</a>
+    </p>
+  </div>
+
+  @if (sets().length === 0) {
+  <pc-empty-state
+    icon="map"
+    title="No boundary map yet"
+    hint="Nothing is broken. A workspace starts with no map, and there are three ways to get one."
+  >
+    <div class="mt-2 grid w-full gap-4 text-left md:grid-cols-3">
+      <!-- 1. Import: cheapest, and most voter files already carry the columns. -->
+      <div class="pc-panel flex h-full flex-col gap-2 p-4">
+        <div class="flex items-center gap-2">
+          <pc-icon name="arrows-up-down-tray" [size]="5" class="text-primary"></pc-icon>
+          <span class="text-sm font-semibold">Import the names you have</span>
+        </div>
+        <p class="grow text-xs leading-relaxed text-base-content/70">
+          Quickest of the three, and free. If your household file already carries a ward, district or precinct column,
+          the import wizard writes those names straight onto each household. There is no file to find and no shape to
+          draw.
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <a routerLink="/imports/new" class="btn btn-outline btn-primary btn-sm">Go to import</a>
+          <a routerLink="/help/importing-districts" class="link text-xs text-primary">Which columns are read</a>
+        </div>
+      </div>
+
+      <!-- 2. Upload: a published file from a city, commission or elections body. -->
+      <div class="pc-panel flex h-full flex-col gap-2 p-4">
+        <div class="flex items-center gap-2">
+          <pc-icon name="arrow-up-tray" [size]="5" class="text-primary"></pc-icon>
+          <span class="text-sm font-semibold">Upload a published map</span>
+        </div>
+        <p class="grow text-xs leading-relaxed text-base-content/70">
+          A GeoJSON file from whoever publishes the boundaries: your city's open-data portal, a provincial commission,
+          an elections body. You say which property in the file holds each area's name, and we do the rest.
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="btn btn-outline btn-primary btn-sm"
+            [disabled]="!canEdit()"
+            (click)="startUpload()"
+          >
+            Upload GeoJSON
+          </button>
+        </div>
+      </div>
+
+      <!-- 3. Draw: the answer for the many municipalities that publish nothing usable. -->
+      <div class="pc-panel flex h-full flex-col gap-2 p-4">
+        <div class="flex items-center gap-2">
+          <pc-icon name="pencil-square" [size]="5" class="text-primary"></pc-icon>
+          <span class="text-sm font-semibold">Draw it yourself</span>
+        </div>
+        <p class="grow text-xs leading-relaxed text-base-content/70">
+          For the many places that publish nothing usable. Trace the areas on the map with your own household pins
+          showing underneath, so you draw around the doors you actually have.
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" class="btn btn-primary btn-sm" [disabled]="!canEdit()" (click)="startDrawNew()">
+            Draw a map
+          </button>
+          <a routerLink="/help/drawing-boundaries" class="link text-xs text-primary">How drawing works</a>
+        </div>
+      </div>
+    </div>
+  </pc-empty-state>
+
+  @if (!canEdit()) {
+  <p class="text-xs text-base-content/60">
+    Only an admin or the workspace owner can add or change a boundary map. You can see the maps this workspace holds.
+  </p>
+  } } @else {
+
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <p class="text-xs text-base-content/60">
+      {{ sets().length }} of {{ maxSetsPerWorkspace }} maps used in this workspace.
+    </p>
+    <div class="flex flex-wrap items-center gap-2">
+      <a routerLink="/imports/new" class="btn btn-outline btn-primary btn-sm">Import area names</a>
+      <button
+        type="button"
+        class="btn btn-outline btn-primary btn-sm"
+        [disabled]="rematching() || !canEdit()"
+        (click)="rematch(null)"
+      >
+        Re-match every map
+      </button>
+      <button
+        type="button"
+        class="btn btn-outline btn-primary btn-sm"
+        [disabled]="!canEdit() || atSetLimit()"
+        (click)="startUpload()"
+      >
+        Upload GeoJSON
+      </button>
+      <button
+        type="button"
+        class="btn btn-primary btn-sm"
+        [disabled]="!canEdit() || atSetLimit()"
+        (click)="startDrawNew()"
+      >
+        Draw a map
+      </button>
+    </div>
+  </div>
+
+  @if (atSetLimit()) {
+  <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
+    <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+    <p class="text-xs leading-relaxed text-base-content/80">
+      This workspace holds the maximum of {{ maxSetsPerWorkspace }} boundary maps. Delete one you no longer use before
+      adding another.
+    </p>
+  </div>
+  } @if (!canEdit()) {
+  <p class="text-xs text-base-content/60">Only an admin or the workspace owner can add or change a boundary map.</p>
+  }
+
+  <pc-table [columns]="6" [loading]="loading()">
+    <ng-container pcTableHead>
+      <th>Map</th>
+      <th>Covers</th>
+      <th>Where it came from</th>
+      <th class="text-right">Areas</th>
+      <th>Vintage</th>
+      <th class="w-10"></th>
+    </ng-container>
+
+    @for (set of sets(); track set.id) {
+    <tr>
+      <td>
+        @if (set.editable) {
+        <button type="button" class="link link-hover font-semibold text-primary" (click)="openMap(set)">
+          {{ set.label }}
+        </button>
+        } @else {
+        <span class="font-semibold">{{ set.label }}</span>
+        }
+        <div class="text-base-content/60">{{ scopeLabel(set) }}</div>
+      </td>
+      <td>{{ coversLabel(set) }}</td>
+      <td>
+        {{ sourceLabel(set) }} @if (!set.editable) {
+        <div class="text-base-content/60">Area names only, so there is no shape to open.</div>
+        }
+      </td>
+      <td class="text-right tabular-nums">{{ set.feature_count.toLocaleString() }}</td>
+      <td>{{ set.vintage || '—' }}</td>
+      <td class="text-right">
+        <pc-row-actions [label]="'Actions for ' + set.label">
+          @if (set.editable) {
+          <li><button type="button" (click)="openMap(set)">Open the map</button></li>
+          }
+          <li>
+            <button type="button" [disabled]="rematching() || !canEdit()" (click)="rematch(set.id)">
+              Re-match households
+            </button>
+          </li>
+          <li>
+            <button type="button" class="text-error" [disabled]="!canEdit()" (click)="deleteSet(set)">
+              Delete map
+            </button>
+          </li>
+        </pc-row-actions>
+      </td>
+    </tr>
+    }
+
+    <ng-container pcTableFooter>
+      <p class="px-3 py-2 text-xs text-base-content/60">
+        A map's areas are matched against every household that has coordinates. Households without coordinates are
+        matched once they get them.
+      </p>
+    </ng-container>
+  </pc-table>
+  } }
+
+  <!-- ────────────────────────────── Draw a new map ────────────────────────────── -->
+  @case ('draw-new') {
+  <div class="flex items-center gap-2">
+    <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="showList()">All maps</button>
+    <span class="text-xs text-base-content/60">Step 1 of 2: describe the map, then draw its areas.</span>
+  </div>
+
+  <!-- Said before anybody draws anything, not after, because it changes what people use it for. -->
+  <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
+    <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+    <p class="text-xs leading-relaxed text-base-content/80">
+      Areas you draw by hand are approximate. Neighbouring shapes will leave small gaps and overlaps unless you trace
+      carefully, so a drawn map is right for organizing canvassing work and wrong for anything legal, such as the
+      electoral district printed on a donation receipt. Use a published map for that.
+      <a routerLink="/help/drawing-boundaries" class="link text-primary">How drawing works</a>
+    </p>
+  </div>
+
+  <pc-card
+    title="New drawn map"
+    subtitle="It is created empty. You draw the areas on the next screen."
+    icon="pencil-square"
+  >
+    <div class="grid gap-4 md:grid-cols-2">
+      <pc-input label="Map name" placeholder="Ottawa wards 2022" [formField]="setForm.label"></pc-input>
+      <pc-input label="Vintage (optional)" placeholder="City of Ottawa 2022" [formField]="setForm.vintage"></pc-input>
+    </div>
+    <p class="-mt-2 text-xs text-base-content/60">
+      Vintage is which edition these boundaries are. Old and new maps live side by side, and this is what tells them
+      apart a year from now.
+    </p>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <pc-select label="Level of government" [formField]="setForm.jurisdiction">
+          @for (option of jurisdictionOptions; track option.id) {
+          <option [value]="option.id">{{ option.label }}</option>
+          }
+        </pc-select>
+        <p class="mt-1 pl-1 text-xs text-base-content/60">{{ setSpec().description }}</p>
+      </div>
+      <div>
+        <pc-select label="What these areas are" [formField]="setForm.role">
+          @for (option of roleOptions; track option.role) {
+          <option [value]="option.role">{{ option.label }}</option>
+          }
+        </pc-select>
+        <p class="mt-1 pl-1 text-xs text-base-content/60">
+          This is what the map means, and it is never taken from what the areas are called. A Toronto ward elects a
+          councillor and is a seat area; a Boston ward elects nobody and is a voting subdivision. Both are called ward.
+        </p>
+      </div>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      @if (setRegionOptions().length > 0) {
+      <pc-select label="Province or state it covers" placeholder="The whole country" [formField]="setForm.region">
+        @for (region of setRegionOptions(); track region.code) {
+        <option [value]="region.code">{{ region.name }}</option>
+        }
+      </pc-select>
+      } @if (setSpec().usesChamber) {
+      <pc-select label="Chamber" placeholder="Choose a chamber" [formField]="setForm.chamber">
+        @for (option of chamberOptions; track option.chamber) {
+        <option [value]="option.chamber">{{ option.label }}</option>
+        }
+      </pc-select>
+      }
+    </div>
+
+    <pc-textarea
+      label="Notes (optional)"
+      placeholder="Why this map exists and where its lines came from."
+      [rows]="2"
+      [formField]="setForm.description"
+    ></pc-textarea>
+
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="showList()">Cancel</button>
+      <button type="button" class="btn btn-primary btn-sm" [disabled]="saving()" (click)="createDrawnSet()">
+        @if (saving()) { <span class="loading loading-spinner loading-xs"></span> } Create map and start drawing
+      </button>
+    </div>
+  </pc-card>
+  }
+
+  <!-- ────────────────────────────── Upload a map ────────────────────────────── -->
+  @case ('upload') {
+  <div class="flex items-center gap-2">
+    <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="showList()">All maps</button>
+    <span class="text-xs text-base-content/60">Upload a GeoJSON file published by whoever draws the boundaries.</span>
+  </div>
+
+  <pc-card
+    title="Choose the file"
+    subtitle="GeoJSON only. Most open-data portals offer it directly."
+    icon="arrow-up-tray"
+  >
+    <div class="flex flex-wrap items-center gap-3">
+      <input
+        type="file"
+        accept=".geojson,.json,application/geo+json,application/json"
+        class="file-input file-input-bordered file-input-sm w-full max-w-sm"
+        aria-label="Choose a GeoJSON file"
+        (change)="chooseFile($event)"
+      />
+      @if (reading()) {
+      <span class="flex items-center gap-2 text-xs text-base-content/60">
+        <span class="loading loading-spinner loading-xs"></span> Reading the file
+      </span>
+      }
+    </div>
+
+    <p class="text-xs leading-relaxed text-base-content/60">
+      Limits for one map: {{ maxUploadLabel }} per file, {{ maxAreasPerSet }} areas, and {{ maxPointsPerArea }} points
+      in any one area. This workspace may hold {{ maxSetsPerWorkspace }} maps in total. If a file is past a limit, most
+      publishers also offer a simplified version of the same map. The original file is kept in your workspace storage so
+      a map can be re-read from its source.
+    </p>
+
+    @if (fileError(); as problem) {
+    <div class="flex items-start gap-2.5 rounded-lg border border-error/30 bg-error/10 px-3.5 py-2.5">
+      <pc-icon name="exclamation-circle" [size]="5" class="mt-0.5 shrink-0 text-error"></pc-icon>
+      <p class="text-xs leading-relaxed text-base-content/80">{{ problem }}</p>
+    </div>
+    } @if (inspection(); as found) {
+    <div class="flex items-start gap-2.5 rounded-lg border border-success/30 bg-success/10 px-3.5 py-2.5">
+      <pc-icon name="check-circle" [size]="5" class="mt-0.5 shrink-0 text-success"></pc-icon>
+      <p class="text-xs leading-relaxed text-base-content/80">
+        {{ found.areaCount.toLocaleString() }} areas found in {{ chosenFile()?.name }}. @if (found.skippedCount > 0) {
+        {{ found.skippedCount.toLocaleString() }} other shapes are points or lines, so they enclose no area and will be
+        left out. } The most detailed area has {{ found.maxVertices.toLocaleString() }} points.
+      </p>
+    </div>
+    }
+  </pc-card>
+
+  @if (inspection(); as found) {
+  <pc-card
+    title="Which property holds the area name"
+    subtitle="No two publishers agree, so pick the one whose sample values look like area names."
+    icon="table-cells"
+  >
+    <div class="grid gap-4 md:grid-cols-2">
+      <pc-select label="Name property" [formField]="uploadForm.nameProperty">
+        @for (property of propertyOptions(); track property.key) {
+        <option [value]="property.key">{{ property.key }}</option>
+        }
+      </pc-select>
+      <pc-select label="Code property (optional)" placeholder="No code" [formField]="uploadForm.codeProperty">
+        @for (property of propertyOptions(); track property.key) {
+        <option [value]="property.key">{{ property.key }}</option>
+        }
+      </pc-select>
+    </div>
+
+    @if (namePreview().length > 0) {
+    <p class="text-xs text-base-content/70">
+      Your areas will be named:
+      <span class="font-semibold">{{ namePreview().join(', ') }}</span>
+      @if (found.areaCount > namePreview().length) { and {{ (found.areaCount - namePreview().length).toLocaleString() }}
+      more. }
+    </p>
+    } @else {
+    <p class="text-xs text-warning">
+      That property has no text values in the areas we sampled, so every area would be named "Area 1", "Area 2" and so
+      on. Try another property.
+    </p>
+    }
+  </pc-card>
+
+  <pc-card
+    title="Describe the map"
+    subtitle="What it covers, so the right campaigns are matched against it."
+    icon="map"
+  >
+    <div class="grid gap-4 md:grid-cols-2">
+      <pc-input
+        label="Map name"
+        placeholder="Congressional districts (119th Congress)"
+        [formField]="setForm.label"
+      ></pc-input>
+      <pc-input
+        label="Vintage (optional)"
+        placeholder="2023 representation order"
+        [formField]="setForm.vintage"
+      ></pc-input>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <pc-select label="Level of government" [formField]="setForm.jurisdiction">
+          @for (option of jurisdictionOptions; track option.id) {
+          <option [value]="option.id">{{ option.label }}</option>
+          }
+        </pc-select>
+        <p class="mt-1 pl-1 text-xs text-base-content/60">{{ setSpec().description }}</p>
+      </div>
+      <pc-select label="What these areas are" [formField]="setForm.role">
+        @for (option of roleOptions; track option.role) {
+        <option [value]="option.role">{{ option.label }}</option>
+        }
+      </pc-select>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      @if (setRegionOptions().length > 0) {
+      <pc-select label="Province or state it covers" placeholder="The whole country" [formField]="setForm.region">
+        @for (region of setRegionOptions(); track region.code) {
+        <option [value]="region.code">{{ region.name }}</option>
+        }
+      </pc-select>
+      } @if (setSpec().usesChamber) {
+      <pc-select label="Chamber" placeholder="Choose a chamber" [formField]="setForm.chamber">
+        @for (option of chamberOptions; track option.chamber) {
+        <option [value]="option.chamber">{{ option.label }}</option>
+        }
+      </pc-select>
+      }
+    </div>
+
+    <div class="flex justify-end gap-2">
+      <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="showList()">Cancel</button>
+      <button type="button" class="btn btn-primary btn-sm" [disabled]="saving()" (click)="uploadSet()">
+        @if (saving()) { <span class="loading loading-spinner loading-xs"></span> } Add this map
+      </button>
+    </div>
+  </pc-card>
+  } }
+
+  <!-- ────────────────────────────── One map, with its areas ────────────────────────────── -->
+  @case ('map') { @if (activeSet(); as set) {
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="flex flex-wrap items-center gap-2">
+      <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="showList()">All maps</button>
+      <span class="text-sm font-semibold">{{ set.label }}</span>
+      <span class="badge badge-sm badge-neutral">{{ coversLabel(set) }}</span>
+      <span class="badge badge-sm badge-ghost">{{ sourceLabel(set) }}</span>
+    </div>
+    <p class="text-xs text-base-content/60">{{ scopeLabel(set) }}</p>
+  </div>
+
+  @if (set.source === 'drawn') {
+  <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
+    <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+    <p class="text-xs leading-relaxed text-base-content/80">
+      Hand-drawn areas are approximate. They are right for organizing canvassing work and wrong for anything legal, such
+      as the electoral district printed on a donation receipt.
+      <a routerLink="/help/drawing-boundaries" class="link text-primary">How drawing works</a>
+    </p>
+  </div>
+  }
+
+  <div class="grid gap-4 lg:grid-cols-3">
+    <!-- The map itself -->
+    <div class="space-y-2 lg:col-span-2">
+      <div class="flex flex-wrap items-center gap-2">
+        @if (!drawing()) {
+        <button type="button" class="btn btn-primary btn-sm" [disabled]="!canEdit()" (click)="toggleDrawing()">
+          Edit map
+        </button>
+        } @else {
+        <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="toggleDrawing()">Done editing</button>
+        @if (canFinishShape()) {
+        <button type="button" class="btn btn-primary btn-sm" (click)="finishShape()">Finish shape</button>
+        } @if (draftVertexCount() > 0) {
+        <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="undoVertex()">Undo last point</button>
+        <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="cancelShape()">Cancel shape</button>
+        } }
+        <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="fitMap()">
+          Fit map to everything
+        </button>
+      </div>
+
+      @if (drawing()) {
+      <p class="text-xs leading-relaxed text-base-content/70">
+        @if (draftVertexCount() === 0) { Click on the map to place the corners of an area. Points near a corner of an
+        area you already drew snap onto it, which is how two areas come to share an edge. Drag a corner of a saved area
+        to reshape it, right-click a corner to remove it, and right-click inside an area to delete it. } @else { {{
+        draftVertexCount() }} points placed. Click the first point again, press Enter, or press Finish shape. Escape
+        starts the shape over. @if (!canFinishShape()) { An area needs at least three corners. } }
+      </p>
+      } @if (savingShape()) {
+      <p class="flex items-center gap-2 text-xs text-base-content/70">
+        <span class="loading loading-spinner loading-xs"></span> Saving the new shape
+      </p>
+      }
+
+      <!-- center/zoom are non-null only while there is nothing to frame, so an empty workspace
+           opens on its own country instead of the map component's lat 0 / lng 0 ocean fallback. -->
+      <pc-map
+        class="block h-[30rem] w-full rounded-lg"
+        ariaLabel="Boundary map"
+        [markers]="mapMarkers()"
+        [polygons]="mapPolygons()"
+        [drawingEnabled]="drawing()"
+        [selectedPolygonId]="selectedPolygonId()"
+        [fitBounds]="autoFit()"
+        [center]="emptyMapCenter()"
+        [zoom]="emptyMapZoom()"
+        (polygonDrawn)="onPolygonDrawn($event)"
+        (polygonEdited)="onPolygonEdited($event)"
+        (polygonDeleted)="onPolygonDeleted($event)"
+        (polygonSelected)="onPolygonSelected($event)"
+      ></pc-map>
+
+      <p class="text-xs text-base-content/60">
+        @if (!pinsLoaded()) { Loading your household pins. } @else if (pinsTotal() === 0) { No household has coordinates
+        yet, so there are no pins to draw around. Households get coordinates from geocoding after an address is added or
+        imported. @if (drawing()) { Zoom to your area, then click to place corners. } } @else if (pinsCapped()) {
+        Showing {{ pinsShown().toLocaleString() }} of {{ pinsTotal().toLocaleString() }} located households as pins. The
+        rest are still matched; they are just not all drawn. } @else { {{ pinsShown().toLocaleString() }} located
+        households shown as pins. }
+      </p>
+    </div>
+
+    <!-- The panel: name a new shape, edit the selected area, or list the areas -->
+    <div class="space-y-3">
+      @if (pendingPath()) {
+      <div class="pc-panel space-y-3 p-4">
+        <div class="flex items-center gap-2">
+          <pc-icon name="pencil-square" [size]="5" class="text-primary"></pc-icon>
+          <span class="text-sm font-semibold">Name this area</span>
+        </div>
+        <p class="text-xs leading-relaxed text-base-content/70">
+          The shape is drawn but not saved yet. Give it the name your organizers will recognize.
+        </p>
+        <pc-input label="Area name" placeholder="Ward 12" [formField]="areaForm.name"></pc-input>
+        <pc-input label="Code (optional)" placeholder="12" [formField]="areaForm.code"></pc-input>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="discardPendingShape()">
+            Discard shape
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" [disabled]="saving()" (click)="savePendingShape()">
+            Save area
+          </button>
+        </div>
+      </div>
+      } @else if (selectedFeature(); as feature) {
+      <div class="pc-panel space-y-3 p-4">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-semibold">{{ feature.name }}</span>
+          <button
+            type="button"
+            class="btn btn-ghost btn-xs btn-circle"
+            aria-label="Clear selection"
+            (click)="clearSelection()"
+          >
+            <pc-icon name="x-mark" [size]="4"></pc-icon>
+          </button>
+        </div>
+        <pc-input label="Area name" [formField]="areaForm.name"></pc-input>
+        <pc-input label="Code (optional)" [formField]="areaForm.code"></pc-input>
+        <p class="text-xs leading-relaxed text-base-content/70">
+          @if (tooDetailedToReshape(feature)) { This area has {{ featurePointCount(feature).toLocaleString() }} points,
+          too detailed to reshape here. Replace it by uploading a corrected file. Renaming and deleting still work. }
+          @else if (isMultiPart(feature)) { This area is drawn in more than one piece. Drag any piece's corners on the
+          map to reshape it. } @else if (drawing()) { Drag its corners on the map to reshape it. Changes save on their
+          own a moment after you stop. } @else { Turn on Edit map to reshape this area on the map. }
+        </p>
+        <div class="flex justify-end gap-2">
+          <button
+            type="button"
+            class="btn btn-outline btn-error btn-sm"
+            [disabled]="!canEdit()"
+            (click)="deleteSelected()"
+          >
+            Delete area
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary btn-sm"
+            [disabled]="saving() || !canEdit()"
+            (click)="renameSelected()"
+          >
+            Save name
+          </button>
+        </div>
+      </div>
+      }
+
+      <div class="pc-panel p-4">
+        <div class="flex items-center justify-between gap-2 pb-2">
+          <span class="text-sm font-semibold">Areas in this map</span>
+          <span class="text-xs text-base-content/60">{{ features().length.toLocaleString() }}</span>
+        </div>
+        @if (!featuresLoaded()) {
+        <div class="space-y-2">
+          <div class="skeleton h-5 w-full"></div>
+          <div class="skeleton h-5 w-full"></div>
+          <div class="skeleton h-5 w-2/3"></div>
+        </div>
+        } @else if (features().length === 0) {
+        <p class="text-xs leading-relaxed text-base-content/70">
+          This map has no areas yet. Press Edit map, then click on the map to trace your first one.
+        </p>
+        } @else {
+        <ul class="max-h-72 space-y-1 overflow-y-auto">
+          @for (feature of features(); track feature.id) {
+          <li>
+            <button
+              type="button"
+              class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-base-200/60"
+              [class.text-primary]="feature.id === selectedFeatureId()"
+              [class.font-semibold]="feature.id === selectedFeatureId()"
+              (click)="selectFeature(feature.id)"
+            >
+              <span class="truncate">{{ feature.name }}</span>
+              @if (feature.code) {
+              <span class="shrink-0 text-base-content/50">{{ feature.code }}</span>
+              }
+            </button>
+          </li>
+          }
+        </ul>
+        }
+      </div>
+    </div>
+  </div>
+
+  <!-- The two honest quality numbers, refreshed after every save. Free to compute. -->
+  <pc-card
+    title="How well this map fits your households"
+    subtitle="Recalculated after every change. It calls no paid service."
+    icon="check-circle"
+  >
+    @if (validating() && !validation()) {
+    <div class="skeleton h-16 w-full"></div>
+    } @else if (validationSummary(); as summary) {
+    <div class="grid gap-3 sm:grid-cols-3">
+      <div class="pc-panel p-3">
+        <div class="pc-eyebrow">In no area</div>
+        <div class="text-lg font-semibold tabular-nums" [class.text-warning]="(validation()?.unmatched ?? 0) > 0">
+          {{ (validation()?.unmatched ?? 0).toLocaleString() }}
+        </div>
+        <p class="text-xs text-base-content/60">A gap between shapes, or a household outside the map.</p>
+      </div>
+      <div class="pc-panel p-3">
+        <div class="pc-eyebrow">In more than one area</div>
+        <div
+          class="text-lg font-semibold tabular-nums"
+          [class.text-warning]="(validation()?.multiply_matched ?? 0) > 0"
+        >
+          {{ (validation()?.multiply_matched ?? 0).toLocaleString() }}
+        </div>
+        <p class="text-xs text-base-content/60">Two shapes overlap. The match stays the same on every run.</p>
+      </div>
+      <div class="pc-panel p-3">
+        <div class="pc-eyebrow">Households checked</div>
+        <div class="text-lg font-semibold tabular-nums">{{ (validation()?.examined ?? 0).toLocaleString() }}</div>
+        <p class="text-xs text-base-content/60">
+          @if (validation()?.capped) { Stopped early, out of {{ (validation()?.total_geocoded ?? 0).toLocaleString() }}
+          located households. } @else { Every household that has coordinates. }
+        </p>
+      </div>
+    </div>
+    <p class="text-xs leading-relaxed text-base-content/70">{{ summary }}</p>
+    } @else {
+    <p class="text-xs text-base-content/70">Nothing checked yet.</p>
+    }
+
+    <div class="flex flex-wrap justify-end gap-2">
+      <button
+        type="button"
+        class="btn btn-outline btn-primary btn-sm"
+        [disabled]="rematching() || !canEdit()"
+        (click)="rematch(set.id)"
+      >
+        Re-match households
+      </button>
+      <button type="button" class="btn btn-outline btn-primary btn-sm" [disabled]="validating()" (click)="recheck()">
+        Check again
+      </button>
+    </div>
+  </pc-card>
+  } } } }
+</div>

@@ -35,6 +35,12 @@ apps/
           2026-08-01-z-companion-op-result.ts
           2026-08-01-zz-tenants-inbox-purge-scheduled-at.ts
           2026-08-01-zzz-donation-receipts.ts
+          2026-08-02-a-campaign-jurisdiction.ts
+          2026-08-02-b-boundary-sets.ts
+          2026-08-02-c-geocode-cost-control.ts
+          2026-08-02-d-turf-boundaries.ts
+          2026-08-02-e-drop-legacy-geography.ts
+          2026-08-02-f-boundary-match-convergence.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -43,14 +49,21 @@ apps/
           to-trpc-errors.ts
         lib/
           gis/
-            boundaries.geojson
+            boundary-data/
+              README.md
+            boundary-jobs.ts
+            boundary-match.ts
+            boundary-store.ts
             geocode-address.ts
+            geocode-cache.ts
             geocode-queue.ts
             geocoding.ts
+            point-in-polygon.ts
           jobs/
             handlers/
               automation-mail.handlers.ts
               billing.handlers.ts
+              boundaries.handlers.ts
               deletions.handlers.ts
               demo.handlers.ts
               export.handlers.ts
@@ -176,6 +189,12 @@ apps/
             subscription-sync.ts
             trpc.router.ts
             usage-limits.ts
+          boundaries/
+            repositories/
+              boundary-features.repo.ts
+              boundary-sets.repo.ts
+            controller.ts
+            trpc.router.ts
           bug-reports/
             repositories/
               bug-reports.repo.ts
@@ -191,6 +210,7 @@ apps/
           canvassing/
             lib/
               cutting-engine.ts
+              turf-boundary.ts
             repositories/
               turf-assignments.repo.ts
               turf-households.repo.ts
@@ -319,6 +339,8 @@ apps/
             routes/
               households.schema.ts
             controller.ts
+            electoral-areas.ts
+            electoral-import-schema.ts
             trpc.router.ts
           imports/
             repositories/

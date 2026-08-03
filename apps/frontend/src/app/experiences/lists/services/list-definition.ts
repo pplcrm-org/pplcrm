@@ -1,5 +1,5 @@
 import type { QueryBuilderGroupNode, QueryBuilderNode } from '../../../../../../../libs/common/src';
-import { RULE_FIELD_CHOICES, ruleFieldLabel, ruleValueLabel } from './list-rule-fields';
+import { ruleFieldLabel, ruleOpUsesSetWording, ruleValueLabel } from './list-rule-fields';
 
 /**
  * Render a list's stored rule `definition` as the human "DEFINITION" sentence
@@ -44,13 +44,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function opLabel(field: string, op: string): string {
-  if (RULE_FIELD_CHOICES[field] && CHOICE_OP_LABELS[op]) return CHOICE_OP_LABELS[op];
+  if (ruleOpUsesSetWording(field) && CHOICE_OP_LABELS[op]) return CHOICE_OP_LABELS[op];
   return OP_LABELS[op] ?? op;
 }
 
-function describeNode(node: QueryBuilderNode): string {
+function describeNode(node: QueryBuilderNode, seatLabel: string | null): string {
   if (node.kind === 'rule') {
-    const label = ruleFieldLabel(node.field);
+    const label = ruleFieldLabel(node.field, seatLabel);
     const op = opLabel(node.field, node.op);
     if (VALUELESS_OPS.has(node.op)) return `${label} ${op}`;
     // Enum values are shown the way the picker showed them, not raw
@@ -58,13 +58,13 @@ function describeNode(node: QueryBuilderNode): string {
     const value = node.value == null || String(node.value).trim() === '' ? '…' : ruleValueLabel(node.field, node.value);
     return `${label} ${op} '${value}'`;
   }
-  return describeGroup(node);
+  return describeGroup(node, seatLabel);
 }
 
-function describeGroup(group: QueryBuilderGroupNode): string {
+function describeGroup(group: QueryBuilderGroupNode, seatLabel: string | null): string {
   if (!group.rules?.length) return 'Everyone';
   const joiner = group.conjunction === 'OR' ? ' or ' : ' and ';
-  const parts = group.rules.map(describeNode);
+  const parts = group.rules.map((rule) => describeNode(rule, seatLabel));
   return parts.join(joiner);
 }
 
@@ -75,11 +75,17 @@ function asGroup(value: unknown): QueryBuilderGroupNode | null {
   return { kind: 'group', id: String(value['id'] ?? 'root'), conjunction, rules: value['rules'] as QueryBuilderNode[] };
 }
 
-/** Human sentence for a list's rule definition; `null` inputs read as hand-picked. */
-export function describeListDefinition(definition: unknown): string {
+/**
+ * Human sentence for a list's rule definition; `null` inputs read as hand-picked.
+ *
+ * `seatLabel` is the active campaign's word for the seat it contests (Ward, Riding, Congressional
+ * district). Pass it so a rule on the single-valued electoral field reads in the same words the
+ * rule builder offered. Omitting it falls back to the neutral "Electoral area".
+ */
+export function describeListDefinition(definition: unknown, seatLabel: string | null = null): string {
   if (!isRecord(definition)) return 'Hand-picked members';
   const group = asGroup(definition['advancedFilterModel']);
   if (!group) return 'Hand-picked members';
   if (!group.rules.length) return 'Everyone';
-  return describeGroup(group);
+  return describeGroup(group, seatLabel);
 }

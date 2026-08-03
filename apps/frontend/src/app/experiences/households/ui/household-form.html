@@ -89,8 +89,8 @@
                 [disabled]="isLoading() || (household()?.is_placeholder ?? false)"
               ></pc-address-autocomplete>
               <p class="pl-1 text-xs leading-snug text-base-content/55">
-                Picking a suggestion fills every field below and geocodes the household. Ward, district and precinct
-                update automatically.
+                Picking a suggestion fills every field below and geocodes the household. Every electoral boundary the
+                address falls inside is then rematched automatically.
                 <span class="text-base-content/35">Powered by Google.</span>
               </p>
             </div>
@@ -125,7 +125,8 @@
         </fieldset>
       </form>
 
-      <!-- Overview rail: first seen · members · geocode status · ward/district/precinct (§6) -->
+      <!-- Overview rail: first seen · members · geocode status · the list of electoral boundaries
+           this address falls inside, one row per map (§6) -->
       <div class="flex flex-col gap-6">
         @if (!isNewMode() && household(); as h) {
         <pc-card>
@@ -148,24 +149,38 @@
             </div>
           </dl>
 
-          <dl class="flex flex-col gap-2 border-t border-base-200 pt-3 text-sm">
-            <div class="flex items-center justify-between">
-              <dt class="text-base-content/60">Ward</dt>
-              <dd class="font-medium tabular-nums">{{ h.ward || '—' }}</dd>
-            </div>
-            <div class="flex items-center justify-between">
-              <dt class="text-base-content/60">District</dt>
-              <dd class="font-medium tabular-nums">{{ h.district || '—' }}</dd>
-            </div>
-            <div class="flex items-center justify-between">
-              <dt class="text-base-content/60">Precinct</dt>
-              <dd class="font-medium tabular-nums">{{ h.precinct || '—' }}</dd>
-            </div>
-          </dl>
+          <!-- Electoral boundaries: one row per map this address falls inside, not three fixed
+               slots. An address is normally inside several at once (a riding, a ward, a precinct),
+               and the old three-column layout could only ever hold three of them. -->
+          <div class="border-t border-base-200 pt-3">
+            <h4 class="pc-eyebrow mb-2">Electoral boundaries</h4>
 
-          <p class="border-t border-base-200 pt-3 text-xs leading-snug text-base-content/45">
-            Electoral boundaries come from the geocoder. They refresh in the background after save.
-          </p>
+            @if (electoralAreas().length) {
+            <p class="mb-2 text-xs leading-snug text-base-content/55">
+              This address is inside {{ electoralAreas().length }} {{ electoralAreas().length === 1 ? 'boundary' :
+              'boundaries' }}. Every map your workspace holds is listed, so one address can appear on several at once.
+            </p>
+            <dl class="flex flex-col gap-2 text-sm">
+              @for (area of electoralAreas(); track area.setLabel + '/' + area.name) {
+              <div class="flex items-start justify-between gap-4">
+                <dt class="text-base-content/60">{{ area.setLabel || 'Boundary' }}</dt>
+                <dd class="text-right font-medium">{{ area.name }}</dd>
+              </div>
+              }
+            </dl>
+            } @else {
+            <p class="text-xs leading-snug text-base-content/55">
+              No boundaries recorded for this address yet. Boundaries are matched from the address coordinates, and your
+              workspace needs a map before there is anything to match against.
+            </p>
+            }
+
+            <p class="mt-3 text-xs leading-snug text-base-content/45">
+              Boundaries can be imported from a spreadsheet, uploaded as a map file, or drawn by hand; they are also
+              matched automatically once an address has coordinates. Matching runs in the background after you save.
+              <a class="link link-primary" [routerLink]="['/help', 'district-boundaries']">How to get a boundary map</a>
+            </p>
+          </div>
         </pc-card>
         }
       </div>

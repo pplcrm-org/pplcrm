@@ -45,7 +45,7 @@ type TurfStatus = TurfListItem['status'];
 type Tab = 'turfs' | 'report';
 type ReportRange = FieldReportRangeType['range'];
 type CoverageStatus = Coverage['doors'][number]['status'];
-type CoverageView = 'map' | 'ward';
+type CoverageView = 'map' | 'boundary';
 
 /** Door-dot colours on the coverage map: talked → knocked-no-answer → not yet. */
 /** Names shown inline on a turf row before the rest collapse into a "+N" count. */
@@ -68,7 +68,7 @@ const GETTING_STARTED: { title: string; detail: string }[] = [
   {
     title: 'Cut turfs from a list',
     detail:
-      'Pick a list of people or households. Their addresses are split into batches of roughly 40 doors that sit next to each other, and no turf crosses a ward boundary.',
+      'Pick a list of people or households. Their addresses are split into batches of roughly 40 doors that sit next to each other, and no turf crosses a boundary line on the map your campaign uses.',
   },
   {
     title: 'Add canvassers',
@@ -80,6 +80,14 @@ const GETTING_STARTED: { title: string; detail: string }[] = [
     detail: 'Every door they log updates the person, the household and this page while they walk.',
   },
 ];
+
+/**
+ * Lower-case only the first letter. Boundary labels arrive sentence-case ("Polling division",
+ * "Election district"), which is right at the start of a heading and wrong mid-sentence.
+ */
+function lowerFirst(label: string): string {
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
 
 const RANGES: { key: ReportRange; label: string }[] = [
   { key: 'today', label: 'Today' },
@@ -194,7 +202,7 @@ export class CanvassingPage implements OnInit {
   protected readonly todayTotal = computed<number>(() => this.todaySegments().reduce((n, s) => n + s.value, 0));
 
   /**
-   * Tinted turf-centroid markers over the ward map (§13.1 turf map strip).
+   * Tinted turf-centroid markers over the turf map (§13.1 turf map strip).
    * Each turf's stored centroid is pinned and tinted by its live status. (Filled
    * polygons per turf need the door hull — a follow-up; centroids read honestly.)
    */
@@ -269,6 +277,30 @@ export class CanvassingPage implements OnInit {
       variant: COVERAGE_VARIANT[d.status],
     }));
   });
+
+  /**
+   * The campaign's own word for one of the areas turfs are cut inside — 'Polling division',
+   * 'Precinct', 'Ward', 'Riding'. The server resolves it, because the right word depends on the
+   * campaign's declared jurisdiction and region. Nothing on this page hard-codes one; 'Area' is
+   * only the stand-in shown before the coverage payload has arrived.
+   */
+  protected readonly boundaryLabel = computed<string>(() => this.coverage()?.boundary_label ?? 'Area');
+
+  protected readonly boundaryLabelPlural = computed<string>(() => this.coverage()?.boundary_label_plural ?? 'Areas');
+
+  /** The roll-up tab's label: "By polling division", "By ward". */
+  protected readonly coverageByLabel = computed<string>(() => `By ${lowerFirst(this.boundaryLabel())}`);
+
+  /**
+   * The sentence under the roll-up. It names where the areas come from, and explains the row that
+   * holds every unbounded turf's doors without claiming those doors are somewhere they are not.
+   */
+  protected readonly coverageTableNote = computed<string>(
+    () =>
+      `${this.boundaryLabelPlural()} come from the boundary map this campaign uses. ` +
+      'The "Unbounded" row holds doors in turfs with no area of their own: the turf was cut with no map, or its ' +
+      'doors fell outside every area of it. Closeness was the only thing that placed those doors.',
+  );
 
   /** Dashed turf boundaries (convex hull of each turf's doors). */
   protected readonly coveragePolygons = computed<PcMapPolygon[]>(() => {
@@ -348,9 +380,10 @@ export class CanvassingPage implements OnInit {
 
   protected async refresh(t: TurfListItem): Promise<void> {
     if (!t.list_name) return;
+    const mapMissing = t.boundary_name != null && t.boundary_set_id == null;
     const ok = await this.dialog.confirm({
       title: `Re-read "${t.list_name}"?`,
-      message: refreshFromListExplainer(t.list_name),
+      message: refreshFromListExplainer(t.list_name, mapMissing),
       confirmText: 'Refresh doors',
     });
     if (!ok) return;

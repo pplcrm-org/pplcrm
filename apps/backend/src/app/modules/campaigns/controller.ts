@@ -5,11 +5,14 @@ import type {
   CarryOverCampaignType,
   IAuthKeyPayload,
   SetCampaignSubscriptionType,
+  UpdateCampaignType,
   UpsertCampaignPersonFactType,
 } from '../../../../../../libs/common/src';
+import { UpdateCampaignObj, isJurisdictionId } from '../../../../../../libs/common/src';
 
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
+import { enqueueBoundaryMatch } from '../../lib/gis/boundary-jobs';
 import { logger } from '../../logger';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
 import { DeliveriesController } from '../deliveries/controller';
@@ -19,6 +22,48 @@ import { CampaignPersonFactsRepo } from './repositories/campaign-person-facts.re
 import { CampaignSubscriptionsRepo } from './repositories/campaign-subscriptions.repo';
 import { CampaignsRepo } from './repositories/campaigns.repo';
 import type { OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
+
+/**
+ * The nine columns describing which office a campaign is contesting. Listed once so the insert,
+ * the update check and the context payload cannot fall out of step with each other.
+ */
+const OFFICE_FIELDS = [
+  'jurisdiction',
+  'office_region',
+  'office_locality',
+  'chamber',
+  'seat_type',
+  'seat_name',
+  'seat_position',
+  'seat_label_override',
+  'office_title',
+] as const;
+
+/**
+ * The office columns that decide which boundary layers the workspace's households must be matched
+ * against (`requiredSetIdsForTenant` reads exactly these three). A save that changes one of them
+ * queues a boundary re-match instead of leaving the gap to the nightly sweep.
+ */
+const BOUNDARY_MATCH_FIELDS = ['jurisdiction', 'office_region', 'chamber'] as const;
+
+/**
+ * The office columns for an insert. `AddCampaignObj` defaults `jurisdiction` and `seat_type`, so
+ * those two always arrive; the rest are normalized from absent to NULL so the row states plainly
+ * that there is no answer rather than leaving the column to a default.
+ */
+function officeColumnsFrom(input: AddCampaignType) {
+  return {
+    jurisdiction: input.jurisdiction,
+    office_region: input.office_region ?? null,
+    office_locality: input.office_locality ?? null,
+    chamber: input.chamber ?? null,
+    seat_type: input.seat_type,
+    seat_name: input.seat_name ?? null,
+    seat_position: input.seat_position ?? null,
+    seat_label_override: input.seat_label_override ?? null,
+    office_title: input.office_title ?? null,
+  };
+}
 
 /**
  * Campaigns §15 — contexts. A tenant always has exactly one permanent 'office'
@@ -117,8 +162,72 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       status: 'active',
       startdate: input.startdate ?? null,
       enddate: input.enddate ?? null,
+      ...officeColumnsFrom(input),
     } as OperationDataType<'campaigns', 'insert'>;
-    return this.add(row);
+    const created = await this.add(row);
+    // A new campaign's office can require boundary layers the workspace's households were never
+    // matched against, so queue a catch-up pass for the unmatched ones now rather than waiting up
+    // to a day for the nightly sweep. The write above holds no transaction, so this runs right
+    // after it; `enqueueBoundaryMatch` coalesces duplicates. Best-effort — a lost enqueue is
+    // exactly what the nightly sweep exists to cover.
+    try {
+      await enqueueBoundaryMatch(this.getRepo().db, auth.tenant_id, null, 'unmatched');
+    } catch (e) {
+      logger.error({ err: e }, 'Failed to enqueue boundary match after campaign create');
+    }
+    return created;
+  }
+
+  /**
+   * Edit a campaign, including which office it is contesting.
+   *
+   * The office block is validated against the row as it will be AFTER the edit, not against the
+   * fields the caller happened to send. `UpdateCampaignObj` skips its cross-field rules whenever
+   * `jurisdiction` is absent, which is what lets someone rename a campaign without restating its
+   * whole office — but it also means a partial edit could otherwise leave a contradiction behind,
+   * such as switching a Toronto ward campaign to an at-large mayoral race while its ward name
+   * stays on the row. Merging first and re-parsing catches that.
+   */
+  public async updateCampaign(id: string, input: UpdateCampaignType, auth: IAuthKeyPayload) {
+    const existing = await this.getCampaignOrThrow(auth.tenant_id, id);
+    const touchesOffice = OFFICE_FIELDS.some((field) => input[field] !== undefined);
+
+    if (touchesOffice) {
+      const merged: Record<string, unknown> = {};
+      for (const field of OFFICE_FIELDS) {
+        merged[field] = input[field] !== undefined ? input[field] : existing[field];
+      }
+      // Force the rules to run: with `jurisdiction` present, UpdateCampaignObj checks the whole
+      // block. Without it, it checks nothing.
+      merged['jurisdiction'] = isJurisdictionId(merged['jurisdiction']) ? merged['jurisdiction'] : 'other';
+
+      const check = UpdateCampaignObj.safeParse(merged);
+      if (!check.success) {
+        const first = check.error.issues[0];
+        throw new BadRequestError(first?.message ?? 'This office does not describe a valid seat.');
+      }
+    }
+
+    const updated = await this.update({
+      tenant_id: auth.tenant_id,
+      id,
+      row: { ...input, updatedby_id: auth.user_id } as OperationDataType<'campaigns', 'update'>,
+    });
+
+    // A change to the layer-deciding columns (see BOUNDARY_MATCH_FIELDS) can leave households
+    // unmatched against a newly required boundary set. Same enqueue as addCampaign: right after
+    // the untransacted write, coalesced, best-effort.
+    const officeMoved = BOUNDARY_MATCH_FIELDS.some(
+      (field) => input[field] !== undefined && (input[field] ?? null) !== (existing[field] ?? null),
+    );
+    if (officeMoved) {
+      try {
+        await enqueueBoundaryMatch(this.getRepo().db, auth.tenant_id, null, 'unmatched');
+      } catch (e) {
+        logger.error({ err: e }, 'Failed to enqueue boundary match after campaign office change');
+      }
+    }
+    return updated;
   }
 
   public async archive(id: string, auth: IAuthKeyPayload) {
@@ -367,6 +476,15 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
     throw new BadRequestError('Campaigns cannot be deleted. Archive them instead.');
   }
 
+  /**
+   * One campaign as the frontend's context payload carries it.
+   *
+   * The office columns travel with it because the frontend resolves every geography word it shows
+   * from them — the households grid header, the canvassing coverage tab, the turf-cutting copy —
+   * through `seatLabelFor` / `subdivisionLabelFor`. Those resolvers need the jurisdiction, the
+   * region and the campaign's own override, so all three have to be here or nothing can be
+   * labelled without another round trip.
+   */
   private toContextItem(c: Awaited<ReturnType<CampaignsRepo['getSwitcherList']>>[number]) {
     return {
       id: String(c.id),
@@ -375,6 +493,15 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       status: c.status,
       startdate: c.startdate,
       enddate: c.enddate,
+      jurisdiction: c.jurisdiction,
+      office_region: c.office_region,
+      office_locality: c.office_locality,
+      chamber: c.chamber,
+      seat_type: c.seat_type,
+      seat_name: c.seat_name,
+      seat_position: c.seat_position,
+      seat_label_override: c.seat_label_override,
+      office_title: c.office_title,
     };
   }
 

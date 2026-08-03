@@ -103,7 +103,8 @@ import { GeoPosition } from './geo-position';
           </button>
         } @else if (position.state() === 'denied') {
           <p class="text-xs text-base-content/60">
-            Location is off, so turfs are listed by ward. Turn it on in your browser settings to sort by distance.
+            Location is off, so turfs are listed by {{ fallbackOrderLabel(c) }}. Turn it on in your browser settings to
+            sort by distance.
           </p>
         }
 
@@ -177,7 +178,7 @@ export class CanvassTurfPicker {
   }
 
   /**
-   * Distance first when the phone has a fix, otherwise ward then name — and the
+   * Distance first when the phone has a fix, otherwise area then name — and the
    * template says which of the two is in effect rather than leaving the order a mystery.
    */
   protected sorted(list: readonly CompanionTurfChoice[]): CompanionTurfChoice[] {
@@ -186,7 +187,22 @@ export class CanvassTurfPicker {
     if (here) {
       return out.sort((a, b) => (this.distanceKm(a) ?? Infinity) - (this.distanceKm(b) ?? Infinity));
     }
-    return out.sort((a, b) => (a.ward ?? '').localeCompare(b.ward ?? '') || a.name.localeCompare(b.name));
+    return out.sort(
+      (a, b) => (a.boundary_name ?? '').localeCompare(b.boundary_name ?? '') || a.name.localeCompare(b.name),
+    );
+  }
+
+  /**
+   * What the list is actually ordered by when there is no location fix.
+   *
+   * The word for an area is sent by the server (`boundary_label`) because this app has no
+   * signed-in user and therefore no campaign context to derive it from. When no turf carries an
+   * area at all — every turf was cut with no boundary map — the sort falls through to the name,
+   * and saying otherwise would name an order the volunteer cannot see.
+   */
+  protected fallbackOrderLabel(c: CompanionTurfChoices): string {
+    const anyArea = [...c.mine, ...c.available].some((t) => t.boundary_name != null);
+    return anyArea ? c.boundary_label.toLocaleLowerCase() : 'name';
   }
 
   /**
@@ -223,7 +239,10 @@ export class CanvassTurfPicker {
     parts.push(`${t.attempted} of ${t.doors} doors`);
     const km = this.distanceKm(t);
     if (km != null) parts.push(km < 1 ? `${Math.round(km * 1000)} m away` : `${km.toFixed(1)} km away`);
-    else if (t.ward) parts.push(t.ward);
+    // A turf cut with no boundary map has no area name. Nothing is put in its place: an area name
+    // is a locator here, and "unbounded" is a word about how the turf was cut, which is the
+    // organizer's business rather than something a volunteer at a door can act on.
+    else if (t.boundary_name) parts.push(t.boundary_name);
     if (t.canvassers > 0) {
       parts.push(t.canvassers === 1 ? '1 canvasser here' : `${t.canvassers} canvassers here`);
     }

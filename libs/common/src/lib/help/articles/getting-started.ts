@@ -166,11 +166,12 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
       {
         kind: 'list',
         items: [
-          '**63 people in 25 households** with real Ottawa street addresses, so the household map pins, geocoding chips, and ward-based canvassing turfs all work.',
+          '**63 people in 25 households** at real street addresses in a real city, chosen to match the country you gave at signup, so the household map pins and geocoding chips all work.',
+          '**A boundary map already drawn over those addresses**, so every sample household sits in a named area and canvassing turfs can be cut along real lines from the first minute — with no address lookups and nothing for you to set up. See [Boundary maps](/help/district-boundaries).',
           '**11 companies**, with several people linked to them.',
           '**A few duplicates left over from a sample CSV import** — three pairs of people, one repeated household, and one repeated company — waiting on the [Duplicates](/duplicates) page so you can try merging them.',
           '**Tags, issues, support levels, and newsletter consent** spread across the contacts, plus three lists, a team, and two volunteer events with sign-ups.',
-          '**Canvassing turfs** cut across the wards (one complete, one being knocked right now, one just assigned, and one still a draft) with real door knocks so the field report and coverage map have something to show.',
+          '**Canvassing turfs** cut along that boundary map (one complete, one being knocked right now, one just assigned, and one still a draft) with real door knocks so the field report and coverage map have something to show.',
           '**Yard-sign deliveries**: sign requests waiting to be triaged, approved requests ready to route, and two driving routes (one finished, one in progress) so the requests, planner, and routes pages are all populated.',
           '**Three demo teammates** on the [Users](/users) page, with tasks and inbox emails assigned to them. They cannot sign in; their accounts exist so assignment and triage look real.',
           '**Tasks** in every state: overdue, due this week, waiting, and done.',

@@ -216,6 +216,12 @@
           Match on tags and issues, on standing (volunteer, subscriber, staff, support, voting), or on any contact or
           address field. Use AND/OR and nested groups to combine them.
         </div>
+        <!-- The two electoral fields look alike in a bare picker; this is the only place their
+             difference can be stated (design principles §2 and §3: explain, do not just label). -->
+        <div class="flex items-start gap-2 rounded-lg bg-base-200/60 p-3 text-xs text-base-content/70">
+          <pc-icon name="map-pin" class="mt-0.5 shrink-0 text-primary" [size]="4"></pc-icon>
+          <span>{{ electoralFieldNote() }}</span>
+        </div>
       </div>
       <!-- Matches are shown in the summary line above -->
       <div class="flex items-center justify-between mt-2">

@@ -334,8 +334,23 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
     title: 'Canvassing: turfs, the Companion, and the field report',
     summary:
       'Cut a smart list into walkable turfs, send them to volunteers on the Canvass Companion, and watch every knock sync back live.',
-    keywords: ['canvass', 'canvassing', 'turf', 'door', 'knock', 'walk', 'field', 'companion', 'volunteer', 'gotv'],
-    related: ['teams', 'lists', 'events-shifts'],
+    keywords: [
+      'canvass',
+      'canvassing',
+      'turf',
+      'door',
+      'knock',
+      'walk',
+      'field',
+      'companion',
+      'volunteer',
+      'gotv',
+      'boundary',
+      'ward',
+      'precinct',
+      'coverage',
+    ],
+    related: ['teams', 'lists', 'district-boundaries', 'drawing-boundaries', 'events-shifts'],
     blocks: [
       {
         kind: 'p',
@@ -358,9 +373,13 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
           {
             title: 'Confirm',
             detail:
-              'Turfs are cut from the addresses the app has placed on the map, into batches whose doors sit next to each other. A turf never crosses a ward boundary, and wards follow the rivers, rail lines and arterial roads, so nobody is sent across one. New turfs arrive marked **Needs canvassers**.',
+              'Turfs are cut from the addresses the app has placed on the map, into batches whose doors sit next to each other. A turf never crosses a boundary line, and those lines tend to follow the rivers, rail lines and arterial roads, so nobody is sent across one. New turfs arrive marked **Needs canvassers**.',
           },
         ],
+      },
+      {
+        kind: 'p',
+        text: 'Which line that is depends on the maps your workspace holds for this campaign. Cutting uses the finest voting subdivision available — a precinct, a polling division, a poll — and falls back to the seat area (the ward, riding or congressional district) when there is no subdivision map. With no boundary map at all, doors are grouped purely by which ones sit near each other, and those turfs are labelled as unbounded so nobody mistakes the grouping for a real line. Getting a map in is quick and free: see [Boundary maps](/help/district-boundaries), or [draw one yourself](/help/drawing-boundaries) if your municipality publishes nothing usable.',
       },
       { kind: 'h2', id: 'statuses', text: 'What the badge on a turf means' },
       {
@@ -381,7 +400,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'callout',
         tone: 'info',
         title: 'Only located doors get cut',
-        text: 'A turf is built from households the app has geocoded. Addresses still being located are reported in the preview and join a turf once they resolve. Nothing is silently dropped.',
+        text: 'A turf is built from households the app has geocoded. Addresses still being located are reported in the preview, never silently dropped — and once they resolve, **Refresh doors from list** brings them into the turf (see “Keeping a turf in step with its list” below).',
       },
       { kind: 'h2', id: 'open-turf', text: 'Open a turf' },
       {
@@ -410,7 +429,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'refresh', text: 'Keeping a turf in step with its list' },
       {
         kind: 'p',
-        text: 'A list keeps moving after you cut from it: people are added, people move away, a smart list re-decides who belongs. **Refresh doors from list**, in a turf’s ⋯ menu or on the turf page, re-reads the list and brings the turf back in line. Doors still in the list are left exactly as they are, new addresses in the list that fall inside the turf’s ward are added, and doors that have left the list come off the turf. Knocks already logged are kept either way, so nothing disappears from the field report. The app tells you the count both ways before and after.',
+        text: 'A list keeps moving after you cut from it: people are added, people move away, a smart list re-decides who belongs. **Refresh doors from list**, in a turf’s ⋯ menu or on the turf page, re-reads the list and brings the turf back in line. Doors still in the list are left exactly as they are, new addresses in the list that fall inside the turf’s own boundary are added, and doors that have left the list come off the turf. Knocks already logged are kept either way, so nothing disappears from the field report. The app tells you the count both ways before and after.',
       },
       {
         kind: 'callout',
@@ -496,7 +515,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The **Coverage** card shows where you have actually walked. On the **Street map** every door is a dot (green where a volunteer had a conversation, amber where they knocked and got no answer, and grey where no one has been yet), with each turf drawn as a dashed boundary. Flip to **By ward** for the same picture as a table: doors, how much of each ward has been knocked, and how many are still waiting. Like the rest of the report it follows the range you pick, and it appears as soon as turfs are cut, even before the first knock.',
+        text: 'The **Coverage** card shows where you have actually walked. On the **Street map** every door is a dot (green where a volunteer had a conversation, amber where they knocked and got no answer, and grey where no one has been yet), with each turf drawn as a dashed boundary. Flip to the **By area** tab for the same picture as a table: doors, how much of each area has been knocked, and how many are still waiting. That tab is named with your campaign’s own word — **By ward**, **By riding**, **By precinct** — from the office it is running for (see [What office a campaign is running for](/help/campaign-jurisdictions)), and doors that fall in no area are grouped under **Unbounded**. Like the rest of the report it follows the range you pick, and it appears as soon as turfs are cut, even before the first knock.',
       },
     ],
   },

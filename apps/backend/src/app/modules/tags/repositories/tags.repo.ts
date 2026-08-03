@@ -4,6 +4,7 @@ import { sql } from 'kysely';
 
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolveSeatSetId } from '../../households/electoral-areas';
 import type {
   Models,
   OperationDataType,
@@ -30,6 +31,19 @@ export interface TagAdminRow {
    * no removal-history table, so this approximates "trend" as new activity only. See
    * pplcrm-forms/pplcrm-trpc-backend skills note on `user_activity` if that ever changes. */
   recent_applications_30d: number;
+  /**
+   * The most common electoral area among the tagged people's households, read from
+   * `household_districts` (one row per household per boundary set) rather than from a fixed
+   * `households.ward` column. Areas are ranked inside ONE boundary set — the calling campaign's
+   * own seat set when `getAdminList` is given a campaign (the same resolution the grids use,
+   * `resolveSeatSetId`), otherwise the workspace's primary set (a seat-area set first, then the
+   * set covering the most households) — because a household sits in several boundaries at once
+   * and mixing sets would rank a riding against a precinct. Null when the workspace has no
+   * boundary data yet.
+   *
+   * The property is still called `top_ward` because the Issues admin page reads that key; only the
+   * column HEADING is jurisdiction-aware. Renaming it is a coordinated frontend change.
+   */
   top_ward: string | null;
 }
 
@@ -272,11 +286,20 @@ export class TagsRepo extends BaseRepository<'tags'> {
   /**
    * The full §9.1 (Tags admin) / §9.2 (Issues admin) list: one round trip with counts,
    * last-applied timestamp, creator name, 30-day new-application count (the "trend" proxy —
-   * see `TagAdminRow.recent_applications_30d`), and the top ward among tagged people's
-   * households. CTEs over raw SQL rather than the query builder because of the window
-   * function (top ward) and multi-table aggregation; every branch is tenant-scoped.
+   * see `TagAdminRow.recent_applications_30d`), and the most common electoral area among tagged
+   * people's households. CTEs over raw SQL rather than the query builder because of the window
+   * function (top area) and multi-table aggregation; every branch is tenant-scoped.
    */
-  public async getAdminList(input: { tenant_id: string; type: 'tag' | 'issue' }): Promise<TagAdminRow[]> {
+  public async getAdminList(input: {
+    tenant_id: string;
+    type: 'tag' | 'issue';
+    campaignId?: string | null;
+  }): Promise<TagAdminRow[]> {
+    // Which boundary set the top-area column ranks inside. With a campaign, the same resolution
+    // rule the grid columns use (`resolveSeatSetId`) — its own seat map — so the ranking matches
+    // the campaign-worded column heading. Without one, null, and the SQL below falls back to the
+    // campaign-free choice: a seat-area set first, then the set covering the most households.
+    const campaignSetId = input.campaignId ? await resolveSeatSetId(this.db, input.tenant_id, input.campaignId) : null;
     const rows = await sql<{
       id: string;
       name: string;
@@ -316,17 +339,35 @@ export class TagsRepo extends BaseRepository<'tags'> {
         WHERE created_at >= now() - interval '30 days'
         GROUP BY tag_id
       ),
-      ranked_ward AS (
-        SELECT mpt.tag_id, h.ward, count(*) AS cnt,
-               row_number() OVER (PARTITION BY mpt.tag_id ORDER BY count(*) DESC, h.ward) AS rn
+      -- One boundary set to rank inside. A household is in several boundaries at once (a riding
+      -- AND a ward AND a precinct), so ranking across all of them would compare areas that are
+      -- not comparable. The campaign's own seat set wins when one was resolved above; otherwise
+      -- prefer a seat-area set, then the set covering the most households.
+      primary_set AS (
+        SELECT COALESCE(
+          ${campaignSetId}::bigint,
+          (SELECT hd.set_id
+           FROM household_districts hd
+           JOIN boundary_sets bs ON bs.id = hd.set_id AND bs.tenant_id = hd.tenant_id
+           WHERE hd.tenant_id = ${input.tenant_id}
+           GROUP BY hd.set_id, bs.role
+           ORDER BY (bs.role = 'seat_area') DESC, count(*) DESC, hd.set_id
+           LIMIT 1)
+        ) AS set_id
+      ),
+      ranked_area AS (
+        SELECT mpt.tag_id, hd.name AS area, count(*) AS cnt,
+               row_number() OVER (PARTITION BY mpt.tag_id ORDER BY count(*) DESC, hd.name) AS rn
         FROM map_peoples_tags mpt
         JOIN persons p ON p.id = mpt.person_id AND p.tenant_id = mpt.tenant_id
-        JOIN households h ON h.id = p.household_id AND h.tenant_id = p.tenant_id
-        WHERE mpt.tenant_id = ${input.tenant_id} AND h.ward IS NOT NULL AND h.ward <> ''
-        GROUP BY mpt.tag_id, h.ward
+        JOIN household_districts hd ON hd.household_id = p.household_id AND hd.tenant_id = p.tenant_id
+        WHERE mpt.tenant_id = ${input.tenant_id}
+          AND hd.set_id = (SELECT set_id FROM primary_set)
+          AND hd.name <> ''
+        GROUP BY mpt.tag_id, hd.name
       ),
-      top_ward AS (
-        SELECT tag_id, ward FROM ranked_ward WHERE rn = 1
+      top_area AS (
+        SELECT tag_id, area FROM ranked_area WHERE rn = 1
       )
       SELECT
         base.id, base.name, base.description, base.color, base.deletable, base.type, base.created_at,
@@ -335,12 +376,12 @@ export class TagsRepo extends BaseRepository<'tags'> {
         COALESCE(household_counts.cnt, 0) AS use_count_households,
         GREATEST(people_counts.last_applied, household_counts.last_applied) AS last_applied_at,
         COALESCE(recent_30d.cnt, 0) AS recent_applications_30d,
-        top_ward.ward AS top_ward
+        top_area.area AS top_ward
       FROM base
       LEFT JOIN people_counts ON people_counts.tag_id = base.id
       LEFT JOIN household_counts ON household_counts.tag_id = base.id
       LEFT JOIN recent_30d ON recent_30d.tag_id = base.id
-      LEFT JOIN top_ward ON top_ward.tag_id = base.id
+      LEFT JOIN top_area ON top_area.tag_id = base.id
       ORDER BY COALESCE(people_counts.cnt, 0) DESC, base.name ASC
     `.execute(this.db);
 

@@ -106,9 +106,14 @@ export const EXPORT_TABLE_COLUMNS: Record<string, readonly string[]> = {
     'type',
     'home_phone',
     'notes',
-    'district',
-    'precinct',
-    'ward',
+    // Electoral geography is deliberately absent FROM THIS LIST, but it is still exported. It used
+    // to be three text columns on this table (district, precinct, ward), which could hold only
+    // three answers and so had each geocoding pass overwrite the last. It now lives in
+    // `household_districts` — one row per household per boundary map, unbounded in number. This
+    // allow-list gates a `selectFrom(table).select(cols)` over ONE table, so an aggregated value
+    // cannot be named here. The export job adds those columns itself, from the boundary maps the
+    // workspace actually holds — see `electoralExportColumns` at the bottom of this file and the
+    // households branch in lib/jobs/handlers/export.handlers.ts.
     'geocoding_status',
     'address_fp_street',
     'address_fp_full',
@@ -371,4 +376,100 @@ export function resolveExportColumns(table: string, requested: readonly string[]
   }
 
   return { columns: kept.length ? kept : [...allowed], dropped };
+}
+
+/**
+ * The one export table whose CSV carries electoral geography, named here rather than written as a
+ * bare string in the job so the two cannot drift apart.
+ */
+export const ELECTORAL_AREA_EXPORT_TABLE = 'households';
+
+/**
+ * One extra CSV column, holding the household's area inside ONE boundary map.
+ *
+ * Why one column per map rather than a single column listing every area: a spreadsheet is the whole
+ * point of a CSV export, and a spreadsheet can sort, filter, pivot and VLOOKUP on a column whose
+ * cells hold one value each. A single `electoral_areas` cell reading "Ward 5 · Precinct 12 · OH-3"
+ * can only be searched as text, so "give me everyone in Ward 5" — the question the three old
+ * `district`/`precinct`/`ward` columns could answer — would no longer be answerable. The number of
+ * columns is bounded by the number of boundary maps the workspace holds, which is capped per
+ * workspace, and a workspace with no map at all gets no extra columns.
+ */
+export interface ElectoralExportColumn {
+  /** The `boundary_sets.id` this column reads. */
+  readonly setId: string;
+  /** The alias the aggregate carries inside the SQL. Always a plain identifier, never label-derived. */
+  readonly alias: string;
+  /** The CSV header, and the key each streamed row is read under. Derived from the map's label. */
+  readonly header: string;
+}
+
+/**
+ * A header has to survive two round trips intact, and both of them silently corrupt some strings:
+ *
+ *  - It is used as a Postgres column alias, and Postgres truncates an identifier at 63 bytes. A
+ *    longer header would come back on the row under a name the CSV writer never asks for, so every
+ *    cell in that column would be blank.
+ *  - It is written into the header line by `CsvTransformStream`, which joins the column names with
+ *    a comma and does NOT quote them (only cell values are escaped). A comma, a double quote or a
+ *    newline inside a label would therefore split or break the header line.
+ *
+ * So the label is stripped of those three characters, formula-guarded like any cell value, and
+ * truncated well inside the byte limit, leaving room for a " (2)" suffix when two maps end up with
+ * the same header.
+ */
+const MAX_HEADER_BYTES = 55;
+
+function csvSafeLabel(label: string): string {
+  const cleaned = (label ?? '')
+    .replace(/["\r\n,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Same formula guard `escapeCsvCell` (lib/csv.ts) applies to cell values. The header line is
+  // written unquoted and never passes through that function, so a map labelled "=1+1" would
+  // otherwise reach the spreadsheet as a live formula while its cells are guarded.
+  return /^[=+\-@\t\r]/.test(cleaned) ? `'${cleaned}` : cleaned;
+}
+
+function truncateToBytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  let out = '';
+  for (const char of text) {
+    if (Buffer.byteLength(out + char, 'utf8') > maxBytes) break;
+    out += char;
+  }
+  return out.trimEnd();
+}
+
+/**
+ * Turn the workspace's boundary maps into export columns.
+ *
+ * Pure on purpose: the job does the (tenant-scoped) read of `boundary_sets` and hands the rows in,
+ * so the naming, deduplication and truncation rules are testable without a database.
+ *
+ * `reservedHeaders` is the list of real table columns already going into the CSV. A map labelled
+ * "notes" must not produce a second `notes` column, because the CSV writer looks each column up by
+ * name on the row and the two would collide.
+ */
+export function electoralExportColumns(
+  sets: readonly { id: string; label: string }[],
+  reservedHeaders: readonly string[] = [],
+): ElectoralExportColumn[] {
+  const taken = new Set<string>(reservedHeaders);
+  const columns: ElectoralExportColumn[] = [];
+
+  sets.forEach((set, index) => {
+    const cleaned = truncateToBytes(csvSafeLabel(set.label), MAX_HEADER_BYTES);
+    const base = cleaned.length > 0 ? cleaned : `Boundary map ${index + 1}`;
+    let header = base;
+    let suffix = 2;
+    while (taken.has(header)) {
+      header = `${base} (${suffix})`;
+      suffix += 1;
+    }
+    taken.add(header);
+    columns.push({ setId: String(set.id), alias: `electoral_area_${index}`, header });
+  });
+
+  return columns;
 }

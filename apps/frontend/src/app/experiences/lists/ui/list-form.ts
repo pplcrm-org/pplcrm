@@ -21,7 +21,13 @@ import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 
 import { QueryBuilderField, QueryBuilderComponent } from '@frontend/shared/components/query-builder/query-builder';
 import { QueryBuilderNode, QueryBuilderGroupNode, cloneQueryBuilderNode } from '../../../../../../../libs/common/src';
-import { RULE_FIELD_CHOICES, ruleFieldLabel } from '@experiences/lists/services/list-rule-fields';
+import {
+  ANY_ELECTORAL_AREA_FIELD,
+  ELECTORAL_AREA_FIELD,
+  RULE_FIELD_CHOICES,
+  ruleFieldLabel,
+} from '@experiences/lists/services/list-rule-fields';
+import { CampaignContextService } from '@frontend/services/campaign-context.service';
 import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
 interface RuleOperator {
@@ -68,6 +74,36 @@ const CHOICE_OPERATORS: RuleOperator[] = [
 const BOOLEAN_OPERATORS: RuleOperator[] = [
   { value: 'eq', label: 'is' },
   { value: 'neq', label: 'is not' },
+];
+
+/**
+ * The household's area on the active campaign's own map. One value per household, so it can be
+ * compared exactly: "Ward equals Ward 4" is a question this field can answer honestly.
+ * "is not set" rather than "is empty", because an absent area means the address has not been
+ * placed on a map yet.
+ */
+const ELECTORAL_AREA_OPERATORS: RuleOperator[] = [
+  { value: 'equals', label: 'equals' },
+  { value: 'notEquals', label: 'does not equal' },
+  { value: 'contains', label: 'contains' },
+  { value: 'notContains', label: 'does not contain' },
+  { value: 'startsWith', label: 'starts with' },
+  { value: 'isNotEmpty', label: 'is set' },
+  { value: 'isEmpty', label: 'is not set' },
+];
+
+/**
+ * Every boundary the household falls in at any level, joined into one string by the backend.
+ *
+ * `equals` is deliberately absent. The value is a concatenation, so a household sitting in a riding
+ * AND a ward AND a precinct would never equal any one of those names, and offering the operator
+ * would produce a list that silently matches nobody.
+ */
+const ANY_ELECTORAL_AREA_OPERATORS: RuleOperator[] = [
+  { value: 'contains', label: 'contains' },
+  { value: 'notContains', label: 'does not contain' },
+  { value: 'isNotEmpty', label: 'is set' },
+  { value: 'isEmpty', label: 'is not set' },
 ];
 
 @Component({
@@ -209,6 +245,7 @@ export class ListForm implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly dialogs = inject(ConfirmDialogService);
+  private readonly campaignCtx = inject(CampaignContextService);
 
   private _loading = createLoadingGate();
   private readonly householdGrid = viewChild(HouseholdFilterGrid);
@@ -243,6 +280,29 @@ export class ListForm implements OnInit {
 
   protected readonly listType = computed<'people' | 'households'>(() => this.payload().object);
 
+  /**
+   * The active campaign's own word for the seat it contests (Ward, Riding, Congressional district).
+   * Never empty: before the context loads, and for a campaign that declares no jurisdiction,
+   * `CampaignContextService.seatLabel()` resolves through the 'other' spec and says "District".
+   */
+  protected readonly seatLabel = computed<string>(() => this.campaignCtx.seatLabel());
+
+  /**
+   * Why the rule builder offers two electoral fields rather than one. Shown as a sentence under the
+   * builder, because the picker is a bare list of labels and a person choosing between them has no
+   * other way to learn that one is exact and the other spans every map.
+   */
+  protected readonly electoralFieldNote = computed<string>(() => {
+    const seat = this.seatLabel();
+    return (
+      `A household sits inside several boundaries at once, so electoral geography is two fields. ` +
+      `"${seat}" is the household's area on this campaign's own map, one value per household, so it ` +
+      `compares exactly. "Any electoral boundary" searches every map this workspace holds at every ` +
+      `level, joined into one line, so use "contains" to reach everyone in a precinct or a district ` +
+      `that is not this campaign's own map.`
+    );
+  });
+
   protected readonly isDynamic = computed<boolean>(() => this.payload().is_dynamic);
 
   protected setObject(object: 'people' | 'households'): void {
@@ -258,6 +318,9 @@ export class ListForm implements OnInit {
   }
 
   private async loadOnInit(): Promise<void> {
+    // The electoral rule field is labelled with the campaign's own word, so the context has to be
+    // loaded before the picker is drawn.
+    await this.campaignCtx.ensureLoaded();
     const id = this.route.snapshot.paramMap.get('id');
     const mode = this.route.snapshot.data['mode'] as 'new' | 'edit' | undefined;
     this.isNew.set(mode !== 'edit');
@@ -364,10 +427,11 @@ export class ListForm implements OnInit {
    */
   protected readonly listFields = computed<QueryBuilderField[]>(() => {
     const isPeople = this.listType() === 'people';
+    const seat = this.seatLabel();
 
     const field = (name: string, inputType: QueryBuilderField['inputType'], operators: RuleOperator[]) => ({
       name,
-      label: ruleFieldLabel(name),
+      label: ruleFieldLabel(name, seat),
       operators,
       inputType,
       ...(RULE_FIELD_CHOICES[name] ? { choices: RULE_FIELD_CHOICES[name] } : {}),
@@ -376,6 +440,12 @@ export class ListForm implements OnInit {
     const text = (name: string) => field(name, 'text', TEXT_OPERATORS);
     const tag = (name: string) => field(name, 'autocomplete', TAG_OPERATORS);
     const choice = (name: string) => field(name, 'select', CHOICE_OPERATORS);
+    // Both electoral fields, always together. Offering only one would hide the question the other
+    // answers, and the explanation under the builder names them as a pair.
+    const electoral = () => [
+      field(ELECTORAL_AREA_FIELD, 'text', ELECTORAL_AREA_OPERATORS),
+      field(ANY_ELECTORAL_AREA_FIELD, 'text', ANY_ELECTORAL_AREA_OPERATORS),
+    ];
 
     if (isPeople) {
       return [
@@ -398,6 +468,7 @@ export class ListForm implements OnInit {
         text('email'),
         text('mobile'),
         text('company_name'),
+        ...electoral(),
         text('city'),
         text('state'),
         text('street1'),
@@ -410,6 +481,7 @@ export class ListForm implements OnInit {
     return [
       tag('tags'),
       tag('issues'),
+      ...electoral(),
       text('city'),
       text('state'),
       text('street1'),

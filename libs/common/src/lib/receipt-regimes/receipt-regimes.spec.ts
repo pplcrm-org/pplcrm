@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { RECEIPT_REGIMES, RECEIPT_REGIME_IDS, RECEIPT_ISSUER_FIELDS } from './index';
+import {
+  RECEIPT_REGIMES,
+  RECEIPT_REGIME_IDS,
+  RECEIPT_ISSUER_FIELDS,
+  US_POLITICAL_CONTRIBUTIONS_NOT_RECEIPTED,
+  receiptRegimeHintForCampaign,
+} from './index';
 
 describe('receipt regimes', () => {
   it('registers every regime id exactly once', () => {
@@ -56,5 +62,68 @@ describe('receipt regimes', () => {
 
   it('keeps the Alberta auto-issue threshold just above $50', () => {
     expect(RECEIPT_REGIMES.political_ab.autoIssueThresholdCents).toBe(5001);
+  });
+});
+
+describe('receiptRegimeHintForCampaign', () => {
+  it('suggests the regime of the four provinces that have one, and the federal regime', () => {
+    expect(receiptRegimeHintForCampaign('ca_provincial', 'ON')).toMatchObject({
+      kind: 'suggested',
+      regime: 'political_on',
+    });
+    expect(receiptRegimeHintForCampaign('ca_provincial', 'BC')).toMatchObject({
+      kind: 'suggested',
+      regime: 'political_bc',
+    });
+    expect(receiptRegimeHintForCampaign('ca_provincial', 'AB')).toMatchObject({
+      kind: 'suggested',
+      regime: 'political_ab',
+    });
+    expect(receiptRegimeHintForCampaign('ca_provincial', 'QC')).toMatchObject({
+      kind: 'suggested',
+      regime: 'political_qc',
+    });
+    expect(receiptRegimeHintForCampaign('ca_federal', null)).toMatchObject({
+      kind: 'suggested',
+      regime: 'political_federal',
+    });
+  });
+
+  /**
+   * The hint names a regime and says why, and it must also say that nothing was chosen. The
+   * settings page is expected to render this next to an UNSET picker; a page that pre-selects the
+   * suggestion would put unverified legal wording on a tax receipt without anyone deciding to.
+   */
+  it('states in the suggestion itself that nothing has been selected', () => {
+    const hint = receiptRegimeHintForCampaign('ca_provincial', 'AB');
+    expect(hint?.message).toMatch(/suggestion only/i);
+    expect(hint?.message).toMatch(/nothing has been selected/i);
+    expect(hint?.message).toContain('Alberta');
+  });
+
+  /**
+   * US political contributions are not tax-deductible, so there is no regime to offer and the page
+   * must say so rather than showing a picker of Canadian regimes. The last assertion guards the
+   * other half of that honesty: the product does not file FEC or state disclosure reports either,
+   * and the explanation says so out loud.
+   */
+  it('tells a US political workspace plainly that there is nothing to receipt', () => {
+    for (const jurisdiction of ['us_federal', 'us_state', 'us_local'] as const) {
+      expect(receiptRegimeHintForCampaign(jurisdiction, 'OH')).toEqual({
+        kind: 'not_receipted',
+        message: US_POLITICAL_CONTRIBUTIONS_NOT_RECEIPTED,
+      });
+    }
+    expect(US_POLITICAL_CONTRIBUTIONS_NOT_RECEIPTED).toMatch(/not\s+tax-deductible/i);
+    expect(US_POLITICAL_CONTRIBUTIONS_NOT_RECEIPTED).toMatch(/does not prepare FEC or state disclosure filings/i);
+  });
+
+  /** Silence, not a guess: no regime is modelled for these, and a neighbour's regime is not close enough. */
+  it('says nothing at all where no regime is modelled', () => {
+    expect(receiptRegimeHintForCampaign('ca_provincial', 'MB')).toBeNull();
+    expect(receiptRegimeHintForCampaign('ca_provincial', null)).toBeNull();
+    expect(receiptRegimeHintForCampaign('ca_municipal', 'ON')).toBeNull();
+    expect(receiptRegimeHintForCampaign('other', null)).toBeNull();
+    expect(receiptRegimeHintForCampaign(null, 'ON')).toBeNull();
   });
 });

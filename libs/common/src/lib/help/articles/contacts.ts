@@ -120,10 +120,14 @@ export const CONTACTS_ARTICLES: HelpArticle[] = [
       'ward',
       'district',
       'precinct',
+      'riding',
+      'polling division',
+      'congressional district',
+      'boundaries',
       'geocode',
       'door notes',
     ],
-    related: ['add-people', 'person-profile', 'duplicates'],
+    related: ['add-people', 'person-profile', 'district-boundaries', 'geocoding-and-costs', 'duplicates'],
     blocks: [
       {
         kind: 'p',
@@ -151,11 +155,15 @@ export const CONTACTS_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'address-map', text: 'The address, the map, and electoral boundaries' },
       {
         kind: 'p',
-        text: 'Editing a household, search for an address and pick a suggestion. It fills every field below and geocodes the household, so ward, district, and precinct update automatically. Prefer to type it yourself? Open **Enter address manually**; manual edits save as typed, geocode in the background, and the map pin appears once the address verifies.',
+        text: 'Editing a household, search for an address and pick a suggestion. It fills every field below and geocodes the household, so its electoral areas fill in automatically. Prefer to type it yourself? Open **Enter address manually**; manual edits save as typed, geocode in the background, and the map pin appears once the address verifies.',
       },
       {
         kind: 'p',
-        text: 'The household page shows a map card. Clicking it opens the location in your maps app, with the ward and address labelled on top. A status chip always tells you where geocoding stands: **Located** (the pin is set), **Locating…** (still working in the background), **Address problem** (the address could not be found; open Edit and fix it), or **Not geocoded** (geocoding is a Movement feature and your plan is below it — the address is saved and fine, it just wasn’t placed on the map). Geocoded households power canvassing turfs and delivery coverage, so a clean address pays off downstream. Below the details you’ll also find a **Yard sign** card showing this home’s sign request in the campaign you are working in. Set it right there if a sign went up outside the app (see [Deliveries](/help/deliveries)).',
+        text: 'A household holds **every** electoral area that covers it, one per boundary map your workspace has loaded, and none of them overwrites another. Depending on where you organize and what maps you hold, that might be a riding and a polling division, or a congressional district, a state senate district, a state house district, a council district and a precinct all at once. Each is labelled with the word your campaign uses — see [What office a campaign is running for](/help/campaign-jurisdictions) — and where those maps come from is covered in [Boundary maps](/help/district-boundaries).',
+      },
+      {
+        kind: 'p',
+        text: 'The household page shows a map card. Clicking it opens the location in your maps app, with the address and its area labelled on top. A status chip always tells you where geocoding stands: **Located** (the pin is set), **Locating…** (still working in the background), **Address problem** (the address could not be found; open Edit and fix it), or **Not geocoded** (geocoding is a Movement feature and your plan is below it — the address is saved and fine, it just wasn’t placed on the map). Geocoded households power canvassing turfs and delivery coverage, so a clean address pays off downstream. What each state costs and when a **Locating…** household resolves is spelled out in [Geocoding, boundary matching, and what each costs](/help/geocoding-and-costs). Below the details you’ll also find a **Yard sign** card showing this home’s sign request in the campaign you are working in. Set it right there if a sign went up outside the app (see [Deliveries](/help/deliveries)).',
       },
       { kind: 'h2', id: 'dedupe', text: 'Keep households clean' },
       {

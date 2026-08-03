@@ -1,14 +1,16 @@
 ---
 name: pplcrm-canvassing
-description: Canvassing (§13) — the turfs / turf_households / turf_assignments / turf_knocks tables, the turf-cutting engine (clusters geocoded households into contiguous ward-bounded turfs), progress derived from knocks, and the tokenised account-less Canvass Companion. USE WHEN editing modules/canvassing, experiences/canvassing, the turf/knock schema, the cutting engine, the Companion public route, or the field report. EXAMPLES 'add a knock outcome', 'why do turfs never cross a ward', 'where does turf progress come from'.
+description: Canvassing (§13) — the turfs / turf_households / turf_assignments / turf_knocks tables, the turf-cutting engine (clusters geocoded households into contiguous turfs bounded by whichever boundary map the campaign's office implies), progress derived from knocks, and the tokenised account-less Canvass Companion. USE WHEN editing modules/canvassing, experiences/canvassing, the turf/knock schema, the cutting engine, turf-boundary.ts, the Companion public route, or the field report. EXAMPLES 'add a knock outcome', 'why do turfs never cross a boundary', 'what is an unbounded turf', 'where does turf progress come from'.
 ---
 
 # Canvassing (§13)
 
 Cut a smart-list universe into walkable **turfs**, hand them to volunteers via a
 **Canvass Companion** (web app, no account), and let every knock sync back live.
-Reuses the existing household geocoding (`households.lat/lng` + `ward`) and
-`lists.getCurrentMembers` — do **not** re-derive either.
+Reuses the existing household geocoding (`households.lat/lng`, plus the
+`household_districts` rows the boundary matcher writes — `households.ward` and
+its two siblings no longer exist) and `lists.getCurrentMembers` — do **not**
+re-derive either.
 
 ## Data model
 
@@ -24,7 +26,7 @@ runs through `sql.raw(...)` (parameterless → simple protocol), like the baseli
 
 | Table                 | What it is                                                                                                                                                                                                                                                                             |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `turfs`               | A turf. `status` = `draft`\|`active`\|`retired` (stored lifecycle only). `list_id`, `target_doors`, `centroid_lat/lng`, `ward`.                                                                                                                                                        |
+| `turfs`               | A turf. `status` = `draft`\|`active`\|`retired` (stored lifecycle only). `list_id`, `target_doors`, `centroid_lat/lng`, `boundary_set_id` (FK, `ON DELETE SET NULL`) + `boundary_name` (text). The old `ward` column is **dropped**.                                                   |
 | `turf_households`     | The doors — one row per household (junction, PK includes both).                                                                                                                                                                                                                        |
 | `turf_assignments`    | A turf handed to a volunteer: `volunteer_person_id` (the person the link belongs to — required by the access layer), optional `expires_at`, `team_id`, `token`. `status` = `active`\|`revoked`.                                                                                        |
 | `turf_knocks`         | **The source of truth for progress.** One row per door interaction. `outcome`, `response`, `issues[]`, follow-up flags (`wants_volunteer`/`wants_yard_sign`/`set_dnc`/`subscribe`), `contact_phone/email`, `source`, `canvasser_name`, `client_knock_id`, `knocked_at`.                |
@@ -303,26 +305,62 @@ Pure, dependency-free, unit-tested (`cutting-engine.spec.ts`). `cutTurfs(doors,
 target)` and `previewCut(...)` share the same code so the dialog preview can
 never disagree with the actual cut.
 
-- **Input**: geocoded households (`{household_id, lat, lng, ward}`). Ungeocoded
-  ones are reported as `unplaced`, never dropped.
-- **Barriers**: the only barrier data shipped is the ward/precinct GIS polygons
-  (`lib/gis/boundaries.geojson`), whose edges follow real rivers/rail/arterials.
-  So the engine treats the **ward boundary as the barrier — a turf never spans
-  two wards**. True per-street barrier linework isn't in the dataset, so finer
-  avoidance is deferred to the manual "rebalance on the map" step the spec
-  already calls for. If you add real barrier data, this is where it plugs in.
-- **Contiguity**: within a ward, doors are ordered along a latitude-banded
-  boustrophedon ("snake") sweep, then chunked into near-equal runs → compact,
-  contiguous turfs without a TSP solve.
+- **Input**: geocoded households as `DoorPoint {household_id, lat, lng, boundaryName}`.
+  Ungeocoded ones are reported as `unplaced`, never dropped.
+- **Barriers**: the engine is told only the **name** of the area each door falls
+  in, never which kind of area it is, and never lets one turf span two — a
+  boundary edge in practice follows a river, a rail line or an arterial road.
+  True per-street barrier linework is not in the dataset, so finer avoidance is
+  still the manual "rebalance on the map" step.
+- **Contiguity**: within one boundary area, doors are ordered along a
+  latitude-banded boustrophedon ("snake") sweep, then chunked into near-equal
+  runs → compact, contiguous turfs without a TSP solve.
+- `TurfCluster.boundaryName` is `null` for an **unbounded** turf — either the
+  workspace holds no usable map, or those doors fell outside every area of it.
+  Supported state, not an error; the UI labels it rather than inventing a name.
+
+### Which boundary — `modules/canvassing/lib/turf-boundary.ts`
+
+`resolveTurfBoundary(db, { tenant_id, campaign_id })` is the **single place**
+that decides, and it returns `{ set_id, label, label_plural }`. Order:
+
+1. The **finest subdivision** set matching the campaign's jurisdiction and
+   region (a polling division or precinct is about one evening's walk). "Finest"
+   is `feature_count DESC NULLS LAST` — more areas over the same ground means
+   smaller areas.
+2. Otherwise the **seat-area** set (a riding is far too big for one turf, but is
+   still a real barrier, and the engine chunks each area to target size anyway).
+3. Otherwise **no set at all** (`set_id: null`) — purely geographic clustering.
+
+A set with `region` NULL is national and matches any campaign region; ties break
+to the highest id so re-running a cut picks the same map. A null `campaign_id`
+resolves to the workspace's permanent office campaign, and an unrecognised
+stored `jurisdiction` reads as `'other'` rather than throwing.
+
+The `label` / `label_plural` come from `seatLabelFor` / `subdivisionLabelFor`
+(see `pplcrm-campaigns`), which is why the field report's roll-up tab reads "By
+polling division" or "By ward" depending on the campaign — never a hard-coded
+word. `getCoverage` and `getTurfDetail` return them as `boundary_label` /
+`boundary_label_plural`; doors in unbounded turfs roll up under
+`UNBOUNDED_AREA_LABEL`.
+
+Refreshing a turf's doors compares against **the turf's own**
+`boundary_set_id` + `boundary_name`, not the campaign's current map
+(`boundaryMembersNotInAnyTurf`), so redrawing a map never silently re-scopes an
+existing turf.
 
 ## The universe = a smart list (reuse, don't re-derive)
 
 `CanvassingController.resolveUniverseHouseholdIds` calls
 `new ListsController().getCurrentMembers(auth, listId)`. If the list is
 `people`, it maps to distinct `household_id`s; if `households`, uses them
-directly. Then `TurfsRepo.getHouseholdsGeo` fetches lat/lng/ward. **Refresh doors
+directly. Then `TurfsRepo.getHouseholdsGeo({ tenant_id, household_ids,
+boundary_set_id })` fetches lat/lng plus each door's area name, joined from
+`household_districts` for that one set (a null `boundary_set_id` means no map
+applies and every door comes back with `boundaryName: null`). **Refresh doors
 from list** re-runs this, drops doors that left the list (knock rows persist —
-history kept) and adds new in-ward members not yet in any turf.
+history kept) and adds new members that fall in the **same area of the same
+map** and are not yet in any turf.
 
 It only works on a turf with a `list_id`, i.e. one that was **cut**; `addTurf`
 accepts an optional `list_id` but `updateTurf` cannot attach one afterwards, so a
@@ -420,10 +458,12 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   `pc-grid-header` with `helpArticle="canvassing"`, so the ⓘ defines a turf and links
   the guide. With zero turfs the whole tab is a `pc-empty-state` walking through the
   three steps (`GETTING_STARTED`) instead of four empty widgets. The Field report
-  tab's **Coverage** card (§13.3) has a Street map / By ward toggle: `getCoverage`
+  tab's **Coverage** card (§13.3) has a Street map / by-area toggle whose label is
+  the campaign's own word ("By ward", "By polling division", from
+  `boundary_label_plural`; `'Areas'` when the payload has none): `getCoverage`
   (router + `controller.getCoverage`) returns one door per geocoded turf household
   coloured by window knock status (`conversation`/`attempted`/`not_yet`), a
-  convex-hull dashed boundary per turf, and a by-ward roll-up. It renders whenever
+  convex-hull dashed boundary per turf, and a by-area roll-up. It renders whenever
   turfs have geocoded doors — independently of `report.doors` — so a freshly-cut
   universe reads as an all-grey map before the first knock. Aggregation lives in
   `controller.getCoverage` (+ the module-level `convexHull`); the raw per-door rows
@@ -477,8 +517,10 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   `DB_NAME=pplcrm_canvass_test` in `.env.test`. globalSetup then builds it from
   scratch (also the fresh-DB migration verification).
 - `controller.spec.ts` seeds a static household list of geocoded doors across two
-  wards and drives the full flow (cut → assign → token → idempotent knock →
-  progress → refresh). `cutting-engine.spec.ts` covers clustering purely.
+  boundary areas — a `boundary_sets` row plus one `household_districts` row per
+  household, which is where the cutter reads them — and drives the full flow
+  (cut → assign → token → idempotent knock → progress → refresh).
+  `cutting-engine.spec.ts` covers clustering purely.
 - Mixed `.select([...])` (string cols + `sql` builders) type-checks as a plain
   array but **not** in a `.select(() => [...])` callback — use plain arrays.
 
@@ -490,8 +532,9 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   **Coverage** map (Field report tab) _does_ draw per-turf boundaries,
   computing the convex hull of each turf's door coordinates on the fly in
   `getCoverage` — reuse that if you want hulls on the turf strip too.
-- **Sub-ward barrier avoidance** — no highway/rail/water linework in the shipped
-  GIS data; ward boundary is the honest proxy (see engine).
+- **Sub-area barrier avoidance** — there is no highway/rail/water linework
+  anywhere in the product, so the boundary line a workspace holds is the honest
+  proxy (see engine). A workspace holding no map at all cuts unbounded turfs.
 - **Team-target picker UI** — the backend fully supports `team_id`; the page
   currently issues the tokenised-link assignment ("Copy a link instead" path).
 

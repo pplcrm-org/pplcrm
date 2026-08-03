@@ -2,9 +2,14 @@ import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormField, form, max, min } from '@angular/forms/signals';
 import { ActivatedRoute } from '@angular/router';
 import {
+  CA_PROVINCES,
   RECEIPT_REGIMES,
   RECEIPT_REGIME_IDS,
   STRIPE_CONNECT_COUNTRIES,
+  US_STATES,
+  isJurisdictionId,
+  receiptRegimeHintForCampaign,
+  type CampaignReceiptRegimeHint,
   type ReceiptRegimeId,
   type StripeConnectCountry,
 } from '@common';
@@ -16,6 +21,7 @@ import { createLoadingGate } from '@uxcommon/loading-gate';
 import { DonationReceiptsService } from '../../../services/api/donation-receipts-service';
 import { DonationsService } from '../../../services/api/donations-service';
 import { TokenService } from '../../../services/api/token-service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { FilesService } from '../../files/services/files.service';
 import { SettingsService } from '../services/settings-service';
@@ -70,6 +76,8 @@ export class DonationsSettingsComponent implements OnInit {
   private readonly filesSvc = inject(FilesService);
   private readonly dialogs = inject(ConfirmDialogService);
   private readonly route = inject(ActivatedRoute);
+  /** Supplies the active campaign's declared office, which drives the receipting hint below. */
+  private readonly campaignCtx = inject(CampaignContextService);
 
   private readonly _loading = createLoadingGate();
 
@@ -121,6 +129,32 @@ export class DonationsSettingsComponent implements OnInit {
   });
   protected readonly regimeIsExternal = computed(() => this.regimeSpec()?.issuance === 'external');
 
+  /**
+   * What the active campaign's declared office can say about receipting. A hint shown beside the
+   * picker, never a value put into it.
+   *
+   * The regime is a statement about how the ORGANIZATION is registered, not about which seat it
+   * contests: a Toronto campaign's gifts might be receipted by a registered provincial constituency
+   * association, by a federal riding association, or not by this workspace at all. Selecting one on
+   * the workspace's behalf would print wrong legal wording on a tax document, and it would do it
+   * silently, because a pre-selected field looks answered.
+   *
+   * Null means the campaign's office says nothing useful (a province with no regime modelled, a
+   * municipal race, or no campaign jurisdiction declared), and nothing is shown.
+   */
+  protected readonly receiptRegimeHint = computed<CampaignReceiptRegimeHint | null>(() => {
+    const campaign = this.campaignCtx.activeCampaign();
+    const jurisdiction = campaign?.jurisdiction;
+    if (!isJurisdictionId(jurisdiction)) return null;
+    return receiptRegimeHintForCampaign(jurisdiction, campaign?.office_region ?? null);
+  });
+
+  /** The suggested regime's own label, for naming it in the hint. Null unless one is suggested. */
+  protected readonly suggestedRegimeLabel = computed<string | null>(() => {
+    const hint = this.receiptRegimeHint();
+    return hint?.kind === 'suggested' ? RECEIPT_REGIMES[hint.regime].label : null;
+  });
+
   // Donation periods
   protected readonly donationPeriods = signal<DonationPeriod[]>([]);
   protected readonly showAddPeriod = signal(false);
@@ -155,74 +189,18 @@ export class DonationsSettingsComponent implements OnInit {
     { code: 'NL', name: 'Netherlands' },
   ];
 
-  protected readonly canadaProvinces = [
-    { code: 'ON', name: 'Ontario' },
-    { code: 'QC', name: 'Quebec' },
-    { code: 'BC', name: 'British Columbia' },
-    { code: 'AB', name: 'Alberta' },
-    { code: 'MB', name: 'Manitoba' },
-    { code: 'SK', name: 'Saskatchewan' },
-    { code: 'NS', name: 'Nova Scotia' },
-    { code: 'NB', name: 'New Brunswick' },
-    { code: 'NL', name: 'Newfoundland and Labrador' },
-    { code: 'PE', name: 'Prince Edward Island' },
-    { code: 'NT', name: 'Northwest Territories' },
-    { code: 'YT', name: 'Yukon' },
-    { code: 'NU', name: 'Nunavut' },
-  ];
-
-  protected readonly usStates = [
-    { code: 'AL', name: 'Alabama' },
-    { code: 'AK', name: 'Alaska' },
-    { code: 'AZ', name: 'Arizona' },
-    { code: 'AR', name: 'Arkansas' },
-    { code: 'CA', name: 'California' },
-    { code: 'CO', name: 'Colorado' },
-    { code: 'CT', name: 'Connecticut' },
-    { code: 'DE', name: 'Delaware' },
-    { code: 'FL', name: 'Florida' },
-    { code: 'GA', name: 'Georgia' },
-    { code: 'HI', name: 'Hawaii' },
-    { code: 'ID', name: 'Idaho' },
-    { code: 'IL', name: 'Illinois' },
-    { code: 'IN', name: 'Indiana' },
-    { code: 'IA', name: 'Iowa' },
-    { code: 'KS', name: 'Kansas' },
-    { code: 'KY', name: 'Kentucky' },
-    { code: 'LA', name: 'Louisiana' },
-    { code: 'ME', name: 'Maine' },
-    { code: 'MD', name: 'Maryland' },
-    { code: 'MA', name: 'Massachusetts' },
-    { code: 'MI', name: 'Michigan' },
-    { code: 'MN', name: 'Minnesota' },
-    { code: 'MS', name: 'Mississippi' },
-    { code: 'MO', name: 'Missouri' },
-    { code: 'MT', name: 'Montana' },
-    { code: 'NE', name: 'Nebraska' },
-    { code: 'NV', name: 'Nevada' },
-    { code: 'NH', name: 'New Hampshire' },
-    { code: 'NJ', name: 'New Jersey' },
-    { code: 'NM', name: 'New Mexico' },
-    { code: 'NY', name: 'New York' },
-    { code: 'NC', name: 'North Carolina' },
-    { code: 'ND', name: 'North Dakota' },
-    { code: 'OH', name: 'Ohio' },
-    { code: 'OK', name: 'Oklahoma' },
-    { code: 'OR', name: 'Oregon' },
-    { code: 'PA', name: 'Pennsylvania' },
-    { code: 'RI', name: 'Rhode Island' },
-    { code: 'SC', name: 'South Carolina' },
-    { code: 'SD', name: 'South Dakota' },
-    { code: 'TN', name: 'Tennessee' },
-    { code: 'TX', name: 'Texas' },
-    { code: 'UT', name: 'Utah' },
-    { code: 'VT', name: 'Vermont' },
-    { code: 'VA', name: 'Virginia' },
-    { code: 'WA', name: 'Washington' },
-    { code: 'WV', name: 'West Virginia' },
-    { code: 'WI', name: 'Wisconsin' },
-    { code: 'WY', name: 'Wyoming' },
-  ];
+  /**
+   * Canadian provinces and US states now come from the shared jurisdictions module, which is also
+   * what the campaign office picker reads. They used to be two private arrays here, and this page
+   * was the only place in the repository that held them; a campaign in Alberta and a donation
+   * residency rule for Alberta must agree on the code and the name, so there is one list.
+   *
+   * The country list and the German, French and Indian region lists below are deliberately NOT
+   * shared. Donation residency accepts money from many more countries than pplCRM models elections
+   * in, so those lists belong to this page alone.
+   */
+  protected readonly canadaProvinces = CA_PROVINCES;
+  protected readonly usStates = US_STATES;
 
   protected readonly germanyStates = [
     { code: 'DE-BW', name: 'Baden-Württemberg' },
@@ -389,6 +367,14 @@ export class DonationsSettingsComponent implements OnInit {
       this.alerts.showSuccess('Stripe onboarding complete. Verifying your account status…');
     } else if (params.has('stripe_refresh')) {
       this.alerts.showError('Stripe onboarding was interrupted — resume it below when you are ready.');
+    }
+
+    // The receipting hint reads the active campaign's declared office, so the context has to be
+    // loaded. A failure here costs the hint only; every setting on the page still works.
+    try {
+      await this.campaignCtx.ensureLoaded();
+    } catch (err) {
+      console.error('Failed to load campaign context for the receipting hint', err);
     }
 
     await this.settingsSvc.load();

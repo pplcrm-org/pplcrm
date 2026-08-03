@@ -4,12 +4,14 @@
  * One of several — see `demo-datasets.ts` for the per-mode registry and `demo-data-types.ts` for
  * the shapes and the ground rules every dataset obeys.
  *
- * WHY THIS DERIVES FROM THE CAMPAIGN DATASET instead of inventing its own city, and why the church
- * and non-profit datasets do the opposite: an office and a campaign in the same riding really do
- * work the same rolodex. The same families live at the same addresses, care about the same issues,
+ * WHY THIS DERIVES FROM THE CAMPAIGN DATASET instead of inventing its own story, and why the church
+ * and non-profit datasets do the opposite: a council member's office and the campaign for that same
+ * seat really do work the same rolodex. A council member represents a WARD, not a riding — the two
+ * words name seat areas at different levels of government, and this file used to use them
+ * interchangeably. The same families live at the same addresses, care about the same issues,
  * and turn up to the same park cleanup. What differs is the WORK — casework instead of sign drops,
  * community clinics instead of a meet-and-greet, and no fundraising at all, because a publicly
- * funded office is not the legal entity that raises money (the riding association is). So the
+ * funded office is not the legal entity that raises money (the campaign is). So the
  * people, places, companies, teammates, lists, issue assignments and survey responses are shared
  * verbatim, and every section that describes work is authored here.
  *
@@ -32,7 +34,7 @@ import type {
   DemoTurfDef,
   DemoVolunteerEventDef,
 } from './demo-data-types';
-import { DEMO_CITY, DEMO_COUNTRY, DEMO_STATE, allSites } from './demo-data-places';
+import { allSites } from './demo-data-places';
 import {
   DEMO_COMPANIES,
   DEMO_ISSUE_ASSIGNMENTS,
@@ -148,7 +150,7 @@ export const OFFICE_TASKS: DemoTaskDef[] = [
   },
   {
     name: 'Coffee with Michelle Thibault',
-    details: 'Former riding association president. Pick her brain on the ward captains model before we grow the team.',
+    details: 'Ran the last three campaigns here. Pick her brain on the block captains model before we grow the team.',
     status: 'todo',
     priority: 'medium',
     position: 11,
@@ -375,8 +377,8 @@ export const OFFICE_EMAILS: DemoEmailDef[] = [
 // about signs are rewritten, keyed by household (each appears in exactly one turf).
 
 const OFFICE_TURF_NOTES: Record<string, string> = {
-  'turf-somerset': 'First turf out the door this season — every door attempted.',
-  'turf-kitchissippi': 'Being knocked right now — Saturday afternoon shift.',
+  'turf-core': 'First turf out the door this season — every door attempted.',
+  'turf-west': 'Being knocked right now — Saturday afternoon shift.',
 };
 
 const OFFICE_KNOCK_NOTES: Record<string, string> = {
@@ -550,9 +552,7 @@ export const OFFICE_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
     name: 'Westboro notice drop',
     status: 'completed',
     volunteerPerson: 'jake-morrison',
-    startAddress: '1064 Wellington St W, Ottawa, ON K1Y 2Y3',
-    startLat: 45.4012,
-    startLng: -75.7196,
+    start: 'west',
     scheduledInDays: -3,
     stops: [
       { request: 'dr-byron', status: 'delivered', actedVia: 'volunteer_link', actedHoursAgo: 72 },
@@ -562,12 +562,10 @@ export const OFFICE_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
   },
   {
     key: 'route-glebe',
-    name: 'Glebe & Old Ottawa South drop',
+    name: 'South end notice drop',
     status: 'in_progress',
     volunteerPerson: 'julie-lavoie',
-    startAddress: '175 Third Ave, Ottawa, ON K1S 2K2',
-    startLat: 45.4009,
-    startLng: -75.6889,
+    start: 'south',
     shared: true,
     scheduledInDays: 0,
     stops: [
@@ -580,9 +578,6 @@ export const OFFICE_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
 
 /** The constituency-office dataset, bundled for `demo-datasets.ts`. */
 export const OFFICE_DEMO_DATASET: DemoDataset = {
-  city: DEMO_CITY,
-  state: DEMO_STATE,
-  country: DEMO_COUNTRY,
   companies: DEMO_COMPANIES,
   households: OFFICE_HOUSEHOLDS,
   persons: DEMO_PERSONS,
@@ -598,7 +593,7 @@ export const OFFICE_DEMO_DATASET: DemoDataset = {
   turfs: OFFICE_TURFS,
   deliveryRequests: OFFICE_DELIVERY_REQUESTS,
   deliveryRoutes: OFFICE_DELIVERY_ROUTES,
-  // An office does not fundraise — its riding association does, on its own books. No gifts means
+  // An office does not fundraise — the candidate's own campaign entity does, on its own books. No gifts means
   // nothing to receipt, and office mode hides Donations at signup anyway.
   pledges: [],
   donations: [],

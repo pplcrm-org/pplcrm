@@ -120,6 +120,42 @@
   </div>
 </section>
 
+<!-- =================== RIDINGS, WARDS AND DISTRICTS ===================
+     Electoral audiences only (see showElectoralGeography): a congregation or a
+     food bank does not contest a seat, and a band about congressional districts
+     would read as the campaign template showing through. -->
+@if (showElectoralGeography) {
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[640px] text-center">
+      <div class="eyebrow">Ridings, wards and districts</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        Every other tool assumes your race looks like theirs.
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        A Canadian tool asks for your riding and has never heard of a state house district. An American one asks for
+        your ward and breaks on a federal riding. pplCRM asks what you are running for, then uses that word on every
+        screen.
+      </p>
+    </div>
+    <div class="mx-auto mt-9 grid max-w-[880px] gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+      @for (word of wordCards; track word.word) {
+      <div class="rounded-xl border border-line bg-base-100 p-5">
+        <div class="text-[15px] font-semibold text-primary">{{ word.word }}</div>
+        <p class="mt-1 text-[13px] leading-snug text-base-content/60">{{ word.where }}</p>
+        <p class="mt-2.5 text-[12.5px] text-base-content/45">{{ word.example }}</p>
+      </div>
+      }
+    </div>
+    <div class="mt-6 text-center">
+      <a routerLink="/districts" class="text-[13.5px] font-semibold text-primary hover:text-secondary"
+        >One product, every North American race →</a
+      >
+    </div>
+  </div>
+</section>
+}
+
 <!-- ======================= THE NETWORK EFFECT ======================= -->
 <section class="bg-navy px-5 py-14 sm:px-8 sm:py-16">
   <div class="site-wrap flex flex-wrap items-center gap-10 lg:gap-14">

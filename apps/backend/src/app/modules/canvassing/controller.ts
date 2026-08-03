@@ -53,6 +53,7 @@ import {
   type CutPreview,
   type DoorPoint,
 } from './lib/cutting-engine';
+import { resolveTurfBoundary, type TurfBoundaryContext } from './lib/turf-boundary';
 import { TurfHouseholdsRepo, type CoverageDoorRow } from './repositories/turf-households.repo';
 import { type TurfCanvasser, TurfAssignmentsRepo, generateTurfToken } from './repositories/turf-assignments.repo';
 import {
@@ -145,7 +146,19 @@ export interface TurfListItem {
   status: TurfDisplayStatus;
   list_id: string | null;
   list_name: string | null;
-  ward: string | null;
+  /**
+   * The area this turf covers — 'Ward 12', 'Poll 043'. Null means the turf has no area of its
+   * own: it was cut with no boundary map, or its doors fell outside every area of the map that
+   * was used. Either way the doors were grouped on geography alone, and the UI says so rather
+   * than showing a blank.
+   */
+  boundary_name: string | null;
+  /**
+   * The map the turf was cut against, null when it was cut with no map or the map was later
+   * deleted. A named area with a null map id is the "map is gone" state: refresh can remove
+   * doors but cannot add any, and the refresh explainer/toast say so instead of promising growth.
+   */
+  boundary_set_id: string | null;
   centroid_lat: number | null;
   centroid_lng: number | null;
   door_count: number;
@@ -203,12 +216,15 @@ export interface CoverageDoor extends LatLng {
 export interface CoverageTurf {
   id: string;
   name: string;
-  ward: string | null;
+  /** The area this turf covers, or null when it has none (no map, or outside every area of it). */
+  boundary_name: string | null;
   path: LatLng[];
 }
 
-export interface CoverageWard {
-  ward: string;
+/** One row of the coverage roll-up: how far one area has been walked. */
+export interface CoverageArea {
+  /** The area's name, or `UNBOUNDED_AREA_LABEL` for doors in turfs with no area of their own. */
+  boundary_name: string;
   doors: number;
   conversation: number;
   attempted: number;
@@ -218,7 +234,15 @@ export interface CoverageWard {
 export interface Coverage {
   doors: CoverageDoor[];
   turfs: CoverageTurf[];
-  byWard: CoverageWard[];
+  byBoundary: CoverageArea[];
+  /**
+   * The campaign's own word for one of these areas — 'Polling division', 'Precinct', 'Ward',
+   * 'Riding'. Sent with the data because the right word depends on the campaign's declared
+   * jurisdiction and region, which only the server knows. Never hard-code a word from it.
+   */
+  boundary_label: string;
+  /** Plural of the same word, for the tab heading: "By polling division". */
+  boundary_label_plural: string;
 }
 
 /** One door on the turf detail page: where it is, who lives there, what happened. */
@@ -265,7 +289,17 @@ export interface TurfDetail {
   list_id: string | null;
   list_name: string | null;
   campaign_name: string;
-  ward: string | null;
+  /** The area this turf covers, or null when it has no area of its own. */
+  boundary_name: string | null;
+  /**
+   * The map the turf was cut against. Together with `boundary_name` this tells the page which
+   * no-area story is true: name set = a real area (set may be null when the map is gone);
+   * set without name = cut against a map but outside every area of it; both null = cut with
+   * no map at all.
+   */
+  boundary_set_id: string | null;
+  /** This campaign's word for that kind of area — 'Polling division', 'Ward'. */
+  boundary_label: string;
   door_count: number;
   attempted: number;
   conversations: number;
@@ -278,7 +312,26 @@ export interface TurfDetail {
   doors: TurfDoor[];
 }
 
-const UNASSIGNED_WARD = 'Unassigned';
+/**
+ * The engine's preview arithmetic plus whether THIS cut resolved a boundary map.
+ *
+ * `bounded` is false when no map applies to the cut — the workspace holds none, or none of the
+ * ones it holds matches the campaign's office — so the turfs will be grouped on geography alone.
+ * The dialog words its boundary promise from this, never from "does any map exist", which proves
+ * nothing about a particular cut.
+ */
+export interface CutPreviewResult extends CutPreview {
+  bounded: boolean;
+}
+
+/**
+ * What the coverage roll-up calls the bucket for doors in turfs that have no boundary area of
+ * their own — cut with no map, or cut against a map whose areas all missed their doors.
+ *
+ * 'Unbounded' is the word the turf pages already use for this state. The old label 'Unassigned'
+ * collided with this page's other meaning of the word (a turf with no canvasser assigned).
+ */
+const UNBOUNDED_AREA_LABEL = 'Unbounded';
 const MIN_HULL_POINTS = 3;
 
 // A turf is "in the field" if a knock landed within this window.
@@ -334,7 +387,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         status: this.displayStatus(r, attempted, lastAt, roster.length > 0),
         list_id: r.list_id,
         list_name: r.list_name,
-        ward: r.ward,
+        boundary_name: r.boundary_name,
+        boundary_set_id: r.boundary_set_id,
         centroid_lat: r.centroid_lat,
         centroid_lng: r.centroid_lng,
         door_count: r.door_count,
@@ -358,12 +412,13 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     const row = await this.turfsRepo().getTurfRow({ tenant_id, id: turfId });
     if (!row) throw new NotFoundError('Turf not found');
 
-    const [doorRows, activity, roster, work, campaign] = await Promise.all([
+    const [doorRows, activity, roster, work, campaign, boundaryContext] = await Promise.all([
       this.turfHouseholds.getDoors({ tenant_id, turf_id: turfId }),
       this.knocks.getDoorActivity({ tenant_id, turf_id: turfId }),
       this.assignments.canvassersByTurf({ tenant_id, turf_id: turfId }),
       this.knocks.getCanvasserWork({ tenant_id, turf_id: turfId }),
       this.companionCampaign(tenant_id, String(row.campaign_id ?? '')),
+      resolveTurfBoundary(this.turfsRepo().db, { tenant_id, campaign_id: row.campaign_id }),
     ]);
     const residents = await this.peopleByHousehold(
       tenant_id,
@@ -409,7 +464,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       list_id: row.list_id,
       list_name: row.list_name,
       campaign_name: campaign.name,
-      ward: row.ward,
+      boundary_name: row.boundary_name,
+      boundary_set_id: row.boundary_set_id,
+      boundary_label: boundaryContext.label,
       door_count: row.door_count,
       attempted,
       conversations,
@@ -495,17 +552,33 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   /**
    * §13.3 Coverage — every geocoded door in a turf, coloured by whether it was
    * talked to, knocked with no answer, or not yet reached in the window, plus a
-   * dashed boundary hull per turf and a by-ward roll-up. Unlike the report tiles
+   * dashed boundary hull per turf and a roll-up by area. Unlike the report tiles
    * this returns doors even when nothing has been knocked (a freshly-cut universe
    * reads as an all-grey map), so the caller shows it independently of `doors`.
+   *
+   * The word for one area travels with the response because it depends on the campaign's declared
+   * jurisdiction and region: the same table is headed "By polling division" for a Canadian federal
+   * campaign, "By precinct" in most of the United States, "By election district" in New York, and
+   * "By ward" for a Toronto council race.
    */
   public async getCoverage(auth: IAuthKeyPayload, input: FieldReportRangeType): Promise<Coverage> {
     const { from, to } = this.rangeToDates(input);
-    const rows = await this.turfHouseholds.getCoverageRows({ tenant_id: auth.tenant_id, from, to });
+    const [rows, boundary] = await Promise.all([
+      this.turfHouseholds.getCoverageRows({ tenant_id: auth.tenant_id, from, to }),
+      // This report spans every campaign in the workspace, so there is no one campaign to read the
+      // word from. The caller's pinned campaign is used when they have one, and the workspace's
+      // permanent office context otherwise — the same default every campaign-scoped write takes.
+      resolveTurfBoundary(this.turfsRepo().db, {
+        tenant_id: auth.tenant_id,
+        campaign_id: auth.campaign_id ?? null,
+      }),
+    ]);
 
     const doors: CoverageDoor[] = [];
-    const turfPoints = new Map<string, { name: string; ward: string | null; pts: LatLng[] }>();
-    const wards = new Map<string, CoverageWard>();
+    const turfPoints = new Map<string, { name: string; boundary_name: string | null; pts: LatLng[] }>();
+    // Keyed on the raw name with null as its own key, not on the display label, so a real area
+    // that happens to be named exactly like the bucket label can never be merged into the bucket.
+    const areas = new Map<string | null, CoverageArea>();
 
     for (const r of rows) {
       const status = this.coverageStatus(r);
@@ -514,31 +587,42 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
       let turf = turfPoints.get(r.turf_id);
       if (!turf) {
-        turf = { name: r.turf_name, ward: r.ward, pts: [] };
+        turf = { name: r.turf_name, boundary_name: r.boundary_name, pts: [] };
         turfPoints.set(r.turf_id, turf);
       }
       turf.pts.push(point);
 
-      const wardKey = r.ward ?? UNASSIGNED_WARD;
-      let ward = wards.get(wardKey);
-      if (!ward) {
-        ward = { ward: wardKey, doors: 0, conversation: 0, attempted: 0, not_yet: 0 };
-        wards.set(wardKey, ward);
+      let area = areas.get(r.boundary_name);
+      if (!area) {
+        area = {
+          boundary_name: r.boundary_name ?? UNBOUNDED_AREA_LABEL,
+          doors: 0,
+          conversation: 0,
+          attempted: 0,
+          not_yet: 0,
+        };
+        areas.set(r.boundary_name, area);
       }
-      ward.doors += 1;
-      ward[status] += 1;
+      area.doors += 1;
+      area[status] += 1;
     }
 
     const turfs: CoverageTurf[] = [];
     for (const [id, turf] of turfPoints) {
       const path = convexHull(turf.pts);
       if (path.length >= MIN_HULL_POINTS) {
-        turfs.push({ id, name: turf.name, ward: turf.ward, path });
+        turfs.push({ id, name: turf.name, boundary_name: turf.boundary_name, path });
       }
     }
 
-    const byWard = [...wards.values()].sort((a, b) => b.doors - a.doors);
-    return { doors, turfs, byWard };
+    const byBoundary = [...areas.values()].sort((a, b) => b.doors - a.doors);
+    return {
+      doors,
+      turfs,
+      byBoundary,
+      boundary_label: boundary.label,
+      boundary_label_plural: boundary.label_plural,
+    };
   }
 
   private coverageStatus(r: CoverageDoorRow): CoverageStatus {
@@ -571,13 +655,23 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
   // ---------------------------------------------------------- cut turfs -----
 
-  public async previewCut(auth: IAuthKeyPayload, input: CutTurfsType): Promise<CutPreview> {
-    const doors = await this.resolveUniverseDoors(auth, input.list_id);
-    return previewCutPlan(doors, input.doors_per_turf);
+  public async previewCut(auth: IAuthKeyPayload, input: CutTurfsType): Promise<CutPreviewResult> {
+    // The preview must be cut against the same map the real cut will use, or it can promise a
+    // turf count the cut then contradicts.
+    const boundary = await this.turfBoundaryForCut(auth);
+    const doors = await this.resolveUniverseDoors(auth, input.list_id, boundary.set_id);
+    return { ...previewCutPlan(doors, input.doors_per_turf), bounded: boundary.set_id != null };
   }
 
   public async cutTurfs(auth: IAuthKeyPayload, input: CutTurfsType): Promise<{ created: number; unplaced: number }> {
-    const doors = await this.resolveUniverseDoors(auth, input.list_id);
+    // Turfs are cut FOR a campaign (§15); defaults to the office context.
+    const campaignId = await this.campaignsRepo.resolveForWrite({ tenant_id: auth.tenant_id });
+    const boundary = await resolveTurfBoundary(this.turfsRepo().db, {
+      tenant_id: auth.tenant_id,
+      campaign_id: campaignId,
+    });
+
+    const doors = await this.resolveUniverseDoors(auth, input.list_id, boundary.set_id);
     const plan = clusterTurfs(doors, input.doors_per_turf);
     if (plan.turfs.length === 0) {
       throw new BadRequestError('No geocoded doors in that list yet. Turfs are cut from located households.');
@@ -587,9 +681,6 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     // Continue turf numbering from the current count.
     const existing = await repo.getTurfs(auth.tenant_id);
     let n = existing.length;
-
-    // Turfs are cut FOR a campaign (§15); defaults to the office context.
-    const campaignId = await this.campaignsRepo.resolveForWrite({ tenant_id: auth.tenant_id });
 
     await repo.transaction().execute(async (trx) => {
       for (const cluster of plan.turfs) {
@@ -603,7 +694,18 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           target_doors: input.doors_per_turf,
           centroid_lat: cluster.centroid_lat,
           centroid_lng: cluster.centroid_lng,
-          ward: cluster.ward,
+          // The map is recorded even when the doors matched no area of it. Three stored states:
+          //   set + name   the turf sits inside that named area of that map.
+          //   set, no name the turf was cut against that map but its doors fell outside every
+          //                area of it. Distinct from having no map, and the refresh matcher
+          //                depends on the distinction: doors are re-resolved against THIS map,
+          //                so only doors still outside every area of it may join.
+          //   neither      no map applied at all; refresh matches any unassigned door, the same
+          //                one-bucket rule the cutter used.
+          // (A name with no set also exists in old data: the map was deleted, or the turf
+          // predates maps. refreshFromList handles that state explicitly.)
+          boundary_set_id: boundary.set_id,
+          boundary_name: cluster.boundaryName,
           notes: null,
           createdby_id: auth.user_id,
           updatedby_id: auth.user_id,
@@ -621,8 +723,20 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     return { created: plan.turfs.length, unplaced: plan.unplaced.length };
   }
 
-  /** Re-sync a turf's doors with its smart list WITHOUT losing knock history. */
-  public async refreshFromList(auth: IAuthKeyPayload, turfId: string): Promise<{ added: number; removed: number }> {
+  /**
+   * Re-sync a turf's doors with its smart list WITHOUT losing knock history.
+   *
+   * `boundary_map_missing` is true for a turf that names an area but no longer names the map it
+   * came from — the map was deleted (the FK is ON DELETE SET NULL) or the turf predates boundary
+   * maps. The area name can then be resolved against nothing, so adding doors would either invent
+   * a placement or quietly re-scope the turf. Refresh stays useful one way: doors that left the
+   * list still come off, no doors are added, and the flag lets the client say exactly that
+   * instead of claiming the turf already matches the list.
+   */
+  public async refreshFromList(
+    auth: IAuthKeyPayload,
+    turfId: string,
+  ): Promise<{ added: number; removed: number; boundary_map_missing: boolean }> {
     const turf = await this.turfsRepo().getTurfCore({ tenant_id: auth.tenant_id, id: turfId });
     if (!turf) throw new NotFoundError('Turf not found');
     const listId = turf.list_id;
@@ -634,9 +748,10 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
     // Drop doors no longer in the list; their knock rows persist (history kept).
     const removed = current.filter((h) => !members.has(h));
-    // Add new list members that live in this turf's ward and aren't in ANY turf yet.
-    const wardMembers = await this.wardMembersNotInAnyTurf(auth, turf.ward, members);
-    const added = wardMembers.filter((h) => !currentSet.has(h));
+    // Add new list members that fall in this turf's own area and aren't in ANY turf yet.
+    const boundaryMapMissing = turf.boundary_name != null && turf.boundary_set_id == null;
+    const inArea = boundaryMapMissing ? [] : await this.boundaryMembersNotInAnyTurf(auth, turf, members);
+    const added = inArea.filter((h) => !currentSet.has(h));
 
     await this.turfsRepo()
       .transaction()
@@ -651,7 +766,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         );
       });
 
-    return { added: added.length, removed: removed.length };
+    return { added: added.length, removed: removed.length, boundary_map_missing: boundaryMapMissing };
   }
 
   // -------------------------------------------------------- assignment ------
@@ -1060,13 +1175,17 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     const session = await this.companionAccess.resolveSession(sessionToken);
     const tenant_id = session.tenant_id;
 
-    const [mineIds, rows, progress, canvassers, mayRoam, campaigns] = await Promise.all([
+    const [mineIds, rows, progress, canvassers, mayRoam, campaigns, boundary] = await Promise.all([
       this.assignments.activeTurfIdsForVolunteer({ tenant_id, volunteer_person_id: session.person_id }),
       this.turfsRepo().getTurfs(tenant_id),
       this.knocks.getProgressByTenant(tenant_id),
       this.assignments.canvassersByTurf({ tenant_id }),
       volunteerMayRoam(this.knocks.db, { tenant_id, can_roam: session.can_roam }),
       this.campaignsRepo.getSwitcherList({ tenant_id }),
+      // The picker can span campaigns, so there is no single campaign to read the word from. The
+      // workspace's office context supplies it, which is the same default every other unscoped
+      // campaign read takes.
+      resolveTurfBoundary(this.knocks.db, { tenant_id, campaign_id: null }),
     ]);
 
     const mineSet = new Set(mineIds);
@@ -1078,7 +1197,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       return {
         turf_id: r.id,
         name: r.name,
-        ward: r.ward,
+        boundary_name: r.boundary_name,
         doors: r.door_count,
         attempted: p?.attempted ?? 0,
         canvassers: (canvassers.get(r.id) ?? []).length,
@@ -1097,6 +1216,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
             .filter((r) => myCampaigns.has(String(r.campaign_id ?? '')))
             .map(toChoice)
         : [],
+      boundary_label: boundary.label,
+      boundary_label_plural: boundary.label_plural,
     };
   }
 
@@ -2071,9 +2192,29 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     }
   }
 
-  private async resolveUniverseDoors(auth: IAuthKeyPayload, listId: string): Promise<DoorPoint[]> {
+  /**
+   * The boundary map a cut started right now would use.
+   *
+   * `previewCut` has no campaign in its input, so it resolves the same campaign the cut will:
+   * `CampaignsRepo.resolveForWrite` with no explicit id, which is the workspace's office context.
+   * A workspace with no office campaign has nothing to cut for either, so the resolver's own
+   * fallback (no map, purely geographic clustering) is the honest preview.
+   */
+  private async turfBoundaryForCut(auth: IAuthKeyPayload): Promise<TurfBoundaryContext> {
+    return resolveTurfBoundary(this.turfsRepo().db, { tenant_id: auth.tenant_id, campaign_id: null });
+  }
+
+  private async resolveUniverseDoors(
+    auth: IAuthKeyPayload,
+    listId: string,
+    boundarySetId: string | null,
+  ): Promise<DoorPoint[]> {
     const householdIds = await this.resolveUniverseHouseholdIds(auth, listId);
-    return this.turfsRepo().getHouseholdsGeo({ tenant_id: auth.tenant_id, household_ids: householdIds });
+    return this.turfsRepo().getHouseholdsGeo({
+      tenant_id: auth.tenant_id,
+      household_ids: householdIds,
+      boundary_set_id: boundarySetId,
+    });
   }
 
   /** Reuse Lists' getCurrentMembers (Wave 1C) — never re-derive membership. */
@@ -2084,20 +2225,50 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     return this.turfsRepo().getHouseholdIdsForPersons({ tenant_id: auth.tenant_id, person_ids: members.ids });
   }
 
-  private async wardMembersNotInAnyTurf(
+  /**
+   * List members that fall in the same area as this turf and are not in any turf yet.
+   *
+   * The comparison is made against the turf's OWN boundary map, not the campaign's current one.
+   * A turf cut last month against the outgoing riding map must keep growing along that map's
+   * lines; re-deriving the map here would silently start adding doors from a different set of
+   * areas to a turf a volunteer is already walking.
+   *
+   * One name comparison serves every stored state, because the doors are resolved against the
+   * turf's own map first:
+   *
+   * - set + name: a door matches when it resolves to the same named area of that map.
+   * - set, no name: doors are resolved against that map, so a null area name means the door is
+   *   genuinely outside every area of it — exactly the doors this turf was cut from. Without the
+   *   stored set, these doors would be resolved against nothing, every candidate would read as
+   *   null, and this turf would swallow doors that belong inside named areas.
+   * - neither: no map applies, every door resolves to null, and any unassigned household
+   *   matches — the same one-bucket rule the cutter used.
+   *
+   * (The fourth state, a name with no set, never reaches here: `refreshFromList` skips the
+   * add phase for it, because the name can no longer be resolved against anything.)
+   */
+  private async boundaryMembersNotInAnyTurf(
     auth: IAuthKeyPayload,
-    ward: string | null,
+    turf: { boundary_set_id: string | null; boundary_name: string | null },
     members: Set<string>,
   ): Promise<string[]> {
     if (members.size === 0) return [];
     const geo = await this.turfsRepo().getHouseholdsGeo({
       tenant_id: auth.tenant_id,
       household_ids: [...members],
+      boundary_set_id: turf.boundary_set_id,
     });
-    const inWard = geo.filter((d) => (d.ward ?? null) === ward).map((d) => d.household_id);
+    // Only located doors join a turf — the same rule the cutter applies. Without this, a door
+    // with no coordinates reads as boundaryName null and would slip into a no-map or
+    // outside-every-area turf, putting a pinless door on a canvasser's walk map. It joins on a
+    // later refresh once geocoding places it.
+    const inArea = geo
+      .filter((d) => d.lat != null && d.lng != null)
+      .filter((d) => d.boundaryName === turf.boundary_name)
+      .map((d) => d.household_id);
     // Exclude households already assigned to any turf.
-    const assigned = await this.householdsInAnyTurf(auth, inWard);
-    return inWard.filter((h) => !assigned.has(h));
+    const assigned = await this.householdsInAnyTurf(auth, inArea);
+    return inArea.filter((h) => !assigned.has(h));
   }
 
   private async householdsInAnyTurf(auth: IAuthKeyPayload, householdIds: string[]): Promise<Set<string>> {

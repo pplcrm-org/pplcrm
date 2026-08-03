@@ -1,8 +1,9 @@
 import { Component, inject } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { ORG_MODES, isOrgMode } from '@common';
+import { ORG_MODES, ORG_MODE_IS_ELECTORAL, isOrgMode } from '@common';
 
 import { AUDIENCE_CONTENT, type Audience, type Feature } from './audience-content';
+import { WORD_CARDS } from '../districts/districts-content';
 import { BrowserFrame } from '../ui/browser-frame';
 import { Constellation } from '../ui/constellation';
 import { SeoService } from '../ui/seo';
@@ -55,6 +56,19 @@ export class HomePage {
 
   /** Carries the audience into signup so the visitor is not asked the same question twice. */
   protected readonly audienceSignupUrl = signupUrlFor(this.aud);
+
+  /**
+   * Whether to show the electoral-geography band and its link to /districts.
+   *
+   * Only the two electoral audiences contest a seat, so a food bank or a parish would read a
+   * band about ridings and congressional districts as the campaign template showing through —
+   * the same failure the per-audience blocks in audience-content.ts exist to prevent. The flag
+   * is the app's own `ORG_MODE_IS_ELECTORAL`, so the site cannot drift from the product.
+   */
+  protected readonly showElectoralGeography = ORG_MODE_IS_ELECTORAL[this.aud];
+
+  /** The four seat words the band leads with; the full set lives on /districts. */
+  protected readonly wordCards = WORD_CARDS;
 
   /** Singular labels for the hero's "I'm a…" picker; the nav uses the plural forms. */
   protected readonly audiences: readonly { id: Audience; label: string }[] = ORG_MODES.map((id) => ({

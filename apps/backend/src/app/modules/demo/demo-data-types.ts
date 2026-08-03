@@ -1,5 +1,6 @@
 import type { SupportLevel, VotingStatus, VolunteerStatus, StaffStatus } from '../../../../../../libs/common/src';
 import type { DemoAttachmentKey } from './demo-attachment-assets';
+import type { DemoAreaKey, DemoRouteStartKey, DemoVenueKey } from './demo-data-places';
 
 /**
  * Shapes for the hand-curated demo datasets, one per organization mode.
@@ -9,12 +10,16 @@ import type { DemoAttachmentKey } from './demo-attachment-assets';
  * fiction it has nothing to do with.
  *
  * Ground rules every dataset obeys (why the data looks the way it does):
- * - Addresses are real Ottawa, ON streets with pre-baked coordinates and real ward names, so map
- *   pins, the "Located" geocode chip, and ward-bounded turf cutting all work with zero Google API
- *   calls at signup.
+ * - A dataset holds STORY ONLY, never a place. It names a household by its site key and the place
+ *   pack chosen from the signup country supplies the street, the coordinates and the seat area (see
+ *   `demo-data-places.ts`). Every address in every pack is a real street with pre-baked
+ *   coordinates and a real seat-area name, so map pins, the "Located" geocode chip and
+ *   boundary-bounded turf cutting all work with zero paid address lookups at signup.
  * - Emails are on RFC 2606 reserved domains (example.com/org/net) so nothing a user does with the
  *   demo data — including actually sending the draft newsletter — can ever reach a real inbox.
- * - Phone numbers use the fictional 555 exchange in Ottawa area codes.
+ * - Phone numbers use the fictional 555 exchange. The area code written here is the Canadian pack's
+ *   (613); the seeder rewrites it to the seeded pack's area code, so a Chicago workspace does not
+ *   open with a page of Ottawa numbers.
  * - Tags and issues are STARTER vocabulary, seeded by seedStarterTags (modules/auth/
  *   onboarding-seed.ts) and kept when demo data is deleted. A dataset only ATTACHES persons and
  *   households to them BY NAME, and submissions to starter forms BY SLUG — the seeder skips a
@@ -36,15 +41,15 @@ export interface DemoCompanyDef {
   industry: string;
 }
 
+/**
+ * One demo household: a site key plus this dataset's story about the people there.
+ *
+ * The address, coordinates, postal code and seat area are NOT here. They come from the place pack
+ * the workspace was seeded with, looked up by `key` — which is what lets one story serve an Ottawa
+ * workspace and a Chicago one.
+ */
 export interface DemoHouseholdDef {
   key: string;
-  street_num: string;
-  street1: string;
-  zip: string;
-  lat: number;
-  lng: number;
-  ward: string;
-  home_phone?: string;
   notes?: string;
   /** Starter tag names attached via map_households_tags. */
   tags?: string[];
@@ -105,7 +110,8 @@ export interface DemoVolunteerEventDef {
   key: string;
   name: string;
   description: string;
-  location_address: string;
+  /** Which of the place pack's addresses the event is held at. */
+  venue: DemoVenueKey;
   slug: string;
   /** Negative = in the past. */
   startInDays: number;
@@ -212,9 +218,13 @@ export interface DemoKnockDef {
 
 export interface DemoTurfDef {
   key: string;
-  name: string;
-  /** All households must sit in this ward (turfs are ward-bounded). */
-  ward: string;
+  /**
+   * The pack area this turf covers. Every household listed below must sit in it, because the
+   * cutting engine never lets one turf span two boundaries. The turf's NAME comes from the pack's
+   * area too, so a Chicago workspace reads "Wicker Park (Ward 1)" where an Ottawa one reads
+   * "The Glebe (Capital)".
+   */
+  area: DemoAreaKey;
   /** Stored lifecycle: 'active' = handed out/knocked, 'draft' = cut, not yet assigned. */
   status: 'draft' | 'active';
   /** Whether a tokenised Companion assignment exists (active turfs only). */
@@ -253,9 +263,8 @@ export interface DemoDeliveryRouteDef {
   status: 'assigned' | 'in_progress' | 'completed';
   /** Volunteer driving it (person key). */
   volunteerPerson?: string;
-  startAddress: string;
-  startLat: number;
-  startLng: number;
+  /** Which of the place pack's route starts the driver sets off from. */
+  start: DemoRouteStartKey;
   /** Whether a share link is still live (sets share_token_hash). */
   shared?: boolean;
   scheduledInDays?: number;
@@ -330,9 +339,6 @@ export interface DemoStatementRunDef {
  * worse than no canvassing at all.
  */
 export interface DemoDataset {
-  readonly city: string;
-  readonly state: string;
-  readonly country: string;
   readonly companies: readonly DemoCompanyDef[];
   readonly households: readonly DemoHouseholdDef[];
   readonly persons: readonly DemoPersonDef[];
@@ -350,7 +356,13 @@ export interface DemoDataset {
   readonly deliveryRoutes: readonly DemoDeliveryRouteDef[];
   readonly pledges: readonly DemoPledgeDef[];
   readonly donations: readonly DemoDonationDef[];
-  /** Official receipts over `donations` (empty when the mode's story has no receipting). */
+  /**
+   * Official receipts over `donations` (empty when the mode's story has no receipting).
+   *
+   * Seeded only into a Canadian workspace. Every receipt regime the product implements is Canadian,
+   * so a United States workspace gets the gifts and the ledger but no receipts — see
+   * `PlacePack.seedsReceipts`.
+   */
   readonly receipts: readonly DemoReceiptDef[];
   /** `receipts.*` settings seeded with the receipts (removed again on exit-demo). */
   readonly receiptSettings: Readonly<Record<string, string | boolean>>;

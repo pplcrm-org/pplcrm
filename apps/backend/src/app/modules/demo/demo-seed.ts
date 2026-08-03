@@ -16,6 +16,9 @@ import { DuplicateMaintenanceService } from '../persons/services/duplicate-maint
 import { extractBodyText } from '../emails/services/email-body-text';
 import { buildDemoAttachment } from './demo-attachment-assets';
 import type { DemoDataset, DemoEngagementDef, DemoNewsletterDef } from './demo-data-types';
+import { JURISDICTIONS, boundaryBBoxOf, isJurisdictionId } from '../../../../../../libs/common/src';
+import type { PlacePack } from './demo-data-places';
+import { DEMO_AREA_KEYS, areaGeometry, placePackForCountry, sitesByKey } from './demo-data-places';
 
 /**
  * Everything `seedDemoData` created, keyed by table — stored as a `settings`
@@ -73,6 +76,14 @@ export const DemoSeedManifestObj = z.object({
   /** True when seeding wrote receipts.* settings — exit-demo removes them so a workspace never
    *  issues REAL receipts under the demo organization's name and registration number. */
   receipt_settings_seeded: z.boolean().default(false),
+  /**
+   * The sample seat-area map seeded with the demo households.
+   *
+   * `boundary_features` and `household_districts` both CASCADE from a set, so deleting these ids on
+   * exit-demo takes the polygons and the per-household area rows with them. Optional-with-default so
+   * a manifest written before boundary sets existed still parses.
+   */
+  boundary_sets: z.array(z.string()).default([]),
 });
 export type DemoSeedManifest = z.infer<typeof DemoSeedManifestObj>;
 
@@ -83,6 +94,50 @@ const HOUR_MS = 60 * 60 * 1000;
 const daysAgo = (n: number) => new Date(Date.now() - n * DAY_MS);
 const daysFromNow = (n: number) => new Date(Date.now() + n * DAY_MS);
 const hoursAgo = (n: number) => new Date(Date.now() - n * HOUR_MS);
+
+/**
+ * The area code the datasets are written with. Every demo phone number is `613-555-XXXX`, and the
+ * seeder swaps this prefix for the seeded pack's own area code so a Chicago workspace does not open
+ * with a directory of Ottawa numbers. Only the area code moves; the fictional 555 exchange stays,
+ * because 555-01XX is the range reserved for fiction in both countries.
+ */
+const DATASET_PHONE_AREA_CODE = '613';
+
+/** Rewrite a demo phone number's area code to the seeded pack's. Leaves anything else untouched. */
+function packPhone(phone: string | null | undefined, pack: PlacePack): string | null {
+  if (phone == null) return null;
+  if (!phone.startsWith(`${DATASET_PHONE_AREA_CODE}-`)) return phone;
+  return `${pack.phoneAreaCode}-${phone.slice(DATASET_PHONE_AREA_CODE.length + 1)}`;
+}
+
+/** The full one-line address of a pack venue, in the same shape the household addresses use. */
+function venueAddress(pack: PlacePack, key: keyof PlacePack['venues']): string {
+  const venue = pack.venues[key];
+  return `${venue.line1}, ${pack.city}, ${pack.state} ${venue.zip}`;
+}
+
+/**
+ * Which country's addresses this workspace is seeded with.
+ *
+ * Read from the office campaign signup just created, because that is where signup's step-2 answers
+ * land and it is the only country signal a workspace has at this point. `tenants.data_region` is
+ * NOT consulted: it is a hosting preference and deliberately not the campaign's country. A campaign
+ * that skipped the office step has jurisdiction 'other', whose country is null, and gets the
+ * default pack.
+ */
+async function resolvePlacePack(
+  trx: Transaction<Models>,
+  params: { tenant_id: string; campaign_id: string },
+): Promise<PlacePack> {
+  const campaign = await trx
+    .selectFrom('campaigns')
+    .select(['jurisdiction'])
+    .where('tenant_id', '=', params.tenant_id)
+    .where('id', '=', params.campaign_id)
+    .executeTakeFirst();
+  const jurisdiction = campaign && isJurisdictionId(campaign.jurisdiction) ? campaign.jurisdiction : null;
+  return placePackForCountry(jurisdiction ? JURISDICTIONS[jurisdiction].country : null);
+}
 
 interface SeedParams {
   tenant_id: string;
@@ -104,12 +159,45 @@ interface SeedParams {
  * transaction. Returns the manifest it also persisted to `settings`; sets
  * `tenants.demo_mode_at` as the final step so the flag and the data are atomic.
  *
- * Geocoding is pre-baked (real coordinates + ward names in the dataset), so no
- * geocode_household jobs are enqueued and no Google API calls happen at signup.
+ * Geocoding is pre-baked — the place pack carries real coordinates and real seat-area names — so no
+ * geocode_household jobs are enqueued and not one paid address lookup happens at signup. Boundary
+ * matching is pre-baked for the same reason: the `household_districts` rows are written directly
+ * from the pack rather than by running the matcher, and matching costs nothing anyway.
  */
 export async function seedDemoData(params: SeedParams, trx: Transaction<Models>): Promise<DemoSeedManifest> {
   const { tenant_id, user_id, campaign_id, placeholder_household_id, dataset } = params;
   const audit = { tenant_id, createdby_id: user_id, updatedby_id: user_id };
+
+  // Which country's streets, seat areas and phone numbers this workspace gets.
+  const pack = await resolvePlacePack(trx, { tenant_id, campaign_id });
+  const siteByKey = sitesByKey(pack);
+  const siteFor = (key: string) => {
+    const site = siteByKey.get(key);
+    if (!site) throw new Error(`Demo place pack "${pack.country}" has no site "${key}"`);
+    return site;
+  };
+
+  // ── The office the demo depicts ───────────────────────────────────────────
+  // Both electoral datasets are a council member's operation, so the campaign is given the pack's
+  // local office — but ONLY when signup left the office undeclared. An answer the user actually
+  // gave is never overwritten: their race is theirs, and the demo data is a sample beside it.
+  await trx
+    .updateTable('campaigns')
+    .set({
+      jurisdiction: pack.office.jurisdiction,
+      office_region: pack.office.office_region,
+      office_locality: pack.office.office_locality,
+      chamber: pack.office.chamber,
+      seat_type: pack.office.seat_type,
+      seat_name: pack.office.seat_name,
+      seat_label_override: pack.office.seat_label_override,
+      office_title: pack.office.office_title,
+    })
+    .where('tenant_id', '=', tenant_id)
+    .where('id', '=', campaign_id)
+    .where('jurisdiction', '=', 'other')
+    .where('seat_name', 'is', null)
+    .execute();
 
   // ── Demo teammates (real authusers so Users/assignment/inbox look staffed;
   //    random unguessable password + reserved-domain email = can never sign in).
@@ -168,7 +256,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         description: c.description,
         website: c.website,
         email: c.email,
-        phone: c.phone,
+        phone: packPhone(c.phone, pack),
         industry: c.industry,
       })),
     )
@@ -176,29 +264,33 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     .execute();
   const companyIdByKey = new Map(dataset.companies.map((c, i) => [c.key, String(companyRows[i]?.id)]));
 
-  // ── Households (geocode pre-baked: success + lat/lng + ward) ─────────────
+  // ── Households (geocode pre-baked: success + lat/lng + area) ─────────────
+  //    The story comes from the dataset and the place comes from the pack, joined on the site key.
   const householdRows = await trx
     .insertInto('households')
     .values(
       dataset.households.map((h) => {
+        const site = siteFor(h.key);
         const address = {
-          street_num: h.street_num,
-          street1: h.street1,
-          city: dataset.city,
-          state: dataset.state,
-          zip: h.zip,
-          country: dataset.country,
+          street_num: site.street_num,
+          street1: site.street1,
+          city: pack.city,
+          state: pack.state,
+          zip: site.zip,
+          country: pack.countryName,
         };
         return {
           ...audit,
           campaign_id,
           ...address,
-          home_phone: h.home_phone ?? null,
+          home_phone: packPhone(site.home_phone, pack),
           notes: h.notes ?? null,
-          lat: h.lat,
-          lng: h.lng,
-          ward: h.ward,
-          formatted_address: `${h.street_num} ${h.street1}, ${dataset.city}, ${dataset.state} ${h.zip}, ${dataset.country}`,
+          lat: site.lat,
+          lng: site.lng,
+          // Which area this address is in is written further down, as a `household_districts` row
+          // naming pack.areas[site.area] — one row per household per map, so it can hold every
+          // boundary that covers the address rather than only one.
+          formatted_address: `${site.street_num} ${site.street1}, ${pack.city}, ${pack.state} ${site.zip}, ${pack.countryName}`,
           geocoding_status: 'success',
           address_fp_street: fingerprintStreet(address),
           address_fp_full: fingerprintFull(address),
@@ -209,6 +301,67 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     .execute();
   const householdIdByKey = new Map(dataset.households.map((h, i) => [h.key, String(householdRows[i]?.id)]));
   const householdByKey = new Map(dataset.households.map((h) => [h.key, h]));
+
+  // ── The sample seat-area map ──────────────────────────────────────────────
+  // Turf cutting refuses to let a turf span two boundaries, and the map page wants something to
+  // draw, so the demo ships its own boundary set rather than leaving both empty. Three honesty
+  // rules hold here: the source is 'drawn' because that is literally what these outlines are, the
+  // label and vintage say they are sample outlines and not the city's official lines, and no
+  // external service is called — matching a point to a polygon is arithmetic, not a paid lookup.
+  const boundarySetRow = await trx
+    .insertInto('boundary_sets')
+    .values({
+      tenant_id,
+      createdby_id: user_id,
+      slug: pack.boundarySet.slug,
+      label: pack.boundarySet.label,
+      jurisdiction: pack.office.jurisdiction,
+      role: 'seat_area',
+      chamber: null,
+      region: pack.office.office_region,
+      vintage: pack.boundarySet.vintage,
+      source: 'drawn',
+      file_id: null,
+      name_property: null,
+      code_property: null,
+      feature_count: DEMO_AREA_KEYS.length,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const boundary_set_id = String(boundarySetRow.id);
+
+  await trx
+    .insertInto('boundary_features')
+    .values(
+      DEMO_AREA_KEYS.map((key) => {
+        const area = pack.areas[key];
+        const geometry = areaGeometry(area);
+        return {
+          tenant_id,
+          createdby_id: user_id,
+          updatedby_id: user_id,
+          set_id: boundary_set_id,
+          name: area.name,
+          code: area.code,
+          geometry: JSON.stringify(geometry),
+          bbox: JSON.stringify(boundaryBBoxOf(geometry)),
+        };
+      }),
+    )
+    .execute();
+
+  // Which area covers each demo household. Written straight from the pack rather than by running
+  // the matcher: the pack already states which area every address is in, and re-deriving it would
+  // only re-confirm what the polygons were drawn around.
+  const householdDistrictRows = dataset.households.flatMap((h) => {
+    const household_id = householdIdByKey.get(h.key);
+    if (!household_id) return [];
+    const area = pack.areas[siteFor(h.key).area];
+    return [{ tenant_id, household_id, set_id: boundary_set_id, name: area.name, code: area.code }];
+  });
+  if (householdDistrictRows.length > 0) {
+    await trx.insertInto('household_districts').values(householdDistrictRows).execute();
+  }
 
   // ── Persons (created_at staggered so the dashboard growth chart is real) ──
   const personRows = await trx
@@ -222,7 +375,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         first_name: p.first_name,
         last_name: p.last_name,
         email: p.email ?? null,
-        mobile: p.mobile ?? null,
+        mobile: packPhone(p.mobile, pack),
         notes: p.notes ?? null,
         do_not_contact: p.doNotContact ?? false,
         volunteer_status: p.volunteerStatus ?? null,
@@ -394,7 +547,7 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         ...audit,
         name: ev.name,
         description: ev.description,
-        location_address: ev.location_address,
+        location_address: venueAddress(pack, ev.venue),
         start_time: start,
         end_time: end,
         capacity: ev.capacity,
@@ -629,7 +782,12 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   //    lifecycle status and the raw knock rows (never counters). Knock times
   //    are relative to now so the derived display state is stable.
   const round1 = (n: number): number => Math.round(n * 10) / 10;
-  const householdGeoByKey = new Map<string, LatLng>(dataset.households.map((h) => [h.key, { lat: h.lat, lng: h.lng }]));
+  const householdGeoByKey = new Map<string, LatLng>(
+    dataset.households.map((h) => {
+      const site = siteFor(h.key);
+      return [h.key, { lat: site.lat, lng: site.lng }];
+    }),
+  );
 
   const turfIds: string[] = [];
   const turfAssignmentIds: string[] = [];
@@ -643,13 +801,14 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
       .values({
         ...audit,
         campaign_id,
-        name: turf.name,
+        name: pack.areas[turf.area].turfName,
         status: turf.status,
         list_id: null,
         target_doors: turf.households.length,
         centroid_lat,
         centroid_lng,
-        ward: turf.ward,
+        boundary_set_id,
+        boundary_name: pack.areas[turf.area].name,
         notes: turf.notes ?? null,
       })
       .returning('id')
@@ -741,7 +900,8 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   const deliveryRouteIds: string[] = [];
   const deliveryStopIds: string[] = [];
   for (const route of dataset.deliveryRoutes) {
-    const start: LatLng = { lat: route.startLat, lng: route.startLng };
+    const routeStart = pack.routeStarts[route.start];
+    const start: LatLng = { lat: routeStart.lat, lng: routeStart.lng };
     let travelMinutes = 0;
     let est_km = 0;
     const legs: number[] = [];
@@ -762,9 +922,9 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         name: route.name,
         status: route.status,
         volunteer_person_id: route.volunteerPerson ? (personIdByKey.get(route.volunteerPerson) ?? null) : null,
-        start_address: route.startAddress,
-        start_lat: route.startLat,
-        start_lng: route.startLng,
+        start_address: `${routeStart.line1}, ${pack.city}, ${pack.state} ${routeStart.zip}`,
+        start_lat: routeStart.lat,
+        start_lng: routeStart.lng,
         est_minutes: round1(travelMinutes + SERVICE_MINUTES_PER_STOP * route.stops.length),
         est_km: round1(est_km),
         scheduled_for: route.scheduledInDays != null ? daysFromNow(route.scheduledInDays) : null,
@@ -882,10 +1042,18 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
   //    year for anyone signing up in January. Numbering therefore restarts at 1 in each year the
   //    seeded receipts land in, oldest first, which is what "gap-free, forward in time" means to
   //    the auditor a real charity answers to.
+  //
+  //    Canada only. Every regime in libs/common/src/lib/receipt-regimes is Canadian — the CRA
+  //    charity regime and the four political ones — because United States political
+  //    contributions are not tax-deductible and no United States charity regime is built yet.
+  //    Seeding these rows into a Chicago workspace would hand a brand-new user a page of Canada
+  //    Revenue Agency receipts issued from an American address. The gifts and the ledger are
+  //    still seeded; only the official receipts are not.
   const receiptIds: string[] = [];
   const receiptItemIds: string[] = [];
   const statementRunIds: string[] = [];
-  if (dataset.receipts.length > 0) {
+  const seedsReceipts = pack.seedsReceipts && dataset.receipts.length > 0;
+  if (seedsReceipts) {
     await trx
       .insertInto('settings')
       .values(
@@ -928,7 +1096,8 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
       const advantageCents = def.advantageCents ?? 0;
       // The donor's mailing address is prescribed content on a CRA receipt, and the live issue
       // path freezes it onto the row from the person's household — so the demo does the same.
-      const home = person.household ? householdByKey.get(person.household) : undefined;
+      const homeStory = person.household ? householdByKey.get(person.household) : undefined;
+      const home = homeStory ? siteFor(homeStory.key) : undefined;
       const receipt = await trx
         .insertInto('donation_receipts')
         .values({
@@ -944,10 +1113,10 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
           donor_name: `${person.first_name} ${person.last_name}`.trim(),
           donor_email: person.email ?? null,
           donor_address_line1: home ? `${home.street_num} ${home.street1}` : null,
-          donor_city: home ? dataset.city : null,
-          donor_province: home ? dataset.state : null,
+          donor_city: home ? pack.city : null,
+          donor_province: home ? pack.state : null,
           donor_postal_code: home?.zip ?? null,
-          donor_country: home ? dataset.country : null,
+          donor_country: home ? pack.countryName : null,
           amount_cents: donationDef.amountCents,
           advantage_cents: advantageCents,
           eligible_cents: donationDef.amountCents - advantageCents,
@@ -1069,7 +1238,8 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     donation_receipts: receiptIds,
     donation_receipt_items: receiptItemIds,
     receipt_statement_runs: statementRunIds,
-    receipt_settings_seeded: Object.keys(dataset.receiptSettings).length > 0,
+    receipt_settings_seeded: seedsReceipts && Object.keys(dataset.receiptSettings).length > 0,
+    boundary_sets: [boundary_set_id],
   };
 
   await trx
@@ -1315,6 +1485,17 @@ export async function deleteDemoData(params: DeleteParams, trx: Transaction<Mode
   }
   if (m.companies.length > 0) {
     await trx.deleteFrom('companies').where('tenant_id', '=', tenant_id).where('id', 'in', m.companies).execute();
+  }
+
+  // The sample seat-area map. Its polygons and its per-household area rows both CASCADE from the
+  // set, so one delete removes all three. `turfs.boundary_set_id` is ON DELETE SET NULL, which is
+  // why this runs after the turfs are gone rather than orphaning a live turf's map link.
+  if (m.boundary_sets.length > 0) {
+    await trx
+      .deleteFrom('boundary_sets')
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', m.boundary_sets)
+      .execute();
   }
 
   // Tags/issues are starter vocabulary now and never enter new manifests

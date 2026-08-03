@@ -10,6 +10,7 @@ import { backfillPersonPublicIds, insertPersonWithPublicId } from '../../../lib/
 import { notificationEnabled } from '../../../lib/profile-preferences';
 import { assertAssigneeInTenant, findAssigneeForNotification } from '../../../lib/tenant-members';
 import { HouseholdRepo } from '../../households/repositories/households.repo';
+import { ensureImportedBoundarySets, readImportedAreas, writeImportedAreas } from '../../households/electoral-areas';
 import { SettingsController } from '../../settings/controller';
 import { TagsRepo } from '../../tags/repositories/tags.repo';
 import { MapPersonsTagRepo } from '../repositories/map-persons-tags.repo';
@@ -588,6 +589,23 @@ export class PersonsService {
         country?: string;
         company?: string;
         tags?: string;
+        /**
+         * Electoral columns the file itself named. A purchased US voter file is one row per voter,
+         * so it comes in through this importer rather than the households one, and it routinely
+         * already carries the congressional district, both state legislative district numbers, the
+         * precinct and the ward on every row. Taking those columns writes `household_districts`
+         * rows straight out of the file: no polygon data, no address lookup, nothing billed.
+         *
+         * The keys match `IMPORTED_AREA_SETS` in modules/households/electoral-areas.ts, which is
+         * what `readImportedAreas` reads them back out under.
+         */
+        electoral_district?: string;
+        congressional_district?: string;
+        legislative_district?: string;
+        state_house_district?: string;
+        state_senate_district?: string;
+        ward?: string;
+        precinct?: string;
       }>;
       tags?: string[];
       skipped?: number;
@@ -789,6 +807,21 @@ export class PersonsService {
     let autoTagId: string | null = null;
     const autoTag = tags.find((t) => t.startsWith('Imported-')) || tags[0];
 
+    // Which jurisdiction a boundary map created by this import belongs to. A spreadsheet never says,
+    // so the importing campaign's own jurisdiction is the best available answer, and 'other' is the
+    // honest default for a workspace that has not declared one. Same rule as the households
+    // importer (modules/households/controller.ts), so a workspace that imports both files ends up
+    // with one set of maps rather than two.
+    const importCampaign = campaign_id
+      ? await this.personsRepo.db
+          .selectFrom('campaigns')
+          .select('jurisdiction')
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', campaign_id)
+          .executeTakeFirst()
+      : undefined;
+    const importJurisdiction = importCampaign?.jurisdiction ?? 'other';
+
     // Total rows consumed from the source so far — replaces rows.length now
     // that the source may be a lazy iterator (also drives 1-based row numbers).
     let rowsSeen = 0;
@@ -818,6 +851,13 @@ export class PersonsService {
           company?: string;
           tags: string[];
         };
+        /**
+         * Electoral areas the file itself named, keyed by import field. Empty for most files, and
+         * the whole point of a purchased voter file. These are NOT columns on `households` — they
+         * become `household_districts` rows against an `import`-sourced boundary map, one row per
+         * column the file carried.
+         */
+        areas: Record<string, string>;
         isBlankAddress: boolean;
         fp_street: string | null;
         fp_full: string | null;
@@ -853,6 +893,7 @@ export class PersonsService {
           !sanitized.country;
         validEntries.push({
           sanitized,
+          areas: readImportedAreas(raw),
           isBlankAddress,
           fp_street: isBlankAddress
             ? null
@@ -969,6 +1010,49 @@ export class PersonsService {
             const household = await households.add({ row: hhRow }, trx);
             fpCache.set(fp_full, String(household?.id));
             householdsCreatedDelta += 1;
+          }
+
+          // 2c bis. Electoral areas the file named. This is the cheapest way a workspace gets real
+          // electoral geography, and it costs nothing at all: the area name arrived already
+          // assigned to the row, so there is no polygon to match and — the part that matters — no
+          // paid address lookup. Nothing below calls a geocoding service, and nothing below changes
+          // whether or when one is called: coordinates remain a separate concern, metered by the
+          // plan gate and per-workspace daily budget in lib/gis/geocode-queue.ts.
+          //
+          // Written with `upsertHouseholdAreas` (via `writeImportedAreas`) rather than
+          // `applyHouseholdMatches`, because that opens its own transaction and Kysely issues a
+          // fresh BEGIN/COMMIT on the same connection rather than a savepoint — calling it here
+          // would commit this import's transaction early.
+          //
+          // Areas are written for the household the row resolved to, whether this chunk created it
+          // or it was already on file, because a district is a fact about the address and a
+          // purchased voter file is exactly the case where the addresses already exist. Rows with
+          // no address at all are excluded: they all share the one blank household, so recording
+          // one voter's district there would attach it to every address-less person in the
+          // workspace.
+          //
+          // Several voters share one door, so the per-household areas are merged first. Two rows
+          // for the same household in one INSERT would make Postgres refuse the statement outright
+          // ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+          const areasByHousehold = new Map<string, Record<string, string>>();
+          for (const entry of validEntries) {
+            if (entry.isBlankAddress || !entry.fp_full) continue;
+            if (Object.keys(entry.areas).length === 0) continue;
+            const householdId = fpCache.get(entry.fp_full);
+            if (!householdId) continue;
+            areasByHousehold.set(householdId, { ...(areasByHousehold.get(householdId) ?? {}), ...entry.areas });
+          }
+          if (areasByHousehold.size > 0) {
+            const areaEntries = [...areasByHousehold].map(([household_id, areas]) => ({ household_id, areas }));
+            const usedFields = [...new Set(areaEntries.flatMap((e) => Object.keys(e.areas)))];
+            const setIdByField = await ensureImportedBoundarySets(
+              trx,
+              tenant_id,
+              user_id,
+              usedFields,
+              importJurisdiction,
+            );
+            await writeImportedAreas(trx, tenant_id, areaEntries, setIdByField);
           }
 
           // 2c'. Resolve companies by case-insensitive name: one IN query for the

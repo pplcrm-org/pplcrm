@@ -39,6 +39,10 @@ export const appConfig: ApplicationConfig = {
         const env = inject(ENVIRONMENT);
         return new Loader({
           apiKey: env.googleMapsApiKey,
+          // 'drawing' is deliberately NOT loaded. Google removed DrawingManager from the Maps
+          // JavaScript API at v3.65, so the library is dead weight. <pc-map>'s boundary drawing
+          // places vertices from map clicks instead, which is also the only way vertex snapping
+          // can work — DrawingManager only ever returned a completed shape.
           libraries: ['places'],
         });
       },

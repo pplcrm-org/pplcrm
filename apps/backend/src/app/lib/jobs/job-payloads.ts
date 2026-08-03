@@ -89,6 +89,27 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     tenant_id: idSchema,
   }),
   /**
+   * Re-match households against boundary polygons. Pure processor work: it re-reads coordinates
+   * already on file and calls no paid service, which is why it may run promptly while geocoding is
+   * metered across days. Enqueued whenever a boundary set is created, drawn into, uploaded, edited
+   * or deleted, inside that write's own transaction.
+   *
+   * `set_id` null means every set the workspace's active campaigns require. `scope` 'unmatched'
+   * limits the pass to households that hold no row for the target sets, which is what the nightly
+   * sweep wants; 'all' re-matches everything, which is what a changed map wants. `cursor` is the
+   * keyset resume point — one pass handles a fixed batch and re-queues itself with the last
+   * household id it saw, so a large workspace never holds a transaction open across a long loop.
+   */
+  z.object({
+    type: z.literal('match_boundaries'),
+    tenant_id: idSchema,
+    set_id: idSchema.nullish(),
+    scope: z.enum(['all', 'unmatched']).default('all'),
+    cursor: idSchema.nullish(),
+  }),
+  /** Nightly: re-match anything still unmatched, for every workspace holding a boundary set. */
+  z.object({ type: z.literal('sweep_unmatched_boundaries') }),
+  /**
    * Materialize the demo inbox's attachment payloads (build the bytes, upload, link a `files`
    * row). Enqueued in the signup transaction rather than uploaded inline: blob I/O in the
    * signup path adds latency, makes a storage outage a signup problem, and strands blobs if

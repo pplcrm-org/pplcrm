@@ -4,6 +4,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { emailSchema } from '@common';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { ELECTORAL_IMPORT_FIELDS } from '@uxcommon/components/csv-import/persons-field-mapping';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
 import { CompaniesService } from '../../companies/services/companies-service';
@@ -18,6 +19,23 @@ import {
   type ImportEntityType,
 } from '../import-entity-config';
 import { ImportsService } from '../services/imports-service';
+
+/**
+ * The district, ward and precinct values a mapped row carries, if any.
+ *
+ * The people branch sends its rows to the server exactly as mapped, so it needs nothing. The
+ * households branch rebuilds each row field by field — which is what silently dropped these columns
+ * — so it spreads this in. Absent keys are left out rather than sent as undefined, so a file with
+ * no electoral columns sends the same payload it always did.
+ */
+function electoralFieldsOf(row: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const field of ELECTORAL_IMPORT_FIELDS) {
+    const value = row[field];
+    if (value) out[field] = value;
+  }
+  return out;
+}
 
 /** The four steps of the CSV import wizard (spec §17), in order. */
 type WizardStep = 'upload' | 'map' | 'review' | 'confirm';
@@ -527,6 +545,11 @@ export class ImportWizard {
             country: row['country'],
             home_phone: row['home_phone'],
             notes: row['notes'],
+            // District, ward and precinct columns the person mapped. Listed by name like every
+            // other field above, because this object is rebuilt field by field and anything not
+            // named here never leaves the browser. Each becomes its own boundary map on the
+            // backend, with no address lookup and no cost.
+            ...electoralFieldsOf(row),
           })),
           tags: this.parsedTags(),
           ...common,

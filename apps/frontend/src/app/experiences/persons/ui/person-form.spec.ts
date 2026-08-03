@@ -83,6 +83,12 @@ describe('PersonForm', () => {
       activeCampaignId: () => 'c1',
       activeCampaign: () => ({ id: 'c1', name: 'Office' }),
       isArchivedContext: () => false,
+      // Jurisdiction vocabulary resolved from the active campaign's declared office. Components
+      // read these to name electoral areas in the campaign's own word.
+      seatLabel: () => 'Ward',
+      seatLabelPlural: () => 'Wards',
+      subdivisionLabel: () => 'Poll',
+      subdivisionLabelPlural: () => 'Polls',
     };
 
     mockRoute = {

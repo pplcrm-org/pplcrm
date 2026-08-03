@@ -3,7 +3,12 @@ import { CampaignsController } from './controller';
 import { CampaignsRepo } from './repositories/campaigns.repo';
 import { BaseRepository } from '../../lib/base.repo';
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import type { IAuthKeyPayload } from '@common';
+
+// Campaign create/office-change commits `pending` boundary-match rows into the shared
+// background_jobs queue, which another spec file's claimer could steal mid-run.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 function rand() {
   return String(Math.floor(Math.random() * 100000000) + 10000000);
@@ -51,6 +56,7 @@ async function createTestSeed(db: any) {
 
 async function cleanTenant(db: any, tenantId: string) {
   await db.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
+  await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('profiles').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('campaign_subscriptions').where('tenant_id', '=', tenantId).execute();
@@ -125,6 +131,65 @@ describe('CampaignsController', () => {
     const election = rows.find((c) => c.name === 'Riverdale 2026');
     expect(election?.kind).toBe('election');
     expect(election?.status).toBe('active');
+  });
+
+  it('queues an unmatched boundary re-match when a campaign is created', async () => {
+    await controller.addCampaign(
+      { name: 'Matchville 2026', kind: 'election', description: null, notes: null, startdate: null, enddate: null },
+      auth,
+    );
+
+    const jobs = await db.selectFrom('background_jobs').selectAll().where('tenant_id', '=', tenantId).execute();
+    const matchJobs = jobs
+      .map((j: any) => ({
+        status: j.status,
+        payload: typeof j.payload === 'string' ? JSON.parse(j.payload) : j.payload,
+      }))
+      .filter((j: any) => j.payload.type === 'match_boundaries');
+    expect(matchJobs).toHaveLength(1);
+    expect(matchJobs[0].status).toBe('pending');
+    expect(matchJobs[0].payload.scope).toBe('unmatched');
+  });
+
+  it('queues a re-match when an update moves the office, and not for a plain rename', async () => {
+    const campaignId = rand();
+    await db
+      .insertInto('campaigns')
+      .values({
+        id: campaignId,
+        tenant_id: tenantId,
+        admin_id: userId,
+        name: 'Officeless Race',
+        kind: 'election',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    const matchJobs = async () => {
+      const jobs = await db.selectFrom('background_jobs').selectAll().where('tenant_id', '=', tenantId).execute();
+      return jobs.filter((j: any) => {
+        const payload = typeof j.payload === 'string' ? JSON.parse(j.payload) : j.payload;
+        return payload.type === 'match_boundaries';
+      });
+    };
+
+    // A rename touches none of the layer-deciding columns — no job.
+    await controller.updateCampaign(campaignId, { name: 'Renamed Race' }, auth);
+    expect(await matchJobs()).toHaveLength(0);
+
+    // Moving the office to a modelled jurisdiction changes which boundary layers the workspace
+    // needs — one pending job appears.
+    await controller.updateCampaign(campaignId, { jurisdiction: 'ca_federal', seat_name: 'Ottawa Centre' }, auth);
+    expect(await matchJobs()).toHaveLength(1);
+
+    // A second office move while the first job is still pending coalesces instead of stacking.
+    await controller.updateCampaign(
+      campaignId,
+      { jurisdiction: 'ca_provincial', office_region: 'AB', seat_name: 'Calgary-Varsity' },
+      auth,
+    );
+    expect(await matchJobs()).toHaveLength(1);
   });
 
   it('refuses a second office context', async () => {

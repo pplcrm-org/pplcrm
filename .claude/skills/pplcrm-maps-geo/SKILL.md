@@ -1,6 +1,6 @@
 ---
 name: pplcrm-maps-geo
-description: Maps and geocoding — the single `<pc-map>` Google Maps primitive (placeholder-safe), the household geocoding transactional-outbox job, the ward/district/precinct GIS match, and the geocode-status chip contract. USE WHEN adding a map to any page (household card, canvassing turfs, delivery routes), reading geocoded lat/lng or ward data, surfacing geocode status, wiring a geocoding/enrichment background job, or configuring the Google Maps API key. EXAMPLES: 'draw turf polygons on a map', 'why is my map a grey placeholder in tests', 'what does geocoding_status mean'.
+description: Maps and geocoding — the single `<pc-map>` Google Maps primitive (placeholder-safe, and the only thing that draws boundaries), the household geocoding transactional-outbox job, the `geocode_cache` memo, the boundary-set/feature/household_districts tables and the point-in-polygon matcher, and the geocode-status chip contract. USE WHEN adding a map to any page (household card, canvassing turfs, delivery routes), drawing or uploading boundaries, reading a household's electoral areas, surfacing geocode status, wiring a geocoding/boundary background job, or configuring the Google Maps API key. EXAMPLES: 'draw turf polygons on a map', 'why is my map a grey placeholder in tests', 'what does geocoding_status mean', 'which district is this household in'.
 ---
 
 # Maps & geocoding (§6 / §13 / §14)
@@ -28,6 +28,47 @@ binding contract in `docs/spec/pc-map-usage.md`. Do **not** hand-roll a
 - Give it a height (`class="block h-48"`); it has a `min-h-40` floor.
 - Marker/polygon colours resolve from DaisyUI `--color-*` tokens at runtime and
   redraw on a light/dark theme flip. Pass a semantic `variant`, never a hex.
+
+### Drawing mode — the same component, off by default
+
+Two more inputs: `drawingEnabled` (default `false`) and `selectedPolygonId`
+(default `null`, highlights that polygon id with a heavier stroke and denser
+fill). With `drawingEnabled` on:
+
+- A map click places a vertex. A vertex landing within
+  `VERTEX_SNAP_TOLERANCE_PX = 12` **screen** pixels of a vertex already on the
+  map snaps onto it exactly — that is how two neighbouring areas share an edge
+  instead of leaving slivers. `snapToleranceInDegrees(zoom)` converts pixels to
+  degrees, and the distance test corrects for the Mercator 1/cos(latitude)
+  stretch, so the tolerance is not far too generous north–south in Canada.
+- Clicking the first vertex again — or `finishDrawing()` — closes the ring
+  (minimum three vertices) and emits `polygonDrawn: PcLatLng[]`.
+- Saved polygons become editable/draggable; each shape change emits
+  `polygonEdited: { id, path }`. Clicking one emits `polygonSelected: string`.
+  Right-clicking a polygon's **body** emits `polygonDeleted: string`;
+  right-clicking a **vertex** of an editable saved shape removes that vertex —
+  the component implements the gesture itself (Google provides no
+  remove-a-vertex gesture). Shapes above the component's vertex threshold stay
+  view-only in edit mode, with a note explaining why. Escape cancels an
+  in-progress trace; Enter finishes a closable one (three or more vertices).
+- Public methods `finishDrawing()`, `cancelDrawing()`, `undoLastVertex()` and
+  the signals `draftVertexCount()` / `canFinishDrawing()` are how a host page
+  drives its toolbar.
+
+Every drawing payload is plain `PcLatLng` values and string ids — no Google SDK
+object ever leaves the component.
+
+**There is no `DrawingManager`.** Google removed it: `@types/google.maps`
+(pinned at Maps JS API **3.65**) marks `google.maps.drawing.DrawingManager`
+`@deprecated` — "no longer available in the Maps JavaScript API as of version
+3.65". `<pc-map>` therefore places vertices from raw map `click` events itself
+and renders the shape in progress as a `Polyline` plus one marker per vertex.
+Do not "simplify" it back onto the drawing library; it is gone.
+
+**`<pc-map>` renders no drawing toolbar of its own** — deliberately. The finish,
+undo and cancel controls belong to the host page, which calls the methods above
+on a `viewChild(PcMap)`. Live example: the boundary map editor,
+`apps/frontend/src/app/experiences/settings/boundaries/`.
 
 ### Why it never breaks tests
 
@@ -75,13 +116,38 @@ handler `handleGeocodeHousehold` calls `geocodeAndMapHousehold`
 (`apps/backend/src/app/lib/gis/geocoding.ts`), which:
 
 1. Skips + marks `failed` if the address is blank/incomplete.
-2. Calls the Google Geocoding API for lat/lng + formatted_address — **unless**
-   `isMockOrTest` (`!apiKey || apiKey.includes('mock') || NODE_ENV==='test'`),
-   in which case it fills deterministic dev coordinates. This is the honest
-   degrade path; real API calls are gated behind a configured key.
-3. Matches lat/lng against `lib/gis/boundaries.geojson` to fill
-   `ward` / `district` / `precinct` (point-in-polygon, no external service).
-4. Sets `geocoding_status = 'success'`.
+2. Resolves coordinates through `geocodeAddressCached` (`lib/gis/geocode-cache.ts`),
+   which answers from `geocode_cache` when this tenant looked the same address
+   fingerprint up before and otherwise calls `geocodeAddress`
+   (`lib/gis/geocode-address.ts`) — **unless** `isMockOrTestGeocode()`
+   (`!apiKey || apiKey.includes('mock') || NODE_ENV==='test'`), which returns
+   deterministic dev coordinates, skips the cache and never touches the network.
+   `null` (ZERO_RESULTS) marks the household `failed`; a transient error
+   re-throws so the worker retries.
+3. Sets lat/lng, `formatted_address`, `type` and `geocoding_status = 'success'`.
+4. Calls `matchHouseholdBoundaries` (`lib/gis/boundary-match.ts`) to write one
+   `household_districts` row per required boundary layer — point-in-polygon in
+   this process, no external service.
+
+Marking a household `failed` also clears its `household_districts` rows, because
+they were derived from coordinates now known to be wrong or unobtainable.
+
+### The cost split — memorise this before touching either half
+
+**Geocoding costs money; boundary matching is free.** Geocoding is billed per
+Google request, so it is plan-gated, metered per tenant per day, and memoised by
+address. Matching a coordinate to polygons is pure CPU in this process, so it
+may be re-run as often as anyone likes — every time a map is drawn, redrawn,
+uploaded or deleted. Do not add a gate or a budget to matching, and do not
+bypass the cache/queue on the geocoding side.
+
+`geocode_cache` (per tenant, keyed on the `households.address_fp_full` address
+fingerprint) caches **`zero_results` as well as `success`** — a permanent "no
+such address" is worth as much as a positive answer, otherwise every typo is
+billable forever. It deliberately has **no foreign key to households**: it must
+survive household deletion, which is what stops import → delete → re-import from
+buying the same lookups twice. It is per tenant, not global, because a shared
+cache would disclose that another workspace holds a given address.
 
 **Company enrichment** (`enrich_company_google`) follows the identical pattern
 (`companies/services/companies-enrichment.service.ts`) — a Places text search +
@@ -89,6 +155,74 @@ details lookup that fills website/phone/industry/description **only where blank*
 The user-facing **Enrich / Re-check Google** button
 (`companies.enrich` tRPC mutation → `queueEnrichment`) passes `force: true` to
 re-run even when already enriched; the first-load auto-queue does not.
+
+## Electoral geography — `boundary_sets` / `boundary_features` / `household_districts`
+
+`households.district`, `households.precinct` and `households.ward` **no longer
+exist** (dropped in `2026-08-02-e-drop-legacy-geography.ts`, along with
+`turfs.ward`). Three text columns could hold three answers, but one US address
+is simultaneously in a congressional district, both state legislative districts,
+a council district and a precinct — so each pass overwrote the last.
+
+| Table                 | Holds                                                                                                                         |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `boundary_sets`       | One named, versioned map layer. `role` ∈ `seat_area` / `subdivision` / `locality` is **the only place meaning lives**         |
+| `boundary_features`   | One row per named area of an editable set: `geometry` (GeoJSON Polygon/MultiPolygon) + `bbox` `[minLng,minLat,maxLng,maxLat]` |
+| `household_districts` | One row per household per layer — `UNIQUE (household_id, set_id)`                                                             |
+
+The unique key is `(household_id, set_id)` and **not** `(household_id, level)`
+or `(…, kind)` on purpose: a Massachusetts household is genuinely in a ward and
+a precinct (both subdivisions of the same city), and a redistricting year needs
+the outgoing and incoming maps on the same household on the same day. Never
+infer meaning from a layer's **name** — an Ontario "ward" is a seat area, a
+Massachusetts "ward" is not. Read `boundary_sets.role`.
+
+**No boundary data ships with the product.** A workspace gets a map exactly
+three ways: a CSV import that already carries district columns (`source =
+'import'` — those sets hold no polygons and are skipped by the matcher), an
+uploaded GeoJSON (`'upload'`), or polygons drawn on the map (`'drawn'`). A
+`'bundled'` source and its file-loading path exist and work, but
+`lib/gis/boundary-data/` contains only a README — nothing has been converted.
+Do not tell a user the product knows their riding out of the box.
+
+### The functions in `apps/backend/src/app/lib/gis/`
+
+| File                  | What to call                                                                                                                                                                                                      |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `boundary-match.ts`   | `requiredSetIdsForTenant`, `matchHouseholdBoundaries` (one household, already geocoded), `matchPointToSets` / `matchPointToLoadedSets`, `applyHouseholdMatches(Batch)`, `countContainingFeatures`, `asCoordinate` |
+| `boundary-store.ts`   | `loadBoundarySets` (batched, process-cached, version-checked), `featureContainsPoint` (bbox reject, then ray cast), `invalidateBoundarySetCache`                                                                  |
+| `point-in-polygon.ts` | `isPointInPolygon`, `isPointInMultiPolygon` — pure ray casting, holes honoured                                                                                                                                    |
+| `boundary-jobs.ts`    | `enqueueBoundaryMatch`, `enqueueBoundaryMatchContinuation`, `runningBoundaryMatchCount`, `BOUNDARY_MATCH_BATCH_SIZE`                                                                                              |
+| `geocode-cache.ts`    | `geocodeAddressCached`, `lookupGeocodeCache`, `rememberGeocode`                                                                                                                                                   |
+
+Batch vs single matters: `matchPointToSets` reloads the layers on every call
+(right for one household saved in the UI, wrong for thousands). A sweep calls
+`loadBoundarySets` once and `matchPointToLoadedSets` per point.
+
+`requiredSetIdsForTenant` derives the layers to match from the workspace's
+**active campaigns** (jurisdiction + region + chamber must agree), **plus** every
+layer the workspace made itself (uploaded or drawn), always — otherwise drawing
+a map would appear to do nothing until a campaign was configured.
+
+Overlapping hand-drawn areas are resolved by a fixed sort (name, then code, by
+code point — not `localeCompare`, whose collation varies by Node/ICU build) so
+the same household never flips between two areas between runs; overlaps are
+reported through validation counts instead of being resolved silently.
+
+Two background jobs (`lib/jobs/handlers/boundaries.handlers.ts`):
+`match_boundaries` (enqueued inside the transaction of any boundary write;
+`scope: 'all' | 'unmatched'`, keyset `cursor`, re-queues itself per batch) and
+the nightly `sweep_unmatched_boundaries`.
+
+### Gone — do not reach for these
+
+`apps/backend/src/app/lib/gis/boundaries.geojson` (three rectangles over
+downtown Chicago labelled "Ward 1/2/3") is **deleted**, and with it
+`loadBoundaries()` and `matchCoordinatesToDistrict()` from `geocoding.ts`. It
+never worked: any address outside those boxes resolved to nulls, it was never
+copied into a deployed build, and the loader resolved a source-tree path from
+the process working directory. `isPointInPolygon` / `isPointInMultiPolygon`
+moved to `point-in-polygon.ts` and are re-exported from `geocoding.ts`.
 
 ## Adding a new geo/Google background job
 

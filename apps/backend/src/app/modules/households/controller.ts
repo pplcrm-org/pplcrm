@@ -20,7 +20,8 @@ import { HouseholdRepo } from './repositories/households.repo';
 import { MapHouseholdsTagsRepo } from './repositories/map-households-tags.repo';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
 import { TagsRepo } from '../tags/repositories/tags.repo';
-import { matchCoordinatesToDistrict } from '../../lib/gis/geocoding';
+import { applyHouseholdMatchesBatch, matchPointToSets, requiredSetIdsForTenant } from '../../lib/gis/boundary-match';
+import { ensureImportedBoundarySets, readImportedAreas, writeImportedAreas } from './electoral-areas';
 import { BaseController } from '../../lib/base.controller';
 import { SettingsController } from '../settings/controller';
 import type { OperationDataType, TypeId, TypeTenantId } from '../../../../../../libs/common/src/lib/kysely.models';
@@ -121,9 +122,17 @@ export class HouseholdsController extends BaseController<'households', Household
     const is_placeholder = tenantRow?.placeholder_household_id
       ? String(tenantRow.placeholder_household_id) === String((household as any).id)
       : false;
+
+    // Every boundary this address falls inside — a federal riding AND a municipal ward AND a
+    // precinct can all be true at the same time, which is why this is a list and not three fields.
+    // The detail page renders one row per entry and needs the map's name next to the area's, since
+    // "Ward 4" on its own does not say which map drew it.
+    const electoral_areas = await this.getRepo().getElectoralAreas(input.tenant_id, input.id);
+
     return {
       ...household,
       is_placeholder,
+      electoral_areas,
     } as any;
   }
 
@@ -155,20 +164,29 @@ export class HouseholdsController extends BaseController<'households', Household
         const merged = { ...current, ...input.row };
 
         let geocoding_status = isBlankAddress(merged) || isIncompleteAddress(merged) ? 'failed' : 'pending';
-        let district = null;
-        let precinct = null;
-        let ward = null;
 
-        // If autocomplete coordinates are provided in the update, use them and map boundaries synchronously
-        if (input.row.lat && input.row.lng && Number(input.row.lat) !== 0 && Number(input.row.lng) !== 0) {
+        // Autocomplete supplied coordinates with the edit, so the address is already located and
+        // there is nothing to look up. Match it against the workspace's boundary sets right here:
+        // point-in-polygon is pure processor work with no external call and nothing billed, so it
+        // is safe on the request path the moment coordinates exist. The paid half — turning an
+        // address into coordinates — is only ever queued, below.
+        const lat = Number(input.row.lat);
+        const lng = Number(input.row.lng);
+        if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
+          geocoding_status = 'success';
           try {
-            const matched = await matchCoordinatesToDistrict(Number(input.row.lat), Number(input.row.lng));
-            district = matched.district;
-            precinct = matched.precinct;
-            ward = matched.ward;
-            geocoding_status = 'success';
+            const db = this.getRepo().db;
+            const setIds = await requiredSetIdsForTenant(db, input.tenant_id);
+            // Replace only the layers this edit re-matched, exactly as the batch job does. A set
+            // outside the required list — an archived campaign's map — was never looked at, so
+            // its rows are not an answer this pass may overwrite. No required layers: nothing
+            // matched, so nothing to replace either.
+            if (setIds.length > 0) {
+              const matches = await matchPointToSets(db, input.tenant_id, lat, lng, setIds);
+              await applyHouseholdMatchesBatch(db, input.tenant_id, [{ householdId: input.id, matches }], setIds);
+            }
           } catch (err) {
-            logger.error({ err }, 'Failed to map coordinates to district during update');
+            logger.error({ err }, 'Failed to match household coordinates to boundary sets during update');
           }
         }
 
@@ -196,9 +214,6 @@ export class HouseholdsController extends BaseController<'households', Household
             country: merged.country,
           }),
           geocoding_status,
-          district,
-          precinct,
-          ward,
         };
         await super.update({ ...input, row: fpRow as unknown as OperationDataType<'households', 'update'> });
 
@@ -328,8 +343,9 @@ export class HouseholdsController extends BaseController<'households', Household
     };
   }
 
-  public countDistinctWards(auth: IAuthKeyPayload) {
-    return this.getRepo().countDistinctWards(auth.tenant_id);
+  /** `campaignId` = the campaign whose seat map the count reads (grain sentence, §5). */
+  public countDistinctWards(auth: IAuthKeyPayload, campaignId?: string) {
+    return this.getRepo().countDistinctWards(auth.tenant_id, campaignId ?? null);
   }
 
   public getUnhoused(auth: IAuthKeyPayload) {
@@ -616,6 +632,19 @@ export class HouseholdsController extends BaseController<'households', Household
       if (clean && !uniqueTagNames.has(clean.toLowerCase())) uniqueTagNames.set(clean.toLowerCase(), clean);
     }
 
+    // Which jurisdiction any boundary set created by this import belongs to. A spreadsheet does not
+    // say, so the importing campaign's own jurisdiction is the best available answer; 'other' is the
+    // honest default for a workspace that has not declared one.
+    const importCampaign = campaign_id
+      ? await this.getRepo()
+          .db.selectFrom('campaigns')
+          .select('jurisdiction')
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', campaign_id)
+          .executeTakeFirst()
+      : undefined;
+    const importJurisdiction = importCampaign?.jurisdiction ?? 'other';
+
     for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
       // 1. Sanitize and fingerprint valid rows upfront
       type Entry = {
@@ -631,11 +660,18 @@ export class HouseholdsController extends BaseController<'households', Household
           home_phone: string | null;
           notes: string | null;
         };
+        /**
+         * Electoral areas the file itself named, keyed by import field. Empty for most files.
+         * These are NOT columns on `households` — they become `household_districts` rows against
+         * an `import`-sourced boundary set, one row per column the file carried.
+         */
+        areas: Record<string, string>;
         fp_street: string | null;
         fp_full: string | null;
       };
       const entries: Entry[] = [];
       for (const raw of chunk) {
+        const areas = readImportedAreas(raw);
         const sanitized = {
           street_num: trim(raw['street_num']),
           apt: trim(raw['apt']),
@@ -663,6 +699,7 @@ export class HouseholdsController extends BaseController<'households', Household
         }
         entries.push({
           sanitized,
+          areas,
           fp_street: hasAddress
             ? fingerprintStreet({
                 street_num: sanitized.street_num,
@@ -708,6 +745,8 @@ export class HouseholdsController extends BaseController<'households', Household
               // 3. Insert only addresses the tenant doesn't have yet (also deduped within the file)
               const seenFps = new Set<string>();
               const toInsert: OperationDataType<'households', 'insert'>[] = [];
+              // Same length and order as `toInsert`, so a created row's areas are found by index.
+              const insertedAreas: Record<string, string>[] = [];
               for (const entry of entries) {
                 if (entry.fp_full && (existingFps.has(entry.fp_full) || seenFps.has(entry.fp_full))) {
                   results.skipped += 1;
@@ -724,10 +763,49 @@ export class HouseholdsController extends BaseController<'households', Household
                   address_fp_full: entry.fp_full,
                   file_id: import_id,
                 } as OperationDataType<'households', 'insert'>);
+                insertedAreas.push(entry.areas);
               }
 
               const created = toInsert.length > 0 ? await this.getRepo().addMany({ rows: toInsert }, trx) : [];
               results.inserted += created.length;
+
+              // 3b. Electoral areas the file named — the cheapest way a workspace gets real
+              // electoral geography, because it costs nothing at all. A purchased US voter file
+              // already carries the congressional district, both legislative district numbers and
+              // the precinct on every row, so taking those columns writes `household_districts`
+              // rows with no polygon data and no paid address lookup.
+              //
+              // Geocoding is still queued for these rows by `addMany`, and deliberately so: the
+              // areas answer "which boundaries" but not "where on the map", and coordinates are
+              // what the map pins and the turf cutter need. The cost of that lookup is controlled
+              // where it always was — the plan gate and the per-tenant daily budget in
+              // lib/gis/geocode-queue.ts.
+              //
+              // A multi-row INSERT ... RETURNING gives its rows back in VALUES order, which is what
+              // pairs a created household with the areas its own file row carried. If that ever
+              // stops holding, writing the areas against the wrong households would be worse than
+              // not writing them, so the mismatch is reported rather than guessed at.
+              if (created.length !== insertedAreas.length) {
+                logger.error(
+                  { importId: import_id, inserted: created.length, expected: insertedAreas.length },
+                  'Household insert returned a different number of rows than it was given; skipping imported electoral areas for this chunk',
+                );
+              } else {
+                const areaEntries = created
+                  .map((h, i) => ({ household_id: h?.id != null ? String(h.id) : '', areas: insertedAreas[i] ?? {} }))
+                  .filter((e) => e.household_id.length > 0 && Object.keys(e.areas).length > 0);
+                if (areaEntries.length > 0) {
+                  const usedFields = [...new Set(areaEntries.flatMap((e) => Object.keys(e.areas)))];
+                  const setIdByField = await ensureImportedBoundarySets(
+                    trx,
+                    tenant_id,
+                    user_id,
+                    usedFields,
+                    importJurisdiction,
+                  );
+                  await writeImportedAreas(trx, tenant_id, areaEntries, setIdByField);
+                }
+              }
 
               // 4. Apply the batch-level tags to every created household
               if (created.length > 0 && uniqueTagNames.size > 0) {

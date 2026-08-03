@@ -76,6 +76,8 @@ async function cleanTenant(db: any, tenantId: string) {
     .where('id', '=', tenantId)
     .execute();
   await db.deleteFrom('potential_duplicates').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('household_districts').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('boundary_sets').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('donations').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('events').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('workflows').where('tenant_id', '=', tenantId).execute();
@@ -988,6 +990,34 @@ describe('PersonsRepo Integration', () => {
     expect(dups).toHaveLength(0);
   });
 
+  it('ignores a sortModel colId the query cannot serve (a saved sort on the removed ward column)', async () => {
+    await repo.add({
+      row: {
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        household_id: householdId,
+        first_name: 'Sorted',
+        last_name: 'Fine',
+        createdby_id: userId,
+        updatedby_id: userId,
+      },
+    });
+
+    // 'ward' was a real column once, so a browser can still hold a persisted sort on it. Passed
+    // through it becomes ORDER BY "ward" and Postgres rejects the whole query; it must be
+    // skipped while the known column beside it still sorts.
+    const result = await repo.getAllWithAddress({
+      tenant_id: tenantId,
+      options: {
+        sortModel: [
+          { colId: 'ward', sort: 'asc' },
+          { colId: 'last_name', sort: 'asc' },
+        ],
+      },
+    });
+    expect(result.rows.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('should filter persons using advancedFilterModel', async () => {
     // 1. Create two persons
     const p1 = await repo.add({
@@ -1247,6 +1277,76 @@ describe('HouseholdRepo Duplicates', () => {
     // Check source household deleted
     const checkSource = await householdsRepo.getOneBy('id', { tenant_id: tenantId, value: sourceHhId });
     expect(checkSource).toBeUndefined();
+  });
+
+  it('moves boundary rows to the surviving household on merge instead of cascading them away', async () => {
+    const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
+    const sourceHhId = rand();
+    await db
+      .insertInto('households')
+      .values({
+        id: sourceHhId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    const addSet = (slug: string, source: string) =>
+      db
+        .insertInto('boundary_sets')
+        .values({
+          tenant_id: tenantId,
+          slug,
+          label: slug,
+          jurisdiction: 'other',
+          role: 'seat_area',
+          source,
+          createdby_id: userId,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+    // An import-sourced set: its area names arrived in a spreadsheet, so a cascade-deleted row
+    // is unrecoverable — no polygon exists to rematch from.
+    const importSet = await addSet(`import-${rand()}`, 'import');
+    const sharedSet = await addSet(`shared-${rand()}`, 'drawn');
+
+    const place = (householdId2: string, setId: unknown, name: string) =>
+      db
+        .insertInto('household_districts')
+        .values({ tenant_id: tenantId, household_id: householdId2, set_id: String(setId), name })
+        .execute();
+    await place(sourceHhId, importSet.id, 'CD-3');
+    await place(sourceHhId, sharedSet.id, 'Ward 9');
+    await place(householdId, sharedSet.id, 'Ward 1'); // target already answered for this set
+
+    await householdsRepo.mergeHouseholds({
+      tenant_id: tenantId,
+      target_id: householdId,
+      source_id: sourceHhId,
+      user_id: userId,
+    });
+
+    const targetRows = await db
+      .selectFrom('household_districts')
+      .select(['set_id', 'name'])
+      .where('tenant_id', '=', tenantId)
+      .where('household_id', '=', householdId)
+      .execute();
+    const bySet = new Map(targetRows.map((r: any) => [String(r.set_id), r.name]));
+    // The import-sourced row survived the merge on the target…
+    expect(bySet.get(String(importSet.id))).toBe('CD-3');
+    // …and the target's own row won where both households had one.
+    expect(bySet.get(String(sharedSet.id))).toBe('Ward 1');
+
+    const sourceRows = await db
+      .selectFrom('household_districts')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .where('household_id', '=', sourceHhId)
+      .execute();
+    expect(sourceRows).toHaveLength(0);
   });
 });
 

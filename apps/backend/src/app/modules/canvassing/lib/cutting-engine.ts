@@ -9,33 +9,45 @@
  *
  * ## Barriers (highways / rail / water)
  * The spec requires turfs never to cross a hard barrier. The only barrier data
- * the app ships is the ward/precinct GIS polygon set (`lib/gis/boundaries.geojson`),
- * whose edges in practice follow exactly those features (rivers, rail lines,
- * arterial roads). So the engine treats the **ward boundary as the barrier**: a
- * turf is never allowed to span two wards. This is an honest proxy given the
- * available data — true per-street barrier linework is not in the dataset, so
- * finer barrier avoidance is deferred to the manual "rebalance on the map" step
- * the spec already calls for.
+ * the app has is the electoral boundary polygons a workspace holds, whose edges
+ * in practice follow exactly those features (rivers, rail lines, arterial roads).
+ * So the engine treats the **boundary line as the barrier**: a turf is never
+ * allowed to span two boundaries. This is an honest proxy given the available
+ * data — true per-street barrier linework is not in the dataset, so finer barrier
+ * avoidance is deferred to the manual "rebalance on the map" step the spec
+ * already calls for.
+ *
+ * Which boundary that is differs per campaign — a polling division for a Canadian
+ * federal riding, a precinct for a US legislative district, a ward for a Toronto
+ * council race — so this engine is deliberately told only the name of the area
+ * each door falls in and never which kind of area it is. The caller resolves that
+ * (see `turf-boundary.ts`) and passes the resulting names in.
  *
  * ## Contiguity
- * Within a ward the doors are laid out along a boustrophedon ("snake") sweep —
- * banded by latitude, alternating east/west within each band — which yields a
- * locality-preserving 1-D order. Chunking that order into near-equal runs gives
- * spatially compact, contiguous turfs without needing a full TSP/graph solve.
+ * Within one boundary the doors are laid out along a boustrophedon ("snake")
+ * sweep — banded by latitude, alternating east/west within each band — which
+ * yields a locality-preserving 1-D order. Chunking that order into near-equal
+ * runs gives spatially compact, contiguous turfs without needing a full TSP/graph
+ * solve.
  */
 
 export interface DoorPoint {
   household_id: string;
   lat: number | null;
   lng: number | null;
-  ward: string | null;
+  /** The area this door falls in, or null when no boundary map covers it. */
+  boundaryName: string | null;
 }
 
 export interface TurfCluster {
   households: string[];
   centroid_lat: number;
   centroid_lng: number;
-  ward: string | null;
+  /**
+   * The area every door in this turf shares, or null when the turf is unbounded — either the
+   * workspace holds no boundary map, or these doors fell outside every area of the one it holds.
+   */
+  boundaryName: string | null;
 }
 
 export interface CutPlan {
@@ -100,8 +112,18 @@ function centroid(points: readonly { lat: number; lng: number }[]): { lat: numbe
 }
 
 /**
+ * The bucket key every door with no boundary lands in.
+ *
+ * All un-located doors share ONE bucket rather than getting one each, and that is a deliberate
+ * behaviour worth keeping: they then cluster together on geography alone, which is exactly what a
+ * workspace holding no boundary map gets for every door it has. Giving each unmatched door its own
+ * bucket would produce a turf per door.
+ */
+const UNBOUNDED_KEY = '';
+
+/**
  * Cut a set of doors into contiguous turfs of ~`targetDoors` each, never
- * crossing a ward boundary.
+ * crossing a boundary line.
  */
 export function cutTurfs(doors: readonly DoorPoint[], targetDoors: number): CutPlan {
   const target = Math.max(MIN_TARGET, Math.floor(targetDoors));
@@ -113,24 +135,24 @@ export function cutTurfs(doors: readonly DoorPoint[], targetDoors: number): CutP
     else unplaced.push(d.household_id);
   }
 
-  // Partition by ward — a turf never spans two wards (the barrier proxy).
-  const byWard = new Map<string, (DoorPoint & { lat: number; lng: number })[]>();
+  // Partition by boundary — a turf never spans two areas (the barrier proxy).
+  const byBoundary = new Map<string, (DoorPoint & { lat: number; lng: number })[]>();
   for (const d of placed) {
-    const key = d.ward ?? '';
-    const bucket = byWard.get(key);
+    const key = d.boundaryName ?? UNBOUNDED_KEY;
+    const bucket = byBoundary.get(key);
     if (bucket) bucket.push(d);
-    else byWard.set(key, [d]);
+    else byBoundary.set(key, [d]);
   }
 
   const turfs: TurfCluster[] = [];
-  // Stable ward order for deterministic output.
-  const wardKeys = [...byWard.keys()].sort();
-  for (const wardKey of wardKeys) {
-    const wardDoors = byWard.get(wardKey) ?? [];
-    if (wardDoors.length === 0) continue;
+  // Stable boundary order for deterministic output.
+  const boundaryKeys = [...byBoundary.keys()].sort();
+  for (const boundaryKey of boundaryKeys) {
+    const boundaryDoors = byBoundary.get(boundaryKey) ?? [];
+    if (boundaryDoors.length === 0) continue;
 
-    const ordered = snakeOrder(wardDoors);
-    // Number of turfs for this ward: round to nearest, at least one.
+    const ordered = snakeOrder(boundaryDoors);
+    // Number of turfs for this boundary: round to nearest, at least one.
     const k = Math.max(1, Math.round(ordered.length / target));
     const chunks = evenChunks(ordered, k);
     for (const chunk of chunks) {
@@ -139,7 +161,9 @@ export function cutTurfs(doors: readonly DoorPoint[], targetDoors: number): CutP
         households: chunk.map((d) => d.household_id),
         centroid_lat: c.lat,
         centroid_lng: c.lng,
-        ward: wardKey === '' ? null : wardKey,
+        // Null, not the empty-string key, so the caller can tell an unbounded turf from a
+        // boundary that happens to be named — and label it as unbounded rather than blank.
+        boundaryName: boundaryKey === UNBOUNDED_KEY ? null : boundaryKey,
       });
     }
   }

@@ -6,6 +6,16 @@ import type { NotificationPreferencesType } from './schemas/auth.schema';
 import { DATA_REGION_CHOICES, DEFAULT_DATA_REGION_CHOICE } from './data-residency';
 import { DEFAULT_ORG_MODE, ORG_MODES, type ModuleId, type OrgMode } from './org-mode';
 import type { PlanKey } from './billing/plans';
+import {
+  CHAMBERS,
+  JURISDICTIONS,
+  JURISDICTION_IDS,
+  SEAT_TYPES,
+  regionsForCountry,
+  seatLabelFor,
+} from './jurisdictions';
+import type { JurisdictionId, SeatType } from './jurisdictions';
+import { nullableEmailSchema, phoneSchema } from './schemas/core.schema';
 
 export interface IAuthKeyPayload {
   name?: string;
@@ -223,24 +233,146 @@ export const signInInputObj = z.object({
   rememberMe: z.boolean().optional(),
 });
 
-export const signUpInputObj = z.object({
-  organization: z.string(),
-  email: z.string().max(100),
-  password: z.string().min(8).max(72),
-  first_name: z.string().max(100),
-  /**
-   * Organization type. Asked at signup rather than later because the starter tags,
-   * starter forms and demo dataset are all seeded inside the signup transaction — a
-   * mode chosen afterwards would be too late to change any of them. Defaulted so every
-   * existing caller keeps working.
-   */
-  mode: z.enum(ORG_MODES).default(DEFAULT_ORG_MODE),
-  /**
-   * Where the workspace's data is stored, or 'any' for no requirement. Asked at signup
-   * because it is a property of how the workspace is provisioned — once records exist,
-   * changing it is a data migration. Accepted from anyone regardless of plan: naming a
-   * region needs Movement (DATA_RESIDENCY_MIN_PLAN), but nobody has chosen a plan yet at
-   * signup, so this records the answer and the form states the requirement.
-   */
-  data_region: z.enum(DATA_REGION_CHOICES).default(DEFAULT_DATA_REGION_CHOICE),
-});
+/** Optional free text on the signup form: trimmed, capped, and accepting both null and omission. */
+const signUpTextSchema = (max: number, label: string) =>
+  z.string().trim().max(max, `${label} is too long — use ${max} characters or fewer.`).nullable().optional();
+
+/**
+ * Everything the signup wizard's steps 2 and 3 may collect, all optional.
+ *
+ * Both steps carry a "Skip for now" that records nothing, so every field here can be absent and the
+ * workspace must still come out working. The defaults that stand in for a skipped step are the
+ * column defaults on `campaigns`: jurisdiction 'other' and seat type 'district'.
+ *
+ * The office block mirrors the columns on `campaigns` (see schemas/campaigns.schema.ts) so the
+ * answers can be written straight onto the tenant's office campaign without renaming anything.
+ * `seat_position` and `seat_label_override` are deliberately NOT asked at signup — they are refinements
+ * for the minority of races that need them, and the campaign edit form is where they belong.
+ */
+const signUpOfficeFields = {
+  /** Country and level of government. See libs/common/src/lib/jurisdictions. Absent = 'other'. */
+  jurisdiction: z.enum(JURISDICTION_IDS).optional(),
+  /** Province, territory or state code — 'AB', 'OH'. Checked against that country's list. */
+  office_region: signUpTextSchema(10, 'Region code'),
+  /** Municipality or county, for local races — 'Toronto'. */
+  office_locality: signUpTextSchema(120, 'City or county'),
+  /** Upper or lower house. Only US state legislatures have two, drawn on two different maps. */
+  chamber: z.enum(CHAMBERS).nullable().optional(),
+  /** Whether the seat has its own territory, or is elected across the whole area. Absent = 'district'. */
+  seat_type: z.enum(SEAT_TYPES).optional(),
+  /** The seat's name — 'Ottawa Centre', 'OH-3', 'Ward 14'. Empty for an at-large seat. */
+  seat_name: signUpTextSchema(160, 'Seat name'),
+  /** What the seat-holder is called — 'MP', 'Councillor', 'State Representative'. */
+  office_title: signUpTextSchema(80, 'Office title'),
+};
+
+/**
+ * Cross-field rules for the signup office block.
+ *
+ * These are the *contradiction* half of the rules `AddCampaignObj` enforces, and only that half.
+ * A signup answer set may be incomplete — steps 2 and 3 are skippable by design, so "you have not
+ * named the riding yet" must never block someone from creating an account. It may not be
+ * self-contradictory, because a contradictory answer set would be written to the campaign row and
+ * then rejected the first time anyone opened the campaign edit form.
+ *
+ * The flags come from the same `JURISDICTIONS` registry the campaign schema reads, so the two
+ * cannot drift on which jurisdictions have at-large seats or two chambers.
+ */
+function checkSignUpOffice(
+  value: {
+    jurisdiction?: JurisdictionId;
+    office_region?: string | null;
+    chamber?: string | null;
+    seat_type?: SeatType;
+    seat_name?: string | null;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const jurisdiction = value.jurisdiction ?? 'other';
+  const spec = JURISDICTIONS[jurisdiction];
+  const regionText = value.office_region?.trim();
+  const region = regionText ? regionText : null;
+  const seat = seatLabelFor(jurisdiction, region, null).toLowerCase();
+
+  if (value.seat_type === 'at_large') {
+    if (!spec.supportsAtLarge) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['seat_type'],
+        message: `There are no at-large seats at this level of government — every seat is contested in a ${seat}.`,
+      });
+    }
+    if (value.seat_name != null && value.seat_name.trim().length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['seat_name'],
+        message: `An at-large seat covers the whole area, so it has no ${seat}.`,
+      });
+    }
+    // Mirrors the campaign schema: an at-large office sits in no chamber, and a stored chamber
+    // here would be rejected the first time the campaign edit form re-validated the row.
+    if (spec.usesChamber && value.chamber != null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['chamber'],
+        message:
+          'A statewide office is elected across the whole state, so it sits in no chamber. Leave the chamber empty.',
+      });
+    }
+  }
+
+  if (!spec.usesChamber && value.chamber != null) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['chamber'],
+      message: 'This level of government has only one elected chamber, so leave the chamber empty.',
+    });
+  }
+
+  const regionList = regionsForCountry(spec.country);
+  if (region != null && regionList.length > 0 && !regionList.some((r) => r.code === region)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['office_region'],
+      message: `We do not recognize "${region}". Pick a ${spec.country === 'CA' ? 'province or territory' : 'state'} from the list.`,
+    });
+  }
+}
+
+export const signUpInputObj = z
+  .object({
+    organization: z.string(),
+    email: z.string().max(100),
+    password: z.string().min(8).max(72),
+    first_name: z.string().max(100),
+    /**
+     * Organization type. Asked at signup rather than later because the starter tags,
+     * starter forms and demo dataset are all seeded inside the signup transaction — a
+     * mode chosen afterwards would be too late to change any of them. Defaulted so every
+     * existing caller keeps working.
+     */
+    mode: z.enum(ORG_MODES).default(DEFAULT_ORG_MODE),
+    /**
+     * Where the workspace's data is stored, or 'any' for no requirement. Asked at signup
+     * because it is a property of how the workspace is provisioned — once records exist,
+     * changing it is a data migration. Accepted from anyone regardless of plan: naming a
+     * region needs Movement (DATA_RESIDENCY_MIN_PLAN), but nobody has chosen a plan yet at
+     * signup, so this records the answer and the form states the requirement.
+     */
+    data_region: z.enum(DATA_REGION_CHOICES).default(DEFAULT_DATA_REGION_CHOICE),
+
+    ...signUpOfficeFields,
+
+    /**
+     * Where the organization is. Written to `organization.address` (Workspace settings) and to
+     * `receipts.org_address`, which is a field every receipt regime prescribes — so a workspace
+     * that answers this at signup starts with part of its receipt configuration already done
+     * instead of discovering the requirement the first time it tries to issue one.
+     */
+    organization_address: signUpTextSchema(500, 'Address'),
+    /** Written to `organization.phone`. The organization's number, not the signer's mobile. */
+    organization_phone: phoneSchema('Phone number'),
+    /** Written to `organization.contact_email`. The address the public writes to, not the login. */
+    organization_contact_email: nullableEmailSchema,
+  })
+  .superRefine(checkSignUpOffice);

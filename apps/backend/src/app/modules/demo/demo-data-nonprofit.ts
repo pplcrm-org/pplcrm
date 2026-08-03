@@ -16,7 +16,7 @@ import type {
   DemoDonationDef,
   DemoPledgeDef,
 } from './demo-data-types';
-import { DEMO_CITY, DEMO_COUNTRY, DEMO_STATE, allSites } from './demo-data-places';
+import { CANADA_PLACE_PACK, allSites } from './demo-data-places';
 
 /**
  * The demo workspace for NON-PROFIT mode: the Rideau Community Table, a fictional Ottawa charity
@@ -703,7 +703,7 @@ const VOLUNTEER_EVENTS: DemoVolunteerEventDef[] = [
     name: 'Winter food drive — sorting day',
     description:
       'Everything collected over the two-week drive gets sorted, dated and shelved. Bring a friend; the more hands the shorter the day. Coffee and lunch provided.',
-    location_address: '1064 Wellington St W, Ottawa, ON K1Y 2Y3',
+    venue: 'hq',
     slug: 'winter-drive-sorting-day',
     startInDays: 16,
     durationHours: 4,
@@ -721,7 +721,7 @@ const VOLUNTEER_EVENTS: DemoVolunteerEventDef[] = [
     name: 'Pro bono immigration clinic',
     description:
       'Monthly evening clinic with Elgin Street Legal. Interpreters needed for Arabic, Twi and Spanish — say so when you sign up.',
-    location_address: '340 Somerset St W, Ottawa, ON K2P 0J9',
+    venue: 'annex',
     slug: 'immigration-clinic',
     startInDays: -12,
     durationHours: 3,
@@ -1080,18 +1080,24 @@ const RECEIPTS: DemoReceiptDef[] = [
  * CRA charitable receipting for a small charity that issues by hand rather than automatically:
  * `auto_issue` is off, so gifts land in the ledger unreceipted and Bea works through them. (Church
  * mode is the auto-issue example — running both ways across the datasets is deliberate.)
+ *
+ * The registered address is written with the Canadian pack's city on purpose. These settings are
+ * seeded ONLY into a Canadian workspace — every receipt regime the product implements is Canadian,
+ * so `PlacePack.seedsReceipts` is false for the United States pack and this block is skipped there.
+ * Composing the address from the seeded pack instead would produce a Canada Revenue Agency receipt
+ * bearing a Chicago address, which is a false document.
  */
 const RECEIPT_SETTINGS: Record<string, string | boolean> = {
   'receipts.regime': 'cra_charity',
   'receipts.mode': 'per_gift',
   'receipts.auto_issue': false,
   'receipts.org_legal_name': 'Rideau Community Table',
-  'receipts.org_address': `1064 Wellington Street West, ${DEMO_CITY}, ${DEMO_STATE}`,
+  'receipts.org_address': `1064 Wellington Street West, ${CANADA_PLACE_PACK.city}, ${CANADA_PLACE_PACK.state}`,
   'receipts.registration_number': '867539021 RR 0001',
   'receipts.signatory_name': 'Bea Solomon',
   'receipts.signatory_title': 'Director of Giving',
   'receipts.number_prefix': 'RCT',
-  'receipts.place_of_issue': DEMO_CITY,
+  'receipts.place_of_issue': CANADA_PLACE_PACK.city,
 };
 
 /** Last year's giving statements — where every gift too small to receipt individually ended up. */
@@ -1104,9 +1110,6 @@ const STATEMENT_RUN: DemoStatementRunDef = {
 };
 
 export const NONPROFIT_DEMO_DATASET: DemoDataset = {
-  city: DEMO_CITY,
-  state: DEMO_STATE,
-  country: DEMO_COUNTRY,
   companies: COMPANIES,
   households: HOUSEHOLDS,
   persons: PERSONS,

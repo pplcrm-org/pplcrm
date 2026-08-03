@@ -44,7 +44,7 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The [Issues](/issues) tab additionally ranks by interest with a trend (new applications in the last 30 days) and a top ward, since issues exist to tell the policy team what people care about, not to describe who someone is, which is what tags are for.',
+        text: 'The [Issues](/issues) tab additionally ranks by interest with a trend (new applications in the last 30 days) and a top area — the ward, riding or precinct where that issue comes up most, named with your campaign’s own word for it (see [What office a campaign is running for](/help/campaign-jurisdictions)). Issues exist to tell the policy team what people care about, not to describe who someone is, which is what tags are for.',
       },
       {
         kind: 'callout',
@@ -76,8 +76,12 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
       'built-in list',
       'system list',
       'undeletable',
+      'ward',
+      'precinct',
+      'riding',
+      'district',
     ],
-    related: ['tags-issues', 'filters', 'newsletters'],
+    related: ['tags-issues', 'filters', 'district-boundaries', 'newsletters'],
     blocks: [
       {
         kind: 'p',
@@ -118,7 +122,7 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
           {
             title: 'Build the rule',
             detail:
-              'Compose conditions in the query builder: match all or any, with nested groups. For people you can rule on tags and issues, on standing (volunteer status, subscriber status, staff status, support level, voting status, do not contact), and on any contact or address field. Status fields offer a picker rather than a text box, plus “is set” / “is not set”. The live preview does the math in public: “Matches 1,284 people right now”, with a note reminding you whether that count will keep moving (Smart) or freeze on save (Static).',
+              'Compose conditions in the query builder: match all or any, with nested groups. For people you can rule on tags and issues, on standing (volunteer status, subscriber status, staff status, support level, voting status, do not contact), on any contact or address field, and on the electoral areas a household sits in — so “everyone in precinct 12” is one rule. The area field is labelled with your campaign’s word for it and is always offered; until your workspace has a [boundary map](/help/district-boundaries) or imported area names, it simply matches nobody. Status fields offer a picker rather than a text box, plus “is set” / “is not set”. The live preview does the math in public: “Matches 1,284 people right now”, with a note reminding you whether that count will keep moving (Smart) or freeze on save (Static).',
           },
           {
             title: 'Create it',

@@ -1,4 +1,4 @@
-import type { ReferenceExpression, Selectable, Transaction } from 'kysely';
+import type { ExpressionBuilder, JoinBuilder, ReferenceExpression, Selectable, Transaction } from 'kysely';
 import type { AnyQB } from '../../../lib/base.repo';
 import { sql } from 'kysely';
 
@@ -7,9 +7,72 @@ import { MAX_PAGE_SIZE } from '../../../../../../../libs/common/src';
 import { isBlankAddress, isIncompleteAddress } from '../../../lib/address-normalize';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
-import { matchCoordinatesToDistrict } from '../../../lib/gis/geocoding';
+import { matchPointToSets, requiredSetIdsForTenant } from '../../../lib/gis/boundary-match';
 import { enqueueGeocodeJobs } from '../../../lib/gis/geocode-queue';
+import {
+  electoralAreaSelects,
+  getHouseholdAreas,
+  referencesElectoralAreas,
+  resolveSeatSetId,
+  upsertHouseholdAreas,
+  type HouseholdAreaListing,
+  type HouseholdAreaRow,
+} from '../electoral-areas';
 import { logger } from '../../../logger';
+
+/** households columns the grid may sort on — prefixed `households.` in ORDER BY. */
+const SORTABLE_HOUSEHOLD_COLUMNS: readonly string[] = [
+  'id',
+  'campaign_id',
+  'createdby_id',
+  'file_id',
+  'home_phone',
+  'notes',
+  'address_fp_street',
+  'address_fp_full',
+  'geocoding_status',
+  'tenant_id',
+  'updatedby_id',
+  'created_at',
+  'updated_at',
+  'country',
+  'zip',
+  'state',
+  'city',
+  'street1',
+  'street2',
+  'street_num',
+  'apt',
+];
+
+/**
+ * Output aliases the data query selects, which Postgres resolves bare in ORDER BY. The two
+ * electoral columns belong to the lateral `hd_areas` relation, not to `households`, so prefixing
+ * them would fail; `is_placeholder`, `persons_count`, `members`, `tags` and `issues` are computed
+ * selections with no backing column at all.
+ */
+const SORTABLE_HOUSEHOLD_ALIASES: readonly string[] = [
+  'electoral_area',
+  'any_electoral_area',
+  'is_placeholder',
+  'persons_count',
+  'members',
+  'tags',
+  'issues',
+];
+
+/**
+ * Resolve a grid sortModel colId to an ORDER BY target, or null for anything unknown. A saved sort
+ * from a dropped column (the old `ward`/`district`/`precinct` text columns), a mistyped id or a
+ * dotted reference must be SKIPPED, not passed through: an unknown identifier makes Postgres
+ * reject the whole query and the grid never loads.
+ */
+function resolveHouseholdSortColumn(colId: unknown): string | null {
+  if (typeof colId !== 'string') return null;
+  if (SORTABLE_HOUSEHOLD_COLUMNS.includes(colId)) return `households.${colId}`;
+  if (SORTABLE_HOUSEHOLD_ALIASES.includes(colId)) return colId;
+  return null;
+}
 
 export class HouseholdRepo extends BaseRepository<'households'> {
   constructor() {
@@ -20,51 +83,65 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     input: { rows: OperationDataType<'households', 'insert'>[] },
     trx?: Transaction<Models>,
   ) {
-    const processedRows = await Promise.all(
-      input.rows.map(async (row) => {
-        const isBlank = isBlankAddress(row);
-        const isIncomplete = isIncompleteAddress(row);
-
-        let geocoding_status = isBlank || isIncomplete ? 'failed' : 'pending';
-        let district = row.district ?? null;
-        let precinct = row.precinct ?? null;
-        let ward = row.ward ?? null;
-
-        if (row.lat && row.lng && Number(row.lat) !== 0 && Number(row.lng) !== 0) {
-          try {
-            const matched = await matchCoordinatesToDistrict(Number(row.lat), Number(row.lng));
-            district = matched.district;
-            precinct = matched.precinct;
-            ward = matched.ward;
-            geocoding_status = 'success';
-          } catch (err) {
-            logger.error({ err }, 'Failed to map coordinates to district during insert');
-          }
-        }
-
-        return {
-          ...row,
-          district,
-          precinct,
-          ward,
-          geocoding_status,
-        };
-      }),
-    );
+    const processedRows = input.rows.map((row) => {
+      const isBlank = isBlankAddress(row);
+      const isIncomplete = isIncompleteAddress(row);
+      const hasCoordinates = row.lat && row.lng && Number(row.lat) !== 0 && Number(row.lng) !== 0;
+      // Coordinates already on the row (address autocomplete, demo seed, a file that carried them)
+      // mean there is nothing to look up and nothing to bill.
+      const geocoding_status = hasCoordinates ? 'success' : isBlank || isIncomplete ? 'failed' : 'pending';
+      return { ...row, geocoding_status };
+    });
 
     const createdRows = await super.addMany({ rows: processedRows }, trx);
     const db = trx || this.db;
 
-    // Enqueue geocoding for the newly-pending households, grouped by tenant so the plan gate and
-    // per-tenant daily budget apply per workspace (see lib/gis/geocode-queue.ts).
+    // Boundary matching for every row that arrived with coordinates. This is deciding which
+    // polygons contain a point: pure processor work, no external call, nothing billed. So it runs
+    // inline the moment coordinates exist, unlike geocoding below, which is billed per address and
+    // therefore only ever queued.
+    //
+    // The rows are written here rather than through `applyHouseholdMatches` because that function
+    // opens its own transaction, and Kysely implements a nested transaction as a second BEGIN and
+    // COMMIT on the same connection rather than as a savepoint — inside the CSV import's
+    // transaction it would commit the import early. See `upsertHouseholdAreas`.
+    const locatedByTenant = new Map<string, { id: string; lat: number; lng: number }[]>();
     const pendingByTenant = new Map<string, string[]>();
     for (const row of createdRows) {
-      if (row && row.id && row.geocoding_status === 'pending') {
+      if (!row || !row.id) continue;
+      if (row.geocoding_status === 'pending') {
         const list = pendingByTenant.get(row.tenant_id) ?? [];
         list.push(String(row.id));
         pendingByTenant.set(row.tenant_id, list);
       }
+      const lat = Number(row.lat);
+      const lng = Number(row.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
+        const list = locatedByTenant.get(row.tenant_id) ?? [];
+        list.push({ id: String(row.id), lat, lng });
+        locatedByTenant.set(row.tenant_id, list);
+      }
     }
+
+    for (const [tenantId, located] of locatedByTenant) {
+      try {
+        const setIds = await requiredSetIdsForTenant(db, tenantId);
+        if (setIds.length === 0) continue;
+        const areaRows: HouseholdAreaRow[] = [];
+        for (const item of located) {
+          const matches = await matchPointToSets(db, tenantId, item.lat, item.lng, setIds);
+          for (const match of matches) {
+            areaRows.push({ household_id: item.id, set_id: match.set_id, name: match.name, code: match.code });
+          }
+        }
+        await upsertHouseholdAreas(db, tenantId, areaRows);
+      } catch (err) {
+        logger.error({ err, tenantId }, 'Failed to match new households to boundary sets during insert');
+      }
+    }
+
+    // Enqueue geocoding for the newly-pending households, grouped by tenant so the plan gate and
+    // per-tenant daily budget apply per workspace (see lib/gis/geocode-queue.ts).
     for (const [tenantId, ids] of pendingByTenant) {
       await enqueueGeocodeJobs(db, tenantId, ids);
     }
@@ -159,22 +236,47 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     },
     trx?: Transaction<Models>,
   ): Promise<{ rows: Record<string, unknown>[]; count: number }> {
-    const options: JoinedQueryParams & { issues?: string[]; listId?: string } = input.options || {};
+    const options: JoinedQueryParams & { issues?: string[]; listId?: string; campaignId?: string } =
+      input.options || {};
     const tenantId = input.tenant_id;
+    // Which boundary set the single-valued `electoral_area` column reads. Resolved once per request
+    // rather than per row; null when the workspace has no map yet, and the column is then NULL.
+    const seatSetId = await resolveSeatSetId(trx ?? this.db, tenantId, options.campaignId ?? null);
     const searchStr = this.normalizeSearch(options.searchStr);
     const tags = input.tags?.map((t) => t.trim().toLowerCase()).filter(Boolean);
     const issues = (input.issues || options.issues)?.map((i) => i.trim().toLowerCase()).filter(Boolean);
     const filterModel = ((options as JoinedQueryParams & { issues?: string[] })?.filterModel ?? {}) as Record<
       string,
-      { value: unknown } | undefined
+      { op?: string; value?: unknown } | undefined
     >;
+    const advModel =
+      options.advancedFilterModel || (options.filterModel?.['tags_expression'] as typeof options.advancedFilterModel);
 
-    // Shared where clause builder (for both queries)
-    const applyFilters = <QB extends AnyQB>(qb: QB) => {
+    // Shared where clause builder (for both queries). `includeLateral` controls the electoral
+    // lateral join: the data query always carries it (the columns are selected), the count query
+    // only when a filter actually reads them — see the count below.
+    const applyFilters = <QB extends AnyQB>(qb: QB, includeLateral: boolean) => {
       let q = qb
         .leftJoin('map_households_tags', 'map_households_tags.household_id', 'households.id')
         .leftJoin('tags', 'tags.id', 'map_households_tags.tag_id')
         .leftJoin('tenants', 'tenants.id', 'households.tenant_id')
+        // Electoral geography. A household is in several boundaries at once, so this is a lateral
+        // aggregate rather than a plain join: a plain join would multiply the household row by its
+        // number of boundaries, and the tag/issue `array_agg` below would then repeat every tag
+        // once per boundary. The subquery aggregates with no GROUP BY, so it yields exactly one
+        // row per household even when the household matches no boundary at all.
+        .$if(includeLateral, (qb2) =>
+          qb2.leftJoinLateral(
+            (eb: ExpressionBuilder<Models, 'households'>) =>
+              eb
+                .selectFrom('household_districts as hd')
+                .whereRef('hd.household_id', '=', 'households.id')
+                .whereRef('hd.tenant_id', '=', 'households.tenant_id')
+                .select(electoralAreaSelects(seatSetId))
+                .as('hd_areas'),
+            (join: JoinBuilder<Models, 'households'>) => join.onTrue(),
+          ),
+        )
         .$if(!!tags?.length, (q) => q.where('tags.name', 'in', tags ?? []).where('tags.type', '=', 'tag'))
         .$if(!!issues?.length, (q) => q.where('tags.name', 'in', issues ?? []).where('tags.type', '=', 'issue'))
         .$if(!!options.listId, (qb) =>
@@ -217,6 +319,13 @@ export class HouseholdRepo extends BaseRepository<'households'> {
       q = this.applyCastColumnFilter(q, sql`households.street_num::text`, filterModel['street_num'] ?? {});
       q = this.applyColumnFilter(q, 'households.zip', filterModel['zip'] ?? {});
       q = this.applyColumnFilter(q, 'households.home_phone', filterModel['home_phone'] ?? {});
+      if (includeLateral) {
+        // The grid's "+ Add filter" on the two electoral columns lands here. Outer-query
+        // references to a lateral alias are valid Postgres, so the operator-aware helper works
+        // against `hd_areas` directly. Guarded because without the lateral the aliases don't exist.
+        q = this.applyColumnFilter(q, 'hd_areas.electoral_area', filterModel['electoral_area'] ?? {});
+        q = this.applyColumnFilter(q, 'hd_areas.any_electoral_area', filterModel['any_electoral_area'] ?? {});
+      }
       if (filterModel['tags']?.value && filterModel['issues']?.value) {
         // Both filters present — use OR grouping to avoid contradictory AND on tags.type
         const tagVal = `%${String(filterModel['tags'].value).replace(/\*/g, '%')}%`;
@@ -248,23 +357,43 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         tag: { col: 'tags.name' },
         tags: { col: 'tags.name' },
         issues: { col: 'tags.name' },
+        // Electoral geography (§8 rule builder). Two fields, because they answer two different
+        // questions and one cannot do both:
+        //  - `electoral_area` is the household's area in the campaign's own seat set, a single
+        //    value, so "Riding is Ottawa Centre" compares exactly.
+        //  - `any_electoral_area` is every area the household is in, joined together, so
+        //    "everyone in precinct 12" works even when precincts are not the seat set. It is a
+        //    concatenation, so it answers `contains` honestly and `equals` only when the household
+        //    is in exactly one area — the frontend field list must offer contains / does not
+        //    contain / is set / is not set for it, not equals.
+        //
+        // Mapped only while the lateral join is present: without it a rule on these fields is
+        // dropped by buildGroupExpression instead of producing a query naming a missing alias.
+        ...(includeLateral
+          ? {
+              electoral_area: { col: 'hd_areas.electoral_area' },
+              any_electoral_area: { col: 'hd_areas.any_electoral_area' },
+            }
+          : {}),
       };
-      const advModel =
-        options.advancedFilterModel || (options.filterModel?.['tags_expression'] as typeof options.advancedFilterModel);
       q = this.applyAdvancedFilters(q, advModel, columnMapping);
 
       return q;
     };
 
-    // Count query
-    const countResult = await applyFilters(this.getSelect(trx))
+    // Count query. It never reads the electoral columns, and the lateral aggregate over
+    // household_districts is per-row work Postgres cannot eliminate — so the join rides along
+    // only when an active filter or rule actually references those fields, which keeps the
+    // count's predicate identical to the data query's.
+    const countNeedsElectoral = referencesElectoralAreas(filterModel, advModel);
+    const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral)
       .select(({ fn }) => [fn.count(sql`DISTINCT households.id`).as('total')])
       .execute();
 
     const count = Number(countResult[0]?.['total'] || 0);
 
     // Data query
-    const rows = await applyFilters(this.getSelect(trx))
+    const rows = await applyFilters(this.getSelect(trx), true)
       .select([
         'households.id',
         'households.country',
@@ -277,9 +406,12 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.street2',
         'households.street_num',
         'households.notes',
-        'households.district',
-        'households.precinct',
-        'households.ward',
+        // Replaces the three fixed text columns (district, precinct, ward). Both are selected, not
+        // just filtered on, because the list builder's live preview evaluates the same rules
+        // client-side against the returned rows — a field filtered server-side but not selected
+        // previews wrong. See the pplcrm-lists skill.
+        'hd_areas.electoral_area',
+        'hd_areas.any_electoral_area',
         'households.geocoding_status',
         'households.updated_at',
       ])
@@ -333,9 +465,8 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.street2',
         'households.street_num',
         'households.notes',
-        'households.district',
-        'households.precinct',
-        'households.ward',
+        'hd_areas.electoral_area',
+        'hd_areas.any_electoral_area',
         'households.geocoding_status',
         'households.created_at',
         'households.updated_at',
@@ -350,39 +481,8 @@ export class HouseholdRepo extends BaseRepository<'households'> {
       ])
       .$if(!!options.sortModel?.length, (qb) =>
         (options.sortModel ?? []).reduce((acc, sort) => {
-          let col = sort.colId;
-          if (typeof col === 'string' && !col.includes('.')) {
-            const hhCols = [
-              'id',
-              'campaign_id',
-              'createdby_id',
-              'file_id',
-              'home_phone',
-              'notes',
-              'address_fp_street',
-              'address_fp_full',
-              'is_placeholder',
-              'district',
-              'precinct',
-              'ward',
-              'geocoding_status',
-              'tenant_id',
-              'updatedby_id',
-              'created_at',
-              'updated_at',
-              'country',
-              'zip',
-              'state',
-              'city',
-              'street1',
-              'street2',
-              'street_num',
-              'apt',
-            ];
-            if (hhCols.includes(col)) {
-              col = `households.${col}`;
-            }
-          }
+          const col = resolveHouseholdSortColumn(sort.colId);
+          if (col == null) return acc;
           return acc.orderBy(col as ReferenceExpression<Models, 'households'>, sort.sort);
         }, qb),
       )
@@ -481,7 +581,6 @@ export class HouseholdRepo extends BaseRepository<'households'> {
       .executeTakeFirst();
   }
 
-  /** Distinct geocoded wards — powers the Households grain sentence ("{n} households across {m} wards"). */
   /**
    * Real households the tenant has, excluding the permanent placeholder household
    * (the one on `tenants.placeholder_household_id`, which just holds people with
@@ -528,14 +627,38 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     };
   }
 
-  public async countDistinctWards(tenant_id: string): Promise<number> {
-    const result = await this.getSelect()
-      .select(({ fn }) => [fn.count<number>(sql`DISTINCT ward`).as('count')])
+  /**
+   * How many distinct electoral areas the workspace's households fall into — the "{n} households
+   * across {m} ridings" grain sentence. The word is the campaign's; the number is this.
+   *
+   * Counted inside ONE boundary set (see `resolveSeatSetId`), because a household is in a riding
+   * AND a ward AND a precinct at once and counting across sets would add a riding count to a
+   * precinct count. Zero when the workspace has no map yet, which is the honest answer.
+   *
+   * `campaignId` picks the campaign whose seat set the count reads — the same resolution the grid
+   * columns use, so the number and the word in "{n} households across {m} ridings" agree.
+   */
+  public async countDistinctWards(tenant_id: string, campaignId?: string | null): Promise<number> {
+    const setId = await resolveSeatSetId(this.db, tenant_id, campaignId ?? null);
+    if (setId == null) return 0;
+    const result = await this.db
+      .selectFrom('household_districts')
+      .select(({ fn }) => [fn.count<number>(sql`DISTINCT name`).as('count')])
       .where('tenant_id', '=', tenant_id)
-      .where('ward', 'is not', null)
-      .where('ward', '!=', '')
+      .where('set_id', '=', setId)
+      .where('name', '!=', '')
       .executeTakeFirst();
     return Number(result?.count ?? 0);
+  }
+
+  /**
+   * Every boundary one household falls inside — a riding AND a ward AND a precinct can all be
+   * true at once — each named with the map it came from, in the order the detail page shows them.
+   *
+   * One query, whatever the number of boundaries. See `listHouseholdAreas`.
+   */
+  public getElectoralAreas(tenant_id: string, household_id: string): Promise<HouseholdAreaListing[]> {
+    return getHouseholdAreas(this.db, tenant_id, household_id);
   }
 
   public getTags(id: string, tenant_id: string, type?: 'tag' | 'issue') {
@@ -826,7 +949,19 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         .where('household_id', '=', input.source_id)
         .execute();
 
-      // 5. Delete source household
+      // 5. Move the source's boundary rows (household_districts) to the target wherever the
+      // target has no row for that set yet. Without this the FK cascade on the source delete
+      // below silently drops them — including rows against an `import`-sourced boundary set,
+      // whose area names arrived in a spreadsheet and cannot be recomputed from any polygon.
+      await sql`
+        INSERT INTO household_districts (tenant_id, household_id, set_id, name, code, matched_at)
+        SELECT tenant_id, ${input.target_id}, set_id, name, code, matched_at
+        FROM household_districts
+        WHERE tenant_id = ${input.tenant_id} AND household_id = ${input.source_id}
+        ON CONFLICT (household_id, set_id) DO NOTHING
+      `.execute(trx);
+
+      // 6. Delete source household
       await this.delete({ tenant_id: input.tenant_id, id: input.source_id }, trx);
 
       return { success: true };

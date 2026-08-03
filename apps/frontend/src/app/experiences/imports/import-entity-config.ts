@@ -1,6 +1,12 @@
 import type { PcIconNameType } from '@icons/icons.index';
 
-import { PERSONS_MAPPABLE_FIELDS, autoMapPersonsHeader } from '@uxcommon/components/csv-import/persons-field-mapping';
+import {
+  ELECTORAL_HEADER_TO_FIELD,
+  ELECTORAL_IMPORT_FIELDS,
+  ELECTORAL_IMPORT_FIELD_LABELS,
+  PERSONS_MAPPABLE_FIELDS,
+  autoMapPersonsHeader,
+} from '@uxcommon/components/csv-import/persons-field-mapping';
 
 /**
  * Everything the CSV import wizard (spec §17) needs to know about one
@@ -64,7 +70,28 @@ const COMPANIES_HEADER_TO_FIELD: Record<string, string> = {
   comments: 'notes',
 };
 
+/**
+ * Electoral columns a file may carry, and the import fields they land in — re-exported from the
+ * shared people/households mapping module so both importers offer exactly the same columns under
+ * exactly the same field keys.
+ *
+ * This is the cheapest way a workspace gets real electoral geography, and it costs nothing at all:
+ * a purchased US voter file routinely already names the congressional district, both legislative
+ * district numbers and the precinct on every row, so accepting those columns writes the boundary
+ * rows straight out of the file with no polygon data and no paid address lookup.
+ *
+ * Each column becomes its OWN boundary map rather than sharing one, because a file carrying both a
+ * city council "District" column and a "CD" column is naming two genuinely different boundaries.
+ *
+ * The field keys and the maps they create are defined on the backend in
+ * `apps/backend/src/app/modules/households/electoral-areas.ts` (`IMPORTED_AREA_SETS`); the row
+ * payload is validated against `electoral-import-schema.ts` in that same folder, which drops any
+ * key it does not name.
+ */
+export { ELECTORAL_IMPORT_FIELDS, ELECTORAL_IMPORT_FIELD_LABELS };
+
 const HOUSEHOLDS_HEADER_TO_FIELD: Record<string, string> = {
+  ...ELECTORAL_HEADER_TO_FIELD,
   streetnum: 'street_num',
   streetnumber: 'street_num',
   homestreet: 'street1',
@@ -147,7 +174,8 @@ export const IMPORT_ENTITY_CONFIGS: Record<ImportEntityType, ImportEntityConfig>
     label: 'People',
     noun: 'people',
     icon: 'user-group',
-    description: 'Contacts with names, emails, phones and addresses. Duplicates are matched by email.',
+    description:
+      'Contacts with names, emails, phones and addresses. Duplicates are matched by email. District, ward and precinct columns are accepted as they are.',
     subtitle: 'Headers in the first row · duplicates are matched by email · nothing is written until the last step',
     mappableFields: PERSONS_MAPPABLE_FIELDS,
     fieldLabels: {
@@ -169,13 +197,17 @@ export const IMPORT_ENTITY_CONFIGS: Record<ImportEntityType, ImportEntityConfig>
       company: 'Company',
       tags: 'Tags (comma-separated)',
       notes: 'Notes',
+      // Without these the column-mapping dropdown falls back to the raw field key and offers
+      // "electoral_district" instead of "District / riding".
+      ...ELECTORAL_IMPORT_FIELD_LABELS,
     },
     autoMapHeader: autoMapPersonsHeader,
     requiredFields: [],
     supportsEmailReview: true,
     supportsTags: true,
     supportsList: true,
-    reviewNote: null,
+    reviewNote:
+      'Any district, ward or precinct columns you map are recorded against each person’s address as they are, with no lookup and no cost.',
     viewRoute: '/people',
   },
   companies: {
@@ -208,7 +240,8 @@ export const IMPORT_ENTITY_CONFIGS: Record<ImportEntityType, ImportEntityConfig>
     label: 'Households',
     noun: 'households',
     icon: 'house-modern',
-    description: 'Addresses (doors). Each unique address becomes one household, ready for geocoding.',
+    description:
+      'Addresses (doors). Each unique address becomes one household, ready for geocoding. District, ward and precinct columns are accepted as they are.',
     subtitle: 'Headers in the first row · duplicates are matched by address · nothing is written until the last step',
     mappableFields: [
       'street_num',
@@ -221,6 +254,7 @@ export const IMPORT_ENTITY_CONFIGS: Record<ImportEntityType, ImportEntityConfig>
       'country',
       'home_phone',
       'notes',
+      ...ELECTORAL_IMPORT_FIELDS,
     ],
     fieldLabels: {
       street_num: 'Street number',
@@ -233,6 +267,7 @@ export const IMPORT_ENTITY_CONFIGS: Record<ImportEntityType, ImportEntityConfig>
       country: 'Country',
       home_phone: 'Home phone',
       notes: 'Notes',
+      ...ELECTORAL_IMPORT_FIELD_LABELS,
     },
     autoMapHeader: autoMapWith(HOUSEHOLDS_HEADER_TO_FIELD),
     requiredFields: [],
@@ -240,7 +275,7 @@ export const IMPORT_ENTITY_CONFIGS: Record<ImportEntityType, ImportEntityConfig>
     supportsTags: true,
     supportsList: false,
     reviewNote:
-      'Rows matching an address you already have (or repeated in the file) are skipped automatically, and new addresses are queued for geocoding.',
+      'Rows matching an address you already have (or repeated in the file) are skipped automatically, and new addresses are queued for geocoding. Any district, ward or precinct columns you map are recorded as they are, with no lookup and no cost.',
     viewRoute: '/households',
   },
   tasks: {

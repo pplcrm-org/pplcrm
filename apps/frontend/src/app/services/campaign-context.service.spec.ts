@@ -11,6 +11,28 @@ const CAMPAIGNS = [
   { id: 'c3', name: 'Election 2022', status: 'archived' },
 ];
 
+/** A campaign row shaped like the context payload, with only the office fields a test cares about. */
+function campaignWithOffice(overrides: Record<string, unknown>) {
+  return {
+    id: 'j1',
+    name: 'Office',
+    kind: 'office',
+    status: 'active',
+    startdate: null,
+    enddate: null,
+    jurisdiction: 'other',
+    office_region: null,
+    office_locality: null,
+    chamber: null,
+    seat_type: 'district',
+    seat_name: null,
+    seat_position: null,
+    seat_label_override: null,
+    office_title: null,
+    ...overrides,
+  };
+}
+
 describe('CampaignContextService', () => {
   let service: CampaignContextService;
   let mockApi: {
@@ -132,6 +154,83 @@ describe('CampaignContextService', () => {
 
       await service.setActive('c2');
       expect(service.isArchivedContext()).toBe(false);
+    });
+  });
+
+  /**
+   * The four label signals every other screen reads. They must never be empty, because several
+   * callers put the value straight into a column header.
+   */
+  describe('electoral vocabulary', () => {
+    async function loadOffice(overrides: Record<string, unknown>): Promise<void> {
+      mockApi.campaigns.getContext.query.mockResolvedValue({
+        campaigns: [campaignWithOffice(overrides)],
+        active_campaign_id: 'j1',
+      });
+      await service.refresh();
+    }
+
+    it('falls back to neutral words before anything is loaded', () => {
+      expect(service.seatLabel()).toBe('District');
+      expect(service.seatLabelPlural()).toBe('Districts');
+      expect(service.subdivisionLabel()).toBe('Subdivision');
+      expect(service.subdivisionLabelPlural()).toBe('Subdivisions');
+      expect(service.activeJurisdiction()).toBe('other');
+    });
+
+    it('never returns an empty string, whatever the campaign carries', async () => {
+      await loadOffice({ jurisdiction: 'not-a-jurisdiction', seat_label_override: '   ' });
+
+      for (const label of [
+        service.seatLabel(),
+        service.seatLabelPlural(),
+        service.subdivisionLabel(),
+        service.subdivisionLabelPlural(),
+      ]) {
+        expect(label.length).toBeGreaterThan(0);
+      }
+      expect(service.activeJurisdiction()).toBe('other');
+    });
+
+    it('uses the jurisdiction default when there is no exception', async () => {
+      await loadOffice({ jurisdiction: 'ca_federal' });
+
+      expect(service.seatLabel()).toBe('Riding');
+      expect(service.seatLabelPlural()).toBe('Ridings');
+      expect(service.subdivisionLabel()).toBe('Polling division');
+      expect(service.subdivisionLabelPlural()).toBe('Polling divisions');
+    });
+
+    it('applies the regional exception with nothing configured — Alberta says Constituency', async () => {
+      await loadOffice({ jurisdiction: 'ca_provincial', office_region: 'AB' });
+
+      expect(service.seatLabel()).toBe('Constituency');
+      expect(service.seatLabelPlural()).toBe('Constituencies');
+    });
+
+    it('applies the New York subdivision exception', async () => {
+      await loadOffice({ jurisdiction: 'us_state', office_region: 'NY' });
+
+      expect(service.seatLabel()).toBe('Legislative district');
+      expect(service.subdivisionLabel()).toBe('Election district');
+      expect(service.subdivisionLabelPlural()).toBe('Election districts');
+    });
+
+    it("lets the campaign's own override beat the regional exception", async () => {
+      await loadOffice({ jurisdiction: 'ca_provincial', office_region: 'AB', seat_label_override: 'Trustee area' });
+
+      expect(service.seatLabel()).toBe('Trustee area');
+      expect(service.seatLabelPlural()).toBe('Trustee areas');
+      // The override renames the seat only; where you are still decides the subdivision word.
+      expect(service.subdivisionLabel()).toBe('Polling division');
+    });
+
+    it('exposes the region and the spec alongside the words', async () => {
+      await loadOffice({ jurisdiction: 'us_federal', office_region: 'OH' });
+
+      expect(service.activeRegion()).toBe('OH');
+      expect(service.activeJurisdictionSpec().label).toBe('United States — federal');
+      expect(service.seatLabel()).toBe('Congressional district');
     });
   });
 });

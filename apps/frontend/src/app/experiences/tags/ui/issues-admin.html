@@ -23,7 +23,9 @@
       <th class="min-w-44">Issue</th>
       <th class="min-w-48">People interested</th>
       <th>Trend</th>
-      <th>Top ward</th>
+      <!-- Named in the active campaign's own word (Top ward, Top riding, Top precinct). The row's
+           backend key is still `top_ward`; only the heading is jurisdiction-aware. -->
+      <th>{{ topAreaHeading() }}</th>
       <th class="w-10"></th>
     </ng-container>
 

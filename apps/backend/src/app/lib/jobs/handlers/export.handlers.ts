@@ -1,4 +1,4 @@
-import type { ExpressionBuilder, Kysely } from 'kysely';
+import type { AliasedRawBuilder, ExpressionBuilder, JoinBuilder, Kysely } from 'kysely';
 import { sql } from 'kysely';
 import { Readable } from 'stream';
 import { env } from '../../../../env';
@@ -13,7 +13,13 @@ import { sendMailOrDrop } from '../../mail/send-or-drop';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { UserActivityRepo } from '../../user-activity.repo';
 import type { JobPayloadOf } from '../job-payloads';
-import { ALLOWED_EXPORT_TABLES, resolveExportColumns } from '../../../modules/exports/export-tables';
+import {
+  ALLOWED_EXPORT_TABLES,
+  ELECTORAL_AREA_EXPORT_TABLE,
+  electoralExportColumns,
+  resolveExportColumns,
+  type ElectoralExportColumn,
+} from '../../../modules/exports/export-tables';
 import { isPrivilegedRole } from '../../../../../../../libs/common/src';
 
 const storageService = new StorageService();
@@ -63,6 +69,34 @@ async function resolveExportCampaignPin(
     .executeTakeFirst();
 
   return office ? String(office.id) : null;
+}
+
+/**
+ * The boundary maps this workspace holds, turned into export columns.
+ *
+ * Ordered so the CSV is stable between runs: seat areas (ridings, wards, congressional districts —
+ * the ones people actually organize around) first, then by label, then by id to break a tie between
+ * two maps sharing a label. Without a total order Postgres is free to return the maps in any order
+ * and the column order of the file would change from one export to the next.
+ */
+async function resolveElectoralExportColumns(
+  db: Kysely<Models>,
+  tenantId: string,
+  reservedHeaders: readonly string[],
+): Promise<ElectoralExportColumn[]> {
+  const sets = await db
+    .selectFrom('boundary_sets')
+    .select(['id', 'label'])
+    .where('tenant_id', '=', tenantId)
+    .orderBy(sql`(role = 'seat_area')`, 'desc')
+    .orderBy('label', 'asc')
+    .orderBy('id', 'asc')
+    .execute();
+
+  return electoralExportColumns(
+    sets.map((set) => ({ id: String(set.id), label: set.label })),
+    reservedHeaders,
+  );
 }
 
 export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: Kysely<Models>): Promise<void> {
@@ -137,8 +171,52 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
       // selection — hence AnyQB, the workspace's alias for a deliberately untyped query builder.
       // `csvColumns` is not free-form: it comes from EXPORT_TABLE_COLUMNS, which the export-tables
       // spec checks against information_schema on every run.
-      const dynamic: AnyQB = db.selectFrom(table as keyof Models);
-      query = dynamic.select(csvColumns).where('tenant_id', '=', tenantId);
+      let dynamic: AnyQB = db.selectFrom(table as keyof Models);
+      // The columns to select. Starts as the allow-listed table columns; a households export then
+      // appends one aggregate per boundary map.
+      const selectList: Array<string | AliasedRawBuilder<string | null, string>> = [...csvColumns];
+
+      // A households CSV used to carry `district`, `precinct` and `ward` as plain columns of the
+      // table, and lost them when electoral geography moved into `household_districts`. Restore
+      // them here as one column per boundary map the workspace holds — see `electoralExportColumns`
+      // in modules/exports/export-tables.ts for why one column per map rather than one column
+      // listing every area.
+      //
+      // This costs nothing and calls nothing: the areas are rows already on file, written either by
+      // point-in-polygon matching (pure processor work) or straight out of an imported file. No
+      // geocoding, no external service, no per-address billing is involved in exporting them.
+      if (table === ELECTORAL_AREA_EXPORT_TABLE) {
+        const areaColumns = await resolveElectoralExportColumns(db, tenantId, csvColumns);
+        if (areaColumns.length > 0) {
+          // A lateral aggregate, not a join: a household sits in several boundaries at once, so a
+          // plain join would emit one CSV row per boundary per household. Aggregating with no
+          // GROUP BY yields exactly one row per household, including households that match no
+          // boundary at all (their cells are simply empty). The subquery is correlated on both
+          // household_id and tenant_id, so it stays tenant-scoped.
+          dynamic = dynamic.leftJoinLateral(
+            (eb: ExpressionBuilder<Models, 'households'>) =>
+              eb
+                .selectFrom('household_districts as hd')
+                .whereRef('hd.household_id', '=', 'households.id')
+                .whereRef('hd.tenant_id', '=', 'households.tenant_id')
+                .select(
+                  areaColumns.map((column) =>
+                    sql<string | null>`max(hd.name) filter (where hd.set_id = ${column.setId})`.as(column.alias),
+                  ),
+                )
+                .as('hd_areas'),
+            (join: JoinBuilder<Models, 'households'>) => join.onTrue(),
+          );
+          for (const column of areaColumns) {
+            // Referenced through the safe alias and renamed to the map's label only at the outer
+            // level, so a label with spaces or punctuation never has to be a SQL identifier twice.
+            selectList.push(sql<string | null>`hd_areas.${sql.raw(column.alias)}`.as(column.header));
+            csvColumns.push(column.header);
+          }
+        }
+      }
+
+      query = dynamic.select(selectList).where('tenant_id', '=', tenantId);
 
       // Campaigns §15 — restrict a campaign-pinned requester to their own campaign's rows.
       if (CAMPAIGN_SCOPED_EXPORT_TABLES.has(table)) {

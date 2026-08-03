@@ -11,6 +11,17 @@ import { ProfileCard } from '@uxcommon/components/profile-card/profile-card';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { createRequestGuard } from '@uxcommon/request-guard';
 
+import {
+  CHAMBER_LABELS,
+  JURISDICTIONS,
+  RECEIPT_REGIMES,
+  isJurisdictionId,
+  receiptRegimeHintForCampaign,
+  regionsForCountry,
+  seatLabelFor,
+} from '../../../../../../../libs/common/src';
+import type { CampaignReceiptRegimeHint, JurisdictionId } from '../../../../../../../libs/common/src';
+
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
 import { CampaignDetail, CampaignsService } from '../services/campaigns-service';
@@ -56,6 +67,91 @@ export class CampaignViewComponent {
   protected readonly isOffice = computed(() => this.kind() === 'office');
   protected readonly isArchived = computed(() => this.status() === 'archived');
   protected readonly isCurrentContext = computed(() => this.context.activeCampaignId() === this.id());
+
+  // ---------------------------------------------------------------------------------------------
+  // The office this campaign contests. Everything below is read back in the jurisdiction's own
+  // words, never in the stored identifiers: a campaign that recorded `ca_provincial` + `AB` reads
+  // "Canada — provincial or territorial" and "Constituency", not "ca_provincial" and "seat_name".
+  // ---------------------------------------------------------------------------------------------
+
+  protected readonly jurisdiction = computed<JurisdictionId>(() => {
+    const value = this.campaign()?.['jurisdiction'];
+    return isJurisdictionId(value) ? value : 'other';
+  });
+  protected readonly spec = computed(() => JURISDICTIONS[this.jurisdiction()]);
+  protected readonly officeRegion = computed(() => this.str('office_region') || null);
+  protected readonly officeLocality = computed(() => this.str('office_locality'));
+  protected readonly seatName = computed(() => this.str('seat_name'));
+  protected readonly seatPosition = computed(() => this.str('seat_position'));
+  protected readonly officeTitle = computed(() => this.str('office_title'));
+  protected readonly isAtLarge = computed(() => this.str('seat_type') === 'at_large');
+
+  /** "Alberta", "Ohio", or the stored code if this build does not know the name. */
+  protected readonly regionName = computed(() => {
+    const code = this.officeRegion();
+    if (!code) return '';
+    return regionsForCountry(this.spec().country).find((r) => r.code === code)?.name ?? code;
+  });
+
+  protected readonly chamberLabel = computed(() => {
+    const chamber = this.str('chamber');
+    if (chamber === 'upper' || chamber === 'lower') return CHAMBER_LABELS[chamber];
+    return '';
+  });
+
+  /** This campaign's own word for a seat area: override, then regional exception, then default. */
+  protected readonly seatWord = computed(() =>
+    seatLabelFor(this.jurisdiction(), this.officeRegion(), this.str('seat_label_override') || null),
+  );
+
+  /** True once the campaign has said anything at all about the office it is contesting. */
+  protected readonly hasOffice = computed(
+    () => this.jurisdiction() !== 'other' || !!this.seatName() || !!this.officeTitle(),
+  );
+
+  /** Where the campaign runs, most specific first: "Toronto, Ontario". */
+  protected readonly officePlace = computed(() =>
+    [this.officeLocality(), this.regionName()].filter((part) => part.length > 0).join(', '),
+  );
+
+  /**
+   * One plain sentence naming what is being contested. An at-large seat says so and names the area
+   * it covers, because "at large" on its own tells a first-time reader nothing.
+   */
+  protected readonly officeSummary = computed(() => {
+    const title = this.officeTitle();
+    const seatWord = this.seatWord().toLowerCase();
+
+    if (this.isAtLarge()) {
+      const area = this.officeLocality() || this.regionName() || 'the whole area';
+      const opening = title ? `${title}, elected at large across ${area}.` : `Elected at large across ${area}.`;
+      return `${opening} There is no ${seatWord} for this seat.`;
+    }
+
+    const seat = this.seatName();
+    if (!seat) {
+      return title
+        ? `${title}. The ${seatWord} it contests has not been recorded yet.`
+        : `The ${seatWord} this campaign contests has not been recorded yet.`;
+    }
+    return title ? `${title} for the ${seatWord} of ${seat}.` : `Contesting the ${seatWord} of ${seat}.`;
+  });
+
+  /**
+   * What the declared office can say about receipting. It is a hint shown beside a link to the
+   * donation settings, and it never selects anything: which regime a workspace may issue under
+   * depends on how the organization is registered, which the campaign record cannot know. For a US
+   * campaign it explains that political contributions are not receipted at all.
+   */
+  protected readonly receiptHint = computed<CampaignReceiptRegimeHint | null>(() =>
+    receiptRegimeHintForCampaign(this.jurisdiction(), this.officeRegion()),
+  );
+
+  /** The suggested regime's own display name, for the hint text. */
+  protected readonly suggestedRegimeLabel = computed(() => {
+    const hint = this.receiptHint();
+    return hint?.kind === 'suggested' ? RECEIPT_REGIMES[hint.regime].label : '';
+  });
 
   // Carry-over (§15): seed this campaign from a prior one.
   protected readonly carrySourceId = signal('');

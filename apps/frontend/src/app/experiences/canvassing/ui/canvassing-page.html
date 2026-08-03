@@ -122,12 +122,12 @@
       <div
         class="flex h-32 items-center justify-center rounded-lg border border-dashed border-base-300 text-sm text-base-content/50"
       >
-        Turfs appear here on the ward map once they are cut.
+        Turfs appear here on the map once they are cut.
       </div>
       }
       <p class="mt-2 text-xs text-base-content/50">
-        One pin per turf, placed in the middle of its doors and coloured by status. Click a pin to open that turf. Turfs
-        never cross a ward boundary.
+        One pin per turf, placed in the middle of its doors and coloured by status. Click a pin to open that turf. A
+        turf never crosses a boundary line.
       </p>
     </div>
   </section>
@@ -295,13 +295,14 @@
           >
             Street map
           </button>
+          <!-- The tab is named with the campaign's own word for the area, sent by the server. -->
           <button
             role="tab"
             class="tab"
-            [class.tab-active]="coverageView() === 'ward'"
-            (click)="coverageView.set('ward')"
+            [class.tab-active]="coverageView() === 'boundary'"
+            (click)="coverageView.set('boundary')"
           >
-            By ward
+            {{ coverageByLabel() }}
           </button>
         </div>
       </div>
@@ -329,32 +330,36 @@
           <table class="table pc-table">
             <thead>
               <tr class="text-xs uppercase text-base-content/50">
-                <th>Ward</th>
+                <th>{{ boundaryLabel() }}</th>
                 <th>Doors</th>
                 <th class="w-1/2">Coverage</th>
                 <th class="text-right">Talked</th>
               </tr>
             </thead>
             <tbody>
-              @for (w of cov.byWard; track w.ward) {
+              <!-- Tracked by position, not display name: the roll-up keys areas on the raw name
+                   server-side (null = the "Unbounded" bucket), so a real area named exactly
+                   "Unbounded" arrives as its own row with the same display string. -->
+              @for (a of cov.byBoundary; track $index) {
               <tr>
-                <td class="font-medium">{{ w.ward }}</td>
-                <td class="whitespace-nowrap">{{ w.doors }}</td>
+                <td class="font-medium">{{ a.boundary_name }}</td>
+                <td class="whitespace-nowrap">{{ a.doors }}</td>
                 <td>
                   <div class="flex h-2.5 w-full overflow-hidden rounded-full bg-base-200">
-                    <div class="h-full bg-success" [style.width.%]="barPct(w.conversation, w.doors)"></div>
-                    <div class="h-full bg-warning" [style.width.%]="barPct(w.attempted, w.doors)"></div>
+                    <div class="h-full bg-success" [style.width.%]="barPct(a.conversation, a.doors)"></div>
+                    <div class="h-full bg-warning" [style.width.%]="barPct(a.attempted, a.doors)"></div>
                   </div>
                   <div class="mt-1 text-[10px] text-base-content/50">
-                    {{ barPct(w.conversation + w.attempted, w.doors) }}% knocked · {{ w.not_yet }} not yet
+                    {{ barPct(a.conversation + a.attempted, a.doors) }}% knocked · {{ a.not_yet }} not yet
                   </div>
                 </td>
-                <td class="text-right">{{ w.conversation }}</td>
+                <td class="text-right">{{ a.conversation }}</td>
               </tr>
               }
             </tbody>
           </table>
         </div>
+        <p class="mt-2 text-xs text-base-content/50">{{ coverageTableNote() }}</p>
         }
       </div>
     </div>

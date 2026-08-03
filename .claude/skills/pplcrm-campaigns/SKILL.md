@@ -1,6 +1,6 @@
 ---
 name: pplcrm-campaigns
-description: How Campaigns (§15) scope data — office/election contexts, the shared-rolodex vs campaign-scoped-facts split, the three-layer email consent model, and admin-assigned membership. USE WHEN touching modules/campaigns, experiences/campaigns, campaign_person_facts / campaign_subscriptions / email_suppressions, support level or voting status, DNC, newsletter sendability, domain scoping via options.campaignId, authusers.campaign_id, archive/carry-over rules, or adding a campaign_id column to any table. EXAMPLES 'why is this person not getting the newsletter', 'which campaign does a knock update', 'why is this editor forbidden from another campaign'.
+description: How Campaigns (§15) scope data — office/election contexts, which office a campaign contests (the nine jurisdiction/seat columns and the jurisdiction vocabulary registry), the shared-rolodex vs campaign-scoped-facts split, the three-layer email consent model, and admin-assigned membership. USE WHEN touching modules/campaigns, experiences/campaigns, campaign_person_facts / campaign_subscriptions / email_suppressions, campaigns.jurisdiction / seat_type / chamber or libs/common/src/lib/jurisdictions, labelling a riding/district/ward in the UI, support level or voting status, DNC, newsletter sendability, domain scoping via options.campaignId, authusers.campaign_id, archive/carry-over rules, or adding a campaign_id column to any table. EXAMPLES 'why is this person not getting the newsletter', 'which campaign does a knock update', 'why is this editor forbidden from another campaign'.
 ---
 
 # Campaigns (§15): office/election contexts
@@ -21,8 +21,9 @@ person columns, NULL = "not one". No system tags remain; the `system-tags.ts` ma
 
 ## Tables
 
-- `campaigns` — + `kind ('office'|'election')`, `status ('active'|'archived')`. Backed by
-  `modules/campaigns/` (repo/controller/router registered as `campaigns` in `modules/trpc.ts`).
+- `campaigns` — + `kind ('office'|'election')`, `status ('active'|'archived')`, plus the nine
+  office columns below. Backed by `modules/campaigns/` (repo/controller/router registered as
+  `campaigns` in `modules/trpc.ts`).
 - `campaign_person_facts` — one row per (campaign, person): `support_level`
   (strong/leaning/neutral/leaning_against/against/undecided — **Unknown = no row/NULL, never
   stored**), `voting_status` (will_vote/voted_advance/voted_eday/not_voting/ineligible), each with
@@ -37,6 +38,66 @@ person columns, NULL = "not one". No system tags remain; the `system-tags.ts` ma
 
 **Sendable in campaign X** = subscribed row in X ∧ no suppression for the email ∧ not DNC(email).
 The single choke point is `NewslettersController.buildRecipientQuery` — change sendability there.
+
+## What office a campaign contests (nine columns, added 2026-08-02)
+
+`2026-08-02-a-campaign-jurisdiction.ts` added nine columns to `campaigns`. Three carry CHECK
+constraints; keep those value lists in step with `JURISDICTION_IDS`, `SEAT_TYPES` and `CHAMBERS` in
+`libs/common/src/lib/jurisdictions/`.
+
+| Column                | Values / type                                                                                                              |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `jurisdiction`        | NOT NULL, default `'other'`. CHECK: `ca_federal` `ca_provincial` `ca_municipal` `us_federal` `us_state` `us_local` `other` |
+| `seat_type`           | NOT NULL, default `'district'`. CHECK: `district` / `at_large`                                                             |
+| `chamber`             | nullable. CHECK: `upper` / `lower`. Only `us_state` uses it                                                                |
+| `office_region`       | Province/territory or state code (`'AB'`, `'OH'`)                                                                          |
+| `office_locality`     | Municipality or county                                                                                                     |
+| `seat_name`           | The seat's own name — free text, not yet a reference into `boundary_sets`                                                  |
+| `seat_position`       | Free text for multi-member districts: "Position 2", "Seat B"                                                               |
+| `seat_label_override` | A campaign's own word for its seat                                                                                         |
+| `office_title`        | What the officeholder is called (MP, MLA, Councillor, Representative)                                                      |
+
+**One flat seven-value enum, not country × level**, so invalid combinations are unrepresentable
+(same shape as the receipt-regime enum). `other` is the honest default — every campaign that
+existed before this migration, plus school board, county commission, band council, anything outside
+Canada and the US. `seat_type` is a **separate axis**, not a local-government case: a US Senator, a
+governor, a mayor and the single at-large congressional seat in six states all have no seat area.
+`chamber` is **not derivable** — a state senate and a state house campaign agree on everything else
+yet match different boundary layers.
+
+### The vocabulary is data, never a hard-coded word
+
+`libs/common/src/lib/jurisdictions/` holds one reviewable file per jurisdiction
+(`ca-federal.ts`, `us-state.ts`, …), aggregated in `JURISDICTIONS` in `index.ts`. A
+`JurisdictionSpec` carries the default seat/subdivision words and their plurals, the regional
+exception tables, `supportsAtLarge` / `usesChamber` / `requiresRegion` / `requiresLocality`, the
+expected `boundaryLayers`, the `officeTitles` picker list, and `suggestedReceiptRegime(region)`.
+
+Resolve display words through `seatLabelFor` / `seatLabelPluralFor` / `subdivisionLabelFor` /
+`subdivisionLabelPluralFor` — never hard-code "riding" or "ward". Seat resolution is **override →
+regional exception → spec default**, so an Alberta provincial campaign reads "Constituency" with
+nothing configured (also SK Constituency, NL and PE District, QC Circonscription; NY says "Election
+district" for the subdivision). `subdivisionLabelFor` takes **no override** on purpose: the
+override renames the seat the campaign is contesting, and the subdivision word is a property of
+where you are.
+
+**Never infer meaning from a word.** An Ontario ward is a seat area; a Massachusetts ward is a
+voting subdivision. Meaning lives in `boundary_sets.role` (`seat_area` / `subdivision` /
+`locality`) — see `pplcrm-maps-geo`.
+
+### Validation
+
+`checkOfficeFields` in `libs/common/src/lib/schemas/campaigns.schema.ts` does the cross-field
+checks, because each rule is only answerable once the jurisdiction is known: an `at_large` seat is
+refused where `supportsAtLarge` is false and must have no `seat_name`; a `district` campaign in any
+jurisdiction other than `other` must name its seat; `chamber` is required exactly when
+`usesChamber`; `office_region` must be in `regionsForCountry(spec.country)`. On an **update** the
+whole block is skipped when `jurisdiction` is absent, so editing only a name or dates does not force
+the office to be restated — but sending a jurisdiction means restating the office block with it.
+
+`requiredSetIdsForTenant` (`apps/backend/src/app/lib/gis/boundary-match.ts`) reads
+`jurisdiction` + `office_region` + `chamber` off **active** campaigns to decide which boundary
+layers a workspace's households are matched against.
 
 ## Context plumbing (admin-assigned since 2026-07-23)
 

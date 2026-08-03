@@ -1,14 +1,23 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BOUNDARY_MAX_VERTICES_PER_FEATURE,
+  JURISDICTIONS,
   ORG_MODES,
   ORG_MODE_IS_ELECTORAL,
   ORG_MODE_MODULE_DEFAULTS,
   ORG_MODE_SEEDS_DEMO,
   RECEIPT_REGIMES,
+  boundaryBBoxOf,
+  countBoundaryVertices,
+  isJurisdictionId,
+  regionsForCountry,
 } from '@common';
+import { boundaryGeometrySchema } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
 import type { OrgMode, ReceiptRegimeId } from '@common';
 
+import { isPointInPolygon } from '../../lib/gis/point-in-polygon';
+import { cutTurfs } from '../canvassing/lib/cutting-engine';
 import {
   CAMPAIGN_STARTER_TAGS,
   MODE_ISSUES,
@@ -18,6 +27,8 @@ import {
 } from '../auth/onboarding-seed';
 import { DEMO_DATASETS } from './demo-datasets';
 import type { DemoDataset } from './demo-data-types';
+import type { PlacePack } from './demo-data-places';
+import { DEMO_AREA_KEYS, DEMO_ROUTE_START_KEYS, DEMO_VENUE_KEYS, PLACE_PACKS, areaGeometry } from './demo-data-places';
 
 /**
  * The invariant this file exists for.
@@ -51,6 +62,194 @@ describe('demo datasets', () => {
       expect(ORG_MODE_SEEDS_DEMO[mode], `ORG_MODE_SEEDS_DEMO.${mode} disagrees with DEMO_DATASETS.${mode}`).toBe(
         DEMO_DATASETS[mode] !== null,
       );
+    }
+  });
+
+  const packs: [string, PlacePack][] = Object.entries(PLACE_PACKS);
+
+  /**
+   * The place packs — one country's address book each, and the reason a workspace in Ohio is not
+   * shown Ottawa ward names.
+   *
+   * A dataset names a household by site key alone, so every pack must carry every key or a story
+   * silently loses its address. These checks are also what proves the seeded boundary polygons are
+   * usable: a turf may not span two areas, and that only holds if each area's outline contains its
+   * own households and nobody else's.
+   */
+  describe('place packs', () => {
+    it('carry the same site keys in the same order', () => {
+      const [firstName, first] = packs[0] ?? [];
+      expect(first, 'there is at least one place pack').toBeDefined();
+      if (!first || !firstName) return;
+      const expected = first.sites.map((s) => s.key);
+      expect(new Set(expected).size, `${firstName} repeats a site key`).toBe(expected.length);
+      for (const [name, pack] of packs) {
+        expect(
+          pack.sites.map((s) => s.key),
+          `${name} does not carry the same site keys as ${firstName}`,
+        ).toEqual(expected);
+      }
+    });
+
+    for (const [name, pack] of packs) {
+      describe(name, () => {
+        it('files every site under one of its own areas', () => {
+          const used = new Set<string>();
+          for (const site of pack.sites) {
+            expect(DEMO_AREA_KEYS.includes(site.area), `${name} site ${site.key} has area "${site.area}"`).toBe(true);
+            used.add(site.area);
+          }
+          for (const key of DEMO_AREA_KEYS) {
+            expect(used.has(key), `${name} area "${key}" has no households, so its turf would be empty`).toBe(true);
+          }
+        });
+
+        it('gives every area a valid outline within the vertex cap', () => {
+          for (const key of DEMO_AREA_KEYS) {
+            const geometry = areaGeometry(pack.areas[key]);
+            const parsed = boundaryGeometrySchema.safeParse(geometry);
+            expect(parsed.success, `${name} area "${key}" is not a valid GeoJSON geometry`).toBe(true);
+            expect(countBoundaryVertices(geometry)).toBeLessThanOrEqual(BOUNDARY_MAX_VERTICES_PER_FEATURE);
+            const [minLng, minLat, maxLng, maxLat] = boundaryBBoxOf(geometry);
+            expect(maxLng, `${name} area "${key}" has an empty bounding box`).toBeGreaterThan(minLng);
+            expect(maxLat, `${name} area "${key}" has an empty bounding box`).toBeGreaterThan(minLat);
+          }
+        });
+
+        /**
+         * Seat areas tile a city; they do not overlap. The product's own boundary validation
+         * flags overlapping features, so the sample map must not ship one (Ottawa once did, in a
+         * sliver between Somerset and Rideau-Vanier that held no household — invisible to the
+         * containment test below). Every ring here is an axis-aligned rectangle from `box()`, so
+         * bounding boxes ARE the polygons and this check is exact: sharing an edge is fine,
+         * sharing any area is not.
+         */
+        it('keeps every two area outlines from overlapping', () => {
+          for (const [i, a] of DEMO_AREA_KEYS.entries()) {
+            for (const b of DEMO_AREA_KEYS.slice(i + 1)) {
+              const [aMinLng, aMinLat, aMaxLng, aMaxLat] = boundaryBBoxOf(areaGeometry(pack.areas[a]));
+              const [bMinLng, bMinLat, bMaxLng, bMaxLat] = boundaryBBoxOf(areaGeometry(pack.areas[b]));
+              const lngOverlap = Math.min(aMaxLng, bMaxLng) - Math.max(aMinLng, bMinLng);
+              const latOverlap = Math.min(aMaxLat, bMaxLat) - Math.max(aMinLat, bMinLat);
+              expect(lngOverlap > 0 && latOverlap > 0, `${name} areas "${a}" and "${b}" overlap`).toBe(false);
+            }
+          }
+        });
+
+        /**
+         * The whole point of seeding polygons: a household must land in its own area and in no
+         * other, or the seeded `household_districts` row and what the map shows disagree, and a
+         * later re-match would move the household to a different turf.
+         */
+        it('puts every household inside its own area outline and no other', () => {
+          for (const site of pack.sites) {
+            const inside = DEMO_AREA_KEYS.filter((key) => {
+              const geometry = areaGeometry(pack.areas[key]);
+              return isPointInPolygon(site.lng, site.lat, geometry.coordinates);
+            });
+            expect(inside, `${name} site ${site.key} falls inside areas [${inside.join(', ')}]`).toEqual([site.area]);
+          }
+        });
+
+        it('states a real office whose region belongs to its country', () => {
+          const office = pack.office;
+          expect(isJurisdictionId(office.jurisdiction), `${name} jurisdiction "${office.jurisdiction}"`).toBe(true);
+          if (!isJurisdictionId(office.jurisdiction)) return;
+          const spec = JURISDICTIONS[office.jurisdiction];
+          expect(spec.country, `${name} office jurisdiction is not in the pack's country`).toBe(pack.country);
+          if (spec.requiresRegion) {
+            const regions = regionsForCountry(spec.country).map((r) => r.code);
+            expect(
+              regions,
+              `${name} office region "${office.office_region}" is not a ${spec.country} region`,
+            ).toContain(office.office_region);
+          }
+          if (spec.requiresLocality) {
+            expect(office.office_locality, `${name} office needs a locality`).toBeTruthy();
+          }
+          if (office.seat_type === 'district') {
+            expect(office.seat_name, `${name} office is a district seat, so it needs a seat name`).toBeTruthy();
+          } else {
+            expect(office.seat_name, `${name} office is at large, so it has no seat area to name`).toBeNull();
+          }
+        });
+
+        it('names every venue and gives every route start real coordinates', () => {
+          for (const key of DEMO_VENUE_KEYS) {
+            expect(pack.venues[key].line1.length, `${name} venue "${key}" has no street address`).toBeGreaterThan(0);
+            expect(pack.venues[key].zip.length, `${name} venue "${key}" has no postal code`).toBeGreaterThan(0);
+          }
+          for (const key of DEMO_ROUTE_START_KEYS) {
+            const start = pack.routeStarts[key];
+            expect(Number.isFinite(start.lat), `${name} route start "${key}" has no latitude`).toBe(true);
+            expect(Number.isFinite(start.lng), `${name} route start "${key}" has no longitude`).toBe(true);
+          }
+        });
+
+        it('uses its own area code on every demo phone number it carries', () => {
+          for (const site of pack.sites) {
+            if (site.home_phone == null) continue;
+            expect(site.home_phone.startsWith(`${pack.phoneAreaCode}-`), `${name} site ${site.key} phone`).toBe(true);
+          }
+        });
+      });
+    }
+  });
+
+  /**
+   * Turf cutting over the seeded demo data, run through the real engine rather than a copy of it.
+   *
+   * The engine refuses to let one turf span two boundaries. That guarantee is only worth anything
+   * if the demo's own doors carry the boundary names the seeded polygons would give them, so this
+   * feeds the engine exactly what the seeder writes and checks the result.
+   */
+  describe('turf cutting over the demo data', () => {
+    const withTurfs = seeded.filter(([, dataset]) => dataset.turfs.length > 0);
+
+    it('has at least one dataset with turfs to check', () => {
+      expect(withTurfs.length).toBeGreaterThan(0);
+    });
+
+    for (const [mode, dataset] of withTurfs) {
+      for (const [name, pack] of packs) {
+        it(`${mode} in ${name}: every pre-cut turf sits in one area`, () => {
+          const areaOf = new Map(pack.sites.map((s) => [s.key, s.area]));
+          for (const turf of dataset.turfs) {
+            expect(turf.households.length, `${mode} turf ${turf.key} has no doors`).toBeGreaterThan(0);
+            for (const key of turf.households) {
+              expect(areaOf.get(key), `${mode} turf ${turf.key} door ${key} is not in area "${turf.area}"`).toBe(
+                turf.area,
+              );
+            }
+          }
+        });
+
+        it(`${mode} in ${name}: a fresh cut never spans two areas`, () => {
+          const doors = dataset.households.flatMap((h) => {
+            const site = pack.sites.find((s) => s.key === h.key);
+            if (!site) return [];
+            return [
+              {
+                household_id: h.key,
+                lat: site.lat,
+                lng: site.lng,
+                boundaryName: pack.areas[site.area].name,
+              },
+            ];
+          });
+          const plan = cutTurfs(doors, 4);
+          expect(plan.unplaced, `${mode} in ${name} has doors with no coordinates`).toHaveLength(0);
+          expect(plan.placedCount).toBe(doors.length);
+          expect(plan.turfs.length).toBeGreaterThan(0);
+
+          const areaNameOf = new Map(doors.map((d) => [d.household_id, d.boundaryName]));
+          for (const cluster of plan.turfs) {
+            const names = new Set(cluster.households.map((id) => areaNameOf.get(id)));
+            expect(names.size, `a cut turf spans areas [${[...names].join(', ')}]`).toBe(1);
+            expect([...names][0]).toBe(cluster.boundaryName);
+          }
+        });
+      }
     }
   });
 

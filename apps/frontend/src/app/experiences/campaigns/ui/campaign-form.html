@@ -30,6 +30,203 @@
   }
 
   <form class="grid gap-6" (submit)="save($event)" novalidate>
+    <!--
+      The office card. Only workspaces that run elections contest a seat, so a church or charity
+      never sees it. Each question appears only once the answer above it makes it meaningful.
+    -->
+    @if (isElectoral()) {
+    <pc-card
+      icon="map-pin"
+      title="What office is this campaign for?"
+      subtitle="This decides the words the app uses for your areas, and which maps your households are matched against. You can change it later."
+    >
+      <p class="text-xs leading-relaxed text-base-content/60">
+        <ng-container i18n>
+          Answer as much as you know. Every screen then says riding, ward, constituency or congressional district on its
+          own, without anyone setting wording anywhere.
+        </ng-container>
+        <a routerLink="/help/campaign-jurisdictions" class="link text-primary" i18n>Read what a jurisdiction is</a>.
+      </p>
+
+      <!--
+        1. Country and level of government. Everything below depends on this answer, so each option
+        carries the registry's own one-sentence explanation of what it covers.
+      -->
+      <div class="grid gap-1">
+        <pc-select id="campaign-jurisdiction" label="Country and level of government" [formField]="form.jurisdiction">
+          @for (option of jurisdictionOptions; track option.id) {
+          <option [value]="option.id">{{ option.label }}: {{ option.description }}</option>
+          }
+        </pc-select>
+        <p class="pl-1 text-[11px] leading-snug text-base-content/60">{{ spec().description }}</p>
+      </div>
+
+      <!-- Guide, don't error: 'Something else' is a legitimate answer, so this is an offer, not a warning. -->
+      @if (jurisdiction() === 'other') {
+      <div class="flex items-start gap-2.5 rounded-lg border border-info/30 bg-info/10 px-3.5 py-2.5">
+        <pc-icon name="information-circle" [size]="5" class="mt-0.5 shrink-0 text-info"></pc-icon>
+        <p class="text-xs leading-relaxed text-base-content/80" i18n>
+          This campaign has no office recorded, which is fine. Choosing a country and level above turns on your area's
+          own vocabulary and its boundary maps. You can still name a district and a title below without it.
+        </p>
+      </div>
+      }
+
+      <!-- 2. Province, territory or state. Skipped where the seat has no region of its own. -->
+      @if (showRegion()) {
+      <div class="grid gap-1">
+        <pc-select
+          id="campaign-region"
+          [label]="spec().country === 'CA' ? 'Province or territory' : 'State'"
+          [placeholder]="'Choose a ' + regionTerm() + '…'"
+          [formField]="form.office_region"
+        >
+          @for (option of regionOptions(); track option.code) {
+          <option [value]="option.code">{{ option.name }}</option>
+          }
+        </pc-select>
+        @if (isSingleDistrictState()) {
+        <p class="pl-1 text-[11px] leading-snug text-base-content/60" i18n>
+          This state elects its single member of the House of Representatives statewide. Choose the at-large seat type
+          below; there is no district number to enter.
+        </p>
+        }
+      </div>
+      }
+
+      <!-- 3. The municipality or county, for races run inside one. -->
+      @if (showLocality()) {
+      <div class="grid gap-1">
+        <pc-input
+          id="campaign-locality"
+          label="City, town or county"
+          [formField]="form.office_locality"
+          placeholder="Toronto"
+        ></pc-input>
+        <p class="pl-1 text-[11px] leading-snug text-base-content/60" i18n>
+          The municipality this council or mayoralty governs.
+        </p>
+      </div>
+      }
+
+      <!-- 4. Seat type. Offered only where this level of government has seats with no area. It sits
+           above the chamber question because its answer decides whether that question exists. -->
+      @if (showSeatType()) {
+      <div class="grid gap-1">
+        <pc-select id="campaign-seat-type" label="Does this seat have its own area?" [formField]="form.seat_type">
+          <option value="district"><ng-container i18n>Yes, a specific</ng-container> {{ seatWordLower() }}</option>
+          <option value="at_large" i18n>No, it is elected at large</option>
+        </pc-select>
+        <p class="pl-1 text-[11px] leading-snug text-base-content/60">
+          <ng-container i18n>
+            An at-large seat is elected by everyone in the whole area at once, with no district of its own. US senators,
+            governors and many council seats work this way.
+          </ng-container>
+          @if (isAtLarge()) {
+          <span class="font-medium text-base-content/75">
+            <ng-container i18n>This seat covers</ng-container> {{ atLargeArea() }}.
+          </span>
+          }
+        </p>
+      </div>
+      }
+
+      <!-- 5. Chamber. Asked only where the two houses are drawn on two different maps, and only of
+           a seat that has its own district — a statewide office sits in no chamber. -->
+      @if (showChamber()) {
+      <div class="grid gap-1">
+        <pc-select
+          id="campaign-chamber"
+          label="Which chamber"
+          placeholder="Choose a chamber…"
+          [formField]="form.chamber"
+        >
+          @for (option of chamberOptions; track option) {
+          <option [value]="option">{{ chamberLabels[option] }}</option>
+          }
+        </pc-select>
+        <p class="pl-1 text-[11px] leading-snug text-base-content/60" i18n>
+          The two chambers are drawn on different maps that cover the same ground with different lines. Neither can be
+          worked out from the other, so we have to ask which one this seat is in. Nebraska's legislature has one
+          chamber; choose the upper one there.
+        </p>
+      </div>
+      }
+
+      <!-- 6. The seat itself, named with this jurisdiction's own word. Gone when there is no area. -->
+      @if (showSeatName()) {
+      <pc-input
+        id="campaign-seat-name"
+        [label]="seatWord()"
+        [formField]="form.seat_name"
+        [placeholder]="'Name the ' + seatWordLower() + ' this campaign is contesting'"
+      ></pc-input>
+      }
+
+      <!-- 7. Seat position. Deliberately quiet: most campaigns never need it. -->
+      @if (showSeatPosition()) {
+      <div class="grid gap-1">
+        <pc-input
+          id="campaign-seat-position"
+          label="Seat or position (optional)"
+          [formField]="form.seat_position"
+          placeholder="Position 2"
+        ></pc-input>
+        <p class="pl-1 text-[11px] leading-snug text-base-content/60">
+          <ng-container i18n>Only where one</ng-container> {{ seatWordLower() }}
+          <ng-container i18n>
+            elects more than one person and the seats are numbered or lettered. Leave it empty otherwise.
+          </ng-container>
+        </p>
+      </div>
+      }
+
+      <!-- 8. What the office holder is called. A picker over this jurisdiction's titles, still free text. -->
+      <div class="grid gap-1.5">
+        <pc-input
+          id="campaign-office-title"
+          label="What the office holder is called"
+          [formField]="form.office_title"
+          [placeholder]="officeTitlePlaceholder()"
+        ></pc-input>
+        <div class="flex flex-wrap items-center gap-1.5 pl-1">
+          <span class="text-[11px] text-base-content/60" i18n>Common here:</span>
+          @for (title of officeTitles(); track title) {
+          <button
+            type="button"
+            class="btn btn-ghost btn-xs"
+            [class.text-primary]="title === payload().office_title"
+            (click)="useOfficeTitle(title)"
+          >
+            {{ title }}
+          </button>
+          }
+        </div>
+        <p class="pl-1 text-[11px] leading-snug text-base-content/60" i18n>
+          Pick one or type your own. It appears wherever the app names the office.
+        </p>
+      </div>
+
+      <!-- 9. The override, last and plainly optional. -->
+      <div class="grid gap-1">
+        <pc-input
+          id="campaign-seat-label"
+          label="Your own word for an area (optional)"
+          [formField]="form.seat_label_override"
+          [placeholder]="seatWord()"
+        ></pc-input>
+        <p class="pl-1 text-[11px] leading-snug text-base-content/60">
+          <ng-container i18n>
+            Leave this empty and the app picks the word your area actually uses. Alberta gets Constituency, Quebec gets
+            Circonscription, Ohio gets Congressional district. Fill it in only to override that everywhere for this
+            campaign; a school board might set
+          </ng-container>
+          <span class="font-medium">Trustee area</span>.
+        </p>
+      </div>
+    </pc-card>
+    }
+
     <pc-card>
       <div class="grid gap-4 sm:grid-cols-3">
         <pc-input

@@ -71,6 +71,8 @@ async function cleanTenant(db: any, tenantId: string) {
     .set({ admin_id: null, createdby_id: null, placeholder_household_id: null })
     .where('id', '=', tenantId)
     .execute();
+  await db.deleteFrom('household_districts').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('boundary_sets').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('map_peoples_tags').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('map_households_tags').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
@@ -88,12 +90,14 @@ describe('TagsRepo Integration', () => {
   const db = (BaseRepository as any)._db;
   let tenantId: string;
   let userId: string;
+  let campaignId: string;
   let householdId: string;
 
   beforeEach(async () => {
     const seed = await createTestSeed(db);
     tenantId = seed.tenantId;
     userId = seed.userId;
+    campaignId = seed.campaignId;
     householdId = seed.householdId;
   });
 
@@ -173,5 +177,101 @@ describe('TagsRepo Integration', () => {
       name: 'mIxEdCaSeTaG',
     });
     expect(idObj?.id).toBe(tag.id);
+  });
+
+  it('ranks the top area inside the campaign’s own seat map when getAdminList is given a campaign', async () => {
+    const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
+
+    // Second household so the two maps cover a different number of households.
+    const householdId2 = rand();
+    await db
+      .insertInto('households')
+      .values({
+        id: householdId2,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    const addSet = (slug: string, jurisdiction: string) =>
+      db
+        .insertInto('boundary_sets')
+        .values({
+          tenant_id: tenantId,
+          slug,
+          label: slug,
+          jurisdiction,
+          role: 'seat_area',
+          source: 'drawn',
+          createdby_id: userId,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+    // Ward map covers BOTH households → the campaign-free fallback (most households) picks it.
+    const wardSet = await addSet(`wards-${rand()}`, 'other');
+    // Federal map covers one household → only the campaign's jurisdiction reaches it.
+    const federalSet = await addSet(`federal-${rand()}`, 'ca_federal');
+
+    const place = (hhId: string, setId: unknown, name: string) =>
+      db
+        .insertInto('household_districts')
+        .values({ tenant_id: tenantId, household_id: hhId, set_id: String(setId), name })
+        .execute();
+    await place(householdId, wardSet.id, 'Ward 1');
+    await place(householdId2, wardSet.id, 'Ward 2');
+    await place(householdId, federalSet.id, 'Ottawa Centre');
+
+    // Two tagged people, one per household.
+    const issue = await repo.add({
+      row: {
+        tenant_id: tenantId,
+        name: 'transit',
+        type: 'issue',
+        deletable: true,
+        createdby_id: userId,
+        updatedby_id: userId,
+      },
+    });
+    const addTaggedPerson = async (hhId: string) => {
+      const personId = rand();
+      await db
+        .insertInto('persons')
+        .values({
+          id: personId,
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          household_id: hhId,
+          first_name: `Voter-${personId}`,
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+      await db
+        .insertInto('map_peoples_tags')
+        .values({
+          tenant_id: tenantId,
+          person_id: personId,
+          tag_id: issue.id,
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+    };
+    await addTaggedPerson(householdId);
+    await addTaggedPerson(householdId2);
+
+    // The campaign contests a federal seat, so its heading word is "riding" — the ranking must
+    // come from the same map the word does.
+    await db.updateTable('campaigns').set({ jurisdiction: 'ca_federal' }).where('id', '=', campaignId).execute();
+
+    // Campaign-free: most-covered map (wards); tie between Ward 1 and Ward 2 breaks by name.
+    const withoutCampaign = await repo.getAdminList({ tenant_id: tenantId, type: 'issue' });
+    expect(withoutCampaign.find((r) => r.name === 'transit')?.top_ward).toBe('Ward 1');
+
+    // With the campaign: its own seat map (federal ridings).
+    const withCampaign = await repo.getAdminList({ tenant_id: tenantId, type: 'issue', campaignId });
+    expect(withCampaign.find((r) => r.name === 'transit')?.top_ward).toBe('Ottawa Centre');
   });
 });

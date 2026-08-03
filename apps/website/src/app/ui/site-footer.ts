@@ -85,6 +85,7 @@ export class SiteFooter {
       links: [
         { label: 'Pricing', path: '/pricing' },
         { label: 'Compare', path: '/compare' },
+        { label: 'Ridings & districts', path: '/districts' },
         { label: 'Switch to pplCRM', path: '/switch' },
         { label: 'FAQ', path: '/faq' },
         { label: 'Start free', href: SIGNUP_URL },

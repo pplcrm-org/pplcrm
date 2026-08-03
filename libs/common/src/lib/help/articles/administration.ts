@@ -151,8 +151,9 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       'billing',
       'sla settings',
       'workspace',
+      'boundaries',
     ],
-    related: ['users-roles', 'newsletters', 'dashboard', 'profile'],
+    related: ['users-roles', 'district-boundaries', 'newsletters', 'dashboard', 'profile'],
     blocks: [
       {
         kind: 'p',
@@ -176,8 +177,9 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         kind: 'list',
         items: [
           '**Organization**: your name, contact details, and mailing address, plus the settings everyone sees the effect of — **time zone**, **currency**, **date format**, and the **default theme** for people who have not picked their own. Time zone is the one worth setting first: it decides what “9am” means for service levels and working hours, and which day a date belongs to across the app. Currency is used for donations, pledges, and event pricing — both what a donor is charged and what you see.',
-          '**Modules**: what kind of organization this is — **Constituency office**, **Political campaign**, **Non-profit**, or **Church** — and which optional modules (Canvassing, Deliveries, Donations, Approvals) appear in your sidebar. The organization type only picks the wording and the starting set: a constituency office starts without **Donations**, because a publicly funded office does not fundraise — its riding association does, on separate books. A module that is off — whether the organization type left it off or you switched it off yourself — stays in the sidebar, dimmed, so you can see it exists; clicking it points you back here. Turn any module on here and it lights up immediately. Turning one off never deletes anything, and never blocks a link you already have. Whichever type you pick is shown at the top of your avatar menu, so you can always tell which one a workspace is on; administrators can click it to come straight back here.',
-          '**Campaigns**: your permanent office context and any election campaigns — create and archive them, switch which one you (as an admin) are working in, and read how user assignment works. This section appears for organizations that run elections (a constituency office or a campaign). See [Campaigns and contexts](/help/campaigns-contexts).',
+          '**Modules**: what kind of organization this is — **Constituency office**, **Political campaign**, **Non-profit**, or **Church** — and which optional modules (Canvassing, Deliveries, Donations, Approvals) appear in your sidebar. The organization type only picks the wording and the starting set: a constituency office starts without **Donations**, because a publicly funded office does not fundraise — the campaign or riding association behind it does, on separate books. A module that is off — whether the organization type left it off or you switched it off yourself — stays in the sidebar, dimmed, so you can see it exists; clicking it points you back here. Turn any module on here and it lights up immediately. Turning one off never deletes anything, and never blocks a link you already have. Whichever type you pick is shown at the top of your avatar menu, so you can always tell which one a workspace is on; administrators can click it to come straight back here.',
+          '**Campaigns**: your permanent office context and any election campaigns — create and archive them, set which office each one is running for, switch which one you (as an admin) are working in, and read how user assignment works. This section appears for organizations that run elections (a constituency office or a campaign). See [Campaigns and contexts](/help/campaigns-contexts) and [What office a campaign is running for](/help/campaign-jurisdictions).',
+          '**Boundaries**: the electoral maps your households are matched against — wards, ridings, districts, precincts. Import the names from a CSV, upload a published GeoJSON file, or draw the areas yourself over your own household pins. Adding or changing a map never calls a paid service. See [Boundary maps](/help/district-boundaries).',
           '**Teams & access**: default role for invitations and the MFA requirement.',
           '**Data & duplicates**: maintenance for the address matching behind duplicate detection. Recomputing address fingerprints is worth doing if your addresses were imported oddly and duplicates are being missed; it is available once a month.',
           '**Communications**: default from-name and from-address (verified senders only), reply-to, the newsletter footer disclaimer, and double opt-in for web-form subscribers.',
@@ -361,12 +363,21 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       'archive',
       'workspace',
       'constituency',
+      'jurisdiction',
+      'riding',
+      'ward',
+      'seat',
     ],
-    related: ['users-roles', 'settings', 'activity-log'],
+    related: ['campaign-jurisdictions', 'users-roles', 'settings', 'activity-log'],
     blocks: [
       {
         kind: 'p',
         text: 'Your workspace always has one permanent **office** context, the constituency office’s day-to-day home. When an election comes, an administrator creates an **election campaign** alongside it under [Workspace → Campaigns](/workspace/campaigns). People, households, and companies are shared across every context: one contact list, no duplicates. What stays separate per campaign is what you learn and are permitted to do in it: supporter data, email consent, and outreach.',
+      },
+      { kind: 'h2', id: 'office', text: 'Each campaign declares what it is running for' },
+      {
+        kind: 'p',
+        text: 'A campaign also records the office it is contesting: the country, the level of government, the province or state, and the seat. That is what makes the app say **riding** to an Ottawa campaign, **constituency** to an Alberta one, **ward** to a Toronto councillor and **congressional district** to an Ohio campaign — on the same screens, without anybody configuring wording. It also decides which boundary maps your households are matched against. Two campaigns in one workspace can be at completely different levels, and a household holds the areas for both at once. See [What office a campaign is running for](/help/campaign-jurisdictions).',
       },
       { kind: 'h2', id: 'assignment', text: 'Who works in which campaign' },
       {
@@ -405,6 +416,343 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         tone: 'info',
         title: 'Only for organizations that run elections',
         text: 'Election campaigns are offered to constituency offices and political campaigns. If your workspace is set to Non-profit or Church under [Workspace → Modules](/workspace/modules), the Campaigns section is hidden — you still have the one permanent context underneath, which is simply your workspace. Change the organization type there if that is wrong.',
+      },
+    ],
+  },
+  {
+    id: 'campaign-jurisdictions',
+    category: 'admin',
+    title: 'What office a campaign is running for',
+    summary:
+      'Tell a campaign its country, level of government and seat, and every screen starts using the right word: riding, ward, constituency, congressional district.',
+    keywords: [
+      'jurisdiction',
+      'riding',
+      'ward',
+      'precinct',
+      'district',
+      'constituency',
+      'circonscription',
+      'polling division',
+      'congressional district',
+      'legislative district',
+      'chamber',
+      'at large',
+      'seat',
+      'office',
+      'canada',
+      'united states',
+      'municipal',
+      'provincial',
+      'state',
+      'federal',
+    ],
+    related: ['campaigns-contexts', 'district-boundaries', 'importing-districts', 'settings'],
+    blocks: [
+      {
+        kind: 'p',
+        text: 'A campaign’s **jurisdiction** is the answer to one question: what office is this campaign contesting, and where. Set it when you create a campaign under [Workspace → Campaigns](/workspace/campaigns), or edit it there afterwards. It decides three things — the words the app uses for electoral areas, which boundary maps your households are matched against, and which further questions the campaign form bothers to ask you.',
+      },
+      { kind: 'h2', id: 'vocabulary', text: 'Three words that are not interchangeable' },
+      {
+        kind: 'p',
+        text: 'This is the part people get wrong, and it is worth two minutes because everything else follows from it.',
+      },
+      {
+        kind: 'list',
+        items: [
+          '**District** — in Canada, a **riding** — is a **seat area**: the territory that elects one representative. An MP, an MLA, a member of Congress, a state legislator.',
+          '**Ward** is usually a seat area too, one level down: the territory that elects one councillor.',
+          '**Precinct** — in Canada a **polling division**, in New York an **election district** — is not a seat area at all. It is a **voting subdivision inside** one: the area served by a single polling place.',
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'So district and ward are normally the same kind of thing at different levels of government, and a precinct is a different kind of thing that sits inside either one. That distinction does real work here. A riding or a congressional district holds tens of thousands of doors, which is far too many to hand to anybody. A precinct or a polling division is roughly one evening’s walk. A riding is what a campaign is **for**; a precinct is what a canvassing turf is **cut along**.',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'The word “ward” means two different things',
+        text: 'In Ontario a ward elects a councillor. In Massachusetts cities a ward elects nobody: it is a voting subdivision containing precincts, and Boston’s council seats are their own separate districts. No product can be right in both places by reading the word. So pplCRM never does. Every boundary map you add declares what it **is** — a seat area, a voting subdivision, or a locality — and the name is only a label on top of that. That is exactly why a Massachusetts household can hold a ward **and** a precinct at the same time without either being wrong.',
+      },
+      { kind: 'h2', id: 'choices', text: 'The seven choices' },
+      {
+        kind: 'list',
+        items: [
+          '**Canada — federal**: the seat area is a **riding**, subdivided into **polling divisions**. There is no province to pick; federal ridings cover the whole country.',
+          '**Canada — provincial**: also **ridings**, except where the province uses its own word. Alberta and Saskatchewan say **constituency**, Newfoundland and Labrador and Prince Edward Island say **district**, Quebec says **circonscription**. Picking the province applies the right word for you; you do not have to know the list.',
+          '**Canada — municipal**: the seat area is a **ward** (**district** in Quebec), subdivided into **polls**. Mayors — and every seat on Vancouver city council — are elected across the whole municipality instead, which is what the at-large tick box below is for.',
+          '**United States — federal**: **congressional districts**, subdivided into **precincts**. A US Senate race has no district at all: senators are elected statewide.',
+          '**United States — state**: **legislative districts**, subdivided into precincts. State legislatures have two chambers, so this is the one choice that asks you which — an upper-chamber (senate) race and a lower-chamber (house or assembly) race are matched against entirely different maps, and there is no way to work out one from the other. Governor and the other statewide offices have no district.',
+          '**United States — local**: **council districts** or wards, subdivided into precincts. At-large council seats have no district.',
+          '**Other**: everything not modelled in detail — school board, county commission, band council, a special district, or a race that is none of the above. The neutral words **district** and **subdivision** are used, and no region is required.',
+        ],
+      },
+      { kind: 'h2', id: 'fields', text: 'What the campaign form asks' },
+      {
+        kind: 'p',
+        text: 'Only the questions that apply to your choice are shown. A Canadian federal campaign never sees a chamber selector; a church or non-profit workspace never sees any of this at all.',
+      },
+      {
+        kind: 'list',
+        items: [
+          '**Country and level** — the seven choices above.',
+          '**Province or state** — asked for everything except a Canadian federal race and **Other**.',
+          '**Municipality** — asked for a Canadian municipal or a US local race.',
+          '**Chamber** — upper or lower. US state races only.',
+          '**Elected at large** — tick this when the seat has no territory of its own: a US senator, a governor, a mayor, an at-large councillor, or the single statewide congressional seat that Alaska, Delaware, North Dakota, South Dakota, Vermont and Wyoming each have. Ticking it hides the seat name, because there is not one — the seat covers the municipality you named, or the whole region if you named none.',
+          '**Seat name** — `Ottawa Centre`, `Calgary-Elbow`, `Ward 14`, `OH-3`, `LD-12`.',
+          '**Seat position** — only where more than one person is elected from the same district. Arizona’s House and New Jersey’s General Assembly elect two per district, Washington numbers positions within each legislative district, and at-large council seats are frequently numbered. Type whatever the ballot says: `Position 2`, `Seat B`, `Place 4`.',
+          '**What to call this area** — a manual override for the word. Leave it blank unless your race genuinely uses something other than what the app picked.',
+          '**Office title** — `MP`, `MLA`, `Councillor`, `Representative`, `Senator`. It appears in wording and nothing else.',
+        ],
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'One workspace, several levels at once',
+        text: 'A councillor’s permanent office context and a provincial election campaign can live in the same workspace, each with its own jurisdiction and its own vocabulary. Nothing is shared between them but the contacts, and a household holds the boundaries for both at the same time. See [Campaigns and contexts](/help/campaigns-contexts).',
+      },
+      { kind: 'h2', id: 'effect', text: 'What changes once it is set' },
+      {
+        kind: 'list',
+        items: [
+          'Column headers and page copy stop hedging. The [Households](/households) grid says **Riding**, **Ward**, or **Congressional district**, and its summary line counts “across 12 ridings” or “across 40 precincts”.',
+          'The [Canvassing](/canvassing) coverage tab and the turf-cutting explanation use your subdivision’s word.',
+          'The smart-list rule builder offers your electoral areas as a filter, so “everyone in precinct 12” is a list you can build. See [Smart and static lists](/help/lists).',
+          'Turfs are cut along the finest map your workspace holds for that campaign. See [Boundary maps](/help/district-boundaries).',
+          'The starter tags a new workspace is seeded with use your word rather than assuming Canadian federal vocabulary.',
+        ],
+      },
+      { kind: 'h2', id: 'us-limits', text: 'What pplCRM does not do for US campaigns' },
+      {
+        kind: 'p',
+        text: 'Worth knowing before you plan around it. US political contributions are not tax-deductible federally, so there is nothing to receipt, and pplCRM does not issue receipts for them. It also does not prepare or file FEC or state disclosure reports — that is a separate compliance system with its own contributor occupation, employer and per-donor limit rules, and this product does not have it. A US workspace records gifts in the [Donations](/donations) ledger and exports them; the filing itself happens elsewhere. Canadian receipting is unaffected — see [Donation receipts and giving statements](/help/donation-receipts).',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Not running elections?',
+        text: 'If your workspace is set to Non-profit or Church under [Workspace → Modules](/workspace/modules), none of these questions appear. There is no office to declare.',
+      },
+    ],
+  },
+  {
+    id: 'district-boundaries',
+    category: 'admin',
+    title: 'Boundary maps: wards, ridings, districts and precincts',
+    summary:
+      'A boundary map tells pplCRM which electoral areas each household sits in. There are three ways to get one: import the names, upload a published file, or draw it yourself.',
+    keywords: [
+      'boundary',
+      'boundaries',
+      'boundary set',
+      'geojson',
+      'shapefile',
+      'map',
+      'ward map',
+      'riding map',
+      'precinct map',
+      'district',
+      'upload',
+      'redistricting',
+      'vintage',
+      'seat area',
+      'subdivision',
+    ],
+    related: ['drawing-boundaries', 'importing-districts', 'campaign-jurisdictions', 'geocoding-and-costs'],
+    blocks: [
+      {
+        kind: 'p',
+        text: 'A **boundary map** — a boundary set — is one named collection of areas. Each area has a name (`Ward 12`) and an optional code, and the set as a whole declares what it **is**: a **seat area** (the territory that elects someone), a **voting subdivision** (a precinct, a polling division, a Massachusetts ward), or a **locality** (a whole municipality). Manage them under **Boundaries** in [Workspace settings](/workspace).',
+      },
+      {
+        kind: 'p',
+        text: 'Meaning lives in that declared role, never in the name. It is what lets a Toronto ward and a Boston ward both be represented correctly even though one elects a councillor and the other elects nobody. See [What office a campaign is running for](/help/campaign-jurisdictions) for why that matters.',
+      },
+      { kind: 'h2', id: 'many', text: 'Why a household holds several at once' },
+      {
+        kind: 'p',
+        text: 'One American address sits inside a congressional district **and** a state senate district **and** a state house district **and** a city council district **and** a precinct, all at the same time: five different lines drawn over one house. pplCRM keeps one answer per map, so no level ever overwrites another, and a household page lists every area it belongs to rather than the last one that happened to be worked out.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Old and new maps live side by side',
+        text: 'Canada redrew its federal ridings for the 2023 representation order, the United States redraws congressional and legislative districts after each census, and several states redraw again mid-decade by court order. You often need the outgoing map to compare with past results and the incoming one to target. Each is its own set with its own **vintage** label, and one household holds both without either being wrong.',
+      },
+      { kind: 'h2', id: 'three-ways', text: 'Three ways to get a map' },
+      {
+        kind: 'list',
+        items: [
+          '**Import the names you already have.** Cheapest and fastest. If your rows already carry a district, ward or precinct column — a purchased voter file almost always does — the import wizard writes those names straight onto each household. No shapes to find, no lookups, no cost. See [Import district, ward and precinct columns](/help/importing-districts).',
+          '**Upload a published map.** A GeoJSON file from whoever publishes it: an elections body, a provincial commission, a city open-data portal. You name the set, declare its role, and say which property in the file holds each area’s name.',
+          '**Draw it yourself.** For the many municipalities that publish nothing usable, draw the areas on the map with your own household pins visible underneath. See [Drawing boundaries on the map](/help/drawing-boundaries).',
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'These are not exclusive. A workspace commonly imports precinct names from its voter file, uploads the state’s legislative districts, and draws its own organizing areas, all at once. Each is a separate set and each household holds all three.',
+      },
+      { kind: 'h2', id: 'upload', text: 'Uploading a published map' },
+      {
+        kind: 'steps',
+        items: [
+          {
+            title: 'Get the file as GeoJSON',
+            detail:
+              'Most open-data portals offer GeoJSON directly. If yours only publishes a shapefile, convert it to GeoJSON first with whatever mapping tool you already use.',
+          },
+          {
+            title: 'Open Boundaries in [Workspace settings](/workspace) and choose to upload',
+            detail: 'Give the set a name your organizers will recognize in a dropdown.',
+          },
+          {
+            title: 'Declare its role',
+            detail:
+              'Seat area, voting subdivision, or locality. This is the field that gives the set its meaning, and it is the one worth getting right.',
+          },
+          {
+            title: 'Pick which property holds the name',
+            detail:
+              'The uploader lists every property it found in your file with an example value from the first area, so you can see which one holds `Ward 12` and which holds `12`. Pick a code property too if the file has one.',
+          },
+          {
+            title: 'Save',
+            detail:
+              'The areas are listed, the original file is kept in your workspace files, and every household already on the map is matched against the new set straight away. Matching costs nothing.',
+          },
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'Uploads have limits, and a file that breaks one is refused with a message naming the limit rather than failing quietly: **20 MB** per file, **5,000** areas in one set, **50,000** points in one area’s outline, and **50** sets per workspace. A national file that is too large usually fits comfortably once split per province or state, which is also faster to match against.',
+      },
+      { kind: 'h2', id: 'matching', text: 'How a household gets its areas' },
+      {
+        kind: 'p',
+        text: 'Matching compares a household’s coordinates against each area’s outline and records the ones it falls inside. It is arithmetic on our own servers: it calls no outside service and costs nothing, so it re-runs whenever coordinates change, whenever a map changes, and whenever a new map arrives. A household with no coordinates yet has no areas yet — see [Geocoding, boundary matching, and what each costs](/help/geocoding-and-costs).',
+      },
+      {
+        kind: 'p',
+        text: 'Only the maps your workspace actually needs are matched, worked out from your active campaigns. An Arizona state house campaign needs Arizona’s lower-chamber districts and its precincts, not fifty states’ worth of everything. Saving a campaign — creating one, or changing its jurisdiction, region or chamber — queues a matching pass over the households you already have right away, and a nightly sweep backstops it, so the areas fill in behind you.',
+      },
+      { kind: 'h2', id: 'turfs', text: 'Boundaries and canvassing turfs' },
+      {
+        kind: 'p',
+        text: 'Turf cutting uses the finest voting-subdivision map your workspace holds for that campaign’s jurisdiction and region. With none, it falls back to the seat-area map. With neither, every door lands in one bucket and turfs are grouped purely by which doors sit near each other — which is what happened before boundary maps existed, now reached deliberately instead of by accident. See [Canvassing](/help/canvassing).',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'A map here is for organizing work, not for compliance',
+        text: 'An uploaded map is exactly as accurate as the file you uploaded, and a drawn map is approximate by nature. Neither is a legal source. In particular, the electoral district printed on a donation receipt is a value you enter yourself in the receipting settings and on the campaign — it is never read off one of these maps. See [Donation receipts and giving statements](/help/donation-receipts).',
+      },
+      { kind: 'h2', id: 'housekeeping', text: 'Renaming, replacing and deleting' },
+      {
+        kind: 'p',
+        text: 'Rename a set or any single area at any time; the new name shows everywhere immediately. Deleting a set removes it and every household’s membership in it, and changes nothing else about those households. Because matching is free, deleting a set and adding a better one costs nothing but a little of our own processing, so there is no reason to live with a map you have outgrown.',
+      },
+    ],
+  },
+  {
+    id: 'drawing-boundaries',
+    category: 'admin',
+    title: 'Drawing boundaries on the map',
+    summary:
+      'Draw ward, precinct or organizing areas by hand, over your own household pins. Free, quick, approximate — and fine for canvassing but not for anything legal.',
+    keywords: [
+      'draw',
+      'drawing',
+      'polygon',
+      'hand drawn',
+      'sketch',
+      'boundary',
+      'ward',
+      'precinct',
+      'turf boundary',
+      'organizing areas',
+      'overlap',
+      'gap',
+      'snap',
+      'vertex',
+    ],
+    related: ['district-boundaries', 'geocoding-and-costs', 'canvassing', 'campaign-jurisdictions'],
+    blocks: [
+      {
+        kind: 'p',
+        text: 'Thousands of municipalities publish no usable ward or precinct map. Rather than hunt for a file that may not exist, draw the areas yourself. It usually takes a few minutes, it costs nothing, and you do it with your own geocoded household pins visible underneath — so you can see exactly which doors fall where while you are still drawing, which is the whole reason to do it here rather than in external mapping software.',
+      },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'Drawn boundaries are approximate. Read this before you rely on one.',
+        text: 'A shape drawn by hand is close, not exact. Two areas drawn next to each other will have small gaps and small overlaps along their shared edge unless you trace it very carefully, and pplCRM does not pretend otherwise. That is acceptable for what drawn maps are for — **organizing canvassing work**, where the line stands in for the rivers, rail lines and arterial roads you would not send a volunteer across. It is **not acceptable for anything legal or official**: never treat a drawn area as the electoral district printed on a donation receipt, or as evidence of which district someone lives in for a compliance purpose.',
+      },
+      { kind: 'h2', id: 'draw', text: 'Draw a set' },
+      {
+        kind: 'steps',
+        items: [
+          {
+            title: 'Open Boundaries in [Workspace settings](/workspace) and choose to draw a map',
+            detail: 'The map opens centred on your workspace, with every geocoded household shown as a pin.',
+          },
+          {
+            title: 'Name the set and give it a role',
+            detail:
+              'Seat area, voting subdivision, or locality. A drawn set does not have to be an official area at all — “the three neighbourhoods we are targeting” is a perfectly good set, and turfs can be cut along it exactly like a real precinct map.',
+          },
+          {
+            title: 'Draw the first area',
+            detail:
+              'Pick up the drawing tool, click each corner around the area, and close the shape back at the point you started. The household pins stay visible the whole time.',
+          },
+          { title: 'Name the area', detail: '`Ward 3`, `Riverside`, `East of the tracks` — whatever your team says.' },
+          {
+            title: 'Draw the rest',
+            detail:
+              'Everything already saved stays on screen while you work. Place a new corner near a corner of a shape that already exists and it snaps onto it, so a shared edge can be traced without pixel-perfect clicking.',
+          },
+          {
+            title: 'Read the two counts',
+            detail:
+              'After every save the app re-runs matching and reports two numbers: households in **no** area and households in **more than one**. That is your quality check, and it costs nothing to produce.',
+          },
+        ],
+      },
+      { kind: 'h2', id: 'counts', text: 'What the two counts are telling you' },
+      {
+        kind: 'list',
+        items: [
+          '**Households in no area** — a gap, or a genuine outsider. A small number at the edges of your map usually means a seam to close by dragging a vertex. A large number usually means an area you have not drawn yet.',
+          '**Households in more than one** — an overlap. Two shapes cover the same ground, and at least one of them reaches further than you meant.',
+          'Neither is an error and neither blocks anything. No data is lost either way, and both numbers move as you fix the shapes.',
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'When an address does land in an overlap, which area wins is not left to chance: areas are checked in name order, so the same address lands in the same area on every single run and your reports do not drift between refreshes. Fix the overlap when you get to it; until then, at least the answer is stable.',
+      },
+      { kind: 'h2', id: 'edit', text: 'Reshape, rename, delete' },
+      {
+        kind: 'p',
+        text: 'Click a saved area to select it. Drag any vertex to reshape it, rename it in place, or delete it after a confirmation. Every change re-runs matching for the whole set, so the two counts and every household’s areas are correct again by the time you look away. Redrawing an area you got wrong is genuinely cheap — there is no reason to leave a bad shape alone.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Drawing never costs anything',
+        text: 'Drawing, reshaping, renaming, deleting and re-matching call no paid service at all. They only re-read coordinates that are already on file for your households. The one thing that does cost money is turning a brand-new address into coordinates in the first place — see [Geocoding, boundary matching, and what each costs](/help/geocoding-and-costs).',
+      },
+      { kind: 'h2', id: 'tips', text: 'Three habits that make it quicker' },
+      {
+        kind: 'list',
+        items: [
+          'Work outward from the pins. The doors you actually have are the only part of the map that matters; empty ground can be sloppy without costing you anything.',
+          'Trace a shared edge by snapping onto the neighbour’s corners rather than eyeballing a parallel line. It is faster and it removes the gap and the overlap in one go.',
+          'Save after each area rather than after all of them. You find a seam problem when one shape is wrong, not when twelve are.',
+        ],
       },
     ],
   },

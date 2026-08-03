@@ -6,13 +6,51 @@ import {
   ORG_MODE_IS_ELECTORAL,
   ORG_MODE_MODULE_DEFAULTS,
   fieldsForTemplate,
+  seatLabelFor,
 } from '../../../../../../libs/common/src';
-import type { FormType, OrgMode } from '../../../../../../libs/common/src';
+import type { FormType, JurisdictionId, OrgMode } from '../../../../../../libs/common/src';
 
 export interface StarterTagDef {
   name: string;
   description: string;
   color: string;
+}
+
+/**
+ * What the starter vocabulary needs to know about the race this workspace is running.
+ *
+ * Collected in step 2 of the signup wizard and written to the office campaign's columns; passed
+ * here so the tags a workspace opens with use its own word for its own territory.
+ */
+export interface StarterOffice {
+  jurisdiction: JurisdictionId;
+  /** Province, territory or state code — some regions use a different word for the same thing. */
+  region: string | null;
+  /** The campaign's own word for its seat area, when it set one. */
+  seatLabelOverride: string | null;
+}
+
+/** The word a non-electoral organization's starter tags use for the area it works in. */
+const NON_ELECTORAL_AREA_WORD = 'community';
+
+/**
+ * The word the starter tag descriptions use for the territory the organization works in.
+ *
+ * A church and a food bank serve a community, not a seat area, so they never get an electoral
+ * word at all. An electoral workspace gets its own jurisdiction's word — riding in Ottawa, ward in
+ * Toronto, congressional district in Ohio, constituency in Alberta — and falls back to the generic
+ * "district" when signup's office step was skipped, which is exactly what `seatLabelFor` returns
+ * for the `other` jurisdiction.
+ *
+ * Only the DESCRIPTIONS vary. Tag NAMES are deliberately jurisdiction-independent, because the demo
+ * datasets attach demo people and households to starter tags by name (modules/demo/demo-seed.ts)
+ * and one dataset is seeded for every jurisdiction that shares its org mode — a name that changed
+ * per jurisdiction could not be referenced by any fixed string.
+ */
+export function starterAreaWord(mode: OrgMode, office?: StarterOffice | null): string {
+  if (!ORG_MODE_IS_ELECTORAL[mode]) return NON_ELECTORAL_AREA_WORD;
+  if (!office) return seatLabelFor('other', null, null).toLowerCase();
+  return seatLabelFor(office.jurisdiction, office.region, office.seatLabelOverride).toLowerCase();
 }
 
 export interface StarterFormDef {
@@ -36,29 +74,51 @@ export interface StarterFormDef {
  * The demo dataset (modules/demo/demo-seed-data.ts) attaches demo persons and
  * households to these by NAME — keep the two in sync when renaming.
  */
-export const SHARED_STARTER_TAGS: StarterTagDef[] = [
-  { name: 'community leader', description: 'Runs or anchors a local association, league, or board.', color: '#8b5cf6' },
-  { name: 'small business owner', description: 'Owns or operates a business in the riding.', color: '#f97316' },
-  { name: 'senior', description: 'Prefers daytime calls and print material.', color: '#64748b' },
-  { name: 'student', description: 'Student — usually reachable evenings and weekends.', color: '#22c55e' },
-  { name: 'letter writer', description: 'Has written letters to the editor or to council.', color: '#eab308' },
-  { name: 'media contact', description: 'Journalist or newsletter editor — route through comms.', color: '#ef4444' },
-  { name: 'union member', description: 'Active local union member.', color: '#3b82f6' },
-  { name: 'faith community', description: 'Active in a local faith community.', color: '#a855f7' },
-];
+function sharedStarterTags(area: string): StarterTagDef[] {
+  return [
+    {
+      name: 'community leader',
+      description: 'Runs or anchors a local association, league, or board.',
+      color: '#8b5cf6',
+    },
+    { name: 'small business owner', description: `Owns or operates a business in the ${area}.`, color: '#f97316' },
+    { name: 'senior', description: 'Prefers daytime calls and print material.', color: '#64748b' },
+    { name: 'student', description: 'Student — usually reachable evenings and weekends.', color: '#22c55e' },
+    { name: 'letter writer', description: 'Has written letters to the editor or to council.', color: '#eab308' },
+    { name: 'media contact', description: 'Journalist or newsletter editor — route through comms.', color: '#ef4444' },
+    { name: 'union member', description: 'Active local union member.', color: '#3b82f6' },
+    { name: 'faith community', description: 'Active in a local faith community.', color: '#a855f7' },
+  ];
+}
+
+/** The shared set as it reads for an organization with no seat area — the words a church sees. */
+export const SHARED_STARTER_TAGS: StarterTagDef[] = sharedStarterTags(NON_ELECTORAL_AREA_WORD);
+
+function campaignStarterTags(area: string): StarterTagDef[] {
+  return [{ name: 'new resident', description: `Moved into the ${area} within the last year.`, color: '#06b6d4' }];
+}
 
 /**
  * Starter tags for an organization that runs elections (see ORG_MODE_IS_ELECTORAL) — a
- * constituency office as much as a campaign. Both track who just moved into the riding.
+ * constituency office as much as a campaign. Both track who just moved in.
+ *
+ * The tag used to be called `new to riding`, which handed Canadian federal vocabulary to a
+ * Toronto ward campaign and to an Ohio congressional campaign. The name is now the same
+ * everywhere and says nothing about geography; the description carries the jurisdiction's own word
+ * (see {@link starterAreaWord}). The name has to be fixed rather than derived because the demo
+ * datasets reference starter tags by name and one dataset serves every jurisdiction in its mode.
+ *
+ * This constant is the description as it reads when signup's office step was skipped. Use
+ * {@link starterTagsFor} to get the wording an actual workspace is seeded with.
  *
  * Signs are NOT here. A lawn sign needs a candidate, so 'lawn sign location' lives in the
  * campaign column of MODE_EXTRA_TAGS below; the electoral demo datasets attach households to
  * it BY NAME, and `demo-datasets.spec.ts` is what proves a dataset only references vocabulary
  * its own mode seeds.
  */
-export const CAMPAIGN_STARTER_TAGS: StarterTagDef[] = [
-  { name: 'new to riding', description: 'Moved into the riding within the last year.', color: '#06b6d4' },
-];
+export const CAMPAIGN_STARTER_TAGS: StarterTagDef[] = campaignStarterTags(
+  seatLabelFor('other', null, null).toLowerCase(),
+);
 
 /** The sign-operation tag — campaign only, and referenced by name from that mode's dataset. */
 export const SIGN_STARTER_TAGS: StarterTagDef[] = [
@@ -156,20 +216,21 @@ export const MODE_ISSUES: Record<OrgMode, StarterTagDef[]> = {
  * rather than re-deriving it — a re-derived copy silently stops testing anything the day this
  * composition changes.
  */
-export function starterTagsFor(mode: OrgMode): StarterTagDef[] {
+export function starterTagsFor(mode: OrgMode, office?: StarterOffice | null): StarterTagDef[] {
+  const area = starterAreaWord(mode, office);
   return [
-    ...SHARED_STARTER_TAGS,
-    ...(ORG_MODE_IS_ELECTORAL[mode] ? CAMPAIGN_STARTER_TAGS : []),
+    ...sharedStarterTags(area),
+    ...(ORG_MODE_IS_ELECTORAL[mode] ? campaignStarterTags(area) : []),
     ...MODE_EXTRA_TAGS[mode],
   ];
 }
 
 export async function seedStarterTags(
-  params: { tenant_id: string; user_id: string; mode?: OrgMode },
+  params: { tenant_id: string; user_id: string; mode?: OrgMode; office?: StarterOffice | null },
   trx: Transaction<Models>,
 ): Promise<void> {
   const mode = params.mode ?? DEFAULT_ORG_MODE;
-  const tags = starterTagsFor(mode);
+  const tags = starterTagsFor(mode, params.office);
   const audit = { tenant_id: params.tenant_id, createdby_id: params.user_id, updatedby_id: params.user_id };
   await trx
     .insertInto('tags')

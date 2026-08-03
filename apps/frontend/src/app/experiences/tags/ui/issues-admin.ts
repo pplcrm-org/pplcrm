@@ -9,6 +9,7 @@ import { TagItem } from '@uxcommon/components/tags/tagitem';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
 import { TagsService } from '@experiences/tags/services/tags-service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { AddIssueDialog } from './add-issue';
 import { TagAdminActions, type TagAdminRow } from './tag-admin-actions';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
@@ -42,6 +43,7 @@ import { TagsIssuesNav } from './tags-issues-nav';
 export class IssuesAdmin implements OnInit {
   private readonly tagsSvc = inject(TagsService);
   private readonly alertSvc = inject(AlertService);
+  private readonly campaignCtx = inject(CampaignContextService);
   protected readonly actions = inject(TagAdminActions);
 
   protected readonly addDialog = viewChild.required(AddIssueDialog);
@@ -66,7 +68,19 @@ export class IssuesAdmin implements OnInit {
     );
   });
 
+  /**
+   * Heading for the column showing where an issue is most concentrated, in the active campaign's
+   * own word: "Top ward" for a municipal race, "Top riding" for a Canadian federal one, "Top
+   * congressional district" for a US one. seatLabel() always resolves — "District" via the
+   * 'other' jurisdiction spec when the campaign declares none — so there is no local fallback.
+   *
+   * The row property behind the column is still `top_ward`; that is a wire name, and only the words
+   * a person reads have to follow the campaign.
+   */
+  protected readonly topAreaHeading = computed<string>(() => `Top ${this.campaignCtx.seatLabel().toLowerCase()}`);
+
   public ngOnInit(): void {
+    void this.campaignCtx.ensureLoaded();
     void this.load();
   }
 
@@ -116,7 +130,7 @@ export class IssuesAdmin implements OnInit {
     const end = this._loading.begin();
     try {
       const [rows, peopleSharedCount] = await Promise.all([
-        this.tagsSvc.getAdminList('issue'),
+        this.tagsSvc.getAdminList('issue', this.campaignCtx.activeCampaignId()),
         this.tagsSvc.countDistinctPeople('issue'),
       ]);
       this.rows.set(rows);

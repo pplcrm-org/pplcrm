@@ -19,6 +19,7 @@ import { HouseholdsService } from '../households/services/households-service';
 import { AccountSettingsComponent } from './account/account-settings';
 import { ApiKeysSettingsComponent } from './api-keys/api-keys-settings';
 import { BillingSettingsComponent } from './billing/billing-settings';
+import { BoundariesSettingsComponent } from './boundaries/boundaries-settings';
 import { CampaignsSettingsComponent } from './campaigns/campaigns-settings';
 import { ModulesSettings } from './modules/modules-settings';
 import { DeliveriesSettingsComponent } from './deliveries/deliveries-settings';
@@ -89,6 +90,13 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
       'Separate working contexts (your permanent office plus election campaigns) that share one contact list. Admins manage them and assign users to them.',
   },
   {
+    id: 'boundaries',
+    icon: 'map',
+    title: 'Boundaries',
+    description:
+      'The maps your households are matched against: wards, ridings, districts, precincts, or your own organizing areas. Import the names you already have, upload a published GeoJSON file, or draw the areas yourself.',
+  },
+  {
     id: 'email-sync',
     icon: 'envelope',
     title: 'Email sync',
@@ -148,6 +156,7 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
     MsSyncSettings,
     GoogleSyncSettings,
     BillingSettingsComponent,
+    BoundariesSettingsComponent,
     CampaignsSettingsComponent,
     ModulesSettings,
     DeliveriesSettingsComponent,

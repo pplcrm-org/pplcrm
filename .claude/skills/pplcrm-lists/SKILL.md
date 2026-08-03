@@ -1,6 +1,6 @@
 ---
 name: pplcrm-lists
-description: Lists (§8) — smart vs static membership, the rule-builder field contract (a rule field must be wired into BOTH the repo columnMapping and the frontend field list or it is silently dropped), campaign scoping of a stored definition, and the built-in undeletable "All Subscribers" / "All Volunteers" lists. USE WHEN adding or changing a field the rule builder can filter on, touching modules/lists or experiences/lists, debugging a smart list that matches nothing or the wrong people, or working on the built-in/system lists. EXAMPLES 'my smart list matches zero people', 'add "last donated" to the list rule dropdown', 'why can I not delete All Volunteers'.
+description: Lists (§8) — smart vs static membership, the rule-builder field contract (a rule field must be wired into BOTH the repo columnMapping and the frontend field list or it is silently dropped), the two electoral geography rule fields, campaign scoping of a stored definition, and the built-in undeletable "All Subscribers" / "All Volunteers" lists. USE WHEN adding or changing a field the rule builder can filter on, touching modules/lists or experiences/lists, filtering a list by riding/ward/precinct, debugging a smart list that matches nothing or the wrong people, or working on the built-in/system lists. EXAMPLES 'my smart list matches zero people', 'add "last donated" to the list rule dropdown', 'build a list of everyone in Ward 4', 'why can I not delete All Volunteers'.
 ---
 
 # Lists (§8)
@@ -50,6 +50,46 @@ drift.
 Status/enum fields use `inputType: 'select'` with `choices`, and the operator set
 `is / is not / is set / is not set` — "is empty" is wrong for a NULL status, which means
 "not a volunteer", not "an empty string".
+
+## The two electoral geography fields (added 2026-08-02)
+
+A household is inside several boundaries **at the same time** — a federal riding AND a provincial
+riding AND a municipal ward AND a precinct — so one field cannot answer both questions people ask.
+The rule builder therefore offers two, always together (`list-form.ts` → `electoral()`), on both
+the people and the household field lists.
+
+| Field                | What it is                                                                             | Operators                                                                           |
+| -------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `electoral_area`     | The household's area in **one** set — the campaign's seat set. One value per household | equals, does not equal, contains, does not contain, starts with, is set, is not set |
+| `any_electoral_area` | **Every** area the household is in, joined with `' · '` (`ELECTORAL_AREA_SEPARATOR`)   | contains, does not contain, is set, is not set                                      |
+
+**`any_electoral_area` deliberately has no `equals`.** The value is a concatenation, so a household
+in a riding AND a ward AND a precinct would never equal any single area name — offering the
+operator would produce a list that silently matches nobody. That is the whole reason the two fields
+have separate operator lists (`ELECTORAL_AREA_OPERATORS` / `ANY_ELECTORAL_AREA_OPERATORS` in
+`list-form.ts`).
+
+Both use **"is set" / "is not set"**, not "is empty": an absent area means the address has not been
+placed on a map yet (`ruleOpUsesSetWording` in `list-rule-fields.ts`).
+
+Labels: `ruleFieldLabel(field, seatLabel)` swaps in the **active campaign's own word** for
+`electoral_area` — "Ward" for a Toronto council race, "Congressional district" for an Ohio one.
+A campaign that declares no jurisdiction sits on the `'other'` default, whose seat word is
+**"District"**, so that is the label such a workspace sees; the static "Electoral area" entry in
+`RULE_FIELD_LABELS` (list-rule-fields.ts) is reached only when no seat word is passed at all. The
+seat word is deliberately **not** applied to `any_electoral_area` ("Any electoral boundary"), which
+spans every level at once and so belongs to no single word.
+
+Backend: both columns are computed in `apps/backend/src/app/modules/households/electoral-areas.ts`
+(`electoralAreaSelects(seatSetId)`) and mapped as `electoral_area: { col: 'hd_areas.electoral_area' }`
+/ `any_electoral_area: { col: 'hd_areas.any_electoral_area' }` in **both** `persons.repo.ts`
+(`getAllWithAddress`) and `households.repo.ts`. They come from a **lateral** join over
+`household_districts` that aggregates with no GROUP BY — a plain join would multiply each household
+row by its number of boundaries and make the surrounding `array_agg` repeat every tag once per
+boundary. `resolveSeatSetId` picks the set behind the single-valued column: a `seat_area` set
+matching the campaign's jurisdiction (and region/chamber when named), else any set the workspace
+holds with seat areas first and newest first, else NULL — which is the honest answer for a
+workspace that has imported, uploaded or drawn no map.
 
 ## Campaign scoping: why a rule on a campaign-scoped fact needs help
 

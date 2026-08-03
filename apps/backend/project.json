@@ -22,7 +22,13 @@
         "format": ["esm"],
         "main": "apps/backend/src/main.ts",
         "tsConfig": "apps/backend/tsconfig.app.json",
-        "assets": ["apps/backend/src/assets"],
+        "assets": [
+          {
+            "input": "apps/backend/src/app/lib/gis/boundary-data",
+            "glob": "**/*.geojson",
+            "output": "gis-boundaries"
+          }
+        ],
         "generatePackageJson": false,
         "esbuildOptions": {
           "packages": "external",

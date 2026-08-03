@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { jobPayloadSchema, legacyImportJobSchema } from './job-payloads';
 import { handleCheckAllUsageLimits, handleCheckUsageLimits, handleZapierTrigger } from './handlers/billing.handlers';
+import { handleMatchBoundaries, handleSweepUnmatchedBoundaries } from './handlers/boundaries.handlers';
 import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
 import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
@@ -107,6 +108,12 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'geocode_household':
       await handleGeocodeHousehold(job, db);
+      break;
+    case 'match_boundaries':
+      await handleMatchBoundaries(job, db, jobId);
+      break;
+    case 'sweep_unmatched_boundaries':
+      await handleSweepUnmatchedBoundaries(db);
       break;
     case 'materialize_demo_attachments':
       await handleMaterializeDemoAttachments(job, db);

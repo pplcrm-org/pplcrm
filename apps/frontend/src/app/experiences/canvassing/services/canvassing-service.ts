@@ -62,6 +62,21 @@ export class CanvassingService extends TRPCService<unknown> {
     return this.api.canvassing.cutTurfs.mutate(input);
   }
 
+  /**
+   * Whether this workspace holds any boundary map at all.
+   *
+   * Read from the boundaries router because canvassing has no endpoint that answers it. A `true`
+   * proves nothing about a particular cut — whether a set applies depends on the campaign's
+   * jurisdiction, region and chamber, which only the server resolves — so callers must never read
+   * it as "this cut will be bounded". The per-cut answer is `previewCut(...).bounded`; this flag
+   * only tells apart the two unbounded stories (no maps at all, versus maps that do not apply to
+   * this campaign's office).
+   */
+  public async workspaceHasBoundaryMap(): Promise<boolean> {
+    const sets = await this.api.boundaries.list.query();
+    return sets.length > 0;
+  }
+
   public assign(input: AssignTurfType): Promise<{ token: string; sent: { email: boolean; sms: boolean } }> {
     return this.api.canvassing.assign.mutate(input);
   }
@@ -86,7 +101,12 @@ export class CanvassingService extends TRPCService<unknown> {
     return this.api.canvassing.retire.mutate(turfId).then(() => undefined);
   }
 
-  public refreshFromList(turfId: string): Promise<{ added: number; removed: number }> {
+  /**
+   * `boundary_map_missing` is true when the turf names an area but the map it came from is gone
+   * (deleted, or the turf predates boundary maps): doors that left the list were still removed,
+   * but none could be added, because the area name can no longer be resolved against any map.
+   */
+  public refreshFromList(turfId: string): Promise<{ added: number; removed: number; boundary_map_missing: boolean }> {
     return this.api.canvassing.refreshFromList.mutate(turfId);
   }
 

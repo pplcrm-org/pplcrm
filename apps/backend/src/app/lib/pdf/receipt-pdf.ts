@@ -106,6 +106,13 @@ export function buildReceiptPdf(input: ReceiptPdfInput): Promise<Buffer> {
     if (issuer.place_of_issue) labeledRow(doc, 'Place receipt issued', issuer.place_of_issue);
     if (issuer.registration_number) labeledRow(doc, regime.registrationNumberLabel, issuer.registration_number);
     if (issuer.agent_name) labeledRow(doc, regime.issuerRole, issuer.agent_name);
+    // "Electoral district" is hard-coded ON PURPOSE and must stay that way. It is the wording the
+    // receipting regulation prescribes for this field (B.C. Reg 343/95 s.2 names the candidate's
+    // electoral district), not interface wording, so it must NOT follow the campaign's chosen seat
+    // word from `seatLabelFor`. A campaign that calls its seat a Ward or a Constituency still gets
+    // a receipt that reads "Electoral district"; printing the campaign's word instead would put a
+    // term on a legal document that the regulation does not use. Only the VALUE is per-campaign —
+    // it comes from the gift's campaign seat, falling back to the workspace setting.
     if (issuer.electoral_district) labeledRow(doc, 'Electoral district', issuer.electoral_district);
     if (issuer.polling_day) labeledRow(doc, 'Polling day', formatDateLong(issuer.polling_day));
 

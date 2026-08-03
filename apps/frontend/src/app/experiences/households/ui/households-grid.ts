@@ -14,6 +14,7 @@ import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { PersonsService } from '../../persons/services/persons-service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { HouseholdsService } from '../services/households-service';
 
 @Component({
@@ -22,50 +23,56 @@ import { HouseholdsService } from '../services/households-service';
   host: { class: 'block h-full' },
   template: `
     <div class="flex h-full min-h-0 flex-col gap-6">
-      <pc-datagrid
-        #grid
-        [showToolbar]="!inline()"
-        [grainLayout]="!inline()"
-        [fitColumns]="true"
-        title="Households"
-        i18n-title
-        description="Manage household groups, track shared addresses, and organize family relationships."
-        i18n-description
-        [listId]="listId()"
-        [colDefs]="col"
-        [disableDelete]="false"
-        [disableMerge]="false"
-        [disableView]="false"
-        [disableImport]="false"
-        [confirmDeleteOverride]="onConfirmDeleteBind"
-        (rowsDeleted)="onRowsDeleted()"
-        [rowCanSelect]="rowCanSelectFn"
-        [totalSentence]="totalSentence()"
-        (importCSV)="openImportWizard()"
-        addRoute="add"
-        i18n-addRoute
-        plusIcon="add-home"
-        i18n-plusIcon
-      >
-        <div pcGridBelowHeader>
-          @if (!inline()) {
-            <pc-grain-tabs />
+      <!-- The grid snapshots its column definitions when it is created, and the electoral column's
+      heading is the campaign's own word, so it waits for the campaign context to answer. It is
+      created either way: with no loaded context, seatLabel() resolves through the 'other'
+      jurisdiction spec and the heading reads "District" rather than leaving a blank page. -->
+      @if (columnsReady()) {
+        <pc-datagrid
+          #grid
+          [showToolbar]="!inline()"
+          [grainLayout]="!inline()"
+          [fitColumns]="true"
+          title="Households"
+          i18n-title
+          description="Manage household groups, track shared addresses, and organize family relationships."
+          i18n-description
+          [listId]="listId()"
+          [colDefs]="col"
+          [disableDelete]="false"
+          [disableMerge]="false"
+          [disableView]="false"
+          [disableImport]="false"
+          [confirmDeleteOverride]="onConfirmDeleteBind"
+          (rowsDeleted)="onRowsDeleted()"
+          [rowCanSelect]="rowCanSelectFn"
+          [totalSentence]="totalSentence()"
+          (importCSV)="openImportWizard()"
+          addRoute="add"
+          i18n-addRoute
+          plusIcon="add-home"
+          i18n-plusIcon
+        >
+          <div pcGridBelowHeader>
+            @if (!inline()) {
+              <pc-grain-tabs />
+            }
+          </div>
+          @if (!inline() && unhoused().count > 0) {
+            <p pcGridFooterStart class="truncate text-xs text-base-content/55" i18n>
+              <button
+                type="button"
+                class="cursor-pointer underline decoration-base-content/30 underline-offset-[3px] transition-colors hover:text-primary hover:decoration-primary"
+                (click)="openUnhoused()"
+              >
+                {{ unhoused().count }} {{ unhoused().count === 1 ? 'person' : 'people' }}
+              </button>
+              {{ unhoused().count === 1 ? "doesn't" : "don't" }} belong to a household: no address, or one that can't be
+              matched to a door.
+            </p>
           }
-        </div>
-        @if (!inline() && unhoused().count > 0) {
-          <p pcGridFooterStart class="truncate text-xs text-base-content/55" i18n>
-            <button
-              type="button"
-              class="cursor-pointer underline decoration-base-content/30 underline-offset-[3px] transition-colors hover:text-primary hover:decoration-primary"
-              (click)="openUnhoused()"
-            >
-              {{ unhoused().count }} {{ unhoused().count === 1 ? 'person' : 'people' }}
-            </button>
-            {{ unhoused().count === 1 ? "doesn't" : "don't" }} belong to a household: no address, or one that can't be
-            matched to a door.
-          </p>
-        }
-      </pc-datagrid>
+        </pc-datagrid>
+      }
     </div>
   `,
   providers: [
@@ -89,9 +96,13 @@ export class HouseholdsGrid implements OnInit {
   private readonly router = inject(Router);
   public readonly _loading = createLoadingGate();
   private readonly householdsService = inject(HouseholdsService);
+  private readonly campaignCtx = inject(CampaignContextService);
 
   private readonly grid = viewChild<DataGrid<'households', never>>('grid');
   private readonly grainTabs = viewChild(GrainTabs);
+
+  /** Flipped once the campaign context has answered, which is when the column headings are final. */
+  protected readonly columnsReady = signal(false);
 
   private tagOptionValues: string[] = [];
   private issueOptionValues: string[] = [];
@@ -173,9 +184,25 @@ export class HouseholdsGrid implements OnInit {
       comparator: (tagsA: unknown, tagsB: unknown) =>
         this.utils.tagArrayEquals(this.utils.normalizeTagSelection(tagsA), this.utils.normalizeTagSelection(tagsB)),
     },
-    { field: 'district', headerName: 'District / Riding', editable: false, hide: true, minWidth: 140 },
-    { field: 'precinct', headerName: 'Precinct / Polling Div.', editable: false, hide: true, minWidth: 180 },
-    { field: 'ward', headerName: 'Ward', editable: false, minWidth: 100 },
+    // Electoral geography, replacing the three fixed text columns (district / precinct / ward) that
+    // could only ever hold three answers. A household is inside several boundaries at once, so the
+    // visible column shows its area on THIS campaign's map and the hidden one shows all of them.
+    // Both headings are rewritten with the campaign's own word in `applyJurisdictionLabels`.
+    {
+      field: 'electoral_area',
+      // Placeholder only: applyJurisdictionLabels always overwrites it before the grid is
+      // created, and seatLabel() always resolves ("District" via the 'other' spec at worst).
+      headerName: 'Electoral area',
+      editable: false,
+      minWidth: 140,
+    },
+    {
+      field: 'any_electoral_area',
+      headerName: 'All boundaries',
+      editable: false,
+      hide: true,
+      minWidth: 220,
+    },
     {
       field: 'updated_at',
       headerName: 'Last touch',
@@ -195,7 +222,10 @@ export class HouseholdsGrid implements OnInit {
   public listId = input<string | null>(null);
   public showHeader = input<boolean>(true);
 
-  /** Grain total sentence for the header (spec §5): "{n} households across {m} wards". */
+  /**
+   * Grain total sentence for the header (spec §5): "{n} households across {m} wards", where the
+   * last word is whatever this campaign calls the areas on its own map (wards, ridings, precincts).
+   */
   protected readonly totalSentence = signal<string | null>(null);
 
   /** People with no matchable address (the placeholder household) — footer note + link target. */
@@ -213,10 +243,39 @@ export class HouseholdsGrid implements OnInit {
   }
 
   private async loadOnInit(): Promise<void> {
+    try {
+      await this.campaignCtx.ensureLoaded();
+    } catch (err) {
+      // seatLabel() still resolves without a loaded context — "District" via the 'other'
+      // jurisdiction spec — so a failed load costs a word, not the page. Everything below runs.
+      console.error('Failed to load campaign context for household column headings', err);
+    }
+    this.applyJurisdictionLabels();
+    this.columnsReady.set(true);
+
     await this.loadTagOptions();
     await this.loadIssueOptions();
     void this.loadGrainSentence();
     if (!this.inline()) void this.loadUnhoused();
+  }
+
+  /**
+   * Rewrite the two electoral column headings in the campaign's own word. Called before the grid is
+   * created, because the grid copies its column definitions once at init and never re-reads them.
+   */
+  private applyJurisdictionLabels(): void {
+    // Both labels always resolve: seatLabelFor falls back to the 'other' spec ("District" /
+    // "Districts") when the campaign declares no jurisdiction, so no local fallback exists here.
+    const seat = this.campaignCtx.seatLabel();
+    const seatPlural = this.campaignCtx.seatLabelPlural();
+    for (const c of this.col) {
+      if (c.field === 'electoral_area') c.headerName = seat;
+      // The hidden column spans every map the workspace holds, not just this campaign's, so it
+      // names the campaign's own areas first and then says there may be more.
+      if (c.field === 'any_electoral_area') {
+        c.headerName = `All boundaries (${seatPlural.toLowerCase()} and any other map)`;
+      }
+    }
   }
 
   /** Deletes change the header counts — re-query the grain sentence, unhoused note, and tab totals. */
@@ -242,17 +301,20 @@ export class HouseholdsGrid implements OnInit {
 
   private async loadGrainSentence(): Promise<void> {
     try {
-      const [total, wards] = await Promise.all([
+      const [total, areas] = await Promise.all([
         this.householdsService.count(),
-        this.householdsService.countDistinctWards(),
+        this.householdsService.countDistinctAreas(),
       ]);
       const fmt = new Intl.NumberFormat();
       const households = total === 1 ? '1 household' : `${fmt.format(total)} households`;
-      // Ward data comes from geocoding; until any exists, fall back to a plain total.
+      // seatLabel()/seatLabelPlural() always resolve — "District"/"Districts" via the 'other'
+      // spec when the campaign declares no jurisdiction.
+      const areaWord =
+        areas === 1 ? this.campaignCtx.seatLabel().toLowerCase() : this.campaignCtx.seatLabelPlural().toLowerCase();
+      // A workspace with no boundary map yet has no areas to count, so the sentence drops that
+      // clause rather than claiming zero.
       this.totalSentence.set(
-        wards > 0
-          ? `${households} across ${fmt.format(wards)} ${wards === 1 ? 'ward' : 'wards'}`
-          : `${households} total`,
+        areas > 0 ? `${households} across ${fmt.format(areas)} ${areaWord}` : `${households} total`,
       );
     } catch (err) {
       console.error('Failed to load household grain counts', err);

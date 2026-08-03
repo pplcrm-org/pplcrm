@@ -48,7 +48,7 @@ export interface SettingsNavGroup {
 }
 
 export const WORKSPACE_NAV_GROUPS: SettingsNavGroup[] = [
-  { label: 'Workspace', ids: ['organization', 'modules', 'campaigns', 'access', 'data'] },
+  { label: 'Workspace', ids: ['organization', 'modules', 'campaigns', 'boundaries', 'access', 'data'] },
   { label: 'Email', ids: ['communications', 'email-sync', 'domains'] },
   { label: 'Features', ids: ['sla', 'donations', 'deliveries', 'app'] },
   { label: 'Plan & account', ids: ['storage', 'billing', 'api-keys', 'account'] },

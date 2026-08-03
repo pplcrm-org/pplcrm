@@ -18,6 +18,7 @@ import { Card as PcCard } from '@uxcommon/components/card/card';
 
 import { UserService } from '../../../services/user.service';
 import { HouseholdsService } from '../../households/services/households-service';
+import { electoralAreaSuffix } from '../../households/services/household-areas';
 import { PersonsService } from '../services/persons-service';
 import { CompaniesService } from '../../companies/services/companies-service';
 import { AddressType, Persons, Households } from '../../../../../../../libs/common/src/lib/kysely.models';
@@ -121,12 +122,16 @@ export class PersonForm implements OnInit {
     return (this.householdResource.value() as Households | null | undefined)?.is_placeholder ?? false;
   });
 
-  /** Address line with the household's ward appended when known (e.g. "312 Alder St … · Ward 3"). */
-  protected readonly addressWithWard = computed(() => {
+  /**
+   * Address line with the household's area on the active campaign's own boundary map appended when
+   * known, e.g. "312 Alder St … · Ward 3" for a municipal race and "… · Ottawa Centre" for a
+   * federal one. The area is dropped when the address has not been placed on a map.
+   */
+  protected readonly addressWithArea = computed(() => {
     const base = this.addressString();
     if (!base) return null;
-    const ward = (this.householdResource.value() as Households | null | undefined)?.ward;
-    return ward ? `${base} · Ward ${ward}` : base;
+    const area = electoralAreaSuffix(this.householdResource.value(), this.campaignContext.seatLabel());
+    return area ? `${base} · ${area}` : base;
   });
 
   // Drawer state for assigning household

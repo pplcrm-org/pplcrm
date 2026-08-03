@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import {
   AddCampaignObj,
   CarryOverCampaignObj,
@@ -21,6 +23,19 @@ export const CampaignsRouter = router({
   ...crud,
 
   add: adminOrOwnerProcedure.input(AddCampaignObj).mutation(({ input, ctx }) => campaigns.addCampaign(input, ctx.auth)),
+
+  /** The CRUD router's alias for `add`; pointed at the same handler so it cannot skip its checks. */
+  create: adminOrOwnerProcedure
+    .input(AddCampaignObj)
+    .mutation(({ input, ctx }) => campaigns.addCampaign(input, ctx.auth)),
+
+  /**
+   * Replaces the generic CRUD update so an edit that changes the office is checked against the
+   * whole office block, not only the fields the form happened to send.
+   */
+  update: adminOrOwnerProcedure
+    .input(z.object({ id: idSchema, data: UpdateCampaignObj }))
+    .mutation(({ input, ctx }) => campaigns.updateCampaign(input.id, input.data, ctx.auth)),
 
   /** Lightweight list for campaign management and assignment pickers (admin/owner). */
   getSwitcherList: adminOrOwnerProcedure.query(({ ctx }) => campaigns.getSwitcherList(ctx.auth)),

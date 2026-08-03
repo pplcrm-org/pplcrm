@@ -55,6 +55,12 @@ export class ComparePage {
       crm: 'Offline-first companion apps for volunteers; every knock and delivery syncs back to the live report.',
     },
     {
+      job: 'Knowing which district a door is in',
+      stack:
+        'One column headed “Ward”, meaning something different in every file you were handed, overwritten the next time somebody re-imports.',
+      crm: 'Every boundary covering an address is held against the household at once: riding, ward, congressional district, precinct. Each screen calls them by the word your own race uses.',
+    },
+    {
       job: 'When a staffer or volunteer leaves',
       stack: 'The master file lived on their laptop. So did the passwords.',
       crm: 'History belongs to the workspace, not a laptop. Access ends with one click; the story stays.',

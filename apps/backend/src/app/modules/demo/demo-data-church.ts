@@ -16,7 +16,7 @@ import type {
   DemoReceiptDef,
   DemoStatementRunDef,
 } from './demo-data-types';
-import { DEMO_CITY, DEMO_COUNTRY, DEMO_STATE, allSites } from './demo-data-places';
+import { CANADA_PLACE_PACK, allSites } from './demo-data-places';
 
 /**
  * The demo workspace for CHURCH mode: Riverside Community Church, a fictional Ottawa
@@ -860,7 +860,7 @@ const VOLUNTEER_EVENTS: DemoVolunteerEventDef[] = [
     name: 'Hope Street — cook and serve',
     description:
       'Third Saturday of the month. Six people cook from 3pm, serve at 5:30, and are home by 8. No experience needed; Joseph will show you the kitchen.',
-    location_address: '211 Hope St, Ottawa, ON K1N 7B4',
+    venue: 'hall',
     slug: 'hope-street-cook-and-serve',
     startInDays: 11,
     durationHours: 5,
@@ -877,7 +877,7 @@ const VOLUNTEER_EVENTS: DemoVolunteerEventDef[] = [
     name: 'Newcomers lunch',
     description:
       'Lunch after the second service for anyone who has started coming recently — and whoever invited them. Held in the hall, about ninety minutes.',
-    location_address: '1064 Wellington St W, Ottawa, ON K1Y 2Y3',
+    venue: 'hq',
     slug: 'newcomers-lunch',
     startInDays: -9,
     durationHours: 2,
@@ -1256,17 +1256,25 @@ const RECEIPTS: DemoReceiptDef[] = [
 ];
 
 /** CRA charitable receipting, configured the way a real church office would. */
+/**
+ * The registered address here is written with the Canadian pack's city on purpose.
+ *
+ * These settings are seeded ONLY into a Canadian workspace: every receipt regime the product
+ * implements is Canadian, so `PlacePack.seedsReceipts` is false for the United States pack and this
+ * whole block is skipped there. Composing the address from the seeded pack instead would produce a
+ * Canada Revenue Agency receipt bearing a Chicago address, which is a false document.
+ */
 const RECEIPT_SETTINGS: Record<string, string | boolean> = {
   'receipts.regime': 'cra_charity',
   'receipts.mode': 'per_gift',
   'receipts.auto_issue': true,
   'receipts.org_legal_name': 'Riverside Community Church',
-  'receipts.org_address': `41 Chapel Street, ${DEMO_CITY}, ${DEMO_STATE}`,
+  'receipts.org_address': `41 Chapel Street, ${CANADA_PLACE_PACK.city}, ${CANADA_PLACE_PACK.state}`,
   'receipts.registration_number': '123456789 RR 0001',
   'receipts.signatory_name': 'Margaret Liu',
   'receipts.signatory_title': 'Treasurer',
   'receipts.number_prefix': 'RCC',
-  'receipts.place_of_issue': DEMO_CITY,
+  'receipts.place_of_issue': CANADA_PLACE_PACK.city,
 };
 
 /** Last year's statement run — the "giving statements went out" the newsletter mentions. */
@@ -1279,9 +1287,6 @@ const STATEMENT_RUN: DemoStatementRunDef = {
 };
 
 export const CHURCH_DEMO_DATASET: DemoDataset = {
-  city: DEMO_CITY,
-  state: DEMO_STATE,
-  country: DEMO_COUNTRY,
   companies: COMPANIES,
   households: HOUSEHOLDS,
   persons: PERSONS,

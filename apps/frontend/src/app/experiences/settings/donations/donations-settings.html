@@ -629,9 +629,34 @@
         <option [value]="spec.id" [selected]="spec.id === receiptRegime()">{{ spec.label }}</option>
         }
       </select>
+      <p class="text-xs leading-snug text-base-content/55">
+        Which regime applies depends on how your organization is registered, not on which seat your campaign contests.
+        Nothing here is chosen for you.
+      </p>
     </div>
 
-    @if (regimeSpec(); as spec) {
+    <!-- What the active campaign's declared office can say about receipting. This is a hint shown
+         beside the picker and it never selects anything: a wrongly pre-selected regime prints wrong
+         legal wording on a tax document, and it does so silently, because a pre-selected field
+         looks answered. -->
+    @if (receiptRegimeHint(); as hint) { @if (hint.kind === 'suggested') {
+    <div class="alert alert-info max-w-xl text-xs">
+      <pc-icon name="information-circle" [size]="4"></pc-icon>
+      <span>
+        <span class="font-semibold">Your campaign's office suggests {{ suggestedRegimeLabel() }}.</span>
+        {{ hint.message }}
+      </span>
+    </div>
+    } @else {
+    <div class="alert alert-info max-w-xl text-xs">
+      <pc-icon name="information-circle" [size]="4"></pc-icon>
+      <span>
+        <span class="font-semibold">No receipting regime applies to this campaign.</span>
+        {{ hint.message }} Leaving this set to "Not configured" is the correct setting for a United States political
+        campaign.
+      </span>
+    </div>
+    } } @if (regimeSpec(); as spec) {
     <!-- Counsel caveat: plain language, never printed on receipts -->
     <div class="alert alert-warning text-xs">
       <pc-icon name="exclamation-triangle" [size]="4"></pc-icon>

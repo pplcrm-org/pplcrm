@@ -10,6 +10,7 @@ import { Icon } from '@icons/icon';
 import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
 import { UpdateListType } from '../../../../../../../libs/common/src';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -87,7 +88,11 @@ export class ListsGridComponent implements OnInit {
   private readonly refreshSvc = inject(ListsRefreshService);
   private readonly listsSvc = inject(ListsService);
   private readonly router = inject(Router);
+  private readonly campaignCtx = inject(CampaignContextService);
   private readonly grid = viewChild<DataGrid<'lists', UpdateListType>>('grid');
+
+  /** The active campaign's word for the seat it contests, or null when it declares no office. */
+  private readonly seatLabel = computed<string | null>(() => this.campaignCtx.seatLabel());
 
   /** Counts for the grain sentence — refreshed alongside the grid. */
   private readonly counts = signal<{ total: number; smart: number; static: number }>({ total: 0, smart: 0, static: 0 });
@@ -113,6 +118,7 @@ export class ListsGridComponent implements OnInit {
   }
 
   public ngOnInit(): void {
+    void this.campaignCtx.ensureLoaded();
     void this.loadCounts();
   }
 
@@ -172,7 +178,9 @@ export class ListsGridComponent implements OnInit {
     {
       field: 'definition',
       headerName: 'Definition',
-      valueFormatter: (p: CellParams) => describeListDefinition(p?.data?.['definition']),
+      // The seat label makes an electoral rule read in the campaign's own word ("Ward is 'Ward 4'"),
+      // matching what the rule builder offered when the list was written.
+      valueFormatter: (p: CellParams) => describeListDefinition(p?.data?.['definition'], this.seatLabel()),
     },
     {
       field: 'list_size',

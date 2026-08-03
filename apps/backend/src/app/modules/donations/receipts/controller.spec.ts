@@ -270,6 +270,73 @@ describe('DonationReceiptsController', () => {
   });
 
   /**
+   * `receipts.electoral_district` is ONE value for the whole workspace, so a workspace running two
+   * campaigns in two seats can only store one of them. The gift's own campaign knows its seat, so
+   * `campaigns.seat_name` is what the receipt freezes; the workspace setting stays as the fallback.
+   *
+   * British Columbia is the regime that exercises this: it is the only one that asks for an
+   * electoral district, and it asks only for candidate gifts — which are exactly the gifts that
+   * have a campaign in hand. So the workspace setting is left empty here on purpose, and issuance
+   * has to succeed on the campaign's answer alone.
+   */
+  it('freezes the campaign seat as the electoral district, falling back to the workspace setting', async () => {
+    await db.deleteFrom('settings').where('tenant_id', '=', seed.tenantId).where('key', 'like', 'receipts.%').execute();
+    await seedReceiptSettings(db, seed.tenantId, seed.userId, {
+      'receipts.regime': 'political_bc',
+      'receipts.agent_name': 'Financial Agent',
+      'receipts.polling_day': '2026-10-17',
+      'receipts.electoral_district': undefined, // deliberately unset: the campaign must answer
+    });
+    await db
+      .updateTable('campaigns')
+      .set({ kind: 'election', jurisdiction: 'ca_provincial', office_region: 'BC', seat_name: 'Vancouver-Point Grey' })
+      .where('id', '=', seed.campaignId)
+      .execute();
+
+    const d1 = await insertDonation(db, seed, 10000);
+    const fromCampaign = await controller.issueReceipt(auth(), d1, {});
+    const snapshot = await db
+      .selectFrom('donation_receipts')
+      .select('issuer_snapshot')
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', fromCampaign.id)
+      .executeTakeFirstOrThrow();
+    expect(snapshot.issuer_snapshot.electoral_district).toBe('Vancouver-Point Grey');
+
+    // Same regime, a campaign with no seat of its own: the workspace setting is used instead.
+    await db.updateTable('campaigns').set({ seat_name: null }).where('id', '=', seed.campaignId).execute();
+    await db
+      .insertInto('settings')
+      .values({
+        tenant_id: seed.tenantId,
+        key: 'receipts.electoral_district',
+        value: JSON.stringify('Burnaby North'),
+        createdby_id: seed.userId,
+        updatedby_id: seed.userId,
+      })
+      .execute();
+
+    const d2 = await insertDonation(db, seed, 5000);
+    const fromWorkspace = await controller.issueReceipt(auth(), d2, {});
+    const fallbackSnapshot = await db
+      .selectFrom('donation_receipts')
+      .select('issuer_snapshot')
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', fromWorkspace.id)
+      .executeTakeFirstOrThrow();
+    expect(fallbackSnapshot.issuer_snapshot.electoral_district).toBe('Burnaby North');
+
+    // The first receipt was frozen at issue time and is untouched by any of the above.
+    const firstAgain = await db
+      .selectFrom('donation_receipts')
+      .select('issuer_snapshot')
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', fromCampaign.id)
+      .executeTakeFirstOrThrow();
+    expect(firstAgain.issuer_snapshot.electoral_district).toBe('Vancouver-Point Grey');
+  });
+
+  /**
    * A facsimile signature is prescribed by every printing regime, but whether to print one is the
    * issuing organization's decision, not ours. The product reports the empty field and issues the
    * receipt anyway, with the signatory's printed name in place of the image.

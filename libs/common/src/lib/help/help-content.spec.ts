@@ -42,6 +42,7 @@ const KNOWN_APP_ROUTES = new Set([
   '/workspace/billing',
   '/workspace/donations',
   '/workspace/campaigns',
+  '/workspace/boundaries',
   '/workspace/modules',
   '/imports',
   '/imports/new',

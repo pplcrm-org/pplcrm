@@ -191,7 +191,7 @@ export function parseModuleOverrides(value: unknown): Partial<Record<ModuleId, b
  * Whether a mode runs elections. Exactly one question, asked in three places: whether a person
  * carries a support level and a voting status (`person-campaign-facts`), whether the Campaigns
  * settings section — which is where you add and archive ELECTION contexts — appears at all, and
- * whether signup seeds the electoral starter vocabulary ("new to riding", the issues survey).
+ * whether signup seeds the electoral starter vocabulary ("new resident", the issues survey).
  *
  * It is NOT "is this a campaign". Lawn signs and the yard-sign request form used to hang off this
  * flag, which handed a constituency office a sign operation it has no candidate for; they now live

@@ -1,4 +1,4 @@
-import { Service } from '@angular/core';
+import { Service, inject } from '@angular/core';
 import {
   ExportCsvInputType,
   ExportCsvResponseType,
@@ -7,11 +7,14 @@ import {
 } from '../../../../../../../libs/common/src';
 
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { RouterInputs, RouterOutputs } from '../../../services/api/trpc-types';
 
 @Service()
 export class HouseholdsService extends AbstractAPIService<'households', never> {
   protected override readonly endpointName = 'households';
+
+  private readonly campaignContext = inject(CampaignContextService);
 
   public add(household: UpdateHouseholdsType) {
     return this.api.households.add.mutate(household);
@@ -34,9 +37,20 @@ export class HouseholdsService extends AbstractAPIService<'households', never> {
     return this.api.households.count.query();
   }
 
-  /** Distinct geocoded wards — powers the "{n} households across {m} wards" grain sentence. */
-  public countDistinctWards(): Promise<number> {
-    return this.api.households.countDistinctWards.query();
+  /**
+   * How many distinct areas the workspace's households fall into on the active campaign's own
+   * boundary map. Powers the grain sentence "{n} households across {m} wards", where the last word
+   * is whatever that campaign calls its areas.
+   *
+   * The backend procedure is still named `countDistinctWards`. That name is kept deliberately (the
+   * same decision as the `top_ward` key on the Issues admin row): renaming a wire contract is a
+   * coordinated change, and only the words a person reads have to be jurisdiction-aware.
+   */
+  public countDistinctAreas(): Promise<number> {
+    // The active campaign picks WHICH seat map is counted, so the number agrees with the
+    // campaign's word around it ("across 12 wards").
+    const campaignId = this.campaignContext.activeCampaignId();
+    return this.api.households.countDistinctWards.query(campaignId ? { campaignId } : undefined);
   }
 
   /** People in the placeholder household (no matchable address) — powers the grid footer note. */
@@ -85,7 +99,11 @@ export class HouseholdsService extends AbstractAPIService<'households', never> {
   }
 
   private async getAllWithPeopleCount(options?: getAllOptionsType) {
-    return this.api.households.getAllWithPeopleCount.query(options, {
+    // Stamp the active context so the campaign-resolved electoral column (§15) reads the
+    // campaign's own seat map — the same stamp persons-service.ts applies.
+    const campaignId = this.campaignContext.activeCampaignId();
+    const scoped = campaignId ? { ...(options ?? {}), campaignId } : options;
+    return this.api.households.getAllWithPeopleCount.query(scoped, {
       signal: this.ac.signal,
     });
   }

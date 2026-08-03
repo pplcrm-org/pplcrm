@@ -8,6 +8,11 @@ import { POLITICAL_QUEBEC_REGIME } from './political-quebec';
 import type { ReceiptRegimeId, ReceiptRegimeSpec } from './receipt-regime.types';
 
 export * from './receipt-regime.types';
+export {
+  US_POLITICAL_CONTRIBUTIONS_NOT_RECEIPTED,
+  receiptRegimeHintForCampaign,
+  type CampaignReceiptRegimeHint,
+} from './campaign-suggestion';
 export { CRA_CHARITY_REGIME } from './cra-charity';
 export { POLITICAL_FEDERAL_REGIME } from './political-federal';
 export { POLITICAL_ONTARIO_REGIME } from './political-ontario';

@@ -105,9 +105,19 @@ const CHIP_FOLLOW_UP = 'bg-info/15 text-[#0e4e6e]';
 const CHIP_NOT_HOME = 'bg-warning/40 text-warning-content';
 const CHIP_REMAINING = 'bg-base-300/60 text-base-content/60';
 
-/** The five household names recur across the site's mock data — keep them identical everywhere. */
-const ADDRESSES = ['214 Alder St', '218 Alder St', '222 Alder St', '226 Alder St', '230 Alder St'] as const;
-const RESIDENTS = ['Elena & Marco Ramos', 'Wei & Lily Chen', 'Denise Cole', 'Priya Natarajan', 'Marcus Lee'] as const;
+/**
+ * The five household names recur across the site's mock data — keep them identical everywhere.
+ * Exported because the /districts page shows the same five households in a grid mock; two
+ * copies of the cast would let the phone mock and the grid mock drift apart.
+ */
+export const ADDRESSES = ['214 Alder St', '218 Alder St', '222 Alder St', '226 Alder St', '230 Alder St'] as const;
+export const RESIDENTS = [
+  'Elena & Marco Ramos',
+  'Wei & Lily Chen',
+  'Denise Cole',
+  'Priya Natarajan',
+  'Marcus Lee',
+] as const;
 
 /** Door rows differ only by the first two chips — the outcome vocabulary of each vertical. */
 function doorsWith(first: string, second: string): readonly Door[] {
@@ -143,7 +153,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
   office: {
     pickerLabel: 'Constituency office',
     longGameBody:
-      'A sales pipeline forgets a deal the day it closes. Casework compounds: the file you closed two years ago is the context for today’s call, and the resident you helped is the volunteer who shows up next term. pplCRM keeps that whole story on one record, for as long as you serve the riding.',
+      'A sales pipeline forgets a deal the day it closes. Casework compounds: the file you closed two years ago is the context for today’s call, and the resident you helped is the volunteer who shows up next term. pplCRM keeps that whole story on one record, for as long as you hold the seat.',
     oneList: {
       icon: 'rectangle-stack',
       title: 'One list, office and election',
@@ -200,11 +210,12 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'map-pin',
         title: 'Doors & the field',
-        body: 'Cut the riding into walkable routes; staff and volunteers see them on their phones. Every conversation syncs back live.',
+        body: 'Cut your riding, ward or congressional district into walkable routes; staff and volunteers see them on their phones. Every conversation syncs back live.',
       },
       {
-        // An office does not fundraise — the riding association does. The shared card used to
-        // advertise donations here, which was the wrong pitch for the site's default audience.
+        // An office does not fundraise — in Canada the riding association does, in the United
+        // States the campaign committee does. The shared card used to advertise donations here,
+        // which was the wrong pitch for the site's default audience.
         icon: 'calendar',
         title: 'Events & clinics',
         body: 'Mobile office hours, town halls and community clinics. People register online and arrive already on your list.',
@@ -229,7 +240,10 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       },
     ],
     field: {
-      context: 'Ward 5 · Route 12',
+      // Named for the work, not for a ward: an office may sit in a riding, a ward or a
+      // congressional district, and the caption should not pick one country's answer. "Door
+      // knocking" is also the label office mode actually renders (ORG_MODE_TERMS).
+      context: 'Door knocking · Route 12',
       place: 'Maple Heights',
       meta: '14 doors · 21 constituents',
       progressClass: 'w-[43%]',

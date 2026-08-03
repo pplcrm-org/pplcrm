@@ -35,7 +35,19 @@ libs/
           help-markdown.ts
           help-search.ts
           help-types.ts
+        jurisdictions/
+          ca-federal.ts
+          ca-municipal.ts
+          ca-provincial.ts
+          index.ts
+          jurisdiction.types.ts
+          other.ts
+          regions.ts
+          us-federal.ts
+          us-local.ts
+          us-state.ts
         receipt-regimes/
+          campaign-suggestion.ts
           cra-charity.ts
           index.ts
           political-alberta.ts
@@ -47,6 +59,7 @@ libs/
         schemas/
           activity.schema.ts
           auth.schema.ts
+          boundaries.schema.ts
           bug-reports.schema.ts
           campaigns.schema.ts
           canvassing.schema.ts

@@ -6,6 +6,7 @@ import { HouseholdsService } from '../services/households-service';
 import { PersonsService } from '../../persons/services/persons-service';
 import { CompaniesService } from '../../companies/services/companies-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { DATA_GRID_CONFIG } from '@frontend/shared/components/datagrid/datagrid.tokens';
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
@@ -17,10 +18,25 @@ class MockHouseholdsService {
   deleteMany = vi.fn().mockResolvedValue(true);
   getAll = vi.fn().mockResolvedValue({ rows: [], count: 0 });
   count = vi.fn().mockResolvedValue(0);
-  countDistinctWards = vi.fn().mockResolvedValue(0);
+  countDistinctAreas = vi.fn().mockResolvedValue(0);
   abort = vi.fn();
   refreshCount = signal(0);
 }
+
+/**
+ * The grid names its electoral column with the active campaign's own word, so it needs the
+ * campaign context. 'Ward' here stands for a municipal campaign; a federal one would say 'Riding'.
+ */
+const mockCampaignContext = {
+  ensureLoaded: vi.fn().mockResolvedValue(undefined),
+  activeCampaignId: () => 'c1',
+  activeCampaign: () => ({ id: 'c1', name: 'Office' }),
+  isArchivedContext: () => false,
+  seatLabel: () => 'Ward',
+  seatLabelPlural: () => 'Wards',
+  subdivisionLabel: () => 'Poll',
+  subdivisionLabelPlural: () => 'Polls',
+};
 
 describe('HouseholdsGrid', () => {
   let component: HouseholdsGrid;
@@ -74,6 +90,7 @@ describe('HouseholdsGrid', () => {
         },
         { provide: AbstractAPIService, useValue: mockHouseholdsSvc },
         { provide: TagOptionsService, useValue: mockTagOptionsSvc },
+        { provide: CampaignContextService, useValue: mockCampaignContext },
       ],
     })
       .overrideComponent(HouseholdsGrid, {
@@ -90,6 +107,36 @@ describe('HouseholdsGrid', () => {
   it('should create and initialize columns', () => {
     expect(component).toBeTruthy();
     expect(component['col']).toBeDefined();
+  });
+
+  it('replaces the three fixed geography columns with the electoral-area pair', () => {
+    const fields = component['col'].map((c) => c.field);
+    expect(fields).toContain('electoral_area');
+    expect(fields).toContain('any_electoral_area');
+    // The old columns each held one answer, so a household in a riding and a ward lost one.
+    expect(fields).not.toContain('district');
+    expect(fields).not.toContain('precinct');
+    expect(fields).not.toContain('ward');
+  });
+
+  it('heads the electoral column with the active campaign’s own word', async () => {
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const areaCol = component['col'].find((c) => c.field === 'electoral_area');
+    expect(areaCol?.headerName).toBe('Ward');
+    expect(component['columnsReady']()).toBe(true);
+  });
+
+  it('still heads the electoral column from seatLabel() when the context load fails', async () => {
+    // The fallback word lives in CampaignContextService (seatLabelFor resolves "District" via the
+    // 'other' spec) — the grid holds no fallback string of its own, so even a failed load reads
+    // whatever seatLabel() answers.
+    mockCampaignContext.ensureLoaded.mockRejectedValueOnce(new Error('offline'));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const areaCol = component['col'].find((c) => c.field === 'electoral_area');
+    expect(areaCol?.headerName).toBe('Ward');
+    expect(component['columnsReady']()).toBe(true);
   });
 
   it('should return false (fallback to default) when selected households have no people', async () => {
@@ -165,7 +212,12 @@ describe('HouseholdsGrid', () => {
     expect(regular).toBe('123 Main St');
   });
 
-  it('should prevent inline editing for placeholder households', () => {
+  it('should prevent inline editing for placeholder households', async () => {
+    // The grid is created only after the campaign context answers, because its column headings
+    // carry the campaign's own word for an electoral area and the grid copies its column
+    // definitions once. So this waits for that load before reaching for the grid.
+    fixture.detectChanges();
+    await fixture.whenStable();
     fixture.detectChanges();
 
     const cityCol = component['col'].find((c) => c.field === 'city');

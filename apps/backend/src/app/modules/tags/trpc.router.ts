@@ -23,10 +23,12 @@ export const TagsRouter = router({
     )
     .query(({ input, ctx }) => tags.findByName(input, ctx.auth)),
 
-  // §9.1 Tags admin / §9.2 Issues admin
+  // §9.1 Tags admin / §9.2 Issues admin. `campaignId` scopes the top-area ranking to that
+  // campaign's seat set so the number under a campaign-worded heading ("Top ward") is computed
+  // on the same map the word comes from.
   getAdminList: authProcedure
-    .input(z.object({ type: z.enum(['tag', 'issue']) }))
-    .query(({ input, ctx }) => tags.getAdminList(input.type, ctx.auth)),
+    .input(z.object({ type: z.enum(['tag', 'issue']), campaignId: z.string().optional() }))
+    .query(({ input, ctx }) => tags.getAdminList(input.type, ctx.auth, input.campaignId)),
 
   countDistinctPeople: authProcedure
     .input(z.object({ type: z.enum(['tag', 'issue']) }))

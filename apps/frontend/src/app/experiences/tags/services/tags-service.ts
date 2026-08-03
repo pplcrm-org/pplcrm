@@ -91,8 +91,13 @@ export class TagsService extends AbstractAPIService<'tags', AddTagType> {
   }
 
   /** §9.1 Tags admin / §9.2 Issues admin — the full unpaginated list. */
-  public getAdminList(type: 'tag' | 'issue'): Promise<RouterOutputs['tags']['getAdminList']> {
-    return this.api.tags.getAdminList.query({ type });
+  public getAdminList(
+    type: 'tag' | 'issue',
+    campaignId?: string | null,
+  ): Promise<RouterOutputs['tags']['getAdminList']> {
+    // The campaign decides which boundary map the per-row "top area" is ranked against;
+    // without it the backend falls back to the workspace's newest seat-area map.
+    return this.api.tags.getAdminList.query({ type, campaignId: campaignId ?? undefined });
   }
 
   /** §9.2 Issues admin sentence: unique people, not total applications. */

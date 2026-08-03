@@ -9,6 +9,8 @@ import { LogInteraction } from '@experiences/activity/ui/log-interaction/log-int
 import { PeopleInHousehold } from './people-in-household';
 import { UserService } from '../../../services/user.service';
 import { HouseholdsService } from '../../households/services/households-service';
+import { electoralAreaSuffix } from '../../households/services/household-areas';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { PersonsService } from '../services/persons-service';
 import { VolunteerService } from '../../../services/api/volunteer-service';
 import { DonationsService } from '../../../services/api/donations-service';
@@ -65,6 +67,8 @@ export class PersonView {
   private readonly alertSvc = inject(AlertService);
   private readonly userService = inject(UserService);
   private readonly householdsSvc = inject(HouseholdsService);
+  /** Supplies the campaign's own word for the area shown after the address (Ward, Riding, …). */
+  private readonly campaignContext = inject(CampaignContextService);
   private readonly personsSvc = inject(PersonsService);
   protected readonly donationsSvc = inject(DonationsService);
   private readonly route = inject(ActivatedRoute);
@@ -150,12 +154,16 @@ export class PersonView {
     return (this.householdResource.value() as Households | null | undefined)?.is_placeholder ?? false;
   });
 
-  /** Address plus ward for the contact row (e.g. "312 Alder Street … · Ward 3"). */
+  /**
+   * Address plus the household's area on the active campaign's own boundary map, e.g.
+   * "312 Alder Street … · Ward 3" for a municipal race and "… · Ottawa Centre" for a federal one.
+   * The area is dropped when the address has not been placed on a map.
+   */
   protected readonly addressDisplay = computed(() => {
     const base = this.addressString();
     if (base === 'No Address Assigned') return base;
-    const ward = (this.householdResource.value() as Households | null | undefined)?.ward;
-    return ward ? `${base} · Ward ${ward}` : base;
+    const area = electoralAreaSuffix(this.householdResource.value(), this.campaignContext.seatLabel());
+    return area ? `${base} · ${area}` : base;
   });
 
   // Contact initials and full name computation

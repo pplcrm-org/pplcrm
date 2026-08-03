@@ -4,6 +4,20 @@
     one volunteer can walk a batch in an evening.
   </p>
 
+  <!-- No boundary map is a normal starting condition, not a fault: say what happens instead and
+       where to get a map, before the cut rather than after it (design §3, guide don't error). -->
+  @if (hasBoundaryMap() === false) {
+  <div class="mt-3 flex gap-2 rounded-lg border border-base-300 bg-base-200/40 p-3 text-xs text-base-content/70">
+    <pc-icon name="information-circle" [size]="4" class="mt-px shrink-0 text-primary" />
+    <span>
+      This workspace has no boundary map yet, so these turfs are grouped purely by how close the doors are to each
+      other. They still walk fine. A map only adds the lines a turf must never cross, and the turfs cut without one are
+      labelled unbounded so the grouping is never mistaken for a real line.
+      <a class="link link-primary" [routerLink]="['/help', 'district-boundaries']">How to get a boundary map</a>
+    </span>
+  </div>
+  }
+
   <!-- Which list to walk -->
   <div class="form-control mt-4">
     <label class="label" for="cut-universe">
@@ -57,9 +71,15 @@
       · ~{{ p.doors.toLocaleString() }} doors →
       <span class="font-medium">{{ p.turfCount }} turfs of ~{{ p.avgDoorsPerTurf }} doors each</span>
     </p>
+    <!-- The boundary promise comes from THIS preview's own `bounded` flag, resolved by the server
+         for this cut — never from "does the workspace hold any map", which proves nothing about
+         whether one applies to this campaign's office. -->
     <p class="mt-1 text-base-content/60">
-      Doors in a turf sit next to each other, and a turf never crosses a ward boundary. Wards follow the rivers, rail
-      lines and big roads, so a volunteer is not sent across one.
+      @if (p.bounded) { Doors in a turf sit next to each other, and a turf never crosses a boundary line. Those lines
+      follow the rivers, rail lines and big roads, so a volunteer is not sent across one. } @else if (hasBoundaryMap()
+      === true) { This workspace's boundary map does not apply to this campaign's office, so these turfs are grouped
+      purely by how close the doors are to each other. They are labelled unbounded. } @else { Doors in a turf sit next
+      to each other, and with no boundary map that closeness is the only thing grouping them. }
     </p>
     @if (p.unplaced > 0) {
     <p class="mt-1 text-warning">

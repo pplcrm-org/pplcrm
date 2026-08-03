@@ -236,6 +236,7 @@ apps/
               help-rich-text.ts
           households/
             services/
+              household-areas.ts
               households-service.ts
             ui/
               household-form.html
@@ -310,6 +311,12 @@ apps/
             billing/
               billing-settings.html
               billing-settings.ts
+            boundaries/
+              services/
+                boundaries-service.ts
+              boundaries-settings.html
+              boundaries-settings.ts
+              boundary-geojson.ts
             campaigns/
               campaigns-settings.html
               campaigns-settings.ts
