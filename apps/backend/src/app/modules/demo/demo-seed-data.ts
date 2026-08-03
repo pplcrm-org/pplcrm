@@ -1915,12 +1915,16 @@ export const CAMPAIGN_DEMO_DATASET: DemoDataset = {
   deliveryRoutes: DEMO_DELIVERY_ROUTES,
   pledges: DEMO_PLEDGES,
   donations: DEMO_DONATIONS,
-  // No receipts, and that is not an omission. This is a MUNICIPAL race, and a municipal candidate
-  // in Ontario issues plain contribution receipts under the Municipal Elections Act — not an
-  // income-tax receipt. A United States municipal candidate issues none at all. None of
-  // the six regimes in libs/common/src/lib/receipt-regimes covers that, so configuring one here
-  // would print a document claiming a tax treatment these contributions do not get. The gifts are
-  // recorded in the ledger; receipting stays off until there is a regime that fits.
+  // No official TAX receipts, and that is not an omission. This is a MUNICIPAL race, and a municipal
+  // candidate in Ontario issues plain contribution receipts under the Municipal Elections Act — not
+  // an income-tax receipt. A United States municipal candidate issues none at all. None of the six
+  // regimes in libs/common/src/lib/receipt-regimes covers that, so configuring one here would print
+  // a document claiming a tax treatment these contributions do not get.
+  //
+  // Every gift is still ACKNOWLEDGED. The seeder writes one acknowledgement per donation for every
+  // dataset, outside this block, because an acknowledgement asserts no tax treatment and needs no
+  // regime — so this ledger reads the way the live product behaves rather than showing a column of
+  // gifts nobody thanked.
   receipts: [],
   receiptSettings: {},
   statementRun: null,

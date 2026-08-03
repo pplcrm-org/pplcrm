@@ -67,7 +67,8 @@ export const DemoSeedManifestObj = z.object({
   // survive exit (they are starter forms); these recorded gifts do not.
   donations: z.array(z.string()).default([]),
   donation_pledges: z.array(z.string()).default([]),
-  // Official receipts over the demo gifts + last year's statement run. Counter rows are
+  // Acknowledgements, official receipts over the demo gifts, and last year's year-end run. All
+  // three document kinds live in donation_receipts, so one id list covers them. Counter rows are
   // deliberately NOT tracked: deleting them would reset numbering under receipts a user issued
   // during demo mode, and a leftover counter row is harmless.
   donation_receipts: z.array(z.string()).default([]),
@@ -1031,6 +1032,128 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
         .execute();
   const donationIds = donationRows.map((r) => String(r.id));
 
+  // ── Acknowledgements: one for EVERY seeded gift, in every dataset ─────────
+  //    The live path acknowledges every gift the moment it is recorded, so a demo workspace whose
+  //    ledger showed "not sent" on every row would misrepresent the product. Rows are written
+  //    directly rather than through the issue flow because the demo needs historic dates.
+  //
+  //    Deliberately OUTSIDE the pack.seedsReceipts gate below. That flag exists because a Canada
+  //    Revenue Agency receipt over a Chicago address would be a false document; an acknowledgement
+  //    asserts no tax treatment at all, so it is correct in a United States workspace and in a
+  //    municipal campaign that will never configure a receipting regime. It is also outside the
+  //    dataset.receipts check: a dataset with no official receipts still acknowledges its gifts.
+  const acknowledgementIds: string[] = [];
+  const acknowledgementItemIds: string[] = [];
+  const ackSerialByYear = new Map<number, number>();
+  // The receipting legal name when the dataset sets one, otherwise the workspace's own organization
+  // name — the same fallback the live acknowledgement path uses, so an unconfigured workspace still
+  // produces a document with a real name on it.
+  const orgNameRow = await trx
+    .selectFrom('settings')
+    .select('value')
+    .where('tenant_id', '=', tenant_id)
+    .where('key', '=', 'organization.name')
+    .executeTakeFirst();
+  const ackOrgName =
+    String(dataset.receiptSettings['receipts.org_legal_name'] ?? '') ||
+    (typeof orgNameRow?.value === 'string' ? orgNameRow.value : '');
+  // Oldest gift first, so acknowledgement numbers run forward in time like the real counter does.
+  const giftsOldestFirst = dataset.donations
+    .map((d, index) => ({ def: d, index }))
+    .sort((a, b) => b.def.createdDaysAgo - a.def.createdDaysAgo);
+  for (const { def: donationDef, index } of giftsOldestFirst) {
+    const donationId = donationIds[index];
+    const person = personByKey.get(donationDef.person);
+    const personId = personIdByKey.get(donationDef.person);
+    if (!donationId || !person || !personId) continue;
+
+    const giftDate = daysAgo(donationDef.createdDaysAgo);
+    const year = giftDate.getFullYear();
+    const serial = (ackSerialByYear.get(year) ?? 0) + 1;
+    ackSerialByYear.set(year, serial);
+    const homeStory = person.household ? householdByKey.get(person.household) : undefined;
+    const home = homeStory ? siteFor(homeStory.key) : undefined;
+
+    const ack = await trx
+      .insertInto('donation_receipts')
+      .values({
+        tenant_id,
+        kind: 'acknowledgement',
+        regime: null,
+        year,
+        serial,
+        receipt_number: `A-${year}-${String(serial).padStart(5, '0')}`,
+        status: 'issued',
+        person_id: personId,
+        campaign_id,
+        donor_name: `${person.first_name} ${person.last_name}`.trim(),
+        donor_email: person.email ?? null,
+        donor_address_line1: home ? `${home.street_num} ${home.street1}` : null,
+        donor_city: home ? pack.city : null,
+        donor_province: home ? pack.state : null,
+        donor_postal_code: home?.zip ?? null,
+        donor_country: home ? pack.countryName : null,
+        amount_cents: donationDef.amountCents,
+        advantage_cents: 0,
+        eligible_cents: donationDef.amountCents,
+        advantage_description: null,
+        gift_date: giftDate,
+        issuer_snapshot: JSON.stringify({
+          org_legal_name: ackOrgName,
+          org_address: dataset.receiptSettings['receipts.org_address'],
+        }),
+        replaces_receipt_id: null,
+        issued_at: giftDate,
+        emailed_at: person.email ? giftDate : null,
+        createdby_id: user_id,
+        updatedby_id: user_id,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    acknowledgementIds.push(String(ack.id));
+
+    const ackItem = await trx
+      .insertInto('donation_receipt_items')
+      .values({
+        tenant_id,
+        receipt_id: ack.id,
+        donation_id: donationId,
+        amount_cents: donationDef.amountCents,
+        gift_date: giftDate,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    acknowledgementItemIds.push(String(ackItem.id));
+
+    // Real PDFs, so a demo workspace can open and download actual sample documents. email:false —
+    // demo donors are never mailed.
+    await trx
+      .insertInto('background_jobs')
+      .values({
+        tenant_id,
+        queue: 'default',
+        status: 'pending',
+        payload: JSON.stringify({
+          type: 'render-receipt-pdf',
+          tenant_id,
+          receipt_id: ack.id,
+          email: false,
+          user_id,
+        }),
+        run_at: new Date(),
+        max_attempts: 3,
+      })
+      .execute();
+  }
+
+  for (const [year, n] of ackSerialByYear) {
+    await sql`
+      INSERT INTO receipt_counters (tenant_id, year, kind, n)
+      VALUES (${tenant_id}, ${year}, 'acknowledgement', ${n})
+      ON CONFLICT (tenant_id, year, kind) DO UPDATE SET n = GREATEST(receipt_counters.n, ${n})
+    `.execute(trx);
+  }
+
   // ── Official receipts over the demo gifts ─────────────────────────────────
   //    Rows are inserted directly (not through the issue flow) so the demo can carry a
   //    cancel-and-replace pair and historic dates; the real render job then draws each PDF
@@ -1235,8 +1358,8 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     delivery_route_stops: deliveryStopIds,
     donations: donationIds,
     donation_pledges: donationPledgeIds,
-    donation_receipts: receiptIds,
-    donation_receipt_items: receiptItemIds,
+    donation_receipts: [...acknowledgementIds, ...receiptIds],
+    donation_receipt_items: [...acknowledgementItemIds, ...receiptItemIds],
     receipt_statement_runs: statementRunIds,
     receipt_settings_seeded: seedsReceipts && Object.keys(dataset.receiptSettings).length > 0,
     boundary_sets: [boundary_set_id],

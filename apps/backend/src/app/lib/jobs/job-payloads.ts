@@ -31,16 +31,16 @@ const exportOptionsSchema = z.object({
 
 export const jobPayloadSchema = z.discriminatedUnion('type', [
   // ── Donation receipts ───────────────────────────────────────────────────
-  // Auto-issue after a gift commits (outbox insert in recordSuccessfulDonation). The handler
-  // re-validates settings and skips-without-retry when they are incomplete.
+  // Acknowledge a gift the moment it commits (outbox insert in recordSuccessfulDonation). Enqueued
+  // for EVERY successful gift; unlike a tax receipt it depends on no workspace configuration.
   z.object({
-    type: z.literal('issue-donation-receipt'),
+    type: z.literal('issue-donation-acknowledgement'),
     tenant_id: idSchema,
     donation_id: idSchema,
     user_id: idSchema,
   }),
-  // Render a receipt/statement PDF, store it via the files service, email it to the donor.
-  // Attachments only exist on the direct sendMail path, so this MUST run in the worker.
+  // Render an acknowledgement/receipt/statement PDF, store it via the files service, email it to
+  // the donor. Attachments only exist on the direct sendMail path, so this MUST run in the worker.
   z.object({
     type: z.literal('render-receipt-pdf'),
     tenant_id: idSchema,

@@ -1,7 +1,19 @@
+import { OFFICIAL_RECEIPT_KINDS } from '@common';
 import { sql, type Insertable, type Selectable, type Transaction } from 'kysely';
 
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { BaseRepository } from '../../../lib/base.repo';
+
+/**
+ * Which `receipt_counters` sequence a number comes from. Per-gift and cumulative TAX receipts share
+ * the 'official' sequence, because an auditor reconciling a year expects one unbroken run of
+ * serials. Acknowledgements are numbered too — support needs something to quote back — but from
+ * their own sequence, so issuing one can never advance or interleave with the official run.
+ */
+export type ReceiptCounterKind = 'official' | 'acknowledgement';
+
+/** Mutable copy for query builders: `OFFICIAL_RECEIPT_KINDS` is a readonly tuple. */
+const OFFICIAL_KINDS: string[] = [...OFFICIAL_RECEIPT_KINDS];
 
 /** Fields the issue flow inserts (id/serial defaults come from the caller building the row). */
 export type NewReceiptRow = Insertable<Models['donation_receipts']>;
@@ -20,16 +32,21 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
   }
 
   /**
-   * Take the next gap-free serial for (tenant, year). MUST run inside the same transaction as
-   * the receipt insert: a rollback returns the number, and concurrent issuers serialize on the
-   * counter row lock. `INSERT … ON CONFLICT DO UPDATE` is the one statement that atomically
-   * handles insert-if-absent — plain FOR UPDATE locks nothing when the row does not exist yet
-   * (see lib/jobs/reschedule.ts for the worked explanation).
+   * Take the next gap-free serial for (tenant, year, counter kind). MUST run inside the same
+   * transaction as the receipt insert: a rollback returns the number, and concurrent issuers
+   * serialize on the counter row lock. `INSERT … ON CONFLICT DO UPDATE` is the one statement that
+   * atomically handles insert-if-absent — plain FOR UPDATE locks nothing when the row does not
+   * exist yet (see lib/jobs/reschedule.ts for the worked explanation).
    */
-  public async nextSerial(trx: Transaction<Models>, tenantId: string, year: number): Promise<number> {
+  public async nextSerial(
+    trx: Transaction<Models>,
+    tenantId: string,
+    year: number,
+    counterKind: ReceiptCounterKind = 'official',
+  ): Promise<number> {
     const result = await sql<{ n: number }>`
       INSERT INTO receipt_counters (tenant_id, year, kind, n)
-      VALUES (${tenantId}, ${year}, 'official', 1)
+      VALUES (${tenantId}, ${year}, ${counterKind}, 1)
       ON CONFLICT (tenant_id, year, kind)
       DO UPDATE SET n = receipt_counters.n + 1
       RETURNING n
@@ -63,7 +80,7 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
     return inserted;
   }
 
-  /** Official (non-statement) receipts covering a donation, live ones first. */
+  /** Official TAX receipts covering a donation, live ones first. Acknowledgements are not these. */
   public async getOfficialReceiptsForDonation(
     tenantId: string,
     donationId: string,
@@ -76,13 +93,34 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
       .where('dri.tenant_id', '=', tenantId)
       .where('dr.tenant_id', '=', tenantId)
       .where('dri.donation_id', '=', donationId)
-      .where('dr.kind', '!=', 'statement')
+      .where('dr.kind', 'in', OFFICIAL_KINDS)
       .orderBy(sql`CASE WHEN dr.status = 'issued' THEN 0 ELSE 1 END`)
       .orderBy('dr.issued_at', 'desc')
       .execute();
   }
 
-  /** ALL receipts (statements included) covering a donation and still issued — the refund hook's input. */
+  /** The live acknowledgement covering a donation, if one exists (the idempotency check). */
+  public async getLiveAcknowledgementForDonation(
+    tenantId: string,
+    donationId: string,
+    trx?: Transaction<Models>,
+  ): Promise<ReceiptRow | undefined> {
+    return (trx ?? this.db)
+      .selectFrom('donation_receipt_items as dri')
+      .innerJoin('donation_receipts as dr', 'dr.id', 'dri.receipt_id')
+      .selectAll('dr')
+      .where('dri.tenant_id', '=', tenantId)
+      .where('dr.tenant_id', '=', tenantId)
+      .where('dri.donation_id', '=', donationId)
+      .where('dr.kind', '=', 'acknowledgement')
+      .where('dr.status', '=', 'issued')
+      .executeTakeFirst();
+  }
+
+  /**
+   * EVERY live document covering a donation — acknowledgement, tax receipt and statement alike.
+   * The refund hook's input: a reversed gift must not leave any of them standing.
+   */
   public async getLiveReceiptsForDonation(
     tenantId: string,
     donationId: string,
@@ -175,9 +213,13 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
   }
 
   /**
-   * Succeeded gifts for a person-year not yet covered by a live official receipt — what an
+   * Succeeded gifts for a person-year not yet covered by a live official TAX receipt — what an
    * annual cumulative receipt gathers. Runs inside the issue transaction (after the counter
    * lock serialized concurrent issuers) so two racing cumulative issues cannot double-cover.
+   *
+   * The kind filter must name the tax kinds explicitly. Every gift carries an acknowledgement, so
+   * a `kind != 'statement'` test here would report every gift as already receipted and the annual
+   * receipt would cover nothing.
    */
   public async getUnreceiptedSucceededDonations(
     tenantId: string,
@@ -205,7 +247,7 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
               .whereRef('dri.donation_id', '=', 'donations.id')
               .whereRef('dri.tenant_id', '=', 'donations.tenant_id')
               .where('dr.status', '=', 'issued')
-              .where('dr.kind', '!=', 'statement'),
+              .where('dr.kind', 'in', OFFICIAL_KINDS),
           ),
         ),
       )
@@ -221,7 +263,7 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
       personId?: string;
       year?: number;
       status?: string;
-      kind?: string;
+      kinds?: readonly string[];
       needsAttention?: boolean;
       limit?: number;
       offset?: number;
@@ -247,7 +289,7 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
     if (filters.personId) query = query.where('person_id', '=', filters.personId);
     if (filters.year) query = query.where('year', '=', filters.year);
     if (filters.status) query = query.where('status', '=', filters.status);
-    if (filters.kind) query = query.where('kind', '=', filters.kind);
+    if (filters.kinds?.length) query = query.where('kind', 'in', [...filters.kinds]);
     if (filters.needsAttention) query = query.where('reissue_required', '=', true);
 
     return query
@@ -258,9 +300,13 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
   }
 
   /**
-   * Statement batch: the next donors (ascending person_id keyset — never OFFSET, so donors
-   * appearing/disappearing mid-run cannot skip a boundary) with ≥1 succeeded gift in the year
-   * and no live statement yet.
+   * Year-end batch: the next donors (ascending person_id keyset — never OFFSET, so donors
+   * appearing/disappearing mid-run cannot skip a boundary) with ≥1 succeeded gift in the year and
+   * no live year-end document yet.
+   *
+   * "Year-end document" means a statement OR a cumulative tax receipt, because the run now issues
+   * whichever of the two a donor qualifies for. Excluding only statements would hand a donor who
+   * already holds a tax receipt a redundant summary on every rerun.
    */
   public async listStatementDonors(
     tenantId: string,
@@ -287,7 +333,7 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
               .select('dr.id')
               .whereRef('dr.tenant_id', '=', 'donations.tenant_id')
               .whereRef('dr.person_id', '=', 'donations.person_id')
-              .where('dr.kind', '=', 'statement')
+              .where('dr.kind', 'in', ['statement', 'cumulative'])
               .where('dr.status', '=', 'issued')
               .where('dr.year', '=', year),
           ),

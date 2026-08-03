@@ -1233,9 +1233,13 @@ const DONATIONS: DemoDonationDef[] = [
 ];
 
 /**
- * Official receipts over DONATIONS (by index). Most one-time gifts are receipted (auto-issue is
- * on); a few cash gifts are deliberately not, so the "Receipts" stat is honest work-in-progress,
- * and Alan Forsyth's check carries the cancel-and-replace pair the receipts page demonstrates.
+ * Official TAX receipts over DONATIONS (by index) — on top of the acknowledgement every gift
+ * already carries, which the seeder writes for the whole ledger.
+ *
+ * These are the ones the church office issued by hand when a donor asked before year end, which is
+ * how per-gift tax receipts are issued now that the year-end run handles the rest. Most gifts have
+ * none, and that is correct rather than a backlog. Alan Forsyth's check carries the
+ * cancel-and-replace pair the receipts page demonstrates.
  *
  * `ref` is a label for the cancel-and-replace link below, not the printed number — the seeder
  * numbers these by issue date (see DemoReceiptDef).
@@ -1266,8 +1270,6 @@ const RECEIPTS: DemoReceiptDef[] = [
  */
 const RECEIPT_SETTINGS: Record<string, string | boolean> = {
   'receipts.regime': 'cra_charity',
-  'receipts.mode': 'per_gift',
-  'receipts.auto_issue': true,
   'receipts.org_legal_name': 'Riverside Community Church',
   'receipts.org_address': `41 Chapel Street, ${CANADA_PLACE_PACK.city}, ${CANADA_PLACE_PACK.state}`,
   'receipts.registration_number': '123456789 RR 0001',

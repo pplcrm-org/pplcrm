@@ -11,6 +11,7 @@ import type { Selectable, Transaction } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { BadRequestError, ConflictError, NotFoundError, PreconditionFailedError } from '../../../errors/app-errors';
 import { BaseController } from '../../../lib/base.controller';
+import { buildAcknowledgementPdf } from '../../../lib/pdf/acknowledgement-pdf';
 import { buildReceiptPdf, type ReceiptIssuerSnapshot } from '../../../lib/pdf/receipt-pdf';
 import { torontoDateString } from '../../../lib/pdf/pdf-common';
 import { StorageService } from '../../../lib/storage.service';
@@ -22,8 +23,6 @@ import { ReceiptsRepo, type ReceiptItemInput, type ReceiptRow } from '../reposit
 /** The receipts.* workspace settings, loaded in one pass. Client-readable — nothing secret. */
 export interface ReceiptWorkspaceSettings {
   regime: ReceiptRegimeId | null;
-  mode: 'per_gift' | 'annual_cumulative';
-  autoIssue: boolean;
   numberPrefix: string;
   values: Partial<Record<ReceiptIssuerField, string>>;
 }
@@ -42,8 +41,6 @@ interface DonorSnapshot {
 type IssueOptions = {
   advantageCents?: number;
   advantageDescription?: string;
-  /** 'auto' skips silently on blocks (settings problems can't be fixed by a retry); 'manual' throws. */
-  mode: 'manual' | 'auto';
 };
 
 /**
@@ -99,8 +96,6 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     const regime = str('regime');
     return {
       regime: regime && regime in RECEIPT_REGIMES ? (regime as ReceiptRegimeId) : null,
-      mode: str('mode') === 'annual_cumulative' ? 'annual_cumulative' : 'per_gift',
-      autoIssue: map.get('receipts.auto_issue') === true,
       numberPrefix: str('number_prefix') || 'R',
       values: {
         org_legal_name: str('org_legal_name'),
@@ -174,10 +169,15 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       .map((field) => RECEIPT_ISSUER_FIELD_LABELS[field]);
   }
 
+  /**
+   * Whether this workspace is set up to issue official TAX receipts, and what is missing if not.
+   *
+   * None of this affects acknowledgements. Every gift is acknowledged the moment it is recorded,
+   * in every workspace, whatever this reports — the two documents are independent, and a workspace
+   * that never opens this settings page still thanks its donors.
+   */
   public async getReceiptSettingsStatus(tenantId: string): Promise<{
     regime: ReceiptRegimeId | null;
-    mode: 'per_gift' | 'annual_cumulative';
-    autoIssue: boolean;
     complete: boolean;
     missing: string[];
     advisory: string[];
@@ -189,22 +189,20 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     if (!settings.regime) {
       return {
         regime: null,
-        mode: settings.mode,
-        autoIssue: settings.autoIssue,
         complete: false,
         missing: ['receipting regime'],
         advisory: [],
         advisoryMessage: null,
         externalIssuance: false,
-        message: 'Choose a receipting regime in Workspace settings → Donations before issuing receipts.',
+        message:
+          'No receipting regime is chosen, so this workspace issues no official tax receipts. ' +
+          'Every gift is still acknowledged by email, and donors receive a year-end giving summary.',
       };
     }
     const spec = RECEIPT_REGIMES[settings.regime];
     if (spec.issuance === 'external') {
       return {
         regime: settings.regime,
-        mode: settings.mode,
-        autoIssue: settings.autoIssue,
         complete: false,
         missing: [],
         advisory: [],
@@ -219,8 +217,6 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     const advisory = this.advisoryMissingFields(settings, spec);
     return {
       regime: settings.regime,
-      mode: settings.mode,
-      autoIssue: settings.autoIssue,
       complete: missing.length === 0,
       missing,
       advisory,
@@ -422,34 +418,19 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     return { isElection: campaign.kind === 'election', electoralDistrict: seat ? seat : null };
   }
 
-  /** Issue one official per-gift receipt. The manual path; the auto path wraps it (tryAutoIssue). */
+  /**
+   * Issue one official per-gift TAX receipt for a single gift, on request.
+   *
+   * Nothing calls this automatically. Official receipting is a year-end activity
+   * ({@link generateYearEndDocumentForDonor}); this exists for the donor who asks for their receipt
+   * in March, and it is reached only from the button on the gift detail page.
+   */
   public async issueReceipt(
     auth: { tenant_id: string; user_id: string },
     donationId: string,
     opts: { advantageCents?: number; advantageDescription?: string },
   ): Promise<ReceiptRow> {
-    return this.issueOfficialForDonation(auth.tenant_id, auth.user_id, donationId, { ...opts, mode: 'manual' });
-  }
-
-  /**
-   * Auto-issue from the background job. Never throws for settings/eligibility problems — those
-   * can't be fixed by a retry; the gift simply stays visibly unreceipted. Returns the skip reason
-   * for the job log.
-   */
-  public async tryAutoIssue(
-    tenantId: string,
-    donationId: string,
-    userId: string,
-  ): Promise<{ receipt: ReceiptRow | null; skipped?: string }> {
-    try {
-      const receipt = await this.issueOfficialForDonation(tenantId, userId, donationId, { mode: 'auto' });
-      return { receipt };
-    } catch (err) {
-      if (err instanceof PreconditionFailedError || err instanceof ConflictError || err instanceof BadRequestError) {
-        return { receipt: null, skipped: err.message };
-      }
-      throw err;
-    }
+    return this.issueOfficialForDonation(auth.tenant_id, auth.user_id, donationId, opts);
   }
 
   private async issueOfficialForDonation(
@@ -473,18 +454,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     }
 
     const campaign = await this.loadCampaignFacts(tenantId, donation.campaign_id);
-    const { settings, spec } = await this.assertIssuable(tenantId, campaign);
-
-    if (opts.mode === 'auto') {
-      if (settings.mode === 'annual_cumulative') {
-        throw new PreconditionFailedError('Workspace uses one cumulative receipt per donor per year.');
-      }
-      if (spec.autoIssueThresholdCents && donation.amount < spec.autoIssueThresholdCents) {
-        throw new PreconditionFailedError(
-          `Below this regime’s auto-issue threshold (${spec.autoIssueThresholdCents / 100} dollars) — issue manually if the donor asks.`,
-        );
-      }
-    }
+    const { settings } = await this.assertIssuable(tenantId, campaign);
 
     const { donor, hasAddress } = await this.resolveDonor(tenantId, donation.person_id, donation);
     if (!donor) throw new PreconditionFailedError('This gift has no donor name on file.');
@@ -543,7 +513,118 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       });
   }
 
-  /** Annual cumulative mode: one official receipt covering a donor's un-receipted gifts in a year. */
+  // ── Acknowledgement (every gift, no configuration) ──────────────────────────
+
+  /**
+   * The plain acknowledgement, issued the moment a gift is recorded.
+   *
+   * This is the one document with NO preconditions beyond a successful gift and a donor to address
+   * it to. It asserts no tax treatment, so it needs no regime, no registration number, no
+   * authorized signatory and — unlike every tax receipt — no mailing address. That is deliberate:
+   * a donor who gives and hears nothing back assumes the payment failed, and the workspaces most
+   * likely to be unconfigured (a municipal campaign, any United States workspace) are exactly the
+   * ones that can never satisfy a tax regime.
+   *
+   * Returns null instead of throwing when the gift cannot be acknowledged at all, because the caller
+   * is a background job and none of these conditions is fixed by a retry.
+   */
+  public async issueAcknowledgement(
+    tenantId: string,
+    donationId: string,
+    userId: string,
+  ): Promise<{ receipt: ReceiptRow | null; skipped?: string }> {
+    const donation = await this.donationsRepo.db
+      .selectFrom('donations')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', donationId)
+      .executeTakeFirst();
+    if (!donation) return { receipt: null, skipped: 'Donation not found' };
+    if (donation.status !== 'succeeded') return { receipt: null, skipped: `Gift is ${donation.status}` };
+    if (!donation.person_id) return { receipt: null, skipped: 'Gift has no donor on file' };
+
+    const existing = await this.getRepo().getLiveAcknowledgementForDonation(tenantId, donationId);
+    if (existing) return { receipt: existing };
+
+    const { donor } = await this.resolveDonor(tenantId, donation.person_id, donation);
+    if (!donor) return { receipt: null, skipped: 'Gift has no donor name on file' };
+
+    const settings = await this.loadSettings(tenantId);
+    const orgName = await this.resolveOrgName(tenantId, settings);
+    const now = new Date();
+    const year = torontoYear(now);
+    const giftDate = torontoDateString(new Date(donation.created_at));
+    const personId = String(donation.person_id);
+
+    const receipt = await this.getRepo()
+      .transaction()
+      .execute(async (trx) => {
+        // Own counter sequence: acknowledging a gift must never advance the official tax-receipt
+        // serials, which are audited for gaps. The counter row lock also serializes racing
+        // acknowledgements for one gift, which is why the coverage re-check sits after it.
+        const serial = await this.getRepo().nextSerial(trx, tenantId, year, 'acknowledgement');
+        const raced = await this.getRepo().getLiveAcknowledgementForDonation(tenantId, donationId, trx);
+        if (raced) return raced;
+
+        const row = await this.getRepo().insertReceiptWithItems(
+          trx,
+          {
+            tenant_id: tenantId,
+            kind: 'acknowledgement',
+            regime: null,
+            year,
+            serial,
+            receipt_number: `A-${year}-${String(serial).padStart(SERIAL_PAD, '0')}`,
+            status: 'issued',
+            person_id: personId,
+            campaign_id: donation.campaign_id,
+            donor_name: donor.name,
+            donor_email: donor.email,
+            donor_address_line1: donor.line1,
+            donor_address_line2: donor.line2,
+            donor_city: donor.city,
+            donor_province: donor.province,
+            donor_postal_code: donor.postalCode,
+            donor_country: donor.country,
+            amount_cents: donation.amount,
+            advantage_cents: 0,
+            eligible_cents: donation.amount,
+            advantage_description: null,
+            gift_date: giftDate,
+            // Only the two fields an acknowledgement prints. No registration number, no signatory:
+            // printing them would dress a non-tax document up as a tax document.
+            issuer_snapshot: JSON.stringify({
+              org_legal_name: orgName,
+              org_address: settings.values.org_address || undefined,
+            }),
+            replaces_receipt_id: null,
+            createdby_id: userId,
+            updatedby_id: userId,
+          },
+          [{ donation_id: donationId, amount_cents: donation.amount, gift_date: giftDate }],
+        );
+
+        await this.enqueueRenderJob(trx, tenantId, row.id, userId, true);
+        return row;
+      });
+
+    return { receipt };
+  }
+
+  /**
+   * The organization name an acknowledgement or statement prints: the receipting legal name when the
+   * workspace has set one, otherwise the plain organization name every workspace has from signup.
+   * The fallback is what lets an unconfigured workspace produce a usable document on day one.
+   */
+  private async resolveOrgName(tenantId: string, settings: ReceiptWorkspaceSettings): Promise<string> {
+    if (settings.values.org_legal_name) return settings.values.org_legal_name;
+    const row = await this.settingsRepo.getByKey({ tenant_id: tenantId, key: 'organization.name' });
+    return typeof row?.value === 'string' ? row.value : '';
+  }
+
+  // ── Cumulative tax receipt ──────────────────────────────────────────────────
+
+  /** One official receipt covering a donor's un-receipted gifts in a year. */
   public async issueCumulativeReceipt(
     auth: { tenant_id: string; user_id: string },
     personId: string,
@@ -554,7 +635,25 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     // A cumulative receipt covers a donor's gifts across every campaign in the year, so no single
     // campaign can answer for it. The workspace setting is the only correct source here.
     const { settings } = await this.assertIssuable(tenantId, NO_CAMPAIGN);
+    return this.insertCumulativeReceipt(tenantId, auth.user_id, personId, year, settings, opts);
+  }
 
+  /**
+   * The cumulative-receipt write, with the workspace-level checks already done by the caller.
+   *
+   * Split out for the year-end batch: `assertIssuable` reads every workspace setting, and running it
+   * once per donor would repeat that read for every donor in the workspace. The batch evaluates it
+   * once per execution and calls this directly.
+   */
+  private async insertCumulativeReceipt(
+    tenantId: string,
+    userId: string,
+    personId: string,
+    year: number,
+    settings: ReceiptWorkspaceSettings,
+    opts: { advantageCents?: number; advantageDescription?: string },
+  ): Promise<ReceiptRow> {
+    const auth = { tenant_id: tenantId, user_id: userId };
     const { donor, hasAddress } = await this.resolveDonor(tenantId, personId);
     if (!donor) throw new NotFoundError('Person not found');
     if (!hasAddress) {
@@ -668,27 +767,38 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       input.items,
     );
 
-    // Transactional outbox: the PDF render + donor email happen in the worker, and the job
-    // exists only if this issuance commits.
+    await this.enqueueRenderJob(trx, input.tenantId, receipt.id, input.userId, true);
+    return receipt;
+  }
+
+  /**
+   * Transactional outbox: the PDF render and the donor email happen in the worker, and the job
+   * exists only if the issuance it belongs to commits. Shared by acknowledgements and tax receipts.
+   */
+  private async enqueueRenderJob(
+    trx: Transaction<Models>,
+    tenantId: string,
+    receiptId: string,
+    userId: string,
+    email: boolean,
+  ): Promise<void> {
     await trx
       .insertInto('background_jobs')
       .values({
-        tenant_id: input.tenantId,
+        tenant_id: tenantId,
         queue: 'default',
         status: 'pending',
         payload: JSON.stringify({
           type: 'render-receipt-pdf',
-          tenant_id: input.tenantId,
-          receipt_id: receipt.id,
-          email: true,
-          user_id: input.userId,
+          tenant_id: tenantId,
+          receipt_id: receiptId,
+          email,
+          user_id: userId,
         }),
         run_at: new Date(),
         max_attempts: 3,
       })
       .execute();
-
-    return receipt;
   }
 
   // ── Cancel / reissue ────────────────────────────────────────────────────────
@@ -731,6 +841,12 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     if (!predecessor) throw new NotFoundError('Receipt not found');
     if (predecessor.kind === 'statement') {
       throw new BadRequestError('Statements are regenerated by rerunning the year, not reissued.');
+    }
+    if (predecessor.kind === 'acknowledgement') {
+      // Cancel-and-replace exists because a tax authority requires cancelled serials to be retained
+      // and a successor to reference them. An acknowledgement is under no such rule, and a corrected
+      // one is simply a fresh acknowledgement.
+      throw new BadRequestError('Acknowledgements are not reissued. Issue a tax receipt for this gift instead.');
     }
     if (predecessor.status === 'issued' && !reason?.trim()) {
       throw new BadRequestError('Give a short reason — it is recorded on the cancelled receipt.');
@@ -831,10 +947,13 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
   // ── Refund hook (called from DonationsController.reverseDonation, same transaction) ─────────
 
   /**
-   * A receipted gift was refunded or charged back: no receipt covering it may stand. Per-gift
-   * receipts cancel outright; cumulative receipts cancel AND flag reissue_required (an immutable
-   * receipt cannot shrink — a human confirms the corrected total via reissue); statements cancel
-   * and come back on the next batch rerun.
+   * A gift was refunded or charged back: no document covering it may stand. Acknowledgements and
+   * per-gift receipts cancel outright; cumulative receipts cancel AND flag reissue_required (an
+   * immutable receipt cannot shrink — a human confirms the corrected total via reissue); statements
+   * cancel and come back on the next batch rerun.
+   *
+   * The acknowledgement is included on purpose. It says a gift was received, which stops being true
+   * the moment the money goes back, and it is the one document the donor is guaranteed to hold.
    */
   public async cancelReceiptsForReversedDonation(
     trx: Transaction<Models>,
@@ -847,7 +966,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     for (const receipt of live) {
       const isCumulative = receipt.kind === 'cumulative';
       const reason =
-        receipt.kind === 'per_gift'
+        receipt.kind === 'per_gift' || receipt.kind === 'acknowledgement'
           ? `Donation ${verb}`
           : isCumulative
             ? `A covered donation was ${verb} — reissue required`
@@ -927,9 +1046,57 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     }
   }
 
-  /** Everything the render job needs to draw an official receipt from a stored row. */
+  /** Everything the render job needs to draw an acknowledgement from a stored row. */
+  public async buildPdfForAcknowledgement(tenantId: string, receipt: ReceiptRow): Promise<Buffer> {
+    const issuer = (
+      receipt.issuer_snapshot && typeof receipt.issuer_snapshot === 'object' ? receipt.issuer_snapshot : {}
+    ) as ReceiptIssuerSnapshot;
+    const items = await this.getRepo().getItems(tenantId, receipt.id);
+    const method = await this.donationsRepo.db
+      .selectFrom('donations as d')
+      .innerJoin('donation_receipt_items as dri', 'dri.donation_id', 'd.id')
+      .select('d.method')
+      .where('d.tenant_id', '=', tenantId)
+      .where('dri.tenant_id', '=', tenantId)
+      .where('dri.receipt_id', '=', receipt.id)
+      .executeTakeFirst();
+
+    const giftDate = receipt.gift_date ?? items[0]?.gift_date ?? receipt.issued_at;
+    const settings = await this.loadSettings(tenantId);
+
+    return buildAcknowledgementPdf({
+      number: receipt.receipt_number ?? String(receipt.id),
+      orgName: issuer.org_legal_name ?? '',
+      orgAddress: issuer.org_address,
+      donorName: receipt.donor_name,
+      donorAddressLines: this.donorAddressLines(receipt),
+      giftDate: torontoDateString(new Date(giftDate)),
+      issuedAt: new Date(receipt.issued_at),
+      amountCents: receipt.amount_cents,
+      method: method?.method ?? 'card',
+      currency: await this.workspaceCurrency(tenantId),
+      // Read live rather than frozen: a workspace that configures receipting in March should stop
+      // promising tax receipts on gifts it will never receipt, and start promising on ones it will.
+      taxReceiptExpected: Boolean(settings.regime && RECEIPT_REGIMES[settings.regime].issuance === 'internal'),
+      cancelled:
+        receipt.status === 'cancelled' && receipt.cancelled_at
+          ? { reason: receipt.cancelled_reason ?? '', at: new Date(receipt.cancelled_at) }
+          : null,
+    });
+  }
+
+  /**
+   * Everything the render job needs to draw an official TAX receipt from a stored row.
+   *
+   * Only for `per_gift` and `cumulative` rows. Acknowledgements go to buildAcknowledgementPdf and
+   * statements to buildStatementPdf; neither has a regime, and this layout is regime-driven
+   * throughout.
+   */
   public async buildPdfForReceipt(tenantId: string, receipt: ReceiptRow): Promise<Buffer> {
-    const spec = RECEIPT_REGIMES[receipt.regime as ReceiptRegimeId];
+    const spec = receipt.regime ? RECEIPT_REGIMES[receipt.regime as ReceiptRegimeId] : undefined;
+    if (!spec) {
+      throw new BadRequestError(`Receipt ${receipt.id} has no receipting regime and cannot be drawn as a tax receipt.`);
+    }
     const settings = await this.loadSettings(tenantId);
     const issuer = (
       receipt.issuer_snapshot && typeof receipt.issuer_snapshot === 'object' ? receipt.issuer_snapshot : {}
@@ -965,9 +1132,64 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
   }
 
   /**
-   * Create one donor's year-end statement row + items (no PDF, no email — the batch handler
-   * renders and delivers so the send-cap handling lives in one place). Returns null when the
-   * donor has nothing to state or already has a live statement (idempotent rerun).
+   * Whether this workspace can issue official cumulative TAX receipts at all, evaluated once per
+   * year-end batch execution rather than once per donor.
+   *
+   * Returns the settings when it can, null when it cannot — no regime chosen, the regime hands
+   * issuance to the electoral authority, or a required issuer field is blank. Null is not a failure:
+   * the batch then sends every donor a giving summary instead, which is the correct document for a
+   * workspace that does not issue tax receipts.
+   */
+  public async cumulativeIssuanceSettings(tenantId: string): Promise<ReceiptWorkspaceSettings | null> {
+    try {
+      // NO_CAMPAIGN because a cumulative receipt spans every campaign the donor gave to; see
+      // issueCumulativeReceipt for why no single campaign can answer for it.
+      const { settings } = await this.assertIssuable(tenantId, NO_CAMPAIGN);
+      return settings;
+    } catch (err) {
+      if (err instanceof PreconditionFailedError) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * One donor's year-end document: an official cumulative tax receipt when this workspace and this
+   * donor both qualify, otherwise an unnumbered giving summary.
+   *
+   * The choice is per donor, not per workspace. A charity with its receipting fully configured still
+   * has donors with no mailing address on file, and a tax receipt cannot be issued to them — they
+   * get the summary rather than nothing.
+   *
+   * No PDF and no email here; the batch handler renders and delivers, so send-cap handling lives in
+   * one place. Returns null when the donor has nothing to send.
+   */
+  public async generateYearEndDocumentForDonor(
+    tenantId: string,
+    personId: string,
+    year: number,
+    userId: string,
+    issuanceSettings: ReceiptWorkspaceSettings | null,
+  ): Promise<ReceiptRow | null> {
+    if (issuanceSettings) {
+      try {
+        return await this.insertCumulativeReceipt(tenantId, userId, personId, year, issuanceSettings, {});
+      } catch (err) {
+        // Nothing left to receipt, or this donor cannot be receipted (no address, advantage larger
+        // than the surviving gifts). Fall through to the summary — never leave the donor with
+        // nothing because one of them failed a tax-document rule.
+        if (!(err instanceof PreconditionFailedError || err instanceof ConflictError)) throw err;
+        logger.info({ tenantId, personId, year, reason: err.message }, 'Year-end: summary instead of a tax receipt');
+      }
+    }
+    return this.generateStatementForDonor(tenantId, personId, year, userId);
+  }
+
+  /**
+   * Create one donor's year-end statement row + items. Returns null when the donor has nothing to
+   * state or already has a live statement (idempotent rerun).
+   *
+   * A workspace with no receipting regime reaches here for every donor, and the statement row then
+   * carries a null regime — the summary asserts no tax treatment, so there is nothing to stamp.
    */
   public async generateStatementForDonor(
     tenantId: string,
@@ -976,7 +1198,6 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     userId: string,
   ): Promise<ReceiptRow | null> {
     const settings = await this.loadSettings(tenantId);
-    if (!settings.regime) return null; // the run mutation guards this; belt for direct calls
 
     const gifts = await this.getRepo().getSucceededDonationsForPersonYear(tenantId, personId, year);
     if (gifts.length === 0) return null;
@@ -984,8 +1205,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     const { donor } = await this.resolveDonor(tenantId, personId, gifts[0]);
     if (!donor) return null;
 
-    const orgRow = await this.settingsRepo.getByKey({ tenant_id: tenantId, key: 'organization.name' });
-    const orgName = settings.values.org_legal_name || (typeof orgRow?.value === 'string' ? orgRow.value : '');
+    const orgName = await this.resolveOrgName(tenantId, settings);
 
     try {
       return await this.getRepo()
@@ -996,7 +1216,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
             {
               tenant_id: tenantId,
               kind: 'statement',
-              regime: settings.regime as ReceiptRegimeId,
+              regime: settings.regime,
               year,
               serial: null,
               receipt_number: null,

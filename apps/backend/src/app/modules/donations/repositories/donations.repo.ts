@@ -4,15 +4,30 @@ import type { Models } from '../../../../../../../libs/common/src/lib/kysely.mod
 import { BaseRepository } from '../../../lib/base.repo';
 
 /**
- * Receipt coverage derived from donation_receipt_items ⋈ donation_receipts (statements never
- * count as coverage). 'receipted' = a live official receipt covers the gift; 'cancelled' = only
- * cancelled receipts cover it (needs attention / reissue); 'none' = never receipted.
+ * What document covers a gift, derived from donation_receipt_items ⋈ donation_receipts. Year-end
+ * summaries never count — they are not per-gift documents.
+ *
+ * The four states, in the order they win when several documents cover one gift:
+ *
+ * - `receipted` — a live official TAX receipt. The strongest thing a gift can have.
+ * - `cancelled` — only cancelled tax receipts cover it, so it needs attention or a reissue.
+ * - `acknowledged` — the plain acknowledgement every gift gets, and no tax receipt.
+ * - `none` — nothing at all. After acknowledgements this should be rare: it means the gift was
+ *   recorded before this feature existed, or its acknowledgement job has not run yet.
  */
 export interface DonationReceiptState {
-  receipt_status: 'receipted' | 'cancelled' | 'none';
+  receipt_status: 'receipted' | 'cancelled' | 'acknowledged' | 'none';
   receipt_id: string | null;
   receipt_number: string | null;
 }
+
+/** Strongest-first, so a later row only overwrites an earlier one when it outranks it. */
+const RECEIPT_STATE_RANK: Record<DonationReceiptState['receipt_status'], number> = {
+  receipted: 3,
+  cancelled: 2,
+  acknowledged: 1,
+  none: 0,
+};
 
 export class DonationsRepo extends BaseRepository<'donations'> {
   constructor() {
@@ -20,8 +35,11 @@ export class DonationsRepo extends BaseRepository<'donations'> {
   }
 
   /**
-   * Receipt state for a batch of donations in one query. Prefers the live (issued) receipt when
-   * one exists; otherwise reports the most recent cancelled one so the UI can offer reissue.
+   * Receipt state for a batch of donations in one query, strongest document per gift.
+   *
+   * A gift normally carries both an acknowledgement and, once the year-end run or the manual button
+   * has issued one, a tax receipt. The ranking picks the tax receipt in that case, so the ledger
+   * shows the document that matters most to the donor rather than whichever row sorted last.
    */
   public async getReceiptStateForDonations(
     tenantId: string,
@@ -33,7 +51,7 @@ export class DonationsRepo extends BaseRepository<'donations'> {
     const rows = await this.db
       .selectFrom('donation_receipt_items as dri')
       .innerJoin('donation_receipts as dr', 'dr.id', 'dri.receipt_id')
-      .select(['dri.donation_id', 'dr.id as receipt_id', 'dr.receipt_number', 'dr.status', 'dr.issued_at'])
+      .select(['dri.donation_id', 'dr.id as receipt_id', 'dr.receipt_number', 'dr.status', 'dr.kind', 'dr.issued_at'])
       .where('dri.tenant_id', '=', tenantId)
       .where('dr.tenant_id', '=', tenantId)
       .where('dr.kind', '!=', 'statement')
@@ -42,11 +60,15 @@ export class DonationsRepo extends BaseRepository<'donations'> {
       .execute();
 
     for (const row of rows) {
+      // A cancelled acknowledgement contributes nothing: the gift was reversed, and the tax-receipt
+      // states already carry "needs attention" for anything that did.
+      if (row.kind === 'acknowledgement' && row.status !== 'issued') continue;
+      const status: DonationReceiptState['receipt_status'] =
+        row.kind === 'acknowledgement' ? 'acknowledged' : row.status === 'issued' ? 'receipted' : 'cancelled';
       const existing = state.get(row.donation_id);
-      // Later rows overwrite earlier ones unless we'd replace a live receipt with a cancelled one.
-      if (existing?.receipt_status === 'receipted' && row.status !== 'issued') continue;
+      if (existing && RECEIPT_STATE_RANK[existing.receipt_status] >= RECEIPT_STATE_RANK[status]) continue;
       state.set(row.donation_id, {
-        receipt_status: row.status === 'issued' ? 'receipted' : 'cancelled',
+        receipt_status: status,
         receipt_id: row.receipt_id,
         receipt_number: row.receipt_number,
       });
@@ -54,7 +76,7 @@ export class DonationsRepo extends BaseRepository<'donations'> {
     return state;
   }
 
-  /** Merge receipt state onto donation rows (default 'none' for never-receipted gifts). */
+  /** Merge receipt state onto donation rows (default 'none' when no document covers the gift). */
   public async withReceiptState<T extends { id: string }>(
     tenantId: string,
     donations: T[],

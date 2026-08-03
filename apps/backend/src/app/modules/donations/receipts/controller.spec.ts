@@ -475,4 +475,207 @@ describe('DonationReceiptsController', () => {
     const status = await controller.getReceiptSettingsStatus(seed.tenantId);
     expect(status.complete).toBe(true);
   });
+
+  // ── Acknowledgements ────────────────────────────────────────────────────────
+
+  /**
+   * The point of the whole acknowledgement path: a workspace with NOTHING configured still thanks
+   * its donors. This deletes every receipts.* setting first, which is the state a municipal campaign
+   * or a United States committee is in permanently.
+   */
+  it('acknowledges a gift in a workspace with no receipting settings at all', async () => {
+    await db.deleteFrom('settings').where('tenant_id', '=', seed.tenantId).where('key', 'like', 'receipts.%').execute();
+    const donationId = await insertDonation(db, seed, 4200);
+
+    const { receipt } = await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId);
+    expect(receipt?.kind).toBe('acknowledgement');
+    expect(receipt?.regime).toBeNull();
+    expect(receipt?.receipt_number).toMatch(/^A-\d{4}-00001$/);
+    expect(receipt?.amount_cents).toBe(4200);
+    expect(receipt?.eligible_cents).toBe(4200);
+
+    // The render+email job is written in the same transaction as the acknowledgement.
+    const jobs = await db
+      .selectFrom('background_jobs')
+      .select('payload')
+      .where('tenant_id', '=', seed.tenantId)
+      .execute();
+    expect(jobs.some((j: { payload: unknown }) => JSON.stringify(j.payload).includes('render-receipt-pdf'))).toBe(true);
+  });
+
+  /** Issued once per gift; the job may run twice and must not produce two documents. */
+  it('acknowledges a gift only once', async () => {
+    const donationId = await insertDonation(db, seed, 1000);
+    const first = await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId);
+    const second = await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId);
+    expect(second.receipt?.id).toBe(first.receipt?.id);
+  });
+
+  /** An acknowledgement needs no mailing address; a tax receipt for the same gift still does. */
+  it('acknowledges a donor with no address on file, where a tax receipt is refused', async () => {
+    // Both address sources stripped: the donation's own snapshot and the donor's household.
+    const donationId = await insertDonation(db, seed, 9000, {
+      street: null,
+      city: null,
+      state: null,
+      zip: null,
+      country: null,
+    });
+    await db
+      .updateTable('households')
+      .set({ street_num: null, street1: null, city: null })
+      .where('id', '=', seed.householdId)
+      .execute();
+
+    const { receipt } = await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId);
+    expect(receipt).not.toBeNull();
+    expect(receipt?.donor_address_line1).toBeNull();
+    await expect(controller.issueReceipt(auth(), donationId, {})).rejects.toThrow(/no mailing address/);
+  });
+
+  /**
+   * Acknowledgement numbering must not disturb the official run — an auditor reconciling a year
+   * expects the tax-receipt serials to be 1, 2, 3 with nothing missing between them.
+   */
+  it('numbers acknowledgements from a separate counter, leaving tax-receipt serials untouched', async () => {
+    const d1 = await insertDonation(db, seed, 10000);
+    const d2 = await insertDonation(db, seed, 20000);
+    await controller.issueAcknowledgement(seed.tenantId, d1, seed.userId);
+    await controller.issueAcknowledgement(seed.tenantId, d2, seed.userId);
+
+    const r1 = await controller.issueReceipt(auth(), d1, {});
+    const r2 = await controller.issueReceipt(auth(), d2, {});
+    expect(r1.serial).toBe(1);
+    expect(r2.serial).toBe(2);
+
+    const counters = await db
+      .selectFrom('receipt_counters')
+      .select(['kind', 'n'])
+      .where('tenant_id', '=', seed.tenantId)
+      .orderBy('kind', 'asc')
+      .execute();
+    expect(counters).toEqual([
+      { kind: 'acknowledgement', n: 2 },
+      { kind: 'official', n: 2 },
+    ]);
+  });
+
+  /** A gift that already carries an acknowledgement is still un-receipted for tax purposes. */
+  it('does not let an acknowledgement count as tax-receipt coverage', async () => {
+    const donationId = await insertDonation(db, seed, 12000);
+    await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId);
+
+    const cumulative = await controller.issueCumulativeReceipt(auth(), seed.personId, new Date().getFullYear(), {});
+    expect(cumulative.amount_cents).toBe(12000);
+  });
+
+  it('cancels the acknowledgement when the gift is refunded', async () => {
+    const paymentIntentId = `pi_ack_${seed.tenantId}`;
+    const donationId = await insertDonation(db, seed, 3000, { stripe_payment_intent_id: paymentIntentId });
+    const { receipt } = await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId);
+
+    await new DonationsController().reverseDonation(seed.tenantId, seed.userId, {
+      paymentIntentId,
+      invoiceId: null,
+      status: 'refunded',
+    });
+    const after = await db
+      .selectFrom('donation_receipts')
+      .select(['status', 'cancelled_reason', 'reissue_required'])
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', receipt?.id)
+      .executeTakeFirstOrThrow();
+    expect(after.status).toBe('cancelled');
+    expect(after.reissue_required).toBe(false);
+    expect(after.cancelled_reason).toContain('refunded');
+  });
+
+  // ── Year-end run ────────────────────────────────────────────────────────────
+
+  /**
+   * The per-donor choice the year-end batch makes. Both donors are in one fully configured
+   * workspace; only the second lacks a mailing address, and only that one falls back to a summary.
+   * A workspace-level decision would give them both the same document, which is the bug this guards.
+   */
+  it('gives an addressed donor a tax receipt and an unaddressed one a summary, in the same run', async () => {
+    const year = new Date().getFullYear();
+    await insertDonation(db, seed, 15000);
+
+    // persons.household_id is NOT NULL, so "no address" means a household with no street or city.
+    const otherHouseholdId = rand();
+    const otherPersonId = rand();
+    await db
+      .insertInto('households')
+      .values({
+        id: otherHouseholdId,
+        tenant_id: seed.tenantId,
+        campaign_id: seed.campaignId,
+        createdby_id: seed.userId,
+        updatedby_id: seed.userId,
+      })
+      .execute();
+    await db
+      .insertInto('persons')
+      .values({
+        id: otherPersonId,
+        tenant_id: seed.tenantId,
+        campaign_id: seed.campaignId,
+        household_id: otherHouseholdId,
+        first_name: 'Nomail',
+        last_name: 'Address',
+        email: 'nomail@example.com',
+        createdby_id: seed.userId,
+        updatedby_id: seed.userId,
+      })
+      .execute();
+    await db
+      .insertInto('donations')
+      .values({
+        tenant_id: seed.tenantId,
+        campaign_id: seed.campaignId,
+        person_id: otherPersonId,
+        amount: 2500,
+        status: 'succeeded',
+        method: 'cash',
+        first_name: 'Nomail',
+        last_name: 'Address',
+        email: 'nomail@example.com',
+      })
+      .execute();
+
+    const issuance = await controller.cumulativeIssuanceSettings(seed.tenantId);
+    expect(issuance).not.toBeNull();
+
+    const addressed = await controller.generateYearEndDocumentForDonor(
+      seed.tenantId,
+      seed.personId,
+      year,
+      seed.userId,
+      issuance,
+    );
+    const unaddressed = await controller.generateYearEndDocumentForDonor(
+      seed.tenantId,
+      otherPersonId,
+      year,
+      seed.userId,
+      issuance,
+    );
+
+    expect(addressed?.kind).toBe('cumulative');
+    expect(addressed?.receipt_number).toMatch(/^T-\d{4}-\d{5}$/);
+    expect(unaddressed?.kind).toBe('statement');
+    expect(unaddressed?.serial).toBeNull();
+  });
+
+  /** No regime configured is a normal state, and those donors must still get their summary. */
+  it('sends summaries from a workspace with no receipting regime', async () => {
+    await db.deleteFrom('settings').where('tenant_id', '=', seed.tenantId).where('key', 'like', 'receipts.%').execute();
+    await insertDonation(db, seed, 6000);
+    const year = new Date().getFullYear();
+
+    expect(await controller.cumulativeIssuanceSettings(seed.tenantId)).toBeNull();
+    const doc = await controller.generateYearEndDocumentForDonor(seed.tenantId, seed.personId, year, seed.userId, null);
+    expect(doc?.kind).toBe('statement');
+    expect(doc?.regime).toBeNull();
+  });
 });

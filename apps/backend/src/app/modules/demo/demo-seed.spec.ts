@@ -809,17 +809,30 @@ describe('demo seeding and exit-demo', () => {
       }
     });
 
-    it('seeds no Canadian charity receipts into a United States workspace', async () => {
+    /**
+     * A Canada Revenue Agency receipt issued from a Chicago address would be a false document, so
+     * no TAX receipt and no receipts.* setting reaches a United States workspace. Acknowledgements
+     * are the opposite case: they assert no tax treatment, need no regime, and are exactly what a
+     * United States committee should be sending — so every gift still carries one.
+     */
+    it('seeds acknowledgements but no Canadian tax receipts into a United States workspace', async () => {
       const f = await seedFixture('nonprofit', {
         jurisdiction: 'us_local',
         office_region: 'IL',
         office_locality: 'Chicago',
         seat_name: 'Ward 49',
       });
-      expect(f.manifest.donation_receipts).toHaveLength(0);
       expect(f.manifest.receipt_settings_seeded).toBe(false);
-      // The gifts themselves are still there — only the official receipts are withheld.
       expect(f.manifest.donations.length).toBeGreaterThan(0);
+
+      const byKind = await ctx.trx
+        .selectFrom('donation_receipts')
+        .select(['kind'])
+        .where('tenant_id', '=', f.tenant_id)
+        .execute();
+      expect(byKind.filter((r) => r.kind !== 'acknowledgement')).toHaveLength(0);
+      expect(byKind.filter((r) => r.kind === 'acknowledgement')).toHaveLength(f.manifest.donations.length);
+
       const settings = await ctx.trx
         .selectFrom('settings')
         .select('key')
@@ -1331,11 +1344,12 @@ describe('demo seeding and exit-demo', () => {
       }
       expect(await count('campaign_subscriptions', f.tenant_id)).toBeGreaterThan(0);
 
-      // Every receipt the dataset describes becomes a receipt row and exactly one item row; a
-      // receipt whose donation index is out of range is skipped in silence, so counting is the
-      // only way to notice.
-      expect(await count('donation_receipts', f.tenant_id)).toBe(dataset.receipts.length);
-      expect(await count('donation_receipt_items', f.tenant_id)).toBe(dataset.receipts.length);
+      // Every gift is acknowledged, and every tax receipt the dataset describes becomes a row —
+      // each with exactly one item row. A tax receipt whose donation index is out of range is
+      // skipped in silence, so counting is the only way to notice.
+      const documents = dataset.donations.length + dataset.receipts.length;
+      expect(await count('donation_receipts', f.tenant_id)).toBe(documents);
+      expect(await count('donation_receipt_items', f.tenant_id)).toBe(documents);
       expect(await count('receipt_statement_runs', f.tenant_id)).toBe(dataset.statementRun ? 1 : 0);
     });
 
@@ -1376,12 +1390,13 @@ describe('demo seeding and exit-demo', () => {
    * created, so a receipt dated 65 days ago belongs to last year for anyone signing up in
    * January. The seeder therefore numbers by issue date, restarting at 1 in each year.
    */
-  it('numbers seeded receipts gap-free and forward in time, per issue year', async () => {
+  it('numbers seeded tax receipts gap-free and forward in time, per issue year', async () => {
     const f = await seedFixture('nonprofit');
     const receipts = await ctx.trx
       .selectFrom('donation_receipts')
       .select(['year', 'serial', 'receipt_number', 'issued_at', 'donor_address_line1', 'donor_city'])
       .where('tenant_id', '=', f.tenant_id)
+      .where('kind', 'in', ['per_gift', 'cumulative'])
       .orderBy('issued_at', 'asc')
       .execute();
     expect(receipts.length).toBeGreaterThan(0);
@@ -1403,10 +1418,51 @@ describe('demo seeding and exit-demo', () => {
       .selectFrom('receipt_counters')
       .select(['year', 'n'])
       .where('tenant_id', '=', f.tenant_id)
+      .where('kind', '=', 'official')
       .execute();
     for (const [year, highest] of nextByYear) {
       expect(counters.find((c) => c.year === year)?.n).toBe(highest);
     }
+  });
+
+  /**
+   * The screenshot this whole feature came from: a demo ledger reading "No receipt" on every row.
+   * Acknowledgements are unconditional in the live product, so a demo workspace that showed
+   * otherwise would be misrepresenting it. This asserts the seeder covers EVERY gift, numbers them
+   * from their own sequence, and — critically — does not touch the official counter while doing it.
+   */
+  it('acknowledges every seeded gift, from a sequence of its own', async () => {
+    const f = await seedFixture('campaign');
+    const acks = await ctx.trx
+      .selectFrom('donation_receipts')
+      .select(['id', 'kind', 'regime', 'serial', 'receipt_number', 'year'])
+      .where('tenant_id', '=', f.tenant_id)
+      .where('kind', '=', 'acknowledgement')
+      .orderBy('serial', 'asc')
+      .execute();
+
+    // The campaign workspace configures no receipting regime at all, and still acknowledges.
+    expect(f.manifest.receipt_settings_seeded).toBe(false);
+    expect(acks).toHaveLength(f.manifest.donations.length);
+    for (const ack of acks) {
+      expect(ack.regime).toBeNull();
+      expect(ack.receipt_number).toBe(`A-${ack.year}-${String(ack.serial).padStart(5, '0')}`);
+    }
+
+    // Every gift is covered exactly once.
+    const items = await ctx.trx
+      .selectFrom('donation_receipt_items')
+      .select(['donation_id'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    expect(new Set(items.map((i) => String(i.donation_id))).size).toBe(f.manifest.donations.length);
+
+    const counters = await ctx.trx
+      .selectFrom('receipt_counters')
+      .select(['kind', 'n'])
+      .where('tenant_id', '=', f.tenant_id)
+      .execute();
+    expect(counters.every((c) => c.kind === 'acknowledgement')).toBe(true);
   });
 
   /**

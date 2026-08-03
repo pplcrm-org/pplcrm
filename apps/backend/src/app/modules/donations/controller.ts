@@ -804,13 +804,6 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       .where('tenant_id', '=', tenantId)
       .executeTakeFirst();
 
-    // Auto-issue is read before the transaction; the job itself re-validates settings, so a
-    // half-configured workspace records the gift and simply gets no receipt (visible as
-    // "No receipt" in the ledger), never a failed donation.
-    const autoIssueReceipts =
-      Boolean(await this.getSettingVal(tenantId, 'receipts.auto_issue')) &&
-      Boolean(await this.getSettingVal(tenantId, 'receipts.regime'));
-
     const record = await this.getRepo()
       .db.transaction()
       .execute(async (trx) => {
@@ -839,25 +832,28 @@ export class DonationsController extends BaseController<'donations', DonationsRe
           .returningAll()
           .executeTakeFirstOrThrow()) as Selectable<Models['donations']>;
 
-        if (autoIssueReceipts) {
-          // Transactional outbox: the issue job exists only if the gift committed.
-          await trx
-            .insertInto('background_jobs')
-            .values({
+        // Every gift is acknowledged, unconditionally — no workspace setting, no receipting regime,
+        // no mailing address required. A donor who gives and hears nothing back assumes the payment
+        // failed. Official TAX receipts are a separate, year-end activity (or the manual button on
+        // the gift detail page); an acknowledgement makes no tax claim, so nothing gates it.
+        //
+        // Transactional outbox: the job exists only if the gift committed.
+        await trx
+          .insertInto('background_jobs')
+          .values({
+            tenant_id: tenantId,
+            queue: 'default',
+            status: 'pending',
+            payload: JSON.stringify({
+              type: 'issue-donation-acknowledgement',
               tenant_id: tenantId,
-              queue: 'default',
-              status: 'pending',
-              payload: JSON.stringify({
-                type: 'issue-donation-receipt',
-                tenant_id: tenantId,
-                donation_id: inserted.id,
-                user_id: userId,
-              }),
-              run_at: new Date(),
-              max_attempts: 3,
-            })
-            .execute();
-        }
+              donation_id: inserted.id,
+              user_id: userId,
+            }),
+            run_at: new Date(),
+            max_attempts: 3,
+          })
+          .execute();
 
         // "Donor" is derived from donations data (§15) — no tag to maintain.
 

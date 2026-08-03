@@ -1047,17 +1047,19 @@ const DONATIONS: DemoDonationDef[] = [
 ];
 
 /**
- * Official CRA receipts over DONATIONS (by index).
+ * Official CRA TAX receipts over DONATIONS (by index) — separate from, and in addition to, the
+ * acknowledgement the seeder writes for every gift in the ledger.
  *
- * The desk rule this data encodes: Bea issues a receipt by hand for every one-time gift of $100
- * or more, and everything below that — plus every monthly pledge charge — rolls into the year-end
- * giving statement instead. So the unreceipted gifts in the ledger are unreceipted for a reason a
- * user can work out, rather than looking like data someone forgot to finish.
+ * The desk rule this data encodes: Bea issues a tax receipt on request for a one-time gift of $100
+ * or more, and everything below that — plus every monthly pledge charge — waits for the year-end
+ * run. So a gift with no tax receipt is not a backlog: it is a gift whose donor has not asked and
+ * whose receipt comes in January.
  *
  * Two of them carry the cases a charity actually runs into: Nadia Petrov's benefit-dinner seat is
  * split into gift, advantage and eligible amount, and Claudia Reyes' $150 online gift is the one
- * the desk CANNOT receipt, because she has no mailing address on file and a CRA receipt requires
- * one. Church mode covers the cancel-and-replace pair; this dataset deliberately does not repeat it.
+ * the desk CANNOT tax-receipt, because she has no mailing address on file and a CRA receipt requires
+ * one. She is still acknowledged — an acknowledgement needs no address. Church mode covers the
+ * cancel-and-replace pair; this dataset deliberately does not repeat it.
  */
 const RECEIPTS: DemoReceiptDef[] = [
   { donation: 0, ref: 1, issuedDaysAgo: 3, emailed: false }, // margaret-shore $1,000 — prefers paper, gets mailed
@@ -1077,9 +1079,11 @@ const RECEIPTS: DemoReceiptDef[] = [
 ];
 
 /**
- * CRA charitable receipting for a small charity that issues by hand rather than automatically:
- * `auto_issue` is off, so gifts land in the ledger unreceipted and Bea works through them. (Church
- * mode is the auto-issue example — running both ways across the datasets is deliberate.)
+ * CRA charitable receipting for a small charity.
+ *
+ * Every gift here is acknowledged automatically, like everywhere else; these settings are what let
+ * Bea also issue an official TAX receipt on request, and what the year-end run will use to issue
+ * them in bulk.
  *
  * The registered address is written with the Canadian pack's city on purpose. These settings are
  * seeded ONLY into a Canadian workspace — every receipt regime the product implements is Canadian,
@@ -1089,8 +1093,6 @@ const RECEIPTS: DemoReceiptDef[] = [
  */
 const RECEIPT_SETTINGS: Record<string, string | boolean> = {
   'receipts.regime': 'cra_charity',
-  'receipts.mode': 'per_gift',
-  'receipts.auto_issue': false,
   'receipts.org_legal_name': 'Rideau Community Table',
   'receipts.org_address': `1064 Wellington Street West, ${CANADA_PLACE_PACK.city}, ${CANADA_PLACE_PACK.state}`,
   'receipts.registration_number': '867539021 RR 0001',

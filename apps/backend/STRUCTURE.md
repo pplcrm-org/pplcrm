@@ -41,6 +41,8 @@ apps/
           2026-08-02-d-turf-boundaries.ts
           2026-08-02-e-drop-legacy-geography.ts
           2026-08-02-f-boundary-match-convergence.ts
+          2026-08-02-g-donation-acknowledgements.ts
+          2026-08-02-h-receipt-serial-per-sequence.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -100,6 +102,7 @@ apps/
             transactional-send-guard.ts
             volunteer-link-notify.ts
           pdf/
+            acknowledgement-pdf.ts
             pdf-common.ts
             receipt-pdf.ts
             statement-pdf.ts

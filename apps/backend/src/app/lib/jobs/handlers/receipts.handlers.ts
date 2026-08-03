@@ -14,10 +14,10 @@ import { notificationEnabled } from '../../profile-preferences';
 import type { JobPayloadOf } from '../job-payloads';
 
 /**
- * Donation-receipt jobs: auto-issue after a gift commits, PDF render + donor email for one
- * receipt, and the year-end statement batch. All PDF and mail work lives here in the worker —
- * attachments only exist on the direct sendMail path, and payment webhooks / tRPC mutations must
- * never wait on (or fail because of) a PDF.
+ * Donation-document jobs: acknowledge a gift the moment it commits, render + email one document,
+ * and the year-end batch. All PDF and mail work lives here in the worker — attachments only exist
+ * on the direct sendMail path, and payment webhooks / tRPC mutations must never wait on (or fail
+ * because of) a PDF.
  */
 
 /** Donors handled per execution before yielding the worker slot (newsletter-batch rationale). */
@@ -27,28 +27,31 @@ const RATE_CAP_DEFER_MS = 20 * 60 * 1000;
 
 const mailService = new TransactionalEmailService({ defaultAudience: 'contact' });
 
-// ── Auto-issue ──────────────────────────────────────────────────────────────
+// ── Acknowledge a gift ──────────────────────────────────────────────────────
 
-export async function handleIssueDonationReceipt(job: JobPayloadOf<'issue-donation-receipt'>): Promise<void> {
+export async function handleIssueDonationAcknowledgement(
+  job: JobPayloadOf<'issue-donation-acknowledgement'>,
+): Promise<void> {
   const controller = new DonationReceiptsController();
-  const { receipt, skipped } = await controller.tryAutoIssue(job.tenant_id, job.donation_id, job.user_id);
+  const { receipt, skipped } = await controller.issueAcknowledgement(job.tenant_id, job.donation_id, job.user_id);
   if (receipt) {
     logger.info(
-      { tenantId: job.tenant_id, donationId: job.donation_id, receiptNumber: receipt.receipt_number },
-      'Auto-issued donation receipt',
+      { tenantId: job.tenant_id, donationId: job.donation_id, number: receipt.receipt_number },
+      'Acknowledged donation',
     );
   } else {
-    // Deliberately success, not failure: a retry cannot complete half-finished settings, and the
-    // gift stays visibly unreceipted in the ledger.
-    logger.info({ tenantId: job.tenant_id, donationId: job.donation_id, skipped }, 'Auto-issue skipped');
+    // Deliberately success, not failure: the reasons an acknowledgement is skipped (gift reversed,
+    // no donor linked) are not fixed by retrying.
+    logger.info({ tenantId: job.tenant_id, donationId: job.donation_id, skipped }, 'Acknowledgement skipped');
   }
 }
 
-// ── Render + deliver one receipt ────────────────────────────────────────────
+// ── Render + deliver one document ───────────────────────────────────────────
 
 function receiptFilename(receipt: ReceiptRow): string {
   if (receipt.kind === 'statement') return `Giving-statement-${receipt.year}.pdf`;
-  return `Receipt-${(receipt.receipt_number ?? String(receipt.id)).replace(/[^A-Za-z0-9-]/g, '')}.pdf`;
+  const number = (receipt.receipt_number ?? String(receipt.id)).replace(/[^A-Za-z0-9-]/g, '');
+  return receipt.kind === 'acknowledgement' ? `Donation-receipt-${number}.pdf` : `Receipt-${number}.pdf`;
 }
 
 async function buildPdf(
@@ -56,6 +59,7 @@ async function buildPdf(
   tenantId: string,
   receipt: ReceiptRow,
 ): Promise<Buffer> {
+  if (receipt.kind === 'acknowledgement') return controller.buildPdfForAcknowledgement(tenantId, receipt);
   if (receipt.kind !== 'statement') return controller.buildPdfForReceipt(tenantId, receipt);
 
   const issuer = (
@@ -77,10 +81,33 @@ async function buildPdf(
   });
 }
 
+/** Donor-facing subject and opening line, by document kind. */
+function donorMailCopy(receipt: ReceiptRow, orgName: string): { subject: string; intro: string } {
+  switch (receipt.kind) {
+    case 'statement':
+      return {
+        subject: `Your ${receipt.year} giving statement from ${orgName}`,
+        intro: `Attached is your giving statement for ${receipt.year} — a summary of your gifts to ${orgName}.`,
+      };
+    case 'acknowledgement':
+      return {
+        subject: `Your donation receipt from ${orgName}`,
+        intro:
+          `Thank you for your gift to ${orgName}. Your receipt ${receipt.receipt_number ?? ''} is attached. ` +
+          'It is not an official receipt for income tax purposes.',
+      };
+    default:
+      return {
+        subject: `Your official tax receipt from ${orgName}`,
+        intro: `Thank you for your gift to ${orgName}. Your official receipt ${receipt.receipt_number ?? ''} is attached.`,
+      };
+  }
+}
+
 /**
- * Idempotent render-then-email for one receipt/statement: a retry re-enters wherever it left
- * off (file exists → skip to email; emailed_at set → done). Returns what happened; rethrows
- * TransactionalSendBlockedError so the statement batch can defer on the hourly cap.
+ * Idempotent render-then-email for one document: a retry re-enters wherever it left off (file
+ * exists → skip to email; emailed_at set → done). Returns what happened; rethrows
+ * TransactionalSendBlockedError so the caller can decide between deferring and dropping.
  */
 export async function renderAndDeliverReceipt(
   db: Kysely<Models>,
@@ -128,13 +155,7 @@ export async function renderAndDeliverReceipt(
     current.issuer_snapshot && typeof current.issuer_snapshot === 'object' ? current.issuer_snapshot : {}
   ) as { org_legal_name?: string };
   const orgName = issuer.org_legal_name || 'the organization';
-  const isStatement = current.kind === 'statement';
-  const subject = isStatement
-    ? `Your ${current.year} giving statement from ${orgName}`
-    : `Your donation receipt from ${orgName}`;
-  const intro = isStatement
-    ? `Attached is your giving statement for ${current.year} — a summary of your gifts to ${orgName}.`
-    : `Thank you for your gift to ${orgName}. Your receipt ${current.receipt_number ?? ''} is attached.`;
+  const { subject, intro } = donorMailCopy(current, orgName);
 
   await mailService.sendMail({
     to: current.donor_email,
@@ -161,6 +182,30 @@ export async function handleRenderReceiptPdf(
     logger.info({ tenantId: job.tenant_id, receiptId: job.receipt_id, outcome }, 'Receipt PDF render job finished');
   } catch (err) {
     if (err instanceof TransactionalSendBlockedError) {
+      const receipt = await new ReceiptsRepo().getReceiptById(job.tenant_id, job.receipt_id);
+      // Acknowledgements are the exception to the guard's drop-don't-retry contract. A donor who
+      // gives online and hears nothing back assumes the payment failed, so a send blocked by the
+      // ROLLING hourly cap is retried once the window moves. A send blocked because the workspace
+      // is suspended or paused is not a rolling condition and is still dropped — the PDF is stored
+      // either way, so staff can always download and send it by hand.
+      if (receipt?.kind === 'acknowledgement' && err.reason === 'rate_capped') {
+        await db
+          .insertInto('background_jobs')
+          .values({
+            tenant_id: job.tenant_id,
+            queue: 'default',
+            status: 'pending',
+            payload: JSON.stringify(job),
+            run_at: new Date(Date.now() + RATE_CAP_DEFER_MS),
+            max_attempts: 3,
+          })
+          .execute();
+        logger.warn(
+          { tenantId: job.tenant_id, receiptId: job.receipt_id },
+          'Acknowledgement email hit the hourly cap — deferred',
+        );
+        return;
+      }
       // Guard contract: drop, don't retry — the PDF is stored; staff can download and send it.
       logger.warn({ tenantId: job.tenant_id, receiptId: job.receipt_id, err: err.message }, 'Receipt email withheld');
       return;
@@ -178,6 +223,7 @@ async function updateRunCounters(
   set: Partial<{
     cursor_person_id: string | null;
     generated_count: number;
+    official_count: number;
     emailed_count: number;
     skipped_no_email: number;
     failed_count: number;
@@ -212,7 +258,11 @@ async function enqueueContinuation(
     .execute();
 }
 
-/** Statements generated but not yet emailed (donor has an email) — heals cap-interrupted donors. */
+/**
+ * Year-end documents generated but not yet emailed (donor has an email) — heals cap-interrupted
+ * donors. Covers both kinds the run produces: a cap can interrupt after a tax receipt is written
+ * just as easily as after a summary.
+ */
 async function emailPendingStatements(
   db: Kysely<Models>,
   tenantId: string,
@@ -223,7 +273,7 @@ async function emailPendingStatements(
     .selectFrom('donation_receipts')
     .select(['id'])
     .where('tenant_id', '=', tenantId)
-    .where('kind', '=', 'statement')
+    .where('kind', 'in', ['statement', 'cumulative'])
     .where('year', '=', year)
     .where('status', '=', 'issued')
     .where('emailed_at', 'is', null)
@@ -272,22 +322,36 @@ export async function handleRunYearEndStatements(
 
   const counters = {
     generated: run.generated_count,
+    official: run.official_count,
     emailed: run.emailed_count,
     skippedNoEmail: run.skipped_no_email,
     failed: run.failed_count,
   };
   let cursor = job.cursor ?? run.cursor_person_id ?? null;
 
+  // Whether this workspace can issue official tax receipts at all, decided ONCE for the execution:
+  // the check reads every receipts.* setting, and per donor it would repeat that read for the whole
+  // workspace. Null means every donor gets a giving summary instead, which is the right document
+  // for a workspace that issues no tax receipts.
+  const issuanceSettings = await controller.cumulativeIssuanceSettings(tenantId);
+
   try {
-    // First, deliver statements a previous execution generated but could not email (cap hit).
+    // First, deliver documents a previous execution generated but could not email (cap hit).
     counters.emailed += await emailPendingStatements(db, tenantId, job.year, job.user_id);
 
     const donors = await repo.listStatementDonors(tenantId, job.year, cursor, STATEMENT_BATCH_DONORS);
     for (const { person_id } of donors) {
       try {
-        const receipt = await controller.generateStatementForDonor(tenantId, person_id, job.year, job.user_id);
+        const receipt = await controller.generateYearEndDocumentForDonor(
+          tenantId,
+          person_id,
+          job.year,
+          job.user_id,
+          issuanceSettings,
+        );
         if (receipt) {
           counters.generated += 1;
+          if (receipt.kind === 'cumulative') counters.official += 1;
           const outcome = await renderAndDeliverReceipt(db, tenantId, receipt.id, {
             email: true,
             userId: job.user_id,
@@ -298,12 +362,13 @@ export async function handleRunYearEndStatements(
       } catch (err) {
         if (err instanceof TransactionalSendBlockedError) throw err; // handled below — defer
         counters.failed += 1;
-        logger.error({ err, tenantId, personId: person_id, year: job.year }, 'Statement generation failed for donor');
+        logger.error({ err, tenantId, personId: person_id, year: job.year }, 'Year-end document failed for donor');
       }
       cursor = person_id;
       await updateRunCounters(db, tenantId, job.run_id, {
         cursor_person_id: cursor,
         generated_count: counters.generated,
+        official_count: counters.official,
         emailed_count: counters.emailed,
         skipped_no_email: counters.skippedNoEmail,
         failed_count: counters.failed,
@@ -321,6 +386,7 @@ export async function handleRunYearEndStatements(
       await updateRunCounters(db, tenantId, job.run_id, {
         cursor_person_id: cursor,
         generated_count: counters.generated,
+        official_count: counters.official,
         emailed_count: counters.emailed,
         skipped_no_email: counters.skippedNoEmail,
         failed_count: counters.failed,
@@ -336,7 +402,7 @@ export async function handleRunYearEndStatements(
     .selectFrom('donation_receipts')
     .select(({ fn }) => [fn.countAll<string | number>().as('total')])
     .where('tenant_id', '=', tenantId)
-    .where('kind', '=', 'statement')
+    .where('kind', 'in', ['statement', 'cumulative'])
     .where('year', '=', job.year)
     .where('status', '=', 'issued')
     .where('donor_email', 'is', null)
@@ -347,6 +413,7 @@ export async function handleRunYearEndStatements(
     status: 'completed',
     cursor_person_id: null,
     generated_count: counters.generated,
+    official_count: counters.official,
     emailed_count: counters.emailed,
     skipped_no_email: counters.skippedNoEmail,
     failed_count: counters.failed,
@@ -359,7 +426,7 @@ async function notifyRunComplete(
   db: Kysely<Models>,
   tenantId: string,
   job: JobPayloadOf<'run-year-end-statements'>,
-  counters: { generated: number; emailed: number; skippedNoEmail: number; failed: number },
+  counters: { generated: number; official: number; emailed: number; skippedNoEmail: number; failed: number },
 ): Promise<void> {
   try {
     const user = await db
@@ -370,8 +437,10 @@ async function notifyRunComplete(
       .executeTakeFirst();
     if (!user) return;
 
+    const summaries = counters.generated - counters.official;
     const summary =
-      `${counters.generated} statements generated, ${counters.emailed} emailed` +
+      `${counters.official} official tax receipts and ${summaries} giving summaries generated, ` +
+      `${counters.emailed} emailed` +
       (counters.skippedNoEmail > 0 ? `, ${counters.skippedNoEmail} to print (no email on file)` : '') +
       (counters.failed > 0 ? `, ${counters.failed} failed` : '') +
       '.';

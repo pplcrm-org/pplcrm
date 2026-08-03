@@ -62,10 +62,20 @@ const HOUR_MS = 60 * 60 * 1000;
 
 type Db = Kysely<Models> | Transaction<Models>;
 
+/**
+ * Why a send was blocked. The distinction matters to callers deciding between dropping and
+ * retrying: 'rate_capped' clears by itself as the rolling hour moves, while 'suspended' and
+ * 'sending_paused' are standing states that a retry cannot resolve.
+ */
+export type TransactionalSendBlockReason = 'suspended' | 'sending_paused' | 'rate_capped';
+
 export class TransactionalSendBlockedError extends Error {
-  constructor(message: string) {
+  public readonly reason: TransactionalSendBlockReason;
+
+  constructor(message: string, reason: TransactionalSendBlockReason = 'suspended') {
     super(message);
     this.name = 'TransactionalSendBlockedError';
+    this.reason = reason;
   }
 }
 
@@ -94,12 +104,18 @@ export async function assertTenantMaySendTransactional(
     .executeTakeFirst();
 
   if (tenant?.suspended_at) {
-    throw new TransactionalSendBlockedError(`Tenant ${tenantId} is suspended — transactional mail withheld.`);
+    throw new TransactionalSendBlockedError(
+      `Tenant ${tenantId} is suspended — transactional mail withheld.`,
+      'suspended',
+    );
   }
   // A pause is the tripwire response to a bounce/complaint spike. Continuing to emit
   // audience-facing mail through a second pipe would defeat it.
   if (audience === 'contact' && tenant?.sending_paused_at) {
-    throw new TransactionalSendBlockedError(`Tenant ${tenantId} has sending paused — transactional mail withheld.`);
+    throw new TransactionalSendBlockedError(
+      `Tenant ${tenantId} has sending paused — transactional mail withheld.`,
+      'sending_paused',
+    );
   }
 
   const cap = HOURLY_CAPS[audience];
@@ -113,6 +129,7 @@ export async function assertTenantMaySendTransactional(
     );
     throw new TransactionalSendBlockedError(
       `Tenant ${tenantId} exceeded the hourly ${audience} mail cap (${cap}) — message withheld.`,
+      'rate_capped',
     );
   }
 }
