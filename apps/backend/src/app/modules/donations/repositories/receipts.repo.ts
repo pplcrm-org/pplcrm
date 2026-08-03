@@ -255,6 +255,46 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
       .execute();
   }
 
+  /**
+   * Succeeded gifts that carry no live acknowledgement — the backfill's work list.
+   *
+   * Every gift recorded since acknowledgements existed already has one, so on a healthy workspace
+   * this returns nothing and the backfill finishes in one pass. It exists for the gifts recorded
+   * before, which would otherwise never be acknowledged: the document is written by a job enqueued
+   * at the moment a gift is recorded, and nothing revisits older rows.
+   *
+   * Ascending id keyset rather than OFFSET, so a gift arriving mid-run cannot push another past a
+   * page boundary unseen.
+   */
+  public async listUnacknowledgedDonations(
+    tenantId: string,
+    afterDonationId: string | null,
+    limit: number,
+  ): Promise<{ id: string }[]> {
+    let query = this.db
+      .selectFrom('donations')
+      .select('id')
+      .where('tenant_id', '=', tenantId)
+      .where('status', '=', 'succeeded')
+      .where('person_id', 'is not', null)
+      .where(({ eb, not, exists }) =>
+        not(
+          exists(
+            eb
+              .selectFrom('donation_receipt_items as dri')
+              .innerJoin('donation_receipts as dr', 'dr.id', 'dri.receipt_id')
+              .select('dri.id')
+              .whereRef('dri.donation_id', '=', 'donations.id')
+              .whereRef('dri.tenant_id', '=', 'donations.tenant_id')
+              .where('dr.kind', '=', 'acknowledgement')
+              .where('dr.status', '=', 'issued'),
+          ),
+        ),
+      );
+    if (afterDonationId) query = query.where('id', '>', afterDonationId);
+    return query.orderBy('id', 'asc').limit(limit).execute();
+  }
+
   /** The receipts/statements list with donor names, filterable; newest first. */
   public async listReceipts(
     tenantId: string,

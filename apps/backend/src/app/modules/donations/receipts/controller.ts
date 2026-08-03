@@ -532,6 +532,12 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     tenantId: string,
     donationId: string,
     userId: string,
+    /**
+     * `email: false` stores the PDF and sends nothing. Used by the backfill over gifts recorded
+     * before acknowledgements existed: mailing a donor a receipt for a gift from four months ago
+     * is worse than the gap it fills.
+     */
+    opts: { email?: boolean } = {},
   ): Promise<{ receipt: ReceiptRow | null; skipped?: string }> {
     const donation = await this.donationsRepo.db
       .selectFrom('donations')
@@ -604,7 +610,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           [{ donation_id: donationId, amount_cents: donation.amount, gift_date: giftDate }],
         );
 
-        await this.enqueueRenderJob(trx, tenantId, row.id, userId, true);
+        await this.enqueueRenderJob(trx, tenantId, row.id, userId, opts.email ?? true);
         return row;
       });
 

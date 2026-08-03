@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BaseRepository } from '../../../lib/base.repo';
 import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../../lib/test-utils/exclusive-db-lock';
 import { DonationsController } from '../controller';
+import { ReceiptsRepo } from '../repositories/receipts.repo';
 import { DonationReceiptsController } from './controller';
 
 // Issue flows commit real transactions against the shared Postgres (the counter's row lock IS
@@ -558,6 +559,38 @@ describe('DonationReceiptsController', () => {
       { kind: 'acknowledgement', n: 2 },
       { kind: 'official', n: 2 },
     ]);
+  });
+
+  /**
+   * The backfill's two requirements: it finds the gifts nothing has acknowledged, and it does not
+   * mail anyone. A donor receiving a receipt for a gift from four months ago would be worse than
+   * the gap being filled, so the stored render job must carry email:false.
+   */
+  it('backfills an old gift without emailing the donor', async () => {
+    const donationId = await insertDonation(db, seed, 7700);
+    const repo = new ReceiptsRepo();
+
+    const pending = await repo.listUnacknowledgedDonations(seed.tenantId, null, 100);
+    expect(pending.map((g) => String(g.id))).toEqual([donationId]);
+
+    const { receipt } = await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId, {
+      email: false,
+    });
+    expect(receipt).not.toBeNull();
+
+    const jobs = await db
+      .selectFrom('background_jobs')
+      .select('payload')
+      .where('tenant_id', '=', seed.tenantId)
+      .execute();
+    const renderJobs = jobs
+      .map((j: { payload: unknown }) => j.payload as { type?: string; email?: boolean })
+      .filter((p) => p.type === 'render-receipt-pdf');
+    expect(renderJobs).toHaveLength(1);
+    expect(renderJobs[0].email).toBe(false);
+
+    // Acknowledged now, so a second sweep has nothing left to do.
+    expect(await repo.listUnacknowledgedDonations(seed.tenantId, null, 100)).toHaveLength(0);
   });
 
   /** A gift that already carries an acknowledgement is still un-receipted for tax purposes. */

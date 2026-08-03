@@ -46,6 +46,57 @@ export async function handleIssueDonationAcknowledgement(
   }
 }
 
+/** Gifts acknowledged per execution before yielding the worker slot. */
+const BACKFILL_BATCH_GIFTS = 100;
+
+/**
+ * One-time sweep giving a receipt to gifts recorded before acknowledgements existed.
+ *
+ * Nothing is emailed. The PDF is stored and the row appears in the ledger, which is the whole
+ * point — a donor receiving a receipt for a gift from four months ago would be worse than the gap.
+ *
+ * Enqueued once per workspace by the migration that introduced it. On a workspace whose gifts are
+ * all already acknowledged, the first pass finds nothing and the job ends.
+ */
+export async function handleBackfillDonationAcknowledgements(
+  job: JobPayloadOf<'backfill-donation-acknowledgements'>,
+  db: Kysely<Models>,
+): Promise<void> {
+  const controller = new DonationReceiptsController();
+  const repo = new ReceiptsRepo();
+  const gifts = await repo.listUnacknowledgedDonations(job.tenant_id, job.cursor ?? null, BACKFILL_BATCH_GIFTS);
+  if (gifts.length === 0) {
+    logger.info({ tenantId: job.tenant_id }, 'Acknowledgement backfill finished');
+    return;
+  }
+
+  let acknowledged = 0;
+  let cursor = job.cursor ?? null;
+  for (const gift of gifts) {
+    const { receipt, skipped } = await controller.issueAcknowledgement(job.tenant_id, String(gift.id), job.user_id, {
+      email: false,
+    });
+    if (receipt) acknowledged += 1;
+    else logger.info({ tenantId: job.tenant_id, donationId: gift.id, skipped }, 'Backfill skipped a gift');
+    cursor = String(gift.id);
+  }
+  logger.info({ tenantId: job.tenant_id, acknowledged, cursor }, 'Acknowledgement backfill batch done');
+
+  // Always continue: a gift the loop skipped stays unacknowledged, so the cursor — not an empty
+  // result — is what moves the sweep forward. The next pass ends it when nothing is left.
+  await db
+    .insertInto('background_jobs')
+    .values({
+      tenant_id: job.tenant_id,
+      queue: 'default',
+      status: 'pending',
+      payload: JSON.stringify({ ...job, cursor }),
+      run_at: new Date(),
+      max_attempts: 3,
+    })
+    .execute();
+}
+
 // ── Render + deliver one document ───────────────────────────────────────────
 
 function receiptFilename(receipt: ReceiptRow): string {

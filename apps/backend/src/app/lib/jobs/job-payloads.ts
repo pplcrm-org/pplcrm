@@ -48,6 +48,15 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     email: z.boolean().default(true),
     user_id: idSchema.nullish(),
   }),
+  // One-time sweep over gifts recorded before acknowledgements existed. Stores each PDF and sends
+  // NO email — a donor should not receive a receipt for a gift from months ago. `cursor` carries
+  // the keyset resume point on continuation.
+  z.object({
+    type: z.literal('backfill-donation-acknowledgements'),
+    tenant_id: idSchema,
+    user_id: idSchema,
+    cursor: idSchema.nullish(),
+  }),
   // Year-end giving statement batch; cursor carries the keyset resume point on continuation.
   z.object({
     type: z.literal('run-year-end-statements'),

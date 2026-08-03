@@ -43,6 +43,7 @@ apps/
           2026-08-02-f-boundary-match-convergence.ts
           2026-08-02-g-donation-acknowledgements.ts
           2026-08-02-h-receipt-serial-per-sequence.ts
+          2026-08-03-a-backfill-donation-acknowledgements.ts
           schema.sql
         config/
           email-folders.config.ts

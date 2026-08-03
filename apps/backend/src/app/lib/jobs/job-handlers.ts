@@ -37,6 +37,7 @@ import {
 } from './handlers/notifications.handlers';
 import { handleOpsWatchdog, handleSendBugReportEmail } from './handlers/ops.handlers';
 import {
+  handleBackfillDonationAcknowledgements,
   handleIssueDonationAcknowledgement,
   handleRenderReceiptPdf,
   handleRunYearEndStatements,
@@ -78,6 +79,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
   switch (job.type) {
     case 'issue-donation-acknowledgement':
       await handleIssueDonationAcknowledgement(job);
+      break;
+    case 'backfill-donation-acknowledgements':
+      await handleBackfillDonationAcknowledgements(job, db);
       break;
     case 'render-receipt-pdf':
       await handleRenderReceiptPdf(job, db);
