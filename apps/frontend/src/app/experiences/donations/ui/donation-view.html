@@ -4,6 +4,7 @@
   [crumbs]="crumbs()"
   [isLoading]="isLoading() && !donation()"
   [hasRecord]="!initialized() || !!donation()"
+  [showActions]="false"
   [showDelete]="false"
 >
   @if (donation(); as d) {
