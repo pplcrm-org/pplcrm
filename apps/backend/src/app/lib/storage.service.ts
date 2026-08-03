@@ -93,6 +93,25 @@ export class StorageService {
     });
   }
 
+  /**
+   * Open the blob as a Node stream for piping straight to a reply. Use this for user-facing
+   * downloads of potentially large blobs (export CSVs, stored files): {@link download} buffers
+   * the whole blob — chunk array plus concat, ~2× the file — while this holds only one chunk
+   * at a time. `contentLength` is the blob's size as Azure reports it.
+   */
+  public async downloadStream(key: string): Promise<{ stream: NodeJS.ReadableStream; contentLength: number | null }> {
+    const blockBlobClient = this.containerClient.getBlockBlobClient(key);
+    const response = await blockBlobClient.download(0);
+    const stream = response.readableStreamBody;
+    if (!stream) {
+      throw new Error('No readable stream body in blob response');
+    }
+    return {
+      stream,
+      contentLength: typeof response.contentLength === 'number' ? response.contentLength : null,
+    };
+  }
+
   public async download(key: string): Promise<Buffer> {
     const blockBlobClient = this.containerClient.getBlockBlobClient(key);
     const downloadBlockBlobResponse = await blockBlobClient.download(0);

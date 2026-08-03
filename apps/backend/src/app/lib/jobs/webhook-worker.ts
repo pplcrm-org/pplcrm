@@ -26,6 +26,8 @@ const WEBHOOK_HEARTBEAT_MS = 5 * 60 * 1000;
  * retries through the normal path rather than being reclaimed underneath itself.
  */
 const WEBHOOK_TIMEOUT_MS = 2 * 60 * 1000;
+/** Longest stop() waits for in-flight events before continuing shutdown; matches the job worker. */
+const SHUTDOWN_DRAIN_DEADLINE_MS = 15_000;
 
 export class WebhookEventWorker {
   private isRunning = false;
@@ -87,9 +89,29 @@ export class WebhookEventWorker {
       logger.info(
         `Webhook Event Worker: Waiting for ${this.activeJobsCount} active events to process before shutting down...`,
       );
-      await new Promise<void>((resolve) => {
+      const drained = new Promise<void>((resolve) => {
         this.shutdownResolver = resolve;
       });
+
+      // Wait for a clean drain, but only up to the deadline. main.ts awaits this stop() BEFORE
+      // closing the HTTP server, so a wedged handler with no deadline would block the whole
+      // graceful shutdown until shutdown.ts force-exits, killing in-flight HTTP requests too.
+      // Events still 'processing' past the deadline are reclaimed by stale-event recovery.
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      const drainedInTime = await Promise.race([
+        drained.then(() => true),
+        new Promise<boolean>((resolve) => {
+          deadlineTimer = setTimeout(() => resolve(false), SHUTDOWN_DRAIN_DEADLINE_MS);
+          if (typeof deadlineTimer.unref === 'function') deadlineTimer.unref();
+        }),
+      ]);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+
+      if (!drainedInTime) {
+        logger.warn(
+          `Webhook Event Worker: ${this.activeJobsCount} events still processing at the drain deadline; continuing shutdown`,
+        );
+      }
     }
     logger.info('Webhook Event Worker stopped.');
   }

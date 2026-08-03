@@ -1,4 +1,5 @@
 import { BaseController } from '../../lib/base.controller';
+import { isRateLimited } from '../../lib/rate-limiter';
 import { VolunteerEventsRepo } from './repositories/volunteer-events.repo';
 import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
 import type { AddVolunteerShiftType, UpdateVolunteerShiftType } from '../../../../../../libs/common/src';
@@ -12,7 +13,8 @@ import { logger } from '../../logger';
 
 const DEFAULT_FIELDS = ['first_name', 'last_name', 'email', 'mobile', 'notes'];
 
-const ipSignupTimestamps = new Map<string, number[]>();
+// Counters live in the shared swept limiter (lib/rate-limiter) so distinct visitor IPs on this
+// public endpoint don't accumulate in-process for the life of the server.
 const SIGNUP_RATE_LIMIT_MAX = 5;
 const SIGNUP_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 
@@ -610,21 +612,11 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
     // 1. Rate limiting check. Keyed (workspace-API-key) submissions skip the per-IP window —
     // they come from one integration server and are rate-limited per tenant by the route.
     if (!opts?.skipIpRateLimit) {
-      const now = Date.now();
-      let timestamps = ipSignupTimestamps.get(clientIp) || [];
-      timestamps = timestamps.filter((t) => now - t < SIGNUP_RATE_LIMIT_WINDOW_MS);
-      if (timestamps.length >= SIGNUP_RATE_LIMIT_MAX) {
+      if (isRateLimited(`volunteer-signup:${clientIp}`, SIGNUP_RATE_LIMIT_MAX, SIGNUP_RATE_LIMIT_WINDOW_MS)) {
         throw new TRPCError({
           code: 'TOO_MANY_REQUESTS',
           message: 'Rate limit exceeded. Please try again in a minute.',
         });
-      }
-      timestamps.push(now);
-      // Prune the key if empty to prevent unbounded Map growth across long-lived processes
-      if (timestamps.length > 0) {
-        ipSignupTimestamps.set(clientIp, timestamps);
-      } else {
-        ipSignupTimestamps.delete(clientIp);
       }
     }
 

@@ -163,6 +163,9 @@ export function buildRawMime(options: {
   return Buffer.from(rawMimeString, 'utf-8');
 }
 
+// Total attachment bytes accepted for one outbound email (see the send route's multipart loop).
+const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
 const storageService = new StorageService();
 
 /** A file already uploaded to storage, ready to be persisted as an email attachment. */
@@ -422,9 +425,21 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
     const fields: Record<string, string> = {};
     const files: Array<{ filename: string; fieldname: string; mimetype: string; buffer: Buffer }> = [];
 
+    // Reject oversized sends while reading parts, before the whole set is buffered. The global
+    // multipart config allows 10 × 50 MB, but Gmail rejects raw messages near 35 MB and Graph is
+    // similar — and the Gmail path re-encodes the full message as base64 (+33%), so anything
+    // above this cap could only fail later at the provider after the memory was already spent.
+    let totalAttachmentBytes = 0;
     for await (const part of parts) {
       if (part.type === 'file') {
         const buffer = await part.toBuffer();
+        totalAttachmentBytes += buffer.length;
+        if (totalAttachmentBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+          return reply.status(413).send({
+            status: 'error',
+            message: `Attachments exceed the ${Math.floor(MAX_TOTAL_ATTACHMENT_BYTES / (1024 * 1024))} MB total limit for one email.`,
+          });
+        }
         files.push({
           filename: part.filename,
           fieldname: part.fieldname,
@@ -689,11 +704,10 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
             })),
           });
 
-          const rawBase64Url = rawMessageBuffer
-            .toString('base64')
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
+          // base64url is the unpadded URL-safe alphabet Gmail expects; encoding it directly
+          // avoids materializing the padded base64 string plus three .replace() copies of the
+          // whole message.
+          const rawBase64Url = rawMessageBuffer.toString('base64url');
 
           const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
             method: 'POST',

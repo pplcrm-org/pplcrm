@@ -38,10 +38,15 @@ const exportsDownloadRoute: FastifyPluginCallback = (fastify, _, done) => {
     }
 
     try {
-      const buffer = await storageService.download(exportRecord.storage_key);
+      // The export job streams arbitrarily large CSVs into storage, so the download must
+      // stream back out — buffering here would cost ~2× the file per request.
+      const { stream, contentLength } = await storageService.downloadStream(exportRecord.storage_key);
       reply.type('text/csv; charset=utf-8');
       reply.header('Content-Disposition', attachmentDisposition(exportRecord.file_name));
-      return reply.send(buffer);
+      if (contentLength != null) {
+        reply.header('Content-Length', contentLength);
+      }
+      return reply.send(stream);
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ error: 'Failed to stream export file' });

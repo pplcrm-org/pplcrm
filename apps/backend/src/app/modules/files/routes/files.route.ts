@@ -55,12 +55,15 @@ const filesRoute: FastifyPluginCallback = (fastify, _, done) => {
     }
 
     try {
-      const buffer = await storageService.download(file.storage_key);
+      const { stream, contentLength } = await storageService.downloadStream(file.storage_key);
       reply.type(file.mime_type || 'application/octet-stream');
       reply.header('Content-Disposition', attachmentDisposition(file.filename));
+      if (contentLength != null) {
+        reply.header('Content-Length', contentLength);
+      }
       // Private: these files are tenant-scoped and token-gated — never allow shared caches.
       reply.header('Cache-Control', 'private, max-age=31536000, immutable');
-      return reply.send(buffer);
+      return reply.send(stream);
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ error: 'Failed to download file' });

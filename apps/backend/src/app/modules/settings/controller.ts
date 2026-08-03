@@ -72,6 +72,23 @@ const tenantVerificationTimestamps = new Map<string, number[]>(); // key: tenant
 const domainVerificationTimestamps = new Map<string, number>(); // key: `${tenant_id}:${domain}`, value: timestamp
 const tenantDomainVerificationTimestamps = new Map<string, number[]>(); // key: tenant_id, value: array of timestamps
 
+// The per-address/per-domain maps are keyed by caller-supplied values, so without eviction they
+// grow for the life of the process. Sweep entries older than the 1-minute throttle window. (The
+// two per-tenant maps are bounded by tenant count and are left alone.)
+const THROTTLE_WINDOW_MS = 60 * 1000;
+const THROTTLE_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+let lastThrottleSweep = Date.now();
+
+function sweepVerificationThrottles(now: number): void {
+  if (now - lastThrottleSweep < THROTTLE_SWEEP_INTERVAL_MS) return;
+  lastThrottleSweep = now;
+  for (const map of [verificationRequestTimestamps, domainVerificationTimestamps]) {
+    for (const [key, ts] of map) {
+      if (now - ts >= THROTTLE_WINDOW_MS) map.delete(key);
+    }
+  }
+}
+
 /** Postgres unique-violation, narrowed without asserting a shape onto an unknown catch binding. */
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === '23505';
@@ -364,6 +381,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     const normalized = email.toLowerCase().trim();
     const rateLimitKey = `${auth.tenant_id}:${normalized}`;
     const now = Date.now();
+    sweepVerificationThrottles(now);
 
     // 1. Per-email verification limit: max once per minute
     const lastRequest = verificationRequestTimestamps.get(rateLimitKey);
@@ -814,6 +832,7 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     const domainVal = domain.toLowerCase().trim();
     const rateLimitKey = `${auth.tenant_id}:${domainVal}`;
     const now = Date.now();
+    sweepVerificationThrottles(now);
 
     // 1. Per-domain verification check limit: max once per minute
     const lastRequest = domainVerificationTimestamps.get(rateLimitKey);

@@ -75,6 +75,7 @@ function boundaryAssetCandidates(): string[] {
 interface CacheEntry {
   version: string;
   set: LoadedBoundarySet;
+  estimatedBytes: number;
 }
 const boundarySetCache = new Map<string, CacheEntry>();
 
@@ -83,6 +84,28 @@ const boundarySetCache = new Map<string, CacheEntry>();
  * workspace uploading its 50 allowed layers cannot pin every other workspace's out of memory.
  */
 const BOUNDARY_CACHE_MAX_SETS = 64;
+
+/**
+ * The byte budget matters more than the entry count: layers vary from a few hand-drawn wards
+ * (kilobytes) to a 20 MB statewide precinct file, and a parsed coordinate graph occupies several
+ * times its serialized length in V8 heap (nested arrays of positions). The serialized length times
+ * this factor approximates resident bytes — precision is unimportant, only that a big layer costs
+ * proportionally more of the budget than a small one.
+ */
+const JSON_BYTES_TO_HEAP_FACTOR = 6;
+const BOUNDARY_CACHE_MAX_BYTES = 256 * 1024 * 1024;
+let cachedBytesTotal = 0;
+
+function estimateHeapBytes(set: LoadedBoundarySet): number {
+  return JSON.stringify(set.features).length * JSON_BYTES_TO_HEAP_FACTOR;
+}
+
+function cacheDelete(setId: string): void {
+  const entry = boundarySetCache.get(setId);
+  if (!entry) return;
+  cachedBytesTotal -= entry.estimatedBytes;
+  boundarySetCache.delete(setId);
+}
 
 function cacheGet(setId: string, version: string): LoadedBoundarySet | undefined {
   const entry = boundarySetCache.get(setId);
@@ -94,12 +117,16 @@ function cacheGet(setId: string, version: string): LoadedBoundarySet | undefined
 }
 
 function cachePut(setId: string, version: string, set: LoadedBoundarySet): void {
-  boundarySetCache.delete(setId);
-  boundarySetCache.set(setId, { version, set });
-  while (boundarySetCache.size > BOUNDARY_CACHE_MAX_SETS) {
+  cacheDelete(setId);
+  const estimatedBytes = estimateHeapBytes(set);
+  boundarySetCache.set(setId, { version, set, estimatedBytes });
+  cachedBytesTotal += estimatedBytes;
+  // Evicting oldest-first can drop the entry just inserted if it alone exceeds the byte budget;
+  // that is fine — the caller holds its own reference, the layer just won't be cached.
+  while (boundarySetCache.size > BOUNDARY_CACHE_MAX_SETS || cachedBytesTotal > BOUNDARY_CACHE_MAX_BYTES) {
     const oldest = boundarySetCache.keys().next();
     if (oldest.done) break;
-    boundarySetCache.delete(oldest.value);
+    cacheDelete(oldest.value);
   }
 }
 
@@ -110,8 +137,12 @@ function cachePut(setId: string, version: string, set: LoadedBoundarySet): void 
  * a just-saved polygon from waiting on a round trip in the process that saved it.
  */
 export function invalidateBoundarySetCache(setId?: string): void {
-  if (setId === undefined) boundarySetCache.clear();
-  else boundarySetCache.delete(setId);
+  if (setId === undefined) {
+    boundarySetCache.clear();
+    cachedBytesTotal = 0;
+  } else {
+    cacheDelete(setId);
+  }
 }
 
 /**

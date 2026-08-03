@@ -1,3 +1,4 @@
+import { Readable } from 'stream';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { createSigner } from 'fast-jwt';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -89,7 +90,11 @@ describe('exports download route ownership', () => {
     app = Fastify();
     await app.register(exportsDownloadRoute, { prefix: '/api/exports' });
 
-    downloadSpy = vi.spyOn(StorageService.prototype, 'download').mockResolvedValue(Buffer.from(FILE_BYTES));
+    // The route streams the blob (downloadStream), never the buffering download().
+    downloadSpy = vi.spyOn(StorageService.prototype, 'downloadStream').mockImplementation(async () => ({
+      stream: Readable.from([Buffer.from(FILE_BYTES)]),
+      contentLength: Buffer.byteLength(FILE_BYTES),
+    }));
 
     tenantId = rand();
     await db.insertInto('tenants').values({ id: tenantId, name: 'Export Download Tenant' }).execute();

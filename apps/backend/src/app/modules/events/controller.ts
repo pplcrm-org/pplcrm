@@ -4,6 +4,7 @@ import { sql } from 'kysely';
 import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
 import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { BaseController } from '../../lib/base.controller';
+import { isRateLimited } from '../../lib/rate-limiter';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
 import { publicOrgName } from '../../lib/public-tenant';
 import { logger } from '../../logger';
@@ -12,7 +13,8 @@ import { EventsRepo } from './repositories/events.repo';
 
 const DEFAULT_FIELDS = ['first_name', 'last_name', 'email', 'mobile', 'notes'];
 
-const ipRsvpTimestamps = new Map<string, number[]>();
+// Counters live in the shared swept limiter (lib/rate-limiter) so distinct visitor IPs on this
+// public endpoint don't accumulate in-process for the life of the server.
 const RSVP_RATE_LIMIT_MAX = 5;
 const RSVP_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
@@ -613,17 +615,12 @@ export class EventsController extends BaseController<'events', EventsRepo> {
     // Rate limiting. Keyed (workspace-API-key) submissions skip the per-IP window — they come
     // from one integration server and are rate-limited per tenant by the route.
     if (!opts?.skipIpRateLimit) {
-      const now = Date.now();
-      let timestamps = ipRsvpTimestamps.get(clientIp) || [];
-      timestamps = timestamps.filter((t) => now - t < RSVP_RATE_LIMIT_WINDOW_MS);
-      if (timestamps.length >= RSVP_RATE_LIMIT_MAX) {
+      if (isRateLimited(`event-rsvp:${clientIp}`, RSVP_RATE_LIMIT_MAX, RSVP_RATE_LIMIT_WINDOW_MS)) {
         throw new TRPCError({
           code: 'TOO_MANY_REQUESTS',
           message: 'Rate limit exceeded. Please try again in a minute.',
         });
       }
-      timestamps.push(now);
-      ipRsvpTimestamps.set(clientIp, timestamps);
     }
 
     const event = await this.getEventBySlug(tenantId, slug);

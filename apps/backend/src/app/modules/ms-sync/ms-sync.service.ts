@@ -11,6 +11,14 @@ import { logger } from '../../logger';
 const MAX_MESSAGES_PER_SYNC = 50;
 
 /**
+ * Backstop on one folder's page walk (× $top above = messages per folder per run). Pages are
+ * ingested as they arrive, so this bounds time and Graph quota rather than memory. When the cap
+ * is hit the walk stops without a delta link and without the reconciliation sweep — both need the
+ * complete listing — and the next scheduled sync picks the folder up again.
+ */
+const MAX_PAGES_PER_FOLDER_SYNC = 200;
+
+/**
  * How far back a first sync reaches. See the matching constant in the Gmail adapter — connecting a
  * mailbox used to enumerate and ingest its entire history, which no real account survives inside a
  * job timeout. Everything after the initial window arrives incrementally via the delta link.
@@ -149,16 +157,32 @@ export class MsSyncService {
 
       let pageUrl: string | null = folderDeltaLink ?? initialDeltaUrl(folder.wellKnownName, windowStart);
 
-      const allMessages: any[] = [];
       let isInitialSync = folderDeltaLink === null;
       let hasMore = true;
 
+      // Each page is ingested as it arrives — the $select includes full HTML bodies, so
+      // accumulating pages first (as this used to) held an unbounded array of complete messages
+      // whenever Graph declined the window $filter or a delta covered a long gap. Only the ids
+      // are kept across pages, for the reconciliation sweep below.
+      const serverMsIds = new Set<string>();
+      let pagesFetched = 0;
+      let truncated = false;
+
       while (pageUrl && hasMore) {
+        if (pagesFetched >= MAX_PAGES_PER_FOLDER_SYNC) {
+          truncated = true;
+          logger.warn(
+            { folder: folder.wellKnownName, pages: pagesFetched },
+            'MS Graph sync stopped at the per-folder page cap; the next run will continue',
+          );
+          break;
+        }
+
         const url = pageUrl;
+        let messages: any[];
         try {
           const response: any = await graphCallWithRetry(() => client.api(url).get());
-          const messages = response.value ?? [];
-          allMessages.push(...messages);
+          messages = response.value ?? [];
 
           const nextLink = response['@odata.nextLink'] ?? null;
           const deltaLink = response['@odata.deltaLink'] ?? null;
@@ -176,43 +200,49 @@ export class MsSyncService {
             // Delta link expired for this folder, clear it
             delete nextDeltaMap[folder.wellKnownName];
             isInitialSync = true;
-            allMessages.length = 0; // clear any partially loaded pages before restarting
+            // Ids from the expired walk no longer describe the listing we are about to fetch.
+            // (Messages already ingested from those pages are fine — ingestion dedupes on the
+            // `ms:` key and re-attaches a detached row.)
+            serverMsIds.clear();
             // Restart bounded, exactly like a first sync — an expired delta link must not become a
             // back door to re-enumerating the whole mailbox.
             pageUrl = initialDeltaUrl(folder.wellKnownName, windowStart);
-          } else {
-            throw err;
+            continue;
           }
+          throw err;
         }
-      }
+        pagesFetched++;
 
-      // Process all messages fetched in this sync run
-      for (const msg of allMessages) {
-        if (msg['@removed']) {
-          // `@removed` on a FOLDER-scoped delta means "no longer in this folder", not "deleted".
-          // Archiving a message in Outlook, dragging it elsewhere, or an inbox rule filing it all
-          // produce this on the very next incremental sync. So this detaches the CRM's copy — hides
-          // it from the folder listing, keeps the row and every comment, assignment and status on
-          // it. It used to hard-delete all of that.
-          const msId = msg.id;
-          if (msId) {
-            await this.ingester.detachMessage(tenantId, campaignId, msId);
+        // Process this page's messages before fetching the next one
+        for (const msg of messages) {
+          if (msg['@removed']) {
+            // `@removed` on a FOLDER-scoped delta means "no longer in this folder", not "deleted".
+            // Archiving a message in Outlook, dragging it elsewhere, or an inbox rule filing it all
+            // produce this on the very next incremental sync. So this detaches the CRM's copy — hides
+            // it from the folder listing, keeps the row and every comment, assignment and status on
+            // it. It used to hard-delete all of that.
+            const msId = msg.id;
+            if (msId) {
+              await this.ingester.detachMessage(tenantId, campaignId, msId);
+            }
+            continue;
           }
-          continue;
-        }
 
-        // Belt-and-braces on the initial window: if Graph ignored the $filter, skip anything older
-        // rather than ingesting it. Cheap here, and it keeps the bound honest either way.
-        if (isInitialSync && msg.receivedDateTime) {
-          const received = new Date(msg.receivedDateTime);
-          if (!isNaN(received.getTime()) && received < windowStart) continue;
-        }
+          serverMsIds.add(String(msg.id));
 
-        try {
-          const wasSaved = await this.saveMessage(client, msg, tenantId, campaignId, requestedBy, folder.pplcrmId);
-          if (wasSaved) inserted++;
-        } catch (err) {
-          logger.error({ err }, `Failed to ingest MS Graph message ${msg.id}`);
+          // Belt-and-braces on the initial window: if Graph ignored the $filter, skip anything older
+          // rather than ingesting it. Cheap here, and it keeps the bound honest either way.
+          if (isInitialSync && msg.receivedDateTime) {
+            const received = new Date(msg.receivedDateTime);
+            if (!isNaN(received.getTime()) && received < windowStart) continue;
+          }
+
+          try {
+            const wasSaved = await this.saveMessage(client, msg, tenantId, campaignId, requestedBy, folder.pplcrmId);
+            if (wasSaved) inserted++;
+          } catch (err) {
+            logger.error({ err }, `Failed to ingest MS Graph message ${msg.id}`);
+          }
         }
       }
 
@@ -220,12 +250,12 @@ export class MsSyncService {
       // the server did not return has left this folder — deleted, archived or moved. We cannot tell
       // which, so it is detached (hidden from the folder, row and CRM data kept), never destroyed.
       //
-      // The candidate set MUST be scoped to the window we fetched. `allMessages` only covers mail
+      // The candidate set MUST be scoped to the window we fetched. `serverMsIds` only covers mail
       // since `windowStart`, so comparing against every local row would read the whole older archive
       // as deleted — and since an expired delta link forces this path, that would silently wipe a
-      // long-established mailbox.
-      if (isInitialSync) {
-        const serverMsIds = new Set(allMessages.filter((m) => !m['@removed']).map((m) => String(m.id)));
+      // long-established mailbox. A truncated walk skips the sweep for the same reason: an
+      // incomplete listing would read everything after the cap as deleted.
+      if (isInitialSync && !truncated) {
         const localEmails = await this.db
           .selectFrom('emails')
           .innerJoin('email_headers', 'email_headers.email_id', 'emails.id')

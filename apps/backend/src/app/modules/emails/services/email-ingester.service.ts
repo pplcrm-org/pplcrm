@@ -71,56 +71,48 @@ export class EmailIngesterService {
   ) {}
 
   public async removeAllLocalEmails(tenantId: string, campaignId: string): Promise<void> {
-    const matchedEmails = await this.db
-      .selectFrom('emails')
-      .select('id')
-      .where('tenant_id', '=', tenantId)
-      .where('campaign_id', '=', campaignId)
-      .where('preview', 'like', `${this.prefix}:%`)
-      .execute();
+    // Chunked like purgeAllTenantEmails below: one id array of the whole mailbox both held every
+    // id in memory at once and put them all into a single `in (...)` list, which Postgres rejects
+    // past 65,535 bind parameters. Each chunk deletes what it selected, so loop until none remain.
+    const CHUNK_SIZE = 2_000;
 
-    if (matchedEmails.length === 0) return;
-    const emailIds = matchedEmails.map((e) => String(e.id));
+    for (;;) {
+      const matchedEmails = await this.db
+        .selectFrom('emails')
+        .select('id')
+        .where('tenant_id', '=', tenantId)
+        .where('campaign_id', '=', campaignId)
+        .where('preview', 'like', `${this.prefix}:%`)
+        .limit(CHUNK_SIZE)
+        .execute();
 
-    // Capture attachment file and body blob references before the rows are deleted.
-    const fileIds = await this.getAttachmentFileIds(tenantId, emailIds);
-    const bodyKeys = await this.getBodyStorageKeys(tenantId, emailIds);
+      if (matchedEmails.length === 0) return;
+      const emailIds = matchedEmails.map((e) => String(e.id));
 
-    await this.db.transaction().execute(async (trx) => {
-      // Delete from dependent tables sequentially to prevent foreign key constraint issues
-      await trx
-        .deleteFrom('email_comments')
-        .where('tenant_id', '=', tenantId)
-        .where('email_id', 'in', emailIds)
-        .execute();
-      await trx
-        .deleteFrom('email_bodies')
-        .where('tenant_id', '=', tenantId)
-        .where('email_id', 'in', emailIds)
-        .execute();
-      await trx
-        .deleteFrom('email_headers')
-        .where('tenant_id', '=', tenantId)
-        .where('email_id', 'in', emailIds)
-        .execute();
-      await trx
-        .deleteFrom('email_recipients')
-        .where('tenant_id', '=', tenantId)
-        .where('email_id', 'in', emailIds)
-        .execute();
-      await trx
-        .deleteFrom('email_attachments')
-        .where('tenant_id', '=', tenantId)
-        .where('email_id', 'in', emailIds)
-        .execute();
-      await trx.deleteFrom('email_trash').where('tenant_id', '=', tenantId).where('email_id', 'in', emailIds).execute();
+      // Capture attachment file and body blob references before the rows are deleted.
+      const fileIds = await this.getAttachmentFileIds(tenantId, emailIds);
+      const bodyKeys = await this.getBodyStorageKeys(tenantId, emailIds);
 
-      // Delete from emails table
-      await trx.deleteFrom('emails').where('tenant_id', '=', tenantId).where('id', 'in', emailIds).execute();
-    });
+      await this.db.transaction().execute(async (trx) => {
+        // Delete from dependent tables sequentially to prevent foreign key constraint issues
+        for (const table of [
+          'email_comments',
+          'email_bodies',
+          'email_headers',
+          'email_recipients',
+          'email_attachments',
+          'email_trash',
+        ] as const) {
+          await trx.deleteFrom(table).where('tenant_id', '=', tenantId).where('email_id', 'in', emailIds).execute();
+        }
 
-    await this.purgeOrphanedFiles(tenantId, fileIds);
-    await this.purgeBodyBlobs(bodyKeys);
+        // Delete from emails table
+        await trx.deleteFrom('emails').where('tenant_id', '=', tenantId).where('id', 'in', emailIds).execute();
+      });
+
+      await this.purgeOrphanedFiles(tenantId, fileIds);
+      await this.purgeBodyBlobs(bodyKeys);
+    }
   }
 
   /**
