@@ -103,8 +103,14 @@
     @for (d of recentGifts(); track d.id) {
     <tr class="hover:bg-base-200/30 transition-all duration-200" [class.animate-saved-flash]="highlightId() === d.id">
       <td>
+        <!-- Opens the gift, not the donor. A row in a list of gifts is about the gift, and the
+             donor's own page is one further click from there. -->
         <div class="flex flex-col">
-          <a [routerLink]="['/people', d.person_id]" class="font-semibold text-primary hover:underline">
+          <a
+            [routerLink]="['/donations', d.id]"
+            class="font-semibold text-primary hover:underline"
+            title="Open this gift"
+          >
             {{ d.person_first_name }} {{ d.person_last_name }}
           </a>
           <span class="text-xs text-base-content/50">{{ d.person_email }}</span>
