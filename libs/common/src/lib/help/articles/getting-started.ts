@@ -179,7 +179,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
           '**Three newsletters**, including a sent one with a full engagement report: opens over time, top links, bounces, and unsubscribes.',
           '**Sample form responses** on two of the starter forms, so the Forms page shows what collected submissions look like.',
           '**A donations ledger**: recorded one-time gifts across this month and last, plus a few active monthly pledges, so the [Donations](/donations) page shows real totals and trends. The two fundraising forms live on that page too, not on the Forms page.',
-          '**Issued receipts**, in charity and church workspaces: official receipts over some of the recorded gifts, last year’s finished giving-statement run, and the receipting settings already filled in under the sample organization’s name and registration number. The remaining gifts are left unreceipted on purpose, so there is something for you to issue. See [Donation receipts and giving statements](/help/donation-receipts).',
+          '**Receipts**: a donation receipt for every sample gift, in every workspace that has sample gifts. Charity and church workspaces add a few official tax receipts on top, last year’s finished year-end run, and the receipting settings already filled in under the sample organization’s name and registration number. Most gifts have no tax receipt on purpose — those are issued at year end. See [Donation receipts and giving statements](/help/donation-receipts).',
         ],
       },
       {

@@ -186,7 +186,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
           '**Email sync**: connect your email provider so incoming and outgoing email syncs into your pplCRM inbox.',
           '**Domain verification**: the DNS records (SPF, DKIM, DMARC) that let you send email from your own domain.',
           '**Service levels**: response-time targets for email and tasks, working days and hours, and the warning/critical thresholds behind the dashboard status.',
-          '**Donations**: donation limit, residency restrictions, tax credit tiers, your Stripe connection, and receipt configuration — the receipting regime, registration number, signatory and signature image, numbering prefix, and the auto-issue toggle. See [Donation receipts and giving statements](/help/donation-receipts).',
+          '**Donations**: donation limit, residency restrictions, tax credit tiers, your Stripe connection, and tax receipt configuration — the receipting regime, registration number, signatory and signature image, and numbering prefix. None of it affects the donation receipt every gift gets automatically. See [Donation receipts and giving statements](/help/donation-receipts).',
           '**Deliveries**: the planning defaults the Plan routes page starts from — minutes per stop, average driving speed, how many drivers, and whether the drive back to the start counts. Organizers can still override any of them for a single plan without changing the defaults.',
           '**App**: how the volunteer-facing apps behave, including whether volunteer route links expire after 30 days. Expiry is the secure default (a forwarded or long-lost link goes dead on its own), but you can turn it off if your delivery routes run longer. Volunteers still verify a code and need a one-time approval either way.',
           '**Storage**: your plan quota, live usage, and the files taking up the most space.',
@@ -528,7 +528,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'us-limits', text: 'What pplCRM does not do for US campaigns' },
       {
         kind: 'p',
-        text: 'Worth knowing before you plan around it. US political contributions are not tax-deductible federally, so there is nothing to receipt, and pplCRM does not issue receipts for them. It also does not prepare or file FEC or state disclosure reports — that is a separate compliance system with its own contributor occupation, employer and per-donor limit rules, and this product does not have it. A US workspace records gifts in the [Donations](/donations) ledger and exports them; the filing itself happens elsewhere. Canadian receipting is unaffected — see [Donation receipts and giving statements](/help/donation-receipts).',
+        text: 'Worth knowing before you plan around it. US political contributions are not tax-deductible federally, so there is no TAX receipt to issue and pplCRM issues none. Donors are still sent a plain donation receipt for every gift, which makes no tax claim. It also does not prepare or file FEC or state disclosure reports — that is a separate compliance system with its own contributor occupation, employer and per-donor limit rules, and this product does not have it. A US workspace records gifts in the [Donations](/donations) ledger and exports them; the filing itself happens elsewhere. Canadian receipting is unaffected — see [Donation receipts and giving statements](/help/donation-receipts).',
       },
       {
         kind: 'callout',

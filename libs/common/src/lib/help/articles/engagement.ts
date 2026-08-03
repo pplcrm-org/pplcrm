@@ -96,9 +96,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
     category: 'engagement',
     title: 'Donation receipts and giving statements',
     summary:
-      'Issue official CRA or political contribution receipts — numbered, immutable, cancel-and-replace — and batch year-end giving statements.',
+      'Every gift is receipted by email the moment it arrives. Official tax receipts are issued at year end, or one at a time on request.',
     keywords: [
       'receipt',
+      'acknowledgement',
+      'thank you',
       'official receipt',
       'tax receipt',
       'giving statement',
@@ -114,10 +116,19 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
     ],
     related: ['donations', 'person-profile', 'settings'],
     blocks: [
-      { kind: 'h2', id: 'setup', text: 'Set up receipting once' },
+      { kind: 'h2', id: 'every-gift', text: 'Every gift is receipted straight away' },
       {
         kind: 'p',
-        text: 'Under [Workspace → Donations](/workspace/donations), choose your **receipting regime**: registered charity (CRA official donation receipts), federal political, or a provincial political regime (Ontario, British Columbia, Alberta, Quebec). The regime decides what a receipt must contain and who may sign it. Then fill in your legal organization name and address, registration number, the signatory’s name and title, a receipt number prefix, and the place of issue. **Preview receipt** shows a SPECIMEN-watermarked sample before anything real is issued.',
+        text: 'When a donation is recorded — through a fundraising page, a monthly pledge charge, or the **Record donation** dialog — pplCRM emails the donor a **donation receipt** within moments, with a PDF attached. It shows your organization, the donor, the amount, the date and the payment method, and it carries a numbered reference beginning with **A-**. There is nothing to set up and nothing to turn on: it works in a brand-new workspace, and it works for organizations that issue no tax receipts at all.',
+      },
+      {
+        kind: 'p',
+        text: 'This document is deliberately **not** a tax receipt, and it says so on its face. It makes no claim about deductibility, so it needs no registration number, no authorized signatory and no mailing address. If a gift is later refunded or charged back, its receipt is cancelled along with any tax receipt covering the gift.',
+      },
+      { kind: 'h2', id: 'setup', text: 'Set up tax receipting once' },
+      {
+        kind: 'p',
+        text: 'Official tax receipts are a separate document, and they are optional: a municipal campaign or a United States committee has no tax receipt to issue, and leaving this unconfigured is a perfectly normal resting state. If your organization does issue them, go to [Workspace → Donations](/workspace/donations) and choose your **receipting regime**: registered charity (CRA official donation receipts), federal political, or a provincial political regime (Ontario, British Columbia, Alberta, Quebec). The regime decides what a receipt must contain and who may sign it. Then fill in your legal organization name and address, registration number, the signatory’s name and title, a receipt number prefix, and the place of issue. **Preview receipt** shows a SPECIMEN-watermarked sample before anything real is issued.',
       },
       {
         kind: 'p',
@@ -129,19 +140,27 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         title: 'Check who may issue receipts',
         text: 'Only specific roles may issue contribution receipts — federally a registered agent or official agent; provincially the role your electoral authority prescribes; for charities, someone the charity authorizes. Confirm with your own counsel or electoral authority before issuing. Two special cases the app enforces: Ontario candidate campaigns are receipted by Elections Ontario (gifts are recorded here, not receipted here), and Quebec provincial receipts are issued by Élections Québec, so pplCRM never prints them.',
       },
-      { kind: 'h2', id: 'issuing', text: 'Issue, cancel, replace' },
+      { kind: 'h2', id: 'statements', text: 'The year-end run' },
       {
         kind: 'p',
-        text: 'Open any gift from the [Donations](/donations) grid (or the person’s Donations tab) to issue its receipt, download the PDF, or fix a mistake. Receipts are **numbered gap-free per year** and immutable once issued: corrections go through **cancel and replace**, which cancels the old receipt (kept forever, marked cancelled, with your reason) and issues a successor that prints “cancels and replaces receipt No. …”. Turn on **auto-issue** to receipt every new gift automatically, or choose **one cumulative receipt per donor per year** and issue each donor’s annual receipt in January. If a receipted gift is refunded or charged back, its receipt is cancelled automatically.',
+        text: 'Official tax receipts go out once a year. On the [Receipts & statements](/donations/receipts) tab, pick a year and press **Run year-end**. Every donor with a successful gift in that year receives one document: a **numbered official tax receipt** covering their giving, where your workspace is set up to issue one and the donor has a mailing address on file — otherwise a **giving summary**, which lists the same gifts but is explicitly not an official receipt.',
       },
       {
         kind: 'p',
-        text: 'Every gift needs the donor’s **mailing address** — online checkout collects it, and the Record donation dialog requires it. An older gift recorded without one shows “needs donor address”: add an address to the donor’s household, then issue.',
+        text: 'Donors with an email on file receive theirs automatically (large batches send in waves over a few hours); the rest are marked **Print & mail** for you to download. You are notified when the run completes, with a count of tax receipts, summaries and to-print documents. Rerunning a year only fills in donors who do not already have a document for it.',
       },
-      { kind: 'h2', id: 'statements', text: 'Year-end giving statements' },
+      { kind: 'h2', id: 'issuing', text: 'Issuing a tax receipt on request' },
       {
         kind: 'p',
-        text: 'The [Receipts & statements](/donations/receipts) tab batches one **giving statement** per donor covering a calendar year — a summary, not an official receipt. Donors with an email on file receive theirs automatically (large batches send in waves over a few hours); the rest are marked **Print & mail** for you to download. You are notified when the run completes, with counts of emailed and to-print statements. Rerunning a year only fills in donors who do not have a statement yet.',
+        text: 'A donor who wants their tax receipt before year end does not have to wait. Open the gift from the [Donations](/donations) grid (or the person’s Donations tab) and press **Issue receipt**. Tax receipts are **numbered gap-free per year** and immutable once issued: corrections go through **cancel and replace**, which cancels the old receipt (kept forever, marked cancelled, with your reason) and issues a successor that prints “cancels and replaces receipt No. …”. If a receipted gift is refunded or charged back, its receipt is cancelled automatically.',
+      },
+      {
+        kind: 'p',
+        text: 'A tax receipt needs the donor’s **mailing address** — online checkout collects it, and the Record donation dialog requires it. An older gift recorded without one shows “needs donor address”: add an address to the donor’s household, then issue. The immediate donation receipt is unaffected; it needs no address.',
+      },
+      {
+        kind: 'p',
+        text: 'The receipts list hides the per-gift donation receipts by default, because there is one for every gift and they would bury everything else. Turn on **Show acknowledgements** to see them.',
       },
       {
         kind: 'callout',
@@ -152,7 +171,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'demo-receipts', text: 'The sample receipts in a new workspace' },
       {
         kind: 'p',
-        text: 'A charity or church workspace starts with sample receipts over some of its sample gifts, so this page is not empty on day one. They are configured under the sample organization’s name and registration number, which are cleared along with everything else when you remove the demo data — your own details replace them, and nothing real is ever issued under the sample ones. See [Demo mode and sample data](/help/demo-mode).',
+        text: 'A workspace that starts with sample donations also starts with a donation receipt for each of them, so the ledger reads the way the real thing behaves. A charity or church workspace adds a few sample official tax receipts on top, configured under the sample organization’s name and registration number. All of it is cleared when you remove the demo data — your own details replace them, and nothing real is ever issued under the sample ones. See [Demo mode and sample data](/help/demo-mode).',
       },
     ],
   },

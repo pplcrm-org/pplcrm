@@ -139,10 +139,12 @@ export class HomePage {
     {
       icon: 'credit-card',
       title: 'Online giving pages',
-      // "Receipted" is a real claim now: donation_receipts issues numbered official receipts
-      // (CRA charitable + Canadian political regimes) and batch year-end statements. Keep this
-      // copy in step with what the receipts module actually does — see the website-claims registry.
-      body: 'Share a donation page and gifts land straight on the donor’s record — recorded, receipted with numbered official receipts, and summed into year-end giving statements. No third spreadsheet to reconcile.',
+      // Two distinct claims, and both are real. Every gift is emailed a receipt automatically with
+      // no setup (donation_receipts, kind 'acknowledgement'). Numbered OFFICIAL tax receipts are a
+      // year-end run and require a configured regime (CRA charitable + Canadian political), so the
+      // copy says "where your regime allows" rather than promising them to everyone. Keep this in
+      // step with the receipts module — see the website-claims registry.
+      body: 'Share a donation page and gifts land straight on the donor’s record — every one receipted by email the moment it arrives, and summed at year end into official tax receipts where your regime allows them. No third spreadsheet to reconcile.',
     },
     this.copy.oneList,
   ];

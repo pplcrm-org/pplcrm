@@ -85,7 +85,7 @@ export const CONTACTS_ARTICLES: HelpArticle[] = [
           '**Household**: everyone at the same address.',
           '**Connections**: the people this person is linked to (referrals, relationships, and other ties), separate from who they live with.',
           '**Emails**: messages exchanged with this person through the [Inbox](/inbox), followed by their newsletter engagement (opens, clicks, bounces).',
-          '**Donations**: every gift on record, showing date, amount, method (card or manual, with a “· monthly” note for pledge-linked gifts), and its real receipt status — the receipt number when one is issued, “No receipt” when none is. Click the receipt chip to open the gift and manage its receipt. An active monthly pledge also lights up a “Monthly donor” chip beside the name.',
+          '**Donations**: every gift on record, showing date, amount, method (card or manual, with a “· monthly” note for pledge-linked gifts), and what the donor was sent — the tax receipt number where one has been issued, otherwise the donation receipt that went out when the gift arrived. Click the chip to open the gift. An active monthly pledge also lights up a “Monthly donor” chip beside the name.',
           '**Volunteer**: their shift history and hours.',
           '**Events**: event registrations and attendance.',
           '**Activity**: the running history of this record, pairing the interactions you log (calls, door knocks, notes, meetings) with the audit trail of edits, newest first. It sits last, as it does on every record.',

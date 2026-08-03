@@ -95,7 +95,7 @@ export class FaqPage {
         },
         {
           q: 'Do you issue US donation receipts or file FEC reports?',
-          a: 'No, to both, and we would rather say so here than after you moved your list. US political contributions are not tax-deductible federally, so there is no receipt to issue and pplCRM does not issue one. We also do not prepare or submit FEC or state campaign-finance reports. Canadian political and charitable receipting is unaffected: numbered official receipts on the regimes that allow them.',
+          a: 'No, to both, and we would rather say so here than after you moved your list. US political contributions are not tax-deductible federally, so there is no tax receipt to issue and pplCRM issues none — though every gift is still receipted by email in the plain sense, confirming the gift without claiming a tax treatment. We also do not prepare or submit FEC or state campaign-finance reports. Canadian political and charitable receipting is unaffected: numbered official receipts on the regimes that allow them.',
         },
       ],
     },

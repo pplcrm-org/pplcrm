@@ -431,8 +431,8 @@ export const LIMITS: readonly Limit[] = [
   },
   {
     icon: 'document-currency-dollar',
-    title: 'US political contributions are not receipted',
-    body: 'They are not tax-deductible federally, so there is no receipt to issue and pplCRM does not issue one. Ask us for a US political contribution regime and the answer is that none exists. Canadian political and charitable receipting is unchanged: numbered official receipts, gap-free, on the regimes that allow them.',
+    title: 'US political contributions get no TAX receipt',
+    body: 'They are not tax-deductible federally, so there is no tax receipt to issue and pplCRM issues none. Ask us for a US political contribution regime and the answer is that none exists. Your donors are still sent a plain donation receipt by email for every gift, which confirms the gift and makes no tax claim. Canadian political and charitable receipting is unchanged: numbered official receipts, gap-free, on the regimes that allow them.',
   },
   {
     icon: 'shield-exclamation',
