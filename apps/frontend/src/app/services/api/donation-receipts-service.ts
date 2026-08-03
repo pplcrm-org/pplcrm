@@ -5,6 +5,7 @@ import type {
   IssueReceiptType,
   ListReceiptsType,
   ReissueReceiptType,
+  RetryReceiptPdfType,
 } from '@common';
 import { TRPCService } from './trpc-service';
 
@@ -29,6 +30,11 @@ export class DonationReceiptsService extends TRPCService<'donation_receipts'> {
 
   public reissueReceipt(payload: ReissueReceiptType) {
     return this.api.donationReceipts.reissueReceipt.mutate(payload);
+  }
+
+  /** Queue another PDF render for a receipt whose render failed. Stores the file; sends no email. */
+  public retryReceiptPdf(payload: RetryReceiptPdfType) {
+    return this.api.donationReceipts.retryReceiptPdf.mutate(payload);
   }
 
   public listReceipts(filters: ListReceiptsType = {}) {

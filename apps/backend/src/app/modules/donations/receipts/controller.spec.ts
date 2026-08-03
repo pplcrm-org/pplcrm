@@ -22,6 +22,8 @@ async function cleanTenant(db: any, tenantId: string) {
     'background_jobs',
     'donation_receipt_items',
     'donation_receipts',
+    // Receipt PDFs point at files, and files point at the authuser who uploaded them.
+    'files',
     'receipt_counters',
     'receipt_statement_runs',
     'donations',
@@ -502,6 +504,72 @@ describe('DonationReceiptsController', () => {
       .where('tenant_id', '=', seed.tenantId)
       .execute();
     expect(jobs.some((j: { payload: unknown }) => JSON.stringify(j.payload).includes('render-receipt-pdf'))).toBe(true);
+  });
+
+  /**
+   * A receipt whose PDF never got produced must say so and be recoverable. Before the failure was
+   * recorded on the receipt, a dead render job left the row looking identical to one still
+   * rendering, so the download button stayed disabled forever with no way to act on it.
+   */
+  it('records a permanent render failure and clears it when the PDF is retried', async () => {
+    const repo = new ReceiptsRepo();
+    const donationId = await insertDonation(db, seed, 7700);
+    const { receipt } = await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId);
+    if (!receipt) throw new Error('expected an acknowledgement');
+
+    await repo.markRenderFailed(seed.tenantId, receipt.id, 'connect ECONNREFUSED 127.0.0.1:10000');
+    const failed = await repo.getReceiptById(seed.tenantId, receipt.id);
+    expect(failed?.pdf_failed_at).not.toBeNull();
+    expect(failed?.pdf_error).toContain('ECONNREFUSED');
+
+    await db.deleteFrom('background_jobs').where('tenant_id', '=', seed.tenantId).execute();
+    await controller.retryReceiptPdf(auth(), receipt.id);
+
+    const retried = await repo.getReceiptById(seed.tenantId, receipt.id);
+    expect(retried?.pdf_failed_at).toBeNull();
+    expect(retried?.pdf_error).toBeNull();
+
+    // The retry stores the document and deliberately does not email the donor.
+    const jobs = await db
+      .selectFrom('background_jobs')
+      .select('payload')
+      .where('tenant_id', '=', seed.tenantId)
+      .execute();
+    const payloads = jobs.map((j: { payload: unknown }) =>
+      typeof j.payload === 'string' ? JSON.parse(j.payload) : j.payload,
+    );
+    const render = payloads.find((p: { type: string }) => p.type === 'render-receipt-pdf');
+    expect(render).toBeDefined();
+    expect(render.receipt_id).toBe(String(receipt.id));
+    expect(render.email).toBe(false);
+  });
+
+  /** A job can also fail after the PDF was stored (the email step) — that is not a missing PDF. */
+  it('does not mark a receipt as render-failed once its PDF exists', async () => {
+    const repo = new ReceiptsRepo();
+    const donationId = await insertDonation(db, seed, 3300);
+    const { receipt } = await controller.issueAcknowledgement(seed.tenantId, donationId, seed.userId);
+    if (!receipt) throw new Error('expected an acknowledgement');
+
+    const file = await db
+      .insertInto('files')
+      .values({
+        tenant_id: seed.tenantId,
+        filename: 'receipt.pdf',
+        mime_type: 'application/pdf',
+        size_bytes: 10,
+        storage_key: `receipts/${seed.tenantId}/test.pdf`,
+        uploaded_by: seed.userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await repo.setFile(seed.tenantId, receipt.id, String(file.id));
+
+    await repo.markRenderFailed(seed.tenantId, receipt.id, 'mail provider rejected the message');
+    const row = await repo.getReceiptById(seed.tenantId, receipt.id);
+    expect(row?.pdf_failed_at).toBeNull();
+
+    await expect(controller.retryReceiptPdf(auth(), receipt.id)).rejects.toThrow(/already has a PDF/);
   });
 
   /** Issued once per gift; the job may run twice and must not produce two documents. */

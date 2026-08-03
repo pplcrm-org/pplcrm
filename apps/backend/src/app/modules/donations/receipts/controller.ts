@@ -807,6 +807,43 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       .execute();
   }
 
+  /**
+   * Queue a fresh render for a receipt whose PDF never got produced.
+   *
+   * The usual cause is nothing to do with the receipt — blob storage unreachable, a transient
+   * failure that outlasted the job's three attempts — so the fix is to ask again rather than to
+   * cancel and reissue the document, which would burn a serial and change what the donor holds.
+   *
+   * Deliberately does NOT email the donor. A retry happens after a human noticed, which can be
+   * long after the gift; mailing a donor a receipt for a months-old gift unprompted is a decision
+   * staff should make themselves, and once the PDF exists they can download and send it. This
+   * matches what already happens when a send is blocked: store the document, leave the sending to
+   * a person.
+   */
+  public async retryReceiptPdf(auth: { tenant_id: string; user_id: string }, receiptId: string): Promise<ReceiptRow> {
+    const repo = this.getRepo();
+    const receipt = await repo.getReceiptById(auth.tenant_id, receiptId);
+    if (!receipt) throw new NotFoundError('Receipt not found');
+    if (receipt.file_id) throw new ConflictError('This receipt already has a PDF — reload the page to download it.');
+
+    await repo.db.transaction().execute(async (trx) => {
+      await repo.clearRenderFailure(auth.tenant_id, receiptId, trx);
+      await this.enqueueRenderJob(trx, auth.tenant_id, receiptId, auth.user_id, false);
+    });
+
+    await this.logActivity(
+      repo.db,
+      auth.tenant_id,
+      auth.user_id,
+      receipt.person_id,
+      `Retried the PDF for receipt ${receipt.receipt_number ?? receipt.id}`,
+    );
+
+    const updated = await repo.getReceiptById(auth.tenant_id, receiptId);
+    if (!updated) throw new NotFoundError('Receipt not found');
+    return updated;
+  }
+
   // ── Cancel / reissue ────────────────────────────────────────────────────────
 
   public async cancelReceipt(

@@ -75,16 +75,38 @@
               @if (ack.emailed_at) { Emailed {{ formatDate(ack.emailed_at) }} } @else if (d.email) { Not emailed yet }
               @else { No email address on file — download and mail it }
             </span>
-            <button
-              class="btn btn-ghost btn-xs gap-1 ml-auto"
-              [disabled]="!ack.file_id"
-              [title]="ack.file_id ? 'Download PDF' : 'PDF is being generated'"
-              (click)="downloadReceipt(ack)"
-            >
-              <pc-icon name="arrow-down-tray" [size]="3"></pc-icon>
-              PDF
-            </button>
+            <div class="ml-auto">
+              @if (ack.file_id) {
+              <button class="btn btn-ghost btn-xs gap-1" title="Download PDF" (click)="downloadReceipt(ack)">
+                <pc-icon name="arrow-down-tray" [size]="3"></pc-icon>
+                PDF
+              </button>
+              } @else if (ack.pdf_failed_at) {
+              <button
+                class="btn btn-outline btn-error btn-xs gap-1"
+                [disabled]="acting()"
+                title="Generating the PDF failed. Try again."
+                (click)="retryPdf(ack)"
+              >
+                <pc-icon name="arrow-path" [size]="3"></pc-icon>
+                Retry PDF
+              </button>
+              } @else {
+              <button class="btn btn-ghost btn-xs gap-1" disabled title="The PDF is still being generated">
+                <pc-icon name="arrow-down-tray" [size]="3"></pc-icon>
+                PDF
+              </button>
+              }
+            </div>
           </div>
+          @if (!ack.file_id && ack.pdf_failed_at) {
+          <p class="text-xs text-error mt-2">
+            The PDF could not be generated on {{ formatDate(ack.pdf_failed_at) }}. The receipt itself is valid and
+            numbered — only the document is missing. @if (ack.pdf_error) {
+            <span class="text-base-content/55">Reported: {{ ack.pdf_error }}</span>
+            }
+          </p>
+          }
           <p class="text-xs text-base-content/55 mt-2">
             Sent automatically when the gift was recorded. It confirms the gift and makes no tax claim.
           </p>
@@ -163,16 +185,27 @@
                   <td class="text-xs tabular-nums">{{ formatDate(r.issued_at) }}</td>
                   <td class="text-right">
                     <div class="flex justify-end gap-1">
-                      <button
-                        class="btn btn-ghost btn-xs gap-1"
-                        [disabled]="!r.file_id"
-                        [title]="r.file_id ? 'Download PDF' : 'PDF is being generated'"
-                        (click)="downloadReceipt(r)"
-                      >
+                      @if (r.file_id) {
+                      <button class="btn btn-ghost btn-xs gap-1" title="Download PDF" (click)="downloadReceipt(r)">
                         <pc-icon name="arrow-down-tray" [size]="3"></pc-icon>
                         PDF
                       </button>
-                      @if (r.status === 'issued') {
+                      } @else if (r.pdf_failed_at) {
+                      <button
+                        class="btn btn-outline btn-error btn-xs gap-1"
+                        [disabled]="acting()"
+                        [title]="'Generating the PDF failed. Try again. ' + (r.pdf_error || '')"
+                        (click)="retryPdf(r)"
+                      >
+                        <pc-icon name="arrow-path" [size]="3"></pc-icon>
+                        Retry PDF
+                      </button>
+                      } @else {
+                      <button class="btn btn-ghost btn-xs gap-1" disabled title="The PDF is still being generated">
+                        <pc-icon name="arrow-down-tray" [size]="3"></pc-icon>
+                        PDF
+                      </button>
+                      } @if (r.status === 'issued') {
                       <button class="btn btn-ghost btn-xs" [disabled]="acting()" (click)="reissueReceipt(r)">
                         Replace
                       </button>

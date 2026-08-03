@@ -171,9 +171,24 @@ export class DonationViewComponent {
     });
   }
 
+  /**
+   * Ask for the PDF again after a render failed. The receipt is untouched — it keeps its number and
+   * its contents; only the document is regenerated. Nothing is emailed to the donor.
+   */
+  protected async retryPdf(receipt: ReceiptRowT): Promise<void> {
+    await this.runAction(async () => {
+      await this.receiptsSvc.retryReceiptPdf({ receiptId: receipt.id });
+      this.alertSvc.showSuccess('Generating the PDF again — refresh in a moment to download it.');
+    });
+  }
+
   protected downloadReceipt(receipt: ReceiptRowT): void {
     if (!receipt.file_id) {
-      this.alertSvc.showInfo('The PDF is still being generated — try again in a moment.');
+      this.alertSvc.showInfo(
+        receipt.pdf_failed_at
+          ? 'This PDF could not be generated. Use Retry PDF to try again.'
+          : 'The PDF is still being generated — try again in a moment.',
+      );
       return;
     }
     const filename = `Receipt-${receipt.receipt_number ?? receipt.id}.pdf`;

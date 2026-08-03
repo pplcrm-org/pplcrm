@@ -55,6 +55,7 @@ export class DonationReceiptsPageComponent implements OnInit {
    */
   protected readonly showAcknowledgements = signal(false);
   protected readonly running = signal(false);
+  protected readonly retrying = signal(false);
 
   protected readonly isAdmin = computed(() => {
     const role = this.auth.getUser()?.role;
@@ -112,9 +113,31 @@ export class DonationReceiptsPageComponent implements OnInit {
     }
   }
 
+  /**
+   * Ask for the PDF again after a render failed. The receipt keeps its number and contents — only
+   * the document is regenerated, and nothing is emailed to the donor.
+   */
+  protected async retryPdf(receipt: ReceiptRowT): Promise<void> {
+    if (this.retrying()) return;
+    this.retrying.set(true);
+    try {
+      await this.receiptsSvc.retryReceiptPdf({ receiptId: receipt.id });
+      this.alertSvc.showSuccess('Generating the PDF again — refresh in a moment to download it.');
+      await this.load();
+    } catch (err) {
+      this.alertSvc.showError(err instanceof Error && err.message ? err.message : 'Could not retry the PDF');
+    } finally {
+      this.retrying.set(false);
+    }
+  }
+
   protected downloadReceipt(receipt: ReceiptRowT): void {
     if (!receipt.file_id) {
-      this.alertSvc.showInfo('The PDF is still being generated — try again in a moment.');
+      this.alertSvc.showInfo(
+        receipt.pdf_failed_at
+          ? 'This PDF could not be generated. Use Retry PDF to try again.'
+          : 'The PDF is still being generated — try again in a moment.',
+      );
       return;
     }
     const base =

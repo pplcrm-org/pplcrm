@@ -353,6 +353,18 @@ export class BackgroundJobWorker {
           }
         }
 
+        if (payload.type === 'render-receipt-pdf' && payload.receipt_id && payload.tenant_id) {
+          // Stamp the receipt so the screens can say "the PDF could not be generated" and offer a
+          // retry. Without this the row is indistinguishable from one still rendering, and the
+          // download button stays disabled forever under a tooltip promising it is on its way.
+          try {
+            const { ReceiptsRepo } = await import('../../modules/donations/repositories/receipts.repo');
+            await new ReceiptsRepo().markRenderFailed(String(payload.tenant_id), String(payload.receipt_id), errorMsg);
+          } catch (receiptErr) {
+            logger.error({ err: receiptErr }, 'Failed to mark receipt PDF as failed after permanent job failure');
+          }
+        }
+
         if (payload.type === 'ms_sync' && payload.tenantId && payload.campaignId) {
           const correlationId = Math.random().toString(36).slice(2, 10).toUpperCase();
           logger.error(

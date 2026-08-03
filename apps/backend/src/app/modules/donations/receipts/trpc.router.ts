@@ -4,6 +4,7 @@ import {
   IssueReceiptObj,
   ListReceiptsObj,
   ReissueReceiptObj,
+  RetryReceiptPdfObj,
   RunYearEndStatementsObj,
   StatementRunIdObj,
 } from '@common';
@@ -43,6 +44,10 @@ export const DonationReceiptsRouter = router({
   reissueReceipt: receiptProcedure
     .input(ReissueReceiptObj)
     .mutation(({ ctx, input }) => controller.reissueReceipt(ctx.auth, input.receiptId, input.reason)),
+
+  retryReceiptPdf: receiptProcedure
+    .input(RetryReceiptPdfObj)
+    .mutation(({ ctx, input }) => controller.retryReceiptPdf(ctx.auth, input.receiptId)),
 
   listReceipts: receiptProcedure
     .input(ListReceiptsObj)

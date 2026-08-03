@@ -157,14 +157,43 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
   }
 
   /**
-   * Post-issue setters. Issued receipts are immutable by rule — these five narrow updates
-   * (PDF file, emailed stamp, cancel fields, reissue flag) are the ONLY writes this repo exposes,
-   * so nothing can quietly rewrite an issued receipt's contents.
+   * Post-issue setters. Issued receipts are immutable by rule — these narrow updates
+   * (PDF file, render-failure marker, emailed stamp, cancel fields, reissue flag) are the ONLY
+   * writes this repo exposes, so nothing can quietly rewrite an issued receipt's contents.
    */
   public async setFile(tenantId: string, receiptId: string, fileId: string): Promise<void> {
     await this.db
       .updateTable('donation_receipts')
-      .set({ file_id: fileId, updated_at: new Date() })
+      // Storing the PDF clears any earlier failure: a retry that worked must not leave the row
+      // looking broken, and the screens treat pdf_failed_at as authoritative.
+      .set({ file_id: fileId, pdf_failed_at: null, pdf_error: null, updated_at: new Date() })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', receiptId)
+      .execute();
+  }
+
+  /**
+   * Record that the render job gave up. Called from the worker's permanent-failure path only —
+   * an intermediate attempt failing is not interesting, because the job will try again.
+   *
+   * The `file_id IS NULL` guard matters: a job can also fail after the PDF was stored (the email
+   * step), and marking those rows would tell an admin the document is missing when it is not.
+   */
+  public async markRenderFailed(tenantId: string, receiptId: string, error: string): Promise<void> {
+    await this.db
+      .updateTable('donation_receipts')
+      .set({ pdf_failed_at: new Date(), pdf_error: error.slice(0, 500), updated_at: new Date() })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', receiptId)
+      .where('file_id', 'is', null)
+      .execute();
+  }
+
+  /** Drop the failure marker when a fresh render job is queued, so the row reads "generating". */
+  public async clearRenderFailure(tenantId: string, receiptId: string, trx?: Transaction<Models>): Promise<void> {
+    await (trx ?? this.db)
+      .updateTable('donation_receipts')
+      .set({ pdf_failed_at: null, pdf_error: null, updated_at: new Date() })
       .where('tenant_id', '=', tenantId)
       .where('id', '=', receiptId)
       .execute();

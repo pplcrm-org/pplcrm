@@ -73,6 +73,12 @@ export const ReissueReceiptObj = z.object({
 });
 export type ReissueReceiptType = z.infer<typeof ReissueReceiptObj>;
 
+/** Re-queue the PDF render for a receipt whose render job failed. Stores only — sends no email. */
+export const RetryReceiptPdfObj = z.object({
+  receiptId: idSchema,
+});
+export type RetryReceiptPdfType = z.infer<typeof RetryReceiptPdfObj>;
+
 export const ListReceiptsObj = z.object({
   donationId: idSchema.optional(),
   personId: idSchema.optional(),

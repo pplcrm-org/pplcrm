@@ -162,6 +162,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'p',
         text: 'The receipts list hides the per-gift donation receipts by default, because there is one for every gift and they would bury everything else. Turn on **Show acknowledgements** to see them.',
       },
+      { kind: 'h2', id: 'pdf-failed', text: 'When a PDF says “Retry PDF”' },
+      {
+        kind: 'p',
+        text: 'The PDF is drawn and filed a moment after the receipt itself is created, so a brand-new receipt shows a greyed-out **PDF** button for a few seconds. If the button turns into a red **Retry PDF**, that generation failed for good — usually something outside the receipt, such as file storage being briefly unreachable. The receipt is still valid and keeps its number; only the document is missing. Press **Retry PDF** and it is generated again. Retrying does not email the donor: once the PDF is there, download it and send it yourself if the original email never went out.',
+      },
       {
         kind: 'callout',
         tone: 'info',

@@ -960,6 +960,14 @@ export interface DonationReceipts extends RecordType {
   cancelled_by: string | null;
   /** files.id of the rendered PDF; NULL until the render job completes ("PDF pending"). */
   file_id: string | null;
+  /**
+   * When the render job gave up for good. NULL means it has not failed — so a row with no file_id
+   * and no pdf_failed_at is genuinely still rendering, and one with both is stuck until retried.
+   * Cleared when a PDF is finally stored.
+   */
+  pdf_failed_at: Timestamp | null;
+  /** Last render error (truncated) — shown to admins so they can tell a storage outage apart. */
+  pdf_error: string | null;
   issued_at: Generated<Timestamp>;
   emailed_at: Timestamp | null;
 }
