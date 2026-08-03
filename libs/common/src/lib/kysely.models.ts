@@ -911,17 +911,24 @@ export interface Donations extends Omit<RecordType, 'createdby_id' | 'updatedby_
 }
 
 /**
- * Official donation/contribution receipts and year-end giving statements. Immutable once issued —
+ * Every document a donor receives about their giving: the plain acknowledgement sent the moment a
+ * gift is recorded, official tax receipts, and year-end giving statements. Immutable once issued —
  * corrections go through cancel-and-replace (`replaces_receipt_id`); the only fields code may
  * update after issue are `file_id`, `emailed_at`, `reissue_required` and the cancel fields.
  * Donations link through `donation_receipt_items` for every kind (per-gift receipts have one item).
  */
 export interface DonationReceipts extends RecordType {
+  /** 'acknowledgement' | 'per_gift' | 'cumulative' | 'statement'. */
   kind: string;
-  regime: string;
+  /** NULL exactly when kind is 'acknowledgement' — an acknowledgement asserts no tax treatment. */
+  regime: string | null;
   /** Numbering year (issue-date year) for official receipts; the covered year for statements. */
   year: number;
-  /** Gap-free per (tenant, year) via receipt_counters; NULL for statements (unnumbered). */
+  /**
+   * Gap-free per (tenant, year, counter kind) via receipt_counters; NULL for statements
+   * (unnumbered). Acknowledgements draw on their own counter so the official tax-receipt sequence
+   * stays gap-free and auditable.
+   */
   serial: number | null;
   receipt_number: string | null;
   status: Generated<string>;
@@ -970,7 +977,9 @@ export interface DonationReceiptItems {
 
 /**
  * Gap-free receipt numbering: one row per (tenant, year, kind), bumped with
- * `INSERT … ON CONFLICT DO UPDATE … RETURNING n` inside the issue transaction.
+ * `INSERT … ON CONFLICT DO UPDATE … RETURNING n` inside the issue transaction. `kind` is the
+ * COUNTER kind ('official' | 'acknowledgement'), not the document kind — per-gift and cumulative
+ * tax receipts share one sequence so an auditor sees no gaps in it.
  */
 export interface ReceiptCounters {
   tenant_id: string;
@@ -987,6 +996,8 @@ export interface ReceiptStatementRuns extends RecordType {
   cursor_person_id: string | null;
   donors_total: number | null;
   generated_count: Generated<number>;
+  /** Of `generated_count`, how many were numbered official tax receipts rather than summaries. */
+  official_count: Generated<number>;
   emailed_count: Generated<number>;
   skipped_no_email: Generated<number>;
   failed_count: Generated<number>;

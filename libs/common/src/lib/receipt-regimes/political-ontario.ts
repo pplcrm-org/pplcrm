@@ -26,6 +26,7 @@ export const POLITICAL_ONTARIO_REGIME: ReceiptRegimeSpec = {
   candidateIssuance: 'external',
   issuerRole: 'Chief Financial Officer',
   registrationNumberLabel: 'Elections Ontario registration identifier',
+  registrationNumberHint: 'As recorded on your Elections Ontario registration',
   requiredIssuerFields: ['org_legal_name', 'registration_number', 'agent_name'],
   advisoryIssuerFields: ['signature_file_id'],
   candidateExtraFields: [],

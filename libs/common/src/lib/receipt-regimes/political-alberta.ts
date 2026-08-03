@@ -6,10 +6,11 @@ import type { ReceiptRegimeSpec } from './receipt-regime.types';
  *
  * Issuance: the Chief Financial Officer of the political participant issues official
  * contribution receipts. Receipts are REQUIRED for contributions over $50 and may be issued for
- * smaller amounts when the donor asks — auto-issue therefore skips gifts of $50 or less
- * (autoIssueThresholdCents), while manual issue stays available at any amount. The official
- * receipt must indicate whether the contribution is eligible for the Alberta political
- * contributions tax credit (showsTaxCreditEligibility).
+ * smaller amounts when the donor asks (mandatoryReceiptThresholdCents records the $50 line for
+ * reviewers; no code path withholds a receipt because of it — tax receipts here are annual or on
+ * request, so there is no per-gift decision to gate). The official receipt must indicate whether
+ * the contribution is eligible for the Alberta political contributions tax credit
+ * (showsTaxCreditEligibility).
  *
  * Sources:
  * - https://www.elections.ab.ca/finance/contributions/
@@ -23,10 +24,11 @@ export const POLITICAL_ALBERTA_REGIME: ReceiptRegimeSpec = {
   candidateIssuance: 'internal',
   issuerRole: 'Chief Financial Officer',
   registrationNumberLabel: 'Elections Alberta registration identifier',
+  registrationNumberHint: 'As recorded on your Elections Alberta registration',
   requiredIssuerFields: ['org_legal_name', 'org_address', 'agent_name'],
   advisoryIssuerFields: ['signature_file_id'],
   candidateExtraFields: [],
-  autoIssueThresholdCents: 5001,
+  mandatoryReceiptThresholdCents: 5001,
   showsTaxCreditEligibility: true,
   footerLines: ['Issued under the Election Finances and Contributions Disclosure Act (Alberta).'],
   settingsCaveat:

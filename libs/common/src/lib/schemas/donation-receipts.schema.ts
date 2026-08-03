@@ -3,18 +3,31 @@ import { idSchema } from './core.schema';
 import { RECEIPT_REGIME_IDS } from '../receipt-regimes';
 
 /**
- * Donation receipts — official receipt records (CRA charitable / Canadian political regimes)
- * and year-end giving statements. See libs/common/src/lib/receipt-regimes/ for the per-regime
- * prescribed contents and issuance rules these inputs feed.
+ * Everything a donor is sent about their giving: the plain acknowledgement that goes out the moment
+ * a gift is recorded, official tax receipts, and year-end giving statements. See
+ * libs/common/src/lib/receipt-regimes/ for the per-regime prescribed contents and issuance rules the
+ * tax documents follow — an acknowledgement follows none of them, which is the point of it.
  */
 
-/** 'per_gift' and 'cumulative' are numbered official receipts; 'statement' is an unnumbered summary. */
-export const RECEIPT_KINDS = ['per_gift', 'cumulative', 'statement'] as const;
+/**
+ * 'acknowledgement' is the unconditional thank-you-for-your-gift document — numbered from its own
+ * sequence, tied to no tax regime, and explicitly not a tax receipt. 'per_gift' and 'cumulative'
+ * are numbered official tax receipts; 'statement' is an unnumbered year-end summary.
+ */
+export const RECEIPT_KINDS = ['acknowledgement', 'per_gift', 'cumulative', 'statement'] as const;
 export const RECEIPT_KIND_LABELS: Record<(typeof RECEIPT_KINDS)[number], string> = {
-  per_gift: 'Receipt',
-  cumulative: 'Annual receipt',
+  acknowledgement: 'Acknowledgement',
+  per_gift: 'Tax receipt',
+  cumulative: 'Annual tax receipt',
   statement: 'Giving statement',
 };
+
+/**
+ * The kinds that are official tax documents. Anything asking "does this gift already have a tax
+ * receipt" must test against these — testing `kind !== 'statement'` was correct only while
+ * acknowledgements did not exist, and now silently counts every gift as receipted.
+ */
+export const OFFICIAL_RECEIPT_KINDS = ['per_gift', 'cumulative'] as const;
 
 /** Receipts are never deleted: corrections go through cancel (with reason) and reissue. */
 export const RECEIPT_STATUSES = ['issued', 'cancelled'] as const;
@@ -65,7 +78,11 @@ export const ListReceiptsObj = z.object({
   personId: idSchema.optional(),
   year: receiptYearSchema.optional(),
   status: receiptStatusSchema.optional(),
-  kind: receiptKindSchema.optional(),
+  /**
+   * Restrict to these document kinds. The receipts ledger passes the three tax/summary kinds by
+   * default: one acknowledgement per gift would bury everything else in the list.
+   */
+  kinds: z.array(receiptKindSchema).min(1).optional(),
   /** Cancelled-needing-reissue rows (`reissue_required`) only. */
   needsAttention: z.boolean().optional(),
   limit: z.number().int().min(1).max(200).optional(),

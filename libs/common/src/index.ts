@@ -309,6 +309,7 @@ export {
   RecordDonationObj,
   RECEIPT_KINDS,
   RECEIPT_KIND_LABELS,
+  OFFICIAL_RECEIPT_KINDS,
   RECEIPT_STATUSES,
   receiptKindSchema,
   receiptStatusSchema,

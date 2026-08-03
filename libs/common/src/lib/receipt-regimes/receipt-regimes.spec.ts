@@ -60,8 +60,23 @@ describe('receipt regimes', () => {
     }
   });
 
-  it('keeps the Alberta auto-issue threshold just above $50', () => {
-    expect(RECEIPT_REGIMES.political_ab.autoIssueThresholdCents).toBe(5001);
+  it('records the Alberta mandatory-receipt line just above $50', () => {
+    expect(RECEIPT_REGIMES.political_ab.mandatoryReceiptThresholdCents).toBe(5001);
+  });
+
+  /**
+   * `registrationNumberLabel` is printed on the receipt itself, so it must read as the regulator's
+   * name for the field and nothing more. Format examples belong in `registrationNumberHint`, which
+   * only the settings page renders. This was a real defect: the CRA charity label carried
+   * "(e.g. 123456789 RR 0001)" and every issued receipt printed it.
+   */
+  it('keeps input help out of the label printed on receipts', () => {
+    for (const spec of Object.values(RECEIPT_REGIMES)) {
+      expect(spec.registrationNumberLabel).not.toMatch(/e\.g\.|for example|\(optional/i);
+      if (spec.issuance === 'internal' && spec.requiredIssuerFields.includes('registration_number')) {
+        expect(spec.registrationNumberLabel.length).toBeGreaterThan(0);
+      }
+    }
   });
 });
 

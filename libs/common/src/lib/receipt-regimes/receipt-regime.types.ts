@@ -78,8 +78,15 @@ export interface ReceiptRegimeSpec {
   candidateIssuance: 'internal' | 'external';
   /** The legally prescribed role of the person who signs ("Registered agent", "CFO", …). */
   issuerRole: string;
-  /** Label for the `receipts.registration_number` field in this regime's settings UI. */
+  /**
+   * What the registration-number row is CALLED on the printed receipt. Keep it to the name the
+   * regulator uses and nothing else: this string goes onto a tax document, so a worked example or
+   * any other input help belongs in {@link registrationNumberHint} instead. (It used to serve both
+   * jobs, and receipts printed the field label "CRA registration number (e.g. 123456789 RR 0001)".)
+   */
   registrationNumberLabel: string;
+  /** Format example shown under the settings input. Never printed on a receipt. */
+  registrationNumberHint: string;
   /** Settings that must be present before this regime issues any receipt. */
   requiredIssuerFields: readonly ReceiptIssuerField[];
   /**
@@ -92,10 +99,11 @@ export interface ReceiptRegimeSpec {
   /** Additional settings required when the gift's campaign has kind='election'. */
   candidateExtraFields: readonly ReceiptIssuerField[];
   /**
-   * Auto-issue skips gifts at or below this amount (manual issue stays allowed at any amount).
-   * Alberta: receipts are mandatory only above $50.
+   * The gift amount above which this regime makes an official receipt mandatory (Alberta: $50).
+   * Recorded for reviewers and for the settings caveat text; no code path withholds a receipt over
+   * it. Tax receipts are issued annually or on request, so a per-gift floor has nothing to gate.
    */
-  autoIssueThresholdCents?: number;
+  mandatoryReceiptThresholdCents?: number;
   /** Whether the PDF prints a tax-credit-eligibility line (Alberta prescribes one). */
   showsTaxCreditEligibility?: boolean;
   /** Lines printed at the bottom of the receipt (e.g. the CRA name + website reference). */
