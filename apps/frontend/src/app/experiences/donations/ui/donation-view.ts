@@ -67,8 +67,20 @@ export class DonationViewComponent {
     return d ? `${d.person_first_name ?? ''} ${d.person_last_name ?? ''}`.trim() : '';
   });
 
-  /** The live (issued) official receipt, when one exists. */
-  protected readonly liveReceipt = computed(() => this.receipts().find((r) => r.status === 'issued') ?? null);
+  /**
+   * The acknowledgement — the plain thank-you every gift gets, sent automatically. Kept apart from
+   * the tax receipts below so it cannot be mistaken for one, and so it never suppresses the "Issue
+   * receipt" button: a gift that has been acknowledged still has no tax receipt.
+   */
+  protected readonly acknowledgement = computed(
+    () => this.receipts().find((r) => r.kind === 'acknowledgement' && r.status === 'issued') ?? null,
+  );
+
+  /** Official tax receipts only, issued and cancelled alike. */
+  protected readonly taxReceipts = computed(() => this.receipts().filter((r) => r.kind !== 'acknowledgement'));
+
+  /** The live (issued) official tax receipt, when one exists. */
+  protected readonly liveReceipt = computed(() => this.taxReceipts().find((r) => r.status === 'issued') ?? null);
   protected readonly canIssue = computed(
     () => this.isAdmin() && this.donation()?.status === 'succeeded' && !this.liveReceipt(),
   );

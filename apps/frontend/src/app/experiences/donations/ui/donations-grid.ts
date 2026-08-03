@@ -87,8 +87,18 @@ export class DonationsGridComponent implements OnInit {
 
   protected readonly monthlyDonorCount = computed(() => this.pledges().filter((p) => p.status === 'active').length);
 
-  protected readonly receiptedThisMonth = computed(
-    () => this.thisMonthGifts().filter((d) => d.receipt_status === 'receipted').length,
+  /**
+   * Gifts this month the donor has been sent something for — an acknowledgement, or an official tax
+   * receipt where one has been issued.
+   *
+   * Counting only tax receipts would be the wrong measure now that they are a year-end activity:
+   * the tile would read zero out of everything for eleven months and look like a backlog. What a
+   * fundraiser wants to see here is that no donor was left unthanked.
+   */
+  protected readonly acknowledgedThisMonth = computed(
+    () =>
+      this.thisMonthGifts().filter((d) => d.receipt_status === 'acknowledged' || d.receipt_status === 'receipted')
+        .length,
   );
 
   /** The All tab answers "how much have we raised?" for good — the one-time tab stays on the

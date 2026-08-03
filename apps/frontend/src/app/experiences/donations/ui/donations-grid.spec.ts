@@ -44,7 +44,7 @@ describe('DonationsGridComponent', () => {
       amount: 2500,
       status: 'failed',
       method: 'cash',
-      receipt_status: 'none',
+      receipt_status: 'acknowledged',
       receipt_id: null,
       receipt_number: null,
       country: 'US',
@@ -107,7 +107,9 @@ describe('DonationsGridComponent', () => {
     expect(component['thisMonthCount']()).toBe(1);
     expect(component['averageGift']()).toBe(50);
     expect(component['monthlyDonorCount']()).toBe(2);
-    expect(component['receiptedThisMonth']()).toBe(1);
+    // One succeeded gift this month, and it carries a tax receipt. The failed row is excluded
+    // before the acknowledgement state is even looked at, so it cannot inflate this.
+    expect(component['acknowledgedThisMonth']()).toBe(1);
   });
 
   it('should total every gift ever received on the All tab', async () => {

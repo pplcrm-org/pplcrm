@@ -81,11 +81,11 @@
 
     <div class="stats border border-base-200 bg-base-100 shadow-sm">
       <div class="stat p-4">
-        <div class="stat-title pc-eyebrow">Receipts</div>
+        <div class="stat-title pc-eyebrow">Acknowledged</div>
         <div class="stat-value text-xl font-extrabold text-base-content sm:text-2xl mt-1 tabular-nums">
-          {{ receiptedThisMonth() }}/{{ thisMonthCount() }}
+          {{ acknowledgedThisMonth() }}/{{ thisMonthCount() }}
         </div>
-        <div class="stat-desc text-[10px] text-base-content/40 mt-1">gifts receipted this month</div>
+        <div class="stat-desc text-[10px] text-base-content/40 mt-1">gifts thanked this month</div>
       </div>
     </div>
   </div>
@@ -128,12 +128,18 @@
           @switch (d.receipt_status) { @case ('receipted') {
           <span class="badge badge-success badge-outline text-xs font-semibold px-2.5 py-1 gap-1">
             <pc-icon name="check-circle" [size]="3"></pc-icon>
-            {{ d.receipt_number || 'Receipted' }}
+            {{ d.receipt_number || 'Tax receipt' }}
           </span>
           } @case ('cancelled') {
           <span class="badge badge-warning badge-outline text-xs font-semibold px-2.5 py-1">Receipt cancelled</span>
+          } @case ('acknowledged') {
+          <!-- Every gift lands here. Neutral, not success-green: the green badge is reserved for an
+               official tax receipt, which is a stronger claim than "we thanked them". -->
+          <span class="badge badge-ghost text-xs font-semibold px-2.5 py-1" title="Donation receipt sent to the donor">
+            {{ d.receipt_number || 'Acknowledged' }}
+          </span>
           } @default {
-          <span class="badge badge-ghost text-xs font-semibold px-2.5 py-1">No receipt</span>
+          <span class="badge badge-ghost text-xs font-semibold px-2.5 py-1 text-base-content/50">Not sent</span>
           } }
         </a>
       </td>

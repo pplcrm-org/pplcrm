@@ -49,6 +49,11 @@ export class DonationReceiptsPageComponent implements OnInit {
   protected readonly runs = signal<StatementRun[]>([]);
   protected readonly settingsStatus = signal<SettingsStatus | null>(null);
   protected readonly needsAttentionOnly = signal(false);
+  /**
+   * Off by default. Every gift produces an acknowledgement, so including them here would bury the
+   * tax receipts and statements this page exists for under one row per gift.
+   */
+  protected readonly showAcknowledgements = signal(false);
   protected readonly running = signal(false);
 
   protected readonly isAdmin = computed(() => {
@@ -77,6 +82,12 @@ export class DonationReceiptsPageComponent implements OnInit {
 
   protected toggleNeedsAttention(): void {
     this.needsAttentionOnly.update((v) => !v);
+  }
+
+  /** Server-side filter, so reloading is the point — the excluded rows were never fetched. */
+  protected toggleAcknowledgements(): void {
+    this.showAcknowledgements.update((v) => !v);
+    void this.load();
   }
 
   protected setStatementYear(value: string): void {
@@ -118,19 +129,21 @@ export class DonationReceiptsPageComponent implements OnInit {
   protected async runStatements(): Promise<void> {
     const year = this.statementYear();
     const confirmed = await this.dialogs.confirm({
-      title: `Send ${year} giving statements?`,
+      title: `Send ${year} year-end documents?`,
       message:
-        `One statement is generated for every donor with a successful gift in ${year}. Donors ` +
-        `with an email on file get theirs by email; the rest are marked for you to print. Large ` +
-        `batches send in waves and can take a few hours — you'll be notified when it finishes.`,
-      confirmText: 'Run statements',
+        `Every donor with a successful gift in ${year} gets one document: an official tax receipt ` +
+        `where this workspace can issue one and the donor has a mailing address on file, otherwise ` +
+        `a giving summary. Donors with an email address get theirs by email; the rest are marked ` +
+        `for you to print. Large batches send in waves and can take a few hours — you'll be ` +
+        `notified when it finishes.`,
+      confirmText: 'Run year-end',
       cancelText: 'Not now',
     });
     if (!confirmed) return;
     this.running.set(true);
     try {
       await this.receiptsSvc.runYearEndStatements(year);
-      this.alertSvc.showSuccess(`${year} statement run started. You'll be notified when it completes.`);
+      this.alertSvc.showSuccess(`${year} year-end run started. You'll be notified when it completes.`);
       await this.load();
     } catch (err) {
       this.alertSvc.showError(err instanceof Error && err.message ? err.message : 'Could not start the run');
@@ -143,7 +156,12 @@ export class DonationReceiptsPageComponent implements OnInit {
     const end = this._loading.begin();
     try {
       const [receipts, runs, status] = await Promise.all([
-        this.receiptsSvc.listReceipts({ limit: 200 }),
+        this.receiptsSvc.listReceipts({
+          limit: 200,
+          kinds: this.showAcknowledgements()
+            ? ['acknowledgement', 'per_gift', 'cumulative', 'statement']
+            : ['per_gift', 'cumulative', 'statement'],
+        }),
         this.receiptsSvc.listStatementRuns(),
         this.receiptsSvc.getSettingsStatus(),
       ]);

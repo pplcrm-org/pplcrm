@@ -106,8 +106,6 @@ export class DonationsSettingsComponent implements OnInit {
   // ── Receipts (CRA charitable / Canadian political regimes) ──────────────────
   protected readonly receiptRegimes = RECEIPT_REGIME_IDS.map((id) => RECEIPT_REGIMES[id]);
   protected readonly receiptRegime = signal<'' | ReceiptRegimeId>('');
-  protected readonly receiptMode = signal<'per_gift' | 'annual_cumulative'>('per_gift');
-  protected readonly receiptAutoIssue = signal(false);
   protected readonly receiptOrgName = signal('');
   protected readonly receiptOrgAddress = signal('');
   protected readonly receiptRegNumber = signal('');
@@ -505,10 +503,6 @@ export class DonationsSettingsComponent implements OnInit {
     this.receiptRegime.set(RECEIPT_REGIME_IDS.includes(value as ReceiptRegimeId) ? (value as ReceiptRegimeId) : '');
   }
 
-  protected setReceiptMode(value: string): void {
-    this.receiptMode.set(value === 'annual_cumulative' ? 'annual_cumulative' : 'per_gift');
-  }
-
   /** Upload the signatory's signature image; the file id is stored as a receipts.* setting. */
   protected async onSignatureSelected(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
@@ -585,12 +579,6 @@ export class DonationsSettingsComponent implements OnInit {
     // Receipts
     const regime = this.settingsSvc.getValue<string>('receipts.regime', '');
     this.receiptRegime.set(RECEIPT_REGIME_IDS.includes(regime as ReceiptRegimeId) ? (regime as ReceiptRegimeId) : '');
-    this.receiptMode.set(
-      this.settingsSvc.getValue<string>('receipts.mode', 'per_gift') === 'annual_cumulative'
-        ? 'annual_cumulative'
-        : 'per_gift',
-    );
-    this.receiptAutoIssue.set(this.settingsSvc.getValue<boolean>('receipts.auto_issue', false));
     this.receiptOrgName.set(this.settingsSvc.getValue<string>('receipts.org_legal_name', ''));
     this.receiptOrgAddress.set(this.settingsSvc.getValue<string>('receipts.org_address', ''));
     this.receiptRegNumber.set(this.settingsSvc.getValue<string>('receipts.registration_number', ''));
@@ -756,8 +744,6 @@ export class DonationsSettingsComponent implements OnInit {
         // Receipts: issuer details are snapshotted onto each receipt at issue time, so editing
         // these never rewrites an already-issued receipt.
         { key: 'receipts.regime', value: this.receiptRegime() },
-        { key: 'receipts.mode', value: this.receiptMode() },
-        { key: 'receipts.auto_issue', value: this.receiptAutoIssue() },
         { key: 'receipts.org_legal_name', value: this.receiptOrgName().trim() },
         { key: 'receipts.org_address', value: this.receiptOrgAddress().trim() },
         { key: 'receipts.registration_number', value: this.receiptRegNumber().trim() },
