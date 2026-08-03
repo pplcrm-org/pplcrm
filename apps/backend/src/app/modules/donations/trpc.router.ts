@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { authProcedure as baseAuthProcedure, router } from '../../../trpc';
+import { getAllOptions } from '../../../../../../libs/common/src';
 import {
   RecordDonationObj,
   stripeConnectCountrySchema,
@@ -16,7 +17,15 @@ const authProcedure = baseAuthProcedure.use(planFeatureGate('donations'));
 export const DonationsRouter = router({
   // ── One-time donations ──────────────────────────────────────────────────────
 
-  listDonations: authProcedure.query(({ ctx }) => controller.getTenantDonationsList(ctx.auth.tenant_id)),
+  /** Server-side page of the ledger for the donations grid — search, filters, sort, count. */
+  getAll: authProcedure
+    .input(getAllOptions)
+    .query(({ ctx, input }) => controller.getAllWithCounts(ctx.auth.tenant_id, input)),
+
+  /** Header-tile aggregates (totals, month deltas, thanked count, active pledges). */
+  getLedgerSummary: authProcedure
+    .input(z.object({ scope: z.enum(['all', 'one-time']) }).optional())
+    .query(({ ctx, input }) => controller.getDonationsLedgerSummary(ctx.auth.tenant_id, input?.scope ?? 'all')),
 
   /** Record an offline gift (Fig. 15 "Record donation" dialog) — cash, check, or bank transfer,
    * not run through the public Stripe checkout. */

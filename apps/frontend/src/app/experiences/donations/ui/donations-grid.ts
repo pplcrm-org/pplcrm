@@ -1,32 +1,50 @@
-import { Component, inject, signal, computed, OnInit, viewChild } from '@angular/core';
+import { Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { TabBar } from '@uxcommon/components/tabs/tabs';
-import { Table } from '@uxcommon/components/table/table';
-import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
+import { DataGrid } from '@frontend/shared/components/datagrid/datagrid';
+import { provideDataGridConfig } from '@frontend/shared/components/datagrid/datagrid.tokens';
+import { SECONDARY_CELL_CLASS } from '@frontend/shared/components/datagrid/grid-defaults';
 import { DONATION_METHOD_LABELS, type DonationMethod } from '../../../../../../../libs/common/src';
-import { DonationsService } from '../../../services/api/donations-service';
+import { AbstractAPIService } from '../../../services/api/abstract-api.service';
+import { DonationsService, type DonationLedgerSummary } from '../../../services/api/donations-service';
+import { WorkspaceCurrencyService } from '../../../shared/services/currency.service';
 import { DONATION_TABS, type DonationsScope } from './donation-tabs';
 import { RecordDonationDialog } from './record-donation-dialog';
-import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
-import { WorkspaceCurrencyService } from '../../../shared/services/currency.service';
 
-/** Row shapes inferred from the actual tRPC return types (superjson preserves `Date`, so
- * `created_at` arrives as a real `Date`, not a string) — avoids a hand-rolled interface drifting
- * out of sync with the repo's select list. */
-type DonationRow = Awaited<ReturnType<DonationsService['listDonations']>>[number];
-type PledgeRow = Awaited<ReturnType<DonationsService['listPledges']>>[number];
+import type { CellParams, ColumnDef as ColDef } from '@frontend/shared/components/datagrid/grid-defaults';
 
-/** How many rows of the recent-gifts table show before the "Showing latest N of M" sentence
- * points the rest of the way. Spec Fig. 15: "Showing the latest 8 of 62". */
-const RECENT_GIFTS_LIMIT = 8;
+/** Escape user data before it lands inside a cellRenderer HTML string. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 @Component({
   selector: 'pc-donations-grid',
-  imports: [EmptyState, RouterLink, Icon, RecordDonationDialog, TabBar, Table, GridHeaderComponent],
+  imports: [DataGrid, GridHeaderComponent, Icon, RecordDonationDialog, RouterLink, TabBar],
   templateUrl: './donations-grid.html',
+  host: { class: 'block h-full' },
+  providers: [
+    // Component-scoped service instance: each tab fixes its own `listScope` (all vs one-time),
+    // so the route-reuse strategy can keep both pages alive without them sharing a mutable scope.
+    DonationsService,
+    { provide: AbstractAPIService, useExisting: DonationsService },
+    provideDataGridConfig({
+      messages: {
+        loadFailed: 'Failed to load donations. Please try again.',
+        entityNoun: 'gift',
+        entityNounPlural: 'gifts',
+      },
+    }),
+  ],
 })
 export class DonationsGridComponent implements OnInit {
   private readonly donationsSvc = inject(DonationsService);
@@ -43,35 +61,19 @@ export class DonationsGridComponent implements OnInit {
    * value is fixed for the lifetime of the component — no need to track route changes. */
   protected readonly scope: DonationsScope = this.route.snapshot.data['scope'] === 'one-time' ? 'one-time' : 'all';
 
-  protected readonly donations = signal<DonationRow[]>([]);
-  protected readonly pledges = signal<PledgeRow[]>([]);
   protected readonly _loading = createLoadingGate();
-  /** Id of the most-recently recorded donation — flashes its row once, per the house
-   * "new rows flash in" pattern (row-saved-flash, datagrid.css). */
-  protected readonly highlightId = signal<string | null>(null);
 
-  /** Gifts this tab is accountable for: every successful one, minus the pledge installments
-   * when the One-time tab is asking (a `pledge_id` means the gift is one of a monthly series). */
-  private readonly succeeded = computed(() => {
-    const gifts = this.donations().filter((d) => d.status === 'succeeded');
-    return this.scope === 'one-time' ? gifts.filter((d) => d.pledge_id == null) : gifts;
-  });
+  /** Header-tile aggregates, computed server-side — the grid only ever holds one page of rows,
+   * so totals can no longer be summed client-side. */
+  protected readonly summary = signal<DonationLedgerSummary | null>(null);
 
-  /** Every dollar this tab has ever received — the All tab's headline number. */
-  protected readonly totalRaised = computed(
-    () => this.succeeded().reduce((sum, d) => sum + Number(d.amount || 0), 0) / 100,
-  );
-
-  private readonly thisMonthGifts = computed(() => this.succeeded().filter((d) => this.isInMonth(d.created_at, 0)));
-  private readonly lastMonthGifts = computed(() => this.succeeded().filter((d) => this.isInMonth(d.created_at, -1)));
-
-  protected readonly thisMonthTotal = computed(
-    () => this.thisMonthGifts().reduce((sum, d) => sum + Number(d.amount || 0), 0) / 100,
-  );
-  private readonly lastMonthTotal = computed(
-    () => this.lastMonthGifts().reduce((sum, d) => sum + Number(d.amount || 0), 0) / 100,
-  );
-  protected readonly thisMonthCount = computed(() => this.thisMonthGifts().length);
+  protected readonly totalRaised = computed(() => (this.summary()?.totalCents ?? 0) / 100);
+  protected readonly totalGiftCount = computed(() => this.summary()?.totalCount ?? 0);
+  protected readonly thisMonthTotal = computed(() => (this.summary()?.thisMonthCents ?? 0) / 100);
+  protected readonly thisMonthCount = computed(() => this.summary()?.thisMonthCount ?? 0);
+  private readonly lastMonthTotal = computed(() => (this.summary()?.lastMonthCents ?? 0) / 100);
+  protected readonly monthlyDonorCount = computed(() => this.summary()?.activePledgeCount ?? 0);
+  protected readonly acknowledgedThisMonth = computed(() => this.summary()?.acknowledgedThisMonth ?? 0);
 
   /** "+18% vs April"-style delta. Null when there's no prior-month baseline to compare against. */
   protected readonly monthOverMonthDelta = computed(() => {
@@ -84,22 +86,6 @@ export class DonationsGridComponent implements OnInit {
     const count = this.thisMonthCount();
     return count > 0 ? this.thisMonthTotal() / count : 0;
   });
-
-  protected readonly monthlyDonorCount = computed(() => this.pledges().filter((p) => p.status === 'active').length);
-
-  /**
-   * Gifts this month the donor has been sent something for — an acknowledgement, or an official tax
-   * receipt where one has been issued.
-   *
-   * Counting only tax receipts would be the wrong measure now that they are a year-end activity:
-   * the tile would read zero out of everything for eleven months and look like a backlog. What a
-   * fundraiser wants to see here is that no donor was left unthanked.
-   */
-  protected readonly acknowledgedThisMonth = computed(
-    () =>
-      this.thisMonthGifts().filter((d) => d.receipt_status === 'acknowledged' || d.receipt_status === 'receipted')
-        .length,
-  );
 
   /** The All tab answers "how much have we raised?" for good — the one-time tab stays on the
    * month, which is the number that moves there. */
@@ -115,15 +101,96 @@ export class DonationsGridComponent implements OnInit {
       : `${formattedTotal} raised this month across ${gifts}`;
   });
 
-  protected readonly recentGifts = computed(() => this.succeeded().slice(0, RECENT_GIFTS_LIMIT));
-  protected readonly totalGiftCount = computed(() => this.succeeded().length);
+  /** The ledger columns. Nothing is editable inline — amounts and receipt state have legal
+   * side effects (gap-free receipt numbering), so all edits go through the gift page. */
+  protected readonly col: ColDef[] = [
+    {
+      // The door: opens the gift, not the donor — a row in a list of gifts is about the gift,
+      // and the donor's own page is one further click from there.
+      field: 'donor_name',
+      headerName: 'Donor',
+      editable: false,
+      doorColumn: true,
+      noHide: true,
+      flex: true,
+      minWidth: 200,
+      valueGetter: (params: CellParams) => {
+        const data = params?.data;
+        if (!data) return '';
+        return [data['person_first_name'], data['person_last_name']]
+          .filter((p) => typeof p === 'string' && p.trim().length)
+          .join(' ')
+          .trim();
+      },
+      doorSubtitle: (params: CellParams) => {
+        const email = params?.data?.['person_email'];
+        return typeof email === 'string' && email.trim() ? email : null;
+      },
+    },
+    // Hidden by default (the door subtitle already shows it) but filterable/sortable on demand.
+    { field: 'person_email', headerName: 'Email', editable: false, hide: true, width: 220 },
+    {
+      field: 'amount',
+      headerName: 'Amount',
+      editable: false,
+      width: 130,
+      cellClass: 'text-right font-bold tabular-nums',
+      valueFormatter: (params: CellParams) => this.money.format(Number(params.value ?? 0)),
+    },
+    {
+      field: 'method',
+      headerName: 'Method',
+      editable: false,
+      width: 170,
+      cellRenderer: (params: CellParams) => {
+        const label = escapeHtml(this.methodLabel(String(params.value ?? '')));
+        const badge = `<span class="badge badge-ghost text-xs font-semibold px-2.5 py-1 capitalize">${label}</span>`;
+        // An installment of a monthly pledge, so the All tab does not read as all one-time gifts.
+        const monthly = params?.data?.['pledge_id']
+          ? `<span class="badge badge-outline badge-primary text-xs font-semibold px-2.5 py-1">Monthly</span>`
+          : '';
+        return `<span class="inline-flex flex-wrap items-center gap-1.5">${badge}${monthly}</span>`;
+      },
+    },
+    {
+      field: 'created_at',
+      headerName: 'Date',
+      editable: false,
+      width: 180,
+      cellClass: `${SECONDARY_CELL_CLASS} tabular-nums`,
+      valueFormatter: (params: CellParams) => this.formatDate(params.value as Date | string),
+    },
+    {
+      field: 'receipt_status',
+      headerName: 'Receipt',
+      editable: false,
+      width: 170,
+      cellRenderer: (params: CellParams) => {
+        const number = params?.data?.['receipt_number'];
+        const numberText = typeof number === 'string' && number ? escapeHtml(number) : null;
+        switch (params.value) {
+          case 'receipted':
+            return `<span class="badge badge-success badge-outline text-xs font-semibold px-2.5 py-1">${numberText ?? 'Tax receipt'}</span>`;
+          case 'cancelled':
+            return `<span class="badge badge-warning badge-outline text-xs font-semibold px-2.5 py-1">Receipt cancelled</span>`;
+          case 'acknowledged':
+            // Every gift lands here. Neutral, not success-green: the green badge is reserved for
+            // an official tax receipt, which is a stronger claim than "we thanked them".
+            return `<span class="badge badge-ghost text-xs font-semibold px-2.5 py-1" title="Donation receipt sent to the donor">${numberText ?? 'Acknowledged'}</span>`;
+          default:
+            return `<span class="badge badge-ghost text-xs font-semibold px-2.5 py-1 text-base-content/50">Not sent</span>`;
+        }
+      },
+    },
+  ];
 
-  ngOnInit(): void {
-    void this.load();
+  constructor() {
+    // Fix this instance's slice of the ledger before the child grid's first fetch.
+    this.donationsSvc.listScope = this.scope;
   }
 
-  protected refresh(): void {
-    void this.load();
+  ngOnInit(): void {
+    void this.loadSummary();
   }
 
   protected openRecordDonation(): void {
@@ -131,16 +198,9 @@ export class DonationsGridComponent implements OnInit {
   }
 
   protected async onDonationRecorded(): Promise<void> {
-    await this.load();
-    const newest = this.donations()[0];
-    if (newest) {
-      this.highlightId.set(newest.id);
-      setTimeout(() => this.highlightId.set(null), 1200);
-    }
-  }
-
-  protected formatCurrency(amountCents: number | null | undefined): string {
-    return this.money.format(amountCents);
+    await this.loadSummary();
+    // The grid listens to the service's refresh signal and re-fetches its current page.
+    this.donationsSvc.triggerRefresh();
   }
 
   /** Header stat tiles hold already-divided dollar amounts, not cents. */
@@ -168,25 +228,12 @@ export class DonationsGridComponent implements OnInit {
     return method in DONATION_METHOD_LABELS ? DONATION_METHOD_LABELS[method as DonationMethod] : method;
   }
 
-  private isInMonth(date: Date | string, monthOffset: number): boolean {
-    const d = new Date(date);
-    if (Number.isNaN(d.getTime())) return false;
-    const now = new Date();
-    const target = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-    return d.getFullYear() === target.getFullYear() && d.getMonth() === target.getMonth();
-  }
-
-  private async load(): Promise<void> {
+  private async loadSummary(): Promise<void> {
     const end = this._loading.begin();
     try {
-      const [donations, pledges] = await Promise.all([
-        this.donationsSvc.listDonations(),
-        this.donationsSvc.listPledges(),
-      ]);
-      this.donations.set(donations ?? []);
-      this.pledges.set(pledges ?? []);
+      this.summary.set(await this.donationsSvc.getLedgerSummary(this.scope));
     } catch (_err) {
-      this.alertSvc.showError('Failed to load donations. Please try again.');
+      this.alertSvc.showError('Failed to load donation totals. Please try again.');
     } finally {
       end();
     }

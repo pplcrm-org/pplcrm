@@ -735,6 +735,12 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
   public showToolbar = input<boolean>(true);
   /** Per-column sort/filter/hide dropdown in the header. Off for read-only "reference table" grids. */
   public showColumnMenus = input<boolean>(true);
+  /** Toolbar Columns picker (desktop dropdown and the phone "Columns…" row). Off for grids
+   * whose column set is deliberately fixed (e.g. Donations). */
+  public showColumnsButton = input<boolean>(true);
+  /** Advanced-query-builder entry points (desktop and mobile). Off keeps the simple filter
+   * panel and chip-row filters while dropping the rule builder. */
+  public showQueryBuilder = input<boolean>(true);
   public isCellEditableOverride = input<((row: GridRow, col: ColDef) => boolean) | null>(null);
 
   public readonly externalAdvancedFilterModel = input<QueryBuilderGroupNode | null>(null);

@@ -1,14 +1,85 @@
 import { Service } from '@angular/core';
 import type { DonationAddressType, StripeConnectCountry } from '@common';
-import { TRPCService } from './trpc-service';
+import type { ExportCsvInputType, ExportCsvResponseType, getAllOptionsType } from '../../../../../../libs/common/src';
+import { AbstractAPIService } from './abstract-api.service';
+import type { RouterOutputs } from './trpc-types';
+
+/** Which slice of the ledger the grid asks for — the One-time tab excludes pledge installments. */
+export type DonationsListScope = 'all' | 'one-time';
+
+export type DonationLedgerRow = RouterOutputs['donations']['getAll']['rows'][number];
+export type DonationLedgerSummary = RouterOutputs['donations']['getLedgerSummary'];
 
 @Service()
-export class DonationsService extends TRPCService<'donations'> {
-  // ── One-time donations ──────────────────────────────────────────────────────
+export class DonationsService extends AbstractAPIService<'donations', Record<string, unknown>> {
+  protected override readonly endpointName = 'donations';
 
-  public listDonations() {
-    return this.api.donations.listDonations.query();
+  /**
+   * Fixed scope this instance's getAll requests carry, sent as the `donation_scope` filter-model
+   * key. The donations page provides a component-scoped instance and sets this once from its
+   * route, so the All and One-time tabs never share one mutable scope.
+   */
+  public listScope: DonationsListScope = 'all';
+
+  // ── The donations grid (AbstractAPIService contract) ────────────────────────
+
+  public getAll(options?: getAllOptionsType): Promise<RouterOutputs['donations']['getAll']> {
+    const opts: getAllOptionsType = {
+      ...(options ?? {}),
+      filterModel: { ...(options?.filterModel ?? {}), donation_scope: { value: this.listScope } },
+    };
+    return this.api.donations.getAll.query(opts, { signal: this.ac.signal });
   }
+
+  /** Donations have no archive concept — the grid never shows the archive toggle. */
+  public getAllArchived(_options?: getAllOptionsType): Promise<{ rows: Record<string, unknown>[]; count: number }> {
+    return Promise.resolve({ rows: [], count: 0 });
+  }
+
+  public count(): Promise<number> {
+    return this.getAll({ startRow: 0, endRow: 1 }).then((res) => res.count ?? 0);
+  }
+
+  /** Gifts are recorded through the Record-donation dialog, never through the grid. */
+  public add(_row: Record<string, unknown>): Promise<unknown> {
+    return Promise.reject(new Error('Record donations through the Record donation dialog'));
+  }
+
+  public addMany(_rows: Record<string, unknown>[]): Promise<unknown> {
+    return Promise.resolve([]);
+  }
+
+  /** Amounts and receipt state have legal side effects — edits go through the gift page only. */
+  public update(_id: string, _data: Record<string, unknown>): Promise<unknown> {
+    return Promise.reject(new Error('Donations cannot be edited inline'));
+  }
+
+  public getById(id: string): Promise<unknown> {
+    return this.getDonation(id);
+  }
+
+  public attachTag(_id: string, _tag_name: string): Promise<unknown> {
+    return Promise.resolve();
+  }
+
+  public detachTag(_id: string, _tag_name: string): Promise<unknown> {
+    return Promise.resolve(false);
+  }
+
+  public getTags(_id: string): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+
+  public exportCsv(_input: ExportCsvInputType): Promise<ExportCsvResponseType> {
+    return Promise.reject(new Error('Donation export is not available yet'));
+  }
+
+  /** Header-tile aggregates for the donations page, computed server-side. */
+  public getLedgerSummary(scope: DonationsListScope): Promise<DonationLedgerSummary> {
+    return this.api.donations.getLedgerSummary.query({ scope }, { signal: this.ac.signal });
+  }
+
+  // ── One-time donations ──────────────────────────────────────────────────────
 
   public getHistory(personId: string) {
     return this.api.donations.getPersonDonationHistory.query(personId);

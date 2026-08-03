@@ -132,6 +132,7 @@
         >
           <pc-icon name="funnel" [size]="4"></pc-icon> Advanced Filter
         </button>
+        @if (grid.showQueryBuilder()) {
         <button
           class="btn btn-ghost btn-sm justify-start gap-2 text-xs"
           [class.text-primary]="grid.showAdvancedFilterBuilder() || grid.hasActiveAdvancedFilters()"
@@ -140,6 +141,7 @@
         >
           <pc-icon name="adjustments-horizontal" [size]="4"></pc-icon> Advanced query builder
         </button>
+        }
       </div>
       }
     </div>
@@ -151,6 +153,7 @@
     [phoneCollapsed]="true"
     [icon]="'view-column'"
     [tip]="'Columns'"
+    [hidden]="!grid.showColumnsButton()"
     [hasDropdown]="true"
     [hideCaret]="true"
   >
@@ -276,13 +279,13 @@
       </li>
       } @else {
       <div class="divider my-0 sm:hidden"></div>
-      }
+      } @if (grid.showColumnsButton()) {
       <li class="sm:hidden">
         <a (click)="openColumnsPanel(); $event.stopPropagation()">
           <pc-icon name="view-column" [size]="4"></pc-icon> Columns…
         </a>
       </li>
-      @if (!grid.disableDelete()) {
+      } @if (!grid.disableDelete()) {
       <div class="divider my-0 sm:hidden"></div>
       <li
         class="sm:hidden"
@@ -379,7 +382,7 @@
     <pc-grid-tool-btn
       icon="adjustments-horizontal"
       tip="Advanced query builder"
-      [hidden]="!grid.allowFilter()"
+      [hidden]="!grid.allowFilter() || !grid.showQueryBuilder()"
       [active]="grid.showAdvancedFilterBuilder() || grid.hasActiveAdvancedFilters()"
       [enabled]="!grid.hasActiveFilters() || grid.hasActiveAdvancedFilters()"
       (action)="grid.openAdvancedFilterBuilder()"
@@ -387,7 +390,12 @@
 
     <li class="pointer-events-none flex items-center px-0 text-neutral">|</li>
 
-    <pc-grid-tool-btn [icon]="'view-column'" [tip]="'Columns'" [hasDropdown]="true">
+    <pc-grid-tool-btn
+      [icon]="'view-column'"
+      [tip]="'Columns'"
+      [hidden]="!grid.showColumnsButton()"
+      [hasDropdown]="true"
+    >
       <pc-dg-columns-dropdown [grid]="grid" />
     </pc-grid-tool-btn>
 

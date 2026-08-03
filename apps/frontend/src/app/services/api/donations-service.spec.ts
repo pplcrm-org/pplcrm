@@ -8,7 +8,8 @@ describe('DonationsService', () => {
   beforeEach(() => {
     mockApi = {
       donations: {
-        listDonations: { query: vi.fn() },
+        getAll: { query: vi.fn() },
+        getLedgerSummary: { query: vi.fn() },
         getPersonDonationHistory: { query: vi.fn() },
         getDonationStats: { query: vi.fn() },
         checkEligibility: { query: vi.fn() },
@@ -29,16 +30,46 @@ describe('DonationsService', () => {
 
     service = Object.create(DonationsService.prototype) as DonationsService;
     (service as any).api = mockApi;
+    // Object.create skips field initializers — restore the two the grid contract relies on.
+    (service as any).ac = new AbortController();
+    service.listScope = 'all';
   });
 
-  it('should list one-time donations', async () => {
-    const rows = [{ id: '1', amount: 5000 }];
-    mockApi.donations.listDonations.query.mockResolvedValue(rows);
+  it('should stamp its fixed scope onto every grid page request', async () => {
+    mockApi.donations.getAll.query.mockResolvedValue({ rows: [], count: 0 });
 
-    const result = await service.listDonations();
+    await service.getAll({ startRow: 0, endRow: 25 });
 
-    expect(mockApi.donations.listDonations.query).toHaveBeenCalledWith();
-    expect(result).toEqual(rows);
+    const [options] = mockApi.donations.getAll.query.mock.calls[0];
+    expect(options.startRow).toBe(0);
+    expect(options.endRow).toBe(25);
+    expect(options.filterModel).toEqual({ donation_scope: { value: 'all' } });
+  });
+
+  it('should send the one-time scope without clobbering other column filters', async () => {
+    mockApi.donations.getAll.query.mockResolvedValue({ rows: [], count: 0 });
+    service.listScope = 'one-time';
+
+    await service.getAll({ filterModel: { method: { op: 'contains', value: 'cash' } } });
+
+    const [options] = mockApi.donations.getAll.query.mock.calls[0];
+    expect(options.filterModel).toEqual({
+      method: { op: 'contains', value: 'cash' },
+      donation_scope: { value: 'one-time' },
+    });
+  });
+
+  it('should fetch the ledger summary for a scope', async () => {
+    const summary = { totalCents: 5000, totalCount: 1 };
+    mockApi.donations.getLedgerSummary.query.mockResolvedValue(summary);
+
+    const result = await service.getLedgerSummary('one-time');
+
+    expect(mockApi.donations.getLedgerSummary.query).toHaveBeenCalledWith(
+      { scope: 'one-time' },
+      expect.objectContaining({ signal: expect.anything() }),
+    );
+    expect(result).toEqual(summary);
   });
 
   it('should fetch a person donation history', async () => {
@@ -164,8 +195,8 @@ describe('DonationsService', () => {
 
   it('should propagate errors from the tRPC client', async () => {
     const error = new Error('Network failure');
-    mockApi.donations.listDonations.query.mockRejectedValue(error);
+    mockApi.donations.getAll.query.mockRejectedValue(error);
 
-    await expect(service.listDonations()).rejects.toThrow('Network failure');
+    await expect(service.getAll()).rejects.toThrow('Network failure');
   });
 });

@@ -10,6 +10,7 @@ async function cleanTenant(db: any, tenantId: string, _personId: string) {
     .where('id', '=', tenantId)
     .execute();
   await db.deleteFrom('donations').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('donation_pledges').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('persons').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
@@ -218,6 +219,104 @@ describe('DonationsController Unit & Integration', () => {
       // Matching state: ON
       const check2 = await controller.checkEligibility(tenantId, personId, 10000, { country: 'CA', state: 'ON' });
       expect(check2.eligible).toBe(true);
+    });
+  });
+
+  describe('Donations ledger (getAll + summary)', () => {
+    /** One pledge + three gifts: a plain one-time gift, a monthly installment, and a refund. */
+    async function seedLedger(): Promise<void> {
+      const pledge = await db
+        .insertInto('donation_pledges')
+        .values({
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          person_id: personId,
+          stripe_subscription_id: `sub_${tenantId}`,
+          monthly_amount: 2500,
+          status: 'active',
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+
+      await db
+        .insertInto('donations')
+        .values([
+          {
+            tenant_id: tenantId,
+            campaign_id: campaignId,
+            person_id: personId,
+            amount: 50000,
+            status: 'succeeded',
+            method: 'card',
+          },
+          {
+            tenant_id: tenantId,
+            campaign_id: campaignId,
+            person_id: personId,
+            pledge_id: pledge.id,
+            amount: 2500,
+            status: 'succeeded',
+            method: 'card',
+          },
+          {
+            tenant_id: tenantId,
+            campaign_id: campaignId,
+            person_id: personId,
+            amount: 99900,
+            status: 'refunded',
+            method: 'card',
+          },
+        ])
+        .execute();
+    }
+
+    it('pages succeeded gifts with a total count and joined donor details', async () => {
+      await seedLedger();
+
+      const page = await controller.getAllWithCounts(tenantId, { startRow: 0, endRow: 1 });
+      expect(page.count).toBe(2); // the refunded gift is not in the ledger
+      expect(page.rows).toHaveLength(1); // one page of one row, not everything
+      expect(String(page.rows[0]['person_first_name'])).toBe('John');
+      expect(page.rows[0]['receipt_status']).toBe('none');
+    });
+
+    it('excludes pledge installments when the one-time scope filter is set', async () => {
+      await seedLedger();
+
+      const oneTime = await controller.getAllWithCounts(tenantId, {
+        startRow: 0,
+        endRow: 50,
+        filterModel: { donation_scope: { value: 'one-time' } },
+      });
+      expect(oneTime.count).toBe(1);
+      expect(oneTime.rows[0]['pledge_id']).toBeNull();
+    });
+
+    it('searches by donor name server-side', async () => {
+      await seedLedger();
+
+      const hit = await controller.getAllWithCounts(tenantId, { startRow: 0, endRow: 50, searchStr: 'john' });
+      expect(hit.count).toBe(2);
+
+      const miss = await controller.getAllWithCounts(tenantId, { startRow: 0, endRow: 50, searchStr: 'nobody' });
+      expect(miss.count).toBe(0);
+    });
+
+    it('computes the header tiles in SQL, scoped like the tabs', async () => {
+      await seedLedger();
+
+      const all = await controller.getDonationsLedgerSummary(tenantId, 'all');
+      expect(all.totalCents).toBe(52500);
+      expect(all.totalCount).toBe(2);
+      expect(all.thisMonthCents).toBe(52500); // both gifts were just created
+      expect(all.activePledgeCount).toBe(1);
+      expect(all.acknowledgedThisMonth).toBe(0); // no receipts issued in this seed
+
+      const oneTime = await controller.getDonationsLedgerSummary(tenantId, 'one-time');
+      expect(oneTime.totalCents).toBe(50000);
+      expect(oneTime.totalCount).toBe(1);
     });
   });
 

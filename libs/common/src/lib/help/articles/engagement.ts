@@ -30,11 +30,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'donations', text: 'Donations: money received' },
       {
         kind: 'p',
-        text: 'The [Donations](/donations) grid is the ledger of received gifts. Each donation belongs to a person, so a donor’s full giving history is always one click away on their profile’s **Donations** tab. Like any grid, it filters, exports, and bulk-edits. See [Working in grids](/help/grid-basics).',
+        text: 'The [Donations](/donations) grid is the ledger of received gifts. Each donation belongs to a person, so a donor’s full giving history is always one click away on their profile’s **Donations** tab. The list works like the other grids — search finds donors by name or email, columns filter and sort, and long ledgers page instead of loading every gift at once — but rows are read-only: donation amounts and receipts have legal weight, so open a gift to change anything about it. See [Working in grids](/help/grid-basics).',
       },
       {
         kind: 'p',
-        text: 'Three tabs sit at the top. **All** is the whole ledger, led by the total you have raised to date — every gift, including the monthly installments (they carry a **Monthly** chip). **One-time** narrows it to single gifts, so the month-over-month numbers are not moved by recurring money. **Monthly pledges** is the recurring commitments themselves.',
+        text: 'Four tabs sit at the top. **All** is the whole ledger, led by the total you have raised to date — every gift, including the monthly installments (they carry a **Monthly** chip). **One-time** narrows it to single gifts, so the month-over-month numbers are not moved by recurring money. **Monthly pledges** is the recurring commitments themselves, and **Receipts & statements** is where receipts and year-end documents live.',
       },
       {
         kind: 'p',

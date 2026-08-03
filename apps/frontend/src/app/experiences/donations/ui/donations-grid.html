@@ -1,4 +1,4 @@
-<div class="p-6 max-w-7xl mx-auto">
+<div class="mx-auto flex h-full min-h-0 w-full max-w-7xl flex-col p-6">
   <!-- Header: the one list-page header idiom (pc-grid-header, design §4) -->
   <pc-grid-header
     title="Donations"
@@ -27,8 +27,9 @@
   <progress class="progress w-full text-primary mb-6"></progress>
   }
 
-  <!-- Stats Grid (Fig. 15: TOTAL RAISED, THIS MONTH, AVERAGE GIFT, monthly-donor, receipt-status) -->
-  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">
+  <!-- Stats Grid (Fig. 15: TOTAL RAISED, THIS MONTH, AVERAGE GIFT, monthly-donor, receipt-status).
+       Computed server-side (getLedgerSummary) — the grid below only holds one page of rows. -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
     <div class="stats border border-base-200 bg-base-100 shadow-sm">
       <div class="stat p-4">
         <div class="stat-title pc-eyebrow">Total Raised</div>
@@ -90,88 +91,19 @@
     </div>
   </div>
 
-  <!-- Grid / Table View -->
-  <pc-table [columns]="5">
-    <ng-container pcTableHead>
-      <th>Donor</th>
-      <th class="text-right">Amount</th>
-      <th>Method</th>
-      <th>Date</th>
-      <th>Receipt</th>
-    </ng-container>
-
-    @for (d of recentGifts(); track d.id) {
-    <tr class="hover:bg-base-200/30 transition-all duration-200" [class.animate-saved-flash]="highlightId() === d.id">
-      <td>
-        <!-- Opens the gift, not the donor. A row in a list of gifts is about the gift, and the
-             donor's own page is one further click from there. -->
-        <div class="flex flex-col">
-          <a
-            [routerLink]="['/donations', d.id]"
-            class="font-semibold text-primary hover:underline"
-            title="Open this gift"
-          >
-            {{ d.person_first_name }} {{ d.person_last_name }}
-          </a>
-          <span class="text-xs text-base-content/50">{{ d.person_email }}</span>
-        </div>
-      </td>
-      <td class="text-right font-bold text-base-content tabular-nums">{{ formatCurrency(d.amount) }}</td>
-      <td>
-        <div class="flex flex-wrap items-center gap-1.5">
-          <span class="badge badge-ghost text-xs font-semibold px-2.5 py-1 capitalize"
-            >{{ methodLabel(d.method) }}</span
-          >
-          <!-- An installment of a monthly pledge, so the All tab does not read as all one-time gifts. -->
-          @if (d.pledge_id) {
-          <span class="badge badge-outline badge-primary text-xs font-semibold px-2.5 py-1">Monthly</span>
-          }
-        </div>
-      </td>
-      <td class="text-xs text-base-content/75 tabular-nums">{{ formatDate(d.created_at) }}</td>
-      <td>
-        <a [routerLink]="['/donations', d.id]" class="inline-flex" title="Open this gift">
-          @switch (d.receipt_status) { @case ('receipted') {
-          <span class="badge badge-success badge-outline text-xs font-semibold px-2.5 py-1 gap-1">
-            <pc-icon name="check-circle" [size]="3"></pc-icon>
-            {{ d.receipt_number || 'Tax receipt' }}
-          </span>
-          } @case ('cancelled') {
-          <span class="badge badge-warning badge-outline text-xs font-semibold px-2.5 py-1">Receipt cancelled</span>
-          } @case ('acknowledged') {
-          <!-- Every gift lands here. Neutral, not success-green: the green badge is reserved for an
-               official tax receipt, which is a stronger claim than "we thanked them". -->
-          <span class="badge badge-ghost text-xs font-semibold px-2.5 py-1" title="Donation receipt sent to the donor">
-            {{ d.receipt_number || 'Acknowledged' }}
-          </span>
-          } @default {
-          <span class="badge badge-ghost text-xs font-semibold px-2.5 py-1 text-base-content/50">Not sent</span>
-          } }
-        </a>
-      </td>
-    </tr>
-    } @empty { @if (_loading.loaded()) {
-    <tr>
-      <td colspan="5">
-        <pc-empty-state
-          icon="currency-dollar"
-          [bordered]="false"
-          title="No donations recorded yet"
-          hint="Configure your Stripe integration and set up a donation form, or record an offline gift directly."
-        >
-          <button class="btn btn-primary btn-sm gap-2" (click)="openRecordDonation()">
-            <pc-icon name="plus" [size]="4"></pc-icon>
-            Record donation
-          </button>
-        </pc-empty-state>
-      </td>
-    </tr>
-    } } @if (totalGiftCount() > recentGifts().length) {
-    <div pcTableFooter class="px-4 py-3 text-xs text-base-content/50 border-t border-base-200">
-      Showing the latest {{ recentGifts().length }} of {{ totalGiftCount() }}
-    </div>
-    }
-  </pc-table>
+  <!-- The ledger: server-side paged/searched/filtered/sorted. Rows are read-only; the donor
+       cell is the door into the gift page. Top-bar search finds donors by name and email. -->
+  <pc-datagrid
+    class="min-h-0 flex-1"
+    [colDefs]="col"
+    viewRoute="/donations"
+    [disableView]="false"
+    [enableSelection]="false"
+    [disableImport]="true"
+    [disableExport]="true"
+    [showColumnsButton]="false"
+    [showQueryBuilder]="false"
+  ></pc-datagrid>
 </div>
 
 <pc-record-donation-dialog (saved)="onDonationRecorded()"></pc-record-donation-dialog>

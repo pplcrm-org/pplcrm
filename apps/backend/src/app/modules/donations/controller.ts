@@ -78,8 +78,9 @@ export class DonationsController extends BaseController<'donations', DonationsRe
     return this.getRepo().getPersonCumulativeDonations(tenantId, personId, year);
   }
 
-  public async getTenantDonationsList(tenantId: string) {
-    return this.getRepo().getTenantDonationsList(tenantId);
+  /** Header-tile aggregates for the donations page, computed in SQL (see repo). */
+  public async getDonationsLedgerSummary(tenantId: string, scope: 'all' | 'one-time') {
+    return this.getRepo().getLedgerSummary(tenantId, scope);
   }
 
   /** One gift with its receipt state and campaign label — the donation detail page. */

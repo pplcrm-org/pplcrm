@@ -28,7 +28,9 @@ providers: [
 Template: `<pc-datagrid title="Teams" [colDefs]="col" [disableDelete]="false" [disableView]="false"
 [addRoute]="'add'" plusIcon="add-group">`. Toolbar features are opt-in/out via inputs —
 `disableDelete`/`disableView`/`disableExport`/`disableImport`/`disableMerge`/`disableRefresh`,
-`allowFilter`, `enableSelection`, `rowCanSelect`, `showToolbar`, `showArchiveIcon` — read the
+`allowFilter`, `enableSelection`, `rowCanSelect`, `showToolbar`, `showArchiveIcon`,
+`showColumnsButton` (the toolbar Columns picker; off for fixed-column grids like Donations),
+`showQueryBuilder` (the Advanced-query-builder entry points; off keeps simple filters) — read the
 input block in `datagrid.ts` for the full list before adding a new input; the flag you want
 probably exists. `provideDataGridConfig` merges per-grid copy (delete/export dialog text,
 failure messages) and `pageSize` over `DEFAULT_DATA_GRID_CONFIG` (`datagrid.tokens.ts`).
