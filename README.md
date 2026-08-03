@@ -64,12 +64,36 @@ For day-to-day work, assuming you've already completed the first-time setup:
 
 ### 1. Start Background Services
 
-Make sure Docker Desktop is running, then start your existing containers:
+Two services must be running: PostgreSQL and Azurite (the Azure blob-storage emulator).
+
+**PostgreSQL** — if installed via Homebrew, it is usually already running as a service.
+Check with `pg_isready -h localhost`; if it is not running:
+
+```bash
+brew services start postgresql@18
+```
+
+**Azurite** — run in its own terminal window (stays in the foreground):
+
+```bash
+npm run azurite:start
+```
+
+The `--skipApiVersionCheck` flag baked into that script is required: the repo's
+`@azure/storage-blob` library speaks a newer API version than Azurite accepts, and
+without the flag every storage call fails with an `InvalidHeaderValue` error.
+
+<details>
+<summary>Using Docker instead</summary>
+
+If you set up with Docker (see the [Setup Guide](SETUP.md)), start the existing containers:
 
 ```bash
 docker start pplcrm-db
 docker start pplcrm-azurite
 ```
+
+</details>
 
 ### 2. Run the Apps
 

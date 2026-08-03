@@ -4,6 +4,7 @@
   "license": "MIT",
   "scripts": {
     "lint": "eslint . --ext .ts",
+    "azurite:start": "npx --yes azurite --silent --skipApiVersionCheck --location \"$HOME/.azurite\"",
     "azurite:init": "node --loader ts-node/esm scripts/azurite-init.ts",
     "households:recompute-fp": "node --loader ts-node/esm scripts/recompute-fingerprints.ts",
     "households:regeocode-all": "node --loader ts-node/esm scripts/regeocode-all.ts",

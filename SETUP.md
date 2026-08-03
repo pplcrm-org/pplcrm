@@ -58,7 +58,32 @@ codes work the same way via the Postmark dev mock.
 # TWILIO_FROM_NUMBER=+15550006789
 ```
 
-### 3. Create Background Services (Docker)
+### 3. Create Background Services
+
+Two services are needed: a PostgreSQL database and Azurite (the Azure blob-storage
+emulator). You can run them with Docker (option B) or directly on the machine with no
+Docker at all (option A).
+
+#### Option A — without Docker
+
+```bash
+# PostgreSQL via Homebrew (runs as a background service)
+brew install postgresql@18
+brew services start postgresql@18
+createdb pplcrm
+
+# Azurite via npm — foreground process, run it in its own terminal window
+npm run azurite:start
+
+# Then, in another terminal, create the uploads container and CORS policy
+npm run azurite:init
+```
+
+The `azurite:start` script includes `--skipApiVersionCheck`, which is required: the
+repo's `@azure/storage-blob` library speaks a newer API version than Azurite accepts,
+and without the flag every storage call fails with an `InvalidHeaderValue` error.
+
+#### Option B — with Docker
 
 Make sure Docker Desktop is open and running, then spin up the database and storage services:
 
