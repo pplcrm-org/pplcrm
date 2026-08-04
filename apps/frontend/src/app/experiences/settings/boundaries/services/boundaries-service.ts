@@ -29,6 +29,13 @@ export interface BoundaryHouseholdPin {
   label: string;
 }
 
+/** The pins the map can draw, and how many located households the workspace actually holds. */
+export interface BoundaryHouseholdPins {
+  pins: BoundaryHouseholdPin[];
+  /** Every household with coordinates, including the ones no pin was returned for. */
+  totalLocated: number;
+}
+
 /**
  * Boundary maps: the sets a workspace holds, the areas inside one, and the free re-match.
  *
@@ -85,24 +92,22 @@ export class BoundariesService extends TRPCService<BoundarySetRowType> {
   }
 
   /**
-   * Every household that already has coordinates, as map pins.
+   * Households that already have coordinates, as map pins, with the true count of located ones.
    *
    * This is the point of drawing in the app rather than in external mapping software: the areas are
    * traced around the doors the workspace actually holds. Households without coordinates are left
    * out because there is nowhere honest to put them, not because they do not matter.
+   *
+   * The server caps the pin list and orders it by id, so a large workspace sees the same sample
+   * every time rather than a different arbitrary slice on each load. `totalLocated` is what the
+   * caption must quote as the workspace's number; matching runs over all of them regardless.
    */
-  public async listHouseholdPins(): Promise<BoundaryHouseholdPin[]> {
-    const rows: unknown[] = await this.api.households.getAll.query(undefined, { signal: this.ac.signal });
-    const pins: BoundaryHouseholdPin[] = [];
-    for (const row of rows) {
-      if (!isRecord(row)) continue;
-      const lat = numberOf(row['lat']);
-      const lng = numberOf(row['lng']);
-      const id = textOf(row['id']);
-      if (lat === null || lng === null || !id) continue;
-      pins.push({ id, lat, lng, label: householdLabel(row) });
-    }
-    return pins;
+  public async listHouseholdPins(): Promise<BoundaryHouseholdPins> {
+    const result = await this.api.boundaries.householdPins.query(undefined, { signal: this.ac.signal });
+    return {
+      pins: result.pins.map((row) => ({ id: row.id, lat: row.lat, lng: row.lng, label: householdLabel(row) })),
+      totalLocated: result.total_geocoded,
+    };
   }
 
   /**
@@ -135,25 +140,14 @@ export class BoundariesService extends TRPCService<BoundarySetRowType> {
   }
 }
 
-function householdLabel(row: Record<string, unknown>): string {
-  const street = [textOf(row['street_num']), textOf(row['street1'])].filter(Boolean).join(' ');
-  const city = textOf(row['city']);
+/** The pin tooltip: street address then city, and the bare word when the row has neither. */
+function householdLabel(row: { street_num: string | null; street1: string | null; city: string | null }): string {
+  const street = [row.street_num, row.street1]
+    .map((part) => part?.trim() ?? '')
+    .filter(Boolean)
+    .join(' ');
+  const city = row.city?.trim() ?? '';
   return [street, city].filter(Boolean).join(', ') || 'Household';
-}
-
-/** The household rows arrive from tRPC with no per-column type, so every field is narrowed here. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function numberOf(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function textOf(value: unknown): string {
-  if (typeof value === 'string') return value.trim();
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  return '';
 }
 
 function readFileId(value: unknown): string | null {

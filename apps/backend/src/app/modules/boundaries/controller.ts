@@ -7,6 +7,7 @@ import type {
   AddDrawnBoundarySetType,
   BoundaryFeatureRowType,
   BoundaryGeometryType,
+  BoundaryHouseholdPinsType,
   BoundarySetRowType,
   BoundaryValidationType,
   UpdateBoundaryFeatureType,
@@ -16,6 +17,7 @@ import {
   BOUNDARY_FEATURE_CODE_MAX,
   BOUNDARY_FEATURE_NAME_MAX,
   BOUNDARY_MAX_FEATURES_PER_SET,
+  BOUNDARY_MAX_PINS,
   BOUNDARY_MAX_SETS_PER_TENANT,
   BOUNDARY_MAX_VERTICES_PER_FEATURE,
   BOUNDARY_UPLOAD_MAX_BYTES,
@@ -106,6 +108,57 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
       });
     }
     return features;
+  }
+
+  /**
+   * The household pins the drawing map draws its areas around, plus how many located households
+   * there really are.
+   *
+   * Both numbers are returned because only one of them is the sample. The pin list stops at
+   * {@link BOUNDARY_MAX_PINS} and is ordered by id, so a workspace past the cap gets the SAME
+   * households on every load instead of an arbitrary set that changes under the person tracing over
+   * them. `total_geocoded` is the honest denominator for the caption; matching itself is unaffected,
+   * because it runs server-side over every household rather than over these pins.
+   *
+   * Households without coordinates are left out because there is nowhere honest to put them.
+   */
+  public async listHouseholdPins(auth: IAuthKeyPayload): Promise<BoundaryHouseholdPinsType> {
+    const db = this.getRepo().db;
+
+    const totalRow = await db
+      .selectFrom('households')
+      .select(({ fn }) => [fn.countAll().as('cnt')])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('lat', 'is not', null)
+      .where('lng', 'is not', null)
+      .executeTakeFirst();
+
+    const rows = await db
+      .selectFrom('households')
+      .select(['id', 'lat', 'lng', 'street_num', 'street1', 'city'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('lat', 'is not', null)
+      .where('lng', 'is not', null)
+      .orderBy('id', 'asc')
+      .limit(BOUNDARY_MAX_PINS)
+      .execute();
+
+    const pins: BoundaryHouseholdPinsType['pins'] = [];
+    for (const row of rows) {
+      const lat = asCoordinate(row.lat);
+      const lng = asCoordinate(row.lng);
+      if (lat === null || lng === null) continue;
+      pins.push({
+        id: String(row.id),
+        lat,
+        lng,
+        street_num: row.street_num ?? null,
+        street1: row.street1 ?? null,
+        city: row.city ?? null,
+      });
+    }
+
+    return { pins, total_geocoded: Number(totalRow?.cnt ?? 0) };
   }
 
   // ── Creating layers ───────────────────────────────────────────────────────────────────────────
@@ -304,6 +357,21 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
         },
         trx,
       );
+
+      // A turf remembers which area it was cut from by NAME: `turfs.boundary_name` is text, and the
+      // canvassing door refresh compares it to the area name exactly. Renaming an area without
+      // moving its turfs would leave them naming an area this map no longer has, so the refresh
+      // would find no doors — or, after a renumbering that reuses names, the wrong ones. Scoped to
+      // this layer as well as this tenant, because two layers may both have a "Ward 3".
+      if (name !== existing.name) {
+        await trx
+          .updateTable('turfs')
+          .set({ boundary_name: name })
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('boundary_set_id', '=', setId)
+          .where('boundary_name', '=', existing.name)
+          .execute();
+      }
 
       const count = await this.featuresRepo.countForSet(auth.tenant_id, setId, trx);
       await repo.touch(auth.tenant_id, setId, count, trx);

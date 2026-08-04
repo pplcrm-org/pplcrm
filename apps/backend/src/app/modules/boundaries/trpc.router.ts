@@ -36,6 +36,16 @@ function listFeatures() {
     .query(({ ctx, input }) => controller.listFeatures(ctx.auth, input.setId));
 }
 
+/**
+ * Household pins for the drawing map, capped and ordered, with the true located-household count.
+ *
+ * A read like the other two: any signed-in member may see where the workspace's doors are, and this
+ * returns strictly less about each household than the households list already does.
+ */
+function householdPins() {
+  return authProcedure.query(({ ctx }) => controller.listHouseholdPins(ctx.auth));
+}
+
 function createDrawn() {
   return adminOrOwnerProcedure
     .input(AddDrawnBoundarySetObj)
@@ -89,6 +99,7 @@ function validate() {
 export const BoundariesRouter = router({
   list: listSets(),
   features: listFeatures(),
+  householdPins: householdPins(),
   createDrawn: createDrawn(),
   upload: upload(),
   deleteSet: deleteSet(),

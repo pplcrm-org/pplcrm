@@ -349,6 +349,12 @@ Refreshing a turf's doors compares against **the turf's own**
 (`boundaryMembersNotInAnyTurf`), so redrawing a map never silently re-scopes an
 existing turf.
 
+Because that comparison is on the area's **name as text**, renaming an area in
+Settings → Boundaries rewrites `turfs.boundary_name` for every turf of that same
+boundary set in the same transaction (`BoundariesController.updateFeature`), so a
+renamed or renumbered area keeps refreshing the doors it always did instead of
+finding none.
+
 ## The universe = a smart list (reuse, don't re-derive)
 
 `CanvassingController.resolveUniverseHouseholdIds` calls

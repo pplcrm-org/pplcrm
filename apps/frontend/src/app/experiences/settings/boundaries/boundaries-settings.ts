@@ -191,11 +191,22 @@ export class BoundariesSettingsComponent implements OnInit {
   protected readonly featuresLoaded = signal(false);
   protected readonly validation = signal<BoundaryValidationType | null>(null);
   protected readonly validating = signal(false);
+  /**
+   * True when an area was added, reshaped or deleted since the numbers below were counted.
+   *
+   * The check walks every located household against every area of the layer in the API process, so
+   * running it after each edit made an editing session pay for that scan over and over. It runs when
+   * the map is opened and when the person presses "Check again"; in between, the page says the
+   * numbers are out of date rather than silently showing figures for the previous shapes.
+   */
+  protected readonly validationStale = signal(false);
   protected readonly saving = signal(false);
   protected readonly rematching = signal(false);
 
-  /** Household pins, fetched once and reused for every map. */
+  /** Household pins, fetched once and reused for every map. Capped server-side. */
   private readonly pins = signal<BoundaryHouseholdPin[]>([]);
+  /** Every located household in the workspace, which is more than the pin list when it was capped. */
+  private readonly locatedHouseholds = signal(0);
   protected readonly pinsLoaded = signal(false);
 
   /** Drawing mode: map clicks place vertices and saved areas grow draggable handles. */
@@ -302,9 +313,17 @@ export class BoundariesSettingsComponent implements OnInit {
       .map((pin) => ({ position: { lat: pin.lat, lng: pin.lng }, variant: 'muted' as const, tooltip: pin.label })),
   );
 
+  /**
+   * How many pins are on the map, and how many located households the workspace holds.
+   *
+   * These are two different numbers and the caption has to say both. Pins are thinned twice: the
+   * server returns at most a few thousand of them, and this page draws at most {@link MAX_PINS_DRAWN}
+   * of those. The count of located households comes from the server as its own number, so it stays
+   * true however much the pin layer was thinned.
+   */
   protected readonly pinsShown = computed(() => Math.min(this.pins().length, MAX_PINS_DRAWN));
-  protected readonly pinsTotal = computed(() => this.pins().length);
-  protected readonly pinsCapped = computed(() => this.pins().length > MAX_PINS_DRAWN);
+  protected readonly pinsTotal = computed(() => this.locatedHouseholds());
+  protected readonly pinsCapped = computed(() => this.pinsShown() < this.pinsTotal());
 
   /**
    * Every area on the map, one shape per part.
@@ -454,7 +473,9 @@ export class BoundariesSettingsComponent implements OnInit {
   private async loadPins(): Promise<void> {
     if (this.pinsLoaded()) return;
     try {
-      this.pins.set(await this.boundaries.listHouseholdPins());
+      const loaded = await this.boundaries.listHouseholdPins();
+      this.pins.set(loaded.pins);
+      this.locatedHouseholds.set(loaded.totalLocated);
     } catch (err) {
       // A missing pin layer does not stop anyone drawing, so this reports and carries on.
       this.alerts.showError(getUserErrorMessage(err, 'Could not load household pins for the map.'));
@@ -467,6 +488,7 @@ export class BoundariesSettingsComponent implements OnInit {
     this.validating.set(true);
     try {
       this.validation.set(await this.boundaries.validate(setId));
+      this.validationStale.set(false);
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not check this map against your households.'));
     } finally {
@@ -491,6 +513,7 @@ export class BoundariesSettingsComponent implements OnInit {
     this.features.set([]);
     this.featuresLoaded.set(false);
     this.validation.set(null);
+    this.validationStale.set(false);
     this.drawing.set(false);
     this.pendingPath.set(null);
     this.selectedFeatureId.set(null);
@@ -519,6 +542,7 @@ export class BoundariesSettingsComponent implements OnInit {
     this.features.set([]);
     this.featuresLoaded.set(false);
     this.validation.set(null);
+    this.validationStale.set(false);
     this.selectedFeatureId.set(null);
     this.pendingPath.set(null);
     this.drawing.set(false);
@@ -800,7 +824,10 @@ export class BoundariesSettingsComponent implements OnInit {
       this.features.update((features) => [...features, created]);
       this.bumpSetFeatureCount(setId, 1);
       this.alerts.showSuccess(`${created.name} saved.`);
-      await this.refreshValidation(setId);
+      // The fit numbers now describe the map as it was before this area existed. Re-counting them
+      // scans every located household against every area, so it waits to be asked; see
+      // `validationStale`.
+      this.validationStale.set(true);
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not save that area.'));
     } finally {
@@ -873,7 +900,7 @@ export class BoundariesSettingsComponent implements OnInit {
       this.selectedFeatureId.set(null);
       this.bumpSetFeatureCount(setId, -1);
       this.alerts.showSuccess(`${feature.name} deleted.`);
-      await this.refreshValidation(setId);
+      this.validationStale.set(true);
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not delete that area.'));
     }
@@ -936,10 +963,13 @@ export class BoundariesSettingsComponent implements OnInit {
           continue;
         }
         this.replaceFeature(await this.boundaries.updateFeature(feature.id, { geometry }));
+        // The saved shape moves households between areas, so the fit numbers on screen are now for
+        // the old shape. They are re-counted on request rather than after every drag: the count
+        // walks every located household against every area. See `validationStale`.
+        this.validationStale.set(true);
       }
       // A refused change would otherwise stay drawn, showing a shape the server never accepted.
       if (diverged && setId) await this.loadFeatures(setId);
-      if (setId) await this.refreshValidation(setId);
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not save the new shape.'));
       // The screen and the server have diverged, so re-read rather than leave a shape that is a lie.

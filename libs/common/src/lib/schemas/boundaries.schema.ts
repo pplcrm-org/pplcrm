@@ -61,6 +61,15 @@ export const BOUNDARY_MAX_VERTICES_PER_FEATURE = 50_000;
 /** Most layers one workspace may hold at once, across every source. */
 export const BOUNDARY_MAX_SETS_PER_TENANT = 50;
 
+/**
+ * Most household pins one request returns for the drawing map.
+ *
+ * A workspace can hold far more located households than a map can usefully draw or a browser can
+ * hold, so the pin read is capped. The cap is why the same response also carries the true number of
+ * located households: a capped sample that does not say how much it left out reads as a total.
+ */
+export const BOUNDARY_MAX_PINS = 5_000;
+
 /** Human-readable form of {@link BOUNDARY_UPLOAD_MAX_BYTES}, for messages the user reads. */
 export const BOUNDARY_UPLOAD_MAX_LABEL = '20 MB';
 
@@ -302,6 +311,37 @@ export const BoundaryFeatureObj = z.object({
   bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]),
 });
 export type BoundaryFeatureRowType = z.infer<typeof BoundaryFeatureObj>;
+
+/**
+ * One household with coordinates, thinned to what a map pin needs: where to put it and enough of
+ * the address to label it. The address parts are sent separately rather than pre-joined so the page
+ * decides how to write them.
+ */
+export const BoundaryHouseholdPinObj = z.object({
+  id: z.string(),
+  lat: z.number(),
+  lng: z.number(),
+  street_num: z.string().nullable(),
+  street1: z.string().nullable(),
+  city: z.string().nullable(),
+});
+export type BoundaryHouseholdPinType = z.infer<typeof BoundaryHouseholdPinObj>;
+
+/**
+ * The pins for the drawing map, plus the number of located households they were drawn from.
+ *
+ * Both numbers are here because only one of them is the sample. `pins` stops at
+ * {@link BOUNDARY_MAX_PINS} and is ordered by id so the same households come back on every load;
+ * `total_geocoded` counts every located household in the workspace. Matching is unaffected by the
+ * cap — it runs server-side over all of them — but a caption that reported `pins.length` as the
+ * workspace total would be false for any workspace past the cap.
+ */
+export const BoundaryHouseholdPinsObj = z.object({
+  pins: z.array(BoundaryHouseholdPinObj),
+  /** Households with coordinates in the workspace, whether or not a pin was returned for them. */
+  total_geocoded: z.number(),
+});
+export type BoundaryHouseholdPinsType = z.infer<typeof BoundaryHouseholdPinsObj>;
 
 /**
  * The two honest quality numbers for a hand-drawn or uploaded map, reported after every save.

@@ -514,9 +514,9 @@
         @if (!pinsLoaded()) { Loading your household pins. } @else if (pinsTotal() === 0) { No household has coordinates
         yet, so there are no pins to draw around. Households get coordinates from geocoding after an address is added or
         imported. @if (drawing()) { Zoom to your area, then click to place corners. } } @else if (pinsCapped()) {
-        Showing {{ pinsShown().toLocaleString() }} of {{ pinsTotal().toLocaleString() }} located households as pins. The
-        rest are still matched; they are just not all drawn. } @else { {{ pinsShown().toLocaleString() }} located
-        households shown as pins. }
+        Showing {{ pinsShown().toLocaleString() }} of {{ pinsTotal().toLocaleString() }} located households as pins.
+        These pins are a sample to trace over, always the same one; matching runs over every located household, not just
+        the ones drawn here. } @else { {{ pinsShown().toLocaleString() }} located households shown as pins. }
       </p>
     </div>
 
@@ -624,10 +624,11 @@
     </div>
   </div>
 
-  <!-- The two honest quality numbers, refreshed after every save. Free to compute. -->
+  <!-- The two honest quality numbers. Counted when the map is opened and when "Check again" is
+       pressed, not after every edit: the count walks every located household against every area. -->
   <pc-card
     title="How well this map fits your households"
-    subtitle="Recalculated after every change. It calls no paid service."
+    subtitle="Counted when you open this map and whenever you press Check again. It calls no paid service."
     icon="check-circle"
   >
     @if (validating() && !validation()) {
@@ -665,7 +666,10 @@
     <p class="text-xs text-base-content/70">Nothing checked yet.</p>
     }
 
-    <div class="flex flex-wrap justify-end gap-2">
+    <div class="flex flex-wrap items-center justify-end gap-2">
+      @if (validationStale()) {
+      <p class="mr-auto text-xs text-warning">Areas changed — press Check again to refresh these numbers.</p>
+      }
       <button
         type="button"
         class="btn btn-outline btn-primary btn-sm"
