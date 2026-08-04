@@ -235,6 +235,36 @@
         </div>
       </div>
 
+      <!-- Year-end statements covering this gift: reference only. They belong to the donor's whole
+           year, so cancelling or replacing one from a single gift is never offered here. -->
+      @if (isAdmin() && coveringStatements().length > 0) {
+      <div class="card border border-base-200 bg-base-100 shadow-sm">
+        <div class="card-body p-5">
+          <h3 class="font-bold text-base-content mb-2">Year-end giving statement covering this gift</h3>
+          @for (s of coveringStatements(); track s.id) {
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">
+            <span class="font-semibold tabular-nums">{{ s.year }}</span>
+            <span class="text-base-content/70">
+              @if (s.status === 'issued') { Issued {{ formatDate(s.issued_at) }} } @else { Cancelled {{
+              formatDate(s.cancelled_at) }} }
+            </span>
+            @if (s.file_id) {
+            <div class="ml-auto">
+              <button class="btn btn-ghost btn-xs gap-1" title="Download PDF" (click)="downloadReceipt(s)">
+                <pc-icon name="arrow-down-tray" [size]="3"></pc-icon>
+                PDF
+              </button>
+            </div>
+            }
+          </div>
+          }
+          <p class="text-xs text-base-content/55 mt-2">
+            A summary of the donor's whole year, not this gift's own receipt. Manage it from Receipts &amp; statements.
+          </p>
+        </div>
+      </div>
+      }
+
       <!-- Activity log (mandatory on every mutating view) -->
       <pc-record-activities [entity]="'persons'" [entityId]="d.person_id ?? ''"></pc-record-activities>
     </div>

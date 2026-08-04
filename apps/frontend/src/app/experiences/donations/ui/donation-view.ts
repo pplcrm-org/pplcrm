@@ -8,7 +8,13 @@ import { DetailLayout } from '@uxcommon/components/detail-layout/detail-layout';
 import { DetailRow } from '@uxcommon/components/detail-row/detail-row';
 import { ProfileCard } from '@uxcommon/components/profile-card/profile-card';
 import { createLoadingGate } from '@uxcommon/loading-gate';
-import { DONATION_METHOD_LABELS, RECEIPT_KIND_LABELS, type DonationMethod, type ReceiptKind } from '@common';
+import {
+  DONATION_METHOD_LABELS,
+  OFFICIAL_RECEIPT_KINDS,
+  RECEIPT_KIND_LABELS,
+  type DonationMethod,
+  type ReceiptKind,
+} from '@common';
 import { environment } from '../../../../environments/environment';
 import { AuthService } from '../../../auth/auth-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
@@ -21,6 +27,9 @@ import { WorkspaceCurrencyService } from '../../../shared/services/currency.serv
 
 type DonationDetail = Awaited<ReturnType<DonationsService['getDonation']>>;
 type ReceiptRowT = Awaited<ReturnType<DonationReceiptsService['listReceipts']>>[number];
+
+/** Widened copy for comparing against a row's `kind` string: the constant is a readonly tuple. */
+const OFFICIAL_KINDS: readonly string[] = OFFICIAL_RECEIPT_KINDS;
 
 /**
  * One gift: amount/method/donor/campaign, its receipt history, and the issue / cancel /
@@ -76,8 +85,16 @@ export class DonationViewComponent {
     () => this.receipts().find((r) => r.kind === 'acknowledgement' && r.status === 'issued') ?? null,
   );
 
-  /** Official tax receipts only, issued and cancelled alike. */
-  protected readonly taxReceipts = computed(() => this.receipts().filter((r) => r.kind !== 'acknowledgement'));
+  /**
+   * Official tax receipts only (per_gift and cumulative), issued and cancelled alike — the same
+   * predicate the backend guard uses. A year-end giving statement covers this gift too, but it
+   * belongs to the donor's whole year: cancelling or replacing it from here would void that whole
+   * document, so statements are listed separately and read-only below.
+   */
+  protected readonly taxReceipts = computed(() => this.receipts().filter((r) => OFFICIAL_KINDS.includes(r.kind)));
+
+  /** Year-end giving statements that cover this gift. Shown for reference only — no actions. */
+  protected readonly coveringStatements = computed(() => this.receipts().filter((r) => r.kind === 'statement'));
 
   /** The live (issued) official tax receipt, when one exists. */
   protected readonly liveReceipt = computed(() => this.taxReceipts().find((r) => r.status === 'issued') ?? null);
@@ -164,6 +181,19 @@ export class DonationViewComponent {
       });
       if (!answer?.trim()) return;
       reason = answer.trim();
+    } else {
+      // A cancelled receipt needs no reason, but reissuing still burns a serial and mails the
+      // donor an official document, so it must never happen on a single click.
+      const confirmed = await this.dialogs.confirm({
+        title: `Reissue receipt ${receipt.receipt_number}?`,
+        message:
+          'A new numbered receipt replaces this cancelled one, is saved as a PDF, and is emailed to ' +
+          'the donor if they have an email address on file. Issued receipts cannot be edited — only ' +
+          'cancelled and replaced.',
+        confirmText: 'Reissue receipt',
+        cancelText: 'Not now',
+      });
+      if (!confirmed) return;
     }
     await this.runAction(async () => {
       const successor = await this.receiptsSvc.reissueReceipt({ receiptId: receipt.id, reason });
@@ -191,7 +221,10 @@ export class DonationViewComponent {
       );
       return;
     }
-    const filename = `Receipt-${receipt.receipt_number ?? receipt.id}.pdf`;
+    const filename =
+      receipt.kind === 'statement'
+        ? `Giving-statement-${receipt.year}.pdf`
+        : `Receipt-${receipt.receipt_number ?? receipt.id}.pdf`;
     void downloadWithAuthHeader(
       `${environment.apiUrl}/api/files/download/${receipt.file_id}`,
       this.tokenSvc.getAuthToken(),

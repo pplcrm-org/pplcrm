@@ -172,7 +172,7 @@
       <th class="text-right">PDF</th>
     </ng-container>
 
-    @for (r of visibleReceipts(); track r.id) {
+    @for (r of receipts(); track r.id) {
     <tr class="hover:bg-base-200/30 transition-all duration-200">
       <td class="font-semibold tabular-nums">{{ r.receipt_number || '—' }}</td>
       <td>{{ kindLabel(r.kind) }}</td>
@@ -233,5 +233,10 @@
     </tr>
     } }
   </pc-table>
-  }
+
+  @if (atRowCap()) {
+  <p class="text-xs text-base-content/55 mt-2">
+    Showing the newest {{ rowCap }} documents — use the filters to narrow.
+  </p>
+  } }
 </div>

@@ -25,6 +25,12 @@ type SettingsStatus = Awaited<ReturnType<DonationReceiptsService['getSettingsSta
 const STATEMENT_YEARS_BACK = 5;
 
 /**
+ * The most rows the ledger asks for — also the server's own maximum. There is no paging yet, so a
+ * full page is a truncated page, and the list says so.
+ */
+const RECEIPT_ROW_CAP = 200;
+
+/**
  * Receipts & year-end statements — the workspace-wide receipts ledger (official receipts and
  * giving statements), the needs-attention filter, and the batch statement runs. Admin/owner
  * only: the server refuses everyone else, and this page explains that instead of erroring.
@@ -69,9 +75,10 @@ export class DonationReceiptsPageComponent implements OnInit {
   })();
   protected readonly statementYear = signal(new Date().getFullYear() - 1);
 
-  protected readonly visibleReceipts = computed(() =>
-    this.needsAttentionOnly() ? this.receipts().filter((r) => r.reissue_required) : this.receipts(),
-  );
+  protected readonly rowCap = RECEIPT_ROW_CAP;
+
+  /** A full page means older documents exist that this list is not showing. */
+  protected readonly atRowCap = computed(() => this.receipts().length >= RECEIPT_ROW_CAP);
 
   ngOnInit(): void {
     if (this.isAdmin()) void this.load();
@@ -81,8 +88,13 @@ export class DonationReceiptsPageComponent implements OnInit {
     void this.load();
   }
 
+  /**
+   * Server-side filter, so reloading is the point: filtering the fetched rows would have hidden
+   * every flagged receipt older than the newest {@link RECEIPT_ROW_CAP} documents.
+   */
   protected toggleNeedsAttention(): void {
     this.needsAttentionOnly.update((v) => !v);
+    void this.load();
   }
 
   /** Server-side filter, so reloading is the point — the excluded rows were never fetched. */
@@ -180,7 +192,8 @@ export class DonationReceiptsPageComponent implements OnInit {
     try {
       const [receipts, runs, status] = await Promise.all([
         this.receiptsSvc.listReceipts({
-          limit: 200,
+          limit: RECEIPT_ROW_CAP,
+          needsAttention: this.needsAttentionOnly() || undefined,
           kinds: this.showAcknowledgements()
             ? ['acknowledgement', 'per_gift', 'cumulative', 'statement']
             : ['per_gift', 'cumulative', 'statement'],
