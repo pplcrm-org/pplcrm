@@ -420,6 +420,40 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
   }
 
   /**
+   * Campaign facts for a SET of covered gifts — the cumulative counterpart of
+   * {@link loadCampaignFacts}.
+   *
+   * `isElection` is true when ANY covered gift belongs to an election-kind campaign: one candidate
+   * gift on the document makes the regime's candidate rules apply to the whole document. Regimes
+   * whose candidate receipts are issued externally never reach here with one, because the gather
+   * query excluded those gifts.
+   *
+   * `electoralDistrict` is the covered election campaigns' seat only when they all agree on ONE
+   * name — two different seats cannot both be printed on a single receipt, so disagreement falls
+   * back to the workspace setting via {@link resolvedIssuerValue}, and to the missing-fields guard
+   * when that setting is blank, keeping the guard and the printed receipt in agreement. A campaign
+   * row that no longer exists contributes nothing, matching loadCampaignFacts' fallback.
+   */
+  private async cumulativeCampaignFacts(
+    trx: Transaction<Models>,
+    tenantId: string,
+    donations: Selectable<Models['donations']>[],
+  ): Promise<ReceiptCampaignFacts> {
+    const campaignIds = [...new Set(donations.map((d) => d.campaign_id).filter((id): id is string => id != null))];
+    if (campaignIds.length === 0) return NO_CAMPAIGN;
+    const campaigns = await trx
+      .selectFrom('campaigns')
+      .select(['kind', 'seat_name'])
+      .where('tenant_id', '=', tenantId)
+      .where('id', 'in', campaignIds)
+      .execute();
+    const election = campaigns.filter((c) => c.kind === 'election');
+    if (election.length === 0) return NO_CAMPAIGN;
+    const seats = new Set(election.map((c) => c.seat_name?.trim()).filter((s): s is string => Boolean(s)));
+    return { isElection: true, electoralDistrict: seats.size === 1 ? [...seats][0] : null };
+  }
+
+  /**
    * Issue one official per-gift TAX receipt for a single gift, on request.
    *
    * Nothing calls this automatically. Official receipting is a year-end activity
@@ -649,8 +683,9 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     opts: { advantageCents?: number; advantageDescription?: string },
   ): Promise<ReceiptRow> {
     const tenantId = auth.tenant_id;
-    // A cumulative receipt covers a donor's gifts across every campaign in the year, so no single
-    // campaign can answer for it. The workspace setting is the only correct source here.
+    // NO_CAMPAIGN: the workspace-level gate only. Which gifts this receipt may cover, and what the
+    // covered campaigns demand of it, is decided inside insertCumulativeReceipt against the gifts
+    // actually gathered.
     const { settings } = await this.assertIssuable(tenantId, NO_CAMPAIGN);
     return this.insertCumulativeReceipt(tenantId, auth.user_id, personId, year, settings, opts);
   }
@@ -671,6 +706,16 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     opts: { advantageCents?: number; advantageDescription?: string },
   ): Promise<ReceiptRow> {
     const auth = { tenant_id: tenantId, user_id: userId };
+    // Both callers ran assertIssuable, which rejects a missing regime; the type still allows null,
+    // and the candidate-issuance rules below are read off the spec. Captured as a const so the
+    // narrowing survives into the transaction callback.
+    const regime = settings.regime;
+    if (!regime) {
+      throw new PreconditionFailedError(
+        'Choose a receipting regime in Workspace settings → Donations before issuing receipts.',
+      );
+    }
+    const spec = RECEIPT_REGIMES[regime];
     const { donor, hasAddress } = await this.resolveDonor(tenantId, personId);
     if (!donor) throw new NotFoundError('Person not found');
     if (!hasAddress) {
@@ -684,9 +729,34 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       .execute(async (trx) => {
         const serial = await this.getRepo().nextSerial(trx, tenantId, torontoYear(new Date()));
         // After the counter lock: gather what is STILL un-receipted (racing issues serialized).
-        const donations = await this.getRepo().getUnreceiptedSucceededDonations(tenantId, personId, year, trx);
+        // Candidate-campaign gifts are excluded when the regime hands candidate receipting to the
+        // electoral authority (Ontario): a cumulative receipt covering them would put a second
+        // official receipt on money the authority receipts itself. Any throw below rolls the
+        // transaction back, which returns the serial taken above.
+        const excludeElectionGifts = spec.candidateIssuance === 'external';
+        const donations = await this.getRepo().getUnreceiptedSucceededDonations(tenantId, personId, year, trx, {
+          excludeElectionCampaignGifts: excludeElectionGifts,
+        });
         if (donations.length === 0) {
-          throw new ConflictError(`No un-receipted gifts for ${year} — every gift is already covered.`);
+          throw new ConflictError(
+            excludeElectionGifts
+              ? `No receiptable gifts for ${year} — every gift is already covered, or is a candidate-campaign ` +
+                  'contribution receipted by the electoral authority.'
+              : `No un-receipted gifts for ${year} — every gift is already covered.`,
+          );
+        }
+
+        // What the covered gifts' campaigns demand of THIS receipt — the cumulative counterpart of
+        // the per-gift path's assertIssuable(campaign): one covered candidate gift makes the
+        // regime's candidate extra fields required (British Columbia: electoral district and
+        // polling day; federal: polling day), and the campaign's own seat answers the district
+        // before the workspace setting does.
+        const campaign = await this.cumulativeCampaignFacts(trx, tenantId, donations);
+        const missing = this.missingFields(settings, spec, campaign);
+        if (missing.length > 0) {
+          throw new PreconditionFailedError(
+            `Finish receipt setup in Workspace settings → Donations. Missing: ${missing.join(', ')}.`,
+          );
         }
 
         const amountCents = donations.reduce((sum, d) => sum + d.amount, 0);
@@ -697,7 +767,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           tenantId,
           userId: auth.user_id,
           kind: 'cumulative',
-          regime: settings.regime as ReceiptRegimeId,
+          regime,
           // Numbering year = the year this receipt is issued in, matching the counter the serial
           // came from. Coverage year = the gift year this receipt was asked for, which is what the
           // year-end batch's "already done" and "still to email" checks compare against. The
@@ -713,8 +783,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           advantageCents,
           advantageDescription: opts.advantageDescription ?? null,
           giftDate: null,
-          // No campaign argument: this receipt spans campaigns (see assertIssuable above).
-          issuerSnapshot: this.issuerSnapshot(settings),
+          issuerSnapshot: this.issuerSnapshot(settings, campaign),
           replacesReceiptId: null,
           items: donations.map((d) => ({
             donation_id: d.id,
@@ -1219,8 +1288,9 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
    */
   public async cumulativeIssuanceSettings(tenantId: string): Promise<ReceiptWorkspaceSettings | null> {
     try {
-      // NO_CAMPAIGN because a cumulative receipt spans every campaign the donor gave to; see
-      // issueCumulativeReceipt for why no single campaign can answer for it.
+      // NO_CAMPAIGN: the workspace-level gate only. Per-donor campaign rules — excluding candidate
+      // gifts the electoral authority receipts, requiring the candidate extra fields — are enforced
+      // inside insertCumulativeReceipt against each donor's actual covered gifts.
       const { settings } = await this.assertIssuable(tenantId, NO_CAMPAIGN);
       return settings;
     } catch (err) {
@@ -1251,9 +1321,12 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       try {
         return await this.insertCumulativeReceipt(tenantId, userId, personId, year, issuanceSettings, {});
       } catch (err) {
-        // Nothing left to receipt, or this donor cannot be receipted (no address, advantage larger
-        // than the surviving gifts). Fall through to the summary — never leave the donor with
-        // nothing because one of them failed a tax-document rule.
+        // Nothing left to receipt (every gift covered, or only candidate-campaign gifts the
+        // electoral authority receipts), or this donor cannot be receipted (no address, a missing
+        // candidate field such as BC's polling day). Fall through to the summary — never leave the
+        // donor with nothing because one of them failed a tax-document rule. The summary lists
+        // EVERY gift, candidate gifts included: it is not an official receipt, so nothing bars it
+        // from stating them.
         if (!(err instanceof PreconditionFailedError || err instanceof ConflictError)) throw err;
         logger.info({ tenantId, personId, year, reason: err.message }, 'Year-end: summary instead of a tax receipt');
       }

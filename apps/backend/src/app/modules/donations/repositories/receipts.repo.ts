@@ -264,12 +264,20 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
    * The kind filter must name the tax kinds explicitly. Every gift carries an acknowledgement, so
    * a `kind != 'statement'` test here would report every gift as already receipted and the annual
    * receipt would cover nothing.
+   *
+   * `excludeElectionCampaignGifts` — set by the caller when the workspace regime hands candidate
+   * receipting to the electoral authority (`candidateIssuance: 'external'`, e.g. Ontario): gifts
+   * whose campaign has kind = 'election' are then left out, because a cumulative receipt covering
+   * them would put a second official receipt on money the authority receipts itself. A gift whose
+   * campaign row no longer exists is treated as having no campaign and stays in, matching the
+   * per-gift path's fallback (DonationReceiptsController.loadCampaignFacts).
    */
   public async getUnreceiptedSucceededDonations(
     tenantId: string,
     personId: string,
     year: number,
     trx?: Transaction<Models>,
+    opts?: { excludeElectionCampaignGifts?: boolean },
   ): Promise<Selectable<Models['donations']>[]> {
     const startOfYear = new Date(year, 0, 1);
     const endOfYear = new Date(year, 11, 31, 23, 59, 59, 999);
@@ -292,6 +300,20 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
               .whereRef('dri.tenant_id', '=', 'donations.tenant_id')
               .where('dr.status', '=', 'issued')
               .where('dr.kind', 'in', OFFICIAL_KINDS),
+          ),
+        ),
+      )
+      .$if(opts?.excludeElectionCampaignGifts === true, (qb) =>
+        qb.where(({ eb, not, exists }) =>
+          not(
+            exists(
+              eb
+                .selectFrom('campaigns')
+                .select('campaigns.id')
+                .whereRef('campaigns.id', '=', 'donations.campaign_id')
+                .whereRef('campaigns.tenant_id', '=', 'donations.tenant_id')
+                .where('campaigns.kind', '=', 'election'),
+            ),
           ),
         ),
       )

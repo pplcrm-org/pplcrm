@@ -143,7 +143,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'statements', text: 'The year-end run' },
       {
         kind: 'p',
-        text: 'Official tax receipts go out once a year. On the [Receipts & statements](/donations/receipts) tab, pick a year and press **Run year-end**. Every donor with a successful gift in that year receives one document: a **numbered official tax receipt** covering their giving, where your workspace is set up to issue one and the donor has a mailing address on file — otherwise a **giving summary**, which lists the same gifts but is explicitly not an official receipt.',
+        text: 'Official tax receipts go out once a year. On the [Receipts & statements](/donations/receipts) tab, pick a year and press **Run year-end**. Every donor with a successful gift in that year receives one document: a **numbered official tax receipt** covering their receiptable giving, where your workspace is set up to issue one and the donor has a mailing address on file — otherwise a **giving summary**, which lists every gift but is explicitly not an official receipt. Gifts your regime says are receipted by the electoral authority — Ontario candidate-campaign contributions — are never included on an official receipt issued here; a donor whose gifts were all of that kind receives the giving summary instead.',
       },
       {
         kind: 'p',
