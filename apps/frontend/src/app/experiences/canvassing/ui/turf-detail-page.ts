@@ -221,20 +221,38 @@ export class TurfDetailPage {
     await this.load();
   }
 
-  /** One volunteer was added; the roster dialog stays open for the next one. */
-  protected async onAssigned(res: { token: string; sent: { email: boolean; sms: boolean } }): Promise<void> {
+  /**
+   * One volunteer was added; the roster dialog stays open for the next one.
+   *
+   * `batchSize` is how many people were staged in this add. Copying to the clipboard
+   * only makes sense for a batch of one — for a multi-add, each emission would overwrite
+   * the previous person's link, so the clipboard would end up holding only the last
+   * person's link while every toast claimed "Link also copied" (REVIEW4 T2-29).
+   */
+  protected async onAssigned(res: {
+    token: string;
+    sent: { email: boolean; sms: boolean };
+    batchSize: number;
+  }): Promise<void> {
     const phrase = volunteerLinkSentPhrase(res.sent);
-    const url = companionUrl(`/t/${encodeURIComponent(res.token)}`);
-    try {
-      await navigator.clipboard.writeText(url);
-      this.alerts.showSuccess(
-        phrase ? `Canvasser added — ${phrase}. Link also copied.` : 'Personal link copied. Only they can open it.',
-      );
-    } catch {
-      this.alerts.showSuccess(`Companion link: ${url}`);
+    if (res.batchSize === 1) {
+      const url = companionUrl(`/t/${encodeURIComponent(res.token)}`);
+      try {
+        await navigator.clipboard.writeText(url);
+        this.alerts.showSuccess(
+          phrase ? `Canvasser added — ${phrase}. Link also copied.` : 'Personal link copied. Only they can open it.',
+        );
+      } catch {
+        this.alerts.showSuccess(`Companion link: ${url}`);
+      }
+      if (!phrase) {
+        this.alerts.showWarn('They have no email or mobile on file — paste them the copied link yourself');
+      }
+      return;
     }
+    this.alerts.showSuccess(phrase ? `Canvasser added — ${phrase}.` : 'Canvasser added.');
     if (!phrase) {
-      this.alerts.showWarn('They have no email or mobile on file — paste them the copied link yourself');
+      this.alerts.showWarn("They have no email or mobile on file — you'll have to get them their link yourself");
     }
   }
 

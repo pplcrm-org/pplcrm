@@ -41,6 +41,14 @@ interface PersonOption {
 
         @if (loadingRoster()) {
           <progress class="progress w-full"></progress>
+        } @else if (rosterError()) {
+          <div class="flex flex-col items-center gap-2 rounded-box border border-dashed border-base-300 p-6">
+            <pc-icon name="exclamation-triangle" [size]="6" />
+            <p class="text-xs text-base-content/60">Could not load the roster — try again</p>
+            <button type="button" class="btn btn-outline btn-xs cursor-pointer" (click)="loadRoster()">
+              Try again
+            </button>
+          </div>
         } @else if (roster().length > 0) {
           <ul class="flex flex-col rounded-box border border-base-300">
             @for (c of roster(); track c.person_id) {
@@ -98,6 +106,8 @@ interface PersonOption {
                 </li>
               }
             </ul>
+          } @else if (searchError()) {
+            <p class="text-xs text-error">Search failed — try again</p>
           } @else if (query().trim().length > 1) {
             <p class="text-xs text-base-content/60">No people match. Check the spelling or add them first.</p>
           }
@@ -148,14 +158,20 @@ export class AssignTurfDialog implements OnInit {
   public readonly turfName = input.required<string>();
   /** Emitted once on close so the page reloads the turf list. */
   public readonly closed = output<void>();
-  /** Emits each freshly minted link so the page can copy/announce it. */
-  public readonly assigned = output<{ token: string; sent: { email: boolean; sms: boolean } }>();
+  /**
+   * Emits each freshly minted link so the page can copy/announce it. `batchSize` is how
+   * many people were staged in this save() call, so a consumer can tell a solo add (safe
+   * to copy the link) from a multi-add (copying would only ever hold the last link).
+   */
+  public readonly assigned = output<{ token: string; sent: { email: boolean; sms: boolean }; batchSize: number }>();
 
   protected readonly busyPersonId = signal<string | null>(null);
   protected readonly options = signal<PersonOption[]>([]);
   protected readonly query = signal('');
   protected readonly roster = signal<TurfCanvasser[]>([]);
+  protected readonly rosterError = signal(false);
   protected readonly saving = signal(false);
+  protected readonly searchError = signal(false);
   protected readonly staged = signal<PersonOption[]>([]);
 
   protected readonly loadingRoster = computed(() => this.rosterGate.visible());
@@ -172,6 +188,7 @@ export class AssignTurfDialog implements OnInit {
   private readonly debouncedSearch = debounce(async (term: string) => {
     if (term.trim().length < 2) {
       this.options.set([]);
+      this.searchError.set(false);
       return;
     }
     const end = this.searchGate.begin();
@@ -188,8 +205,10 @@ export class AssignTurfDialog implements OnInit {
           }))
           .filter((o) => !excluded.has(o.id)),
       );
+      this.searchError.set(false);
     } catch {
       this.options.set([]);
+      this.searchError.set(true);
     } finally {
       end();
     }
@@ -249,6 +268,7 @@ export class AssignTurfDialog implements OnInit {
   protected rosterSentence(): string {
     const count = this.roster().length;
     if (this.loadingRoster()) return 'Loading the roster…';
+    if (this.rosterError()) return 'Could not load the roster.';
     if (count === 0) return 'No canvassers yet. Anyone you add gets their own personal link.';
     return count === 1 ? '1 canvasser walking this turf' : `${count} canvassers walking this turf`;
   }
@@ -270,7 +290,7 @@ export class AssignTurfDialog implements OnInit {
             turf_id: this.turfId(),
             volunteer_person_id: person.id,
           });
-          this.assigned.emit(res);
+          this.assigned.emit({ ...res, batchSize: people.length });
         } catch {
           failed.push(person.name);
         }
@@ -296,12 +316,14 @@ export class AssignTurfDialog implements OnInit {
     this.staged.update((list) => list.filter((s) => s.id !== id));
   }
 
-  private async loadRoster(): Promise<void> {
+  protected async loadRoster(): Promise<void> {
     const end = this.rosterGate.begin();
     try {
       this.roster.set(await this.svc.getCanvassers(this.turfId()));
+      this.rosterError.set(false);
     } catch {
       this.roster.set([]);
+      this.rosterError.set(true);
     } finally {
       end();
     }
