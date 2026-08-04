@@ -677,7 +677,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
         // consent for THIS form's campaign only — pending until confirmed when
         // the tenant requires double opt-in. doNothing keeps an existing row
         // (including a deliberate 'unsubscribed') authoritative over re-submits.
-        await trx
+        const insertedSubscription = await trx
           .insertInto('campaign_subscriptions')
           .values({
             tenant_id: tenantId,
@@ -691,9 +691,21 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
             updatedby_id: creatorId,
           })
           .onConflict((oc) => oc.columns(['tenant_id', 'campaign_id', 'person_id']).doNothing())
-          .execute();
+          .returning('id')
+          .executeTakeFirst();
 
         const workflowsController = new WorkflowsController();
+
+        // REVIEW4 T1-2: a row that landed 'subscribed' just now is a real signup — fire the
+        // new_subscriber automations. Not fired for 'pending' rows (those fire on double opt-in
+        // confirmation, see confirmSubscription) nor when doNothing kept an existing row.
+        if (insertedSubscription && !doubleOptIn) {
+          try {
+            await workflowsController.triggerSubscriptionChanged(tenantId, personId, 'subscribed', trx);
+          } catch (err) {
+            logger.error({ err }, 'Failed to trigger new_subscriber workflow in WebFormsController');
+          }
+        }
 
         // Add target custom tags & read-only system tag
         const targetTags: string[] = Array.isArray(form.target_tags)
@@ -942,13 +954,29 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     // Double opt-in confirmed: every pending subscription for this person
     // becomes subscribed (§15). Deliberately allowed even if the campaign has
     // since been archived — the confirmation belongs to when the link was sent.
-    await this.getRepo()
+    const updateResult = await this.getRepo()
       .db.updateTable('campaign_subscriptions')
       .set({ status: 'subscribed', consent_at: sql`now()`, updated_at: sql`now()` })
       .where('tenant_id', '=', String(payload['tenant_id']))
       .where('person_id', '=', String(payload['person_id']))
       .where('status', '=', 'pending')
-      .execute();
+      .executeTakeFirst();
+
+    // REVIEW4 T1-2: pending → subscribed is the real signup moment for double-opt-in tenants —
+    // fire the new_subscriber automations. Best-effort: the consent write above is already
+    // committed, so an enrollment failure must not fail the confirmation. A re-click updates
+    // zero rows and fires nothing.
+    if (Number(updateResult.numUpdatedRows) > 0) {
+      try {
+        await new WorkflowsController().triggerSubscriptionChanged(
+          String(payload['tenant_id']),
+          String(payload['person_id']),
+          'subscribed',
+        );
+      } catch (err) {
+        logger.error({ err }, 'Failed to trigger new_subscriber workflow after double opt-in confirmation');
+      }
+    }
 
     return { success: true };
   }

@@ -2,9 +2,11 @@ import { resolveWorkflowMessageClass } from '@common';
 import { BaseController } from '../../lib/base.controller';
 import { WorkflowsRepo } from './repositories/workflows.repo';
 import { WorkflowEnrollmentsRepo } from './repositories/workflow-enrollments.repo';
+import { sql } from 'kysely';
 import type { Transaction, Kysely } from 'kysely';
 import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { TRPCError } from '@trpc/server';
+import { BadRequestError } from '../../errors/app-errors';
 import { logger } from '../../logger';
 
 export class WorkflowsController extends BaseController<'workflows', WorkflowsRepo> {
@@ -101,7 +103,17 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
           });
         }
 
-        // 2. Delete all existing steps
+        // 2. Snapshot the outgoing steps, then delete them. The snapshot feeds the
+        // enrollment remap below (REVIEW4 T1-3): active enrollments store only a
+        // step NUMBER, and the delete-and-reinsert renumbers by array position.
+        const oldSteps = await trx
+          .selectFrom('workflow_steps')
+          .select(['step_number', 'kind', 'config'])
+          .where('tenant_id', '=', tenantId)
+          .where('workflow_id', '=', workflowId)
+          .orderBy('step_number', 'asc')
+          .execute();
+
         await trx
           .deleteFrom('workflow_steps')
           .where('tenant_id', '=', tenantId)
@@ -130,6 +142,90 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
           });
 
           await trx.insertInto('workflow_steps').values(insertRows).execute();
+        }
+
+        // 4. Remap active enrollments onto the renumbered steps (REVIEW4 T1-3). Without this,
+        // inserting a step re-sends someone the step they just got, deleting one skips a step,
+        // and shortening the sequence silently completes people. The incoming payload carries no
+        // step ids (AddWorkflowStepObj), so old and new steps are matched by content signature
+        // (kind + canonical config JSON), first unmatched wins in order — a pure reorder or a
+        // content edit of subject/body keeps everyone's position.
+        const newSignatures = steps.map((step, idx) => ({
+          signature: stepContentSignature(step.kind, step.config ?? null),
+          step_number: idx + 1,
+          claimed: false,
+        }));
+        const stepNumberMap = new Map<number, number>(); // old step_number → new step_number
+        for (const old of oldSteps) {
+          const sig = stepContentSignature(old.kind, old.config ?? null);
+          const match = newSignatures.find((n) => !n.claimed && n.signature === sig);
+          if (match) {
+            match.claimed = true;
+            stepNumberMap.set(old.step_number, match.step_number);
+          }
+        }
+
+        const activeEnrollments = await trx
+          .selectFrom('workflow_enrollments')
+          .select(['id', 'current_step_number'])
+          .where('tenant_id', '=', tenantId)
+          .where('workflow_id', '=', workflowId)
+          .where('status', '=', 'active')
+          .execute();
+
+        let remapped = 0;
+        let advanced = 0;
+        let completedCount = 0;
+        for (const enrollment of activeEnrollments) {
+          const direct = stepNumberMap.get(enrollment.current_step_number);
+          if (direct !== undefined) {
+            if (direct !== enrollment.current_step_number) {
+              await trx
+                .updateTable('workflow_enrollments')
+                .set({ current_step_number: direct, updated_at: new Date() })
+                .where('tenant_id', '=', tenantId)
+                .where('id', '=', enrollment.id)
+                .execute();
+              remapped++;
+            }
+            continue;
+          }
+          // Their current step was deleted: advance to the next surviving step by OLD ordering.
+          let fallback: number | undefined;
+          for (const old of oldSteps) {
+            if (old.step_number <= enrollment.current_step_number) continue;
+            const mapped = stepNumberMap.get(old.step_number);
+            if (mapped !== undefined) {
+              fallback = mapped;
+              break;
+            }
+          }
+          if (fallback !== undefined) {
+            await trx
+              .updateTable('workflow_enrollments')
+              .set({ current_step_number: fallback, updated_at: new Date() })
+              .where('tenant_id', '=', tenantId)
+              .where('id', '=', enrollment.id)
+              .execute();
+            advanced++;
+          } else {
+            // No surviving later step — complete them (same fields the worker's
+            // completeEnrollment sets; previously this happened implicitly on next tick).
+            await trx
+              .updateTable('workflow_enrollments')
+              .set({ status: 'completed', next_run_at: null, updated_at: new Date() })
+              .where('tenant_id', '=', tenantId)
+              .where('id', '=', enrollment.id)
+              .execute();
+            completedCount++;
+          }
+        }
+
+        if (activeEnrollments.length > 0) {
+          logger.info(
+            `saveSteps remap for workflow ${workflowId}: ${activeEnrollments.length} active enrollment(s) — ` +
+              `${remapped} renumbered, ${advanced} advanced past a deleted step, ${completedCount} completed (no surviving next step).`,
+          );
         }
 
         // Log update activity
@@ -194,6 +290,12 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
           code: 'NOT_FOUND',
           message: 'Workflow not found.',
         });
+      }
+
+      // REVIEW4 T2-16: existence alone is not enough — a draft or paused automation must not
+      // gain enrollments (a draft would start sending the moment it has an enroll surface).
+      if (workflow.status !== 'active') {
+        throw new BadRequestError('This automation is not active. Activate it before enrolling anyone.');
       }
 
       // 3. Check if already enrolled in an active state
@@ -277,7 +379,22 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
     };
 
     if (trx) {
-      return executeLogic(trx);
+      // REVIEW4 T2-14: a failed enrollment attempt on the CALLER's transaction would otherwise
+      // poison it ("current transaction is aborted") even when the caller swallows the error —
+      // e.g. failing an entire public form submission. A savepoint confines the damage to this
+      // attempt. A plain (non-transaction) Kysely handle can't hold a savepoint; run bare as before.
+      if (!trx.isTransaction) {
+        return executeLogic(trx);
+      }
+      await sql`SAVEPOINT workflow_enroll_attempt`.execute(trx);
+      try {
+        const result = await executeLogic(trx);
+        await sql`RELEASE SAVEPOINT workflow_enroll_attempt`.execute(trx);
+        return result;
+      } catch (err) {
+        await sql`ROLLBACK TO SAVEPOINT workflow_enroll_attempt`.execute(trx);
+        throw err;
+      }
     } else {
       return this.getRepo()
         .transaction()
@@ -621,6 +738,24 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
+// REVIEW4 T1-3 — content identity of a step for the saveSteps enrollment remap. Deliberately
+// kind + config only: subject/body/delay edits must NOT read as delete-plus-add, or editing an
+// email's text would bump everyone mid-sequence off that step.
+function stepContentSignature(kind: string, config: unknown): string {
+  return `${kind}|${canonicalJson(config ?? null)}`;
+}
+
+// JSON with recursively sorted object keys, so `{a:1,b:2}` from the client equals the same
+// document read back from a jsonb column (Postgres does not preserve key order).
+function canonicalJson(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v)).join(',')}]`;
+  const entries: [string, unknown][] = Object.entries(value);
+  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
 
 export interface SequenceStepInput {
   kind: 'wait' | 'send_email' | 'add_tag' | 'create_task' | 'notify_team';

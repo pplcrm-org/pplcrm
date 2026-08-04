@@ -6,6 +6,7 @@ import { checkRateLimit } from '../../../lib/rate-limiter';
 import { logger } from '../../../logger';
 import { decodeUnsubscribeToken } from '../unsubscribe-token';
 import { publicOrgName } from '../../../lib/public-tenant';
+import { WorkflowsController } from '../../workflows/controller';
 
 const db = new BaseRepository('campaign_subscriptions').db;
 
@@ -172,7 +173,7 @@ const unsubscribeRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     if (payload.campaignId) {
       update = update.where('campaign_id', '=', payload.campaignId);
     }
-    await update.execute();
+    const updateResult = await update.executeTakeFirst();
 
     logger.info(
       { tenantId: payload.tenantId, personId: payload.personId, campaignId: payload.campaignId ?? null },
@@ -180,6 +181,20 @@ const unsubscribeRoute: FastifyPluginCallback = (fastify, _opts, done) => {
         ? '[unsubscribe] Newsletter one-click unsubscribe processed (campaign-scoped)'
         : '[unsubscribe] Automation-email unsubscribe processed (all campaigns)',
     );
+
+    // REVIEW4 T1-2: a row landing 'unsubscribed' fires the new_unsubscriber automations
+    // (win-back/goodbye). Best-effort only — this route is public and the consent write above
+    // must NEVER fail because enrollment failed. A repeat click updates zero rows and fires nothing.
+    if (Number(updateResult.numUpdatedRows) > 0) {
+      try {
+        await new WorkflowsController().triggerSubscriptionChanged(payload.tenantId, payload.personId, 'unsubscribed');
+      } catch (err) {
+        logger.error(
+          { err, tenantId: payload.tenantId, personId: payload.personId },
+          '[unsubscribe] Could not trigger new_unsubscriber automations after unsubscribe',
+        );
+      }
+    }
 
     // Resolved after the write, never before it: the unsubscribe is the thing that must not fail,
     // and this only decorates the confirmation.
