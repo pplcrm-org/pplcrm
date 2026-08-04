@@ -61,6 +61,11 @@ export const HouseholdsRouter = router({
       return households.importRows(input, ctx.auth);
     }),
 
+  // Overrides the generic CRUD delete on purpose. That one deletes the row directly, which both
+  // fails on the persons foreign key when the household still has members and lets the tenant's
+  // permanent placeholder household be deleted. See HouseholdsController.deleteOneForTenant.
+  delete: authProcedure.input(idSchema).mutation(({ input, ctx }) => households.deleteOneForTenant(ctx.auth, input)),
+
   deleteMany: authProcedure
     .input(
       z

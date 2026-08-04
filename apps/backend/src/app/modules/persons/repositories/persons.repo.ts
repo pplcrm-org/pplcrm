@@ -7,7 +7,8 @@ import type { CompanionVolunteerStatus } from '../../../../../../../libs/common/
 import { COMPANION_VOLUNTEER_STATUSES } from '../../../../../../../libs/common/src';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
-import { resolvePageWindow } from '../../../lib/paging';
+import type { FullScanBatch } from '../../../lib/paging';
+import { FULL_SCAN_BATCH_SIZE, resolvePageWindow } from '../../../lib/paging';
 import { HouseholdRepo } from '../../households/repositories/households.repo';
 import {
   anyElectoralAreaSubquery,
@@ -221,12 +222,28 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     });
   }
 
+  /**
+   * The people grid's read, and the query a smart list's rules resolve through.
+   *
+   * Two shapes, and which one you get depends on `input.fullScan`:
+   *
+   * - Without it (every client request, because the tRPC router only ever fills `options`), the
+   *   result is one page, capped at `MAX_PAGE_SIZE`, and `count` is the total number of matching
+   *   people.
+   * - With it (backend callers only — see `FullScanBatch`), the result is one batch of at most
+   *   `FULL_SCAN_BATCH_SIZE` rows ordered by `persons.id`, starting after `fullScan.afterId`, and
+   *   `count` is the size of that batch rather than the total. The caller loops until a short
+   *   batch comes back. This is how list membership reads every matching person instead of the
+   *   first 5000.
+   */
   public async getAllWithAddress(
     input: {
       tenant_id: string;
       options?: QueryParams<'persons' | 'households' | 'tags' | 'map_peoples_tags'> & { issues?: string[] };
       tags?: string[];
       issues?: string[];
+      /** Backend-only. Absent on every client-originated call; see `FullScanBatch`. */
+      fullScan?: FullScanBatch;
     },
     trx?: Transaction<Models>,
   ): Promise<{ rows: Record<string, unknown>[]; count: number }> {
@@ -250,7 +267,13 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     const filterModel = (options.filterModel ?? {}) as Record<string, { op?: string; value?: unknown } | undefined>;
     const advModel =
       options.advancedFilterModel || (options.filterModel?.['tags_expression'] as typeof options.advancedFilterModel);
-    const page = resolvePageWindow(options);
+    // A backend full scan reads fixed-size batches walked by primary key; everything else — which
+    // is every request that arrived over tRPC — is clamped to one page as before.
+    const isFullScan = input.fullScan != null;
+    const page = isFullScan ? { offset: 0, limit: FULL_SCAN_BATCH_SIZE } : resolvePageWindow(options);
+    // The keyset cursor, flattened to a plain string so the guarded `.where` below needs neither a
+    // cast nor a non-null assertion. An id is never the empty string, so '' means "no cursor".
+    const scanCursorId = input.fullScan?.afterId ?? '';
 
     // Shared where clause builder. `includeLateral` controls the electoral lateral join: the data
     // query always carries it (the columns are selected), the count query only when a filter
@@ -424,11 +447,17 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     // only when an active filter or rule actually references those fields, which keeps the
     // count's predicate identical to the data query's.
     const countNeedsElectoral = referencesElectoralAreas(filterModel, advModel);
-    const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral)
-      .select(({ fn }) => [fn.count(sql`DISTINCT persons.id`).as('total')])
-      .execute();
+    const countMatchingPeople = async (): Promise<number> => {
+      const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral)
+        .select(({ fn }) => [fn.count(sql`DISTINCT persons.id`).as('total')])
+        .execute();
+      return Number(countResult[0]?.['total'] || 0);
+    };
 
-    const count = Number(countResult[0]?.['total'] || 0);
+    // A full scan calls this method once per batch and reads only `rows`. Running the DISTINCT
+    // count on every batch would re-execute the whole predicate for a number the caller does not
+    // use, so it is skipped and the batch's own size is reported instead (see the doc comment).
+    const totalCount = isFullScan ? null : await countMatchingPeople();
 
     // Data query
     const rows = await applyFilters(this.getSelect(trx), true)
@@ -515,22 +544,27 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'hd_areas.electoral_area',
         'hd_areas.any_electoral_area',
       ])
-      .$if(!!options.sortModel?.length, (qb) =>
+      // The caller's sort is skipped during a full scan: the scan's own primary-key order is what
+      // makes the keyset cursor below correct, and a second ORDER BY term ahead of it would let
+      // batches repeat and skip rows. Nothing reads the row order of a membership scan.
+      .$if(!isFullScan && !!options.sortModel?.length, (qb) =>
         (options.sortModel ?? []).reduce((acc, sort) => {
           const col = resolvePersonSortColumn(sort.colId);
           if (col == null) return acc;
           return acc.orderBy(col, sort.sort);
         }, qb),
       )
+      .$if(isFullScan, (qb) => qb.orderBy('persons.id'))
+      .$if(scanCursorId !== '', (qb) => qb.where('persons.id', '>', scanCursorId))
       // Always paged. This used to be a `$if` on both fields being present, so a call with no
       // paging at all — which `persons.getAllWithAddress` accepts directly from any signed-in
       // caller — emitted no LIMIT clause and read every person in the workspace across the seven
-      // joins above.
+      // joins above. A full scan is still paged; it just repeats the page.
       .offset(page.offset)
       .limit(page.limit)
       .execute();
 
-    return { count, rows };
+    return { count: totalCount ?? rows.length, rows };
   }
 
   public getByHouseholdId(

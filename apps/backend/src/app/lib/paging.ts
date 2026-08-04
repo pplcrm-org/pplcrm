@@ -64,3 +64,34 @@ export function resolvePageWindow(
     typeof endRow === 'number' && Number.isFinite(endRow) && endRow >= offset ? endRow - offset : defaultLimit;
   return { offset, limit: clampPageLimit(requested) };
 }
+
+/**
+ * One batch of a backend-internal scan over every row a query matches.
+ *
+ * Some backend work needs the whole result, not a page of it. Rebuilding a smart list's
+ * membership is the case that forced this: the clamp above turned "everyone the rules match"
+ * into "the first 5000 people the rules match", and a smart list used as a newsletter's exclude
+ * list then failed to exclude the people past row 5000 — it mailed people who had unsubscribed.
+ *
+ * A caller that needs the whole result reads it in batches ordered by primary key, passing back
+ * the last id it saw. Keyset rather than a growing `OFFSET`, because these queries have no
+ * default `ORDER BY`: repeated `OFFSET` pages over an unordered result can both repeat and skip
+ * rows. Batching also keeps peak memory at one batch of wide joined rows instead of the whole
+ * table.
+ *
+ * This is deliberately NOT a field of the `getAllOptions` object the tRPC routers validate. It is
+ * a separate argument to the repository method, set only by backend code. A request cannot carry
+ * it: `getAllOptions` is a plain `z.object`, so Zod strips an unknown `fullScan` key from the
+ * request body, and even an unstripped key would land inside `options`, which no repository reads
+ * for this.
+ */
+export interface FullScanBatch {
+  /** Return only rows whose id sorts strictly after this one. `null` starts the scan. */
+  readonly afterId: string | null;
+}
+
+/**
+ * Rows one full-scan batch reads. Equal to the client page ceiling, so the `LIMIT` a full scan
+ * emits is never larger than the one an ordinary grid request emits — only repeated.
+ */
+export const FULL_SCAN_BATCH_SIZE = MAX_PAGE_SIZE;

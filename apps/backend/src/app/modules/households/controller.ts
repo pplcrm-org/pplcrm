@@ -2,6 +2,7 @@ import type {
   ExportCsvInputType,
   ExportCsvResponseType,
   IAuthKeyPayload,
+  SortModelType,
   UpdateHouseholdsType,
   getAllOptionsType,
 } from '../../../../../../libs/common/src';
@@ -13,6 +14,7 @@ import type { QueryParams } from '../../lib/base.repo';
 import { BaseRepository } from '../../lib/base.repo';
 import { fingerprintFull, fingerprintStreet, isBlankAddress, isIncompleteAddress } from '../../lib/address-normalize';
 import { enqueueGeocodeJobs } from '../../lib/gis/geocode-queue';
+import { FULL_SCAN_BATCH_SIZE } from '../../lib/paging';
 import { backfillMissingSlugs, uniqueSlug } from '../../lib/slug';
 import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../lib/ndjson';
 import { StorageService } from '../../lib/storage.service';
@@ -23,9 +25,41 @@ import { TagsRepo } from '../tags/repositories/tags.repo';
 import { applyHouseholdMatchesBatch, matchPointToSets, requiredSetIdsForTenant } from '../../lib/gis/boundary-match';
 import { ensureImportedBoundarySets, readImportedAreas, writeImportedAreas } from './electoral-areas';
 import { BaseController } from '../../lib/base.controller';
+import { BadRequestError } from '../../errors/app-errors';
 import { SettingsController } from '../settings/controller';
 import type { OperationDataType, TypeId, TypeTenantId } from '../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../logger';
+
+// Mirrors MAX_INLINE_EXPORT_ROWS in base.controller.ts (not exported from there). The full-scan
+// export loop below stops fetching once it has passed this many rows so an oversized tenant is not
+// scanned to completion in memory before `buildCsvResponse` makes the authoritative call — its
+// internal `assertInlineExportWithinCap` is what actually refuses the export. Keep this in sync if
+// the base cap ever changes.
+const EXPORT_SCAN_CAP = 50_000;
+
+/** Order accumulated export rows by the grid's requested sort, in memory (the full scan below reads
+ * rows ordered by primary key, not the caller's sort). Absent a sort, the scan order is kept as-is. */
+function sortExportRows(
+  rows: Record<string, unknown>[],
+  sortModel: SortModelType[] | undefined,
+): Record<string, unknown>[] {
+  if (!sortModel?.length) return rows;
+  const compare = (a: unknown, b: unknown): number => {
+    if (a == null && b == null) return 0;
+    if (a == null) return -1;
+    if (b == null) return 1;
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
+    return String(a).localeCompare(String(b));
+  };
+  return [...rows].sort((a, b) => {
+    for (const { colId, sort } of sortModel) {
+      const cmp = compare(a[colId], b[colId]);
+      if (cmp !== 0) return sort === 'desc' ? -cmp : cmp;
+    }
+    return 0;
+  });
+}
 
 export class HouseholdsController extends BaseController<'households', HouseholdRepo> {
   private importsRepo = new ImportsRepo();
@@ -59,6 +93,48 @@ export class HouseholdsController extends BaseController<'households', Household
       ids: safeIds,
       user_id: auth.user_id,
     });
+  }
+
+  /**
+   * Deleting a single household. The generic CRUD delete cannot be used here for two reasons,
+   * so the households router routes its `delete` procedure through this method instead:
+   *
+   * 1. persons.household_id is NOT NULL and its foreign key has no ON DELETE action, so deleting
+   *    a household that still has members raises a raw foreign-key error. Members must move to
+   *    the tenant's placeholder household first, which is what deleteManyReassigningPersons does.
+   * 2. The placeholder household itself is permanent. Its pointer
+   *    (tenants.placeholder_household_id) is ON DELETE SET NULL, so deleting it silently clears
+   *    the pointer, nothing recreates it, and every later household delete with members fails.
+   */
+  public async deleteOneForTenant(auth: IAuthKeyPayload, id: string): Promise<boolean> {
+    const placeholders = await this.getRepo().getPlaceholderIds(auth.tenant_id, [id]);
+    if (placeholders.has(id)) {
+      throw new BadRequestError(
+        'The placeholder household is permanent and cannot be deleted. It holds people who have no address yet.',
+      );
+    }
+
+    const deleted = await this.getRepo().deleteManyReassigningPersons({
+      tenant_id: auth.tenant_id,
+      ids: [id],
+      user_id: auth.user_id,
+    });
+
+    try {
+      await this.userActivity.log({
+        tenant_id: auth.tenant_id,
+        user_id: auth.user_id,
+        activity: 'delete',
+        entity: 'households',
+        entity_id: id,
+        quantity: 1,
+        metadata: { id },
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'Failed to log household delete activity');
+    }
+
+    return deleted;
   }
 
   public async addHousehold(payload: UpdateHouseholdsType, auth: IAuthKeyPayload) {
@@ -360,13 +436,54 @@ export class HouseholdsController extends BaseController<'households', Household
     return this.getRepo().getTags(id, auth.tenant_id, type);
   }
 
+  /**
+   * Every household row the current filters/tags match, read in fixed-size batches ordered by
+   * primary key (the `fullScan` mode `getAllWithPeopleCount` supports) rather than a single page.
+   * Without this, `exportCsv` silently truncated at whatever page size the repo clamps an ordinary
+   * request to.
+   *
+   * Stops once it has passed `EXPORT_SCAN_CAP` rows — the caller's `buildCsvResponse` refuses an
+   * export over the real cap anyway, so there is no point pulling an unbounded table into memory
+   * first. The caller's requested sort is applied afterwards, in memory: `fullScan` ignores it
+   * (it always orders by id to make the keyset walk possible), and re-sorting a bounded ~50k-row
+   * accumulation in memory is cheaper than plumbing sort into the keyset scan.
+   */
+  private async scanAllWithPeopleCount(
+    auth: IAuthKeyPayload,
+    options?: getAllOptionsType,
+  ): Promise<Record<string, unknown>[]> {
+    const { tags, ...queryParams } = options || {};
+    const queryOptions = queryParams as QueryParams<'households' | 'tags' | 'map_households_tags' | 'persons'>;
+    const rows: Record<string, unknown>[] = [];
+    let afterId: string | null = null;
+
+    for (;;) {
+      const batch = await this.getRepo().getAllWithPeopleCount({
+        tenant_id: auth.tenant_id,
+        options: queryOptions,
+        tags,
+        fullScan: { afterId },
+      });
+      for (const row of batch.rows) rows.push(row);
+      if (batch.rows.length < FULL_SCAN_BATCH_SIZE || rows.length > EXPORT_SCAN_CAP) break;
+      const lastRow = batch.rows[batch.rows.length - 1];
+      const lastId = lastRow ? String(lastRow['id']) : '';
+      // The cursor has to move or the next batch repeats this one for ever. It always does move —
+      // the scan orders by id and asks for ids strictly greater than the cursor — so this is a
+      // termination guarantee, not a case that happens.
+      if (lastId === '' || lastId === afterId) break;
+      afterId = lastId;
+    }
+
+    return sortExportRows(rows, options?.sortModel);
+  }
+
   public override async exportCsv(
     input: ExportCsvInputType & { tenant_id: string },
     auth?: IAuthKeyPayload,
   ): Promise<ExportCsvResponseType> {
     if (auth) {
-      const result = await this.getAllWithPeopleCount(auth, input?.options);
-      const rows = (result?.rows ?? []).map((row) => ({ ...(row as Record<string, unknown>) }));
+      const rows = await this.scanAllWithPeopleCount(auth, input?.options);
       const response = this.buildCsvResponse(rows, input) as {
         csv: string;
         fileName: string;
@@ -414,6 +531,18 @@ export class HouseholdsController extends BaseController<'households', Household
   }
 
   public async mergeHouseholds(target_id: string, source_id: string, auth: IAuthKeyPayload) {
+    // A merge deletes the source household, so merging the tenant's placeholder household away
+    // would clear `tenants.placeholder_household_id` (that foreign key is ON DELETE SET NULL).
+    // Nothing recreates it, and without it deleting any household that still has members fails
+    // on the persons.household_id foreign key. Merging INTO it is refused for the same reason it
+    // cannot be edited: it is not a real address, it is the holding pen for people who have none.
+    const placeholders = await this.getRepo().getPlaceholderIds(auth.tenant_id, [target_id, source_id]);
+    if (placeholders.size > 0) {
+      throw new BadRequestError(
+        'The placeholder household holds people who have no address yet and cannot be merged. Move those people into a real household first.',
+      );
+    }
+
     return this.getRepo().mergeHouseholds({
       tenant_id: auth.tenant_id,
       target_id,

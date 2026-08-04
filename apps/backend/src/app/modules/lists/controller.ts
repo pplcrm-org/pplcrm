@@ -8,9 +8,13 @@ import { getAllOptions } from '../../../../../../libs/common/src';
 import { TRPCError } from '@trpc/server';
 
 import { BaseController } from '../../lib/base.controller';
+import type { QueryParams } from '../../lib/base.repo';
+import { FULL_SCAN_BATCH_SIZE } from '../../lib/paging';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
 import { HouseholdsController } from '../households/controller';
+import { HouseholdRepo } from '../households/repositories/households.repo';
 import { PersonsController } from '../persons/controller';
+import { PersonsRepo } from '../persons/repositories/persons.repo';
 import { ListsRepo } from './repositories/lists.repo';
 import { MapListsHouseholdsRepo } from './repositories/map-lists-households.repo';
 import { MapListsPersonsRepo } from './repositories/map-lists-persons.repo';
@@ -103,12 +107,70 @@ function scopedDefinition(definition: getAllOptionsType, campaign_id: string | n
 export class ListsController extends BaseController<'lists', ListsRepo> {
   private campaignsRepo = new CampaignsRepo();
   private householdsController = new HouseholdsController();
+  private householdsRepo = new HouseholdRepo();
   private mapListsHouseholdsRepo = new MapListsHouseholdsRepo();
   private mapListsPersonsRepo = new MapListsPersonsRepo();
   private personsController = new PersonsController();
+  private personsRepo = new PersonsRepo();
 
   constructor() {
     super(new ListsRepo());
+  }
+
+  /**
+   * Every person id a set of list rules matches right now, read in batches.
+   *
+   * A list's membership is not a page of results, it is the whole result. The persons query caps
+   * an ordinary request at 5000 rows so that no client can ask for a whole table in one call, and
+   * that cap was silently cutting smart-list membership off at 5000 people. A list truncated that
+   * way and then used as a newsletter's EXCLUDE list stopped excluding everyone past row 5000, so
+   * the send reached people who had unsubscribed.
+   *
+   * This walks the same query in primary-key batches through the repository's backend-only
+   * full-scan argument, keeping only the ids, so peak memory is one batch of wide joined rows
+   * rather than the whole table. It calls the persons repository rather than PersonsController on
+   * purpose: the controller is the surface the tRPC router calls, and the full-scan argument must
+   * not exist there, where client-supplied input could reach it.
+   */
+  private async scanMatchingPersonIds(tenant_id: string, definition: getAllOptionsType): Promise<string[]> {
+    const { tags, ...queryParams } = definition || {};
+    const options = queryParams as QueryParams<'persons' | 'households' | 'tags' | 'map_peoples_tags'>;
+    const ids: string[] = [];
+    let afterId: string | null = null;
+
+    for (;;) {
+      const batch = await this.personsRepo.getAllWithAddress({ tenant_id, options, tags, fullScan: { afterId } });
+      for (const row of batch.rows) ids.push(String(row['id']));
+      if (batch.rows.length < FULL_SCAN_BATCH_SIZE) return ids;
+      const lastId = ids[ids.length - 1] ?? '';
+      // The cursor has to move or the next batch repeats this one for ever. It always does move —
+      // the scan orders by id and asks for ids strictly greater than the cursor — so this is a
+      // termination guarantee, not a case that happens.
+      if (lastId === '' || lastId === afterId) return ids;
+      afterId = lastId;
+    }
+  }
+
+  /** Every household id a set of list rules matches right now. See `scanMatchingPersonIds`. */
+  private async scanMatchingHouseholdIds(tenant_id: string, definition: getAllOptionsType): Promise<string[]> {
+    const { tags, ...queryParams } = definition || {};
+    const options = queryParams as QueryParams<'households' | 'tags' | 'map_households_tags' | 'persons'>;
+    const ids: string[] = [];
+    let afterId: string | null = null;
+
+    for (;;) {
+      const batch = await this.householdsRepo.getAllWithPeopleCount({
+        tenant_id,
+        options,
+        tags,
+        fullScan: { afterId },
+      });
+      for (const row of batch.rows) ids.push(String(row['id']));
+      if (batch.rows.length < FULL_SCAN_BATCH_SIZE) return ids;
+      const lastId = ids[ids.length - 1] ?? '';
+      if (lastId === '' || lastId === afterId) return ids;
+      afterId = lastId;
+    }
   }
 
   /**
@@ -240,11 +302,13 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
       } else if (payload.definition) {
         const definition = scopedDefinition(payload.definition as getAllOptionsType, row.campaign_id);
         if (payload.object === 'people') {
-          const result = await this.personsController.getAllWithAddress(auth, definition);
-          const rows = result.rows.map((p) => ({
+          // The snapshot a static list is created with must be everyone the rules match, not the
+          // first page of them — same reason the refresh below scans.
+          const memberIds = await this.scanMatchingPersonIds(auth.tenant_id, definition);
+          const rows = memberIds.map((person_id) => ({
             tenant_id: auth.tenant_id,
             list_id: list.id,
-            person_id: String(p['id']),
+            person_id,
             createdby_id: auth.user_id,
             updatedby_id: auth.user_id,
           }));
@@ -262,11 +326,11 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
             }
           }
         } else if (payload.object === 'households') {
-          const result = await this.householdsController.getAllWithPeopleCount(auth, definition);
-          const rows = result.rows.map((h) => ({
+          const memberIds = await this.scanMatchingHouseholdIds(auth.tenant_id, definition);
+          const rows = memberIds.map((household_id) => ({
             tenant_id: auth.tenant_id,
             list_id: list.id,
-            household_id: h['id'],
+            household_id,
             createdby_id: auth.user_id,
             updatedby_id: auth.user_id,
           }));
@@ -323,13 +387,8 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
   }
 
   public async executeListRefresh(tenant_id: string, id: string, user_id: string): Promise<any> {
-    const auth: IAuthKeyPayload = {
-      tenant_id,
-      user_id,
-      name: 'System Worker',
-      session_id: 'worker-session',
-    };
-
+    // No synthetic auth payload is built here any more: membership now resolves through the
+    // repository scans below, which take the tenant id directly.
     const list = (await this.getOneById({ tenant_id, id })) as any;
     if (!list) {
       throw new Error(`List ${id} not found`);
@@ -356,13 +415,14 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
     try {
       if (list.object === 'people') {
         // Resolve the new membership BEFORE touching the old one, so a failed
-        // rule query can't cost the list its current snapshot. No pagination
-        // here on purpose: a refresh wants every matching row.
-        const result = await this.personsController.getAllWithAddress(auth, definition);
-        const rows = result.rows.map((p) => ({
+        // rule query can't cost the list its current snapshot. The scan reads
+        // every matching row in batches: a refresh wants all of them, and the
+        // ordinary query path stops at 5000.
+        const memberIds = await this.scanMatchingPersonIds(tenant_id, definition);
+        const rows = memberIds.map((person_id) => ({
           tenant_id: tenant_id,
           list_id: list.id,
-          person_id: p['id'],
+          person_id,
           createdby_id: user_id,
           updatedby_id: user_id,
         }));
@@ -388,11 +448,11 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
         });
       } else if (list.object === 'households') {
         // Same shape as the people branch: resolve first, then swap atomically.
-        const result = await this.householdsController.getAllWithPeopleCount(auth, definition);
-        const rows = result.rows.map((h) => ({
+        const memberIds = await this.scanMatchingHouseholdIds(tenant_id, definition);
+        const rows = memberIds.map((household_id) => ({
           tenant_id: tenant_id,
           list_id: list.id,
-          household_id: h['id'],
+          household_id,
           createdby_id: user_id,
           updatedby_id: user_id,
         }));
@@ -554,14 +614,15 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
     // Smart list: re-run the definition against live data.
     if (list.is_dynamic && list.definition) {
       const definition = scopedDefinition(list.definition, list.campaign_id);
+      // Scanned, not paged. Turf cutting (§13), automations (§16) and CSV import (§17) all read
+      // this as "the whole list"; a 5000-row slice would silently drop everyone past it. The
+      // static branch below has always returned every saved row, so this matches it.
       if (list.object === 'people') {
-        const data = await this.personsController.getAllWithAddress(auth, definition);
-        const ids = data.rows.map((r) => String(r['id']));
-        return { object: 'people', ids, count: data.count };
+        const ids = await this.scanMatchingPersonIds(auth.tenant_id, definition);
+        return { object: 'people', ids, count: ids.length };
       }
-      const data = await this.householdsController.getAllWithPeopleCount(auth, definition);
-      const ids = data.rows.map((r) => String(r['id']));
-      return { object: 'households', ids, count: data.count };
+      const ids = await this.scanMatchingHouseholdIds(auth.tenant_id, definition);
+      return { object: 'households', ids, count: ids.length };
     }
 
     // Static list (or smart with no definition): read the saved snapshot.

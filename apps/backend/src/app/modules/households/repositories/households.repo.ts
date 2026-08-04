@@ -3,7 +3,8 @@ import type { AnyQB } from '../../../lib/base.repo';
 import { sql } from 'kysely';
 
 import type { Models, OperationDataType, TypeTenantId } from '../../../../../../../libs/common/src/lib/kysely.models';
-import { MAX_PAGE_SIZE } from '../../../../../../../libs/common/src';
+import type { FullScanBatch } from '../../../lib/paging';
+import { FULL_SCAN_BATCH_SIZE, resolvePageWindow } from '../../../lib/paging';
 import { isBlankAddress, isIncompleteAddress } from '../../../lib/address-normalize';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
@@ -227,12 +228,28 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     return undefined;
   }
 
+  /**
+   * The households grid's read, and the query a household smart list's rules resolve through.
+   *
+   * Two shapes, and which one you get depends on `input.fullScan`:
+   *
+   * - Without it (every client request, because the tRPC router only ever fills `options`), the
+   *   result is one page, capped at `MAX_PAGE_SIZE`, and `count` is the total number of matching
+   *   households.
+   * - With it (backend callers only — see `FullScanBatch`), the result is one batch of at most
+   *   `FULL_SCAN_BATCH_SIZE` rows ordered by `households.id`, starting after `fullScan.afterId`,
+   *   and `count` is the size of that batch rather than the total. The caller loops until a short
+   *   batch comes back. This is how list membership reads every matching household instead of the
+   *   first 5000.
+   */
   public async getAllWithPeopleCount(
     input: {
       tenant_id: string;
       options?: QueryParams<'households' | 'tags' | 'map_households_tags' | 'persons'> & { issues?: string[] };
       tags?: string[];
       issues?: string[];
+      /** Backend-only. Absent on every client-originated call; see `FullScanBatch`. */
+      fullScan?: FullScanBatch;
     },
     trx?: Transaction<Models>,
   ): Promise<{ rows: Record<string, unknown>[]; count: number }> {
@@ -251,6 +268,13 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     >;
     const advModel =
       options.advancedFilterModel || (options.filterModel?.['tags_expression'] as typeof options.advancedFilterModel);
+    // A backend full scan reads fixed-size batches walked by primary key; everything else — which
+    // is every request that arrived over tRPC — is clamped to one page as before.
+    const isFullScan = input.fullScan != null;
+    const page = isFullScan ? { offset: 0, limit: FULL_SCAN_BATCH_SIZE } : resolvePageWindow(options);
+    // The keyset cursor, flattened to a plain string so the guarded `.where` below needs neither a
+    // cast nor a non-null assertion. An id is never the empty string, so '' means "no cursor".
+    const scanCursorId = input.fullScan?.afterId ?? '';
 
     // Shared where clause builder (for both queries). `includeLateral` controls the electoral
     // lateral join: the data query always carries it (the columns are selected), the count query
@@ -386,11 +410,17 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     // only when an active filter or rule actually references those fields, which keeps the
     // count's predicate identical to the data query's.
     const countNeedsElectoral = referencesElectoralAreas(filterModel, advModel);
-    const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral)
-      .select(({ fn }) => [fn.count(sql`DISTINCT households.id`).as('total')])
-      .execute();
+    const countMatchingHouseholds = async (): Promise<number> => {
+      const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral)
+        .select(({ fn }) => [fn.count(sql`DISTINCT households.id`).as('total')])
+        .execute();
+      return Number(countResult[0]?.['total'] || 0);
+    };
 
-    const count = Number(countResult[0]?.['total'] || 0);
+    // A full scan calls this method once per batch and reads only `rows`. Running the DISTINCT
+    // count on every batch would re-execute the whole predicate for a number the caller does not
+    // use, so it is skipped and the batch's own size is reported instead (see the doc comment).
+    const totalCount = isFullScan ? null : await countMatchingHouseholds();
 
     // Data query
     const rows = await applyFilters(this.getSelect(trx), true)
@@ -479,27 +509,29 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.tenant_id',
         'tenants.placeholder_household_id',
       ])
-      .$if(!!options.sortModel?.length, (qb) =>
+      // The caller's sort is skipped during a full scan: the scan's own primary-key order is what
+      // makes the keyset cursor below correct, and a second ORDER BY term ahead of it would let
+      // batches repeat and skip rows. Nothing reads the row order of a membership scan.
+      .$if(!isFullScan && !!options.sortModel?.length, (qb) =>
         (options.sortModel ?? []).reduce((acc, sort) => {
           const col = resolveHouseholdSortColumn(sort.colId);
           if (col == null) return acc;
           return acc.orderBy(col as ReferenceExpression<Models, 'households'>, sort.sort);
         }, qb),
       )
+      .$if(isFullScan, (qb) => qb.orderBy('households.id'))
+      .$if(scanCursorId !== '', (qb) => qb.where('households.id', '>', scanCursorId))
       // Always bounded. This row carries two correlated subqueries and a jsonb_agg of members,
       // so an unpaged request (the old behaviour when startRow/endRow were absent) built that
-      // for every household in the tenant.
-      .offset(options.startRow ?? 0)
-      .limit(
-        typeof options.startRow === 'number' && typeof options.endRow === 'number'
-          ? Math.min(Math.max(0, options.endRow - options.startRow), MAX_PAGE_SIZE)
-          : MAX_PAGE_SIZE,
-      )
+      // for every household in the tenant. A full scan is still bounded; it just repeats the
+      // batch, so that per-row work never happens for more than FULL_SCAN_BATCH_SIZE rows at once.
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     return {
       rows,
-      count,
+      count: totalCount ?? rows.length,
     };
   }
 
@@ -817,7 +849,12 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     return { groups: sortedGroups, total };
   }
 
-  public async mergeHouseholds(input: { tenant_id: string; target_id: string; source_id: string; user_id: string }) {
+  public async mergeHouseholds(input: {
+    tenant_id: string;
+    target_id: string;
+    source_id: string;
+    user_id: string;
+  }): Promise<{ success: boolean }> {
     return this.transaction().execute(async (trx) => {
       const target = (await this.getOneBy(
         'id',
@@ -961,7 +998,84 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         ON CONFLICT (household_id, set_id) DO NOTHING
       `.execute(trx);
 
-      // 6. Delete source household
+      // 6. Re-point the canvassing rows. turf_knocks.household_id and turf_households.household_id
+      // are both ON DELETE CASCADE on households(id), so the source delete below would erase every
+      // knock ever recorded at that door and drop the address out of the turf it belongs to —
+      // silent loss of field history that no other step restores. Same class of re-pointing the
+      // PERSON merge does for its child rows.
+      //
+      // turf_knocks: the only unique key is uq_turf_knocks_client
+      // (tenant_id, turf_id, client_knock_id) WHERE client_knock_id IS NOT NULL. The household is
+      // not part of that key, so a plain re-point cannot collide.
+      await trx
+        .updateTable('turf_knocks')
+        .set({ household_id: input.target_id, updated_at: sql`now()`, updatedby_id: input.user_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('household_id', '=', input.source_id)
+        .execute();
+
+      // 7. turf_households: primary key (tenant_id, turf_id, household_id). Where the target is
+      // already in the same turf, re-pointing the source's row would violate that key, so the
+      // source's membership row is deleted instead and the target's own row (with its own
+      // walk_order) survives. Memberships in turfs the target is not in move across normally.
+      const targetTurfs = await trx
+        .selectFrom('turf_households')
+        .select('turf_id')
+        .where('tenant_id', '=', input.tenant_id)
+        .where('household_id', '=', input.target_id)
+        .execute();
+      const targetTurfIds = targetTurfs.map((r) => String(r.turf_id));
+      if (targetTurfIds.length > 0) {
+        await trx
+          .deleteFrom('turf_households')
+          .where('tenant_id', '=', input.tenant_id)
+          .where('household_id', '=', input.source_id)
+          .where('turf_id', 'in', targetTurfIds)
+          .execute();
+      }
+      await trx
+        .updateTable('turf_households')
+        .set({ household_id: input.target_id, updated_at: sql`now()`, updatedby_id: input.user_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('household_id', '=', input.source_id)
+        .execute();
+
+      // 8. delivery_requests.household_id is also ON DELETE CASCADE, so yard-sign requests at the
+      // source address would vanish with it. uq_delivery_requests_open_per_household is a partial
+      // unique index on (tenant_id, household_id) WHERE status IN ('new','approved'), so only one
+      // OPEN request may point at the surviving household. When both households have an open
+      // request the target's stays open and the source's is declined first, with the reason
+      // recorded — that moves it out of the partial index while keeping the row as history.
+      // Requests already delivered or declined sit outside the index and simply move across.
+      const targetOpenRequest = await trx
+        .selectFrom('delivery_requests')
+        .select('id')
+        .where('tenant_id', '=', input.tenant_id)
+        .where('household_id', '=', input.target_id)
+        .where('status', 'in', ['new', 'approved'])
+        .executeTakeFirst();
+      if (targetOpenRequest) {
+        await trx
+          .updateTable('delivery_requests')
+          .set({
+            status: 'declined',
+            skip_reason: 'Household records merged — the surviving household already has an open sign request',
+            updated_at: sql`now()`,
+            updatedby_id: input.user_id,
+          })
+          .where('tenant_id', '=', input.tenant_id)
+          .where('household_id', '=', input.source_id)
+          .where('status', 'in', ['new', 'approved'])
+          .execute();
+      }
+      await trx
+        .updateTable('delivery_requests')
+        .set({ household_id: input.target_id, updated_at: sql`now()`, updatedby_id: input.user_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('household_id', '=', input.source_id)
+        .execute();
+
+      // 9. Delete source household
       await this.delete({ tenant_id: input.tenant_id, id: input.source_id }, trx);
 
       return { success: true };

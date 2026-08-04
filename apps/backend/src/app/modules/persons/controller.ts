@@ -2,14 +2,18 @@ import type {
   ExportCsvInputType,
   ExportCsvResponseType,
   IAuthKeyPayload,
+  SortModelType,
   getAllOptionsType,
 } from '../../../../../../libs/common/src';
 import { buildPersonSlug, normalizeCrockford, PUBLIC_ID_LENGTH } from '../../../../../../libs/common/src';
 import type { OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { TRPCError } from '@trpc/server';
+import { BadRequestError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
 import type { QueryParams } from '../../lib/base.repo';
+import { FULL_SCAN_BATCH_SIZE } from '../../lib/paging';
 import { generatePersonPublicId } from '../../lib/person-public-id';
+import { HouseholdRepo } from '../households/repositories/households.repo';
 import { MapListsPersonsRepo } from '../lists/repositories/map-lists-persons.repo';
 import { MapPersonsTagRepo } from './repositories/map-persons-tags.repo';
 import { PersonsRepo } from './repositories/persons.repo';
@@ -17,10 +21,42 @@ import { MapTeamsPersonsRepo } from '../teams/repositories/map-teams-persons.rep
 import { queueZapierTrigger } from '../zapier/zapier.service';
 import { logger } from '../../logger';
 
+// Mirrors MAX_INLINE_EXPORT_ROWS in base.controller.ts (not exported from there). The full-scan
+// export loop below stops fetching once it has passed this many rows so an oversized tenant is not
+// scanned to completion in memory before `buildCsvResponse` makes the authoritative call — its
+// internal `assertInlineExportWithinCap` is what actually refuses the export. Keep this in sync if
+// the base cap ever changes.
+const EXPORT_SCAN_CAP = 50_000;
+
+/** Order accumulated export rows by the grid's requested sort, in memory (the full scan below reads
+ * rows ordered by primary key, not the caller's sort). Absent a sort, the scan order is kept as-is. */
+function sortExportRows(
+  rows: Record<string, unknown>[],
+  sortModel: SortModelType[] | undefined,
+): Record<string, unknown>[] {
+  if (!sortModel?.length) return rows;
+  const compare = (a: unknown, b: unknown): number => {
+    if (a == null && b == null) return 0;
+    if (a == null) return -1;
+    if (b == null) return 1;
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime();
+    return String(a).localeCompare(String(b));
+  };
+  return [...rows].sort((a, b) => {
+    for (const { colId, sort } of sortModel) {
+      const cmp = compare(a[colId], b[colId]);
+      if (cmp !== 0) return sort === 'desc' ? -cmp : cmp;
+    }
+    return 0;
+  });
+}
+
 export class PersonsController extends BaseController<'persons', PersonsRepo> {
   private mapPersonsTagRepo = new MapPersonsTagRepo();
   private mapListsPersonsRepo = new MapListsPersonsRepo();
   private mapTeamsPersonsRepo = new MapTeamsPersonsRepo();
+  private householdRepo = new HouseholdRepo();
 
   constructor() {
     super(new PersonsRepo());
@@ -106,6 +142,13 @@ export class PersonsController extends BaseController<'persons', PersonsRepo> {
   }
 
   public async moveEntireHousehold(oldHouseholdId: string, newHouseholdId: string, tenantId: string) {
+    // household_id has no tenant-composite FK (FINDING A) — Postgres would happily accept
+    // another tenant's household id here. Verify it belongs to this tenant before the bulk
+    // update below can point this tenant's persons at it.
+    const targetHousehold = await this.householdRepo.getOneById({ id: newHouseholdId, tenant_id: tenantId });
+    if (!targetHousehold) {
+      throw new BadRequestError('That household does not belong to this workspace.');
+    }
     return this.getRepo()
       .transaction()
       .execute(
@@ -176,6 +219,64 @@ export class PersonsController extends BaseController<'persons', PersonsRepo> {
           .where('person_id', 'in', idsToDelete)
           .execute();
 
+        // Revoke companion (canvass/deliveries) access for any deleted person who was a
+        // volunteer (FINDING B). None of companion_volunteers.person_id,
+        // companion_sessions.volunteer_id, companion_approval_tokens.volunteer_id, or
+        // turf_assignments/turf_segment_claims.volunteer_person_id carry a foreign key to
+        // persons — see the merge cleanup in persons.repo.ts (mergePersons) for the same
+        // problem on the merge path. Mirrors that method's lifecycle mechanics: sessions and
+        // pending approval tokens are deleted outright (a live device session or a pending
+        // magic link is a bare credential, not history worth keeping); companion_volunteers,
+        // turf_assignments, and turf_segment_claims are moved to their existing
+        // "no longer active" states (status='revoked' / released_at) rather than deleted, so
+        // the access-check paths (requireSession, resolveByToken, and the segment-claim
+        // uniqueness index) block them the same way a live revoke would, while keeping the
+        // row as an audit trail.
+        const revokedVolunteers = await trx
+          .selectFrom('companion_volunteers')
+          .select('id')
+          .where('tenant_id', '=', tenant_id)
+          .where('person_id', 'in', idsToDelete)
+          .execute();
+        const revokedVolunteerIds = revokedVolunteers.map((v) => v.id);
+
+        if (revokedVolunteerIds.length > 0) {
+          await trx
+            .deleteFrom('companion_sessions')
+            .where('tenant_id', '=', tenant_id)
+            .where('volunteer_id', 'in', revokedVolunteerIds)
+            .execute();
+
+          await trx
+            .deleteFrom('companion_approval_tokens')
+            .where('tenant_id', '=', tenant_id)
+            .where('volunteer_id', 'in', revokedVolunteerIds)
+            .execute();
+
+          await trx
+            .updateTable('companion_volunteers')
+            .set({ status: 'revoked', revoked_at: new Date() })
+            .where('tenant_id', '=', tenant_id)
+            .where('id', 'in', revokedVolunteerIds)
+            .execute();
+        }
+
+        await trx
+          .updateTable('turf_assignments')
+          .set({ status: 'revoked', updated_at: new Date() })
+          .where('tenant_id', '=', tenant_id)
+          .where('volunteer_person_id', 'in', idsToDelete)
+          .where('status', '=', 'active')
+          .execute();
+
+        await trx
+          .updateTable('turf_segment_claims')
+          .set({ released_at: new Date() })
+          .where('tenant_id', '=', tenant_id)
+          .where('volunteer_person_id', 'in', idsToDelete)
+          .where('released_at', 'is', null)
+          .execute();
+
         // Delete team mappings
         await this.mapTeamsPersonsRepo.deleteByPersonIds({ tenant_id, person_ids: idsToDelete }, trx);
         // Delete tag mappings
@@ -229,13 +330,53 @@ export class PersonsController extends BaseController<'persons', PersonsRepo> {
     return result;
   }
 
+  /**
+   * Every person row the current filters/tags match, read in fixed-size batches ordered by primary
+   * key (the `fullScan` mode `getAllWithAddress` supports) rather than a single page. Without this,
+   * `exportCsv` silently truncated at whatever page size the repo clamps an ordinary request to.
+   *
+   * Stops once it has passed `EXPORT_SCAN_CAP` rows — the caller's `buildCsvResponse` refuses an
+   * export over the real cap anyway, so there is no point pulling an unbounded table into memory
+   * first. The caller's requested sort is applied afterwards, in memory: `fullScan` ignores it
+   * (it always orders by id to make the keyset walk possible), and re-sorting a bounded ~50k-row
+   * accumulation in memory is cheaper than plumbing sort into the keyset scan.
+   */
+  private async scanAllWithAddress(
+    auth: IAuthKeyPayload,
+    options?: getAllOptionsType,
+  ): Promise<Record<string, unknown>[]> {
+    const { tags, ...queryParams } = options || {};
+    const queryOptions = queryParams as QueryParams<'persons' | 'households' | 'tags' | 'map_peoples_tags'>;
+    const rows: Record<string, unknown>[] = [];
+    let afterId: string | null = null;
+
+    for (;;) {
+      const batch = await this.getRepo().getAllWithAddress({
+        tenant_id: auth.tenant_id,
+        options: queryOptions,
+        tags,
+        fullScan: { afterId },
+      });
+      for (const row of batch.rows) rows.push(row);
+      if (batch.rows.length < FULL_SCAN_BATCH_SIZE || rows.length > EXPORT_SCAN_CAP) break;
+      const lastRow = batch.rows[batch.rows.length - 1];
+      const lastId = lastRow ? String(lastRow['id']) : '';
+      // The cursor has to move or the next batch repeats this one for ever. It always does move —
+      // the scan orders by id and asks for ids strictly greater than the cursor — so this is a
+      // termination guarantee, not a case that happens.
+      if (lastId === '' || lastId === afterId) break;
+      afterId = lastId;
+    }
+
+    return sortExportRows(rows, options?.sortModel);
+  }
+
   public override async exportCsv(
     input: ExportCsvInputType & { tenant_id: string },
     auth?: IAuthKeyPayload,
   ): Promise<ExportCsvResponseType> {
     if (auth) {
-      const result = await this.getAllWithAddress(auth, input?.options);
-      const rows = (result?.rows ?? []).map((row) => ({ ...(row as Record<string, unknown>) }));
+      const rows = await this.scanAllWithAddress(auth, input?.options);
       const response = this.buildCsvResponse(rows, input) as {
         csv: string;
         fileName: string;

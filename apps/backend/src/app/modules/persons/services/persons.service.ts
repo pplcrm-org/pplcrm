@@ -3,6 +3,7 @@ import type { IAuthKeyPayload, PersonMergeImpactType, UpdatePersonsType } from '
 import { TRPCError } from '@trpc/server';
 import { sql } from 'kysely';
 
+import { BadRequestError } from '../../../errors/app-errors';
 import { fingerprintFull, fingerprintStreet } from '../../../lib/address-normalize';
 import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../../lib/ndjson';
 import { backfillMissingSlugs } from '../../../lib/slug';
@@ -15,6 +16,7 @@ import { SettingsController } from '../../settings/controller';
 import { TagsRepo } from '../../tags/repositories/tags.repo';
 import { MapPersonsTagRepo } from '../repositories/map-persons-tags.repo';
 import { PersonsRepo } from '../repositories/persons.repo';
+import { CampaignsRepo } from '../../campaigns/repositories/campaigns.repo';
 import { CompaniesRepo } from '../../companies/repositories/companies.repo';
 import { MapTeamsPersonsRepo } from '../../teams/repositories/map-teams-persons.repo';
 import { TeamsRepo } from '../../teams/repositories/teams.repo';
@@ -42,12 +44,50 @@ export class PersonsService {
   private storageService = new StorageService();
   private householdRepo = new HouseholdRepo();
   private companiesRepo = new CompaniesRepo();
+  private campaignsRepo = new CampaignsRepo();
   private listsRepo = new ListsRepo();
   private mapListsPersonsRepo = new MapListsPersonsRepo();
+
+  /**
+   * `persons.household_id`, `persons.company_id`, and `persons.campaign_id` are single-column
+   * FKs with no tenant pairing — Postgres validates only that the referenced row exists
+   * somewhere, not that it belongs to the caller's tenant. Row-level security stops a
+   * cross-tenant *read*, but a write that names another tenant's id lands. Call this before
+   * any insert/update that writes a client-supplied value into one of these columns.
+   */
+  private async assertPersonReferencesInTenant(
+    refs: { household_id?: string; company_id?: string | null; campaign_id?: string },
+    tenantId: string,
+  ): Promise<void> {
+    if (refs.household_id) {
+      const household = await this.householdRepo.getOneById({ id: refs.household_id, tenant_id: tenantId });
+      if (!household) {
+        throw new BadRequestError('That household does not belong to this workspace.');
+      }
+    }
+    if (refs.company_id) {
+      const company = await this.companiesRepo.getOneById({ id: refs.company_id, tenant_id: tenantId });
+      if (!company) {
+        throw new BadRequestError('That company does not belong to this workspace.');
+      }
+    }
+    if (refs.campaign_id) {
+      const campaign = await this.campaignsRepo.getOneById({ id: refs.campaign_id, tenant_id: tenantId });
+      if (!campaign) {
+        throw new BadRequestError('That campaign does not belong to this workspace.');
+      }
+    }
+  }
 
   public async addPerson(payload: UpdatePersonsType, auth: IAuthKeyPayload) {
     // persons.assigned_to has no tenant-composite FK (see lib/tenant-members).
     await assertAssigneeInTenant(this.personsRepo.db, auth.tenant_id, payload.assigned_to);
+    // Same problem for household_id/company_id (campaign_id below is server-derived, not
+    // client-supplied, in this method) — see assertPersonReferencesInTenant doc comment.
+    await this.assertPersonReferencesInTenant(
+      { household_id: payload.household_id, company_id: payload.company_id },
+      auth.tenant_id,
+    );
 
     // Enforce email uniqueness within the tenant
     const emailToCheck = payload.email?.trim();
@@ -192,6 +232,12 @@ export class PersonsService {
 
   public async updatePerson(id: string, data: UpdatePersonsType, auth: IAuthKeyPayload) {
     await assertAssigneeInTenant(this.personsRepo.db, auth.tenant_id, data.assigned_to);
+    // household_id/company_id/campaign_id can all be present on an update payload — see
+    // assertPersonReferencesInTenant doc comment.
+    await this.assertPersonReferencesInTenant(
+      { household_id: data.household_id, company_id: data.company_id, campaign_id: data.campaign_id },
+      auth.tenant_id,
+    );
 
     // Enforce email uniqueness within the tenant (excluding the person being updated)
     const emailToCheck = data.email?.trim();
