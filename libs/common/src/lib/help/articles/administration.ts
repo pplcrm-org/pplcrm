@@ -724,7 +724,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
           {
             title: 'Read the two counts',
             detail:
-              'After every save the app re-runs matching and reports two numbers: households in **no** area and households in **more than one**. That is your quality check, and it costs nothing to produce.',
+              'The map reports two numbers: households in **no** area and households in **more than one**. They are counted when you open the map and again whenever you press **Check again** — after an edit, a notice reminds you to recheck. That is your quality check.',
           },
         ],
       },
