@@ -115,7 +115,9 @@ describe('BoundariesSettingsComponent', () => {
       deleteFeature: vi.fn().mockResolvedValue(true),
       deleteSet: vi.fn().mockResolvedValue(true),
       listFeatures: vi.fn().mockResolvedValue([makeFeature()]),
-      listHouseholdPins: vi.fn().mockResolvedValue([{ id: '5', lat: 45.42, lng: -75.69, label: '1 Main St' }]),
+      listHouseholdPins: vi
+        .fn()
+        .mockResolvedValue({ pins: [{ id: '5', lat: 45.42, lng: -75.69, label: '1 Main St' }], totalLocated: 1 }),
       listSets: vi.fn().mockResolvedValue([]),
       rematch: vi.fn().mockResolvedValue({ queued: true }),
       updateFeature: vi
@@ -293,7 +295,7 @@ describe('BoundariesSettingsComponent', () => {
       expect(component['areaForm']().invalid()).toBe(true);
     });
 
-    it('re-runs the validation count after saving an area', async () => {
+    it('marks the fit numbers stale after saving an area instead of re-counting', async () => {
       boundaries.validate.mockClear();
       component['onPolygonDrawn']([
         { lat: 45.4, lng: -75.7 },
@@ -302,7 +304,16 @@ describe('BoundariesSettingsComponent', () => {
       ]);
       component['areaPayload'].set({ name: 'Ward 13', code: '' });
       await component['savePendingShape']();
+      expect(boundaries.validate).not.toHaveBeenCalled();
+      expect(component['validationStale']()).toBe(true);
+    });
+
+    it('re-counts the fit numbers on request and clears the stale flag', async () => {
+      boundaries.validate.mockClear();
+      component['validationStale'].set(true);
+      await component['refreshValidation']('1');
       expect(boundaries.validate).toHaveBeenCalledWith('1');
+      expect(component['validationStale']()).toBe(false);
     });
 
     it('reports both quality counts in plain words', () => {
@@ -459,7 +470,7 @@ describe('BoundariesSettingsComponent', () => {
   describe('the draw view of an empty workspace', () => {
     async function buildEmpty(set: BoundarySetRowType): Promise<void> {
       boundaries.listFeatures.mockResolvedValue([]);
-      boundaries.listHouseholdPins.mockResolvedValue([]);
+      boundaries.listHouseholdPins.mockResolvedValue({ pins: [], totalLocated: 0 });
       await build([set]);
       await component['openMap'](set);
       fixture.detectChanges();
