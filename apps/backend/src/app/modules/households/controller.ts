@@ -24,18 +24,17 @@ import { ImportsRepo } from '../imports/repositories/imports.repo';
 import { TagsRepo } from '../tags/repositories/tags.repo';
 import { applyHouseholdMatchesBatch, matchPointToSets, requiredSetIdsForTenant } from '../../lib/gis/boundary-match';
 import { ensureImportedBoundarySets, readImportedAreas, writeImportedAreas } from './electoral-areas';
-import { BaseController } from '../../lib/base.controller';
+import { BaseController, MAX_INLINE_EXPORT_ROWS } from '../../lib/base.controller';
 import { BadRequestError } from '../../errors/app-errors';
 import { SettingsController } from '../settings/controller';
 import type { OperationDataType, TypeId, TypeTenantId } from '../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../logger';
 
-// Mirrors MAX_INLINE_EXPORT_ROWS in base.controller.ts (not exported from there). The full-scan
-// export loop below stops fetching once it has passed this many rows so an oversized tenant is not
-// scanned to completion in memory before `buildCsvResponse` makes the authoritative call — its
-// internal `assertInlineExportWithinCap` is what actually refuses the export. Keep this in sync if
-// the base cap ever changes.
-const EXPORT_SCAN_CAP = 50_000;
+// The full-scan export loop below stops fetching once it has passed this many rows so an
+// oversized tenant is not scanned to completion in memory before `buildCsvResponse` makes the
+// authoritative call — its internal `assertInlineExportWithinCap` is what actually refuses the
+// export. Same constant, so the two caps cannot drift.
+const EXPORT_SCAN_CAP = MAX_INLINE_EXPORT_ROWS;
 
 /** Order accumulated export rows by the grid's requested sort, in memory (the full scan below reads
  * rows ordered by primary key, not the caller's sort). Absent a sort, the scan order is kept as-is. */

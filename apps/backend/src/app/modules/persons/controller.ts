@@ -9,7 +9,7 @@ import { buildPersonSlug, normalizeCrockford, PUBLIC_ID_LENGTH } from '../../../
 import type { OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { TRPCError } from '@trpc/server';
 import { BadRequestError } from '../../errors/app-errors';
-import { BaseController } from '../../lib/base.controller';
+import { BaseController, MAX_INLINE_EXPORT_ROWS } from '../../lib/base.controller';
 import type { QueryParams } from '../../lib/base.repo';
 import { FULL_SCAN_BATCH_SIZE } from '../../lib/paging';
 import { generatePersonPublicId } from '../../lib/person-public-id';
@@ -21,12 +21,11 @@ import { MapTeamsPersonsRepo } from '../teams/repositories/map-teams-persons.rep
 import { queueZapierTrigger } from '../zapier/zapier.service';
 import { logger } from '../../logger';
 
-// Mirrors MAX_INLINE_EXPORT_ROWS in base.controller.ts (not exported from there). The full-scan
-// export loop below stops fetching once it has passed this many rows so an oversized tenant is not
-// scanned to completion in memory before `buildCsvResponse` makes the authoritative call — its
-// internal `assertInlineExportWithinCap` is what actually refuses the export. Keep this in sync if
-// the base cap ever changes.
-const EXPORT_SCAN_CAP = 50_000;
+// The full-scan export loop below stops fetching once it has passed this many rows so an
+// oversized tenant is not scanned to completion in memory before `buildCsvResponse` makes the
+// authoritative call — its internal `assertInlineExportWithinCap` is what actually refuses the
+// export. Same constant, so the two caps cannot drift.
+const EXPORT_SCAN_CAP = MAX_INLINE_EXPORT_ROWS;
 
 /** Order accumulated export rows by the grid's requested sort, in memory (the full scan below reads
  * rows ordered by primary key, not the caller's sort). Absent a sort, the scan order is kept as-is. */

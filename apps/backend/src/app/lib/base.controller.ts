@@ -24,7 +24,7 @@ import { TransactionalEmailService } from './mail/transactional-mail.service';
 // backend memory or stall the event loop (SECURITY-REVIEW.md 3.2). Anything past this cap has to go
 // through the queued/streamed background export (ExportsController.queueExport), which writes to
 // storage instead of buffering. Kept generous so ordinary exports are unaffected.
-const MAX_INLINE_EXPORT_ROWS = 50_000;
+export const MAX_INLINE_EXPORT_ROWS = 50_000;
 
 /** Refuse an oversized inline export with an actionable message pointing at the background export. */
 function assertInlineExportWithinCap(rowCount: number): void {
