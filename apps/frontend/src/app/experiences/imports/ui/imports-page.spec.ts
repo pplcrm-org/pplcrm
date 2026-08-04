@@ -49,7 +49,11 @@ const baseExportJob = {
   file_name: 'people-export.csv',
   status: 'completed' as const,
   row_count: 42,
+  error: null,
   created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  downloadable: true,
+  ownedByOther: false,
   createdBy: { name: 'Admin', email: 'admin@example.com' },
 };
 
@@ -317,6 +321,43 @@ describe('ImportsPage', () => {
       await component['deleteExportJob'](baseExportJob as never);
 
       expect(mockAlertSvc.showError).toHaveBeenCalledWith('Failed to delete export. Please try again.');
+    });
+
+    // Downloading and deleting an export are limited to the member who requested it plus
+    // admins and owners, but the tab lists the whole workspace. The row must not offer a
+    // button the server answers with a permission error.
+    async function renderExportsTabWith(job: unknown): Promise<string> {
+      mockExportsSvc.list.mockResolvedValue([job]);
+      await fixture.whenStable();
+      component['switchTab']('exports');
+      await fixture.whenStable();
+      fixture.detectChanges();
+      return (fixture.nativeElement as HTMLElement).innerHTML;
+    }
+
+    it('should offer no download or delete button for a colleague’s export', async () => {
+      const html = await renderExportsTabWith({ ...baseExportJob, downloadable: false, ownedByOther: true });
+
+      expect(html).toContain('Owner only');
+      expect(html).not.toContain('Download CSV');
+      expect(html).not.toContain('Delete export');
+    });
+
+    it('should still offer the download and delete buttons for your own export', async () => {
+      const html = await renderExportsTabWith(baseExportJob);
+
+      expect(html).not.toContain('Owner only');
+      expect(html).toContain('Download CSV');
+      expect(html).toContain('Delete export');
+    });
+
+    it('should name the owner in the "Owner only" tooltip, and fall back when nobody is named', () => {
+      expect(
+        component['ownerOnlyHint']({ ...baseExportJob, createdBy: { id: 'u2', name: 'Rosa Diaz', email: null } }),
+      ).toBe('Only Rosa Diaz, or a workspace admin, can download or delete this export.');
+      expect(component['ownerOnlyHint']({ ...baseExportJob, createdBy: null })).toBe(
+        'Only the member who requested this export, or a workspace admin, can download or delete it.',
+      );
     });
 
     it('should toggle the "New export" guidance panel instead of opening a wizard', () => {

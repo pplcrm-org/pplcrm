@@ -144,6 +144,7 @@ export class ExportsController {
       created_at: exportRecord.created_at?.toISOString?.() ?? new Date().toISOString(),
       updated_at: exportRecord.updated_at?.toISOString?.() ?? new Date().toISOString(),
       downloadable: false,
+      ownedByOther: false,
       createdBy: {
         id: auth.user_id,
         name: auth.name || null,
@@ -174,6 +175,7 @@ export class ExportsController {
       created_at: exportRecord.created_at?.toISOString?.() ?? new Date().toISOString(),
       updated_at: exportRecord.updated_at?.toISOString?.() ?? new Date().toISOString(),
       downloadable: false,
+      ownedByOther: false,
       createdBy: {
         id: auth.user_id,
         name: auth.name || null,
@@ -186,6 +188,12 @@ export class ExportsController {
     const rows = await this.repo.list(auth.tenant_id);
     return rows.map((r) => {
       const name = [r.creator_first_name, r.creator_last_name].filter(Boolean).join(' ').trim();
+      // The list is workspace-wide, but downloading and deleting are owner-or-admin only
+      // (canAccessExport, shared with the download route). A row the caller may not fetch used
+      // to come back with downloadable: true whenever the file existed, so the page offered a
+      // button the route answers with 403. Report the restriction instead, so the page can
+      // withhold the button *and* say why.
+      const accessible = canAccessExport(r, auth);
       return {
         id: String(r.id),
         entity: String(r.entity),
@@ -195,7 +203,8 @@ export class ExportsController {
         error: r.error ?? null,
         created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
         updated_at: r.updated_at instanceof Date ? r.updated_at.toISOString() : String(r.updated_at),
-        downloadable: r.storage_key != null,
+        downloadable: accessible && r.storage_key != null,
+        ownedByOther: !accessible,
         createdBy: r.user_id
           ? {
               id: r.user_id,

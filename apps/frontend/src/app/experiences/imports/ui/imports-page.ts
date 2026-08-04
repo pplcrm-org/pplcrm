@@ -291,6 +291,19 @@ export class ImportsPage {
     return this.formatDate(dateStr);
   }
 
+  /**
+   * Tooltip for the "Owner only" marker on a colleague's export. The download route and the
+   * delete mutation both accept only the member who requested the export, plus admins and
+   * owners, so the row states the rule and names the owner instead of offering an action the
+   * server refuses.
+   */
+  protected ownerOnlyHint(job: DataExportRecordType): string {
+    const owner = job.createdBy?.name?.trim() || job.createdBy?.email?.trim();
+    return owner
+      ? `Only ${owner}, or a workspace admin, can download or delete this export.`
+      : 'Only the member who requested this export, or a workspace admin, can download or delete it.';
+  }
+
   protected isExpired(job: DataExportRecordType): boolean {
     const EXPIRE_MS = 30 * 24 * 60 * 60 * 1000;
     return Date.now() - new Date(job.created_at).getTime() > EXPIRE_MS;

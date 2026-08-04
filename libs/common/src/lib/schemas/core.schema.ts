@@ -220,6 +220,11 @@ export const dataExportRecord = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   downloadable: z.boolean(),
+  /** True when this export was requested by another member and the caller is neither an admin
+   *  nor an owner, so the download route and the delete mutation will both refuse them. The
+   *  Exports tab lists the whole workspace, so it needs this to withhold the buttons and say
+   *  why rather than offering an action that fails. */
+  ownedByOther: z.boolean(),
   createdBy: z
     .object({
       id: z.string(),

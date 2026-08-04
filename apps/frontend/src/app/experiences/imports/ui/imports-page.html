@@ -227,6 +227,13 @@
           } }
         </td>
         <td class="text-right">
+          <!-- The tab lists the whole workspace's exports, but downloading and deleting one are
+               limited to the member who requested it plus admins and owners. Rather than offer
+               buttons the server answers with a permission error, say who it belongs to: the By
+               column on this row already names them. -->
+          @if (job.ownedByOther) {
+          <span class="text-xs text-base-content/50" [title]="ownerOnlyHint(job)">Owner only</span>
+          } @else {
           <div class="flex justify-end gap-1">
             @if (job.status === 'completed') { @if (isExpired(job)) {
             <span class="text-xs text-base-content/40 mr-2">Expired (30d)</span>
@@ -256,6 +263,7 @@
               <pc-icon name="trash" [size]="4"></pc-icon>
             </button>
           </div>
+          }
         </td>
       </tr>
       } @empty {

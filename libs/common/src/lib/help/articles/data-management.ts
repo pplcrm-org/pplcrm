@@ -109,7 +109,7 @@ export const DATA_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The tab lists everyone’s exports so the workspace can see what has been extracted, but the file itself is yours: you can download or delete an export you requested, and organization admins and owners can download or delete any of them. After 30 days the file is deleted and its row leaves the list; the Activity log entry stays. Exporting the workspace **user list** is limited to admins and owners.',
+        text: 'The tab lists everyone’s exports so the workspace can see what has been extracted, but the file itself is yours: you can download or delete an export you requested, and organization admins and owners can download or delete any of them. A colleague’s export shows **Owner only** where the download and delete buttons would be, with their name in the **By** column, so you can see the export exists without being offered a button that would be refused. After 30 days the file is deleted and its row leaves the list; the Activity log entry stays. Exporting the workspace **user list** is limited to admins and owners.',
       },
       {
         kind: 'callout',

@@ -31,6 +31,7 @@ function makeExportRecord(overrides: Record<string, unknown> = {}) {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     downloadable: false,
+    ownedByOther: false,
     createdBy: null,
     ...overrides,
   };
