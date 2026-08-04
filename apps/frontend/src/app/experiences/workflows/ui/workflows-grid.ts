@@ -25,7 +25,8 @@ interface ListRow {
   steps: ListStep[];
   runs_30d: number;
   last_run_at: string | Date | null;
-  last_run_status: 'success' | 'failed' | 'skipped' | null;
+  // 'pending' = an automation email that is queued for delivery; its outcome is not known yet.
+  last_run_status: 'pending' | 'success' | 'failed' | 'skipped' | null;
   last_run_error: string | null;
 }
 

@@ -922,8 +922,24 @@ export interface DonationReceipts extends RecordType {
   kind: string;
   /** NULL exactly when kind is 'acknowledgement' — an acknowledgement asserts no tax treatment. */
   regime: string | null;
-  /** Numbering year (issue-date year) for official receipts; the covered year for statements. */
+  /**
+   * Numbering year: the `receipt_counters` year the serial was drawn from, which is the year the
+   * document was ISSUED. Statements are unnumbered and store the covered year here instead.
+   *
+   * Never filter "documents for tax year N" on this column — a cumulative receipt for 2025 gifts
+   * issued in the 2026 batch has year = 2026. Use `coverage_year` for that; see below.
+   */
   year: number;
+  /**
+   * The calendar year of the GIFTS this document covers, on every kind — the year a donor would
+   * call it. Separate from `year` because the two differ for exactly the case the year-end batch
+   * hits: a cumulative receipt for 2025 gifts written by a batch that runs in 2026.
+   *
+   * NULL only on rows written by code that predates the column (the demo seeder), so every read is
+   * `coalesce(coverage_year, year)` — `coverageYearRef()` in donations/repositories/receipts.repo.ts
+   * builds that expression.
+   */
+  coverage_year: number | null;
   /**
    * Gap-free per (tenant, year, counter kind) via receipt_counters; NULL for statements
    * (unnumbered). Acknowledgements draw on their own counter so the official tax-receipt sequence
@@ -1106,6 +1122,10 @@ export interface Tasks extends RecordType {
   person_id: string | null;
   /** Once-only marker: when the hourly scan first found this task past its working-hours SLA target. */
   sla_breached_at: Timestamp | null;
+  /** The automation whose `create_task` step made this task, or null for a task a person created.
+   * The SLA-breach scan skips these: an automation triggered by `task_sla_breach` that contains a
+   * `create_task` step would otherwise keep re-triggering itself through the tasks it creates. */
+  created_by_workflow_id: string | null;
 }
 
 // Unlike every other record table, tenants.createdby_id is NULLABLE in the schema — the tenant
@@ -1761,6 +1781,11 @@ export interface Workflows extends RecordType {
   trigger_type: string;
   status: string;
   trigger_event_id: string | null;
+  /** Which consent rules this automation's emails obey (REVIEW3 two-class plan):
+   * 'relationship' = operational mail, allowed to reach zero-subscription recipients;
+   * 'marketing' = commercial mail, requires a subscribed recipient + the org postal address.
+   * DB default 'marketing'; the controller derives the real value from the trigger. */
+  message_class: Generated<'relationship' | 'marketing'>;
   // Spec §16 ONLY ENROLL IF — a QueryBuilder group node (see core.schema QueryBuilderGroupNode).
   conditions: Json | null;
   /** Sequence-level goals (WorkflowExitCondition[] as jsonb) that end an enrollment early. */
@@ -1797,7 +1822,10 @@ export interface WorkflowRuns {
   person_id: string | null;
   step_number: number | null;
   step_kind: string | null;
-  status: 'success' | 'failed' | 'skipped';
+  /** 'pending' is an email run that has been queued for delivery but not yet handed to the mail
+   * provider; the delivery handler moves it to 'success', 'skipped' (deliberately dropped) or
+   * 'failed'. Every other step kind is written in its terminal state. */
+  status: 'pending' | 'success' | 'failed' | 'skipped';
   error: string | null;
   /** First open/click of the automation email this run sent (stamped by the SendGrid event
    * webhook via the workflow_run_id custom arg). Step conditions and exit goals read these. */

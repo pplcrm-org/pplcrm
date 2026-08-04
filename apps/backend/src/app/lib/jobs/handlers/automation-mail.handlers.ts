@@ -9,6 +9,34 @@ import { resolveAutomationSendConsent } from '../../../modules/workflows/automat
 
 const mailService = new NewsletterEmailService();
 
+/** Longest run error text kept — the automations screens show it inline. */
+const MAX_RUN_ERROR_LENGTH = 500;
+
+/**
+ * Settle the `workflow_runs` row this delivery job belongs to.
+ *
+ * The drip worker writes the row as 'pending' when it queues the job, because at that moment
+ * nothing has been sent. This is the only place that knows what actually happened, so it is the
+ * only place that writes the terminal state: 'success' once the mail provider accepted the
+ * message, 'skipped' when the send is deliberately dropped, 'failed' when it did not go out.
+ * A retry that finally succeeds overwrites an earlier 'failed', which is why this is a plain
+ * update rather than one guarded to the pending state.
+ */
+async function settleRun(
+  db: Kysely<Models>,
+  tenantId: string,
+  workflowRunId: string,
+  status: 'success' | 'skipped' | 'failed',
+  error: string | null,
+): Promise<void> {
+  await db
+    .updateTable('workflow_runs')
+    .set({ status, error: error === null ? null : error.substring(0, MAX_RUN_ERROR_LENGTH) })
+    .where('tenant_id', '=', tenantId)
+    .where('id', '=', workflowRunId)
+    .execute();
+}
+
 export interface SendAutomationEmailPayload {
   tenantId: string;
   workflowRunId: string;
@@ -17,6 +45,12 @@ export interface SendAutomationEmailPayload {
   html: string;
   text: string;
   unsubscribeUrl: string;
+  /** The workflow's message class, carried in the payload so the delivery-time consent re-check
+   * applies the same branch without joining back to workflows. Legacy jobs (field absent) were
+   * enqueued before the two-class split, when every automation email followed today's
+   * relationship rules — so absent is read as 'relationship' to keep in-flight mail behaving
+   * as it did when it was queued. */
+  messageClass?: 'relationship' | 'marketing';
   /** Set on jobs enqueued since quota moved to delivery-time metering — this handler logs the
    * send after SendGrid accepts it. Legacy jobs (flag absent) were metered at enqueue time. */
   meterOnSend?: boolean;
@@ -31,11 +65,26 @@ export interface SendAutomationEmailPayload {
  *
  * Consent, caps, and the verified-domain gate were all enforced by the drip worker before this
  * job was enqueued; this handler only resolves identity and hands the message to SendGrid.
+ *
+ * Whatever happens, the run row ends up saying it honestly: the delivery below settles it to
+ * 'success' or 'skipped', and anything thrown is recorded as 'failed' before being re-thrown so
+ * the worker can still retry. A retry that succeeds overwrites the 'failed'; a job that runs out
+ * of attempts leaves it there, which is what the automations screens should show.
  */
 export async function handleSendAutomationEmail(
   db: Kysely<Models>,
   payload: SendAutomationEmailPayload,
 ): Promise<void> {
+  try {
+    await deliverAutomationEmail(db, payload);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await settleRun(db, payload.tenantId, payload.workflowRunId, 'failed', message);
+    throw err;
+  }
+}
+
+async function deliverAutomationEmail(db: Kysely<Models>, payload: SendAutomationEmailPayload): Promise<void> {
   const { tenantId } = payload;
 
   const settingsRows = await db
@@ -86,6 +135,13 @@ export async function handleSendAutomationEmail(
       { tenantId, workflowRunId: payload.workflowRunId },
       'Tenant sending blocked at delivery time — dropping queued automation email',
     );
+    await settleRun(
+      db,
+      tenantId,
+      payload.workflowRunId,
+      'skipped',
+      'Sending was blocked for this workspace when the email came up for delivery, so it was not sent.',
+    );
     return;
   }
   const run = await db
@@ -95,15 +151,21 @@ export async function handleSendAutomationEmail(
     .where('id', '=', payload.workflowRunId)
     .executeTakeFirst();
   if (run?.person_id) {
-    const consent = await resolveAutomationSendConsent(db, tenantId, {
-      id: String(run.person_id),
-      email: payload.to,
-    });
+    const consent = await resolveAutomationSendConsent(
+      db,
+      tenantId,
+      {
+        id: String(run.person_id),
+        email: payload.to,
+      },
+      payload.messageClass ?? 'relationship',
+    );
     if (!consent.ok) {
       logger.info(
         { tenantId, workflowRunId: payload.workflowRunId, reason: consent.reason },
         'Recipient no longer consents at delivery time — dropping queued automation email',
       );
+      await settleRun(db, tenantId, payload.workflowRunId, 'skipped', consent.reason);
       return;
     }
   }
@@ -137,10 +199,25 @@ export async function handleSendAutomationEmail(
     subscriptionTracking: false,
   });
 
+  // Nothing accepted means the address was empty or a duplicate inside this single-recipient
+  // request — retrying cannot change that, so record it and stop rather than throw.
+  if (delivered === 0) {
+    await settleRun(
+      db,
+      tenantId,
+      payload.workflowRunId,
+      'failed',
+      'The mail provider accepted no recipient for this email, so it was not sent.',
+    );
+    return;
+  }
+
+  await settleRun(db, tenantId, payload.workflowRunId, 'success', null);
+
   // Meter the send only after SendGrid accepted it — a job that fails (and exhausts its
   // retries) must not consume the tenant's allowance. Legacy jobs without `meterOnSend` were
   // already metered at enqueue time; logging them again would double-count.
-  if (payload.meterOnSend && delivered > 0) {
+  if (payload.meterOnSend) {
     await logAutomationSend(db, tenantId);
   }
 }

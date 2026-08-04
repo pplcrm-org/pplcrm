@@ -4,10 +4,11 @@ import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, moveItemInArra
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { AddWorkflowObj } from '@common';
+import { AddWorkflowObj, defaultMessageClassForTrigger, lockedMessageClassForTrigger } from '@common';
 import type {
   QueryBuilderGroupNode,
   WorkflowExitCondition,
+  WorkflowMessageClass,
   WorkflowSendCondition,
   WorkflowStepKind,
   WorkflowTriggerType,
@@ -51,7 +52,9 @@ interface OptionRow {
 
 interface RunRow {
   id: string;
-  status: 'success' | 'failed' | 'skipped';
+  // 'pending' = the email is queued for delivery and has not been handed to the mail provider
+  // yet; it becomes success, skipped or failed once the delivery job runs.
+  status: 'pending' | 'success' | 'failed' | 'skipped';
   step_kind: string | null;
   step_number: number | null;
   error: string | null;
@@ -157,12 +160,14 @@ export class WorkflowFormComponent implements OnInit {
     description: string;
     trigger_type: WorkflowTriggerType;
     trigger_event_id: string;
+    message_class: WorkflowMessageClass;
     status: 'active' | 'draft' | 'paused';
   }>({
     name: '',
     description: '',
     trigger_type: 'manual',
     trigger_event_id: '',
+    message_class: defaultMessageClassForTrigger('manual'),
     status: 'draft',
   });
 
@@ -185,6 +190,12 @@ export class WorkflowFormComponent implements OnInit {
   ]);
 
   protected readonly triggerMeta = computed(() => triggerCardMeta(this.payload().trigger_type));
+
+  /** The class the current trigger forces, or null when the author may choose. Drives whether
+   *  the Email type control is a selector or a read-only line. */
+  protected readonly lockedMessageClass = computed<WorkflowMessageClass | null>(() =>
+    lockedMessageClassForTrigger(this.payload().trigger_type),
+  );
 
   // The trigger needs a specific target (tag / form / list / shift status). Manual and the
   // event-less triggers don't.
@@ -236,6 +247,7 @@ export class WorkflowFormComponent implements OnInit {
       description: recipe.description,
       trigger_type: recipe.trigger_type,
       trigger_event_id: recipe.trigger_event_id ?? '',
+      message_class: defaultMessageClassForTrigger(recipe.trigger_type),
     }));
     this.exitConditions.set([...(recipe.exit_conditions ?? [])]);
     this.steps.set(
@@ -262,6 +274,10 @@ export class WorkflowFormComponent implements OnInit {
       trigger_type: type,
       // supporter_lapsed stores its inactivity threshold (days) in trigger_event_id.
       trigger_event_id: type === 'supporter_lapsed' ? '90' : '',
+      // The trigger decides the email type: locked triggers force it, ambiguous ones reset to
+      // the safe default ('marketing') for the author to change. Server-side normalization in
+      // the workflows controller re-applies the same rule on save.
+      message_class: defaultMessageClassForTrigger(type),
       name: p.name || `${meta ? meta.title : 'New'} automation`,
     }));
     if (this.steps().length === 0) {
@@ -281,6 +297,13 @@ export class WorkflowFormComponent implements OnInit {
 
   protected setStatus(status: 'active' | 'paused'): void {
     this.payload.update((p) => ({ ...p, status }));
+  }
+
+  /** Only reachable from the selector shown for ambiguous triggers; locked triggers render a
+   *  read-only line instead, and the server re-forces their class on save regardless. */
+  protected setMessageClass(value: string): void {
+    const cls: WorkflowMessageClass = value === 'relationship' ? 'relationship' : 'marketing';
+    this.payload.update((p) => ({ ...p, message_class: cls }));
   }
 
   // ── Sequence editing ───────────────────────────────────────────────────────
@@ -606,11 +629,17 @@ export class WorkflowFormComponent implements OnInit {
     try {
       const record = await this.workflowsSvc.getById(id);
       if (record) {
+        const storedClass = (record as Record<string, unknown>)['message_class'];
+        const trigger = record.trigger_type || 'manual';
         this.payload.set({
           name: record.name || '',
           description: record.description || '',
-          trigger_type: record.trigger_type || 'manual',
+          trigger_type: trigger,
           trigger_event_id: record.trigger_event_id || '',
+          message_class:
+            storedClass === 'relationship' || storedClass === 'marketing'
+              ? storedClass
+              : defaultMessageClassForTrigger(trigger),
           status: record.status || 'draft',
         });
         const cond = record.conditions;

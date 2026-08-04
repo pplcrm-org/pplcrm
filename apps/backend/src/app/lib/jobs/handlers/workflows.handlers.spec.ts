@@ -201,6 +201,7 @@ describe('executeActionStep send_email sending gates', () => {
       plain_text_content: 'Thank you!',
       config: null,
     },
+    messageClass: 'relationship',
   };
 
   it('fails the run when a Free tenant has not verified a sending phone number', async () => {

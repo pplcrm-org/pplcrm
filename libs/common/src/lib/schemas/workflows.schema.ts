@@ -30,6 +30,67 @@ export type WorkflowTriggerType = (typeof WORKFLOW_TRIGGER_TYPES)[number];
 
 const triggerTypeSchema = z.enum(WORKFLOW_TRIGGER_TYPES);
 
+// Every automation carries a message class that decides which consent rules its send_email
+// steps obey (spec: REVIEW3 "two classes of automation email"):
+//  - 'relationship': operational mail responding to the recipient's own action (a shift signup,
+//    a form submission, a donation). Allowed to reach people with zero newsletter-subscription
+//    rows; suppression and do-not-contact still apply.
+//  - 'marketing': commercial mail. Requires at least one positively subscribed newsletter row
+//    AND the organization's postal address before it can send.
+export const WORKFLOW_MESSAGE_CLASSES = ['relationship', 'marketing'] as const;
+
+export type WorkflowMessageClass = (typeof WORKFLOW_MESSAGE_CLASSES)[number];
+
+const messageClassSchema = z.enum(WORKFLOW_MESSAGE_CLASSES);
+
+// Triggers that fire off the recipient's OWN action — operational (relationship) mail, and the
+// editor locks the class. `new_unsubscriber` is here because it fires on the person's own
+// unsubscribe: classing it as marketing would make the trigger unusable (the recipient just
+// revoked the subscription marketing requires).
+const RELATIONSHIP_LOCKED_TRIGGERS: ReadonlySet<WorkflowTriggerType> = new Set([
+  'web_form_submitted',
+  'donation_recorded',
+  'payment_event',
+  'volunteer_shift_status',
+  'task_sla_breach',
+  'volunteer_signup',
+  'new_unsubscriber',
+]);
+
+// Triggers that are re-solicitation by definition — always marketing, not switchable.
+// `supporter_lapsed` (the win-back trigger) emails someone precisely because they have NOT
+// acted recently, which is the opposite of relationship mail.
+const MARKETING_LOCKED_TRIGGERS: ReadonlySet<WorkflowTriggerType> = new Set(['supporter_lapsed']);
+
+/**
+ * The class a trigger forces, or null when the author may choose (ambiguous triggers:
+ * manual, contact_created, tag_added, list_joined, new_subscriber, date_arrives).
+ * Accepts any string so backend rows with unexpected trigger values degrade to "ambiguous".
+ */
+export function lockedMessageClassForTrigger(trigger: string): WorkflowMessageClass | null {
+  if (RELATIONSHIP_LOCKED_TRIGGERS.has(trigger as WorkflowTriggerType)) return 'relationship';
+  if (MARKETING_LOCKED_TRIGGERS.has(trigger as WorkflowTriggerType)) return 'marketing';
+  return null;
+}
+
+/** Default class for a trigger: its locked class, else 'marketing' (the safe side). */
+export function defaultMessageClassForTrigger(trigger: string): WorkflowMessageClass {
+  return lockedMessageClassForTrigger(trigger) ?? 'marketing';
+}
+
+/**
+ * Server-side normalization used on every workflow create/save: a locked trigger always wins
+ * over whatever the client sent (the win-back trigger cannot be talked into 'relationship'
+ * via the API), an ambiguous trigger keeps the requested class, and no class at all falls
+ * back to the trigger's default.
+ */
+export function resolveWorkflowMessageClass(
+  trigger: string,
+  requested: WorkflowMessageClass | null | undefined,
+): WorkflowMessageClass {
+  return lockedMessageClassForTrigger(trigger) ?? requested ?? 'marketing';
+}
+
 // Spec §16 sequence editor — the five step kinds offered by the ADD A STEP menu.
 export const WORKFLOW_STEP_KINDS = ['wait', 'send_email', 'add_tag', 'create_task', 'notify_team'] as const;
 
@@ -83,6 +144,7 @@ export const WorkflowObj = z.object({
   description: z.string().nullable().optional(),
   trigger_type: triggerTypeSchema.default('manual'),
   trigger_event_id: z.string().nullable().optional(),
+  message_class: messageClassSchema.default('marketing'),
   status: z.enum(['draft', 'active', 'paused']).default('draft'),
   conditions: queryBuilderNodeSchema.nullable().optional(),
   exit_conditions: z.array(z.enum(WORKFLOW_EXIT_CONDITIONS)).nullable().optional(),
@@ -97,6 +159,9 @@ export const AddWorkflowObj = z.object({
   description: z.string().nullable().optional(),
   trigger_type: triggerTypeSchema.default('manual'),
   trigger_event_id: z.string().nullable().optional(),
+  // Optional at the boundary: the controller derives/normalizes it from the trigger
+  // (resolveWorkflowMessageClass), so a client that omits it still gets the right class.
+  message_class: messageClassSchema.optional(),
   status: z.enum(['draft', 'active', 'paused']).default('draft').optional(),
   conditions: queryBuilderNodeSchema.nullable().optional(),
   exit_conditions: z.array(z.enum(WORKFLOW_EXIT_CONDITIONS)).nullable().optional(),
@@ -162,7 +227,9 @@ export const WorkflowRunObj = z.object({
   person_id: z.string().nullable().optional(),
   step_number: z.number().int().nullable().optional(),
   step_kind: z.string().nullable().optional(),
-  status: z.enum(['success', 'failed', 'skipped']),
+  // 'pending' = an automation email that is queued for delivery but has not been handed to the
+  // mail provider yet; the delivery handler settles it to success/skipped/failed.
+  status: z.enum(['pending', 'success', 'failed', 'skipped']),
   error: z.string().nullable().optional(),
   opened_at: z.coerce.date().nullable().optional(),
   clicked_at: z.coerce.date().nullable().optional(),

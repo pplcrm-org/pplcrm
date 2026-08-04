@@ -30,15 +30,15 @@ function fakeDb(results: FakeResults) {
 
 const person = { id: '9', email: 'amira@example.org' };
 
-describe('resolveAutomationSendConsent', () => {
+describe('resolveAutomationSendConsent (relationship class)', () => {
   it('blocks a suppressed address first', async () => {
-    const result = await resolveAutomationSendConsent(fakeDb({ suppressed: true }), '1', person);
+    const result = await resolveAutomationSendConsent(fakeDb({ suppressed: true }), '1', person, 'relationship');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/bounced or complained/);
   });
 
   it('blocks a do-not-contact person', async () => {
-    const result = await resolveAutomationSendConsent(fakeDb({ dnc: true }), '1', person);
+    const result = await resolveAutomationSendConsent(fakeDb({ dnc: true }), '1', person, 'relationship');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/do-not-contact/);
   });
@@ -48,6 +48,7 @@ describe('resolveAutomationSendConsent', () => {
       fakeDb({ subscriptions: [{ status: 'unsubscribed' }, { status: 'pending' }] }),
       '1',
       person,
+      'relationship',
     );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toMatch(/unsubscribed/);
@@ -58,12 +59,47 @@ describe('resolveAutomationSendConsent', () => {
       fakeDb({ subscriptions: [{ status: 'unsubscribed' }, { status: 'subscribed' }] }),
       '1',
       person,
+      'relationship',
     );
     expect(result.ok).toBe(true);
   });
 
   it('allows someone with no subscription history at all (relationship mail)', async () => {
-    const result = await resolveAutomationSendConsent(fakeDb({}), '1', person);
+    const result = await resolveAutomationSendConsent(fakeDb({}), '1', person, 'relationship');
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('resolveAutomationSendConsent (marketing class)', () => {
+  it('still blocks a suppressed address and a do-not-contact person', async () => {
+    expect((await resolveAutomationSendConsent(fakeDb({ suppressed: true }), '1', person, 'marketing')).ok).toBe(false);
+    expect((await resolveAutomationSendConsent(fakeDb({ dnc: true }), '1', person, 'marketing')).ok).toBe(false);
+  });
+
+  it('blocks someone with no subscription history at all — the difference from relationship', async () => {
+    const result = await resolveAutomationSendConsent(fakeDb({}), '1', person, 'marketing');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/never subscribed/);
+  });
+
+  it('blocks someone whose rows are all non-subscribed', async () => {
+    const result = await resolveAutomationSendConsent(
+      fakeDb({ subscriptions: [{ status: 'unsubscribed' }, { status: 'pending' }] }),
+      '1',
+      person,
+      'marketing',
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/unsubscribed/);
+  });
+
+  it('allows someone with at least one subscribed row', async () => {
+    const result = await resolveAutomationSendConsent(
+      fakeDb({ subscriptions: [{ status: 'subscribed' }] }),
+      '1',
+      person,
+      'marketing',
+    );
     expect(result.ok).toBe(true);
   });
 });

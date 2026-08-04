@@ -45,6 +45,11 @@ apps/
           2026-08-02-h-receipt-serial-per-sequence.ts
           2026-08-03-a-backfill-donation-acknowledgements.ts
           2026-08-03-b-receipt-pdf-render-failure.ts
+          2026-08-04-a-fk-ri-indexes.ts
+          2026-08-04-b-receipt-coverage-year.ts
+          2026-08-04-c-workflow-run-status.ts
+          2026-08-04-d-task-automation-origin.ts
+          2026-08-04-e-workflow-message-class.ts
           schema.sql
         config/
           email-folders.config.ts

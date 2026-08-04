@@ -1,3 +1,4 @@
+import { resolveWorkflowMessageClass } from '@common';
 import { BaseController } from '../../lib/base.controller';
 import { WorkflowsRepo } from './repositories/workflows.repo';
 import { WorkflowEnrollmentsRepo } from './repositories/workflow-enrollments.repo';
@@ -23,6 +24,10 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
 
   public override async add(row: OperationDataType<'workflows', 'insert'>, trx?: Transaction<Models>) {
     WorkflowsController.stringifyExitConditions(row as Record<string, unknown>);
+    // Server-side message-class enforcement (REVIEW3 two-class plan): a trigger that determines
+    // the class always wins over whatever the client sent — the win-back trigger cannot be made
+    // 'relationship' through the API — and an omitted class falls back to the trigger's default.
+    row.message_class = resolveWorkflowMessageClass(row.trigger_type, row.message_class ?? null);
     return super.add(row, trx);
   }
 
@@ -32,6 +37,26 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
     row: OperationDataType<'workflows', 'update'>;
   }) {
     WorkflowsController.stringifyExitConditions(input.row as Record<string, unknown>);
+    const { row } = input;
+    // Same enforcement as add(). A partial update may carry only one of the pair, so the
+    // missing half is read from the stored row before normalizing.
+    if (row.trigger_type !== undefined || row.message_class !== undefined) {
+      let trigger = row.trigger_type;
+      let requested = row.message_class ?? null;
+      if (trigger === undefined || row.message_class === undefined) {
+        const existing = await this.getRepo()
+          .db.selectFrom('workflows')
+          .select(['trigger_type', 'message_class'])
+          .where('tenant_id', '=', input.tenant_id)
+          .where('id', '=', input.id)
+          .executeTakeFirst();
+        trigger = trigger ?? existing?.trigger_type;
+        requested = requested ?? existing?.message_class ?? null;
+      }
+      if (trigger !== undefined) {
+        row.message_class = resolveWorkflowMessageClass(trigger, requested);
+      }
+    }
     return super.update(input);
   }
 
@@ -628,7 +653,8 @@ interface WorkflowListRow {
   steps: WorkflowListStep[];
   runs_30d: number;
   last_run_at: Date | null;
-  last_run_status: 'success' | 'failed' | 'skipped' | null;
+  // 'pending' = an automation email queued for delivery whose outcome is not known yet.
+  last_run_status: 'pending' | 'success' | 'failed' | 'skipped' | null;
   last_run_error: string | null;
 }
 

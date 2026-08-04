@@ -363,6 +363,42 @@
                   Paused. Nothing runs or queues until you resume it. }
                 </p>
               </div>
+
+              <!-- Email type: relationship vs marketing. Locked triggers show a read-only line;
+                   ambiguous triggers get the selector. The server enforces locked classes too. -->
+              <div class="form-control">
+                <label class="label label-text py-1 text-xs font-semibold">Email type</label>
+                @if (lockedMessageClass(); as locked) {
+                <p class="text-xs font-semibold">
+                  {{ locked === 'relationship' ? 'Relationship' : 'Marketing' }}
+                  <span class="font-normal text-base-content/50">— set by the trigger</span>
+                </p>
+                <p class="mt-1 text-[10px] leading-relaxed text-base-content/50">
+                  @if (locked === 'relationship') { This trigger responds to something the person did themselves, so its
+                  emails are relationship mail: they can reach contacts who never subscribed to your newsletter.
+                  Suppressed and do-not-contact people are always skipped. } @else { Reaching out to someone because
+                  they went quiet is marketing mail: only subscribed contacts receive it, and your organization’s
+                  mailing address must be set before it can send. }
+                </p>
+                } @else {
+                <select
+                  class="select select-bordered select-sm w-full"
+                  (change)="setMessageClass($any($event.target).value)"
+                >
+                  <option value="marketing" [selected]="payload().message_class === 'marketing'">Marketing</option>
+                  <option value="relationship" [selected]="payload().message_class === 'relationship'">
+                    Relationship
+                  </option>
+                </select>
+                <p class="mt-1 text-[10px] leading-relaxed text-base-content/50">
+                  @if (payload().message_class === 'marketing') { Marketing emails only go to subscribed contacts, and
+                  your organization’s mailing address must be set before they can send. } @else { Relationship emails
+                  respond to something the person did themselves and can reach contacts who never subscribed. Choose
+                  this only if the sequence is a direct follow-up to their own action — you are responsible for that
+                  call. }
+                </p>
+                }
+              </div>
             </div>
           </section>
 
@@ -432,19 +468,21 @@
               @for (run of runs(); track run.id) {
               <li class="flex items-center justify-between gap-2 text-xs">
                 <div class="flex min-w-0 items-center gap-2">
+                  <!-- 'Queued' is an email that has been handed to the delivery queue but not yet
+                       sent; it settles to Success, Skipped or Failed once the delivery job runs. -->
                   <pc-status-badge
                     [type]="
                       run.step_kind === 'exit'
                         ? 'info'
                         : run.status === 'success'
                           ? 'success'
-                          : run.status === 'skipped'
+                          : run.status === 'skipped' || run.status === 'pending'
                             ? 'neutral'
                             : 'error'
                     "
                   >
                     {{ run.step_kind === 'exit' ? 'Goal met' : run.status === 'success' ? 'Success' : run.status ===
-                    'skipped' ? 'Skipped' : 'Failed' }}
+                    'skipped' ? 'Skipped' : run.status === 'pending' ? 'Queued' : 'Failed' }}
                   </pc-status-badge>
                   <span class="truncate text-base-content/70">{{ runContact(run) }}</span>
                   @if (run.clicked_at) {

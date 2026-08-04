@@ -1,7 +1,7 @@
 import type { Kysely, Selectable, Transaction } from 'kysely';
 import { sql } from 'kysely';
 import { WORKFLOW_EXIT_CONDITIONS, WORKFLOW_SEND_CONDITIONS, calculateWorkingTimeMs, planAllowsFeature } from '@common';
-import type { WorkflowExitCondition, WorkflowSendCondition } from '@common';
+import type { WorkflowExitCondition, WorkflowMessageClass, WorkflowSendCondition } from '@common';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
 import { logger } from '../../../logger';
@@ -9,6 +9,7 @@ import { SLA_SETTING_KEYS, type SlaPolicy, settingsMapFrom, slaPolicyFrom } from
 import {
   AUTOMATION_PHONE_UNVERIFIED_MESSAGE,
   assertTenantSendingNotBlocked,
+  hasOrganizationAddress,
   hasVerifiedSendingDomain,
   loadSendingTenant,
   needsPhoneVerification,
@@ -101,7 +102,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
 
         const workflow = await trx
           .selectFrom('workflows')
-          .select(['id', 'name', 'status', 'createdby_id', 'exit_conditions'])
+          .select(['id', 'name', 'status', 'createdby_id', 'exit_conditions', 'message_class'])
           .where('tenant_id', '=', lockedEnrollment.tenant_id)
           .where('id', '=', lockedEnrollment.workflow_id)
           .executeTakeFirst();
@@ -217,6 +218,7 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
               actorId,
               person: person ?? null,
               step,
+              messageClass: workflow.message_class,
             });
             if (!outcome.runRecorded) {
               await recordRun(trx, {
@@ -419,6 +421,15 @@ export async function handleDetectTaskSlaBreaches(db: Kysely<Models>): Promise<v
 const TASK_SLA_SCAN_CHUNK_SIZE = 500;
 
 /**
+ * How long after enrolling a person through the `task_sla_breach` trigger that trigger refuses to
+ * enroll the same person again. Second layer of the loop damping described on
+ * `detectTaskSlaBreaches`: even if a marked task slips through (an automation that creates tasks
+ * some other way, a task marked before this column existed), a person can be pulled into a
+ * breach automation at most once a week.
+ */
+const TASK_SLA_REENROLLMENT_COOLDOWN_DAYS = 7;
+
+/**
  * Hourly scan behind the `task_sla_breach` trigger (spec §4 → §16). For every open task not
  * yet marked breached, compute its working-hours age against the tenant's SLA target
  * (`sla.tasks_hours` + working days/hours — the same math as the sidebar badge's
@@ -426,6 +437,15 @@ const TASK_SLA_SCAN_CHUNK_SIZE = 500;
  * `sla_breached_at` (the once-only marker — later ticks skip stamped tasks), then the
  * task's linked person is enrolled through the normal trigger path (conditions respected).
  * Tasks with no linked person are stamped but skip enrollment: automations enroll persons.
+ *
+ * Two things stop a `task_sla_breach` automation that contains a `create_task` step from feeding
+ * itself (breach → enroll → the automation creates another task for the same person → that task
+ * breaches → enroll again → …, with no end):
+ *   1. Tasks carrying `created_by_workflow_id` were made by an automation and are never scanned.
+ *   2. A person enrolled through this trigger within the last
+ *      TASK_SLA_REENROLLMENT_COOLDOWN_DAYS days is not enrolled again. Enrollment on its own only
+ *      blocks a person with a CURRENTLY ACTIVE enrollment, so a completed sequence would happily
+ *      restart. This mirrors the two-window cooldown the `supporter_lapsed` scan already applies.
  *
  * Keyset-paginated by task id (ascending `WHERE id > cursor`, not OFFSET) in chunks of
  * TASK_SLA_SCAN_CHUNK_SIZE, looping until a chunk comes back short — an unbounded, un-stamped
@@ -447,6 +467,9 @@ export async function detectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
       .select(['id', 'tenant_id', 'created_at', 'person_id'])
       .where('status', 'not in', ['done', 'archived'])
       .where('sla_breached_at', 'is', null)
+      // A task an automation created is not a task anyone is late on — and scanning it is how a
+      // `task_sla_breach` automation with a `create_task` step re-triggers itself endlessly.
+      .where('created_by_workflow_id', 'is', null)
       .orderBy('id', 'asc')
       .limit(TASK_SLA_SCAN_CHUNK_SIZE);
     if (cursor !== null) {
@@ -508,8 +531,38 @@ export async function detectTaskSlaBreaches(db: Kysely<Models>): Promise<void> {
             continue;
           }
 
+          // Re-enrollment cooldown. Enrollment only refuses a person who is CURRENTLY enrolled,
+          // so once a breach sequence completes the same person can be pulled straight back in.
+          // Anyone enrolled through this trigger inside the cooldown window is left alone.
+          const personId = String(task.person_id);
+          const cooldownCutoff = new Date(now.getTime() - TASK_SLA_REENROLLMENT_COOLDOWN_DAYS * DAY_MS);
+          const recentEnrollment = await db
+            .selectFrom('workflow_enrollments')
+            .select('workflow_enrollments.id')
+            .where('workflow_enrollments.tenant_id', '=', tenantId)
+            .where('workflow_enrollments.person_id', '=', personId)
+            .where('workflow_enrollments.created_at', '>', cooldownCutoff)
+            .where(({ exists, selectFrom }) =>
+              exists(
+                selectFrom('workflows')
+                  .select('workflows.id')
+                  .where('workflows.tenant_id', '=', tenantId)
+                  .where('workflows.trigger_type', '=', 'task_sla_breach')
+                  .whereRef('workflows.id', '=', 'workflow_enrollments.workflow_id'),
+              ),
+            )
+            .limit(1)
+            .executeTakeFirst();
+          if (recentEnrollment) {
+            logger.info(
+              { tenantId, taskId: String(task.id), personId, cooldownDays: TASK_SLA_REENROLLMENT_COOLDOWN_DAYS },
+              '[task-sla] Contact was already enrolled in a task-breach automation recently — not enrolling again',
+            );
+            continue;
+          }
+
           try {
-            await controller.triggerWorkflow(tenantId, String(task.person_id), 'task_sla_breach', null);
+            await controller.triggerWorkflow(tenantId, personId, 'task_sla_breach', null);
           } catch (err) {
             logger.error(
               { err, tenantId, taskId: String(task.id) },
@@ -587,6 +640,8 @@ export interface ActionContext {
   actorId: string | null;
   person: StepPerson | null;
   step: Selectable<Models['workflow_steps']>;
+  /** The workflow's message class — decides which consent branch and which send gates apply. */
+  messageClass: WorkflowMessageClass;
 }
 
 interface ActionOutcome {
@@ -652,6 +707,10 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
       // outranks even consent checks (delay-then-check drip: pair with a preceding wait step).
       const sendCondition = parseSendCondition(config['send_condition']);
       if (sendCondition) {
+        // Only a run the delivery handler settled as 'success' counts as an email the person
+        // actually received. A 'pending' run is still queued, and 'skipped'/'failed' runs were
+        // dropped or never delivered — treating any of those as "sent but not opened" is what
+        // made a dropped email silently gate the follow-up.
         const previous = await trx
           .selectFrom('workflow_runs')
           .select(['opened_at', 'clicked_at'])
@@ -667,8 +726,14 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
         if (!verdict.send) throw new SkipStepError(verdict.reason);
       }
 
-      // Consent (unsubscribed/suppressed/DNC) → skip this recipient, honestly narrated.
-      const consent = await resolveAutomationSendConsent(trx, ctx.tenantId, { id: person.id, email: person.email });
+      // Consent (unsubscribed/suppressed/DNC — plus, for marketing-class automations, "must be
+      // a subscribed contact") → skip this recipient, honestly narrated.
+      const consent = await resolveAutomationSendConsent(
+        trx,
+        ctx.tenantId,
+        { id: person.id, email: person.email },
+        ctx.messageClass,
+      );
       if (!consent.ok) throw new SkipStepError(consent.reason);
 
       // Automation emails obey the same tenant sending gates and caps as newsletters — an
@@ -692,6 +757,25 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
       if (needsPhoneVerification(tenant)) {
         throw new Error(AUTOMATION_PHONE_UNVERIFIED_MESSAGE);
       }
+      // Marketing-class automations are commercial mail, so they carry the same postal-address
+      // requirement as newsletters (CAN-SPAM/CASL footer). Relationship mail is transactional
+      // and does not. Like the domain/phone gates this needs the user to act, so fail the run
+      // with the fix named rather than deferring forever.
+      switch (ctx.messageClass) {
+        case 'marketing':
+          if (!(await hasOrganizationAddress(trx, ctx.tenantId))) {
+            throw new Error(
+              'Set your organization’s mailing address (Settings → Organization) so marketing automation emails can send — anti-spam laws (like CAN-SPAM and CASL) require it in the footer. This email was not sent.',
+            );
+          }
+          break;
+        case 'relationship':
+          break;
+        default: {
+          const _exhaustive: never = ctx.messageClass;
+          throw new Error(`Unknown automation message class: ${String(_exhaustive)}`);
+        }
+      }
 
       // Caps: quota is metered on actual delivery (the send-automation-email handler writes
       // newsletter_send_log), so enqueued-but-unsent jobs are invisible to the meter — count
@@ -710,6 +794,12 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
       // Record the run BEFORE enqueueing the delivery job — the job carries the run id as a
       // SendGrid custom arg, and the event webhook stamps opens/clicks back onto this row.
       // Same transaction, so a rollback takes both the run and the job (no ghosts either way).
+      //
+      // It is written as 'pending', not 'success': nothing has been sent yet. The delivery
+      // handler (send-automation-email) settles it — 'success' once SendGrid accepts the
+      // message, 'skipped' when it deliberately drops the send, 'failed' when the send throws.
+      // Claiming success here made a dropped or failed message read as delivered, both in the
+      // automations screens and to the "did they open the previous email?" step condition.
       const run = await trx
         .insertInto('workflow_runs')
         .values({
@@ -719,7 +809,7 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
           person_id: person.id,
           step_number: step.step_number,
           step_kind: step.kind,
-          status: 'success',
+          status: 'pending',
           error: null,
         })
         .returning('id')
@@ -740,6 +830,9 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
             text: text ?? '',
             html: html ?? '',
             unsubscribeUrl,
+            // The workflow's message class rides in the payload so the delivery-time consent
+            // re-check applies the same branch without joining back to workflows.
+            messageClass: ctx.messageClass,
             // Quota is metered by the delivery handler after SendGrid accepts the send — a job
             // that exhausts its retries must not consume allowance. The flag marks payloads
             // enqueued under that scheme; legacy jobs without it were already metered here at
@@ -793,9 +886,12 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
           status: 'todo',
           priority: 'medium',
           position: 0,
-          // Link the task to the enrolled contact so a later SLA breach can enroll them
-          // in a task_sla_breach automation (spec §4 → §16).
+          // Link the task to the enrolled contact so the task shows on their record (spec §4).
           person_id: person ? String(person.id) : null,
+          // Record which automation made this task. The SLA-breach scan skips marked tasks: an
+          // automation triggered by `task_sla_breach` that also creates a task would otherwise
+          // feed itself forever (breach → enroll → new task → breach → enroll → …).
+          created_by_workflow_id: ctx.workflowId,
           createdby_id: ctx.actorId,
           updatedby_id: ctx.actorId,
         })

@@ -1,6 +1,7 @@
 import type { Kysely, Transaction } from 'kysely';
 import { sql } from 'kysely';
 
+import type { WorkflowMessageClass } from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 
 type Db = Kysely<Models> | Transaction<Models>;
@@ -10,18 +11,22 @@ export type AutomationSendConsent = { ok: true } | { ok: false; reason: string }
 /**
  * May an automation `send_email` step email this person? Automations aren't campaign-scoped
  * (workflows has no campaign_id), so this is the workflow analogue of the newsletter
- * sendability triad (NewslettersController.buildRecipientQuery):
+ * sendability triad (NewslettersController.buildRecipientQuery). Both classes share the first
+ * two checks; the third branches on the automation's message class:
  *  1. Address suppressed (hard bounce / spam complaint) → never.
  *  2. Person is do-not-contact for email → never.
- *  3. Person has subscription rows and NONE subscribed → they unsubscribed from this
- *     organization's email; skip.
- *  A person with NO subscription rows at all is allowed: they never joined the newsletter,
- *  and the email is relationship mail triggered by their own action (e.g. a volunteer shift).
+ *  3. 'relationship' (operational mail triggered by the recipient's own action): a person with
+ *     subscription rows and NONE subscribed has unsubscribed → skip; a person with NO rows at
+ *     all is allowed — they never joined the newsletter and this is not newsletter mail.
+ *     'marketing' (commercial mail): requires at least one positively subscribed row — zero
+ *     rows, or rows with none subscribed, → skip. This is what stops automations being used
+ *     as a consent-free newsletter channel.
  */
 export async function resolveAutomationSendConsent(
   db: Db,
   tenantId: string,
   person: { id: string; email: string },
+  messageClass: WorkflowMessageClass,
 ): Promise<AutomationSendConsent> {
   const suppressed = await db
     .selectFrom('email_suppressions')
@@ -47,9 +52,28 @@ export async function resolveAutomationSendConsent(
     .where('tenant_id', '=', tenantId)
     .where('person_id', '=', person.id)
     .execute();
-  if (subscriptions.length > 0 && !subscriptions.some((s) => s.status === 'subscribed')) {
-    return { ok: false, reason: 'Contact has unsubscribed from your emails' };
-  }
+  const hasSubscribedRow = subscriptions.some((s) => s.status === 'subscribed');
 
-  return { ok: true };
+  switch (messageClass) {
+    case 'relationship':
+      if (subscriptions.length > 0 && !hasSubscribedRow) {
+        return { ok: false, reason: 'Contact has unsubscribed from your emails' };
+      }
+      return { ok: true };
+    case 'marketing':
+      if (!hasSubscribedRow) {
+        return {
+          ok: false,
+          reason:
+            subscriptions.length > 0
+              ? 'Contact has unsubscribed from your emails'
+              : 'Marketing automations only email subscribed contacts — this contact has never subscribed',
+        };
+      }
+      return { ok: true };
+    default: {
+      const _exhaustive: never = messageClass;
+      return _exhaustive;
+    }
+  }
 }

@@ -545,8 +545,16 @@ export type {
   WorkflowRunType,
   WorkflowSendCondition,
   WorkflowExitCondition,
+  WorkflowMessageClass,
 } from './lib/schemas/workflows.schema';
-export { WORKFLOW_SEND_CONDITIONS, WORKFLOW_EXIT_CONDITIONS } from './lib/schemas/workflows.schema';
+export {
+  WORKFLOW_SEND_CONDITIONS,
+  WORKFLOW_EXIT_CONDITIONS,
+  WORKFLOW_MESSAGE_CLASSES,
+  defaultMessageClassForTrigger,
+  lockedMessageClassForTrigger,
+  resolveWorkflowMessageClass,
+} from './lib/schemas/workflows.schema';
 export type {
   TurfStatus,
   KnockOutcome,
