@@ -13,7 +13,8 @@ import { BadRequestError, ConflictError, NotFoundError, PreconditionFailedError 
 import { BaseController } from '../../../lib/base.controller';
 import { buildAcknowledgementPdf } from '../../../lib/pdf/acknowledgement-pdf';
 import { buildReceiptPdf, type ReceiptIssuerSnapshot } from '../../../lib/pdf/receipt-pdf';
-import { torontoDateString } from '../../../lib/pdf/pdf-common';
+import { dateColumnString, torontoDateString } from '../../../lib/pdf/pdf-common';
+import { publicOrgName } from '../../../lib/public-tenant';
 import { StorageService } from '../../../lib/storage.service';
 import { logger } from '../../../logger';
 import { SettingsRepo } from '../../settings/repositories/settings.repo';
@@ -632,8 +633,10 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
    */
   private async resolveOrgName(tenantId: string, settings: ReceiptWorkspaceSettings): Promise<string> {
     if (settings.values.org_legal_name) return settings.values.org_legal_name;
-    const row = await this.settingsRepo.getByKey({ tenant_id: tenantId, key: 'organization.name' });
-    return typeof row?.value === 'string' ? row.value : '';
+    // Signup never writes the organization.name setting, so reading only that printed a blank org
+    // name on a new workspace's first document. publicOrgName adds the tenant's own signup name as
+    // the last resort — the same source the public /f/:slug pages use.
+    return publicOrgName(tenantId);
   }
 
   // ── Cumulative tax receipt ──────────────────────────────────────────────────
@@ -1130,7 +1133,12 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       .where('dri.receipt_id', '=', receipt.id)
       .executeTakeFirst();
 
-    const giftDate = receipt.gift_date ?? items[0]?.gift_date ?? receipt.issued_at;
+    // gift_date columns are Postgres `date` (read with dateColumnString); issued_at is a real
+    // timestamp, so the last-resort fallback still converts to Toronto.
+    const giftDateColumn = receipt.gift_date ?? items[0]?.gift_date ?? null;
+    const giftDate = giftDateColumn
+      ? dateColumnString(new Date(giftDateColumn))
+      : torontoDateString(new Date(receipt.issued_at));
     const settings = await this.loadSettings(tenantId);
 
     return buildAcknowledgementPdf({
@@ -1139,7 +1147,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       orgAddress: issuer.org_address,
       donorName: receipt.donor_name,
       donorAddressLines: this.donorAddressLines(receipt),
-      giftDate: torontoDateString(new Date(giftDate)),
+      giftDate,
       issuedAt: new Date(receipt.issued_at),
       amountCents: receipt.amount_cents,
       method: method?.method ?? 'card',
@@ -1181,8 +1189,8 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       receiptNumber: receipt.receipt_number ?? String(receipt.id),
       kind: receipt.kind === 'cumulative' ? 'cumulative' : 'per_gift',
       issuedAt: new Date(receipt.issued_at),
-      giftDate: receipt.gift_date ? torontoDateString(new Date(receipt.gift_date)) : null,
-      items: items.map((i) => ({ gift_date: torontoDateString(new Date(i.gift_date)), amount_cents: i.amount_cents })),
+      giftDate: receipt.gift_date ? dateColumnString(new Date(receipt.gift_date)) : null,
+      items: items.map((i) => ({ gift_date: dateColumnString(new Date(i.gift_date)), amount_cents: i.amount_cents })),
       amountCents: receipt.amount_cents,
       advantageCents: receipt.advantage_cents,
       eligibleCents: receipt.eligible_cents,
@@ -1348,7 +1356,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       .orderBy('dri.gift_date', 'asc')
       .execute();
     return rows.map((r) => ({
-      gift_date: torontoDateString(new Date(r.gift_date)),
+      gift_date: dateColumnString(new Date(r.gift_date)),
       amount_cents: r.amount_cents,
       method: r.method,
     }));

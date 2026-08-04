@@ -36,7 +36,23 @@ export function formatMoney(cents: number, currency = 'CAD'): string {
   return new Intl.NumberFormat('en-CA', { style: 'currency', currency }).format(cents / 100);
 }
 
-/** A Date → its calendar date in Toronto (Canada-only feature; avoids UTC New-Year drift). */
+/**
+ * A Postgres `date` COLUMN value → the calendar date it stores, "YYYY-MM-DD".
+ *
+ * The `pg` driver turns a `date` column into a JS Date at midnight in the *server's* local zone, so
+ * the stored calendar date is exactly that Date's local year/month/day. Re-formatting that instant
+ * in another zone moves it a day (on a UTC server, Toronto formatting prints the day before).
+ *
+ * Use this for `date` columns — gift dates. Use `torontoDateString` for real timestamps
+ * (`issued_at`, `cancelled_at`, "now"), where the instant genuinely has to be converted to Toronto.
+ */
+export function dateColumnString(date: Date): string {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/** A TIMESTAMP → its calendar date in Toronto (Canada-only feature; avoids UTC New-Year drift). */
 export function torontoDateString(date: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Toronto',

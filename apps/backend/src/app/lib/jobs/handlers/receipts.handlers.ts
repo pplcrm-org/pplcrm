@@ -211,7 +211,10 @@ export async function renderAndDeliverReceipt(
     current = { ...current, file_id: String(fileRow.id) };
   }
 
-  if (!opts.email || current.emailed_at || !current.donor_email) return 'stored';
+  // A receipt cancelled between issue and this job must not be emailed — the donor would get a
+  // thank-you for a reversed gift. The PDF above is still rendered and stored (a cancelled document
+  // stays downloadable, stamped CANCELLED); only the email is skipped.
+  if (!opts.email || current.status !== 'issued' || current.emailed_at || !current.donor_email) return 'stored';
 
   const pdf = await buildPdf(controller, tenantId, current);
   const attachment: MailAttachment = {

@@ -49,7 +49,11 @@ WORKDIR /app
 # in single-revision Container Apps, a new revision that never becomes healthy leaves the old
 # one answering 200. 'dev' for local builds.
 ARG BUILD_SHA=dev
+# TZ is pinned so date handling never depends on host config: Postgres `date` columns arrive from
+# the pg driver as midnight in the process's local zone, and PDF/report code reads them by their
+# local components. UTC is what the platform already gives us — this makes it explicit.
 ENV NODE_ENV=production \
+    TZ=UTC \
     HOST=0.0.0.0 \
     PORT=3000 \
     MIGRATE_ON_BOOT=false \
