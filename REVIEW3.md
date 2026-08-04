@@ -213,6 +213,68 @@ Each read in the source; narrow, latent, or needing a product decision.
 
 ---
 
+## Planned change — two classes of automation email (relationship vs marketing)
+
+Decided with the maintainer. This resolves finding 3 (no-subscription recipients cannot
+opt out of automation email) and the marketing half of finding 11 (missing postal-address
+gate). Option A was chosen: both classes live inside the automation engine, and the
+marketing class reuses the existing newsletter consent gate rather than a second one. The
+automatic person-level opt-out record is **deferred** — relationship-mail opt-outs are
+handled by hand for now (see "Left open" below).
+
+Files named below by what they do:
+
+- **the automation send-consent check** — `apps/backend/src/app/modules/workflows/automation-consent.ts`, `resolveAutomationSendConsent`.
+- **the automation execution handler** — `apps/backend/src/app/lib/jobs/handlers/workflows.handlers.ts`, the `send_email` case of `executeActionStep` and its gate list.
+- **the automation delivery handler** — `apps/backend/src/app/lib/jobs/handlers/automation-mail.handlers.ts`, which re-checks consent at delivery.
+- **the newsletter consent and sending gate** — `apps/backend/src/app/modules/newsletters/send-guards.ts` (`hasVerifiedSendingDomain`, `needsPhoneVerification`, `remainingSendAllowance`, `hasOrganizationAddress`).
+- **the workflow schema** — `libs/common/src/lib/schemas/workflows.schema.ts`.
+- **the workflows controller** — `apps/backend/src/app/modules/workflows/controller.ts` (create/save workflow).
+- **the workflow editor form** — the frontend workflow create/edit UI.
+
+### The two classes and the rules that attach to each
+
+| Rule                                                            | Relationship (operational)                                  | Marketing (commercial)                                                                               |
+| --------------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Newsletter subscription required to send                        | No — a recipient with no subscription rows is still allowed | Yes — recipient must have at least one subscribed row                                                |
+| Suppression (bounce/complaint) and do-not-contact honoured      | Yes                                                         | Yes                                                                                                  |
+| Postal address required in the footer before sending            | No (transactional mail)                                     | Yes                                                                                                  |
+| Verified sending domain, phone (Free), pause/suspend, send caps | Yes                                                         | Yes                                                                                                  |
+| Working unsubscribe                                             | Manual for now (see "Left open")                            | Yes — recipients are subscription-gated, so the existing unsubscribe endpoint already works for them |
+
+### Step 1 — store the class on each automation
+
+- Migration: add `workflows.message_class text NOT NULL DEFAULT 'marketing'` with a check constraint `message_class IN ('relationship','marketing')`. Default to `marketing` because it is the safe side for a value nobody set.
+- Backfill existing rows **from the trigger**, not to the blanket default — otherwise existing volunteer automations would suddenly require a subscription and stop emailing volunteers. Backfill: operational triggers (volunteer signup, event registration, form submission, donation-driven, task SLA breach) → `relationship`; the "supporter goes quiet" win-back trigger → `marketing`; ambiguous triggers (tag added, manual enrollment) → `marketing`.
+
+### Step 2 — set the class when an automation is created or edited
+
+- Derive a default from the trigger type in the workflow schema and the workflows controller's save path:
+  - Operational triggers default to `relationship`.
+  - The "supporter goes quiet" win-back trigger is **forced** to `marketing` and cannot be set to `relationship` — it is re-solicitation, not a response to the recipient's own recent action.
+  - Ambiguous triggers default to `marketing`; the author may change them to `relationship` and takes responsibility for that choice.
+- The workflow editor form gains a class selector for ambiguous triggers, hidden/locked where the trigger determines the class.
+- Note: the exact trigger names above must be reconciled against the real trigger enum in the workflow schema — that file was not read in full during the review.
+
+### Step 3 — branch the consent check on the class
+
+- `resolveAutomationSendConsent` gains a `messageClass` parameter. Both callers pass it: the automation execution handler at enqueue time, and the automation delivery handler at delivery time. Carry the class in the `send-automation-email` job payload (set where the `send_email` step enqueues it) so the delivery handler does not need an extra join.
+- Relationship class: keep the current three checks unchanged — suppression, do-not-contact, and "has subscription rows and none subscribed"; a recipient with zero subscription rows stays allowed.
+- Marketing class: require a positive subscription. A recipient with zero subscription rows, or with rows but none subscribed, is skipped. This is the single behavioural difference that stops automation being used as a consent-free newsletter channel.
+
+### Step 4 — branch the send-step gates on the class
+
+- Marketing class additionally requires the postal-address gate (`hasOrganizationAddress`) that the newsletter path already enforces, failing the run with a named fix — this closes finding 11 for marketing mail.
+- Relationship class does not require the postal address (transactional mail).
+- Both classes keep the existing gates: verified sending domain, phone verification on Free, pause/suspend, and send caps.
+
+### Left open (accepted for now)
+
+- **The automatic durable opt-out is deferred.** A relationship-mail recipient with no subscription rows who clicks unsubscribe still triggers an UPDATE that matches nothing, so the system records no opt-out. Two consequences the maintainer accepts for now, both worth a follow-up:
+  - The unsubscribe confirmation page tells that recipient they are unsubscribed while nothing is stored. At minimum the relationship-mail path should either omit the unsubscribe link, or route the click to a staff-visible request (a notification or a simple opt-out-requests list) so there is something to action by hand — otherwise "manual" has no input to work from.
+  - Until the durable record exists, honouring a relationship-mail opt-out depends on a staff member marking that person do-not-contact.
+- **Send caps for relationship mail** are left metered exactly as today; whether operational mail should be metered differently is a separate decision and is not part of this change.
+
 ## Areas checked that turned up nothing worth reporting
 
 - **The schema baseline's triggers and stored functions — the top-ranked unreviewed risk in both prior reviews.** Three functions ([schema.sql#L63-L105](apps/backend/src/app/_migrations/schema.sql#L63-L105)): two `pg_notify` with an **empty** payload (no 8000-byte NOTIFY trap; Postgres also de-duplicates identical notifies per transaction, so a 10,000-job enqueue emits one wake-up), and `set_updated_at` which sets `NEW.updated_at = now()`. All 57 triggers are one of those three; the only `AFTER INSERT` ones are the two notifies. No dated migration creates any function or trigger. There is no cascade logic, no computed-column trigger, no invariant enforced behind the application's back. The category is genuinely close to empty.
