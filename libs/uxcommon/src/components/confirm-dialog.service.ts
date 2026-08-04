@@ -165,6 +165,10 @@ export class ConfirmDialogService {
   }
 
   private open(st: DialogState): void {
+    // Only one dialog can be pending at a time. If a second one opens while the
+    // first is still awaited, settle the first with its own cancel value instead
+    // of dropping its resolver — a dropped resolver hangs its caller forever.
+    if (this._resolve) this.cancel();
     this.stateSignal.set(st);
   }
 }

@@ -117,6 +117,30 @@ export class ConfirmDialogHost {
     if (st?.allowBackdropClose) this.svc.cancel();
   }
 
+  /**
+   * Escape closes a native <dialog> by itself. Refuse it on a dialog the caller
+   * marked non-dismissible (allowBackdropClose: false), the same rule ModalShell
+   * applies — otherwise the dialog disappears while the caller keeps waiting.
+   */
+  public onNativeCancel(event: Event): void {
+    const st = this.state();
+    if (st && !st.allowBackdropClose) event.preventDefault();
+  }
+
+  /**
+   * Every close path the browser performs itself (Escape, the backdrop form's
+   * method="dialog" submit) ends here, so the waiting promise is always settled
+   * with the dialog's cancel value.
+   *
+   * ok()/cancel() clear the dialog state before the effect closes the element,
+   * so the close event they trigger arrives with no state and no pending
+   * resolver: the state guard below, and the service's optional call on its
+   * resolver, both make that a no-op. No promise is settled twice.
+   */
+  public onNativeClose(): void {
+    if (this.state()) this.svc.cancel();
+  }
+
   public onCancel(): void {
     this.svc.cancel();
   }

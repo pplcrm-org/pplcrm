@@ -1,4 +1,4 @@
-<dialog #dlg class="modal">
+<dialog #dlg class="modal" (cancel)="onNativeCancel($event)" (close)="onNativeClose()">
   @if (state()) {
   <div class="modal-box">
     <div class="flex items-center gap-2">
@@ -35,8 +35,9 @@
     }
   </div>
 
+  @if (state()!.allowBackdropClose) {
   <form method="dialog" class="modal-backdrop" (submit)="onBackdrop()">
     <button>close</button>
   </form>
-  }
+  } }
 </dialog>
