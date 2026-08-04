@@ -8,13 +8,14 @@ import type {
   UpdateCampaignType,
   UpsertCampaignPersonFactType,
 } from '../../../../../../libs/common/src';
-import { UpdateCampaignObj, isJurisdictionId } from '../../../../../../libs/common/src';
+import { UpdateCampaignObj, isJurisdictionId, isPrivilegedRole } from '../../../../../../libs/common/src';
 
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
 import { enqueueBoundaryMatch } from '../../lib/gis/boundary-jobs';
 import { logger } from '../../logger';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
+import { pinnedCampaignId } from '../../lib/tenant-context';
 import { DeliveriesController } from '../deliveries/controller';
 import { WorkflowsController } from '../workflows/controller';
 import { UserProfiles } from '../userprofiles/repositories/userprofiles.repo';
@@ -310,9 +311,30 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
     return result;
   }
 
-  /** One person's facts across every campaign — the cross-campaign history panel. */
+  /**
+   * Campaigns §15 — drop rows belonging to any campaign other than the caller's pinned one.
+   *
+   * The pin is the server's own answer (the auth middleware binds it to the async context via
+   * `runWithTenant`), never client input. Admins and owners are unpinned and keep the full
+   * cross-campaign view; everyone else belongs to exactly one campaign, and these two panels read
+   * tables that carry a campaign_id but are fetched by person id alone, so without this filter a
+   * pinned Editor would read every campaign's rows for the person.
+   */
+  private scopeRowsToPinnedCampaign<T extends { campaign_id: string }>(rows: T[], auth: IAuthKeyPayload): T[] {
+    if (isPrivilegedRole(auth.role)) return rows;
+    const pinned = pinnedCampaignId();
+    if (pinned === null) return rows;
+    return rows.filter((row) => String(row.campaign_id) === pinned);
+  }
+
+  /**
+   * One person's facts across every campaign the caller may see — the cross-campaign history
+   * panel for admins/owners, the pinned campaign's row only for everyone else. A support level is
+   * a political-opinion assessment, which is exactly what the campaign boundary exists to contain.
+   */
   public async getPersonFacts(personId: string, auth: IAuthKeyPayload) {
-    return this.factsRepo.getForPerson({ tenant_id: auth.tenant_id, person_id: personId });
+    const facts = await this.factsRepo.getForPerson({ tenant_id: auth.tenant_id, person_id: personId });
+    return this.scopeRowsToPinnedCampaign(facts, auth);
   }
 
   /**
@@ -374,7 +396,10 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       .executeTakeFirst();
     if (!person) throw new NotFoundError('Person not found');
 
-    const subscriptions = await this.subsRepo.getForPerson({ tenant_id: auth.tenant_id, person_id: personId });
+    const subscriptions = this.scopeRowsToPinnedCampaign(
+      await this.subsRepo.getForPerson({ tenant_id: auth.tenant_id, person_id: personId }),
+      auth,
+    );
     const suppressions = person.email
       ? await this.subsRepo.getSuppressions({ tenant_id: auth.tenant_id, email: person.email })
       : [];

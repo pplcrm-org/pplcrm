@@ -60,6 +60,14 @@ const SERVER_MANAGED_SETTINGS_MESSAGES: Record<string, string> = {
   [STRIPE_ACCOUNT_ID_KEY]: 'Stripe connection settings cannot be modified directly.',
   [STRIPE_ACCOUNT_STATUS_KEY]: 'Stripe connection settings cannot be modified directly.',
   [DEMO_MANIFEST_SETTINGS_KEY]: 'This setting is managed by pplCRM and cannot be modified directly.',
+  // The workspace's own SendGrid credentials. Nothing writes these today (whitelabel provisioning
+  // reads them; see resolveWhitelabelCredentials), and they must stay that way while every member
+  // can read the whole settings snapshot: an admin who could write the API key here would be
+  // planting a readable credential, and pointing sends at an attacker-controlled key is a
+  // send-guard bypass. If tenant-supplied credentials are ever supported, give them a write path
+  // that stores them outside the snapshot rather than removing these two lines.
+  'communications.sendgrid_api_key': 'SendGrid credentials cannot be set here.',
+  'communications.sendgrid_subuser_username': 'SendGrid credentials cannot be set here.',
 };
 import { SettingsRepo } from './repositories/settings.repo';
 

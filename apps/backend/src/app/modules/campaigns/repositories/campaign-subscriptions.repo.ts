@@ -27,11 +27,20 @@ export class CampaignSubscriptionsRepo extends BaseRepository<'campaign_subscrip
     trx?: Transaction<Models>,
   ) {
     const now = new Date();
+    // `consent_at` and `consent_source` are the evidence that consent was given, so they are
+    // written ONLY on the transition to 'subscribed'. Unsubscribing used to null `consent_at` and
+    // overwrite `consent_source`, which destroyed the proof of the original opt-in at exactly the
+    // moment it is most likely to be asked for; it now records only the new status and the time.
+    // On a first-ever non-subscribed row there is nothing to preserve and the columns take their
+    // defaults (consent_at NULL, consent_source 'manual' — which is what every caller that passes
+    // a non-subscribed status passes anyway).
+    const consentFields =
+      input.status === 'subscribed' ? { consent_at: now, consent_source: input.consent_source } : {};
     const statusFields = {
       status: input.status,
       email: input.email,
-      consent_at: input.status === 'subscribed' ? now : null,
       unsubscribed_at: input.status === 'unsubscribed' ? now : null,
+      ...consentFields,
     };
     const row = {
       tenant_id: input.tenant_id,
@@ -39,7 +48,6 @@ export class CampaignSubscriptionsRepo extends BaseRepository<'campaign_subscrip
       person_id: input.person_id,
       createdby_id: input.user_id,
       updatedby_id: input.user_id,
-      consent_source: input.consent_source,
       ...statusFields,
     } as OperationDataType<'campaign_subscriptions', 'insert'>;
 
@@ -48,7 +56,6 @@ export class CampaignSubscriptionsRepo extends BaseRepository<'campaign_subscrip
       .onConflict((oc) =>
         oc.columns(['tenant_id', 'campaign_id', 'person_id']).doUpdateSet({
           ...statusFields,
-          consent_source: input.consent_source,
           updatedby_id: input.user_id,
           updated_at: now,
         }),
