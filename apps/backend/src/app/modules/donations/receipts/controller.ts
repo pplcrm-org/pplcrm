@@ -450,7 +450,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     const election = campaigns.filter((c) => c.kind === 'election');
     if (election.length === 0) return NO_CAMPAIGN;
     const seats = new Set(election.map((c) => c.seat_name?.trim()).filter((s): s is string => Boolean(s)));
-    return { isElection: true, electoralDistrict: seats.size === 1 ? [...seats][0] : null };
+    return { isElection: true, electoralDistrict: seats.size === 1 ? ([...seats][0] ?? null) : null };
   }
 
   /**
