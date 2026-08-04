@@ -189,6 +189,13 @@ export class WorkflowFormComponent implements OnInit {
     },
   ]);
 
+  /** How many contacts are part-way through the sequence right now. Saving re-numbers steps and
+   *  the server remaps these enrollments onto the new order, so the editor says so up front.
+   *  Reuses the rows the Enrolled contacts tab already loads — no extra request. */
+  protected readonly activeEnrollmentCount = computed(
+    () => this.enrollments().filter((e) => e.status === 'active').length,
+  );
+
   protected readonly triggerMeta = computed(() => triggerCardMeta(this.payload().trigger_type));
 
   /** The class the current trigger forces, or null when the author may choose. Drives whether
@@ -444,6 +451,16 @@ export class WorkflowFormComponent implements OnInit {
     return this.conditions().rules.length > 0;
   }
 
+  /**
+   * "Add condition" seeds a rule with a field and an operator but no value, and a saved rule with
+   * an empty value is evaluated as `field is ''` — it matches almost nobody, silently. Drop those
+   * rules (and any group they leave empty) at save; if nothing survives, save no conditions.
+   */
+  private conditionsForSave(): QueryBuilderGroupNode | null {
+    const pruned = pruneBlankRules(this.conditions());
+    return pruned.rules.length > 0 ? pruned : null;
+  }
+
   // ── Save / delete ──────────────────────────────────────────────────────────
   /**
    * @param done called instead of navigating, so the leave guard can save without fighting the
@@ -468,7 +485,7 @@ export class WorkflowFormComponent implements OnInit {
           const end = this._loading.begin();
           try {
             const raw = this.payload();
-            const conditions = this.hasConditions() ? this.conditions() : null;
+            const conditions = this.conditionsForSave();
             const data = {
               ...raw,
               trigger_event_id: raw.trigger_event_id ? raw.trigger_event_id : null,
@@ -765,4 +782,12 @@ const SHIFT_STATUS_OPTIONS: OptionRow[] = [
 
 function emptyConditions(): QueryBuilderGroupNode {
   return { kind: 'group', id: newUid(), conjunction: 'AND', rules: [] };
+}
+
+/** Recursively removes rules whose value is empty or whitespace, plus groups left with no rules. */
+function pruneBlankRules(group: QueryBuilderGroupNode): QueryBuilderGroupNode {
+  const rules = group.rules
+    .map((node) => (node.kind === 'group' ? pruneBlankRules(node) : node))
+    .filter((node) => (node.kind === 'group' ? node.rules.length > 0 : String(node.value ?? '').trim() !== ''));
+  return { ...group, rules };
 }

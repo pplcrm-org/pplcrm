@@ -119,6 +119,20 @@
           cdkDropList
           (cdkDropListDropped)="reorderStep($event)"
         >
+          <!-- Live-enrollment notice: step edits are re-numbered onto people already mid-sequence. -->
+          @if (activeEnrollmentCount() > 0) {
+          <div
+            class="mb-6 flex w-80 items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-base-content"
+          >
+            <pc-icon name="exclamation-triangle" [size]="4" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+            <span>
+              <span class="font-semibold">{{ activeEnrollmentCount() }}</span>
+              {{ activeEnrollmentCount() === 1 ? 'contact is' : 'contacts are' }} currently moving through this
+              automation — edits apply to them immediately.
+            </span>
+          </div>
+          }
+
           <!-- Trigger card -->
           <div class="w-80 rounded-2xl border-l-4 border-l-primary border-y border-r border-base-300 bg-base-100 p-4">
             <div class="flex items-center justify-between">

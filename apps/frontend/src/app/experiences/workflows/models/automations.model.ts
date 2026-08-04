@@ -16,8 +16,10 @@ export const TRIGGER_CARDS: readonly TriggerCardMeta[] = [
     type: 'manual',
     icon: 'user-plus',
     title: 'Manual enrollment',
-    // Verbatim (mockup).
-    description: 'Runs only when you enroll someone yourself (from the grid, a person page or another automation).',
+    // Not the mockup's copy: it named a grid action, a person-page action and automation-to-automation
+    // enrollment, none of which exist. Enrollment for this trigger is API-only today.
+    description:
+      'Runs only for contacts you enroll deliberately. There is no in-app enroll button yet — sequences with this trigger stay idle until one exists.',
   },
   {
     type: 'web_form_submitted',
