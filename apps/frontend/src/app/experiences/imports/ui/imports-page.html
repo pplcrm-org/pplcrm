@@ -308,7 +308,15 @@
       />
       <span class="text-base-content"> Also delete people ({{ item.contactCount }} found) </span>
     </label>
-    } @if (item.householdCount > 0) {
+    @if (peopleDeleteImpact(item); as impact) {
+    <p class="text-xs text-warning ml-9 -mt-2">{{ impact }}</p>
+    } @if (item.issuedReceiptCount > 0) {
+    <p class="text-xs text-error ml-9 -mt-2">
+      {{ item.issuedReceiptCount }} issued donation receipt{{ item.issuedReceiptCount === 1 ? '' : 's' }} belong to
+      these people. Cancel {{ item.issuedReceiptCount === 1 ? 'it' : 'them' }} first — the delete will be refused while
+      {{ item.issuedReceiptCount === 1 ? 'it stands' : 'they stand' }}.
+    </p>
+    } } @if (item.householdCount > 0) {
     <label
       class="flex items-center gap-3 text-sm cursor-pointer hover:bg-base-200/50 p-2 rounded transition-colors duration-150"
     >

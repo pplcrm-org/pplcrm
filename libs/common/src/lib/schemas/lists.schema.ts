@@ -75,6 +75,15 @@ export const ImportListItemObj = z.object({
   householdCount: z.number().int().nonnegative(),
   companyCount: z.number().int().nonnegative(),
   taskCount: z.number().int().nonnegative(),
+  /**
+   * What the import's people are attached to elsewhere, so the delete dialog can say what "Also
+   * delete people" would take with it instead of only how many people it found. Read-only counts.
+   * An issued receipt is not merely reported: the delete is refused while one exists.
+   */
+  donationCount: z.number().int().nonnegative(),
+  issuedReceiptCount: z.number().int().nonnegative(),
+  eventRegistrationCount: z.number().int().nonnegative(),
+  campaignSubscriptionCount: z.number().int().nonnegative(),
   status: z.string(),
   errorMessage: z.string().nullable().optional(),
   canDeleteContacts: z.boolean(),

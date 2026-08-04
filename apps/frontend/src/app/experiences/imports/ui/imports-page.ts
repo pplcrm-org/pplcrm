@@ -81,6 +81,39 @@ export class ImportsPage {
       `${this.duplicatesMergedThisYear()} duplicates merged`,
   );
 
+  /**
+   * What ticking "Also delete people" would take with it, in plain words, or null when those
+   * people are attached to nothing else.
+   *
+   * Event registrations and email consent records are removed with the person (the database
+   * cascades them). Donations are not removed — the gift survives, but its link back to the donor
+   * is cleared — so they are stated separately rather than folded into the same sentence.
+   */
+  protected peopleDeleteImpact(item: ImportListItem): string | null {
+    const removed: string[] = [];
+    if (item.eventRegistrationCount > 0) {
+      removed.push(this.countLabel(item.eventRegistrationCount, 'event registration'));
+    }
+    if (item.campaignSubscriptionCount > 0) {
+      removed.push(this.countLabel(item.campaignSubscriptionCount, 'email consent record'));
+    }
+
+    const sentences: string[] = [];
+    if (removed.length > 0) {
+      sentences.push(`Deleting these people also deletes ${removed.join(' and ')}.`);
+    }
+    if (item.donationCount > 0) {
+      const gifts = this.countLabel(item.donationCount, 'donation');
+      sentences.push(`${gifts} would be kept but would no longer be linked to a donor.`);
+    }
+    return sentences.length > 0 ? sentences.join(' ') : null;
+  }
+
+  /** "1 donation" / "4 donations" — plural by adding an s, which fits every noun used above. */
+  private countLabel(count: number, noun: string): string {
+    return `${count} ${noun}${count === 1 ? '' : 's'}`;
+  }
+
   /** data_imports.source → the label the Type column shows. */
   protected sourceLabel(source: string): string {
     switch (source) {

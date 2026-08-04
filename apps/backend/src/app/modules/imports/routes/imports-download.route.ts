@@ -4,6 +4,7 @@ import { ImportsRepo } from '../repositories/imports.repo';
 import { authenticateRest } from '../../../lib/rest-auth';
 import { attachmentDisposition } from '../../../lib/download-headers';
 import { rowsToCsv } from '../../../lib/csv';
+import { canAccessImport } from '../controller';
 
 const storageService = new StorageService();
 const importsRepo = new ImportsRepo();
@@ -26,6 +27,13 @@ const importsDownloadRoute: FastifyPluginCallback = (fastify, _, done) => {
 
     if (!importRecord) {
       return reply.status(404).send({ error: 'Import not found' });
+    }
+    // SECURITY: the lookup above is scoped to the tenant only, and `data_imports.id` is a sequence
+    // value, so a member could walk the ids and download every contact list the workspace has ever
+    // uploaded. The exports download route closed this same hole with the same rule; apply it here
+    // from the one shared predicate.
+    if (!canAccessImport(importRecord, authResult.auth)) {
+      return reply.status(403).send({ error: 'You can only download your own imports.' });
     }
     if (!importRecord.source_file_key) {
       return reply.status(404).send({ error: 'The original file is no longer available for this import.' });
@@ -53,6 +61,11 @@ const importsDownloadRoute: FastifyPluginCallback = (fastify, _, done) => {
 
     if (!importRecord) {
       return reply.status(404).send({ error: 'Import not found' });
+    }
+    // Same rule as the source download above: the skipped-rows CSV carries the email address of
+    // every row that did not load, which is the same contact data by another route.
+    if (!canAccessImport(importRecord, authResult.auth)) {
+      return reply.status(403).send({ error: 'You can only download your own imports.' });
     }
     if (!importRecord.skip_reasons.length) {
       return reply.status(404).send({ error: 'No skipped rows recorded for this import.' });

@@ -1,4 +1,5 @@
 import type { Kysely, Transaction } from 'kysely';
+import { sql } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../../logger';
 import { StorageService } from '../../storage.service';
@@ -225,6 +226,36 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
           .execute()
       ).map((row) => row.storage_key);
 
+      // Uploaded import files are the second per-feature blob set the wipe removes. Every import
+      // writer (persons.service.ts, and the households/companies/tasks controllers) builds exactly
+      // two keys, both with the tenant id as a path segment:
+      //   imports/source/<tenantId>/<importId>.csv    — the retained original upload
+      //   imports/payloads/<tenantId>/<importId>.json — the normalized rows the import job reads
+      // Same ordering rule as the receipt PDFs above: read the keys while the rows still exist,
+      // delete the blobs only after the transaction commits.
+      const importSourcePrefix = `imports/source/${tenantId}/`;
+      const importPayloadPrefix = `imports/payloads/${tenantId}/`;
+      const importRows = await db
+        .selectFrom('data_imports')
+        .select(['source_file_key', sql<string | null>`metadata->>'storage_key'`.as('payload_key')])
+        .where('tenant_id', '=', tenantId)
+        .execute();
+      const importBlobKeys: string[] = [];
+      for (const row of importRows) {
+        for (const key of [row.source_file_key, row.payload_key]) {
+          if (typeof key !== 'string' || key.length === 0) continue;
+          // Belt and braces on the most destructive handler in the codebase: the rows are already
+          // scoped to this tenant, so a key that does not sit under this tenant's own import
+          // prefixes is corrupt data. Leaving a stray blob behind is recoverable; deleting another
+          // tenant's file is not.
+          if (!key.startsWith(importSourcePrefix) && !key.startsWith(importPayloadPrefix)) {
+            logger.warn({ tenantId, key }, 'Skipping an import blob key outside this tenant import prefixes');
+            continue;
+          }
+          importBlobKeys.push(key);
+        }
+      }
+
       logger.info(`Hard-deleting tenant ${tenantId} (deletion_scheduled_at <= now)…`);
       await db.transaction().execute((trx) => wipeTenant(trx, tenantId));
       logger.info(`Tenant ${tenantId} fully hard-deleted.`);
@@ -234,6 +265,14 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
           await new StorageService().delete(key);
         } catch (err) {
           logger.error({ err, tenantId, key }, 'Failed to delete a receipt PDF blob for a wiped tenant');
+        }
+      }
+
+      for (const key of importBlobKeys) {
+        try {
+          await new StorageService().delete(key);
+        } catch (err) {
+          logger.error({ err, tenantId, key }, 'Failed to delete an import file blob for a wiped tenant');
         }
       }
     } catch (err) {

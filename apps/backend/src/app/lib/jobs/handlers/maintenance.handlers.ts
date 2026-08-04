@@ -83,6 +83,17 @@ const DATA_EXPORT_RETENTION_DAYS = 30;
  * added are pruned after this window; rows that carry anything are kept indefinitely.
  */
 const DETACHED_EMAIL_RETENTION_DAYS = 90;
+/**
+ * How long the original file a member uploaded to an import stays in blob storage.
+ *
+ * 90 days is not a new decision — it is the number the product already publishes in three places
+ * and had never enforced: the privacy policy ("Import source files are kept for 90 days so you can
+ * audit an import, then removed"), the Help Center article on importing, and the import writer's
+ * own comment in persons.service.ts. Nothing ever deleted the blob, so every uploaded contact list
+ * sat in storage forever. Changing the number means changing all of those — see the
+ * `pplcrm-website-claims` skill.
+ */
+const IMPORT_SOURCE_FILE_RETENTION_DAYS = 90;
 // Chunk size for the keyset-paginated address-fingerprint recompute below.
 const ADDRESS_FINGERPRINT_PAGE_SIZE = 1000;
 
@@ -155,6 +166,71 @@ export async function pruneExpiredExports(db: Kysely<Models>): Promise<{ rows: n
   }
 
   return { rows: rowsDeleted, blobFailures };
+}
+
+/**
+ * Delete the retained original upload of every import past its retention window.
+ *
+ * Nothing pruned these before: every CSV a member ever fed the import wizard stayed in blob
+ * storage indefinitely, while the privacy policy said they are removed after 90 days. Each one is
+ * a full contact extract, so this is the same class of file the export sweep above removes.
+ *
+ * Only the blob and the pointer to it go — the `data_imports` row STAYS, because it is the import
+ * history a workspace reads to see what was loaded and when. The blob is deleted FIRST and the
+ * column nulled only after that succeeds, because the column holds the only copy of the storage
+ * key; nulling first would orphan the file permanently. A blob delete that fails leaves its key in
+ * place so the next daily run retries it, and the loop moves on to the remaining rows.
+ * `StorageService` uses `deleteIfExists`, so an already-missing blob is a success.
+ *
+ * `source_file_size` is deliberately left alone: it describes the upload that happened, which is
+ * still true history, and the History page gates the download button on `source_file_key`.
+ *
+ * NOTE: intentionally cross-tenant — this is scheduled platform maintenance with no caller, the
+ * same as the other sweeps in this job, and it selects only the row id and its storage key.
+ *
+ * Exported so its spec can exercise it alone, for the same reason as the sweeps around it.
+ */
+export async function pruneExpiredImportSourceFiles(db: Kysely<Models>): Promise<{
+  rows: number;
+  blobFailures: number;
+}> {
+  const storageService = new StorageService();
+  let rowsCleared = 0;
+  let blobFailures = 0;
+
+  for (;;) {
+    const expired = await sql<{ id: string; source_file_key: string }>`
+      SELECT id, source_file_key FROM data_imports
+      WHERE source_file_key IS NOT NULL
+        AND processed_at < now() - make_interval(days => ${IMPORT_SOURCE_FILE_RETENTION_DAYS})
+      ORDER BY id
+      LIMIT ${RETENTION_BATCH}
+    `.execute(db);
+
+    if (expired.rows.length === 0) break;
+
+    let progressed = 0;
+    for (const row of expired.rows) {
+      try {
+        await storageService.delete(row.source_file_key);
+      } catch (err) {
+        blobFailures++;
+        logger.error({ err, importId: row.id }, `Failed to delete expired import source blob ${row.source_file_key}`);
+        continue;
+      }
+
+      const res = await sql`UPDATE data_imports SET source_file_key = NULL WHERE id = ${row.id}`.execute(db);
+      rowsCleared += Number(res.numAffectedRows ?? 0n);
+      progressed++;
+    }
+
+    // Every row in this batch failed its blob delete, so re-selecting would return the same rows
+    // forever. Stop and let tomorrow's run retry.
+    if (progressed === 0) break;
+    if (expired.rows.length < RETENTION_BATCH) break;
+  }
+
+  return { rows: rowsCleared, blobFailures };
 }
 
 /**
@@ -320,6 +396,10 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
   // this one sweeps the blob too — see pruneExpiredExports.
   const prunedExports = await pruneExpiredExports(db);
 
+  // Retained original uploads past the published 90-day window. The import row itself stays —
+  // only the file and the key pointing at it go. See pruneExpiredImportSourceFiles.
+  const prunedImportSources = await pruneExpiredImportSourceFiles(db);
+
   // Synced messages that left the mailbox folder upstream long ago and that nobody in the CRM ever
   // commented on, assigned, closed or starred — see pruneDetachedEmails.
   const prunedDetachedEmails = await pruneDetachedEmails(db);
@@ -332,6 +412,8 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
       prunedSessions: prunedSessions.toString(),
       prunedExports: prunedExports.rows,
       exportBlobDeleteFailures: prunedExports.blobFailures,
+      prunedImportSourceFiles: prunedImportSources.rows,
+      importSourceBlobDeleteFailures: prunedImportSources.blobFailures,
       prunedDetachedEmails: prunedDetachedEmails.rows,
     },
     'Retention prune complete',
