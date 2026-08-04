@@ -73,6 +73,20 @@ export abstract class BaseDuplicateManager<T extends { id: string; created_at: s
   protected abstract getItemsFromRawGroup(rawGroup: any): T[];
   protected abstract mergeInService(targetId: string, sourceId: string): Promise<void>;
 
+  /**
+   * A consequence of THIS pair's merge that the confirmation must state, or null when there is
+   * none. Override where merging can cost something the record comparison does not show; people
+   * override it because merging two volunteer records revokes one person's companion access.
+   * A warning shown on every merge would be noise, so this is asked per pair.
+   */
+  protected mergeWarning(
+    _targetId: string,
+    _sourceId: string,
+    _names: { target: string; source: string },
+  ): Promise<string | null> {
+    return Promise.resolve(null);
+  }
+
   public async loadDuplicates() {
     this.isLoading.set(true);
     try {
@@ -153,9 +167,12 @@ export abstract class BaseDuplicateManager<T extends { id: string; created_at: s
     const primaryName = this.getItemDisplayName(targetItem);
     const dupName = this.getItemDisplayName(sourceItem);
 
+    const base = `Are you sure you want to merge "${dupName}" into "${primaryName}"? This action will permanently delete this duplicate ${this.getEntityName()} and cannot be undone.`;
+    const extra = await this.mergeWarning(targetId, sourceId, { target: primaryName, source: dupName });
+
     const confirmed = await this.dialogs.confirm({
       title: 'Confirm Merge',
-      message: `Are you sure you want to merge "${dupName}" into "${primaryName}"? This action will permanently delete this duplicate ${this.getEntityName()} and cannot be undone.`,
+      message: extra ? `${base}\n\n${extra}` : base,
       variant: 'warning',
       confirmText: 'Merge',
       cancelText: 'Cancel',

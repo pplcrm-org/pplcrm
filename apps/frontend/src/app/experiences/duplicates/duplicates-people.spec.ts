@@ -45,6 +45,7 @@ describe('PeopleDuplicatesComponent', () => {
         total: 1,
       }),
       mergePersons: vi.fn().mockResolvedValue({ id: 'p1' }),
+      mergeWarning: vi.fn().mockResolvedValue(null),
     };
 
     mockAlertSvc = {
@@ -179,5 +180,36 @@ describe('PeopleDuplicatesComponent', () => {
   it('should resolve a display name for a given item id via getDisplayNameForId', () => {
     expect(component.getDisplayNameForId([person1, person2], 'p2')).toBe('Johnny Doe');
     expect(component.getDisplayNameForId([person1, person2], undefined)).toBe('');
+  });
+  // Merging two people who both hold a companion volunteer record revokes one person's access to
+  // the canvassing and delivery apps. The dialog has to say so before the operator commits.
+  describe('companion access warning', () => {
+    it('adds the warning to the confirmation message for this pair', async () => {
+      mockPersonsSvc.mergeWarning.mockResolvedValue('Merging takes away Johnny Doe’s companion access.');
+
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      await component.mergeGroup(0);
+
+      expect(mockPersonsSvc.mergeWarning).toHaveBeenCalledWith('p1', 'p2', {
+        target: 'John Doe',
+        source: 'Johnny Doe',
+      });
+      const [opts] = mockDialogSvc.confirm.mock.calls[0];
+      expect(opts.message).toContain('permanently delete this duplicate person');
+      expect(opts.message).toContain('Merging takes away Johnny Doe’s companion access.');
+    });
+
+    it('leaves the confirmation alone when this pair has no consequence to report', async () => {
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      await component.mergeGroup(0);
+
+      const [opts] = mockDialogSvc.confirm.mock.calls[0];
+      expect(opts.message).toContain('permanently delete this duplicate person');
+      expect(opts.message).not.toContain('companion');
+    });
   });
 });

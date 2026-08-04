@@ -348,6 +348,7 @@ export {
   JOIN_CODE_ALPHABET,
   JOIN_CODE_LENGTH,
   JOIN_CODE_STATUSES,
+  PersonMergeImpactObj,
 } from './lib/schema';
 
 export type {
@@ -391,6 +392,7 @@ export type {
   ConsentSource,
 } from './lib/schemas/campaigns.schema';
 export type { DncChannel, VolunteerStatus, StaffStatus } from './lib/schemas/persons.schema';
+export type { PersonMergeImpactType } from './lib/models';
 export type { GridColumnFilter, GridFilterModel } from './lib/schemas/core.schema';
 
 export { DEFAULT_LINK_SUBDOMAIN, MAX_DNS_LABEL_LENGTH, isValidDnsLabel, normalizeDnsLabel } from './lib/dns-label';

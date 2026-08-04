@@ -31,6 +31,7 @@ import type {
   NewsletterReportPreviousSendObj,
   CreateClickersListResultObj,
   EmailDraftObj,
+  PersonMergeImpactObj,
   PersonsObj,
   SettingsEntryObj,
   SettingsObj,
@@ -149,6 +150,8 @@ export type SortModelType = z.infer<typeof sortModelItem>;
 export type UpdateHouseholdsType = z.infer<typeof UpdateHouseholdsObj>;
 
 export type UpdatePersonsType = z.infer<typeof UpdatePersonsObj>;
+
+export type PersonMergeImpactType = z.infer<typeof PersonMergeImpactObj>;
 
 export type UpdateTagType = z.infer<typeof UpdateTagObj>;
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { phoneSchema, notesSchema, idSchema, nullableEmailSchema, addressSchema } from './core.schema';
+import { COMPANION_VOLUNTEER_STATUSES } from './companion-access.schema';
 
 /**
  * Do-not-contact channels (Campaigns §15). The flag lives on the person — it is a
@@ -94,4 +95,21 @@ export const UpdatePersonsObj = z.object({
   deceased_at: z.coerce.date().nullable().optional(),
   /** 65 or older. Null = never asked, which is not the same as false. */
   senior: z.boolean().nullable().optional(),
+});
+
+/**
+ * What merging two people costs beyond the records themselves. Asked before the confirmation
+ * dialog opens, so the dialog can name the consequence of *this* pair instead of showing a
+ * standing caution on every merge, which people learn to click past.
+ *
+ * `companion_volunteers` is UNIQUE (tenant_id, person_id) and is an access grant, not data: when
+ * both people hold a volunteer row the merge keeps the target's and deletes the source's, along
+ * with that row's device sessions and approval tokens (see `PersonsRepo.mergePersons`). Each
+ * status is null when that person has no volunteer row at all, which is the common case.
+ */
+export const PersonMergeImpactObj = z.object({
+  companionAccess: z.object({
+    target: z.enum(COMPANION_VOLUNTEER_STATUSES).nullable(),
+    source: z.enum(COMPANION_VOLUNTEER_STATUSES).nullable(),
+  }),
 });

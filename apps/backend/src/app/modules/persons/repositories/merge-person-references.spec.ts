@@ -409,6 +409,42 @@ describe('mergePersons re-points everything that names the source person', () =>
     expect(String(sessions[0].volunteer_id)).toBe(String(volunteerId));
   });
 
+  // What the merge confirmation dialog asks before it opens, so it can warn about losing
+  // companion access only on the merges where that actually happens.
+  describe('getCompanionVolunteerStatuses', () => {
+    it('reports the status of each person who holds a volunteer row', async () => {
+      const target = await addPerson('Target');
+      const source = await addPerson('Source');
+      await addVolunteer(target.id, 'invited');
+      await addVolunteer(source.id, 'approved');
+
+      const statuses = await repo.getCompanionVolunteerStatuses(seed.tenantId, [target.id, source.id]);
+
+      expect(statuses.get(target.id)).toBe('invited');
+      expect(statuses.get(source.id)).toBe('approved');
+    });
+
+    it('omits a person who has no volunteer row, so the dialog stays quiet', async () => {
+      const target = await addPerson('Target');
+      const source = await addPerson('Source');
+      await addVolunteer(source.id, 'approved');
+
+      const statuses = await repo.getCompanionVolunteerStatuses(seed.tenantId, [target.id, source.id]);
+
+      expect(statuses.has(target.id)).toBe(false);
+      expect(statuses.get(source.id)).toBe('approved');
+    });
+
+    it('does not read another tenant’s volunteer rows', async () => {
+      const source = await addPerson('Source');
+      await addVolunteer(source.id, 'approved');
+
+      const statuses = await repo.getCompanionVolunteerStatuses(rand(), [source.id]);
+
+      expect(statuses.size).toBe(0);
+    });
+  });
+
   it('keeps exactly one companion volunteer row, the target one, when both people are volunteers', async () => {
     const target = await addPerson('Target');
     const source = await addPerson('Source');

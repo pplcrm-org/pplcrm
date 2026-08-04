@@ -1,8 +1,10 @@
 import { Service, inject } from '@angular/core';
 import {
+  CompanionVolunteerStatus,
   ExportCsvInputType,
   ExportCsvResponseType,
   PERSONINHOUSEHOLDTYPE,
+  PersonMergeImpactType,
   UpdatePersonsType,
   getAllOptionsType,
 } from '../../../../../../../libs/common/src';
@@ -194,6 +196,93 @@ export class PersonsService extends AbstractAPIService<DATA_TYPE, UpdatePersonsT
   public mergePersons(target_id: string, source_id: string): Promise<RouterOutputs['persons']['mergePersons']> {
     return this.api.persons.mergePersons.mutate({ target_id, source_id });
   }
+
+  /**
+   * The extra sentence the merge confirmation must carry for this particular pair, or null when
+   * the merge costs nothing beyond the duplicate record. Both merge surfaces call it (the
+   * Duplicates pair card and the People grid's bulk Merge), so the warning cannot drift between
+   * them, and it is asked per pair so a warning that applies to very few merges is not shown on
+   * all of them.
+   */
+  public async mergeWarning(target_id: string, source_id: string, names: MergeNames): Promise<string | null> {
+    try {
+      const impact = await this.api.persons.mergeImpact.query(
+        { target_id, source_id },
+        // The caller renders whatever comes back inside the confirmation; a global error toast
+        // on top of that would be a second, less useful message.
+        { context: { skipErrorHandler: true } },
+      );
+      return companionAccessMergeWarning(impact, names);
+    } catch {
+      return COMPANION_MERGE_CHECK_FAILED;
+    }
+  }
+}
+
+/** The two records a merge names, in the words the operator is reading on screen. */
+export interface MergeNames {
+  target: string;
+  source: string;
+}
+
+/** How each companion volunteer status reads inside a sentence about a person. */
+const COMPANION_STATUS_WORDS: Record<CompanionVolunteerStatus, string> = {
+  invited: 'invited but has never verified a code',
+  verified: 'verified but still waiting for approval',
+  approved: 'approved',
+  revoked: 'revoked',
+};
+
+/** Shown when the impact query itself failed, so the dialog neither invents a consequence nor
+ *  hides that it could not check. */
+export const COMPANION_MERGE_CHECK_FAILED =
+  'Companion volunteer access could not be checked just now. If both people use the canvassing or delivery app, merging keeps only the surviving record’s access and signs the other person out.';
+
+/**
+ * What this merge does to companion (volunteer app) access, in one sentence, or null when it
+ * does nothing.
+ *
+ * `companion_volunteers` is UNIQUE (tenant_id, person_id), so a merge cannot keep two volunteer
+ * rows: the backend keeps the record being kept and deletes the other one along with its device
+ * sessions. That direction is deliberate, because the opposite would let a merge restore access
+ * an admin had revoked, but it means merging an approved volunteer into a record that was only
+ * ever invited takes their access away.
+ */
+export function companionAccessMergeWarning(impact: PersonMergeImpactType, names: MergeNames): string | null {
+  const { target, source } = impact.companionAccess;
+
+  // With one volunteer record or none there is no collision: the row, its sessions and its
+  // approval move to the surviving person untouched.
+  if (target == null || source == null) return null;
+
+  // An invitation nobody acted on, or access an admin already revoked, costs nothing to drop.
+  if (source === 'invited' || source === 'revoked') return null;
+
+  if (target === 'approved') {
+    // The surviving record already carries full access, so a source that was still waiting for
+    // approval loses nothing worth interrupting for.
+    if (source !== 'approved') return null;
+    return (
+      `${names.source} and ${names.target} are both approved companion volunteers. ` +
+      `Merging keeps ${names.target}'s volunteer record and signs out ${names.source}'s devices, ` +
+      `so that volunteer enters a new code the next time they open the canvassing or delivery app.`
+    );
+  }
+
+  if (source === 'approved') {
+    return (
+      `Merging takes away ${names.source}'s companion access. ${names.source} is an approved volunteer ` +
+      `and ${names.target} is ${COMPANION_STATUS_WORDS[target]}; only one volunteer record survives a merge, ` +
+      `and it is ${names.target}'s. ${names.source} verifies a code again and an admin approves them again ` +
+      `before they can canvass or deliver.`
+    );
+  }
+
+  return (
+    `Merging discards ${names.source}'s companion verification. ${names.source} has verified a code and is ` +
+    `waiting for an admin to approve them, and that request does not survive the merge. ` +
+    `They start again on ${names.target}'s record.`
+  );
 }
 
 export type DATA_TYPE = 'persons' | 'households';

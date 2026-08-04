@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import { PersonsService } from './persons-service';
+import { COMPANION_MERGE_CHECK_FAILED, PersonsService, companionAccessMergeWarning } from './persons-service';
 
 describe('PersonsService', () => {
   let service: PersonsService;
@@ -29,6 +29,7 @@ describe('PersonsService', () => {
         getPotentialDuplicates: { query: vi.fn() },
         getDuplicateCounts: { query: vi.fn() },
         mergePersons: { mutate: vi.fn() },
+        mergeImpact: { query: vi.fn() },
         checkDuplicateEmails: { query: vi.fn() },
       },
     };
@@ -217,6 +218,77 @@ describe('PersonsService', () => {
         { startRow: 0, endRow: 25 },
         { signal: (service as any).ac.signal },
       );
+    });
+  });
+  // Merging two people who both hold a companion volunteer record keeps only one of them, which
+  // can take a working volunteer's access to the canvassing and delivery apps away. The dialog
+  // must say so, and only on the pairs where it is true.
+  describe('companionAccessMergeWarning', () => {
+    const names = { target: 'Rosa Diaz', source: 'Rosa D' };
+    const impact = (target: unknown, source: unknown) =>
+      ({ companionAccess: { target, source } }) as Parameters<typeof companionAccessMergeWarning>[0];
+
+    it('says nothing when neither person is a companion volunteer', () => {
+      expect(companionAccessMergeWarning(impact(null, null), names)).toBeNull();
+    });
+
+    it('says nothing when only one of them is a volunteer, because that row simply moves', () => {
+      expect(companionAccessMergeWarning(impact(null, 'approved'), names)).toBeNull();
+      expect(companionAccessMergeWarning(impact('approved', null), names)).toBeNull();
+    });
+
+    it('says the merge takes access away when the record being removed is the approved one', () => {
+      const warning = companionAccessMergeWarning(impact('invited', 'approved'), names);
+
+      expect(warning).toContain("takes away Rosa D's companion access");
+      expect(warning).toContain('Rosa Diaz is invited but has never verified a code');
+      expect(warning).toContain('verifies a code again');
+    });
+
+    it('warns about signed-out devices when both records are approved', () => {
+      const warning = companionAccessMergeWarning(impact('approved', 'approved'), names);
+
+      expect(warning).toContain('both approved companion volunteers');
+      expect(warning).toContain("signs out Rosa D's devices");
+    });
+
+    it('warns that a pending verification is discarded', () => {
+      const warning = companionAccessMergeWarning(impact('invited', 'verified'), names);
+
+      expect(warning).toContain("discards Rosa D's companion verification");
+    });
+
+    it('stays quiet when the removed record was only an unused invitation or already revoked', () => {
+      expect(companionAccessMergeWarning(impact('approved', 'invited'), names)).toBeNull();
+      expect(companionAccessMergeWarning(impact('approved', 'revoked'), names)).toBeNull();
+    });
+
+    it('stays quiet when the surviving record is already approved and the other was only pending', () => {
+      expect(companionAccessMergeWarning(impact('approved', 'verified'), names)).toBeNull();
+    });
+  });
+
+  describe('mergeWarning', () => {
+    const names = { target: 'Rosa Diaz', source: 'Rosa D' };
+
+    it('asks the impact endpoint for this pair and suppresses the global error toast', async () => {
+      mockApi.persons.mergeImpact.query.mockResolvedValue({
+        companionAccess: { target: 'invited', source: 'approved' },
+      });
+
+      const warning = await service.mergeWarning('p1', 'p2', names);
+
+      expect(mockApi.persons.mergeImpact.query).toHaveBeenCalledWith(
+        { target_id: 'p1', source_id: 'p2' },
+        { context: { skipErrorHandler: true } },
+      );
+      expect(warning).toContain("takes away Rosa D's companion access");
+    });
+
+    it('admits it could not check rather than implying there is nothing to lose', async () => {
+      mockApi.persons.mergeImpact.query.mockRejectedValue(new Error('offline'));
+
+      expect(await service.mergeWarning('p1', 'p2', names)).toBe(COMPANION_MERGE_CHECK_FAILED);
     });
   });
 });

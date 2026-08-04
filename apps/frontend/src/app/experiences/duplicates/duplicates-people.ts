@@ -53,6 +53,19 @@ export class PeopleDuplicatesComponent extends BaseDuplicateManager<PersonDuplic
     await this.personsSvc.mergePersons(targetId, sourceId);
   }
 
+  /**
+   * Merging two people who both hold a companion volunteer record keeps only the surviving
+   * record's, which can revoke a working volunteer's access to the canvassing and delivery apps.
+   * The service answers per pair, so this sentence appears only on the merges where it is true.
+   */
+  protected override mergeWarning(
+    targetId: string,
+    sourceId: string,
+    names: { target: string; source: string },
+  ): Promise<string | null> {
+    return this.personsSvc.mergeWarning(targetId, sourceId, names);
+  }
+
   protected getItemDisplayName(p: PersonDuplicateItem): string {
     return `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Unnamed person';
   }

@@ -310,6 +310,12 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         title: 'Verification needs a contact on file',
         text: 'Codes go to the email or mobile number on the volunteer’s person record. If neither is on file, the link tells them to ask you. Add a contact to their record and have them reopen the link.',
       },
+      {
+        kind: 'callout',
+        tone: 'warning',
+        title: 'Merging two volunteers keeps only one volunteer record',
+        text: 'A person can hold one volunteer record, so merging two people who both have one keeps the record you are keeping and removes the other, along with the phones signed in on it. If the removed one was the approved record, that volunteer verifies a code again and needs approving again. The merge confirmation says this before you commit, and only when both people are volunteers. See [Find and merge duplicates](/help/duplicates).',
+      },
     ],
   },
   {

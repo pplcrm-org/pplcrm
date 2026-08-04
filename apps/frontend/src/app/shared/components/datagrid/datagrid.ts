@@ -77,6 +77,13 @@ interface MergeableService {
   mergePersons?(target: string, source: string): Promise<unknown>;
   mergeCompanies?(target: string, source: string): Promise<unknown>;
   mergeHouseholds?(target: string, source: string): Promise<unknown>;
+  /**
+   * Optional: a consequence of THIS pair's merge that the confirmation must state, or null when
+   * there is none. Keeps entity-specific knowledge in the entity's own service; the grid only
+   * asks and shows the answer. PersonsService implements it because merging two people who both
+   * hold a companion volunteer record revokes one of them.
+   */
+  mergeWarning?(target: string, source: string, names: { target: string; source: string }): Promise<string | null>;
 }
 
 /** One removable chip in the active-filters row above the grid. */
@@ -1488,9 +1495,17 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
     const targetName = this.getRowDisplayName(primaryChoice.target);
     const sourceName = this.getRowDisplayName(primaryChoice.source);
 
+    const base = `Are you sure you want to merge "${sourceName}" into "${targetName}"? This action will permanently delete "${sourceName}" and cannot be undone.`;
+    const extra = svc.mergeWarning
+      ? await svc.mergeWarning(primaryChoice.target.id, primaryChoice.source.id, {
+          target: targetName,
+          source: sourceName,
+        })
+      : null;
+
     const confirmed = await this.dialogs.confirm({
       title: 'Confirm Merge',
-      message: `Are you sure you want to merge "${sourceName}" into "${targetName}"? This action will permanently delete "${sourceName}" and cannot be undone.`,
+      message: extra ? `${base}\n\n${extra}` : base,
       variant: 'warning',
       confirmText: 'Merge',
       cancelText: 'Cancel',

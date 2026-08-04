@@ -167,6 +167,12 @@ export const DATA_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'callout',
+        tone: 'warning',
+        title: 'Merging two volunteers keeps only one volunteer record',
+        text: 'A person can hold one companion volunteer record, so merging two people who both have one keeps the record you are keeping and removes the other, along with the phones signed in on it. If the removed one was the approved record, that volunteer verifies a code again and an admin approves them again before they can canvass or deliver. The merge confirmation tells you when this pair is affected. See [Volunteer access approvals](/help/volunteer-access).',
+      },
+      {
+        kind: 'callout',
         tone: 'tip',
         title: 'Make it a habit',
         text: 'A five-minute duplicates pass after every import keeps the database trustworthy, far cheaper than a heroic annual cleanup.',

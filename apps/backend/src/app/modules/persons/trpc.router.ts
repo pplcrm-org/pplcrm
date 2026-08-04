@@ -7,6 +7,7 @@ import {
   MAX_BULK_IDS,
   MAX_IMPORT_ROWS,
   MAX_PAGE_SIZE,
+  PersonMergeImpactObj,
 } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
@@ -274,6 +275,16 @@ function mergePersons() {
     .mutation(({ input, ctx }) => personsService.mergePersons(input, ctx.auth));
 }
 
+/** Read-only companion to `mergePersons`: what this particular merge will cost, so the
+ *  confirmation dialog can warn about a volunteer losing companion access only on the merges
+ *  where that actually happens. */
+function mergeImpact() {
+  return authProcedure
+    .input(z.object({ target_id: idSchema, source_id: idSchema }))
+    .output(PersonMergeImpactObj)
+    .query(({ input, ctx }) => personsService.getMergeImpact(input, ctx.auth));
+}
+
 function moveEntireHousehold() {
   return authProcedure
     .input(
@@ -312,6 +323,7 @@ export const PersonsRouter = router({
   getPotentialDuplicates: getPotentialDuplicates(),
   getDuplicateCounts: getDuplicateCounts(),
   mergePersons: mergePersons(),
+  mergeImpact: mergeImpact(),
   moveEntireHousehold: moveEntireHousehold(),
   checkDuplicateEmails: checkDuplicateEmails(),
 });

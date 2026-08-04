@@ -1,5 +1,5 @@
 import { env } from '../../../../env';
-import type { IAuthKeyPayload, UpdatePersonsType } from '../../../../../../../libs/common/src';
+import type { IAuthKeyPayload, PersonMergeImpactType, UpdatePersonsType } from '../../../../../../../libs/common/src';
 import { TRPCError } from '@trpc/server';
 import { sql } from 'kysely';
 
@@ -1550,6 +1550,32 @@ export class PersonsService {
       this.companiesRepo.getDuplicateCount(auth.tenant_id),
     ]);
     return { people, households, companies };
+  }
+
+  /**
+   * What merging these two people costs beyond the records themselves, asked before the
+   * confirmation dialog opens.
+   *
+   * Today that is one fact: whether both people hold a `companion_volunteers` row. The table is
+   * UNIQUE (tenant_id, person_id), so a merge cannot keep both; `PersonsRepo.mergePersons` keeps
+   * the target's row and deletes the source's along with its device sessions. That can revoke a
+   * working volunteer's companion access, which nothing in the UI used to say. Returning the two
+   * statuses lets the dialog warn only on the merges where it is true.
+   */
+  public async getMergeImpact(
+    input: { target_id: string; source_id: string },
+    auth: IAuthKeyPayload,
+  ): Promise<PersonMergeImpactType> {
+    const statuses = await this.personsRepo.getCompanionVolunteerStatuses(auth.tenant_id, [
+      input.target_id,
+      input.source_id,
+    ]);
+    return {
+      companionAccess: {
+        target: statuses.get(input.target_id) ?? null,
+        source: statuses.get(input.source_id) ?? null,
+      },
+    };
   }
 
   public async mergePersons(input: { target_id: string; source_id: string }, auth: IAuthKeyPayload) {

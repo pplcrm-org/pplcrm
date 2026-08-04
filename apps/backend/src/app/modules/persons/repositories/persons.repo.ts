@@ -3,6 +3,8 @@ import type { AnyQB } from '../../../lib/base.repo';
 import { sql } from 'kysely';
 
 import type { Models, OperationDataType, TypeTenantId } from '../../../../../../../libs/common/src/lib/kysely.models';
+import type { CompanionVolunteerStatus } from '../../../../../../../libs/common/src';
+import { COMPANION_VOLUNTEER_STATUSES } from '../../../../../../../libs/common/src';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
 import { resolvePageWindow } from '../../../lib/paging';
@@ -630,6 +632,36 @@ export class PersonsRepo extends BaseRepository<'persons'> {
       .where('tenant_id', '=', input.tenant_id)
       .where(sql`lower(email)`, 'in', normalized)
       .execute();
+  }
+
+  /**
+   * The companion volunteer status of each of these people, for the ones that have a volunteer
+   * row at all. `companion_volunteers` is UNIQUE (tenant_id, person_id), so there is at most one
+   * status per person. Used to tell an operator, before they confirm a merge, whether that merge
+   * will drop one of the two volunteer rows and the companion access it carries.
+   */
+  public async getCompanionVolunteerStatuses(
+    tenant_id: string,
+    person_ids: string[],
+  ): Promise<Map<string, CompanionVolunteerStatus>> {
+    const ids = Array.from(new Set(person_ids.filter((id) => id.length > 0)));
+    if (ids.length === 0) return new Map();
+
+    const rows = await this.db
+      .selectFrom('companion_volunteers')
+      .select(['person_id', 'status'])
+      .where('tenant_id', '=', tenant_id)
+      .where('person_id', 'in', ids)
+      .execute();
+
+    const byPerson = new Map<string, CompanionVolunteerStatus>();
+    for (const row of rows) {
+      // `status` is a plain text column in the Kysely model, so narrow it against the shared
+      // vocabulary rather than asserting. A value outside it is treated as "no known status".
+      const status = COMPANION_VOLUNTEER_STATUSES.find((known) => known === row.status);
+      if (status) byPerson.set(String(row.person_id), status);
+    }
+    return byPerson;
   }
 
   public async getDuplicateCount(tenant_id: string): Promise<number> {

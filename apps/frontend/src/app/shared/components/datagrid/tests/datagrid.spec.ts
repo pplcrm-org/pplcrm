@@ -7,6 +7,7 @@ import { DataGrid } from '../datagrid';
 import { AbstractAPIService } from '../../../../services/api/abstract-api.service';
 import { DATA_GRID_CONFIG, DEFAULT_DATA_GRID_CONFIG } from '../datagrid.tokens';
 import { TagOptionsService } from '../services/tag-options.service';
+import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
 import type { ColumnDef } from '../grid-defaults';
 
 class MockGridSvc {
@@ -19,6 +20,9 @@ class MockGridSvc {
   delete = vi.fn().mockResolvedValue(true);
   deleteMany = vi.fn().mockResolvedValue(true);
   queueExport = vi.fn().mockResolvedValue({});
+  mergePersons = vi.fn().mockResolvedValue(undefined);
+  // Entity services may describe what a specific merge costs; the grid only asks and shows it.
+  mergeWarning = vi.fn().mockResolvedValue(null);
 }
 
 describe('DataGrid', () => {
@@ -361,6 +365,49 @@ describe('DataGrid', () => {
       const options = mockGridSvc.getAllArchived.mock.calls.at(-1)?.[0] as Record<string, unknown>;
       expect(options).toMatchObject({ includeArchived: true });
       expect(component.rows().map((r) => r['id'])).toEqual(['9']);
+    });
+  });
+  // The bulk Merge action is the second way two people get merged (the Duplicates pair card is
+  // the first). Merging two people who both hold a companion volunteer record revokes one
+  // person's access to the canvassing and delivery apps, so the confirmation has to say so.
+  describe('bulk merge confirmation', () => {
+    async function runMerge(): Promise<Record<string, unknown>> {
+      await init();
+      vi.spyOn(component, 'getSelectedRows').mockReturnValue([
+        { id: 'p1', name: 'John Doe' },
+        { id: 'p2', name: 'Johnny Doe' },
+      ] as never);
+
+      const dialogs = TestBed.inject(ConfirmDialogService);
+      vi.spyOn(dialogs, 'choose').mockResolvedValue({
+        target: { id: 'p1', name: 'John Doe' },
+        source: { id: 'p2', name: 'Johnny Doe' },
+      } as never);
+      const confirm = vi.spyOn(dialogs, 'confirm').mockResolvedValue(false);
+
+      await (component as unknown as { confirmMerge: () => Promise<void> }).confirmMerge();
+
+      const [opts] = confirm.mock.calls[0] as [Record<string, unknown>];
+      return opts;
+    }
+
+    it('adds what the service says this pair will cost', async () => {
+      mockGridSvc.mergeWarning.mockResolvedValue('Merging takes away Johnny Doe’s companion access.');
+
+      const opts = await runMerge();
+
+      expect(mockGridSvc.mergeWarning).toHaveBeenCalledWith('p1', 'p2', {
+        target: 'John Doe',
+        source: 'Johnny Doe',
+      });
+      expect(String(opts['message'])).toContain('Merging takes away Johnny Doe’s companion access.');
+    });
+
+    it('leaves the confirmation alone when this pair has no consequence to report', async () => {
+      const opts = await runMerge();
+
+      expect(String(opts['message'])).toContain('permanently delete "Johnny Doe"');
+      expect(String(opts['message'])).not.toContain('companion');
     });
   });
 });
