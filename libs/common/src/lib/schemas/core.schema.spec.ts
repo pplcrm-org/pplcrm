@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 import {
   cloneQueryBuilderNode,
   dbIdSchema,
@@ -7,11 +8,14 @@ import {
   getAllOptions,
   idSchema,
   MAX_PAGE_SIZE,
+  MAX_ROW_OFFSET,
   nameSchema,
   notesSchema,
   nullableEmailSchema,
   phoneSchema,
   queryBuilderNodeSchema,
+  refinePageSpan,
+  rowOffsetSchema,
   uuidSchema,
   type QueryBuilderGroupNode,
 } from './core.schema';
@@ -169,5 +173,60 @@ describe('getAllOptions', () => {
     it('still allows a large offset, which is not a memory bound', () => {
       expect(getAllOptions.safeParse({ offset: MAX_PAGE_SIZE * 10 }).success).toBe(true);
     });
+  });
+
+  // startRow and endRow are each allowed to reach MAX_ROW_OFFSET (ten million), because a deep
+  // page legitimately has a large startRow. What becomes the SQL LIMIT, though, is the DISTANCE
+  // between them — so bounding the two fields separately bounds nothing at all.
+  describe('the span between startRow and endRow', () => {
+    it('accepts a real grid page', () => {
+      expect(getAllOptions.safeParse({ startRow: 0, endRow: 25 }).success).toBe(true);
+      expect(getAllOptions.safeParse({ startRow: 4975, endRow: 5000 }).success).toBe(true);
+    });
+
+    it('accepts a deep page, where both fields are large but the span is not', () => {
+      expect(getAllOptions.safeParse({ startRow: 9_000_000, endRow: 9_000_025 }).success).toBe(true);
+    });
+
+    it('accepts a span of exactly MAX_PAGE_SIZE and refuses one row more', () => {
+      expect(getAllOptions.safeParse({ startRow: 0, endRow: MAX_PAGE_SIZE }).success).toBe(true);
+      expect(getAllOptions.safeParse({ startRow: 0, endRow: MAX_PAGE_SIZE + 1 }).success).toBe(false);
+    });
+
+    it('refuses the whole-table request that each field check let through', () => {
+      const parsed = getAllOptions.safeParse({ startRow: 0, endRow: MAX_ROW_OFFSET });
+      expect(parsed.success).toBe(false);
+      // Both fields are individually legal, which is exactly why this needed its own check.
+      expect(rowOffsetSchema.safeParse(0).success).toBe(true);
+      expect(rowOffsetSchema.safeParse(MAX_ROW_OFFSET).success).toBe(true);
+    });
+
+    it('reports the failure against endRow so the client can see which field to change', () => {
+      const parsed = getAllOptions.safeParse({ startRow: 100, endRow: 10_000_000 });
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues[0]?.path).toEqual(['endRow']);
+    });
+
+    it('leaves a request that omits one of the two fields alone', () => {
+      expect(getAllOptions.safeParse({ startRow: 0 }).success).toBe(true);
+      expect(getAllOptions.safeParse({ endRow: MAX_PAGE_SIZE }).success).toBe(true);
+    });
+
+    it('survives .unwrap().extend(), which the files router uses to add its own fields', () => {
+      const extended = getAllOptions.unwrap().extend({ entityType: z.string().optional() });
+      expect(extended.safeParse({ startRow: 0, endRow: 25 }).success).toBe(true);
+      expect(extended.safeParse({ startRow: 0, endRow: 10_000_000 }).success).toBe(false);
+    });
+  });
+});
+
+describe('refinePageSpan', () => {
+  const schema = z
+    .object({ startRow: rowOffsetSchema.optional(), endRow: rowOffsetSchema.optional() })
+    .superRefine(refinePageSpan);
+
+  it('can be attached to any schema carrying the pair', () => {
+    expect(schema.safeParse({ startRow: 0, endRow: 10 }).success).toBe(true);
+    expect(schema.safeParse({ startRow: 0, endRow: MAX_PAGE_SIZE + 1 }).success).toBe(false);
   });
 });

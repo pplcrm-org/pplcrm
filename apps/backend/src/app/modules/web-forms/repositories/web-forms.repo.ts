@@ -4,6 +4,7 @@ import { sql } from 'kysely';
 
 import type { QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 
 export class WebFormsRepo extends BaseRepository<'web_forms'> {
@@ -103,8 +104,7 @@ export class WebFormsRepo extends BaseRepository<'web_forms'> {
     const searchStr = this.normalizeSearch(options.searchStr);
     const filterModel = (options.filterModel ?? {}) as Record<string, { value: string } | undefined>;
 
-    const startRow = typeof options.startRow === 'number' ? options.startRow : 0;
-    const endRow = typeof options.endRow === 'number' && options.endRow > startRow ? options.endRow : startRow + 100;
+    const page = resolvePageWindow(options, 100);
 
     const applyFilters = <QB extends AnyQB>(qb: QB) =>
       qb
@@ -157,8 +157,8 @@ export class WebFormsRepo extends BaseRepository<'web_forms'> {
           qb,
         ),
       )
-      .offset(startRow)
-      .limit(endRow - startRow)
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     const formattedRows = rows.map((row) => ({

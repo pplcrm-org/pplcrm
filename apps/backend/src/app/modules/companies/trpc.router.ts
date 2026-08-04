@@ -1,4 +1,4 @@
-import { idSchema, CompanyInputObj, MAX_IMPORT_ROWS } from '../../../../../../libs/common/src';
+import { idSchema, CompanyInputObj, MAX_IMPORT_ROWS, MAX_PAGE_SIZE } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
 import { CompaniesController } from './controller';
@@ -53,7 +53,8 @@ export const CompaniesRouter = router({
       z
         .object({
           page: z.number().int().positive().optional().default(1),
-          pageSize: z.number().int().positive().optional().default(20),
+          // Bounded like every other page size: this becomes a SQL LIMIT directly.
+          pageSize: z.number().int().positive().max(MAX_PAGE_SIZE).optional().default(20),
         })
         .optional(),
     )

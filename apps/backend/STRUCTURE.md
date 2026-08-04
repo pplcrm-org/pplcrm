@@ -137,6 +137,7 @@ apps/
           ndjson.ts
           oauth-state.ts
           outbound-url-guard.ts
+          paging.ts
           password-hash.ts
           person-public-id.ts
           profile-preferences.ts

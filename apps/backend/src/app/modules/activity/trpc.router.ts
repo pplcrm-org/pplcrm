@@ -1,4 +1,11 @@
-import { getAllOptions, exportCsvInput, exportCsvResponse, LogInteractionObj } from '../../../../../../libs/common/src';
+import {
+  getAllOptions,
+  exportCsvInput,
+  exportCsvResponse,
+  LogInteractionObj,
+  refinePageSpan,
+  rowOffsetSchema,
+} from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
 import { ActivityController } from './controller';
@@ -9,12 +16,17 @@ export const ActivityRouter = router({
   getFeed: authProcedure.input(getAllOptions).query(({ input, ctx }) => activity.getFeed(ctx.auth, input)),
   getActivities: authProcedure
     .input(
-      z.object({
-        entity: z.string(),
-        entityId: z.string().min(1),
-        startRow: z.number().optional(),
-        endRow: z.number().optional(),
-      }),
+      // Bare `z.number()` let a negative, fractional or ten-million-row request through to
+      // Kysely's .offset()/.limit(). The shared row schemas bound each field; refinePageSpan
+      // bounds the distance between them, which is what becomes the SQL LIMIT.
+      z
+        .object({
+          entity: z.string(),
+          entityId: z.string().min(1),
+          startRow: rowOffsetSchema.optional(),
+          endRow: rowOffsetSchema.optional(),
+        })
+        .superRefine(refinePageSpan),
     )
     .query(({ input, ctx }) =>
       activity.getActivities(ctx.auth.tenant_id, input.entity, input.entityId, {

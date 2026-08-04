@@ -4,6 +4,7 @@ import { sql } from 'kysely';
 
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import { resolveSeatSetId } from '../../households/electoral-areas';
 import type {
   Models,
@@ -190,8 +191,7 @@ export class TagsRepo extends BaseRepository<'tags'> {
     const type = options.type;
 
     // Pagination defaults
-    const startRow = typeof options.startRow === 'number' ? options.startRow : 0;
-    const endRow = typeof options.endRow === 'number' && options.endRow > startRow ? options.endRow : startRow + 100;
+    const page = resolvePageWindow(options, 100);
 
     // Shared filter/search logic for both queries
     const applyFilters = <QB extends AnyQB>(qb: QB) =>
@@ -249,8 +249,8 @@ export class TagsRepo extends BaseRepository<'tags'> {
           qb,
         ),
       )
-      .offset(startRow)
-      .limit(endRow - startRow)
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     return {

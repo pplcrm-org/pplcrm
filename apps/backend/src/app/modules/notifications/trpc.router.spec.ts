@@ -34,6 +34,37 @@ describe('NotificationsRouter', () => {
     expect(typeof result).not.toBe('bigint');
   });
 
+  describe('getLatest pagination bounds', () => {
+    // `limit` and `offset` go straight into NotificationsRepo.getLatestForUser's .limit()/.offset().
+    // Validated as bare `z.number()`, a negative or fractional value became a Postgres error
+    // rather than a 400, and an arbitrarily large limit read the user's whole history.
+    function authedCaller() {
+      return NotificationsRouter.createCaller({
+        auth: { tenant_id: '1', user_id: '1', session_id: 's1' } as any,
+      } as any);
+    }
+
+    it('rejects a negative limit or offset', async () => {
+      await expect(authedCaller().getLatest({ limit: -1 })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      await expect(authedCaller().getLatest({ offset: -5 })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    });
+
+    it('rejects a fractional limit or offset', async () => {
+      await expect(authedCaller().getLatest({ limit: 2.5 })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      await expect(authedCaller().getLatest({ offset: 1.1 })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    });
+
+    it('rejects a limit above one page', async () => {
+      await expect(authedCaller().getLatest({ limit: 10_000_000 })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    });
+
+    it('still accepts the page the notification bell asks for', async () => {
+      const spy = vi.spyOn(NotificationsController.prototype, 'getLatest').mockResolvedValue([] as any);
+      await authedCaller().getLatest({ limit: 5, offset: 0 });
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ tenant_id: '1' }), 5, 0);
+    });
+  });
+
   it('should verify getUnreadCount resolves to a number, not a BigInt', async () => {
     const spy = vi.spyOn(NotificationsController.prototype, 'getUnreadCount').mockResolvedValue(5);
 

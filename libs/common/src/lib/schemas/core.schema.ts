@@ -89,15 +89,39 @@ export const MAX_BULK_IDS = 2000;
 export const MAX_IMPORT_ROWS = 5000;
 
 /** A row index/count: a non-negative integer, never a float or a negative that reaches Postgres. */
-const rowCountSchema = z.number().int().min(0).max(MAX_PAGE_SIZE);
+export const rowCountSchema = z.number().int().min(0).max(MAX_PAGE_SIZE);
 /**
  * An offset can legitimately exceed one page's worth of rows, so it is bounded separately —
  * but it is still bounded (finding M13). Unbounded, `offset: 999999999` reached Postgres as
  * a deep OFFSET scan the planner must walk row by row. Ten million rows is far past any real
  * tenant's grid and still cheap to refuse.
  */
-const MAX_ROW_OFFSET = 10_000_000;
-const rowOffsetSchema = z.number().int().min(0).max(MAX_ROW_OFFSET);
+export const MAX_ROW_OFFSET = 10_000_000;
+export const rowOffsetSchema = z.number().int().min(0).max(MAX_ROW_OFFSET);
+
+/**
+ * Bounds the DISTANCE between `startRow` and `endRow`, which is the thing that actually becomes
+ * the SQL `LIMIT`.
+ *
+ * `startRow` and `endRow` are each bounded on their own by `rowOffsetSchema`, and for a while that
+ * was mistaken for bounding the page. It is not: `{ startRow: 0, endRow: 10_000_000 }` satisfies
+ * both field checks, and every repository turns the pair into `LIMIT endRow - startRow`. So any
+ * signed-in caller — a viewer included, since these are queries and the viewer block only covers
+ * mutations — could ask for an entire table in one request. This check is the missing one.
+ *
+ * Attach it with `.superRefine(refinePageSpan)` to any schema that carries the pair.
+ */
+export function refinePageSpan(value: { startRow?: number; endRow?: number }, ctx: z.RefinementCtx): void {
+  const { startRow, endRow } = value;
+  if (typeof startRow !== 'number' || typeof endRow !== 'number') return;
+  if (endRow - startRow > MAX_PAGE_SIZE) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['endRow'],
+      message: `A single request may span at most ${MAX_PAGE_SIZE} rows (endRow - startRow).`,
+    });
+  }
+}
 
 export const getAllOptions = z
   .object({
@@ -130,6 +154,7 @@ export const getAllOptions = z
     volunteerStatus: z.array(z.string()).optional(),
     staffStatus: z.array(z.string()).optional(),
   })
+  .superRefine(refinePageSpan)
   .optional();
 
 export const exportCsvInput = z

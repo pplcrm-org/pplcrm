@@ -3,6 +3,7 @@ import type { AnyQB } from '../../../lib/base.repo';
 import { sql } from 'kysely';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 
 export class WorkflowsRepo extends BaseRepository<'workflows'> {
@@ -22,8 +23,7 @@ export class WorkflowsRepo extends BaseRepository<'workflows'> {
     const searchStr = this.normalizeSearch(options.searchStr);
     const filterModel = (options.filterModel ?? {}) as Record<string, Record<string, unknown>>;
 
-    const startRow = typeof options.startRow === 'number' ? options.startRow : 0;
-    const endRow = typeof options.endRow === 'number' && options.endRow > startRow ? options.endRow : startRow + 100;
+    const page = resolvePageWindow(options, 100);
 
     const applyFilters = <QB extends AnyQB>(qb: QB) =>
       qb
@@ -85,8 +85,8 @@ export class WorkflowsRepo extends BaseRepository<'workflows'> {
           qb,
         ),
       )
-      .offset(startRow)
-      .limit(endRow - startRow)
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     return {

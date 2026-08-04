@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { idSchema } from '../../../../../../libs/common/src';
+import { idSchema, rowCountSchema, rowOffsetSchema } from '../../../../../../libs/common/src';
 import { authProcedure, router } from '../../../trpc';
 import { NotificationsController } from './controller';
 
@@ -8,10 +8,13 @@ const notifications = new NotificationsController();
 export const NotificationsRouter = router({
   getLatest: authProcedure
     .input(
+      // Bare `z.number()` reached NotificationsRepo.getLatestForUser, which puts these straight
+      // into .limit()/.offset() — a negative or fractional value errored out in Postgres, and an
+      // arbitrarily large one read the user's whole notification history.
       z
         .object({
-          limit: z.number().optional(),
-          offset: z.number().optional(),
+          limit: rowCountSchema.optional(),
+          offset: rowOffsetSchema.optional(),
         })
         .optional(),
     )

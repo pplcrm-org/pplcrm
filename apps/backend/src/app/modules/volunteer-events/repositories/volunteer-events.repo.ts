@@ -3,6 +3,7 @@ import type { AnyQB } from '../../../lib/base.repo';
 import { sql } from 'kysely';
 import type { JoinedQueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import type { QueryParams } from '../../../lib/base.repo';
 
@@ -22,6 +23,7 @@ export class VolunteerEventsRepo extends BaseRepository<'volunteer_events'> {
     const tenantId = input.tenant_id;
     const searchStr = this.normalizeSearch(options.searchStr);
     const filterModel = (options.filterModel ?? {}) as Record<string, { value: unknown } | undefined>;
+    const page = resolvePageWindow(options);
 
     const applyFilters = <QB extends AnyQB>(qb: QB) => {
       let q = qb.where('volunteer_events.tenant_id', '=', tenantId).$if(!!searchStr, (qb2) => {
@@ -93,9 +95,10 @@ export class VolunteerEventsRepo extends BaseRepository<'volunteer_events'> {
         (options.sortModel ?? []).reduce((acc, sort) => acc.orderBy(sort.colId, sort.sort), qb),
       )
       .$if(!options.sortModel?.length, (qb) => qb.orderBy('volunteer_events.start_time', 'desc'))
-      .$if(typeof options.startRow === 'number' && typeof options.endRow === 'number', (qb) =>
-        qb.offset(options.startRow ?? 0).limit((options.endRow ?? 100) - (options.startRow ?? 0)),
-      )
+      // Always paged. This was a `$if` on both paging fields being present, so a call with no
+      // paging emitted no LIMIT clause and read every volunteer event in the workspace.
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     return {

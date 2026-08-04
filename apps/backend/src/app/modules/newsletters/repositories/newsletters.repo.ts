@@ -2,6 +2,7 @@ import { sql } from 'kysely';
 
 import type { QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { clampPageLimit, clampRowOffset, resolvePageWindow } from '../../../lib/paging';
 import type { GridFilterModel } from '../../../../../../../libs/common/src';
 
 export class NewslettersRepo extends BaseRepository<'newsletters'> {
@@ -16,14 +17,14 @@ export class NewslettersRepo extends BaseRepository<'newsletters'> {
     const opts: QueryParams<'newsletters'> = options ?? {};
     const searchStr = this.normalizeSearch(opts.searchStr);
     const filterModel = (opts?.filterModel ?? {}) as GridFilterModel;
-    const startRow =
-      typeof opts.startRow === 'number' ? opts.startRow : typeof opts.offset === 'number' ? opts.offset : 0;
+    // `offset` is this repo's own alias for `startRow`; either may be used. A request that
+    // supplies neither a `limit` nor an `endRow` used to emit no LIMIT clause at all, so it read
+    // every newsletter in the workspace — resolvePageWindow gives that case MAX_PAGE_SIZE.
+    const startRow = typeof opts.startRow === 'number' ? clampRowOffset(opts.startRow) : clampRowOffset(opts.offset);
     const limit =
       typeof opts.limit === 'number'
-        ? opts.limit
-        : typeof opts.endRow === 'number'
-          ? Math.max(0, opts.endRow - startRow)
-          : undefined;
+        ? clampPageLimit(opts.limit)
+        : resolvePageWindow({ startRow, endRow: opts.endRow }).limit;
 
     const applyFilters = <QB extends ReturnType<typeof this.getSelect>>(qb: QB) =>
       qb
@@ -114,9 +115,7 @@ export class NewslettersRepo extends BaseRepository<'newsletters'> {
       query = query.offset(startRow);
     }
 
-    if (typeof limit === 'number' && limit > 0) {
-      query = query.limit(limit);
-    }
+    query = query.limit(limit);
 
     const rowsRaw = await query.execute();
 

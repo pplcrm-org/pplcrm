@@ -4,6 +4,7 @@ import {
   idSchema,
   MAX_BULK_IDS,
   MAX_IMPORT_ROWS,
+  MAX_PAGE_SIZE,
 } from '../../../../../../libs/common/src';
 
 import { z } from 'zod';
@@ -128,7 +129,8 @@ export const HouseholdsRouter = router({
       z
         .object({
           page: z.number().int().positive().optional().default(1),
-          pageSize: z.number().int().positive().optional().default(20),
+          // Bounded like every other page size: this becomes a SQL LIMIT directly.
+          pageSize: z.number().int().positive().max(MAX_PAGE_SIZE).optional().default(20),
         })
         .optional(),
     )

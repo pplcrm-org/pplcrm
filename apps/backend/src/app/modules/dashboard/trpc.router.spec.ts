@@ -1,4 +1,5 @@
 import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { MAX_PAGE_SIZE } from '../../../../../../libs/common/src';
 import { DashboardRouter } from './trpc.router';
 import { DashboardController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
@@ -90,5 +91,20 @@ describe('DashboardRouter', () => {
     } as any);
 
     await expect(caller.getBreachedTasks({ page: 1, limit: 0 })).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+  });
+
+  // `limit` had a floor but no ceiling — the same missing-maximum defect as the list paging
+  // fields. The two panels ask for 10 rows each.
+  it('should reject a page size above MAX_PAGE_SIZE on both breached endpoints', async () => {
+    const caller = DashboardRouter.createCaller({
+      auth: { tenant_id: '1', user_id: '1', session_id: 's1' } as any,
+    } as any);
+
+    await expect(caller.getBreachedEmails({ page: 1, limit: MAX_PAGE_SIZE + 1 })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+    await expect(caller.getBreachedTasks({ page: 1, limit: 10_000_000 })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
   });
 });

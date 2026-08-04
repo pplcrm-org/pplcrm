@@ -2762,11 +2762,12 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
   }
 
   private async queueFullExport(): Promise<void> {
-    // Pass a very high endRow so the backend fetches all rows without a limit
+    // No paging fields at all. The background export job (lib/jobs/handlers/export.handlers.ts)
+    // builds and streams its own query and never reads startRow/endRow, so sending a huge span
+    // here bought nothing — it just meant the request carried `endRow: 10_000_000`, which any
+    // repository that derived a LIMIT from the span would have honoured literally.
     const options = this.dataSvc.buildGetAllOptions({
       searchStr: this.searchSvc.getFilterText(),
-      startRow: 0,
-      endRow: 10_000_000,
       tags: this.selectedTags(),
       issues: this.selectedIssues(),
       filterModel: this.buildFilterModel(),

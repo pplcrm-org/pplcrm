@@ -5,6 +5,7 @@ import { sql } from 'kysely';
 import type { Models, OperationDataType, TypeTenantId } from '../../../../../../../libs/common/src/lib/kysely.models';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import { HouseholdRepo } from '../../households/repositories/households.repo';
 import {
   anyElectoralAreaSubquery,
@@ -247,6 +248,7 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     const filterModel = (options.filterModel ?? {}) as Record<string, { op?: string; value?: unknown } | undefined>;
     const advModel =
       options.advancedFilterModel || (options.filterModel?.['tags_expression'] as typeof options.advancedFilterModel);
+    const page = resolvePageWindow(options);
 
     // Shared where clause builder. `includeLateral` controls the electoral lateral join: the data
     // query always carries it (the columns are selected), the count query only when a filter
@@ -518,9 +520,12 @@ export class PersonsRepo extends BaseRepository<'persons'> {
           return acc.orderBy(col, sort.sort);
         }, qb),
       )
-      .$if(typeof options.startRow === 'number' && typeof options.endRow === 'number', (qb) =>
-        qb.offset(options.startRow ?? 0).limit((options.endRow ?? 100) - (options.startRow ?? 0)),
-      )
+      // Always paged. This used to be a `$if` on both fields being present, so a call with no
+      // paging at all — which `persons.getAllWithAddress` accepts directly from any signed-in
+      // caller — emitted no LIMIT clause and read every person in the workspace across the seven
+      // joins above.
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     return { count, rows };

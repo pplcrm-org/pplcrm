@@ -3,6 +3,7 @@ import { sql } from 'kysely';
 
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 
 // Composed street address fallback when a household has no formatted_address yet.
@@ -47,9 +48,7 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
     const filterModel = (options.filterModel ?? {}) as Record<string, { value?: string }>;
     const statusFilter = filterModel['status']?.value;
 
-    const startRow = typeof options.startRow === 'number' ? Math.max(0, options.startRow) : 0;
-    const endRow = typeof options.endRow === 'number' && options.endRow > startRow ? options.endRow : startRow + 100;
-    const limit = endRow - startRow;
+    const page = resolvePageWindow(options, 100);
 
     const db = trx ?? this.db;
     const base = () =>
@@ -100,8 +99,8 @@ export class DeliveryRequestsRepo extends BaseRepository<'delivery_requests'> {
         sql<string>`NULLIF(TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, '')), '')`.as('person_name'),
       ])
       .orderBy('dr.created_at', 'desc')
-      .offset(startRow)
-      .limit(limit)
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     return {

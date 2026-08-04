@@ -5,6 +5,7 @@ import type { GridColumnFilter } from '../../../../../../../libs/common/src';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import type { AnyQB, JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 
 /**
  * What document covers a gift, derived from donation_receipt_items ⋈ donation_receipts. Year-end
@@ -202,12 +203,9 @@ export class DonationsRepo extends BaseRepository<'donations'> {
     const oneTimeOnly =
       String((filterModel['donation_scope'] as { value?: unknown } | undefined)?.value) === 'one-time';
 
-    const startRow = typeof options.startRow === 'number' ? Math.max(0, options.startRow) : 0;
-    const endRowCandidate =
-      typeof options.endRow === 'number' && options.endRow > startRow
-        ? options.endRow
-        : startRow + DONATION_UNPAGED_WINDOW;
-    const limit = endRowCandidate - startRow;
+    const page = resolvePageWindow(options, DONATION_UNPAGED_WINDOW);
+    const startRow = page.offset;
+    const limit = page.limit;
 
     const applyFilters = (qb: AnyQB): AnyQB => {
       let q: AnyQB = qb

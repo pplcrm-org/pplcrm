@@ -115,6 +115,35 @@ protected readonly form = form(this.payload, (p) => {
 - Which schema the form validates against is **not consistent across the repo** — check the experience you're mirroring. `team-form.ts` validates against `AddTeamObj` even in edit mode (the Update schema only types the wire payload, `UpdateTeamType`), but `household-form.ts` validates against `UpdateHouseholdsObj`, `person-form.ts` against `UpdatePersonsObj`, and `company-form.ts` against `CompanyInputObj` (a single shared shape). If you follow the teams pattern, design the Add schema so field-level validity works for both create and edit.
 - The raw `payload` signal holds `''` for empty selects; the `.or(z.literal(''))` idiom above is what lets those raw values pass validation.
 
+## List paging: bound the SPAN, not just the fields
+
+`getAllOptions` carries four paging numbers. Three of them are what they look like; the fourth pair
+is a trap:
+
+| Field                 | Schema                                  | Ceiling                       |
+| --------------------- | --------------------------------------- | ----------------------------- |
+| `limit`               | `rowCountSchema`                        | `MAX_PAGE_SIZE` (5000)        |
+| `offset`              | `rowOffsetSchema`                       | `MAX_ROW_OFFSET` (10,000,000) |
+| `startRow` / `endRow` | `rowOffsetSchema` **plus** a span check | span ≤ `MAX_PAGE_SIZE`        |
+
+`startRow` and `endRow` are AG-Grid-style page bounds, and every repository turns them into
+`LIMIT endRow - startRow`. Bounding each field on its own therefore bounds nothing —
+`{ startRow: 0, endRow: 10_000_000 }` passes both field checks and used to reach Postgres as
+`LIMIT 10000000`. `getAllOptions` now ends with `.superRefine(refinePageSpan)`, which rejects a
+span wider than one page. **Any other schema you write carrying that pair needs the same line** —
+the activity router's `getActivities` input is the worked example.
+
+Two properties worth knowing before you change this:
+
+- The refinement survives `.unwrap().extend()` (Zod 4 keeps checks through `extend`), which is
+  what `modules/files/trpc.router.ts` relies on. There is a spec for that in `core.schema.spec.ts`.
+- The schema is only the first of two layers. The backend backstop is
+  `apps/backend/src/app/lib/paging.ts` (`resolvePageWindow` / `clampPageLimit` / `clampRowOffset`),
+  which every repository that derives a `LIMIT` from the pair calls, so a caller that reaches a
+  repository without passing the schema still cannot exceed `MAX_PAGE_SIZE`. If you raise or lower
+  the ceiling, both layers read the same `MAX_PAGE_SIZE` constant, so change it once in
+  `core.schema.ts`.
+
 ## Non-goals
 
 - **The `form()` helper mechanics** — `[formField]` binding, `.invalid()`, `.markAsTouched()`, loading gates: owned by `pplcrm-angular-components`. This skill only shows the `validateStandardSchema(p, Schema)` connection point.

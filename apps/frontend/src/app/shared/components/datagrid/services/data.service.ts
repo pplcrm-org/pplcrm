@@ -8,10 +8,18 @@ export class DataGridDataService {
     return Math.max(1, Math.ceil((totalCountAll || 0) / size));
   }
 
+  /**
+   * Assemble the server-side fetch options for one grid request.
+   *
+   * `startRow`/`endRow` are optional: the queued full export omits them, because the backend's
+   * export job builds its own streaming query and ignores paging entirely. It used to send
+   * `endRow: 10_000_000` to mean "everything", which the server took literally as `LIMIT
+   * 10000000`; the shared schema now refuses a span wider than one page.
+   */
   buildGetAllOptions(args: {
     searchStr: string;
-    startRow: number;
-    endRow: number;
+    startRow?: number;
+    endRow?: number;
     tags: string[];
     issues?: string[];
     filterModel: Record<string, unknown>;

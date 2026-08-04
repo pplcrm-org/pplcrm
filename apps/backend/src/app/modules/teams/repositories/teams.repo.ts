@@ -4,6 +4,7 @@ import { sql } from 'kysely';
 
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import type { SortModelType } from '../../../../../../../libs/common/src';
 
@@ -21,10 +22,7 @@ export class TeamsRepo extends BaseRepository<'teams'> {
     const searchStr = this.normalizeSearch(options.searchStr);
     const filterModel = ((options as JoinedQueryParams)?.filterModel ?? {}) as Record<string, { value: string }>;
 
-    const startRow = typeof options.startRow === 'number' ? Math.max(0, options.startRow) : 0;
-    const endRowCandidate =
-      typeof options.endRow === 'number' && options.endRow > startRow ? options.endRow : startRow + 100;
-    const limit = endRowCandidate - startRow;
+    const page = resolvePageWindow(options, 100);
 
     const applyFilters = <QB extends AnyQB>(qb: QB) =>
       qb
@@ -128,8 +126,8 @@ export class TeamsRepo extends BaseRepository<'teams'> {
           }
         }, builder),
       )
-      .offset(startRow)
-      .limit(limit)
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     const rows = (rowsRaw as any[]).map((row) => ({

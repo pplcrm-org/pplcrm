@@ -5,6 +5,7 @@ import type { GetOperandType, Models } from '../../../../../../../libs/common/sr
 import type { GridFilterModel } from '../../../../../../../libs/common/src';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import { generateToken, hashToken } from '../../../lib/token-hash';
 
 export class AuthUsersRepo extends BaseRepository<'authusers'> {
@@ -21,10 +22,7 @@ export class AuthUsersRepo extends BaseRepository<'authusers'> {
     const searchStr = this.normalizeSearch(typeof options.searchStr === 'string' ? options.searchStr : undefined);
     const filterModel = ((options as JoinedQueryParams)?.filterModel ?? {}) as GridFilterModel;
 
-    const startRow = typeof options.startRow === 'number' && options.startRow >= 0 ? options.startRow : 0;
-    const endRowCandidate =
-      typeof options.endRow === 'number' && options.endRow > startRow ? options.endRow : startRow + 50;
-    const pageSize = Math.max(1, endRowCandidate - startRow);
+    const page = resolvePageWindow(options, 50);
 
     const applyFilters = <QB extends SelectQueryBuilder<Models, any, any>>(qb: QB) =>
       qb
@@ -116,8 +114,8 @@ export class AuthUsersRepo extends BaseRepository<'authusers'> {
           }
         }, qb),
       )
-      .offset(startRow)
-      .limit(pageSize)
+      .offset(page.offset)
+      .limit(page.limit)
       .execute();
 
     const rows = rowsRaw.map((row: any) => ({

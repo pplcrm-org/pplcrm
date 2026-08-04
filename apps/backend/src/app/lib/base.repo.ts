@@ -31,6 +31,7 @@ import type {
 } from '../../../../../libs/common/src/lib/kysely.models';
 import type { GridColumnFilter } from '../../../../../libs/common/src';
 import { MAX_PAGE_SIZE } from '../../../../../libs/common/src';
+import { clampPageLimit, clampRowOffset } from './paging';
 import { Pool } from 'pg';
 import { env } from '../../env';
 import { currentTenantId, pinnedCampaignId } from './tenant-context';
@@ -463,13 +464,19 @@ export class BaseRepository<T extends keyof Models> {
     const hasOffset = typeof options?.offset === 'number';
     const startRow = typeof opts.startRow === 'number' ? opts.startRow : undefined;
     const endRow = typeof opts.endRow === 'number' ? opts.endRow : undefined;
-    const derivedLimit = !hasLimit && typeof endRow === 'number' ? Math.max(0, endRow - (startRow ?? 0)) : undefined;
-    const derivedOffset = !hasOffset && typeof startRow === 'number' ? startRow : undefined;
+    // The span between startRow and endRow is what becomes the LIMIT, so it is the span that has
+    // to be clamped. Bounding the two fields separately (which getAllOptions does) bounds nothing:
+    // startRow and endRow may each be up to ten million, and `{ startRow: 0, endRow: 10_000_000 }`
+    // used to arrive here as LIMIT 10000000. clampPageLimit caps it at MAX_PAGE_SIZE.
+    const derivedLimit = !hasLimit && typeof endRow === 'number' ? clampPageLimit(endRow - (startRow ?? 0)) : undefined;
+    const derivedOffset = !hasOffset && typeof startRow === 'number' ? clampRowOffset(startRow) : undefined;
 
-    // A request that derives no limit at all used to select every row in the tenant into memory.
-    // MAX_PAGE_SIZE is the backstop for that case only — an explicit limit from a trusted caller
-    // (e.g. the inline CSV export, which deliberately asks for 50k+1 so it can refuse rather than
-    // truncate) still wins, and untrusted input is already bounded by getAllOptions.
+    // A request that derives no limit at all would otherwise select every row in the tenant into
+    // memory, so MAX_PAGE_SIZE is the default for that case. An explicit `options.limit` is NOT
+    // clamped here: from a client it has already passed rowCountSchema (max MAX_PAGE_SIZE), and
+    // the only callers that exceed that are server-side and deliberate — the inline CSV export
+    // asks for MAX_INLINE_EXPORT_ROWS + 1 precisely so it can refuse an oversized export rather
+    // than silently truncate it.
     const finalLimit = hasLimit ? options?.limit : (derivedLimit ?? MAX_PAGE_SIZE);
     const finalOffset = hasOffset ? options?.offset : derivedOffset;
 

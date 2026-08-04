@@ -1,7 +1,15 @@
 import type { SelectQueryBuilder, Transaction } from 'kysely';
 
 import { BaseRepository } from './base.repo';
+import { resolvePageWindow } from './paging';
 import type { Models, OperationDataType } from '../../../../../libs/common/src/lib/kysely.models';
+
+/**
+ * Rows an activity query returns when the caller sends no paging fields. Both in-app consumers
+ * (the Activity page feed and the per-record activity list) always page explicitly; this is the
+ * ceiling for anything that does not.
+ */
+const ACTIVITY_PAGE_SIZE = 100;
 
 export class UserActivityRepo extends BaseRepository<'user_activity'> {
   constructor() {
@@ -112,9 +120,10 @@ export class UserActivityRepo extends BaseRepository<'user_activity'> {
       .where('user_activity.entity', 'in', entities)
       .where('user_activity.entity_id', '=', entity_id);
 
-    if (options && typeof options.startRow === 'number' && typeof options.endRow === 'number') {
-      query = query.offset(options.startRow).limit(options.endRow - options.startRow);
-    }
+    // Always paged: this was conditional on both fields being present, so a caller that sent
+    // neither read the record's entire activity history.
+    const page = resolvePageWindow(options, ACTIVITY_PAGE_SIZE);
+    query = query.offset(page.offset).limit(page.limit);
 
     const [rows, countResult] = await Promise.all([query.execute(), countQuery.executeTakeFirst()]);
 
@@ -164,9 +173,9 @@ export class UserActivityRepo extends BaseRepository<'user_activity'> {
     }
 
     query = query.orderBy('user_activity.created_at', 'desc');
-    if (typeof options.startRow === 'number' && typeof options.endRow === 'number') {
-      query = query.offset(options.startRow).limit(options.endRow - options.startRow);
-    }
+    // Always paged, for the same reason as getForEntity above.
+    const page = resolvePageWindow(options, ACTIVITY_PAGE_SIZE);
+    query = query.offset(page.offset).limit(page.limit);
 
     let countQuery = this.getSelect()
       .select(({ fn }) => [fn.count('user_activity.id').as('total')])

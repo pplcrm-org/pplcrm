@@ -1,5 +1,6 @@
 import type { QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import type { Transaction } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 
@@ -17,8 +18,7 @@ export class WorkflowEnrollmentsRepo extends BaseRepository<'workflow_enrollment
     trx?: Transaction<Models>,
   ) {
     const options = input.options || {};
-    const startRow = typeof options.startRow === 'number' ? options.startRow : 0;
-    const endRow = typeof options.endRow === 'number' && options.endRow > startRow ? options.endRow : startRow + 50;
+    const page = resolvePageWindow(options, 50);
 
     const query = this.getSelect(trx)
       .innerJoin('persons', 'persons.id', 'workflow_enrollments.person_id')
@@ -40,8 +40,8 @@ export class WorkflowEnrollmentsRepo extends BaseRepository<'workflow_enrollment
       .where('workflow_enrollments.tenant_id', '=', input.tenant_id)
       .where('workflow_enrollments.workflow_id', '=', input.workflow_id)
       .orderBy('workflow_enrollments.enrolled_at', 'desc')
-      .offset(startRow)
-      .limit(endRow - startRow);
+      .offset(page.offset)
+      .limit(page.limit);
 
     const rows = await query.execute();
     return rows.map((row) => ({
