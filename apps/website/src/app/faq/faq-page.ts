@@ -150,7 +150,7 @@ export class FaqPage {
         },
         {
           q: 'Do the apps work offline?',
-          a: 'Yes. Door lists and routes are offline-first, and knocks sync back to the field report when you’re in signal again.',
+          a: 'Door lists are. The canvassing companion is offline-first — knocks queue on the phone and sync back to the field report when you’re in signal again. Delivery routes currently need a connection.',
         },
         {
           q: 'Do field volunteers need their own seats?',

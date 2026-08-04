@@ -22,7 +22,7 @@
 
 // Bump to evict everything from older builds. Hashed filenames make collisions unlikely, but this
 // is the escape hatch if a bad asset is ever cached.
-const CACHE = 'pplcrm-companion-v1';
+const CACHE = 'pplcrm-companion-v2';
 
 /** Requests that must always hit the network — see the note about stale canvass data above. */
 function isApiRequest(url) {
@@ -71,8 +71,13 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE).then((cache) => cache.put('/index.html', copy));
+          if (response.ok && response.type === 'basic') {
+            const copy = response.clone();
+            caches
+              .open(CACHE)
+              .then((cache) => cache.put('/index.html', copy))
+              .catch(() => undefined);
+          }
           return response;
         })
         .catch(() => caches.match('/index.html').then((cached) => cached ?? Response.error())),

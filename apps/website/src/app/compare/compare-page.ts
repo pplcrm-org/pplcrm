@@ -52,7 +52,7 @@ export class ComparePage {
     {
       job: 'The field: knocks, signs, deliveries',
       stack: 'Paper lists in the car, re-typed into the sheet at night, if it happens at all.',
-      crm: 'Offline-first companion apps for volunteers; every knock and delivery syncs back to the live report.',
+      crm: 'The canvassing companion is offline-first for volunteers, and every knock syncs back to the live report; delivery routes currently need a connection.',
     },
     {
       job: 'Knowing which district a door is in',
