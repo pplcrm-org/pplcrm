@@ -805,9 +805,23 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       .where('tenant_id', '=', tenantId)
       .executeTakeFirst();
 
-    const record = await this.getRepo()
+    const { isFirstGift, record } = await this.getRepo()
       .db.transaction()
       .execute(async (trx) => {
+        // The 'donation_recorded' automation trigger promises "a one-time gift or the first of a
+        // recurring plan", so a pledge fires it once and later installments do not. Checked
+        // inside the transaction, before the insert, so it sees only earlier gifts.
+        const earlierPledgeGift = pledgeId
+          ? await trx
+              .selectFrom('donations')
+              .select('id')
+              .where('tenant_id', '=', tenantId)
+              .where('pledge_id', '=', pledgeId)
+              .where('status', '=', 'succeeded')
+              .limit(1)
+              .executeTakeFirst()
+          : undefined;
+
         const inserted = (await trx
           .insertInto('donations')
           .values({
@@ -876,16 +890,19 @@ export class DonationsController extends BaseController<'donations', DonationsRe
           logger.error({ err }, 'Failed to write audit activity log for donation');
         }
 
-        return inserted;
+        // No pledge at all, or the pledge's first successful gift.
+        return { isFirstGift: !earlierPledgeGift, record: inserted };
       });
 
-    try {
-      const workflowsController = new WorkflowsController();
-      // 'donation_recorded' is the canonical trigger name (the Zod enum + UI card). The old
-      // 'donation_received' string never matched a saveable workflow, so this trigger was dead.
-      await workflowsController.triggerWorkflow(tenantId, personId, 'donation_recorded', null);
-    } catch (workflowErr) {
-      logger.error({ err: workflowErr }, 'Failed to trigger workflow on donation_recorded');
+    if (isFirstGift) {
+      try {
+        const workflowsController = new WorkflowsController();
+        // 'donation_recorded' is the canonical trigger name (the Zod enum + UI card). The old
+        // 'donation_received' string never matched a saveable workflow, so this trigger was dead.
+        await workflowsController.triggerWorkflow(tenantId, personId, 'donation_recorded', null);
+      } catch (workflowErr) {
+        logger.error({ err: workflowErr }, 'Failed to trigger workflow on donation_recorded');
+      }
     }
 
     return record;

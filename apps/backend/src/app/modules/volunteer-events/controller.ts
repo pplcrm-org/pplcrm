@@ -18,6 +18,11 @@ const DEFAULT_FIELDS = ['first_name', 'last_name', 'email', 'mobile', 'notes'];
 const SIGNUP_RATE_LIMIT_MAX = 5;
 const SIGNUP_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 
+// The shift statuses the automation editor offers as a 'volunteer_shift_status' trigger target
+// (SHIFT_STATUS_OPTIONS in apps/frontend/.../workflows/ui/workflow-form.ts). 'signed_up' is
+// deliberately absent — signups fire the separate 'volunteer_signup' trigger.
+const AUTOMATION_SHIFT_STATUSES: readonly string[] = ['attended', 'no_show', 'cancelled'];
+
 export class VolunteerEventsController extends BaseController<'volunteer_events', VolunteerEventsRepo> {
   constructor() {
     super(new VolunteerEventsRepo());
@@ -275,24 +280,10 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
       }
     }
 
-    if (result && result.status) {
-      try {
-        const workflowsController = new WorkflowsController();
-        await this.getRepo()
-          .transaction()
-          .execute(async (trx) => {
-            await workflowsController.triggerWorkflow(
-              auth.tenant_id,
-              String(payload.person_id),
-              'volunteer_shift_status',
-              result.status,
-              trx,
-            );
-          });
-      } catch (err) {
-        logger.error({ err }, 'Failed to trigger volunteer_shift_status workflow in signupVolunteer');
-      }
-    }
+    // No 'volunteer_shift_status' trigger here: a new shift starts at 'signed_up', which the
+    // automation editor's status picker never offers, so firing it only matched "any status"
+    // automations and made signups look like status changes. Signups are covered by the
+    // separate 'volunteer_signup' trigger fired above.
 
     try {
       await this.userActivity.log({
@@ -312,6 +303,20 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
   }
 
   public async updateShift(id: string, payload: UpdateVolunteerShiftType, auth: IAuthKeyPayload) {
+    const newStatus = payload.status;
+
+    // Read the stored status before writing: the shift form sends the current status on every
+    // save (including hours/notes edits), so the payload carrying a status is not proof the
+    // status changed.
+    const before = newStatus
+      ? await this.getRepo()
+          .db.selectFrom('volunteer_shifts')
+          .select('status')
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('id', '=', id)
+          .executeTakeFirst()
+      : undefined;
+
     const result = await this.getRepo().updateShift({
       tenant_id: auth.tenant_id,
       id,
@@ -320,8 +325,9 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
     });
 
     if (result) {
-      // Trigger volunteer shift status workflows
-      if (payload.status) {
+      // Trigger volunteer shift status workflows, but only on a real change to a status the
+      // automation editor's picker offers — so an hours/notes save never re-fires them.
+      if (newStatus && newStatus !== before?.status && AUTOMATION_SHIFT_STATUSES.includes(newStatus)) {
         try {
           const workflowsController = new WorkflowsController();
           await this.getRepo()
@@ -331,7 +337,7 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
                 auth.tenant_id,
                 String(result.person_id),
                 'volunteer_shift_status',
-                payload.status,
+                newStatus,
                 trx,
               );
             });
