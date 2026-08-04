@@ -68,7 +68,8 @@ export const DATA_ARTICLES: HelpArticle[] = [
         items: [
           'Spot-check a few records against the source file.',
           'If you chose "import as new anyway" for any matched duplicates, run the [Duplicates](/duplicates) finder to reconcile them when convenient.',
-          'The import history row shows what type each import was and keeps the original file downloadable for 90 days; for people imports, skipped rows are downloadable with the reason each was skipped.',
+          'The import history row shows what type each import was and keeps the original file downloadable for 90 days — by the person who ran the import and by admins and owners; for people imports, skipped rows are downloadable with the reason each was skipped.',
+          'Deleting an import can optionally delete the people it created. The dialog lists what else those people carry (gifts, receipts, event registrations, subscriptions), and the delete is refused while any of them holds an issued tax receipt — cancel those receipts first.',
         ],
       },
       { kind: 'h2', id: 'email-checkup', text: 'Email check-up' },
