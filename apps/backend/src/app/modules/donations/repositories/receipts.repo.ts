@@ -1,8 +1,23 @@
 import { OFFICIAL_RECEIPT_KINDS } from '@common';
-import { sql, type Insertable, type Selectable, type Transaction } from 'kysely';
+import { sql, type Insertable, type RawBuilder, type Selectable, type Transaction } from 'kysely';
 
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { BaseRepository } from '../../../lib/base.repo';
+
+/**
+ * The calendar year a document COVERS, as SQL.
+ *
+ * `donation_receipts.year` is the numbering year — the `receipt_counters` year the serial came
+ * from, i.e. the year the document was issued. `coverage_year` is the year of the gifts it covers.
+ * They differ whenever a year-end batch for last year's gifts runs in the new year, which is every
+ * year-end batch, so "documents for tax year N" must be asked of the coverage year.
+ *
+ * The fallback to `year` covers rows written before the column existed and rows written by code
+ * that does not set it (the demo seeder), where `year` is the gift year anyway.
+ */
+export function coverageYearRef(alias = 'donation_receipts'): RawBuilder<number> {
+  return sql<number>`coalesce(${sql.ref(`${alias}.coverage_year`)}, ${sql.ref(`${alias}.year`)})`;
+}
 
 /**
  * Which `receipt_counters` sequence a number comes from. Per-gift and cumulative TAX receipts share
@@ -356,7 +371,9 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
       );
     }
     if (filters.personId) query = query.where('person_id', '=', filters.personId);
-    if (filters.year) query = query.where('year', '=', filters.year);
+    // Coverage year, not numbering year: someone filtering the ledger by 2025 wants the documents
+    // for 2025's gifts, including the cumulative receipts the 2026 batch issued for them.
+    if (filters.year) query = query.where(coverageYearRef(), '=', filters.year);
     if (filters.status) query = query.where('status', '=', filters.status);
     if (filters.kinds?.length) query = query.where('kind', 'in', [...filters.kinds]);
     if (filters.needsAttention) query = query.where('reissue_required', '=', true);
@@ -376,6 +393,11 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
    * "Year-end document" means a statement OR a cumulative tax receipt, because the run now issues
    * whichever of the two a donor qualifies for. Excluding only statements would hand a donor who
    * already holds a tax receipt a redundant summary on every rerun.
+   *
+   * The match is on the COVERAGE year. A cumulative receipt for 2025 gifts carries year = 2026 (the
+   * year its serial was issued in), so comparing `dr.year` to the gift year missed it entirely and
+   * a rerun mailed every tax-receipt donor a redundant summary — every one of their gifts was
+   * already covered, so the cumulative insert failed and the code fell through to the summary path.
    */
   public async listStatementDonors(
     tenantId: string,
@@ -404,7 +426,7 @@ export class ReceiptsRepo extends BaseRepository<'donation_receipts'> {
               .whereRef('dr.person_id', '=', 'donations.person_id')
               .where('dr.kind', 'in', ['statement', 'cumulative'])
               .where('dr.status', '=', 'issued')
-              .where('dr.year', '=', year),
+              .where(coverageYearRef('dr'), '=', year),
           ),
         ),
       );

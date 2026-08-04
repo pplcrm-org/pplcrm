@@ -470,6 +470,10 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     const now = new Date();
     const year = torontoYear(now);
     const giftDate = torontoDateString(new Date(donation.created_at));
+    // Numbering year (`year`) is today's — the serial comes from today's counter. Coverage year is
+    // the gift's own year, which is what a donor and the year-end batch mean by "this receipt's
+    // year". A gift from December receipted in January differs in the two.
+    const coverageYear = torontoYear(new Date(donation.created_at));
 
     return this.getRepo()
       .transaction()
@@ -488,6 +492,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           kind: 'per_gift',
           regime: settings.regime as ReceiptRegimeId,
           year,
+          coverageYear,
           serial,
           numberPrefix: settings.numberPrefix,
           personId: String(donation.person_id),
@@ -579,6 +584,9 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
             kind: 'acknowledgement',
             regime: null,
             year,
+            // The gift's year, not the numbering year: a gift from December acknowledged on
+            // January 2nd belongs to December's giving year.
+            coverage_year: torontoYear(new Date(donation.created_at)),
             serial,
             receipt_number: `A-${year}-${String(serial).padStart(SERIAL_PAD, '0')}`,
             status: 'issued',
@@ -687,7 +695,12 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           userId: auth.user_id,
           kind: 'cumulative',
           regime: settings.regime as ReceiptRegimeId,
+          // Numbering year = the year this receipt is issued in, matching the counter the serial
+          // came from. Coverage year = the gift year this receipt was asked for, which is what the
+          // year-end batch's "already done" and "still to email" checks compare against. The
+          // year-end run for 2025 executes in 2026, so these two are routinely different.
           year: torontoYear(new Date()),
+          coverageYear: year,
           serial,
           numberPrefix: settings.numberPrefix,
           personId,
@@ -725,7 +738,10 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       userId: string;
       kind: 'per_gift' | 'cumulative';
       regime: ReceiptRegimeId;
+      /** Numbering year — the `receipt_counters` year `serial` was taken from (the issue year). */
       year: number;
+      /** Calendar year of the gifts this receipt covers; what "the 2025 receipt" means to a donor. */
+      coverageYear: number;
       serial: number;
       numberPrefix: string;
       personId: string;
@@ -747,6 +763,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
         kind: input.kind,
         regime: input.regime,
         year: input.year,
+        coverage_year: input.coverageYear,
         serial: input.serial,
         receipt_number: this.formatNumber(input.numberPrefix, input.year, input.serial),
         status: 'issued',
@@ -936,6 +953,14 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
 
     const now = new Date();
     const year = torontoYear(now);
+    // The successor is numbered from TODAY's counter but covers the same gifts as the predecessor,
+    // so its coverage year is the predecessor's. A predecessor issued before the coverage_year
+    // column existed has none recorded; its surviving gifts give the same answer, and they are all
+    // from one calendar year (a cumulative receipt is gathered year by year, a per-gift receipt
+    // covers one gift).
+    const coverageYear =
+      predecessor.coverage_year ??
+      surviving.reduce((latest, d) => Math.max(latest, torontoYear(new Date(d.created_at))), 0);
 
     const successor = await this.getRepo()
       .transaction()
@@ -954,6 +979,7 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
           kind: predecessor.kind === 'cumulative' ? 'cumulative' : 'per_gift',
           regime: predecessor.regime as ReceiptRegimeId,
           year,
+          coverageYear,
           serial,
           numberPrefix: settings.numberPrefix,
           personId: predecessor.person_id,
@@ -1260,7 +1286,12 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
               tenant_id: tenantId,
               kind: 'statement',
               regime: settings.regime,
+              // A statement is unnumbered, so it takes nothing from a counter and both columns are
+              // the covered year. Written explicitly rather than left NULL so the year-end batch's
+              // coverage-year queries and the one-live-statement-per-donor-year unique index read
+              // the column directly.
               year,
+              coverage_year: year,
               serial: null,
               receipt_number: null,
               status: 'issued',

@@ -4,7 +4,7 @@ import type { Kysely } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
 import { DonationReceiptsController } from '../../../modules/donations/receipts/controller';
-import { ReceiptsRepo, type ReceiptRow } from '../../../modules/donations/repositories/receipts.repo';
+import { coverageYearRef, ReceiptsRepo, type ReceiptRow } from '../../../modules/donations/repositories/receipts.repo';
 import { logger } from '../../../logger';
 import { buildStatementPdf } from '../../pdf/statement-pdf';
 import { TransactionalEmailService, type MailAttachment } from '../../mail/transactional-mail.service';
@@ -24,6 +24,14 @@ import type { JobPayloadOf } from '../job-payloads';
 const STATEMENT_BATCH_DONORS = 50;
 /** Continuation delay when the hourly contact-mail cap blocks a send (rolling window frees up). */
 const RATE_CAP_DEFER_MS = 20 * 60 * 1000;
+/**
+ * How long a cap-blocked donor email keeps being retried before it is left to staff. The cap is a
+ * rolling hour, so a document that is still blocked a day after it was issued is not waiting on the
+ * window to move — the workspace is sending more than its cap allows, and re-queueing the job every
+ * twenty minutes forever would never deliver it. The PDF is stored throughout, so staff can
+ * download the document and send it by hand.
+ */
+const RATE_CAP_DEFER_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const mailService = new TransactionalEmailService({ defaultAudience: 'contact' });
 
@@ -99,8 +107,17 @@ export async function handleBackfillDonationAcknowledgements(
 
 // ── Render + deliver one document ───────────────────────────────────────────
 
+/**
+ * The year a document covers, for anything a donor reads. `year` is the numbering year and is the
+ * issue year on numbered receipts; `coverage_year` is NULL only on rows written before that column
+ * existed, where `year` was the covered year.
+ */
+function coveredYear(receipt: ReceiptRow): number {
+  return receipt.coverage_year ?? receipt.year;
+}
+
 function receiptFilename(receipt: ReceiptRow): string {
-  if (receipt.kind === 'statement') return `Giving-statement-${receipt.year}.pdf`;
+  if (receipt.kind === 'statement') return `Giving-statement-${coveredYear(receipt)}.pdf`;
   const number = (receipt.receipt_number ?? String(receipt.id)).replace(/[^A-Za-z0-9-]/g, '');
   return receipt.kind === 'acknowledgement' ? `Donation-receipt-${number}.pdf` : `Receipt-${number}.pdf`;
 }
@@ -117,7 +134,7 @@ async function buildPdf(
     receipt.issuer_snapshot && typeof receipt.issuer_snapshot === 'object' ? receipt.issuer_snapshot : {}
   ) as { org_legal_name?: string; org_address?: string };
   return buildStatementPdf({
-    year: receipt.year,
+    year: coveredYear(receipt),
     orgName: issuer.org_legal_name ?? '',
     orgAddress: issuer.org_address,
     donorName: receipt.donor_name,
@@ -137,8 +154,8 @@ function donorMailCopy(receipt: ReceiptRow, orgName: string): { subject: string;
   switch (receipt.kind) {
     case 'statement':
       return {
-        subject: `Your ${receipt.year} giving statement from ${orgName}`,
-        intro: `Attached is your giving statement for ${receipt.year} — a summary of your gifts to ${orgName}.`,
+        subject: `Your ${coveredYear(receipt)} giving statement from ${orgName}`,
+        intro: `Attached is your giving statement for ${coveredYear(receipt)} — a summary of your gifts to ${orgName}.`,
       };
     case 'acknowledgement':
       return {
@@ -233,13 +250,20 @@ export async function handleRenderReceiptPdf(
     logger.info({ tenantId: job.tenant_id, receiptId: job.receipt_id, outcome }, 'Receipt PDF render job finished');
   } catch (err) {
     if (err instanceof TransactionalSendBlockedError) {
+      // Donation documents are the exception to the guard's drop-don't-retry contract, for EVERY
+      // kind. The hourly cap is a rolling condition that clears by itself as the window moves, so
+      // the send is retried rather than thrown away: a donor who gives online and hears nothing back
+      // assumes the payment failed, and an official tax receipt that the row says was issued must
+      // not sit stored and never sent. Re-delivery is idempotent — renderAndDeliverReceipt skips a
+      // stored PDF and stops on emailed_at — so a retry costs one render and nothing else.
+      //
+      // A send blocked because the workspace is suspended or its sending is paused is a standing
+      // state a retry cannot resolve, so those are still dropped. The PDF is stored either way, so
+      // staff can always download the document and send it by hand. Retrying also stops after
+      // RATE_CAP_DEFER_WINDOW_MS so a workspace permanently over its cap cannot re-queue forever.
       const receipt = await new ReceiptsRepo().getReceiptById(job.tenant_id, job.receipt_id);
-      // Acknowledgements are the exception to the guard's drop-don't-retry contract. A donor who
-      // gives online and hears nothing back assumes the payment failed, so a send blocked by the
-      // ROLLING hourly cap is retried once the window moves. A send blocked because the workspace
-      // is suspended or paused is not a rolling condition and is still dropped — the PDF is stored
-      // either way, so staff can always download and send it by hand.
-      if (receipt?.kind === 'acknowledgement' && err.reason === 'rate_capped') {
+      const issuedAgoMs = receipt ? Date.now() - new Date(receipt.issued_at).getTime() : Infinity;
+      if (err.reason === 'rate_capped' && issuedAgoMs < RATE_CAP_DEFER_WINDOW_MS) {
         await db
           .insertInto('background_jobs')
           .values({
@@ -253,7 +277,7 @@ export async function handleRenderReceiptPdf(
           .execute();
         logger.warn(
           { tenantId: job.tenant_id, receiptId: job.receipt_id },
-          'Acknowledgement email hit the hourly cap — deferred',
+          'Donation document email hit the hourly cap — deferred',
         );
         return;
       }
@@ -313,6 +337,10 @@ async function enqueueContinuation(
  * Year-end documents generated but not yet emailed (donor has an email) — heals cap-interrupted
  * donors. Covers both kinds the run produces: a cap can interrupt after a tax receipt is written
  * just as easily as after a summary.
+ *
+ * Matched on the COVERAGE year. A cumulative receipt for 2025 gifts carries year = 2026, the year
+ * its serial was issued in, so the old `year = job.year` test never found one and a tax receipt the
+ * hourly cap had blocked stayed stored and unsent forever.
  */
 async function emailPendingStatements(
   db: Kysely<Models>,
@@ -325,7 +353,7 @@ async function emailPendingStatements(
     .select(['id'])
     .where('tenant_id', '=', tenantId)
     .where('kind', 'in', ['statement', 'cumulative'])
-    .where('year', '=', year)
+    .where(coverageYearRef(), '=', year)
     .where('status', '=', 'issued')
     .where('emailed_at', 'is', null)
     .where('donor_email', 'is not', null)
@@ -449,12 +477,14 @@ export async function handleRunYearEndStatements(
   }
 
   // Recount the print pile from the table rather than trusting increments across continuations.
+  // Coverage year again: a cumulative receipt for job.year's gifts is stamped with the year it was
+  // issued in, so counting on `year` would report zero for the receipts this very run produced.
   const noEmail = await db
     .selectFrom('donation_receipts')
     .select(({ fn }) => [fn.countAll<string | number>().as('total')])
     .where('tenant_id', '=', tenantId)
     .where('kind', 'in', ['statement', 'cumulative'])
-    .where('year', '=', job.year)
+    .where(coverageYearRef(), '=', job.year)
     .where('status', '=', 'issued')
     .where('donor_email', 'is', null)
     .executeTakeFirst();

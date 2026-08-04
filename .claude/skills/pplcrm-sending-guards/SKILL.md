@@ -37,8 +37,11 @@ complaint cannot be attributed and no tripwire fires. That is precisely how the 
 invisible.
 
 **A blocked send is dropped in the job worker, never retried (2026-08-02).** The gate throws
-`TransactionalSendBlockedError`; none of the conditions behind it (suspension, pause, hourly cap)
-clears inside a retry window, so a retry only burns the job's attempts and dead-letters it. The
+`TransactionalSendBlockedError`; the suspension and pause conditions behind it do not clear
+inside a retry window, so a retry only burns the job's attempts and dead-letters it. One
+exception (2026-08-04): donation-receipt documents blocked by the **hourly cap** specifically
+are re-queued by `receipts.handlers.ts` every 20 minutes for up to 24 hours from `issued_at`,
+because a tax receipt must eventually reach the donor; suspension/pause blocks are still dropped. The
 shared helper is **`lib/mail/send-or-drop.ts` → `sendMailOrDrop(mailService, message, context)`**:
 it logs a warning and returns false on a refusal, and rethrows everything else so a genuine
 delivery failure still retries. It takes the service as an argument rather than being a method on
