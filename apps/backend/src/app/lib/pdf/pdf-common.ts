@@ -73,6 +73,40 @@ export function formatDateLong(value: string | Date): string {
   }).format(date);
 }
 
+/** Vertical space a horizontal rule consumes: the line plus the gap below it. */
+export const RULE_HEIGHT = 10;
+
+/**
+ * Height of `text` at the current font, measured away from the page bottom. `heightOfString` walks
+ * the same line wrapper the real draw uses and stops counting once its running `y` passes the
+ * bottom margin — which is exactly the position callers ask about — so measuring in place
+ * under-reports the tall rows that need a page break.
+ */
+export function textHeight(doc: PDFKit.PDFDocument, text: string, width: number): number {
+  const savedY = doc.y;
+  doc.y = doc.page.margins.top;
+  const height = doc.heightOfString(text, { width });
+  doc.y = savedY;
+  return height;
+}
+
+/**
+ * Start a new page when `height` points of content would not fit above the bottom margin, and run
+ * `onNewPage` (a table's column headers) on the fresh page.
+ *
+ * A row built from several absolutely-positioned `doc.text(..., x, y)` cells cannot rely on
+ * pdfkit's automatic break: each cell breaks on its own and redraws itself at the top of a new
+ * page, tearing one row across two or three sheets. Callers measure the row and break first.
+ * The test is the same one pdfkit applies per line (`y + lineHeight > maxY`), so a document that
+ * fits on one page today still fits on one page.
+ */
+export function ensureSpace(doc: PDFKit.PDFDocument, height: number, onNewPage?: () => void): boolean {
+  if (doc.y + height <= doc.page.maxY()) return false;
+  doc.addPage();
+  onNewPage?.();
+  return true;
+}
+
 export function horizontalRule(doc: PDFKit.PDFDocument, y?: number): void {
   const ruleY = y ?? doc.y;
   doc
@@ -83,11 +117,15 @@ export function horizontalRule(doc: PDFKit.PDFDocument, y?: number): void {
     .strokeColor(COLOR_RULE)
     .stroke()
     .restore();
-  doc.y = ruleY + 10;
+  doc.y = ruleY + RULE_HEIGHT;
 }
 
 /** One "Label   value" row in the details block. */
 export function labeledRow(doc: PDFKit.PDFDocument, label: string, value: string, labelWidth = 190): void {
+  // Label and value are two independently positioned cells, so break before the row rather than
+  // letting each cell break on its own and land on a different page.
+  doc.font('Helvetica').fontSize(9.5);
+  ensureSpace(doc, Math.max(textHeight(doc, label, labelWidth), textHeight(doc, value, CONTENT_WIDTH - labelWidth)));
   const y = doc.y;
   doc.font('Helvetica').fontSize(9.5).fillColor(COLOR_MUTED).text(label, PDF_MARGIN, y, { width: labelWidth });
   doc
@@ -99,8 +137,16 @@ export function labeledRow(doc: PDFKit.PDFDocument, label: string, value: string
   doc.x = PDF_MARGIN;
 }
 
-/** Large rotated overlay for SPECIMEN previews and CANCELLED copies. */
+/**
+ * Large rotated overlay for SPECIMEN previews and CANCELLED copies.
+ *
+ * Returns the document to the caller's cursor and to the body font before returning: pdfkit keeps
+ * the current font, size and fill colour in JavaScript state that `restore()` does not roll back,
+ * and this runs from the `pageAdded` handler below, which can fire in the middle of someone else's
+ * paragraph.
+ */
 export function watermark(doc: PDFKit.PDFDocument, text: string): void {
+  const { x, y } = doc;
   doc
     .save()
     .rotate(-30, { origin: [306, 396] })
@@ -111,5 +157,13 @@ export function watermark(doc: PDFKit.PDFDocument, text: string): void {
     .text(text, 0, 360, { width: PAGE_WIDTH, align: 'center' })
     .opacity(1)
     .restore();
-  doc.x = PDF_MARGIN;
+  doc.font('Helvetica').fontSize(9.5).fillColor(COLOR_TEXT);
+  doc.x = x;
+  doc.y = y;
+}
+
+/** Draw the overlay on the current page and on every page added after this call. */
+export function watermarkEveryPage(doc: PDFKit.PDFDocument, text: string): void {
+  watermark(doc, text);
+  doc.on('pageAdded', () => watermark(doc, text));
 }

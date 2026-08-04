@@ -4,13 +4,16 @@ import {
   COLOR_MUTED,
   COLOR_TEXT,
   PDF_MARGIN,
+  RULE_HEIGHT,
+  ensureSpace,
   formatDateLong,
   formatMoney,
   horizontalRule,
   labeledRow,
   renderPdf,
+  textHeight,
   torontoDateString,
-  watermark,
+  watermarkEveryPage,
 } from './pdf-common';
 
 /**
@@ -59,11 +62,19 @@ export interface ReceiptPdfInput {
   taxCreditEligible?: boolean;
 }
 
+/** Space the facsimile signature image occupies: the 48pt image box plus its gap. */
+const SIGNATURE_BLOCK_HEIGHT = 52;
+
+/** Gap under the "Gifts covered by this receipt" heading, in lines. */
+const ITEMS_HEADER_GAP = 0.25;
+
 export function buildReceiptPdf(input: ReceiptPdfInput): Promise<Buffer> {
   const { regime, issuer } = input;
   return renderPdf((doc) => {
-    if (input.specimen) watermark(doc, 'SPECIMEN');
-    if (input.cancelled) watermark(doc, 'CANCELLED');
+    // Registered before any content so the overlay repeats on every continuation page a long
+    // cumulative receipt adds, not just on the first sheet.
+    if (input.specimen) watermarkEveryPage(doc, 'SPECIMEN');
+    if (input.cancelled) watermarkEveryPage(doc, 'CANCELLED');
 
     // Issuer block — organization name and address as registered.
     doc
@@ -119,9 +130,19 @@ export function buildReceiptPdf(input: ReceiptPdfInput): Promise<Buffer> {
     // Cumulative receipts itemize the covered gifts.
     if (input.kind === 'cumulative' && input.items.length > 0) {
       doc.moveDown(0.4);
-      doc.font('Helvetica-Bold').fontSize(9.5).fillColor(COLOR_TEXT).text('Gifts covered by this receipt');
-      doc.moveDown(0.25);
+      const drawItemsHeader = (): void => {
+        doc.font('Helvetica-Bold').fontSize(9.5).fillColor(COLOR_TEXT).text('Gifts covered by this receipt');
+        doc.moveDown(ITEMS_HEADER_GAP);
+      };
+      const headerHeight = doc.font('Helvetica-Bold').fontSize(9.5).currentLineHeight(true) * (1 + ITEMS_HEADER_GAP);
+      const itemRowHeight = doc.font('Helvetica').fontSize(9.5).currentLineHeight(true);
+      // Never leave the heading alone at the foot of a page.
+      ensureSpace(doc, headerHeight + itemRowHeight);
+      drawItemsHeader();
       for (const item of input.items) {
+        // Date and amount are two separate cells, so break before the row instead of letting each
+        // cell break itself and print the date on one page and the amount on the next.
+        ensureSpace(doc, itemRowHeight, drawItemsHeader);
         const y = doc.y;
         doc.font('Helvetica').fontSize(9.5).fillColor(COLOR_TEXT).text(formatDateLong(item.gift_date), PDF_MARGIN, y);
         doc.text(formatMoney(item.amount_cents, input.currency), PDF_MARGIN, y, {
@@ -154,29 +175,38 @@ export function buildReceiptPdf(input: ReceiptPdfInput): Promise<Buffer> {
 
     // Signature block — facsimile image plus the signatory's printed name and role.
     doc.moveDown(1.2);
+    const signatory = issuer.signatory_name ?? issuer.agent_name ?? '';
+    const signatoryLine = issuer.signatory_title ? `${signatory}, ${issuer.signatory_title}` : signatory;
+    doc.font('Helvetica').fontSize(9.5);
+    const nameHeight = textHeight(doc, signatoryLine, CONTENT_WIDTH);
+    const captionHeight = doc.font('Helvetica').fontSize(8.5).currentLineHeight(true);
+    // The image, the printed name and the caption are one unit: never split the signature.
+    ensureSpace(doc, (input.signatureImage ? SIGNATURE_BLOCK_HEIGHT : 0) + nameHeight + captionHeight);
     if (input.signatureImage) {
       try {
         doc.image(input.signatureImage, PDF_MARGIN, doc.y, { fit: [160, 48] });
-        doc.y += 52;
+        doc.y += SIGNATURE_BLOCK_HEIGHT;
       } catch {
         // A corrupt image must not block the receipt — the printed name still identifies the signer.
       }
     }
-    const signatory = issuer.signatory_name ?? issuer.agent_name ?? '';
-    const signatoryLine = issuer.signatory_title ? `${signatory}, ${issuer.signatory_title}` : signatory;
     doc.font('Helvetica').fontSize(9.5).fillColor(COLOR_TEXT).text(signatoryLine, PDF_MARGIN, doc.y);
     doc.font('Helvetica').fontSize(8.5).fillColor(COLOR_MUTED).text('Authorized signature');
 
     // Regime footer (e.g. the CRA name + website reference).
     doc.moveDown(1.2);
+    const issuedLine = `Issued ${torontoDateString(input.issuedAt)} · Keep this receipt for your records.`;
+    doc.font('Helvetica').fontSize(8.5);
+    const footerHeight = [...regime.footerLines, issuedLine].reduce(
+      (total, line) => total + textHeight(doc, line, CONTENT_WIDTH),
+      RULE_HEIGHT,
+    );
+    // Keep the rule and the legal footer lines on one page.
+    ensureSpace(doc, footerHeight);
     horizontalRule(doc);
     for (const line of regime.footerLines) {
       doc.font('Helvetica').fontSize(8.5).fillColor(COLOR_MUTED).text(line);
     }
-    doc
-      .font('Helvetica')
-      .fontSize(8.5)
-      .fillColor(COLOR_MUTED)
-      .text(`Issued ${torontoDateString(input.issuedAt)} · Keep this receipt for your records.`);
+    doc.font('Helvetica').fontSize(8.5).fillColor(COLOR_MUTED).text(issuedLine);
   });
 }

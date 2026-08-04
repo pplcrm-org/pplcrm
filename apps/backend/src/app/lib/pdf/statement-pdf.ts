@@ -3,6 +3,8 @@ import {
   COLOR_MUTED,
   COLOR_TEXT,
   PDF_MARGIN,
+  RULE_HEIGHT,
+  ensureSpace,
   formatDateLong,
   formatMoney,
   horizontalRule,
@@ -27,6 +29,9 @@ export interface StatementPdfInput {
   currency?: string;
   generatedAt: Date;
 }
+
+/** Gap between the last gift row and the rule above the total, in lines. */
+const TOTAL_RULE_GAP = 0.3;
 
 const METHOD_LABELS: Record<string, string> = {
   card: 'Card',
@@ -55,16 +60,34 @@ export function buildStatementPdf(input: StatementPdfInput): Promise<Buffer> {
     // Gifts table: date · method · amount.
     const amountX = PDF_MARGIN + CONTENT_WIDTH - 100;
     const methodX = PDF_MARGIN + 180;
-    doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR_MUTED);
-    const headerY = doc.y;
-    doc.text('Date', PDF_MARGIN, headerY);
-    doc.text('Method', methodX, headerY);
-    doc.text('Amount', amountX, headerY, { width: 100, align: 'right' });
-    doc.moveDown(0.3);
-    horizontalRule(doc);
+    const drawTableHeader = (): void => {
+      doc.font('Helvetica-Bold').fontSize(9).fillColor(COLOR_MUTED);
+      const headerY = doc.y;
+      doc.text('Date', PDF_MARGIN, headerY);
+      doc.text('Method', methodX, headerY);
+      doc.text('Amount', amountX, headerY, { width: 100, align: 'right' });
+      doc.moveDown(0.3);
+      horizontalRule(doc);
+    };
+    const startRow = (): void => {
+      doc.font('Helvetica').fontSize(9.5).fillColor(COLOR_TEXT);
+    };
+    drawTableHeader();
 
-    doc.font('Helvetica').fontSize(9.5).fillColor(COLOR_TEXT);
+    // Heights of the two row shapes, measured before the first row so the fit checks below are the
+    // true drawn height rather than an estimate that could push a one-page statement onto two.
+    doc.font('Helvetica-Bold').fontSize(10.5);
+    const totalRowHeight = doc.currentLineHeight(true);
+    startRow();
+    const giftRowHeight = doc.currentLineHeight(true);
+
     for (const gift of input.gifts) {
+      // Date, method and amount are three separate cells; break the whole row or none of it, and
+      // repeat the column headers on the page the row moves to.
+      ensureSpace(doc, giftRowHeight, () => {
+        drawTableHeader();
+        startRow();
+      });
       const y = doc.y;
       doc.text(formatDateLong(gift.gift_date), PDF_MARGIN, y);
       doc.text(METHOD_LABELS[gift.method] ?? gift.method, methodX, y);
@@ -72,7 +95,9 @@ export function buildStatementPdf(input: StatementPdfInput): Promise<Buffer> {
       doc.moveDown(0.2);
     }
     doc.x = PDF_MARGIN;
-    doc.moveDown(0.3);
+    // The total is a label cell and an amount cell under a rule: keep all three together.
+    ensureSpace(doc, giftRowHeight * TOTAL_RULE_GAP + RULE_HEIGHT + totalRowHeight);
+    doc.moveDown(TOTAL_RULE_GAP);
     horizontalRule(doc);
 
     const totalY = doc.y;
