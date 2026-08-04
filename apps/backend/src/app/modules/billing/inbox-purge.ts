@@ -1,10 +1,15 @@
-import type { Kysely, Transaction } from 'kysely';
+import type { Kysely, Selectable, Transaction } from 'kysely';
 
 import { INBOX_PURGE_DELAY_DAYS, planAllowsFeature } from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../logger';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+export type FreshInboxPurgeStatus = Pick<
+  Selectable<Models['tenants']>,
+  'subscription_plan' | 'demo_mode_at' | 'inbox_purge_scheduled_at'
+>;
 
 /**
  * Keep `tenants.inbox_purge_scheduled_at` consistent with the tenant's plan. Called from every
@@ -20,8 +25,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *    test drive, and is removed by the go-live flow instead.
  *
  * The actual deletion runs in the `purge_downgraded_inboxes` cron
- * (lib/jobs/handlers/inbox-purge.handlers.ts), which re-checks the plan before destroying
- * anything.
+ * (lib/jobs/handlers/inbox-purge.handlers.ts), which re-reads this same status fresh (see
+ * `getFreshInboxPurgeStatus` below) immediately before destroying anything.
  */
 export async function syncInboxPurgeSchedule(
   db: Kysely<Models> | Transaction<Models>,
@@ -76,4 +81,38 @@ export async function syncInboxPurgeSchedule(
   logger.info(
     `[inbox-purge] tenant ${tenantId} downgraded below the shared inbox — synced mail purge scheduled for ${purgeAt.toISOString()}`,
   );
+}
+
+/**
+ * Fresh, single-row read of the tenant's plan/demo/schedule status, straight from the database.
+ *
+ * Used by the `purge_downgraded_inboxes` cron (lib/jobs/handlers/inbox-purge.handlers.ts)
+ * immediately before it destroys a tenant's mail. The cron's own due-tenant scan happens once at
+ * the start of the run and the purge itself is chunked and can take minutes per tenant, so by the
+ * time a given tenant's turn comes up its plan may have changed — an upgrade calls
+ * `syncInboxPurgeSchedule` above, which nulls `inbox_purge_scheduled_at`, but nothing makes the
+ * cron's in-memory snapshot notice that. Re-reading here, right before the destructive call,
+ * closes that window.
+ */
+export async function getFreshInboxPurgeStatus(
+  db: Kysely<Models> | Transaction<Models>,
+  tenantId: string,
+): Promise<FreshInboxPurgeStatus | undefined> {
+  return db
+    .selectFrom('tenants')
+    .select(['subscription_plan', 'demo_mode_at', 'inbox_purge_scheduled_at'])
+    .where('id', '=', tenantId)
+    .executeTakeFirst();
+}
+
+/**
+ * True only if, as of right now, the tenant should still have its synced mail destroyed: the plan
+ * still excludes the shared inbox, the workspace is not a demo, and `inbox_purge_scheduled_at` is
+ * set and has passed. Reuses `planAllowsFeature` so the "does this plan include the inbox" rule
+ * lives in exactly one place.
+ */
+export function inboxPurgeStillDue(status: FreshInboxPurgeStatus): boolean {
+  if (planAllowsFeature(status.subscription_plan, 'inbox') || status.demo_mode_at != null) return false;
+  if (status.inbox_purge_scheduled_at == null) return false;
+  return status.inbox_purge_scheduled_at <= new Date();
 }

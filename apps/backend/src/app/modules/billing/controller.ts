@@ -514,6 +514,14 @@ export class BillingController {
     });
     logger.info(`[switchPlan] Tenant ${auth.tenant_id} switched to ${plan} (${interval}), quantity ${quantity}`);
 
+    // This is the single, immediate source of the "Welcome to the {Plan} plan" email for an
+    // in-app switch — deliberately not deferred to the `customer.subscription.updated` webhook,
+    // because webhook delivery is asynchronous (queued in `webhook_events`, drained by
+    // WebhookEventWorker) and not guaranteed configured in every Stripe mode (see
+    // syncSubscriptionFromStripe's docstring below). The `tenants` row was just written above, so
+    // by the time the webhook for this same change is processed, `processWebhookEvent`'s
+    // `customer.subscription.updated` branch will read that already-updated plan back as
+    // "previous", see no change, and skip its own email — no double send.
     try {
       await this.handleSubscriptionChange(auth.tenant_id, plan, quantity, false, interval);
     } catch (mailErr) {
@@ -727,17 +735,19 @@ export class BillingController {
         const customerId = subscription.customer as string;
 
         // Search Kysely database for the tenant with matching customer id
-        const dbTenant = (await tenantsRepo.getOneBy('stripe_customer_id', {
-          tenant_id: '1',
-          value: customerId,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic-read result collapses to {}; see pplcrm-any-exceptions
-        })) as any;
+        const dbTenant = asTenantBillingRow(
+          await tenantsRepo.getOneBy('stripe_customer_id', {
+            tenant_id: '1',
+            value: customerId,
+          }),
+        );
 
         if (dbTenant) {
           const item = subscription.items.data[0];
           const priceMatch = planForPriceId(item?.price.id);
-          const planName: string = priceMatch?.plan ?? dbTenant.subscription_plan;
-          const interval: BillingInterval = priceMatch?.interval ?? asBillingInterval(dbTenant.subscription_interval);
+          const previousPlan: string = dbTenant.subscription_plan ?? 'free';
+          const planName: string = priceMatch?.plan ?? previousPlan;
+          const interval: BillingInterval = priceMatch?.interval ?? dbTenant.subscription_interval;
           const quantity = item?.quantity ?? 1;
 
           await tenantsRepo.update({
@@ -753,8 +763,24 @@ export class BillingController {
             },
           });
           logger.info(`Subscription updated for Tenant ID: ${dbTenant.id}`);
+
+          // `customer.subscription.updated` fires for far more than a plan change: toggling
+          // `cancel_at_period_end` (in-app cancel/resume) and item-quantity changes (the automatic
+          // seat/subscriber-bracket bump in usage-limits.ts) all raise this same event with the
+          // plan unchanged. Only run the plan-change side effects (welcome email + limit-alert
+          // dedup reset) when the resolved plan actually differs from what was stored before this
+          // write — `notify: false` still keeps the inbox-purge schedule in sync (see
+          // handleSubscriptionChange's step 0) without emailing or clearing dedup flags.
+          //
+          // This comparison also removes the plan-switch double-email: switchPlan() (above) writes
+          // the new plan to `tenants` synchronously and sends its own welcome email immediately, so
+          // by the time this webhook event reaches processWebhookEvent (asynchronously, via
+          // WebhookEventWorker), `dbTenant.subscription_plan` already equals the new plan and
+          // `planChanged` is false here — the webhook becomes a silent state-mirror instead of a
+          // second send.
+          const planChanged = planName !== previousPlan;
           try {
-            await this.handleSubscriptionChange(dbTenant.id, planName, quantity, false, interval);
+            await this.handleSubscriptionChange(dbTenant.id, planName, quantity, false, interval, planChanged);
           } catch (mailErr) {
             logger.error(
               { err: mailErr },
@@ -1071,28 +1097,44 @@ export class BillingController {
     return { success: true };
   }
 
+  /**
+   * Runs the side effects of a subscription landing on `planName`: keep the inbox-purge schedule
+   * in step, then (only when `notify` is true) reset the `billing.limit_alerts_sent` dedup flags
+   * and send the plan-changed email (welcome, or the downgrade-education email for Free).
+   *
+   * `notify` defaults to true for the create/mock/direct-switch call sites, where the caller
+   * already knows this is a genuine plan change. The `customer.subscription.updated` webhook
+   * handler is the one caller that passes `notify: false` — that event fires for far more than a
+   * plan change (cancel/resume toggling, seat-bracket quantity bumps), so it computes whether the
+   * plan actually changed before calling in.
+   */
   private async handleSubscriptionChange(
     tenantId: string,
     planName: string,
     quantity: number,
     isMock = false,
     interval: BillingInterval = 'month',
+    notify = true,
   ): Promise<void> {
-    const tenant = (await tenantsRepo.getOneBy('id', {
-      tenant_id: tenantId,
-      value: tenantId,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic-read result collapses to {}; see pplcrm-any-exceptions
-    })) as any;
+    const tenant = asTenantBillingRow(
+      await tenantsRepo.getOneBy('id', {
+        tenant_id: tenantId,
+        value: tenantId,
+      }),
+    );
 
     if (!tenant) return;
 
     // 0. Keep the synced-inbox purge schedule in step with the plan: a downgrade to Free starts
-    // the 30-day deletion clock, an upgrade (including inside the window) cancels it.
+    // the 30-day deletion clock, an upgrade (including inside the window) cancels it. Runs
+    // regardless of `notify` — it's an idempotent state mirror, not a notification.
     try {
       await syncInboxPurgeSchedule(tenantsRepo.db, tenantId);
     } catch (err) {
       logger.error({ err }, `Failed to sync inbox purge schedule for tenant ${tenantId}`);
     }
+
+    if (!notify) return;
 
     // 1. Reset limit alert settings
     await tenantsRepo.db

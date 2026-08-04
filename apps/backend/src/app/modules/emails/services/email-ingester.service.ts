@@ -12,6 +12,7 @@ import { sanitizeHtml } from '../../../lib/mail/sanitize-util';
 import { extractBodyText, previewTextFrom, INLINE_BODY_MAX_BYTES } from './email-body-text';
 import { purgeUnreferencedFiles } from '../../../lib/file-references';
 import { logger } from '../../../logger';
+import { getFreshInboxPurgeStatus, inboxPurgeStillDue } from '../../billing/inbox-purge';
 
 export interface IngestableEmail {
   id: string; // Remote provider's unique message ID
@@ -127,13 +128,38 @@ export class EmailIngesterService {
    * reference check (`purgeUnreferencedFiles`), so bytes shared with avatars or newsletter images
    * survive. Chunked, with one transaction per chunk: a crash mid-purge resumes on the next cron
    * tick because the schedule column is only cleared after the whole purge succeeds.
+   *
+   * The only caller today is the `purge_downgraded_inboxes` cron
+   * (lib/jobs/handlers/inbox-purge.handlers.ts), which already re-checks the tenant's status
+   * fresh before making this call. This method re-checks it again on every chunk: a single
+   * tenant's purge can take minutes, and an upgrade landing in the middle of it must stop
+   * further deletion, not just be caught by the check that ran before the call started.
+   *
+   * Returns `stoppedEarly: true` when a chunk's due-check found the tenant no longer eligible —
+   * the caller must treat that the same as a skip (do not delete OAuth tokens, do not assume the
+   * mailbox is now empty), not as a completed purge.
    */
-  public async purgeAllTenantEmails(tenantId: string): Promise<{ deletedEmails: number }> {
+  public async purgeAllTenantEmails(tenantId: string): Promise<{ deletedEmails: number; stoppedEarly: boolean }> {
     const CHUNK_SIZE = 2_000;
     let deletedEmails = 0;
+    let stoppedEarly = false;
 
     // Loop until no rows remain rather than paginating: each chunk deletes what it selected.
     for (;;) {
+      // Re-read fresh on every chunk, not just once before the loop starts: this purge can run
+      // for minutes, and an upgrade that lands mid-purge must stop it, not merely have been
+      // caught by the check the caller already made before this method was invoked. Treat a
+      // missing tenant row the same as "no longer due" — there is nothing left to protect, but
+      // also nothing safe left to assert about, so stop rather than keep deleting.
+      const status = await getFreshInboxPurgeStatus(this.db, tenantId);
+      if (!status || !inboxPurgeStillDue(status)) {
+        logger.info(
+          `[inbox-purge] stopped mid-purge for tenant ${tenantId}: no longer due (plan/schedule changed since the purge started)`,
+        );
+        stoppedEarly = true;
+        break;
+      }
+
       const rows = await this.db
         .selectFrom('emails')
         .select('id')
@@ -166,10 +192,15 @@ export class EmailIngesterService {
       deletedEmails += emailIds.length;
     }
 
-    // Inbox drafts are campaign-scoped rather than email-scoped, so they are swept separately.
-    await this.db.deleteFrom('email_drafts').where('tenant_id', '=', tenantId).execute();
+    // Inbox drafts are campaign-scoped rather than email-scoped, so they are swept separately —
+    // but only once the emails themselves finished purging. If the loop above stopped early
+    // because the tenant is no longer due, leave the drafts alone too: a partial purge should
+    // leave the rest of the mailbox intact, not finish off the one part that has no due-check.
+    if (!stoppedEarly) {
+      await this.db.deleteFrom('email_drafts').where('tenant_id', '=', tenantId).execute();
+    }
 
-    return { deletedEmails };
+    return { deletedEmails, stoppedEarly };
   }
 
   /**
