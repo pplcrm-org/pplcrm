@@ -147,9 +147,11 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
         // 4. Remap active enrollments onto the renumbered steps (REVIEW4 T1-3). Without this,
         // inserting a step re-sends someone the step they just got, deleting one skips a step,
         // and shortening the sequence silently completes people. The incoming payload carries no
-        // step ids (AddWorkflowStepObj), so old and new steps are matched by content signature
-        // (kind + canonical config JSON), first unmatched wins in order — a pure reorder or a
-        // content edit of subject/body keeps everyone's position.
+        // step ids (AddWorkflowStepObj), so matching runs in two passes: first by content
+        // signature (kind + canonical config JSON, first unmatched wins in order — handles
+        // inserts, deletes and pure reorders), then the leftovers are paired by position, so a
+        // step whose subject/body/delay was edited in place reads as "same step, new content"
+        // rather than delete-plus-add. Only old steps unmatched by BOTH passes count as deleted.
         const newSignatures = steps.map((step, idx) => ({
           signature: stepContentSignature(step.kind, step.config ?? null),
           step_number: idx + 1,
@@ -163,6 +165,16 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
             match.claimed = true;
             stepNumberMap.set(old.step_number, match.step_number);
           }
+        }
+        // Second pass: edited-in-place steps. Pair remaining old and new steps in order.
+        const leftoverOld = oldSteps.filter((o) => !stepNumberMap.has(o.step_number));
+        const leftoverNew = newSignatures.filter((n) => !n.claimed);
+        for (let i = 0; i < leftoverOld.length; i++) {
+          const oldStep = leftoverOld[i];
+          const newStep = leftoverNew[i];
+          if (oldStep === undefined || newStep === undefined) break;
+          newStep.claimed = true;
+          stepNumberMap.set(oldStep.step_number, newStep.step_number);
         }
 
         const activeEnrollments = await trx
@@ -739,9 +751,10 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
-// REVIEW4 T1-3 — content identity of a step for the saveSteps enrollment remap. Deliberately
-// kind + config only: subject/body/delay edits must NOT read as delete-plus-add, or editing an
-// email's text would bump everyone mid-sequence off that step.
+// REVIEW4 T1-3 — content identity of a step for the saveSteps enrollment remap's FIRST pass.
+// An in-place subject/body/delay edit changes this signature, which is why the remap runs a
+// second, position-based pass over the leftovers — without it, editing an email's text would
+// read as delete-plus-add and bump everyone mid-sequence off that step.
 function stepContentSignature(kind: string, config: unknown): string {
   return `${kind}|${canonicalJson(config ?? null)}`;
 }
