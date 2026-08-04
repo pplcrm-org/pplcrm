@@ -32,6 +32,9 @@ import { TransactionalEmailService } from '../../../lib/mail/transactional-mail.
 import { queueZapierTrigger, pickPersonFields } from '../../zapier/zapier.service';
 import { logger } from '../../../logger';
 
+/** Longest text stored in `data_imports.error_message` — the History page shows it inline. */
+const ERROR_MESSAGE_MAX = 1000;
+
 export class PersonsService {
   private mapPersonsTagRepo = new MapPersonsTagRepo();
   private settingsController = new SettingsController();
@@ -927,8 +930,11 @@ export class PersonsService {
           }
           continue;
         }
+        // A phone number is not an address. Counting home_phone here made a phone-only row
+        // "addressed", so no household was ever created for it and its household_id came out
+        // empty — a NOT NULL violation that rolled back the whole 100-row chunk. Such rows now
+        // join the shared blank household, like any other row with no address.
         const isBlankAddress =
-          !sanitized.home_phone &&
           !sanitized.street_num &&
           !sanitized.street1 &&
           !sanitized.street2 &&
@@ -986,9 +992,16 @@ export class PersonsService {
           let localBlankHouseholdId = cachedBlankHouseholdId;
           let localAutoTagId = autoTagId;
           let householdsCreatedDelta = 0;
+          // Skips discovered inside the transaction are folded into the running totals only
+          // once it commits. A chunk that rolls back has its rows counted as errors instead,
+          // and counting them here as well made one failed row count twice.
+          let skippedDelta = 0;
+          const chunkSkipReasons: Array<{ row: number; email?: string; reason: string }> = [];
 
-          // 2a. Resolve blank household once for the whole chunk
-          if (validEntries.some((e) => e.isBlankAddress)) {
+          // 2a. Resolve blank household once for the whole chunk. Also covers rows that look
+          // addressed but fingerprint to nothing (e.g. an address column holding only
+          // punctuation): they get no household of their own either, so they need the blank one.
+          if (validEntries.some((e) => e.isBlankAddress || !e.fp_full)) {
             if (!localBlankHouseholdId) {
               const existingBlank = await households.getBlankHousehold({ tenant_id }, trx);
               if (existingBlank?.id) {
@@ -1191,9 +1204,9 @@ export class PersonsService {
               // collide with the existing person's email.
               insertEntries.push({ ...entry, sanitized: { ...entry.sanitized, email: undefined } });
             } else {
-              results.skipped += 1;
-              if (skipReasons.length < SKIP_REASONS_CAP) {
-                skipReasons.push({
+              skippedDelta += 1;
+              if (skipReasons.length + chunkSkipReasons.length < SKIP_REASONS_CAP) {
+                chunkSkipReasons.push({
                   row: entry.rowNumber,
                   email: entry.sanitized.email,
                   reason: 'Matches a person you already have. Duplicate decision was Skip',
@@ -1210,7 +1223,10 @@ export class PersonsService {
               campaign_id,
               createdby_id: user_id,
               updatedby_id: user_id,
-              household_id: isBlankAddress ? (localBlankHouseholdId ?? '') : (fpCache.get(fp_full ?? '') ?? ''),
+              household_id:
+                (isBlankAddress || !fp_full
+                  ? localBlankHouseholdId
+                  : (fpCache.get(fp_full) ?? localBlankHouseholdId)) ?? '',
               first_name: sanitized.first_name ?? null,
               middle_names: sanitized.middle_names ?? null,
               last_name: sanitized.last_name ?? null,
@@ -1234,7 +1250,7 @@ export class PersonsService {
 
           // Count rows silently skipped due to a duplicate email under the 'skip' decision
           const duplicatesSkipped = personRows.length - insertedPersons.length;
-          if (duplicatesSkipped > 0) results.skipped += duplicatesSkipped;
+          if (duplicatesSkipped > 0) skippedDelta += duplicatesSkipped;
 
           // 3b. Merge decision: fill only the existing person's blank fields — never overwrite.
           const mergedPersonIds: string[] = [];
@@ -1325,19 +1341,31 @@ export class PersonsService {
               updatedby_id: user_id,
             })),
           );
+          // Which person/tag pairs this chunk actually created, as `${person_id}:${tag_id}`.
+          // A re-import of the same file hits onConflict-doNothing for every pair the contact
+          // already had; firing the tag_added automation for those would re-enroll the same
+          // people on every overlapping import, so only the returned rows are announced below.
+          const newTagPairs = new Set<string>();
           if (tagMapRows.length > 0) {
             // Merged persons may already carry a tag from an earlier import — don't fail the batch on that.
-            await trx
+            const insertedTagMaps = await trx
               .insertInto('map_peoples_tags')
               .values(tagMapRows)
               .onConflict((oc) => oc.doNothing())
+              .returning(['person_id', 'tag_id'])
               .execute();
+            for (const map of insertedTagMaps) {
+              newTagPairs.add(`${String(map.person_id)}:${String(map.tag_id)}`);
+            }
           }
 
           return {
             insertedPersons,
             mergedPersonIds,
             personTags,
+            newTagPairs,
+            skippedDelta,
+            chunkSkipReasons,
             householdsCreatedDelta,
             blankHouseholdId: localBlankHouseholdId,
             companyIdByName: localCompanyIdByName,
@@ -1356,6 +1384,7 @@ export class PersonsService {
             logger.error({ err }, 'Failed to trigger contact_created workflow in CSV import');
           }
           for (const { name, id: tagId } of outcome.personTags.get(personId) ?? []) {
+            if (!outcome.newTagPairs.has(`${personId}:${tagId}`)) continue;
             try {
               await workflowsController.triggerTagAdded(tenant_id, personId, tagId, name);
             } catch (err) {
@@ -1367,7 +1396,10 @@ export class PersonsService {
         // they still belong in the static-list membership pass below.
         for (const personId of outcome.mergedPersonIds) {
           importedPersonIds.push(personId);
+          // Only tags this import actually added to the contact. A merged contact usually
+          // already carries the file's tags from a previous import of the same list.
           for (const { name, id: tagId } of outcome.personTags.get(personId) ?? []) {
+            if (!outcome.newTagPairs.has(`${personId}:${tagId}`)) continue;
             try {
               await workflowsController.triggerTagAdded(tenant_id, personId, tagId, name);
             } catch (err) {
@@ -1378,6 +1410,8 @@ export class PersonsService {
 
         results.inserted += outcome.insertedPersons.length;
         results.households_created += outcome.householdsCreatedDelta;
+        results.skipped += outcome.skippedDelta;
+        skipReasons.push(...outcome.chunkSkipReasons);
         if (outcome.blankHouseholdId) cachedBlankHouseholdId = outcome.blankHouseholdId;
         for (const [lowerName, companyId] of outcome.companyIdByName) companyIdByName.set(lowerName, companyId);
         if (!autoTagId && outcome.autoTagId) autoTagId = outcome.autoTagId;
@@ -1387,6 +1421,16 @@ export class PersonsService {
         const message = err instanceof Error ? err.message : String(err);
         errorMessages.push(message);
         logger.error({ err, message }, 'Import chunk failed');
+        // Name the rows that were lost. Without this the History page shows an error count
+        // with nothing behind it, and the user has no way to tell which rows to re-import.
+        for (const entry of validEntries) {
+          if (skipReasons.length >= SKIP_REASONS_CAP) break;
+          skipReasons.push({
+            row: entry.rowNumber,
+            email: entry.sanitized.email,
+            reason: `Row ${entry.rowNumber} was not imported: its batch failed and was rolled back (${message})`,
+          });
+        }
       }
 
       // Update intermediate counts after each chunk
@@ -1442,6 +1486,11 @@ export class PersonsService {
           merged_count: results.merged,
           tags_applied: JSON.stringify(tags),
           skip_reasons: JSON.stringify(skipReasons),
+          // What went wrong, if anything did. The job handler discards the returned
+          // errorMessages, so an import that lost a batch used to read as a clean success.
+          // Repeated chunk failures usually carry the same message, so store it once.
+          error_message:
+            errorMessages.length > 0 ? [...new Set(errorMessages)].join('; ').substring(0, ERROR_MESSAGE_MAX) : null,
           updatedby_id: user_id,
           updated_at: new Date(),
         },

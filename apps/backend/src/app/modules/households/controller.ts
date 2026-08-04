@@ -750,6 +750,12 @@ export class HouseholdsController extends BaseController<'households', Household
   ) {
     const results = { inserted: 0, errors: 0, skipped: 0 };
     const errorMessages: string[] = [];
+    // Rows kept downloadable with the reason each was skipped or lost, same as the people
+    // importer. Until now this importer wrote none, so a failed batch left an error count
+    // with nothing behind it.
+    const skipReasons: Array<{ row: number; reason: string }> = [];
+    const SKIP_REASONS_CAP = 500;
+    const ERROR_MESSAGE_MAX = 1000;
     const trim = (value: string | null | undefined): string | null => {
       const text = (value ?? '').toString().trim();
       return text.length > 0 ? text : null;
@@ -773,7 +779,12 @@ export class HouseholdsController extends BaseController<'households', Household
       : undefined;
     const importJurisdiction = importCampaign?.jurisdiction ?? 'other';
 
+    // Rows consumed from the source so far, so a skipped or lost row can be named by its
+    // 1-based position in the file.
+    let rowsSeen = 0;
     for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
+      const chunkStartRow = rowsSeen;
+      rowsSeen += chunk.length;
       // 1. Sanitize and fingerprint valid rows upfront
       type Entry = {
         sanitized: {
@@ -796,9 +807,12 @@ export class HouseholdsController extends BaseController<'households', Household
         areas: Record<string, string>;
         fp_street: string | null;
         fp_full: string | null;
+        /** 1-based position of this row in the uploaded file. */
+        rowNumber: number;
       };
       const entries: Entry[] = [];
-      for (const raw of chunk) {
+      for (const [chunkIdx, raw] of chunk.entries()) {
+        const rowNumber = chunkStartRow + chunkIdx + 1;
         const areas = readImportedAreas(raw);
         const sanitized = {
           street_num: trim(raw['street_num']),
@@ -847,14 +861,19 @@ export class HouseholdsController extends BaseController<'households', Household
                 country: sanitized.country,
               })
             : null,
+          rowNumber,
         });
       }
 
       if (entries.length > 0) {
         try {
-          await this.getRepo()
+          // Counted inside the transaction but added to the running totals only after it
+          // commits — a chunk that rolls back counts its rows as errors and nothing else.
+          const committed = await this.getRepo()
             .transaction()
             .execute(async (trx) => {
+              let insertedInChunk = 0;
+              let skippedInChunk = 0;
               // 2. Dedupe against existing households by full-address fingerprint
               const uniqueFps = [...new Set(entries.map((e) => e.fp_full).filter((fp): fp is string => fp != null))];
               const existingFps = new Set<string>();
@@ -877,7 +896,7 @@ export class HouseholdsController extends BaseController<'households', Household
               const insertedAreas: Record<string, string>[] = [];
               for (const entry of entries) {
                 if (entry.fp_full && (existingFps.has(entry.fp_full) || seenFps.has(entry.fp_full))) {
-                  results.skipped += 1;
+                  skippedInChunk += 1;
                   continue;
                 }
                 if (entry.fp_full) seenFps.add(entry.fp_full);
@@ -895,7 +914,7 @@ export class HouseholdsController extends BaseController<'households', Household
               }
 
               const created = toInsert.length > 0 ? await this.getRepo().addMany({ rows: toInsert }, trx) : [];
-              results.inserted += created.length;
+              insertedInChunk += created.length;
 
               // 3b. Electoral areas the file named — the cheapest way a workspace gets real
               // electoral geography, because it costs nothing at all. A purchased US voter file
@@ -972,10 +991,25 @@ export class HouseholdsController extends BaseController<'households', Household
                     .execute();
                 }
               }
+
+              return { inserted: insertedInChunk, skipped: skippedInChunk };
             });
+          results.inserted += committed.inserted;
+          results.skipped += committed.skipped;
         } catch (err) {
           results.errors += entries.length;
-          errorMessages.push(err instanceof Error && err.message ? err.message : String(err));
+          const message = err instanceof Error && err.message ? err.message : String(err);
+          errorMessages.push(message);
+          logger.error({ err, message, importId: import_id }, 'Household import chunk failed');
+          // Name the rows that were lost, so History can list them instead of showing an
+          // error count with nothing behind it.
+          for (const entry of entries) {
+            if (skipReasons.length >= SKIP_REASONS_CAP) break;
+            skipReasons.push({
+              row: entry.rowNumber,
+              reason: `Row ${entry.rowNumber} was not imported: its batch failed and was rolled back (${message})`,
+            });
+          }
         }
       }
 
@@ -998,6 +1032,24 @@ export class HouseholdsController extends BaseController<'households', Household
       await backfillMissingSlugs(this.getRepo().db, 'households', tenant_id);
     } catch (err) {
       logger.error({ err }, 'Failed to backfill household slugs after import');
+    }
+
+    // What was lost and why. The job handler discards the returned errorMessages, so an
+    // import that dropped a batch used to read as a clean success on the History page.
+    try {
+      await this.importsRepo.update({
+        tenant_id,
+        id: import_id,
+        row: {
+          skip_reasons: JSON.stringify(skipReasons),
+          error_message:
+            errorMessages.length > 0 ? [...new Set(errorMessages)].join('; ').substring(0, ERROR_MESSAGE_MAX) : null,
+          updatedby_id: user_id,
+          updated_at: new Date(),
+        } as unknown as OperationDataType<'data_imports', 'update'>,
+      });
+    } catch (err) {
+      logger.error({ err }, 'Failed to persist final household import stats');
     }
 
     return {
