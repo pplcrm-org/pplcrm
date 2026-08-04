@@ -69,6 +69,8 @@ type RunState =
 const POLL_INTERVAL_MS = 1500;
 /** Give up narrating progress (the import itself keeps running server-side) after this long. */
 const POLL_TIMEOUT_MS = 120_000;
+/** The backend's `checkDuplicateEmails` input cap (persons/trpc.router.ts) — chunk requests to stay under it. */
+const DUPLICATE_CHECK_BATCH_SIZE = 2000;
 
 @Component({
   selector: 'pc-import-wizard',
@@ -184,6 +186,8 @@ export class ImportWizard {
   protected readonly listName = signal('');
   protected readonly existingListNames = signal<string[]>([]);
   protected readonly duplicateMatches = signal<DuplicateMatch[]>([]);
+  /** Set when a batch of the duplicate check failed — distinct from a genuine "no duplicates" result. */
+  protected readonly duplicateCheckFailed = signal(false);
 
   protected readonly emailRows = computed(() =>
     this.mappedRows()
@@ -202,7 +206,7 @@ export class ImportWizard {
     return this.validEmailRows().filter((r) => matched.has(r.email.toLowerCase())).length;
   });
   protected readonly reviewIsClean = computed(
-    () => this.duplicateMatches().length === 0 && this.badEmailRows().length === 0,
+    () => !this.duplicateCheckFailed() && this.duplicateMatches().length === 0 && this.badEmailRows().length === 0,
   );
 
   protected readonly parsedTags = computed(() =>
@@ -259,6 +263,7 @@ export class ImportWizard {
     this.tagsText.set('');
     this.listName.set('');
     this.duplicateMatches.set([]);
+    this.duplicateCheckFailed.set(false);
     // Keep the URL shareable/bookmarkable — grids deep-link here with ?type=.
     void this.router.navigate([], {
       relativeTo: this.route,
@@ -392,6 +397,7 @@ export class ImportWizard {
 
   protected async goToReview(): Promise<void> {
     this.step.set('review');
+    this.duplicateCheckFailed.set(false);
     if (!this.config().supportsEmailReview) {
       this.duplicateMatches.set([]);
       return;
@@ -399,11 +405,23 @@ export class ImportWizard {
     const end = this._duplicateCheck.begin();
     try {
       const emails = [...new Set(this.validEmailRows().map((r) => r.email.toLowerCase()))];
-      const matches = emails.length ? await this.personsService.checkDuplicateEmails(emails) : [];
-      this.duplicateMatches.set(matches);
-    } catch {
-      // Review still works without the duplicate preview — the backend re-checks authoritatively at import time.
-      this.duplicateMatches.set([]);
+      const matches: DuplicateMatch[] = [];
+      let failed = false;
+      // The backend caps checkDuplicateEmails input at 2,000 — chunk so files with more unique
+      // emails than that still get checked, instead of guaranteeing the request fails.
+      for (let i = 0; i < emails.length; i += DUPLICATE_CHECK_BATCH_SIZE) {
+        const batch = emails.slice(i, i + DUPLICATE_CHECK_BATCH_SIZE);
+        try {
+          matches.push(...(await this.personsService.checkDuplicateEmails(batch)));
+        } catch {
+          // A partial result would misreport which emails are clean, so on any batch failure
+          // the whole check is treated as not having run — see duplicateCheckFailed.
+          failed = true;
+          break;
+        }
+      }
+      this.duplicateMatches.set(failed ? [] : matches);
+      this.duplicateCheckFailed.set(failed);
     } finally {
       end();
     }
@@ -642,6 +660,7 @@ export class ImportWizard {
     this.tagsText.set('');
     this.listName.set('');
     this.duplicateMatches.set([]);
+    this.duplicateCheckFailed.set(false);
     this.run.set({ status: 'idle' });
     this.step.set('upload');
   }

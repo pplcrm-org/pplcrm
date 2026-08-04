@@ -197,7 +197,15 @@
       </div>
     </div>
 
-    @if (config().supportsEmailReview) { @if (reviewIsClean()) {
+    @if (config().supportsEmailReview) { @if (duplicateCheckFailed()) {
+    <div class="alert bg-warning/10 border border-warning/30 gap-2 text-sm text-base-content">
+      <pc-icon name="exclamation-triangle" class="text-warning" [size]="5"></pc-icon>
+      <span
+        >We couldn't check this file for duplicates — the import will still handle duplicates according to your choice
+        below.</span
+      >
+    </div>
+    } @if (reviewIsClean()) {
     <div class="alert bg-success/10 text-success-content border border-success/30 gap-2">
       <pc-icon name="check-circle" class="text-success" [size]="5"></pc-icon>
       <span>No duplicate emails and no email problems found in this file.</span>
