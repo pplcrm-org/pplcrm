@@ -8,6 +8,7 @@ import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
 import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
 import { handleImportJob } from './handlers/import.handlers';
+import { handleTriggerListJoined } from './handlers/lists.handlers';
 import {
   handleCleanupActivities,
   handlePruneRetention,
@@ -91,6 +92,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'refresh_list':
       await handleRefreshList(job);
+      break;
+    case 'trigger_list_joined':
+      await handleTriggerListJoined(job);
       break;
     case 'enrich_company_google':
       await handleEnrichCompanyGoogle(job, db);

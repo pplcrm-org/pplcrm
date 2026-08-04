@@ -20,8 +20,14 @@ import { MapListsHouseholdsRepo } from './repositories/map-lists-households.repo
 import { MapListsPersonsRepo } from './repositories/map-lists-persons.repo';
 import { ensureSystemLists, queueSystemListRefreshes } from './system-lists';
 import type { OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
-import { WorkflowsController } from '../workflows/controller';
 import { logger } from '../../logger';
+
+/**
+ * How many person ids ride in one queued `trigger_list_joined` job. One job per chunk keeps a
+ * single jsonb payload small and bounds how much work one job does: a 100,000-member list becomes
+ * 200 job rows rather than one job holding every id.
+ */
+const LIST_JOINED_TRIGGER_CHUNK_SIZE = 500;
 
 /**
  * The live membership of a list at the moment of the call.
@@ -240,107 +246,114 @@ export class ListsController extends BaseController<'lists', ListsRepo> {
       status: (payload.is_dynamic ?? false) ? 'refreshing' : 'idle',
     };
 
+    // A static list's membership is resolved BEFORE the write transaction opens: the rule scan is
+    // a long read, and holding a transaction open across it would pin a connection for its whole
+    // duration. Same ordering as executeListRefresh below.
+    const explicitMemberIds = (payload.member_ids ?? []).map(String);
+    let memberIds: string[] = [];
+    if (!row.is_dynamic) {
+      if (explicitMemberIds.length) {
+        memberIds = explicitMemberIds;
+      } else if (payload.definition) {
+        const definition = scopedDefinition(payload.definition as getAllOptionsType, row.campaign_id);
+        // The snapshot a static list is created with must be everyone the rules match, not the
+        // first page of them — same reason the refresh below scans.
+        memberIds =
+          payload.object === 'people'
+            ? await this.scanMatchingPersonIds(auth.tenant_id, definition)
+            : await this.scanMatchingHouseholdIds(auth.tenant_id, definition);
+      }
+    }
+
     let list: Awaited<ReturnType<typeof this.add>>;
     try {
-      list = await this.add(row as OperationDataType<'lists', 'insert'>);
+      // The list row, its membership rows, and the jobs the creation queues all commit together.
+      // Written unwrapped, the list row committed first and a membership insert that failed (a
+      // large tenant blowing Postgres's 65535-bind-parameter cap in one statement) left an empty
+      // list behind whose name was now taken — so the retry could not even reuse the name.
+      list = await this.getRepo()
+        .transaction()
+        .execute(async (trx) => {
+          const created = await this.add(row as OperationDataType<'lists', 'insert'>, trx);
+
+          // For dynamic lists, trigger an immediate initial refresh via background job
+          if (row.is_dynamic) {
+            await trx
+              .insertInto('background_jobs')
+              .values({
+                tenant_id: auth.tenant_id,
+                queue: 'default',
+                status: 'pending',
+                payload: JSON.stringify({
+                  type: 'refresh_list',
+                  list_id: created.id,
+                  tenant_id: auth.tenant_id,
+                  user_id: auth.user_id,
+                }),
+                run_at: new Date(),
+              })
+              .execute();
+            return created;
+          }
+
+          if (memberIds.length === 0) return created;
+
+          // Chunked inserts, not one multi-row INSERT: past ~13,100 members a single statement
+          // exceeds Postgres's 65535-bind-parameter cap and the whole create fails.
+          if (payload.object === 'people') {
+            const rows = memberIds.map((person_id) => ({
+              tenant_id: auth.tenant_id,
+              list_id: created.id,
+              person_id,
+              createdby_id: auth.user_id,
+              updatedby_id: auth.user_id,
+            }));
+            await this.mapListsPersonsRepo.addManyChunked(
+              { rows: rows as OperationDataType<'map_lists_persons', 'insert'>[] },
+              trx,
+            );
+
+            // The `list_joined` automation trigger fires once per new member. Queued, not awaited
+            // in the request: a large list meant thousands of sequential trigger evaluations
+            // inside the HTTP call. Enqueued in this transaction, so a rollback takes the jobs
+            // with it and a commit can never lose them.
+            const triggerJobs: OperationDataType<'background_jobs', 'insert'>[] = [];
+            for (let i = 0; i < memberIds.length; i += LIST_JOINED_TRIGGER_CHUNK_SIZE) {
+              triggerJobs.push({
+                tenant_id: auth.tenant_id,
+                queue: 'default',
+                status: 'pending',
+                payload: JSON.stringify({
+                  type: 'trigger_list_joined',
+                  tenant_id: auth.tenant_id,
+                  list_id: created.id,
+                  person_ids: memberIds.slice(i, i + LIST_JOINED_TRIGGER_CHUNK_SIZE),
+                }),
+                run_at: new Date(),
+              });
+            }
+            await trx.insertInto('background_jobs').values(triggerJobs).execute();
+          } else {
+            const rows = memberIds.map((household_id) => ({
+              tenant_id: auth.tenant_id,
+              list_id: created.id,
+              household_id,
+              createdby_id: auth.user_id,
+              updatedby_id: auth.user_id,
+            }));
+            await this.mapListsHouseholdsRepo.addManyChunked(
+              { rows: rows as OperationDataType<'map_lists_households', 'insert'>[] },
+              trx,
+            );
+          }
+
+          return created;
+        });
     } catch (err) {
       if ((err as { code?: string })?.code === '23505') {
         throw new TRPCError({ code: 'CONFLICT', message: 'A list with this name already exists.' });
       }
       throw err;
-    }
-
-    // For dynamic lists, trigger an immediate initial refresh via background job
-    if (row.is_dynamic) {
-      await this.getRepo()
-        .db.insertInto('background_jobs')
-        .values({
-          tenant_id: auth.tenant_id,
-          queue: 'default',
-          status: 'pending',
-          payload: JSON.stringify({
-            type: 'refresh_list',
-            list_id: list.id,
-            tenant_id: auth.tenant_id,
-            user_id: auth.user_id,
-          }),
-          run_at: new Date(),
-        })
-        .execute();
-    } else {
-      // For static lists, populate membership by explicit IDs if provided; otherwise by definition
-      const ids = payload.member_ids ?? [];
-
-      if (ids.length && payload.object === 'people') {
-        const rows = ids.map((person_id) => ({
-          tenant_id: auth.tenant_id,
-          list_id: list.id,
-          person_id,
-          createdby_id: auth.user_id,
-          updatedby_id: auth.user_id,
-        }));
-        await this.mapListsPersonsRepo.addMany({ rows: rows as OperationDataType<'map_lists_persons', 'insert'>[] });
-        try {
-          const workflowsController = new WorkflowsController();
-          for (const person_id of ids) {
-            await workflowsController.triggerWorkflow(auth.tenant_id, person_id, 'list_joined', list.id);
-          }
-        } catch (err) {
-          logger.error({ err }, 'Failed to trigger list_joined workflow in addList (explicit IDs)');
-        }
-      } else if (ids.length && payload.object === 'households') {
-        const rows = ids.map((household_id) => ({
-          tenant_id: auth.tenant_id,
-          list_id: list.id,
-          household_id,
-          createdby_id: auth.user_id,
-          updatedby_id: auth.user_id,
-        }));
-        await this.mapListsHouseholdsRepo.addMany({
-          rows: rows as OperationDataType<'map_lists_households', 'insert'>[],
-        });
-      } else if (payload.definition) {
-        const definition = scopedDefinition(payload.definition as getAllOptionsType, row.campaign_id);
-        if (payload.object === 'people') {
-          // The snapshot a static list is created with must be everyone the rules match, not the
-          // first page of them — same reason the refresh below scans.
-          const memberIds = await this.scanMatchingPersonIds(auth.tenant_id, definition);
-          const rows = memberIds.map((person_id) => ({
-            tenant_id: auth.tenant_id,
-            list_id: list.id,
-            person_id,
-            createdby_id: auth.user_id,
-            updatedby_id: auth.user_id,
-          }));
-          if (rows.length) {
-            await this.mapListsPersonsRepo.addMany({
-              rows: rows as OperationDataType<'map_lists_persons', 'insert'>[],
-            });
-            try {
-              const workflowsController = new WorkflowsController();
-              for (const r of rows) {
-                await workflowsController.triggerWorkflow(auth.tenant_id, r.person_id, 'list_joined', list.id);
-              }
-            } catch (err) {
-              logger.error({ err }, 'Failed to trigger list_joined workflow in addList (definition)');
-            }
-          }
-        } else if (payload.object === 'households') {
-          const memberIds = await this.scanMatchingHouseholdIds(auth.tenant_id, definition);
-          const rows = memberIds.map((household_id) => ({
-            tenant_id: auth.tenant_id,
-            list_id: list.id,
-            household_id,
-            createdby_id: auth.user_id,
-            updatedby_id: auth.user_id,
-          }));
-          if (rows.length) {
-            await this.mapListsHouseholdsRepo.addMany({
-              rows: rows as OperationDataType<'map_lists_households', 'insert'>[],
-            });
-          }
-        }
-      }
     }
 
     return list;

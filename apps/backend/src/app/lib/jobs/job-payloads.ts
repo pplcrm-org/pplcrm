@@ -73,6 +73,18 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     list_id: idSchema,
     user_id: idSchema,
   }),
+  /**
+   * Fire the `list_joined` automation trigger for people just added to a static list. Enqueued
+   * inside the list-creation transaction, one row per chunk of person ids: evaluating the trigger
+   * once per member sequentially inside the HTTP request meant thousands of awaited round trips on
+   * a large list.
+   */
+  z.object({
+    type: z.literal('trigger_list_joined'),
+    tenant_id: idSchema,
+    list_id: idSchema,
+    person_ids: z.array(idSchema),
+  }),
   z.object({
     type: z.literal('enrich_company_google'),
     company_id: idSchema,
