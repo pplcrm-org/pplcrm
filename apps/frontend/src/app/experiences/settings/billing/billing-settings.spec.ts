@@ -39,6 +39,9 @@ describe('BillingSettingsComponent', () => {
     stripeCustomerId: 'cus_123',
     stripeSubscriptionId: 'sub_123',
     hasActiveSubscription: true,
+    // Mirrors the backend derivation (stored subscription id in a modifiable status), so the
+    // existing seeds keep meaning what they meant; explicit overrides still win via the spread.
+    canModifySubscription: over.stripeSubscriptionId !== null,
     cancelAtPeriodEnd: false,
     isMockMode: false,
     ...over,

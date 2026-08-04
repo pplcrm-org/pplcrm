@@ -79,8 +79,9 @@
         <pc-icon name="cog-6-tooth" />
         Invoices &amp; payment method }
       </button>
-      } @if (!details()?.isMockMode && details()?.hasActiveSubscription && details()?.stripeSubscriptionId) { @if
-      (details()?.cancelAtPeriodEnd) {
+      <!-- hasLiveSubscription() includes past_due: a tenant whose renewal failed must still be
+           able to cancel (or resume) from here — this is their only self-serve exit. -->
+      } @if (!details()?.isMockMode && hasLiveSubscription()) { @if (details()?.cancelAtPeriodEnd) {
       <button
         type="button"
         class="btn btn-outline btn-primary btn-sm"

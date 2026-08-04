@@ -16,6 +16,7 @@ import {
   bracketIndexForSubscribers,
   getPlanDef,
   maxQuantity,
+  priceForQuantity,
   planAllowsFeature,
   planDisplayName,
   priceLabelAt,
@@ -39,6 +40,9 @@ export interface BillingDetailsSnapshot {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   hasActiveSubscription: boolean;
+  /** A Stripe subscription exists and can be changed in-app (switch/cancel/resume). Includes
+   * `past_due` — a tenant whose card failed must still be able to downgrade or cancel. */
+  canModifySubscription: boolean;
   /** A period-end cancellation is scheduled: the plan runs until `endsAt`, then drops to Free. */
   cancelAtPeriodEnd: boolean;
   isMockMode: boolean;
@@ -114,15 +118,16 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     () => this.details()?.plan === 'free' && !!this.details()?.hasActiveSubscription,
   );
 
-  /** Moving to Free is only self-serve while no paid subscription is live; otherwise it is a
-   * cancellation and belongs in the Stripe portal. */
-  protected readonly canChooseFree = computed(() => !this.details()?.stripeSubscriptionId);
+  /** Moving to Free is only self-serve while no modifiable subscription exists; otherwise it is
+   * a cancellation — the "Downgrade to Free" button in the Current plan section. Keyed on the
+   * backend's live-subscription predicate, not the stored Stripe id: after a cancellation lands
+   * the id is cleared, but even a stale one must not block the Free card forever (T1-9). */
+  protected readonly canChooseFree = computed(() => !this.details()?.canModifySubscription);
 
-  /** A paid subscription is live. Plan changes must then go through `switchPlan` (updates the
-   * existing subscription); Checkout would CREATE a second subscription and double-bill. */
-  protected readonly hasLiveSubscription = computed(
-    () => !!this.details()?.hasActiveSubscription && !!this.details()?.stripeSubscriptionId,
-  );
+  /** A subscription is live and modifiable (includes `past_due`). Plan changes must then go
+   * through `switchPlan` (updates the existing subscription); Checkout would CREATE a second
+   * subscription and double-bill. */
+  protected readonly hasLiveSubscription = computed(() => !!this.details()?.canModifySubscription);
 
   /** The Free tier's hard subscriber ceiling, read from the ladder rather than restated. */
   protected readonly freeSubscriberCap = subscriberCapForQuantity('free', 1);
@@ -393,6 +398,20 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     const intervalOnly = this.isCurrentPlan(plan);
     const isDowngrade = !intervalOnly && !this.isUpgrade(plan);
     const lines: string[] = [];
+
+    // switchPlan bills by the REAL emailable-subscriber count, not the slider — so the dialog
+    // must state the amount that will actually be charged (T2-9).
+    const subscribers = this.usage()?.subscribers;
+    const bracket = subscribers == null ? null : bracketIndexForSubscribers(plan.key, subscribers);
+    if (subscribers != null && bracket !== null) {
+      const amount =
+        interval === 'year'
+          ? `$${this.formatCount(annualPriceForQuantity(plan.key, bracket))}/year`
+          : `$${priceForQuantity(plan.key, bracket)}/month`;
+      lines.push(
+        `Your ${this.formatCount(subscribers)} emailable subscribers put you in ${plan.name}’s ${amount} bracket — that is the amount Stripe bills, regardless of the subscriber slider.`,
+      );
+    }
 
     if (intervalOnly) {
       if (interval === 'year') {

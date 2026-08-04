@@ -7,6 +7,7 @@ import {
   hasSettledPlan,
   maxQuantity,
   PLANS_BY_KEY,
+  priceForQuantity,
   PURCHASABLE_PLAN_KEYS,
   type BillingInterval,
   type PlanKey,
@@ -51,6 +52,18 @@ function planForPriceId(
 /** Narrow a stored `tenants.subscription_interval` value (or any unknown) to a BillingInterval. */
 function asBillingInterval(value: unknown): BillingInterval {
   return value === 'year' ? 'year' : 'month';
+}
+
+/**
+ * Statuses under which the stored Stripe subscription still exists and can be modified in-app
+ * (switch, cancel, resume). `past_due` counts — a tenant whose renewal payment failed must still
+ * be able to downgrade or cancel (REVIEW4 T1-10). Distinct from `hasSettledPlan` (active/trialing),
+ * which answers "has this workspace settled on a plan", not "is there a live subscription object".
+ */
+const MODIFIABLE_SUBSCRIPTION_STATUSES = ['active', 'trialing', 'past_due'] as const;
+
+function isModifiableSubscriptionStatus(status: string | null | undefined): boolean {
+  return (MODIFIABLE_SUBSCRIPTION_STATUSES as readonly string[]).includes(status ?? '');
 }
 
 /**
@@ -225,7 +238,12 @@ export class BillingController {
     // store the flag) so the page can show "your plan ends on X" and offer to resume; a Stripe
     // hiccup degrades to `false` rather than failing the whole billing page.
     let cancelAtPeriodEnd = false;
-    if (!isMockMode && stripe && tenant.stripe_subscription_id && hasSettledPlan(tenant.subscription_status)) {
+    if (
+      !isMockMode &&
+      stripe &&
+      tenant.stripe_subscription_id &&
+      isModifiableSubscriptionStatus(tenant.subscription_status)
+    ) {
       try {
         const subscription = await getStripe().subscriptions.retrieve(String(tenant.stripe_subscription_id));
         cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
@@ -242,6 +260,10 @@ export class BillingController {
       stripeCustomerId: tenant.stripe_customer_id || null,
       stripeSubscriptionId: tenant.stripe_subscription_id || null,
       hasActiveSubscription: hasSettledPlan(tenant.subscription_status),
+      // A Stripe subscription exists and can be changed in-app (switch/cancel/resume) — includes
+      // `past_due`, so a tenant whose card failed can still downgrade or cancel (REVIEW4 T1-10).
+      canModifySubscription:
+        !!tenant.stripe_subscription_id && isModifiableSubscriptionStatus(tenant.subscription_status),
       cancelAtPeriodEnd,
       isMockMode,
     };
@@ -329,7 +351,9 @@ export class BillingController {
       billedQuantity,
       subscriberCap: limits.subscribers,
       emailCap: limits.emails,
-      monthlyPrice: plan.pricing ? (plan.pricing.brackets[billedQuantity - 1]?.price ?? 0) : 0,
+      // priceForQuantity clamps into the ladder — a portal price-switch can leave a stored
+      // quantity above the target plan's bracket count, and the raw index then read $0 (T2-10a).
+      monthlyPrice: plan.pricing ? priceForQuantity(plan.key, billedQuantity) : 0,
       interval: tenant.subscription_interval,
       tierMax: plan.pricing ? maxQuantity(plan.key) : Number.POSITIVE_INFINITY,
     };
@@ -608,6 +632,9 @@ export class BillingController {
         tenant_id: tenant.id,
         id: tenant.id,
         row: {
+          // The dead id must be cleared: the Free plan card is gated on "no modifiable
+          // subscription", and a stale id also has nothing left to resume (T1-9).
+          stripe_subscription_id: null,
           subscription_status: 'canceled',
           subscription_plan: 'free',
           subscription_ends_at: new Date().toISOString(),
@@ -631,6 +658,20 @@ export class BillingController {
     const planName: string = priceMatch?.plan ?? currentPlan;
     const interval: BillingInterval = priceMatch?.interval ?? tenant.subscription_interval;
 
+    // A portal price-switch keeps the old quantity, which can exceed the target plan's ladder
+    // (e.g. Movement qty 11 → Grassroots max 10). Store the clamped value; the daily reconcile
+    // cron corrects the Stripe-side quantity itself (T2-10a).
+    const stripeQuantity = item?.quantity ?? 1;
+    const planDef = getPlanDef(planName);
+    const quantity = planDef ? Math.min(stripeQuantity, maxQuantity(planDef.key)) : stripeQuantity;
+    if (quantity !== stripeQuantity) {
+      logger.warn(
+        `[syncSubscriptionFromStripe] Tenant ${tenant.id}: Stripe quantity ${stripeQuantity} exceeds the ` +
+          `'${planName}' ladder max ${quantity} — storing the clamped value; the daily reconciliation will ` +
+          `correct the Stripe subscription.`,
+      );
+    }
+
     await tenantsRepo.update({
       tenant_id: tenant.id,
       id: tenant.id,
@@ -639,7 +680,7 @@ export class BillingController {
         subscription_plan: planName,
         subscription_status: live.status,
         subscription_ends_at: subscriptionPeriodEnd(live),
-        subscription_quantity: item?.quantity ?? 1,
+        subscription_quantity: quantity,
         subscription_interval: interval,
       },
     });
@@ -699,6 +740,24 @@ export class BillingController {
         const customerId = session.customer as string;
 
         if (tenantId && subscriptionId) {
+          // Two completed checkout sessions (two tabs, back button) create two live subscriptions
+          // — Stripe cancels neither. Report-only for now: name both ids loudly so ops can cancel
+          // the stray one in the Stripe dashboard (T2-10b; auto-cancel deliberately not done).
+          const existing = asTenantBillingRow(
+            await tenantsRepo.getOneBy('id', { tenant_id: tenantId, value: tenantId }),
+          );
+          if (
+            existing?.stripe_subscription_id &&
+            existing.stripe_subscription_id !== subscriptionId &&
+            isModifiableSubscriptionStatus(existing.subscription_status)
+          ) {
+            logger.error(
+              `[processWebhookEvent] checkout.session.completed created subscription ${subscriptionId} for ` +
+                `tenant ${tenantId}, which already has live subscription ${existing.stripe_subscription_id} ` +
+                `stored — the tenant is now paying for TWO subscriptions. Cancel one in the Stripe dashboard.`,
+            );
+          }
+
           const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
           const item = subscription.items.data[0];
           const priceMatch = planForPriceId(item?.price.id);
@@ -743,6 +802,17 @@ export class BillingController {
         );
 
         if (dbTenant) {
+          // The tenant was matched by CUSTOMER id, but a customer can carry a stray second
+          // subscription (see checkout.session.completed above). Only mirror events for the
+          // subscription we actually store; a tenant with NO stored id still gets updates so a
+          // stale/missing id self-heals (T2-10b).
+          if (dbTenant.stripe_subscription_id && dbTenant.stripe_subscription_id !== subscriptionId) {
+            logger.warn(
+              `[processWebhookEvent] Ignoring customer.subscription.updated for ${subscriptionId}: ` +
+                `tenant ${dbTenant.id} is on subscription ${dbTenant.stripe_subscription_id}`,
+            );
+            break;
+          }
           const item = subscription.items.data[0];
           const priceMatch = planForPriceId(item?.price.id);
           const previousPlan: string = dbTenant.subscription_plan ?? 'free';
@@ -795,17 +865,31 @@ export class BillingController {
         const subscription = event.data.object as Stripe.Subscription;
         const customerId = subscription.customer as string;
 
-        const dbTenant = (await tenantsRepo.getOneBy('stripe_customer_id', {
-          tenant_id: '1',
-          value: customerId,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic-read result collapses to {}; see pplcrm-any-exceptions
-        })) as any;
+        const dbTenant = asTenantBillingRow(
+          await tenantsRepo.getOneBy('stripe_customer_id', {
+            tenant_id: '1',
+            value: customerId,
+          }),
+        );
 
         if (dbTenant) {
+          // Matched by CUSTOMER id — cancelling a stray second subscription must not drop a
+          // still-paying tenant to Free. Only act on the subscription we store; a tenant with
+          // NO stored id still processes the cancellation as a fallback (T2-10b).
+          if (dbTenant.stripe_subscription_id && dbTenant.stripe_subscription_id !== subscription.id) {
+            logger.warn(
+              `[processWebhookEvent] Ignoring customer.subscription.deleted for ${subscription.id}: ` +
+                `tenant ${dbTenant.id} is on subscription ${dbTenant.stripe_subscription_id}`,
+            );
+            break;
+          }
           await tenantsRepo.update({
             tenant_id: dbTenant.id,
             id: dbTenant.id,
             row: {
+              // Clear the dead id so the Free card unblocks and there is nothing left to
+              // "resume" (T1-9).
+              stripe_subscription_id: null,
               subscription_status: 'canceled',
               subscription_plan: 'free',
               subscription_ends_at: new Date().toISOString(),
