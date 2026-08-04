@@ -396,6 +396,21 @@ export class AuthService extends TRPCService<'authusers'> {
     return this.api.auth.updatePasskeyName.mutate({ id, friendlyName });
   }
 
+  /** This user's own signed-in devices. Carries no session id and no refresh token. */
+  public listSessions() {
+    return this.api.auth.listSessions.query();
+  }
+
+  /** End one session by its row id. The server re-checks that it belongs to this user. */
+  public revokeSession(id: string) {
+    return this.api.auth.revokeSession.mutate({ id });
+  }
+
+  /** End every session except this browser's. */
+  public revokeOtherSessions() {
+    return this.api.auth.revokeOtherSessions.mutate();
+  }
+
   private async updateTokensAndGetCurrentUser(token: { auth_token?: string | null } | TRPCError) {
     if (!token || token instanceof TRPCError) {
       throw token;

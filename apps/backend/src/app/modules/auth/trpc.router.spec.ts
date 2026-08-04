@@ -138,6 +138,25 @@ describe('AuthRouter', () => {
     expect(result).toEqual(mockUser);
   });
 
+  // Revoking the session you are using is a sign-out, so the refresh cookie has to go with it —
+  // otherwise the browser keeps a refresh token pointing at a row that no longer exists, and the
+  // next cold load tries to resume a session the user just ended. Revoking any OTHER device must
+  // leave this browser's cookie untouched.
+  it('clears the refresh cookie only when the revoked session is the caller’s own', async () => {
+    const spy = vi.spyOn(AuthController.prototype, 'revokeSession');
+    const authedCtx = () => ({ ...cookieCtx(), auth: { tenant_id: '1', user_id: '1', session_id: 's1' } });
+
+    spy.mockResolvedValue({ success: true, was_current: false });
+    const otherDevice = authedCtx();
+    await AuthRouter.createCaller(otherDevice as any).revokeSession({ id: '42' });
+    expect(otherDevice.res.clearCookie).not.toHaveBeenCalled();
+
+    spy.mockResolvedValue({ success: true, was_current: true });
+    const thisDevice = authedCtx();
+    await AuthRouter.createCaller(thisDevice as any).revokeSession({ id: '42' });
+    expect(thisDevice.res.clearCookie).toHaveBeenCalledWith('pc_refresh', { path: '/' });
+  });
+
   it('should call signIn on the controller and move the refresh token to the cookie', async () => {
     const mockTokens = { auth_token: 'abc', refresh_token: 'def', refresh_expires_at: null };
     const spy = vi.spyOn(AuthController.prototype, 'signIn').mockResolvedValue(mockTokens as any);

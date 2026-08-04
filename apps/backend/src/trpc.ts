@@ -169,6 +169,15 @@ function collectCampaignIds(value: unknown, depth = 0, out = new Set<string>()):
   return out;
 }
 
+/**
+ * Mutations a `viewer` may still call. Everything here is the viewer acting on their own account
+ * rather than on workspace data: undoing an email change they did not request, signing out, and
+ * ending their own sessions on other devices. Someone who lost a phone must be able to revoke it
+ * whatever their role — the read-only restriction is about the workspace's records, not about
+ * their own access to it.
+ */
+const VIEWER_ALLOWED_MUTATIONS = ['cancelEmailChange', 'signOut', 'revokeSession', 'revokeOtherSessions'];
+
 const isAuthed = middleware(async (opts) => {
   const { ctx } = opts;
 
@@ -228,11 +237,7 @@ const isAuthed = middleware(async (opts) => {
     }
 
     if (opts.type === 'mutation' && user.role === 'viewer') {
-      const isExempt =
-        opts.path === 'cancelEmailChange' ||
-        opts.path.endsWith('.cancelEmailChange') ||
-        opts.path === 'signOut' ||
-        opts.path.endsWith('.signOut');
+      const isExempt = VIEWER_ALLOWED_MUTATIONS.some((name) => opts.path === name || opts.path.endsWith(`.${name}`));
       if (!isExempt) {
         throw new TRPCError({
           code: 'FORBIDDEN',

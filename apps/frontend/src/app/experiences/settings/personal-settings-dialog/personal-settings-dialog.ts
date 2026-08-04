@@ -8,6 +8,7 @@ import { AuthService } from '../../../auth/auth-service';
 import { UserService } from '../../../services/user.service';
 import { ThemePreference, ThemeService } from '../../../layout/theme/theme-service';
 import { PasskeySettingsComponent } from '../security/passkey-settings';
+import { SessionSettingsComponent } from '../security/session-settings';
 
 interface NotifRow {
   /** Stable row identity — the email key where there is one, else the channel key. */
@@ -99,12 +100,13 @@ const NOTIF_ROWS: NotifRow[] = [
 
 /**
  * Personal Settings popup (§5a) — instant apply, no Save/Reset. Everything here is
- * scoped to the signed-in user: notification matrix, theme, and passkeys. Tenant-wide
+ * scoped to the signed-in user: notification matrix, theme, passkeys, and the list of
+ * devices currently signed in to this account. Tenant-wide
  * appearance defaults (theme, date format) live in Workspace → Organization instead.
  */
 @Component({
   selector: 'pc-personal-settings-dialog',
-  imports: [Icon, RouterLink, PasskeySettingsComponent],
+  imports: [Icon, RouterLink, PasskeySettingsComponent, SessionSettingsComponent],
   templateUrl: 'personal-settings-dialog.html',
 })
 export class PersonalSettingsDialog {

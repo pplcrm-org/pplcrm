@@ -346,6 +346,9 @@ apps/
             security/
               passkey-settings.html
               passkey-settings.ts
+              session-settings.html
+              session-settings.ts
+              user-agent-label.ts
             services/
               settings-service.ts
             storage/

@@ -51,7 +51,13 @@ export function getRefreshTokenFromCookie(req: FastifyRequest): string | undefin
 
 /**
  * Persist the refresh token in the HttpOnly cookie. `expiresAt` pins the cookie to the DB session's
- * expiry (remember-me → 30 days); when null it becomes a session cookie that dies with the browser.
+ * expiry — 24 hours normally, 30 days with "remember me".
+ *
+ * The null branch below would produce a cookie that dies when the browser closes, but nothing
+ * reaches it: `createTokens` (auth-tokens.ts) always computes a concrete expiry, so in practice
+ * every refresh cookie is persistent and an abandoned session survives closing the browser for at
+ * least 24 hours. Do not read the null case as a description of how sign-in behaves.
+ *
  * The DB session is always the real authority — the cookie is just the carrier.
  */
 export function setRefreshCookie(res: FastifyReply, refreshToken: string, expiresAt: Date | null): void {

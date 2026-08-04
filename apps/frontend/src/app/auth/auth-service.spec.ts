@@ -565,5 +565,19 @@ describe('AuthService', () => {
       expect(mockApi.auth.dismissPasskeyPrompt.mutate).toHaveBeenCalled();
       expect(mockApi.auth.updatePasskeyName.mutate).toHaveBeenCalledWith({ id: 'cred-1', friendlyName: 'New name' });
     });
+
+    it('listSessions / revokeSession / revokeOtherSessions delegate to the api', async () => {
+      mockApi.auth.listSessions = { query: vi.fn().mockResolvedValue([]) };
+      mockApi.auth.revokeSession = { mutate: vi.fn().mockResolvedValue({ success: true, was_current: false }) };
+      mockApi.auth.revokeOtherSessions = { mutate: vi.fn().mockResolvedValue({ revoked: 2 }) };
+
+      await service.listSessions();
+      await service.revokeSession('42');
+      await service.revokeOtherSessions();
+
+      expect(mockApi.auth.listSessions.query).toHaveBeenCalled();
+      expect(mockApi.auth.revokeSession.mutate).toHaveBeenCalledWith({ id: '42' });
+      expect(mockApi.auth.revokeOtherSessions.mutate).toHaveBeenCalled();
+    });
   });
 });

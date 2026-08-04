@@ -1,0 +1,77 @@
+<div class="space-y-4">
+  <p class="text-xs text-base-content/60">
+    Every browser and phone currently signed in to your account. Sign one out if you do not recognise it, or if it is a
+    device you no longer have.
+  </p>
+
+  @if (loading()) {
+  <div class="flex justify-center py-8">
+    <span class="loading loading-spinner loading-md text-primary"></span>
+  </div>
+  } @else if (sessions().length === 0) {
+  <pc-empty-state
+    [bordered]="false"
+    icon="globe-americas"
+    title="No sessions to show"
+    hint="Reload the page if you expected to see this browser here."
+  />
+  } @else {
+  <ul class="space-y-3">
+    @for (s of sessions(); track s.id) {
+    <li class="pc-panel flex items-start gap-3 p-4">
+      <pc-icon name="globe-americas" [size]="5" class="mt-0.5 shrink-0 text-primary/70"></pc-icon>
+
+      <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="truncate text-xs font-medium">{{ s.device }}</span>
+          @if (s.is_current) {
+          <span class="badge badge-xs badge-success">This device</span>
+          }
+        </div>
+
+        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-base-content/50">
+          <span class="tabular-nums">IP {{ s.ip_address || 'not recorded' }}</span>
+          <span>Signed in {{ s.created_at | date: 'MMM d, h:mm a' }}</span>
+          @if (s.last_used_at) {
+          <span>Last active {{ s.last_used_at | date: 'MMM d, h:mm a' }}</span>
+          } @if (s.expires_at) {
+          <span>Expires {{ s.expires_at | date: 'MMM d, h:mm a' }}</span>
+          }
+        </div>
+      </div>
+
+      @if (s.is_current) {
+      <!-- No button on your own row. Signing this browser out is what "Sign out" in the
+           avatar menu does, and two controls for one job is how they drift apart. -->
+      } @else {
+      <button
+        type="button"
+        class="btn btn-ghost btn-sm shrink-0 text-error hover:bg-error/10"
+        (click)="revokeSession(s)"
+        [disabled]="pendingId() === s.id || revokingOthers()"
+        [attr.aria-label]="'Sign out ' + s.device"
+      >
+        @if (pendingId() === s.id) {
+        <span class="loading loading-spinner loading-xs"></span>
+        } @else {
+        <pc-icon name="arrow-left-start-on-rectangle" [size]="4"></pc-icon>
+        }
+      </button>
+      }
+    </li>
+    }
+  </ul>
+
+  @if (otherCount() > 0) {
+  <button
+    type="button"
+    class="btn btn-outline btn-error btn-sm w-full"
+    (click)="revokeOthers()"
+    [disabled]="revokingOthers() || pendingId() !== null"
+  >
+    @if (revokingOthers()) {
+    <span class="loading loading-spinner loading-xs"></span>
+    } {{ revokeOthersLabel() }}
+  </button>
+  } }
+</div>

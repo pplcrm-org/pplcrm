@@ -200,6 +200,28 @@ function signOut() {
   });
 }
 
+/** The caller's own signed-in devices. Carries no session id and no refresh token — see
+ *  ActiveSessionRow in sessions.repo.ts. */
+function listSessions() {
+  return authProcedure.query(({ ctx }) => controller.listSessions(ctx.auth));
+}
+
+/** End one session. Ownership is re-checked server-side; the row id alone authorises nothing. */
+function revokeSession() {
+  return authProcedure.input(z.object({ id: idSchema })).mutation(async ({ input, ctx }) => {
+    const result = await controller.revokeSession(ctx.auth, input.id);
+    // Revoking the session you are using is a sign-out. Drop the cookie too, or the browser keeps
+    // a refresh token pointing at a row that no longer exists.
+    if (result.was_current) clearRefreshCookie(ctx.res);
+    return result;
+  });
+}
+
+/** End every session except this one — the "I lost a device" action. */
+function revokeOtherSessions() {
+  return authProcedure.mutation(({ ctx }) => controller.revokeOtherSessions(ctx.auth));
+}
+
 function signUp() {
   return publicProcedure.input(signUpInputObj).mutation(async ({ input, ctx }) => {
     const ip = ctx.req?.ip ?? 'unknown';
@@ -331,6 +353,9 @@ export const AuthRouter = router({
   signUp: signUp(),
   signIn: signIn(),
   signOut: signOut(),
+  listSessions: listSessions(),
+  revokeSession: revokeSession(),
+  revokeOtherSessions: revokeOtherSessions(),
   currentUser: currentUser(),
   getAllWithCounts: getAllWithCounts(),
   getById: getById(),

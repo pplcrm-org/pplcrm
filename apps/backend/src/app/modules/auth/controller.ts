@@ -100,6 +100,7 @@ import { DEMO_MODE_INVITES_BLOCKED_MESSAGE, assertNotDemoMode } from '../demo/de
 import { seedDemoData } from '../demo/demo-seed';
 import { demoDatasetFor } from '../demo/demo-datasets';
 import { AuthUsersRepo } from './repositories/authusers.repo';
+import type { ActiveSessionRow } from './repositories/sessions.repo';
 import { SessionsRepo } from './repositories/sessions.repo';
 import { TenantsRepo } from './repositories/tenants.repo';
 
@@ -1639,6 +1640,50 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       return null;
     }
     return this.sessions.deleteBySessionId(auth.session_id);
+  }
+
+  /**
+   * The caller's own signed-in devices. Scoped to this user in this workspace — never the
+   * workspace's sessions and never another user's — and stripped of both credential columns
+   * before it leaves the repository.
+   */
+  public async listSessions(auth: IAuthKeyPayload): Promise<ActiveSessionRow[]> {
+    return this.sessions.getActiveByUserId(auth.user_id, auth.tenant_id, hashToken(auth.session_id));
+  }
+
+  /**
+   * Revoke one session by its row id.
+   *
+   * The row id is a sequence value, so it is guessable — authorisation here comes from an explicit
+   * ownership check, not from the identifier being hard to find. Returns whether the row revoked
+   * was the caller's own, so the transport layer can clear the refresh cookie in that case.
+   */
+  public async revokeSession(auth: IAuthKeyPayload, id: string): Promise<{ success: true; was_current: boolean }> {
+    const row = await this.sessions.getOwnershipById(id, auth.tenant_id, hashToken(auth.session_id));
+    if (!row) {
+      throw new NotFoundError('That session no longer exists.');
+    }
+    if (String(row.user_id) !== String(auth.user_id)) {
+      // FORBIDDEN, never UNAUTHORIZED. The client force-signs-the-user-out on a 401, and this
+      // caller is signed in perfectly well — they simply do not own this row.
+      throw new ForbiddenError('You can only sign out your own sessions.');
+    }
+
+    const deleted = await this.sessions.deleteByIdForUser(id, auth.user_id, auth.tenant_id);
+    if (deleted === 0) {
+      // Lost a race with another revoke, a sign-out, or the session expiring.
+      throw new NotFoundError('That session no longer exists.');
+    }
+    return { success: true, was_current: row.is_current === true };
+  }
+
+  /**
+   * Revoke every session this user has except the one making the request — the "I lost a device"
+   * action. Returns how many were ended so the screen can say so.
+   */
+  public async revokeOtherSessions(auth: IAuthKeyPayload): Promise<{ revoked: number }> {
+    const revoked = await this.sessions.deleteOthersByUserId(auth.user_id, auth.tenant_id, hashToken(auth.session_id));
+    return { revoked };
   }
 
   public async signUp(input: signUpInputType) {
