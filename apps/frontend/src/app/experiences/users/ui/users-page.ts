@@ -109,8 +109,27 @@ export class UsersPageComponent implements OnInit {
   protected readonly assignableCampaigns = computed(() =>
     this.campaignContext.campaigns().filter((c) => c.status === 'active'),
   );
+  /**
+   * What the per-row select offers: the active campaigns, plus any ARCHIVED campaign a row is
+   * still pinned to, labelled as such. An archived campaign missing from the list made the row
+   * read "Office" while the pin kept scoping that user to the archived campaign.
+   */
+  protected readonly campaignOptions = computed(() => {
+    const active = this.assignableCampaigns();
+    const activeIds = new Set(active.map((c) => String(c.id)));
+    const pinnedIds = new Set(
+      this.rows()
+        .map((row) => row.campaign_id)
+        .filter((id): id is string => !!id),
+    );
+    const stillPinned = this.campaignContext
+      .campaigns()
+      .filter((c) => !activeIds.has(String(c.id)) && pinnedIds.has(String(c.id)))
+      .map((c) => ({ ...c, name: `${c.name} (archived)` }));
+    return stillPinned.length ? [...active, ...stillPinned] : active;
+  });
   /** The column only earns its space once an election campaign exists. */
-  protected readonly showCampaignColumn = computed(() => this.assignableCampaigns().length > 1);
+  protected readonly showCampaignColumn = computed(() => this.campaignOptions().length > 1);
   protected readonly columnCount = computed(() => (this.showCampaignColumn() ? 7 : 6));
 
   private readonly userSignal = this.auth.getUserSignal();
@@ -208,7 +227,7 @@ export class UsersPageComponent implements OnInit {
 
   protected campaignName(campaignId: string | null): string {
     if (campaignId == null) return 'Office';
-    return this.assignableCampaigns().find((c) => String(c.id) === campaignId)?.name ?? 'Office';
+    return this.campaignOptions().find((c) => String(c.id) === campaignId)?.name ?? 'Office';
   }
 
   protected async changeCampaign(row: UserRow, event: Event): Promise<void> {

@@ -98,7 +98,7 @@
           [attr.aria-label]="'Campaign for ' + displayName(row)"
           (change)="changeCampaign(row, $event)"
         >
-          @for (c of assignableCampaigns(); track c.id) {
+          @for (c of campaignOptions(); track c.id) {
           <option
             [value]="c.kind === 'office' ? '' : c.id"
             [selected]="(c.kind === 'office' ? null : c.id) === row.campaign_id"

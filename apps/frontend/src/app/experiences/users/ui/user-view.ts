@@ -143,8 +143,20 @@ export class UserViewComponent {
   protected readonly assignableCampaigns = computed(() =>
     this.campaignContext.campaigns().filter((c) => c.status === 'active'),
   );
+  /**
+   * What the select offers: the active campaigns, plus the ARCHIVED campaign this user is still
+   * pinned to, labelled as such. Leaving it out made the control read "Office" while the pin kept
+   * scoping the user to the archived campaign.
+   */
+  protected readonly campaignOptions = computed(() => {
+    const active = this.assignableCampaigns();
+    const assignedId = this.detail()?.campaign_id ?? null;
+    if (!assignedId || active.some((c) => String(c.id) === String(assignedId))) return active;
+    const archived = this.campaignContext.campaigns().find((c) => String(c.id) === String(assignedId));
+    return archived ? [...active, { ...archived, name: `${archived.name} (archived)` }] : active;
+  });
   /** Only worth showing once an election campaign exists alongside the office. */
-  protected readonly showCampaignControl = computed(() => this.assignableCampaigns().length > 1);
+  protected readonly showCampaignControl = computed(() => this.campaignOptions().length > 1);
   /** Admins/owners can work in every campaign, so the assignment doesn't scope them. */
   protected readonly targetIsCampaignScoped = computed(() => {
     const role = this.detail()?.role;
@@ -153,7 +165,7 @@ export class UserViewComponent {
   protected readonly assignedCampaignName = computed(() => {
     const id = this.detail()?.campaign_id ?? null;
     if (id == null) return 'Office';
-    return this.assignableCampaigns().find((c) => String(c.id) === id)?.name ?? 'Office';
+    return this.campaignOptions().find((c) => String(c.id) === id)?.name ?? 'Office';
   });
 
   protected async changeCampaign(event: Event): Promise<void> {
@@ -311,6 +323,25 @@ export class UserViewComponent {
     this.form().markAsTouched();
     if (this.form().invalid() || !this.id()) {
       return false;
+    }
+
+    // Changing a teammate's email address ends every session they have open and refuses their
+    // sign-in until they verify the new address. That is deliberate, but it used to happen behind
+    // a plain "User updated" toast, so say it before it happens.
+    const previousEmail = this.detail()?.email?.trim().toLowerCase() ?? '';
+    const nextEmail = this.payload().email?.trim().toLowerCase() ?? '';
+    if (previousEmail && nextEmail && previousEmail !== nextEmail) {
+      const confirmed = await this.dialogs.confirm({
+        title: 'Change this sign-in email?',
+        message:
+          `${this.displayName() || 'This user'} will be signed out everywhere and cannot sign in again ` +
+          `until they open the verification email sent to ${nextEmail}.`,
+        variant: 'warning',
+        confirmText: 'Change email',
+        cancelText: 'Keep current email',
+        emphasizeCancel: true,
+      });
+      if (!confirmed) return false;
     }
 
     this.saving.set(true);
