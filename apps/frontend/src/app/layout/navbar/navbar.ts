@@ -7,7 +7,7 @@ import { AnimateIfDirective } from '@uxcommon/directives/animate-if.directive';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 
-import { ORG_MODE_LABELS } from '@common';
+import { ORG_MODE_LABELS, isPrivilegedRole } from '@common';
 
 import { injectHelpDoor } from '../../shared/help-doors';
 import { OrgModeService } from '../../services/org-mode.service';
@@ -91,10 +91,10 @@ export class Navbar implements OnDestroy {
 
   /**
    * Whether to make that header a link to the switch. `/workspace` is behind `roleGuard`,
-   * which turns away exactly `role === 'user'` — a plain member sees the label as text
-   * rather than a link that would bounce them to the dashboard (no dead affordances, §2).
+   * which admits only admins and owners — everyone else sees the label as plain text rather
+   * than a link that would bounce them to the dashboard (no dead affordances, §2).
    */
-  protected readonly canChangeOrgMode = computed(() => this.currentUser()?.role !== 'user');
+  protected readonly canChangeOrgMode = computed(() => isPrivilegedRole(this.currentUser()?.role));
 
   /** Initials shown in the avatar circle when the user has no picture. */
   protected readonly userInitials = computed(() => {

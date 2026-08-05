@@ -3,7 +3,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { NgTemplateOutlet } from '@angular/common';
 import { NavigationCancel, NavigationEnd, NavigationError, NavigationStart, Router, RouterLink } from '@angular/router';
 import { filter, map } from 'rxjs';
-import { planAllowsFeature } from '@common';
+import { isPrivilegedRole, planAllowsFeature } from '@common';
 import { Icon } from '@icons/icon';
 import { Swap } from '@uxcommon/components/swap/swap';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -124,7 +124,9 @@ export class Sidebar {
     const allItems = this.sidebarSvc.getItems()();
     const withBadges = this.applyBadges(allItems);
     const scoped = this.applyPlanGates(this.applyModuleVisibility(withBadges));
-    if (role === 'user') {
+    // Admin-marked entries are for admins and owners only. Testing for the Editor role by name
+    // left them showing for Viewers, who are then turned away by roleGuard on arrival.
+    if (!isPrivilegedRole(role)) {
       return scoped
         .filter((item) => !item.adminOnly)
         .map((item) => {
