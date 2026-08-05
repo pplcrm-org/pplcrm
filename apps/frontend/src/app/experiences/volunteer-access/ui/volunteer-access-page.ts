@@ -10,6 +10,7 @@ import { Table } from '@uxcommon/components/table/table';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
 import type { CompanionVolunteerRow, CompanionVolunteerStatus } from '../../../../../../../libs/common/src';
+import { getUserErrorMessage } from '../../../services/api/user-message';
 import { JoinCodePanel } from './join-code-panel';
 import { VolunteerAccessService } from '../services/volunteer-access-service';
 
@@ -85,6 +86,31 @@ export class VolunteerAccessPage implements OnInit {
     }
   }
 
+  /**
+   * Declining a volunteer who is waiting. Same endpoint as Revoke (it has no status
+   * precondition), different copy: nothing to sign out yet, and the decision is reversible.
+   */
+  protected async decline(row: CompanionVolunteerRow): Promise<void> {
+    const confirmed = await this.confirmDlg.confirm({
+      title: `Decline ${this.displayName(row)}?`,
+      message:
+        'Their link stops working and they leave the waiting list. You can approve them later if you change your mind.',
+      variant: 'danger',
+      confirmText: 'Decline',
+    });
+    if (!confirmed) return;
+    this.busyId.set(row.id);
+    try {
+      await this.svc.revoke(row.id);
+      this.alerts.showSuccess(`Declined ${this.displayName(row)}. You can approve them later`);
+      await this.refreshAll();
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Could not decline. Try again'));
+    } finally {
+      this.busyId.set(null);
+    }
+  }
+
   protected contactLine(row: CompanionVolunteerRow): string {
     return [row.email, row.mobile].filter(Boolean).join(' · ') || '—';
   }
@@ -111,9 +137,14 @@ export class VolunteerAccessPage implements OnInit {
       this.alerts.showSuccess(`Updated turf access for ${this.displayName(row)}`);
       this.flash(row.id);
       await this.refresh();
-    } catch {
-      this.alerts.showError('Could not change turf access. Try again');
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Could not change turf access. Try again'));
       await this.refresh();
+      // Re-reading the rows is not enough: when the row comes back unchanged Angular has no
+      // reason to touch the DOM, so the refused choice would sit there looking saved. Put
+      // the select back to what the server actually holds.
+      const current = this.rows().find((r) => r.id === row.id) ?? row;
+      target.value = this.roamValue(current);
     } finally {
       this.busyId.set(null);
     }

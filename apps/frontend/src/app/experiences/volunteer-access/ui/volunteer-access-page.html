@@ -87,9 +87,16 @@
       </td>
       <td class="text-right">
         @switch (row.status) { @case ('verified') {
-        <button type="button" class="btn btn-primary btn-sm" [disabled]="busyId() === row.id" (click)="approve(row)">
-          Approve
-        </button>
+        <div class="flex justify-end gap-2">
+          <!-- Declining is the other half of a decision. Without it an unwanted QR-scan
+               signup sits in "awaiting approval" forever and keeps the badge lit. -->
+          <button type="button" class="btn btn-ghost btn-sm" [disabled]="busyId() === row.id" (click)="decline(row)">
+            Decline
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" [disabled]="busyId() === row.id" (click)="approve(row)">
+            Approve
+          </button>
+        </div>
         } @case ('approved') {
         <button
           type="button"
