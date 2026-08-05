@@ -641,5 +641,71 @@ export class TagsRepo extends BaseRepository<'tags'> {
       WHERE tenant_id = ${tenant_id}
         AND definition -> ${definitionKey} @> to_jsonb(${oldName}::text)
     `.execute(trx);
+
+    await this.renameInsideListRules(trx, tenant_id, type, oldName, newName);
   }
+
+  /**
+   * Rule-builder conditions hold the tag BY NAME as the `value` of a rule whose `field` is one of
+   * the tag fields, nested inside `definition -> 'advancedFilterModel'` (and the older
+   * `definition -> 'filterModel' -> 'tags_expression'`). The two statements above never reach
+   * them, so a rename used to leave the rule filtering on a name no record carries any more and
+   * the smart list silently emptied.
+   *
+   * Walked in TypeScript rather than SQL because the rule tree nests groups to arbitrary depth and
+   * because the value must be replaced only on an exact whole-string match — renaming "donor" must
+   * not touch a rule for "donor-major".
+   */
+  private async renameInsideListRules(
+    trx: Transaction<Models>,
+    tenant_id: string,
+    type: 'tag' | 'issue',
+    oldName: string,
+    newName: string,
+  ): Promise<void> {
+    // The builder offers Tags and Issues as separate fields; 'tag' is the singular spelling older
+    // saved definitions use. All of them compare against tags.name.
+    const fields = type === 'tag' ? ['tag', 'tags'] : ['issues'];
+    const rows = await trx
+      .selectFrom('lists')
+      .select(['id', 'definition'])
+      .where('tenant_id', '=', tenant_id)
+      .where('definition', 'is not', null)
+      .execute();
+
+    for (const row of rows) {
+      const definition = row.definition;
+      if (!isJsonObject(definition)) continue;
+
+      let changed = false;
+      const rewrite = (node: unknown): void => {
+        if (Array.isArray(node)) {
+          for (const child of node) rewrite(child);
+          return;
+        }
+        if (!isJsonObject(node)) return;
+        if (typeof node['field'] === 'string' && fields.includes(node['field']) && node['value'] === oldName) {
+          node['value'] = newName;
+          changed = true;
+        }
+        if (node['rules'] !== undefined) rewrite(node['rules']);
+      };
+
+      rewrite(definition['advancedFilterModel']);
+      const filterModel = definition['filterModel'];
+      if (isJsonObject(filterModel)) rewrite(filterModel['tags_expression']);
+
+      if (!changed) continue;
+      await trx
+        .updateTable('lists')
+        .set({ definition: JSON.stringify(definition), updated_at: sql`now()` })
+        .where('tenant_id', '=', tenant_id)
+        .where('id', '=', row.id)
+        .execute();
+    }
+  }
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
