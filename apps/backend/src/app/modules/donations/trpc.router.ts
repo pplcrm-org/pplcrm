@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { authProcedure as baseAuthProcedure, router } from '../../../trpc';
+import {
+  adminOrOwnerProcedure as baseAdminOrOwnerProcedure,
+  authProcedure as baseAuthProcedure,
+  router,
+} from '../../../trpc';
 import { getAllOptions } from '../../../../../../libs/common/src';
 import {
   RecordDonationObj,
@@ -13,6 +17,14 @@ const controller = new DonationsController();
 
 // FEATURE_MATRIX plan gate: donations are Grassroots-and-up; mutations below are blocked on Free.
 const authProcedure = baseAuthProcedure.use(planFeatureGate('donations'));
+
+/**
+ * Same plan gate, plus the admin-or-owner role gate every other settings mutation carries. Used by
+ * the procedures reachable only from the admin-only donations settings page: the Stripe connection
+ * (severing it stops every donation; the Express dashboard link exposes payouts and bank details)
+ * and the contribution-limit windows, which are a legal setting.
+ */
+const adminAuthProcedure = baseAdminOrOwnerProcedure.use(planFeatureGate('donations'));
 
 export const DonationsRouter = router({
   // ── One-time donations ──────────────────────────────────────────────────────
@@ -39,6 +51,7 @@ export const DonationsRouter = router({
         input.method,
         input.campaign_id,
         input.address,
+        input.gift_date,
       ),
     ),
 
@@ -172,7 +185,7 @@ export const DonationsRouter = router({
 
   getDonationPeriods: authProcedure.query(({ ctx }) => controller.getDonationPeriods(ctx.auth.tenant_id)),
 
-  createDonationPeriod: authProcedure
+  createDonationPeriod: adminAuthProcedure
     .input(
       z.object({
         name: z.string().min(1),
@@ -185,7 +198,7 @@ export const DonationsRouter = router({
     )
     .mutation(({ ctx, input }) => controller.createDonationPeriod(ctx.auth.tenant_id, ctx.auth.user_id, input)),
 
-  updateDonationPeriod: authProcedure
+  updateDonationPeriod: adminAuthProcedure
     .input(
       z.object({
         id: z.string(),
@@ -201,7 +214,7 @@ export const DonationsRouter = router({
       return controller.updateDonationPeriod(ctx.auth.tenant_id, ctx.auth.user_id, id, payload);
     }),
 
-  deleteDonationPeriod: authProcedure
+  deleteDonationPeriod: adminAuthProcedure
     .input(z.object({ id: z.string() }))
     .mutation(({ ctx, input }) => controller.deleteDonationPeriod(ctx.auth.tenant_id, input.id)),
 
@@ -209,13 +222,13 @@ export const DonationsRouter = router({
 
   getStripeConnectStatus: authProcedure.query(({ ctx }) => getConnectStatus(ctx.auth.tenant_id, ctx.auth.user_id)),
 
-  startStripeOnboarding: authProcedure
+  startStripeOnboarding: adminAuthProcedure
     .input(z.object({ country: stripeConnectCountrySchema }))
     .mutation(({ ctx, input }) => startOnboarding(ctx.auth.tenant_id, ctx.auth.user_id, input.country)),
 
-  createStripeLoginLink: authProcedure.mutation(({ ctx }) => createDashboardLoginLink(ctx.auth.tenant_id)),
+  createStripeLoginLink: adminAuthProcedure.mutation(({ ctx }) => createDashboardLoginLink(ctx.auth.tenant_id)),
 
-  disconnectStripe: authProcedure.mutation(async ({ ctx }) => {
+  disconnectStripe: adminAuthProcedure.mutation(async ({ ctx }) => {
     await disconnect(ctx.auth.tenant_id);
     return { success: true };
   }),
