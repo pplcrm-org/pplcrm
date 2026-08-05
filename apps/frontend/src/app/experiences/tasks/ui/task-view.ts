@@ -282,6 +282,8 @@ export class TaskView {
       this.subtaskName.set('');
       await this.loadSubtasks();
       this.refreshActivities();
+    } catch (err) {
+      this.alertSvc.showError(getUserErrorMessage(err, 'Could not add subtask. Please try again.'));
     } finally {
       end();
     }
@@ -335,6 +337,8 @@ export class TaskView {
       this.newComment.set('');
       await Promise.all([this.loadComments(), this.loadAttachments(), this.loadSubtasks()]);
       this.refreshActivities();
+    } catch (err) {
+      this.alertSvc.showError(getUserErrorMessage(err, 'Could not add comment. Please try again.'));
     } finally {
       end();
     }
@@ -352,6 +356,8 @@ export class TaskView {
       this.attUrl.set('');
       await this.loadAttachments();
       this.refreshActivities();
+    } catch (err) {
+      this.alertSvc.showError(getUserErrorMessage(err, 'Could not add attachment. Please try again.'));
     } finally {
       end();
     }
