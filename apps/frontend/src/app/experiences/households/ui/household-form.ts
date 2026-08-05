@@ -324,6 +324,10 @@ export class HouseholdForm implements OnInit {
       await this.tagOptionsSvc.invalidate('tag');
     } catch (err) {
       console.error('Failed to attach tag:', err);
+      // The chip is rendered optimistically, so a failed save left a tag on screen that was
+      // never stored. Take it back off and say why.
+      this.tags.update((curr) => curr.filter((t) => t !== tag));
+      this.alertSvc.showError(getUserErrorMessage(err, `Could not add the tag "${tag}". Please try again.`));
     }
   }
 
@@ -335,6 +339,8 @@ export class HouseholdForm implements OnInit {
       await this.tagOptionsSvc.invalidate('tag');
     } catch (err) {
       console.error('Failed to detach tag:', err);
+      this.tags.update((curr) => (curr.includes(tag) ? curr : [...curr, tag]));
+      this.alertSvc.showError(getUserErrorMessage(err, `Could not remove the tag "${tag}". Please try again.`));
     }
   }
 
@@ -346,6 +352,8 @@ export class HouseholdForm implements OnInit {
       await this.tagOptionsSvc.invalidate('issue');
     } catch (err) {
       console.error('Failed to attach issue:', err);
+      this.issues.update((curr) => curr.filter((i) => i !== issue));
+      this.alertSvc.showError(getUserErrorMessage(err, `Could not add the issue "${issue}". Please try again.`));
     }
   }
 
@@ -357,6 +365,8 @@ export class HouseholdForm implements OnInit {
       await this.tagOptionsSvc.invalidate('issue');
     } catch (err) {
       console.error('Failed to detach issue:', err);
+      this.issues.update((curr) => (curr.includes(issue) ? curr : [...curr, issue]));
+      this.alertSvc.showError(getUserErrorMessage(err, `Could not remove the issue "${issue}". Please try again.`));
     }
   }
 

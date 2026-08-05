@@ -3,6 +3,7 @@ import { SideDrawer } from '@uxcommon/components/side-drawer/side-drawer';
 import { Icon } from '@uxcommon/components/icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ConnectionsService } from '../../../services/api/connections-service';
+import { getUserErrorMessage } from '../../../services/api/user-message';
 import { PersonsService } from '../services/persons-service';
 import { RELATION_TYPES, RELATION_TYPE_LABELS } from '../../../../../../../libs/common/src';
 import type { AddConnectionType } from '../../../../../../../libs/common/src';
@@ -275,6 +276,9 @@ export class AddConnectionDrawer {
     } catch (err) {
       if (err instanceof Error && err.message.includes('already exists')) {
         this.alertSvc.showError('A connection of this type already exists between these contacts.');
+      } else {
+        // Every other failure used to be swallowed, so the Save click just did nothing.
+        this.alertSvc.showError(getUserErrorMessage(err, 'Could not add the connection. Please try again.'));
       }
     } finally {
       this.isSaving.set(false);
