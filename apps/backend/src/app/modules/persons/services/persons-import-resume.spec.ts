@@ -44,6 +44,25 @@ function* crashingSource(
 
 type StoredJobPayload = { type?: string; person_ids?: string[]; pairs?: Array<Record<string, string>> };
 
+type StoredSkipReason = { row: number; email?: string; reason: string };
+
+function reasonsOf(record: Record<string, unknown>): StoredSkipReason[] {
+  const raw = record['skip_reasons'];
+  return Array.isArray(raw) ? (raw as StoredSkipReason[]) : [];
+}
+
+/**
+ * The counted-but-unexplained invariant: every counted skip and every counted error row has a
+ * recorded reason naming it, so skipped_count + error_count === skip_reasons.length whenever the
+ * totals are under the importer's 500-reason cap.
+ */
+function expectCountsMatchReasons(record: Record<string, unknown>): void {
+  const counted = Number(record['skipped_count']) + Number(record['error_count']);
+  if (counted < 500) {
+    expect(reasonsOf(record)).toHaveLength(counted);
+  }
+}
+
 async function storedJobPayloads(tenantId: string): Promise<StoredJobPayload[]> {
   const rows = await db.selectFrom('background_jobs').select('payload').where('tenant_id', '=', tenantId).execute();
   return rows.map((row: { payload: unknown }) => {
@@ -183,11 +202,11 @@ describe('People import: crash-resume and batched automation triggers', () => {
     expect(Number(final['inserted_count']) + Number(final['skipped_count']) + Number(final['error_count'])).toBe(150);
     expect(Number(final['processed_row_offset'])).toBe(150);
 
-    // (c) The committed chunk's skip reason survived the crash, exactly once.
-    const reasons: Array<{ reason: string }> = Array.isArray(final['skip_reasons'])
-      ? (final['skip_reasons'] as Array<{ reason: string }>)
-      : [];
+    // (c) The committed chunk's skip reason survived the crash, exactly once — and every
+    // counted skip has a reason on record.
+    const reasons = reasonsOf(final);
     expect(reasons.filter((r) => r.reason.includes('Blank row'))).toHaveLength(1);
+    expectCountsMatchReasons(final);
   });
 
   it('enqueues contact_created and tag_added trigger jobs per chunk, bounded, with import semantics preserved', async () => {
@@ -222,6 +241,11 @@ describe('People import: crash-resume and batched automation triggers', () => {
       .execute();
     expect(listMembers).toHaveLength(120);
     expect(payloads.filter((p) => p.type === 'trigger_list_joined')).toHaveLength(0);
+
+    // Nothing was skipped, so nothing may carry a reason (count and reasons agree at zero too).
+    const final = await importRecordState();
+    expect(Number(final['skipped_count'])).toBe(0);
+    expectCountsMatchReasons(final);
   });
 
   it('a merged (already-existing) contact gets tag_added for its new tags but never contact_created', async () => {
@@ -248,6 +272,7 @@ describe('People import: crash-resume and batched automation triggers', () => {
 
     const final = await importRecordState();
     expect(Number(final['merged_count'])).toBe(1);
+    expectCountsMatchReasons(final);
   });
 
   it('a rolled-back chunk discards its trigger jobs, its rows and its list memberships together', async () => {
@@ -279,6 +304,15 @@ describe('People import: crash-resume and batched automation triggers', () => {
 
     const final = await importRecordState();
     expect(Number(final['error_count'])).toBe(5);
+    // The lost rows are named, one reason per errored row — an error count with nothing behind
+    // it is exactly the silent-failure mode this pins against.
+    const reasons = reasonsOf(final);
+    expect(reasons).toHaveLength(5);
+    expect(new Set(reasons.map((r) => r.row))).toEqual(new Set([1, 2, 3, 4, 5]));
+    for (const reason of reasons) {
+      expect(reason.reason).toMatch(/not imported.*rolled back/);
+    }
+    expectCountsMatchReasons(final);
   });
 
   it('a row whose invalid email was blanked keeps its Tags column, and within-file duplicates get a named skip reason', async () => {
@@ -314,11 +348,10 @@ describe('People import: crash-resume and batched automation triggers', () => {
     const final = await importRecordState();
     expect(Number(final['inserted_count'])).toBe(2);
     expect(Number(final['skipped_count'])).toBe(1);
-    const reasons: Array<{ row: number; reason: string }> = Array.isArray(final['skip_reasons'])
-      ? (final['skip_reasons'] as Array<{ row: number; reason: string }>)
-      : [];
+    const reasons = reasonsOf(final);
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toMatchObject({ row: 3 });
-    expect(reasons[0].reason).toContain('Duplicate of an earlier row in this file');
+    expect(reasons[0]?.reason).toContain('Duplicate of an earlier row in this file');
+    expectCountsMatchReasons(final);
   });
 });

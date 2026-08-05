@@ -143,8 +143,9 @@ describe('handleImportCsvJob', () => {
 
     expect(capturedRows).toEqual([{ first_name: 'Ada', email: 'ada@example.com' }]);
     expect(capturedSkipped).toBe(1);
-    // The reason rides the same clientSkipReasons machinery the wizard's client skips used.
-    expect(capturedOptions.clientSkipReasons).toHaveLength(1);
+    // The reason rides the same clientSkipReasons machinery the wizard's client skips used —
+    // and the invariant holds at this boundary: every counted pre-skip carries a reason.
+    expect(capturedOptions.clientSkipReasons).toHaveLength(capturedSkipped ?? -1);
     expect(capturedOptions.clientSkipReasons[0]).toMatchObject({ row: 2, email: 'bad@example.com' });
     expect(String(capturedOptions.clientSkipReasons[0].reason)).toContain('first_name');
     // Both rows still count toward row_count — the file really had 2 data rows.
@@ -170,7 +171,9 @@ describe('handleImportCsvJob', () => {
     const skipWrite = updateRows().find((row) => typeof row['skip_reasons'] === 'string');
     expect(skipWrite).toBeDefined();
     const reasons = JSON.parse(String(skipWrite?.['skip_reasons']));
-    expect(reasons).toHaveLength(1);
+    // The invariant at this boundary: the reasons persisted for the non-persons source count
+    // exactly the rows the processor was told were pre-skipped.
+    expect(reasons).toHaveLength(capturedSkipped ?? -1);
     expect(reasons[0]).toMatchObject({ row: 2 });
     expect(personsSpy).not.toHaveBeenCalled();
   });
