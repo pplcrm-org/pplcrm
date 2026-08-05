@@ -39,6 +39,15 @@ export const RecordDonationObj = z.object({
   method: donationMethodSchema,
   /** Campaigns §15 — which fund this gift belongs to; backend defaults to the office. */
   campaign_id: idSchema.optional(),
+  /**
+   * The day the gift was received, "YYYY-MM-DD", for entering a gift after the fact — a cheque
+   * dated in December and entered in January belongs to December's tax year on the receipt.
+   * Omit for a gift received today. Any past date is accepted; a future date is refused.
+   */
+  gift_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter the gift date as YYYY-MM-DD')
+    .optional(),
   /** Required — receipts need a mailing address, so gifts are not recorded without one. */
   address: donationAddressSchema,
 });

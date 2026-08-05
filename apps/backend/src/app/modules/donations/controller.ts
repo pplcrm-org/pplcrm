@@ -1,8 +1,9 @@
 import { TRPCError } from '@trpc/server';
-import { toStripeCurrency, toWorkspaceCurrency, type DonationAddressType } from '@common';
+import { CA_PROVINCES, US_STATES, toStripeCurrency, toWorkspaceCurrency, type DonationAddressType } from '@common';
 import { env } from '../../../env';
 import { BadRequestError, PreconditionFailedError } from '../../errors/app-errors';
 import { getStripe, isMockMode } from '../../lib/stripe-platform-client';
+import { torontoDateString } from '../../lib/pdf/pdf-common';
 import { assertStripeConnectReady, getCachedConnectState, getConnectedAccountId } from './stripe-connect';
 import { BaseController } from '../../lib/base.controller';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
@@ -54,6 +55,68 @@ export function mapStripeBillingAddress(
     zip: addr.postal_code || '',
     country: addr.country,
   };
+}
+
+/**
+ * A "YYYY-MM-DD" gift date from the record-donation dialog → the timestamp stored in
+ * `donations.created_at`, which is the column receipts read for the printed gift date and the
+ * coverage year (see the receipts controller's use of `torontoDateString`).
+ *
+ * Midday UTC, not midnight: receipts format the timestamp in America/Toronto, and midnight UTC
+ * formats as the previous day there — the printed-date bug from REVIEW4 T1-1. Midday UTC lands on
+ * the intended day in every timezone the app formats in. Past dates are unrestricted (staff enter
+ * cheques months late); a future date is refused.
+ */
+function parseGiftDate(giftDate: string): Date {
+  const parsed = new Date(`${giftDate}T12:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new BadRequestError('That gift date is not a real date. Use YYYY-MM-DD.');
+  }
+  if (giftDate > torontoDateString(new Date())) {
+    throw new BadRequestError('A gift cannot be dated in the future. Use today’s date or earlier.');
+  }
+  return parsed;
+}
+
+/**
+ * Which country an entry of `donations.allowed_regions` belongs to, or null when it belongs to no
+ * country the settings page can produce.
+ *
+ * The settings page writes bare two-letter codes for Canada (CA_PROVINCES) and the United States
+ * (US_STATES) — the two lists share no code — and ISO 3166-2 "CC-XX" codes for the other countries
+ * it offers regions for (DE-BY, FR-IDF, IN-MH). A code whose country cannot be identified
+ * constrains nobody rather than refusing everybody.
+ */
+function regionCodeCountry(code: string): string | null {
+  const dash = code.indexOf('-');
+  if (dash > 0) return code.slice(0, dash);
+  if (CA_PROVINCES.some((p) => p.code === code)) return 'CA';
+  if (US_STATES.some((s) => s.code === code)) return 'US';
+  return null;
+}
+
+/**
+ * Whether a donor's state/province field satisfies one allowed region code. Payment providers send
+ * the subdivision without the country prefix ("BY"), while the stored code carries it ("DE-BY"), so
+ * both spellings count as a match.
+ */
+function regionCodeMatchesState(code: string, state: string): boolean {
+  if (!state) return false;
+  const dash = code.indexOf('-');
+  return state === code || (dash > 0 && state === code.slice(dash + 1));
+}
+
+/**
+ * True when Stripe refused a subscription cancel because there is nothing left to cancel: the
+ * subscription is already canceled, or it no longer exists on the connected account. Either way
+ * the donor's card is not being charged, so marking the pledge cancelled is honest. Every other
+ * Stripe failure means the subscription may still be live and must be surfaced to the caller.
+ */
+function isAlreadyCancelledInStripe(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const code = 'code' in err ? err.code : undefined;
+  const message = err instanceof Error ? err.message : '';
+  return code === 'resource_missing' || /no such subscription|already (been )?canceled/i.test(message);
 }
 
 export class DonationsController extends BaseController<'donations', DonationsRepo> {
@@ -198,14 +261,27 @@ export class DonationsController extends BaseController<'donations', DonationsRe
     }
 
     // Cancel in Stripe if there's a real subscription — on the tenant's connected account.
-    if (pledge.stripe_subscription_id && !pledge.stripe_subscription_id.startsWith('sub_mock_')) {
+    // Nothing below marks the row cancelled unless Stripe has actually stopped charging the donor:
+    // saying "cancelled" while the card is still billed monthly is the worst outcome here.
+    if (pledge.stripe_subscription_id && !pledge.stripe_subscription_id.startsWith('sub_mock_') && !isMockMode) {
       const accountId = await getConnectedAccountId(tenantId);
-      if (!isMockMode && accountId) {
-        try {
-          await getStripe().subscriptions.cancel(pledge.stripe_subscription_id, {}, { stripeAccount: accountId });
-        } catch (err) {
+      if (!accountId) {
+        throw new PreconditionFailedError(
+          'This monthly gift is billed through Stripe, but this workspace has no Stripe account connected, so the charge cannot be stopped here. Reconnect Stripe and cancel again, or cancel the subscription in your Stripe dashboard.',
+        );
+      }
+      try {
+        await getStripe().subscriptions.cancel(pledge.stripe_subscription_id, {}, { stripeAccount: accountId });
+      } catch (err) {
+        if (!isAlreadyCancelledInStripe(err)) {
           logger.error({ err }, 'Stripe subscription cancel failed');
+          throw new PreconditionFailedError(
+            'Stripe did not cancel this monthly gift, so the donor is still being charged. Try again in a minute; if it keeps failing, cancel the subscription in your Stripe dashboard.',
+            undefined,
+            { cause: err },
+          );
         }
+        logger.info({ err }, 'Stripe subscription was already cancelled; marking the pledge cancelled');
       }
     }
 
@@ -337,6 +413,9 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       const country = (address.country || '').trim().toUpperCase();
       const state = (address.state || '').trim().toUpperCase();
 
+      // Restriction on with no countries selected enforces nothing — every donor passes. This is
+      // deliberately left permissive (refusing everyone would take a workspace's donations offline
+      // from an empty settings field); the settings page is the place to warn about it.
       if (allowedCountries) {
         const countriesList = allowedCountries.split(',').map((c) => c.trim().toUpperCase());
         if (!country || !countriesList.includes(country)) {
@@ -347,14 +426,19 @@ export class DonationsController extends BaseController<'donations', DonationsRe
         }
       }
 
-      if (allowedRegions) {
-        const regionsList = allowedRegions.split(',').map((r) => r.trim().toUpperCase());
-        if (!state || !regionsList.includes(state)) {
-          return {
-            eligible: false,
-            reason: `Donor must reside in one of the allowed provinces/states: ${allowedRegions}.`,
-          };
-        }
+      // Region codes only constrain donors of the country that code belongs to. Allowing
+      // Canada + Ontario alongside the United Kingdom must not refuse UK donors for not living in
+      // Ontario; a donor from an allowed country with no region codes configured passes on
+      // country alone.
+      const regionsForCountry = allowedRegions
+        .split(',')
+        .map((r) => r.trim().toUpperCase())
+        .filter((r) => r.length > 0 && regionCodeCountry(r) === country);
+      if (regionsForCountry.length > 0 && !regionsForCountry.some((r) => regionCodeMatchesState(r, state))) {
+        return {
+          eligible: false,
+          reason: `Donor must reside in one of the allowed provinces/states: ${regionsForCountry.join(', ')}.`,
+        };
       }
     }
 
@@ -739,6 +823,7 @@ export class DonationsController extends BaseController<'donations', DonationsRe
     method: 'card' | 'check' | 'cash' | 'bank_transfer',
     campaignId: string | undefined,
     address: DonationAddressType,
+    giftDate?: string,
   ): Promise<Selectable<Models['donations']>> {
     const person = await this.getRepo()
       .db.selectFrom('persons')
@@ -768,6 +853,7 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       campaignId,
       undefined,
       address,
+      giftDate ? parseGiftDate(giftDate) : undefined,
     );
   }
 
@@ -790,6 +876,12 @@ export class DonationsController extends BaseController<'donations', DonationsRe
      * back to the household address, or holds with "needs donor address".
      */
     address?: DonationAddressType | null,
+    /**
+     * When the gift was received, for a gift entered after the fact. Written to `created_at`,
+     * which is the column receipts read for the printed gift date and the coverage year. Absent
+     * means now (the column's own default).
+     */
+    receivedAt?: Date,
   ): Promise<Selectable<Models['donations']>> {
     // Which fund the gift belongs to (§15); Stripe-path gifts without an
     // explicit campaign land in the office context.
@@ -843,6 +935,8 @@ export class DonationsController extends BaseController<'donations', DonationsRe
             country: address?.country || country || null,
             pledge_id: pledgeId ? pledgeId : null,
             method,
+            // Only set for a backdated entry; otherwise the column default (now) stands.
+            ...(receivedAt ? { created_at: receivedAt } : {}),
           })
           .returningAll()
           .executeTakeFirstOrThrow()) as Selectable<Models['donations']>;
