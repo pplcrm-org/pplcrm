@@ -457,12 +457,13 @@
               </div>
               }
               <div class="flex items-center justify-between border-t border-base-300 pt-2 font-semibold">
-                <dt>Total</dt>
-                <dd class="tabular-nums text-primary">{{ peopleLabel(estimatedAudienceCount()) }}</dd>
+                <dt>Estimated total</dt>
+                <dd class="tabular-nums text-primary">{{ estimatedPeopleLabel(estimatedAudienceCount()) }}</dd>
               </div>
             </dl>
             <p class="mt-2 text-[11px] text-base-content/55">
-              Overlap between lists and tags is removed, and previously bounced addresses are skipped, when you send.
+              This total adds the lists and tags up as they are, so anyone in more than one of them is counted more than
+              once. Overlap is removed, and previously bounced addresses are skipped, when you send.
             </p>
             } @else {
             <p class="text-sm text-base-content/60">Add a list or tag above to see who this newsletter reaches.</p>
@@ -494,8 +495,10 @@
               </dd>
             </div>
             <div class="flex items-center justify-between gap-4 py-2.5">
-              <dt class="text-base-content/60">Audience</dt>
-              <dd class="font-medium tabular-nums text-primary">{{ peopleLabel(estimatedAudienceCount()) }}</dd>
+              <dt class="text-base-content/60">Audience (estimate)</dt>
+              <dd class="font-medium tabular-nums text-primary">
+                {{ estimatedPeopleLabel(estimatedAudienceCount()) }}
+              </dd>
             </div>
             @if (sendQuota(); as quota) { @if (quota.remaining != null && quota.cap != null) {
             <div class="flex items-center justify-between gap-4 py-2.5">
@@ -526,8 +529,10 @@
           <div class="alert alert-warning mt-3 items-start text-sm" role="alert">
             <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
             <span>
-              This audience is larger than the {{ formatCount(sendQuota()?.remaining ?? 0) }} emails left in your plan's
-              monthly allowance@if (quotaResetLabel()) { (resets {{ quotaResetLabel() }})}. Narrow the audience, or
+              This audience estimate is larger than the {{ formatCount(sendQuota()?.remaining ?? 0) }} emails left in
+              your plan's monthly allowance@if (quotaResetLabel()) { (resets {{ quotaResetLabel() }})}. The estimate
+              counts people in more than one list or tag more than once, so the send may still fit — if it does not, the
+              send is refused with an explanation. Narrow the audience, or
               <a routerLink="/workspace/billing" class="link">upgrade your plan</a>
               for a larger allowance.
             </span>
@@ -714,8 +719,8 @@
       >
         @if (saving()) { <span class="loading loading-spinner loading-xs"></span> } @else {
         <pc-icon name="paper-airplane" [size]="4"></pc-icon> } @if (regularPayload().timingMode === 'schedule') {
-        Schedule for {{ peopleLabel(estimatedAudienceCount()) }} } @else { Send to {{
-        peopleLabel(estimatedAudienceCount()) }} }
+        Schedule for {{ estimatedPeopleLabel(estimatedAudienceCount()) }} } @else { Send to {{
+        estimatedPeopleLabel(estimatedAudienceCount()) }} }
       </button>
     </span>
     }

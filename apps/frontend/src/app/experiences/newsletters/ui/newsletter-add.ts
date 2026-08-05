@@ -238,9 +238,14 @@ export class NewsletterAddComponent implements OnInit {
     const resetsAt = this.sendQuota()?.resetsAt;
     return resetsAt ? this.dateFormatter.format(new Date(resetsAt)) : '';
   });
-  /** Why the Send button is disabled, if it is (§2 explained-disabled): demo mode or allowance.
-   * A scheduled send may fire after the allowance resets, so the shortfall only blocks "Send
-   * now" — the server re-checks the gate when a scheduled send actually fires either way. */
+  /** Why the Send button is disabled, if it is (§2 explained-disabled): demo mode, a missing
+   * mailing address, or the plan's subscriber cap — all three are facts about the workspace, not
+   * guesses about the audience.
+   *
+   * The monthly-allowance shortfall is deliberately NOT here. It is measured against
+   * `estimatedAudienceCount()`, which double-counts people who are in more than one list or tag
+   * and subtracts every excluded list in full — so it can refuse a send the server would accept.
+   * It stays a warning on the Review step; the server's own gate is the one that decides. */
   protected readonly sendBlockedTooltip = computed<string | null>(() => {
     if (this.isDemo()) return this.demoSendTooltip;
     if (!this.orgAddressSet()) {
@@ -249,10 +254,6 @@ export class NewsletterAddComponent implements OnInit {
     const capBlock = this.subscriberCapBlock();
     if (capBlock && this.regularPayload().timingMode === 'now') {
       return `Your workspace has ${this.numberFormatter.format(capBlock.emailableCount)} emailable subscribers — over the ${this.numberFormatter.format(capBlock.cap)} the Free plan includes`;
-    }
-    if (this.quotaShortfall() && this.regularPayload().timingMode === 'now') {
-      const remaining = this.sendQuota()?.remaining ?? 0;
-      return `This audience exceeds the ${this.numberFormatter.format(remaining)} emails left in your monthly allowance`;
     }
     return null;
   });
@@ -582,6 +583,16 @@ export class NewsletterAddComponent implements OnInit {
     return `${this.formatCount(value)} ${value === 1 ? 'person' : 'people'}`;
   }
 
+  /**
+   * The same label, said as the estimate it is. `estimatedAudienceCount()` adds list sizes and tag
+   * usage without removing people who appear in more than one of them, and subtracts excluded
+   * lists in full, so it is never presented as the exact number of recipients — the server works
+   * that out when the send runs.
+   */
+  protected estimatedPeopleLabel(value: number): string {
+    return `about ${this.peopleLabel(value)}`;
+  }
+
   // --- Schedule -------------------------------------------------------------
 
   protected isInvalid(field: 'subject' | 'fromName' | 'fromAddress'): boolean {
@@ -847,7 +858,9 @@ export class NewsletterAddComponent implements OnInit {
       message: this.preflightMessage(count),
       variant: 'info',
       icon: 'paper-airplane',
-      confirmText: scheduled ? `Schedule for ${this.peopleLabel(count)}` : `Send to ${this.peopleLabel(count)}`,
+      confirmText: scheduled
+        ? `Schedule for ${this.estimatedPeopleLabel(count)}`
+        : `Send to ${this.estimatedPeopleLabel(count)}`,
       cancelText: 'Keep editing',
       emphasizeCancel: true,
     });
@@ -869,7 +882,7 @@ export class NewsletterAddComponent implements OnInit {
       this.alertSvc.showSuccess(
         scheduled
           ? `Scheduled "${subject}" for ${whenLabel}; it goes out within a few minutes of that time`
-          : `Queued "${subject}" to ${this.peopleLabel(count)}, sending now`,
+          : `Queued "${subject}" to ${this.estimatedPeopleLabel(count)}, sending now`,
       );
       this.close();
     } catch (err) {
@@ -1005,7 +1018,7 @@ export class NewsletterAddComponent implements OnInit {
       check.band === 'good'
         ? `Deliverability score ${check.score} — looking good.`
         : `Deliverability score ${check.score} — ${flagged} item${flagged === 1 ? '' : 's'} worth fixing first (see the Review & send step).`;
-    const base = `It will go to ${this.peopleLabel(count)}.`;
+    const base = `It will go to ${this.estimatedPeopleLabel(count)} — the exact number is worked out when it sends, after overlapping lists and tags are counted once.`;
     // Not configurable: a hard bounce suppresses the address globally (email_suppressions),
     // so a send can never include one. The old `communications.skip_bounced` lookup had no UI
     // and could not have changed this.
@@ -1147,7 +1160,9 @@ export class NewsletterAddComponent implements OnInit {
           .map((row) => ({
             id: String(row['id']),
             name: String(row['name']),
-            usage: Number(row['use_count_people'] ?? 0) + Number(row['use_count_households'] ?? 0),
+            // People only: a newsletter never reaches a household, so counting household
+            // taggings inflated every audience estimate that used a tag.
+            usage: Number(row['use_count_people'] ?? 0),
           })),
       );
     } catch (err) {
