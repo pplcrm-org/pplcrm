@@ -172,7 +172,11 @@ export class GoogleSyncSettings extends TRPCService<unknown> implements OnInit {
       if (!s?.syncing) {
         this.isSyncing.set(false);
         this.stopPollingStatus();
-        this.alertSvc.showSuccess('Google Suite mailbox sync completed.');
+        if (s?.lastSyncError) {
+          this.alertSvc.showError('Google Suite mailbox sync finished with errors.');
+        } else {
+          this.alertSvc.showSuccess('Google Suite mailbox sync completed.');
+        }
       }
     } catch (err) {
       console.error('Error polling sync status:', err);

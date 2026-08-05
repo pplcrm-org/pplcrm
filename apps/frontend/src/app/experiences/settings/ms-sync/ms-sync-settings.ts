@@ -172,7 +172,11 @@ export class MsSyncSettings extends TRPCService<unknown> implements OnInit {
       if (!s?.syncing) {
         this.isSyncing.set(false);
         this.stopPollingStatus();
-        this.alertSvc.showSuccess('Office 365 mailbox sync completed.');
+        if (s?.lastSyncError) {
+          this.alertSvc.showError('Office 365 mailbox sync finished with errors.');
+        } else {
+          this.alertSvc.showSuccess('Office 365 mailbox sync completed.');
+        }
       }
     } catch (err) {
       console.error('Error polling sync status:', err);
