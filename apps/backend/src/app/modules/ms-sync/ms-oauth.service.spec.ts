@@ -209,13 +209,7 @@ describe('MsOAuthService (integration)', () => {
       expect(transactionCount()).toBe(1);
     });
 
-    // PRODUCTION GAP (not fixed here -- tests only): unlike GoogleOAuthService.handleCallback,
-    // MsOAuthService.handleCallback has no fallback to the refresh token already in the
-    // database. It writes `extractRefreshTokenSecret(cache) ?? ''`, so a re-auth whose MSAL
-    // cache carries no RefreshToken entry overwrites the stored refresh token with an empty
-    // string. Nothing fails at that moment; the mailbox stops syncing when the access token
-    // expires. Un-skip this test if the fallback is added.
-    it.skip('keeps the previously stored refresh token when the MSAL cache has none', async () => {
+    it('keeps the previously stored refresh token when the MSAL cache has none', async () => {
       await seedTokenRow({
         accessToken: 'old-access',
         campaignId,
@@ -239,6 +233,24 @@ describe('MsOAuthService (integration)', () => {
 
       const row = await readTokenRow(tenantId, campaignId);
       expect(row?.refresh_token).toBe(ENC('long-lived-refresh'));
+    });
+
+    it('refuses the connection when neither the response nor the stored row has a refresh token', async () => {
+      vi.spyOn(ConfidentialClientApplication.prototype, 'acquireTokenByCode').mockResolvedValue({
+        accessToken: 'ms-access-4',
+        account: { username: 'mailbox@example.com' },
+        expiresOn: new Date(Date.now() + 3600_000),
+      } as unknown as Awaited<ReturnType<ConfidentialClientApplication['acquireTokenByCode']>>);
+      stubTokenCache(null);
+
+      const { db } = dbOnTransaction(ctx.trx);
+      const service = new MsOAuthService(db, CONFIG);
+
+      await expect(service.handleCallback('auth-code', userId, tenantId, campaignId)).rejects.toThrow(
+        /Consent required to obtain refresh token/i,
+      );
+      expect(await readTokenRow(tenantId, campaignId)).toBeUndefined();
+      expect(await readSyncJobs(tenantId)).toHaveLength(0);
     });
 
     it('writes nothing when Microsoft returns no access token', async () => {

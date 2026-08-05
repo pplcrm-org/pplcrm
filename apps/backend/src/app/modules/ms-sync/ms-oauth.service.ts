@@ -1,7 +1,7 @@
 import type { AuthorizationCodeRequest } from '@azure/msal-node';
 import { ConfidentialClientApplication } from '@azure/msal-node';
-import type { Kysely } from 'kysely';
-import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
+import type { Insertable, Kysely } from 'kysely';
+import type { Models, MsOauthTokens } from '../../../../../../libs/common/src/lib/kysely.models';
 import { decryptSecret, encryptSecret } from '../../lib/secret-crypto';
 
 export const NEEDS_FULL_SYNC = JSON.stringify({ _needs_full_sync: true });
@@ -77,30 +77,56 @@ export class MsOAuthService {
     // Retrieve the refresh token from the MSAL cache
     const cache = this.msalApp.getTokenCache().serialize();
     const parsedCache: unknown = JSON.parse(cache);
-    const refreshToken = extractRefreshTokenSecret(parsedCache) ?? '';
+    const refreshToken = extractRefreshTokenSecret(parsedCache);
+
+    let refreshTokenPlain: string;
+    if (!refreshToken) {
+      // MSAL didn't hand back a RefreshToken cache entry this time (happens on
+      // re-auth) -- try keeping the existing one instead of overwriting it with
+      // an empty string.
+      const existing = await this.db
+        .selectFrom('ms_oauth_tokens')
+        .select('refresh_token')
+        .where('tenant_id', '=', tenantId)
+        .where('campaign_id', '=', campaignId)
+        .executeTakeFirst();
+      // Reuse the stored refresh token; decrypt it to plaintext so it is
+      // re-encrypted uniformly below (avoids double-encryption).
+      refreshTokenPlain = existing?.refresh_token ? decryptSecret(existing.refresh_token) : '';
+    } else {
+      refreshTokenPlain = refreshToken;
+    }
+
+    if (!refreshTokenPlain) {
+      throw new Error('Consent required to obtain refresh token. Please disconnect and reconnect.');
+    }
+
+    // Encrypt the mailbox tokens at the DB write boundary (both the insert values
+    // and the onConflict update below read these fields).
+    const insertObj: Insertable<MsOauthTokens> = {
+      tenant_id: tenantId,
+      campaign_id: campaignId,
+      user_id: connectedBy,
+      access_token: encryptSecret(response.accessToken),
+      refresh_token: encryptSecret(refreshTokenPlain),
+      expires_at: expiresAt,
+      ms_email: response.account?.username ?? null,
+      delta_link: NEEDS_FULL_SYNC,
+      synced_at: null,
+    };
 
     // Wrap the token upsert and initial sync job in a transaction (transactional outbox pattern)
     await this.db.transaction().execute(async (trx) => {
       await trx
         .insertInto('ms_oauth_tokens')
-        .values({
-          tenant_id: tenantId,
-          campaign_id: campaignId,
-          user_id: connectedBy,
-          access_token: encryptSecret(response.accessToken),
-          refresh_token: encryptSecret(refreshToken),
-          expires_at: expiresAt,
-          ms_email: response.account?.username ?? null,
-          delta_link: NEEDS_FULL_SYNC,
-          synced_at: null,
-        })
+        .values(insertObj)
         .onConflict((oc) =>
           oc.columns(['tenant_id', 'campaign_id']).doUpdateSet({
             user_id: connectedBy,
-            access_token: encryptSecret(response.accessToken),
-            refresh_token: encryptSecret(refreshToken),
-            expires_at: expiresAt,
-            ms_email: response.account?.username ?? null,
+            access_token: insertObj.access_token,
+            refresh_token: insertObj.refresh_token,
+            expires_at: insertObj.expires_at,
+            ms_email: insertObj.ms_email,
             delta_link: NEEDS_FULL_SYNC,
             synced_at: null,
             last_sync_error: null,
