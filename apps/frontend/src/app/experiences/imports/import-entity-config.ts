@@ -291,7 +291,9 @@ export const IMPORT_ENTITY_CONFIGS: Record<ImportEntityType, ImportEntityConfig>
       details: 'Details',
       status: 'Status',
       priority: 'Priority',
-      due_at: 'Due date',
+      // States the formats the importer reads, because a bare 05/06/2026 is genuinely ambiguous
+      // and it reads day-first (see parseImportedDueDate in the tasks controller).
+      due_at: 'Due date (YYYY-MM-DD or DD/MM/YYYY)',
       assigned_to: 'Assigned to (name or email)',
     },
     autoMapHeader: autoMapWith(TASKS_HEADER_TO_FIELD),

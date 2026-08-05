@@ -826,6 +826,11 @@ export class HouseholdsController extends BaseController<'households', Household
             .execute(async (trx) => {
               let insertedInChunk = 0;
               let skippedInChunk = 0;
+              // Why each duplicate address was skipped. Collected inside the transaction and
+              // merged into the running list only after it commits, exactly like the counters —
+              // History used to show a skipped count for these rows with no reason behind it,
+              // so the "download the skipped rows" promise listed none of them.
+              const duplicateReasons: Array<{ row: number; reason: string }> = [];
               // 2. Dedupe against existing households by full-address fingerprint
               const uniqueFps = [...new Set(entries.map((e) => e.fp_full).filter((fp): fp is string => fp != null))];
               const existingFps = new Set<string>();
@@ -849,6 +854,14 @@ export class HouseholdsController extends BaseController<'households', Household
               for (const entry of entries) {
                 if (entry.fp_full && (existingFps.has(entry.fp_full) || seenFps.has(entry.fp_full))) {
                   skippedInChunk += 1;
+                  if (skipReasons.length + duplicateReasons.length < SKIP_REASONS_CAP) {
+                    duplicateReasons.push({
+                      row: entry.rowNumber,
+                      reason: existingFps.has(entry.fp_full)
+                        ? `Row ${entry.rowNumber} was skipped: this workspace already has a household at that address`
+                        : `Row ${entry.rowNumber} was skipped: an earlier row in this file has the same address`,
+                    });
+                  }
                   continue;
                 }
                 if (entry.fp_full) seenFps.add(entry.fp_full);
@@ -956,7 +969,7 @@ export class HouseholdsController extends BaseController<'households', Household
                     error_count: results.errors,
                     skipped_count: skippedBase + results.skipped + skippedInChunk,
                     households_created: results.inserted + insertedInChunk,
-                    skip_reasons: JSON.stringify(skipReasons),
+                    skip_reasons: JSON.stringify([...skipReasons, ...duplicateReasons]),
                     processed_row_offset: rowsSeen,
                     updatedby_id: user_id,
                     updated_at: new Date(),
@@ -965,10 +978,11 @@ export class HouseholdsController extends BaseController<'households', Household
                 trx,
               );
 
-              return { inserted: insertedInChunk, skipped: skippedInChunk };
+              return { inserted: insertedInChunk, skipped: skippedInChunk, duplicateReasons };
             });
           results.inserted += committed.inserted;
           results.skipped += committed.skipped;
+          skipReasons.push(...committed.duplicateReasons);
           chunkCommitted = true;
         } catch (err) {
           results.errors += entries.length;
