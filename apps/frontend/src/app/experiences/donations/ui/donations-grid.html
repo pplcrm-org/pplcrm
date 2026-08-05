@@ -27,6 +27,14 @@
   <progress class="progress w-full text-primary mb-6"></progress>
   }
 
+  <!-- A failed summary fetch is not a workspace that has raised nothing: say so instead of
+       printing five tiles of zeros derived from a response that never arrived. -->
+  @if (summaryFailed()) {
+  <div class="alert alert-warning mb-6 flex items-center justify-between gap-4">
+    <span class="text-sm">Donation totals could not be loaded. The gifts below are unaffected.</span>
+    <button type="button" class="btn btn-sm" (click)="retrySummary()">Try again</button>
+  </div>
+  } @else {
   <!-- Stats Grid (Fig. 15: TOTAL RAISED, THIS MONTH, AVERAGE GIFT, monthly-donor, receipt-status).
        Computed server-side (getLedgerSummary) — the grid below only holds one page of rows. -->
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-6">
@@ -90,6 +98,7 @@
       </div>
     </div>
   </div>
+  }
 
   <!-- The ledger: server-side paged/searched/filtered/sorted. Rows are read-only; the donor
        cell is the door into the gift page. Top-bar search finds donors by name and email. -->

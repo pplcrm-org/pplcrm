@@ -102,6 +102,12 @@ export class PersonCampaignFacts {
   /** '' = never asked, 'true' = 65+, 'false' = under 65. Three states, three values. */
   protected readonly seniorSel = signal<string>('');
   protected readonly consent = signal<PersonSubscriptionsPayload | null>(null);
+  /**
+   * True when the last load threw. Everything on this card is read in one call, so a failure left
+   * the selects reading "Unknown" and the send state reading "No email address" — statements about
+   * the person that nothing had actually been read to support.
+   */
+  protected readonly loadFailed = signal(false);
 
   protected readonly activeCampaign = this.context.activeCampaign;
   protected readonly readonlyContext = this.context.isArchivedContext;
@@ -132,6 +138,7 @@ export class PersonCampaignFacts {
    * subscribed in this campaign ∧ address healthy ∧ not DNC(email).
    */
   protected readonly sendState = computed<{ label: string; tone: 'ok' | 'warn' | 'muted' }>(() => {
+    if (this.loadFailed()) return { label: 'Could not be loaded', tone: 'warn' };
     if (!this.hasEmail()) return { label: 'No email address', tone: 'muted' };
     if (this.doNotContact()) return { label: 'Do not contact', tone: 'warn' };
     const sub = this.activeSubscription();
@@ -356,8 +363,11 @@ export class PersonCampaignFacts {
       this.facts.set(facts);
       this.consent.set(consent);
       this.doNotContact.set(!!consent.do_not_contact);
+      this.loadFailed.set(false);
     } catch {
-      // The card degrades to "Unknown" rather than blocking the person page.
+      // The card stays up rather than blocking the person page, but it says it read nothing —
+      // "Unknown" on its own is a claim about the person, not about the request.
+      this.loadFailed.set(true);
     } finally {
       end();
     }

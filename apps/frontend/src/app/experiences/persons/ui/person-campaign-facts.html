@@ -1,4 +1,13 @@
 <pc-card>
+  @if (loadFailed()) {
+  <p class="mb-3 flex items-start gap-1.5 text-[11px] text-warning">
+    <pc-icon name="exclamation-triangle" [size]="3" class="mt-0.5 flex-shrink-0"></pc-icon>
+    <ng-container i18n
+      >This person's standing and consent could not be loaded, so the values shown below are not theirs. Reload the page
+      to try again.</ng-container
+    >
+  </p>
+  }
   <!-- "Campaign standing" is the heading for the electoral block only. With that block hidden the
        card holds consent and volunteering, which are not "standing" in any sense — so the title
        goes with the fields it describes and the remaining blocks carry their own eyebrows. -->

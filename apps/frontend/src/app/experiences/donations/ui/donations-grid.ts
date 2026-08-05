@@ -67,6 +67,12 @@ export class DonationsGridComponent implements OnInit {
    * so totals can no longer be summed client-side. */
   protected readonly summary = signal<DonationLedgerSummary | null>(null);
 
+  /**
+   * True when the last summary fetch threw. Without it the tiles stayed at zero dollars and zero
+   * gifts, which reads as "you have raised nothing" rather than "the totals were not read".
+   */
+  protected readonly summaryFailed = signal(false);
+
   protected readonly totalRaised = computed(() => (this.summary()?.totalCents ?? 0) / 100);
   protected readonly totalGiftCount = computed(() => this.summary()?.totalCount ?? 0);
   protected readonly thisMonthTotal = computed(() => (this.summary()?.thisMonthCents ?? 0) / 100);
@@ -90,6 +96,7 @@ export class DonationsGridComponent implements OnInit {
   /** The All tab answers "how much have we raised?" for good — the one-time tab stays on the
    * month, which is the number that moves there. */
   protected readonly headerSentence = computed(() => {
+    if (this.summaryFailed()) return 'Donation totals could not be loaded';
     const allTime = this.scope === 'all';
     const total = allTime ? this.totalRaised() : this.thisMonthTotal();
     const count = allTime ? this.totalGiftCount() : this.thisMonthCount();
@@ -228,11 +235,18 @@ export class DonationsGridComponent implements OnInit {
     return method in DONATION_METHOD_LABELS ? DONATION_METHOD_LABELS[method as DonationMethod] : method;
   }
 
+  /** Retry button on the totals-failed state. */
+  protected retrySummary(): void {
+    void this.loadSummary();
+  }
+
   private async loadSummary(): Promise<void> {
     const end = this._loading.begin();
     try {
       this.summary.set(await this.donationsSvc.getLedgerSummary(this.scope));
+      this.summaryFailed.set(false);
     } catch (_err) {
+      this.summaryFailed.set(true);
       this.alertSvc.showError('Failed to load donation totals. Please try again.');
     } finally {
       end();
