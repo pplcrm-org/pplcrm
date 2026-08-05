@@ -35,6 +35,10 @@ export const MarketingEmailObj = z.object({
   top_links: z.array(marketingEmailTopLinkObj).nullable().optional(),
   /** The sent newsletter this row is a non-opener follow-up of; null for originals. */
   resend_of_id: z.string().nullable().optional(),
+  /** From name chosen in the composer; null means "use the workspace default". */
+  from_name: z.string().nullable().optional(),
+  /** From address chosen in the composer; null means "use the workspace default". */
+  from_email: z.string().nullable().optional(),
   updated_at: z.coerce.date(),
   created_at: z.coerce.date(),
   createdby_id: z.string(),
@@ -67,6 +71,11 @@ export const AddMarketingEmailObj = z.object({
   html_content: z.string().nullable().optional(),
   plain_text_content: z.string().nullable().optional(),
   top_links: z.array(marketingEmailTopLinkObj).nullable().optional(),
+  /** From name to send under; null/absent means "use the workspace default". */
+  from_name: z.string().max(200).nullable().optional(),
+  /** From address to send from; null/absent means "use the workspace default". Must be one of
+   * the workspace's verified senders — re-checked at send time, not trusted from the client. */
+  from_email: z.email().nullable().optional(),
 });
 
 export const UpdateMarketingEmailObj = AddMarketingEmailObj.partial();

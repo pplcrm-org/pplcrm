@@ -515,6 +515,27 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
       plain_text_content: str(newsletter['plain_text_content']),
     });
 
+    // Sender gate: a newsletter may carry its own From address (chosen in the composer), so it gets
+    // the same rule the test-send path and the settings save path apply — an address the tenant has
+    // not proven it controls never reaches the wire. Without this, storing a From address would be a
+    // way to broadcast from an unverified domain.
+    const storedFromEmail = str(newsletter['from_email']);
+    if (storedFromEmail) {
+      const verifiedRow = await db
+        .selectFrom('settings')
+        .select('value')
+        .where('tenant_id', '=', tenant_id)
+        .where('key', '=', 'communications.verified_emails')
+        .executeTakeFirst();
+      const rawVerified = verifiedRow?.value;
+      const verifiedEmails = Array.isArray(rawVerified) ? rawVerified.map((e) => String(e).toLowerCase().trim()) : [];
+      if (!verifiedEmails.includes(storedFromEmail.toLowerCase().trim())) {
+        throw new ForbiddenError(
+          `${storedFromEmail} is not a verified sending address. Verify it in Workspace settings, or choose a verified address for this newsletter.`,
+        );
+      }
+    }
+
     // Claim the newsletter and enqueue its send job atomically. The status flip is a CONDITIONAL
     // update (only a newsletter not already sent/queuing/sending can be claimed) so two concurrent
     // callers — two browser tabs, or a manual "Send now" racing the scheduled-newsletter cron — can
@@ -664,6 +685,9 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
       html_content: str(original['html_content']),
       plain_text_content: str(original['plain_text_content']),
       audience_description: str(original['audience_description']),
+      // The follow-up must come from the same sender the original did (null = workspace default).
+      from_name: str(original['from_name']),
+      from_email: str(original['from_email']),
       target_lists: asJsonString(original['target_lists']),
       segments: asJsonString(original['segments']),
       createdby_id: userId,

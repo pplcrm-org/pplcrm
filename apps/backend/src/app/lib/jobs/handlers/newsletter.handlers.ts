@@ -234,12 +234,25 @@ export async function handleSendNewsletter(
   const sendingTenant = await loadSendingTenant(db, tenantId);
   const freeTierSubuser = sendingTenant.plan === 'free' && !sendgridApiKey ? env.sendgridFreeTierSubuser : undefined;
   const subuserUsername = settingsMap['communications.sendgrid_subuser_username'] || freeTierSubuser;
-  const fromName = settingsMap['communications.default_from_name'] || 'pplCRM Team';
+  // The composer's own choice of sender identity wins; NULL on the row means "workspace default".
+  const chosenFromName = typeof newsletter.from_name === 'string' ? newsletter.from_name.trim() : '';
+  const chosenFromEmail = typeof newsletter.from_email === 'string' ? newsletter.from_email.toLowerCase().trim() : '';
+  // A stored address is only used while it is still one of the workspace's verified senders. If it
+  // was un-verified (or the domain removed) after the newsletter was composed, fall back to the
+  // workspace default rather than sending from an address the tenant cannot prove it controls.
+  const chosenFromEmailIsVerified = chosenFromEmail !== '' && verifiedEmails.includes(chosenFromEmail);
+  if (chosenFromEmail && !chosenFromEmailIsVerified) {
+    logger.warn(
+      { tenantId, newsletterId },
+      'Stored newsletter From address is no longer a verified sender — using the workspace default',
+    );
+  }
+  const fromName = chosenFromName || settingsMap['communications.default_from_name'] || 'pplCRM Team';
   // A newsletter is the tenant's mail to their own supporters, so it must send from the tenant's own
   // verified-domain address — never a pplCRM address. assertTenantMaySendNewsletter (the verified-
   // domain gate) runs before this job is enqueued, so a permitted broadcast always has this set; fail
   // loudly rather than silently send from the platform domain if that gate is ever bypassed.
-  const fromEmail = settingsMap['communications.default_from_email'];
+  const fromEmail = chosenFromEmailIsVerified ? chosenFromEmail : settingsMap['communications.default_from_email'];
   if (!fromEmail) {
     throw new Error(`Newsletter ${newsletterId}: no verified From address (send-guard invariant violated)`);
   }

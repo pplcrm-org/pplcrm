@@ -1275,6 +1275,12 @@ interface Newsletters extends RecordType {
   /** The sent newsletter this row is a non-opener follow-up of; NULL for originals. At most
    * one resend per original (partial unique index). */
   resend_of_id: string | null;
+  /** From name chosen in the composer; NULL means "use the workspace default". */
+  from_name: string | null;
+  /** From address chosen in the composer; NULL means "use the workspace default". Re-checked
+   * against the workspace's verified senders at send time, so it can never send from an
+   * address the tenant has not verified. */
+  from_email: string | null;
 }
 
 /** A user-saved newsletter design. Tenant-wide (no campaign_id — pure content, no audience or
