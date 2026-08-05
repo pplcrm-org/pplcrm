@@ -27,6 +27,12 @@ import { PersonsService } from '../../persons/services/persons-service';
 import { ShiftsService } from '../services/shifts-service';
 import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
+/** True only for a real typed zero — a blank field (null or '') means "unlimited". */
+function isZeroCapacity(capacity: number | null): boolean {
+  if (capacity == null || String(capacity).trim() === '') return false;
+  return Number(capacity) === 0;
+}
+
 @Component({
   selector: 'pc-shift-form',
   imports: [
@@ -116,10 +122,21 @@ export class ShiftFormComponent implements OnInit {
 
   // Roster state
   protected readonly roster = signal<any[]>([]);
+  /**
+   * Roster rows whose Hours or Notes have been typed but not written yet. The header
+   * "Save event" flushes these, and the leave guard counts them, so they can no longer
+   * be lost by clicking the button that looks like it saves everything on the page.
+   */
+  protected readonly dirtyShiftIds = signal<ReadonlySet<string>>(new Set());
+  /** A cancelled shift has given its spot back, so it is not one of the people coming. */
+  protected readonly activeRosterCount = computed(() => this.roster().filter((r) => r.status !== 'cancelled').length);
+  protected readonly dirtyFieldCount = computed(() => this.unsavedChanges.dirtyCount() + this.dirtyShiftIds().size);
   protected readonly saving = signal(false);
   protected readonly slugChecking = signal(false);
   protected readonly slugUnique = signal<boolean | null>(null);
   protected readonly volunteerSearch = signal('');
+  /** Non-null when the volunteer list could not be fetched, so an empty search can say so. */
+  protected readonly volunteersError = signal<string | null>(null);
 
   // Filter out volunteers that are already signed up
   protected readonly volunteerSearchResults = computed(() => {
@@ -308,12 +325,20 @@ export class ShiftFormComponent implements OnInit {
   }
 
   protected async loadVolunteers() {
+    this.volunteersError.set(null);
     try {
       const res = await this.personsSvc.getAll({ limit: 1000, tags: ['volunteer'] });
       this.allVolunteers.set(res?.rows || []);
     } catch (err) {
       console.error('Failed to load volunteers', err);
+      // Only the console knew about this before, so the search box just looked empty.
+      this.volunteersError.set(err instanceof Error && err.message ? err.message : 'Could not load your volunteers.');
     }
+  }
+
+  /** Retry for the search list after a failed load, without reloading the whole page. */
+  protected reloadVolunteers(): void {
+    void this.loadVolunteers();
   }
 
   protected onSlugInput() {
@@ -358,11 +383,28 @@ export class ShiftFormComponent implements OnInit {
     }
   }
 
-  public canDeactivate(): Promise<boolean> {
+  public async canDeactivate(): Promise<boolean> {
     // stayPut: the router is already navigating away, so the guard-time save must not navigate.
-    return this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this volunteer event', () =>
+    const proceed = await this.unsavedChanges.confirmDiscardIfDirty(this.detail()?.name || 'this volunteer event', () =>
       this.save(undefined, true),
     );
+    if (!proceed) return false;
+    // That handle only watches the event payload. Roster hours and notes live in a separate
+    // table on the same page and would otherwise disappear without a word.
+    return this.confirmDiscardRosterEdits();
+  }
+
+  private async confirmDiscardRosterEdits(): Promise<boolean> {
+    const count = this.dirtyShiftIds().size;
+    if (count === 0) return true;
+    return this.dialogs.confirm({
+      title: 'Leave without saving?',
+      message: `Hours or notes for ${count} volunteer${count === 1 ? '' : 's'} on the roster have not been saved. Leaving discards them.`,
+      variant: 'warning',
+      confirmText: 'Discard roster edits',
+      cancelText: 'Keep editing',
+      emphasizeCancel: true,
+    });
   }
 
   protected async save(done?: (() => void) | Event, stayPut = false): Promise<boolean> {
@@ -374,6 +416,15 @@ export class ShiftFormComponent implements OnInit {
 
     if (this.endBeforeStartError()) {
       this.alerts.showError('The event cannot end before it starts, please check the dates and times again.');
+      return false;
+    }
+
+    // A typed 0 used to be saved as null and displayed as "Unlimited" — the opposite of
+    // what the organizer asked for. Say so, and name the control that does close signups.
+    if (isZeroCapacity(this.payload().capacity)) {
+      this.alerts.showError(
+        'A capacity of 0 is not a limit we can save. Leave it blank for unlimited, or mark the event Private to stop taking signups.',
+      );
       return false;
     }
 
@@ -404,6 +455,11 @@ export class ShiftFormComponent implements OnInit {
     };
 
     try {
+      // Hours and Notes typed into the roster table are pending edits on this page too.
+      // Write them first: if one fails we stop here instead of navigating away with a
+      // success toast that would leave the typing behind.
+      if (!this.isNew() && !(await this.saveDirtyShifts())) return false;
+
       if (this.isNew()) {
         const res = await this.volunteerEventsSvc.add(data as AddVolunteerEventType);
         this.volunteerEventsSvc.triggerRefresh();
@@ -440,6 +496,7 @@ export class ShiftFormComponent implements OnInit {
         notes: shift.notes || null,
       });
       this.alerts.showSuccess('Shift details saved');
+      this.markShiftClean(shift);
       await this.loadRoster();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to save shift details');
@@ -464,10 +521,56 @@ export class ShiftFormComponent implements OnInit {
 
   protected updateShiftHours(shift: any, hours: any) {
     shift.hours_worked = hours ? Number(hours) : null;
+    this.markShiftDirty(shift);
   }
 
   protected updateShiftNotes(shift: any, notes: any) {
     shift.notes = notes || null;
+    this.markShiftDirty(shift);
+  }
+
+  private markShiftDirty(shift: any): void {
+    const id = String(shift.id);
+    this.dirtyShiftIds.update((ids) => (ids.has(id) ? ids : new Set(ids).add(id)));
+  }
+
+  private markShiftClean(shift: any): void {
+    const id = String(shift.id);
+    this.dirtyShiftIds.update((ids) => {
+      if (!ids.has(id)) return ids;
+      const next = new Set(ids);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  /**
+   * Writes every roster row with pending Hours/Notes. Returns false if any write failed,
+   * so the caller can stop rather than navigate away and report success.
+   */
+  private async saveDirtyShifts(): Promise<boolean> {
+    const dirty = this.dirtyShiftIds();
+    if (dirty.size === 0) return true;
+    const rows = this.roster().filter((r) => dirty.has(String(r.id)));
+    try {
+      await Promise.all(
+        rows.map((shift) =>
+          this.volunteerSvc.updateShift(shift.id, {
+            status: shift.status,
+            hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
+            notes: shift.notes || null,
+          }),
+        ),
+      );
+      this.dirtyShiftIds.set(new Set());
+      await this.loadRoster();
+      return true;
+    } catch (err) {
+      this.alerts.showError(
+        err instanceof Error && err.message ? err.message : 'Failed to save roster hours and notes',
+      );
+      return false;
+    }
   }
 
   protected async updateShiftStatus(shift: any, status: any) {
@@ -477,7 +580,9 @@ export class ShiftFormComponent implements OnInit {
         hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
         notes: shift.notes || null,
       });
+      // The status write carries the row's hours and notes with it, so nothing is pending here.
       this.alerts.showSuccess('Shift status updated');
+      this.markShiftClean(shift);
       await this.loadRoster();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to update shift');

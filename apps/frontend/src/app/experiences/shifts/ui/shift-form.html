@@ -23,7 +23,7 @@
       buttonsToShow="two"
       [btn1Text]="isNew() ? 'Create event' : 'Save event'"
       [showDelete]="!isNew()"
-      [dirtyFieldCount]="unsavedChanges.dirtyCount()"
+      [dirtyFieldCount]="dirtyFieldCount()"
       deleteText="Delete event"
       (save)="save($event)"
       (delete)="deleteEvent()"
@@ -138,7 +138,7 @@
           icon="user-group"
         >
           <div pc-card-actions class="badge badge-primary gap-1">
-            {{ roster().length }} Signed Up @if (detail()?.capacity) {
+            {{ activeRosterCount() }} Signed Up @if (detail()?.capacity !== null && detail()?.capacity !== undefined) {
             <span>/ {{ detail()?.capacity }} Max</span>
             }
           </div>
@@ -180,6 +180,21 @@
               </div>
               }
             </div>
+            }
+
+            <!-- Say why the search found nobody, and say when it could not search at all.
+                 Without this, a failed load looks exactly like "that person isn't here". -->
+            @if (volunteersError()) {
+            <p class="text-xs text-error">
+              {{ volunteersError() }}
+              <button type="button" class="link link-error" (click)="reloadVolunteers()">Try loading again</button>
+            </p>
+            } @else if (volunteerSearch().trim() && volunteerSearchResults().length === 0) {
+            <p class="text-xs text-base-content/60">
+              Nobody here matches that. This search covers the first 1,000 people tagged
+              <strong>volunteer</strong> who aren't already on this roster — tag someone on their profile to make them
+              findable.
+            </p>
             }
           </div>
 
