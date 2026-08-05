@@ -74,7 +74,11 @@ export class SignInPage implements OnInit, OnDestroy {
   constructor() {
     effect(() => {
       const user = this.authService.getUserSignal();
-      if (user() && !this.suppressNavigation()) void this.router.navigate(['dashboard']);
+      // Only a user who has verified their email may be forwarded into the app. An unverified one
+      // has to stay here to see the "verify your email" panel: authGuard sends unverified users
+      // back to /signin, so navigating them to /dashboard is an endless redirect loop that hangs
+      // the page. Same rule the login guard applies.
+      if (user()?.email_verified && !this.suppressNavigation()) void this.router.navigate(['dashboard']);
     });
   }
 
