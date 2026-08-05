@@ -256,14 +256,18 @@ export class FundraisingFormComponent implements OnInit {
     if (!id) return;
     const confirmed = await this.dialogs.confirm({
       title: 'Delete Donation Page',
-      message: 'Are you sure you want to delete this donation page? This action cannot be undone.',
+      message:
+        'Are you sure you want to delete this donation page? This action cannot be undone. ' +
+        'Only a draft with no responses can be deleted this way — a published or already-used ' +
+        'page must be archived instead, which keeps its history and disables its public link.',
       variant: 'danger',
       confirmText: 'Delete',
     });
     if (!confirmed) return;
     this.saving.set(true);
     try {
-      await this.formsSvc.delete(id);
+      // Guarded verb: refuses anything but a zero-response draft (unlike the generic CRUD delete).
+      await this.formsSvc.deleteDraft(id);
       this.formsSvc.triggerRefresh();
       this.alertSvc.showSuccess('Donation page deleted');
       await this.router.navigate(['/donations']);
