@@ -85,6 +85,33 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     list_id: idSchema,
     person_ids: z.array(idSchema),
   }),
+  /**
+   * Fire the `contact_created` automation trigger for people a CSV import just inserted. Enqueued
+   * inside each import chunk's transaction (≤ IMPORT_TRIGGER_JOB_CHUNK_SIZE ids per job), so a
+   * rolled-back chunk discards its jobs: firing once per person inline in the import job added
+   * minutes at 100k rows. Only newly-inserted persons — merged persons are not new contacts.
+   */
+  z.object({
+    type: z.literal('trigger_contact_created'),
+    tenant_id: idSchema,
+    person_ids: z.array(idSchema),
+  }),
+  /**
+   * Fire the `tag_added` automation trigger for person/tag pairs a CSV import actually created
+   * (the `.returning()`-confirmed new map_peoples_tags rows only — pairs the contact already had
+   * never re-fire). Same in-transaction chunked enqueue as trigger_contact_created.
+   */
+  z.object({
+    type: z.literal('trigger_tag_added'),
+    tenant_id: idSchema,
+    pairs: z.array(
+      z.object({
+        person_id: idSchema,
+        tag_id: idSchema,
+        tag_name: z.string().default(''),
+      }),
+    ),
+  }),
   z.object({
     type: z.literal('enrich_company_google'),
     company_id: idSchema,

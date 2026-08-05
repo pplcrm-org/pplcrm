@@ -9,6 +9,7 @@ import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
 import { handleImportCsvJob, handleImportJob } from './handlers/import.handlers';
 import { handleTriggerListJoined } from './handlers/lists.handlers';
+import { handleTriggerContactCreated, handleTriggerTagAdded } from './handlers/triggers.handlers';
 import {
   handleCleanupActivities,
   handlePruneRetention,
@@ -95,6 +96,12 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'trigger_list_joined':
       await handleTriggerListJoined(job);
+      break;
+    case 'trigger_contact_created':
+      await handleTriggerContactCreated(job);
+      break;
+    case 'trigger_tag_added':
+      await handleTriggerTagAdded(job);
       break;
     case 'enrich_company_google':
       await handleEnrichCompanyGoogle(job, db);

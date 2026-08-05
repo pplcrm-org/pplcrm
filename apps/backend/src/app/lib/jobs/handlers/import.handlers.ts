@@ -114,27 +114,34 @@ ${tripwireBlock}`;
 }
 
 /**
- * True (with a warning logged) when this import already ran to completion, so a re-delivered
- * job must not write its rows a second time.
+ * Where a (re-)delivered import job must pick up.
  *
  * Inserting the rows is not idempotent for every source: only the persons importer dedupes
  * (its default `duplicate_decision: 'skip'` drops rows whose email already exists), while the
- * companies, households and tasks importers issue plain inserts. So a second run of a job that
- * already finished writes the rows again.
+ * companies, households and tasks importers issue plain inserts. So a job that re-enters
+ * execution — stale-job recovery after a worker crash, a shutdown release, an execution
+ * timeout, or a continuation job — must never feed a row that was already durably handled.
  *
- * Nothing after the insert can fail these jobs any more — the storage cleanup and the summary
- * email are each wrapped in their own catch — but a job can still be re-run by stale-job
- * recovery after a worker crash or an execution timeout. If the previous run got as far as
- * marking the import completed, the rows are in and there is nothing left to do.
- *
- * This does NOT make the import idempotent in general: a crash partway through the insert
- * still leaves the import 'processing', and that retry does re-import. Closing that would need
- * per-chunk resume state, which is a much larger change.
+ * Two fields answer that:
+ *  - `completedAlready`: the previous run finished; there is nothing left to do (and a warning
+ *    is logged, because a completed import being re-delivered is worth noticing).
+ *  - `resumeOffset` (`data_imports.processed_row_offset`): how many of the import's data rows
+ *    earlier runs durably consumed. Each entity processor writes it in the SAME transaction as
+ *    the chunk's rows, so a crash at ANY point re-enters exactly at the last committed chunk —
+ *    the caller stream-skips that many rows and the processors continue their counters from the
+ *    persisted values instead of zero. (This closes the old "a crash partway through the insert
+ *    re-imports from the start" gap.)
  */
-async function shouldSkipCompletedImport(db: Kysely<Models>, tenantId: string, importId: string): Promise<boolean> {
+interface ImportRunState {
+  completedAlready: boolean;
+  resumeOffset: number;
+  rowCount: number | null;
+}
+
+async function readImportRunState(db: Kysely<Models>, tenantId: string, importId: string): Promise<ImportRunState> {
   const priorState = await db
     .selectFrom('data_imports')
-    .select('status')
+    .select(['status', 'processed_row_offset', 'row_count'])
     .where('id', '=', importId)
     .where('tenant_id', '=', tenantId)
     .executeTakeFirst();
@@ -144,9 +151,25 @@ async function shouldSkipCompletedImport(db: Kysely<Models>, tenantId: string, i
       { importId, tenantId },
       'Import job re-ran after it had already completed; skipping so its rows are not written twice',
     );
-    return true;
+    return { completedAlready: true, resumeOffset: 0, rowCount: null };
   }
-  return false;
+  return {
+    completedAlready: false,
+    resumeOffset: Number(priorState?.processed_row_offset ?? 0),
+    rowCount: priorState?.row_count != null ? Number(priorState.row_count) : null,
+  };
+}
+
+/** Skip the first `count` rows of a stored-row source — the rows earlier runs already handled. */
+function* skipStoredRows(
+  source: Iterable<StoredImportRow>,
+  count: number,
+): Generator<StoredImportRow, void, undefined> {
+  let index = 0;
+  for (const row of source) {
+    if (index++ < count) continue;
+    yield row;
+  }
 }
 
 async function markImportProcessing(tenantId: string, importId: string): Promise<void> {
@@ -234,8 +257,11 @@ ${verificationHtml(verification)}
 }
 
 export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysely<Models>): Promise<void> {
-  // 0. Refuse to re-import rows that already landed (see shouldSkipCompletedImport).
-  if (await shouldSkipCompletedImport(db, payload.tenant_id, payload.import_id)) return;
+  // 0. Where to pick up: refuse a completed import outright, and on a crash re-run skip the
+  // rows earlier runs durably handled (see readImportRunState).
+  const runState = await readImportRunState(db, payload.tenant_id, payload.import_id);
+  if (runState.completedAlready) return;
+  const resuming = runState.resumeOffset > 0;
 
   // 1. Mark import status as 'processing' in data_imports
   await markImportProcessing(payload.tenant_id, payload.import_id);
@@ -256,6 +282,10 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
   } else {
     rowSource = importRowsFromNdjson(text);
   }
+  if (resuming) rowSource = skipStoredRows(rowSource, runState.resumeOffset);
+  // On resume the client-side skip count and reasons are already inside the persisted counters
+  // and skip_reasons, so passing them again would double-count them.
+  const skippedBase = resuming ? 0 : Number(payload.skipped || 0);
 
   // 3. Process the import rows in chunks
   let verification: EmailVerificationSummary | null = null;
@@ -265,7 +295,7 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
       payload.import_id,
       payload.tenant_id,
       payload.user_id,
-      Number(payload.skipped || 0),
+      skippedBase,
       rowSource,
     );
   } else if (payload.source === 'tasks') {
@@ -274,7 +304,7 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
       payload.import_id,
       payload.tenant_id,
       payload.user_id,
-      Number(payload.skipped || 0),
+      skippedBase,
       rowSource,
     );
   } else if (payload.source === 'households') {
@@ -285,7 +315,7 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
       payload.user_id,
       payload.campaign_id ?? '',
       payload.tags ?? [],
-      Number(payload.skipped || 0),
+      skippedBase,
       rowSource,
     );
   } else {
@@ -307,12 +337,12 @@ export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysel
       payload.user_id,
       payload.campaign_id ?? '',
       payload.tags ?? [],
-      Number(payload.skipped || 0),
+      skippedBase,
       collectEmails(rowSource),
       {
         duplicateDecision: payload.duplicate_decision ?? 'skip',
         listName: payload.list_name ?? undefined,
-        clientSkipReasons: payload.client_skip_reasons ?? undefined,
+        clientSkipReasons: resuming ? undefined : (payload.client_skip_reasons ?? undefined),
       },
     );
 
@@ -407,12 +437,13 @@ function validateMappedCsvRow(
  * yield only the rows that survive mapping + schema validation, already in the flat
  * `StoredImportRow` shape the unchanged per-entity processors consume. Which rows are dropped
  * here is exactly the set the counting pass already recorded skip reasons for — same mapping,
- * same schema, same file bytes.
+ * same schema, same file bytes. A resumed run skips the counting pass and passes no delimiter;
+ * re-detection over the same bytes is deterministic, so both runs parse the file identically.
  */
 async function* streamValidCsvRows(
   payload: JobPayloadOf<'import_csv'>,
   rowSchema: z.ZodType,
-  delimiter: CsvDelimiter,
+  delimiter: CsvDelimiter | undefined,
 ): AsyncGenerator<StoredImportRow, void, undefined> {
   const { stream } = await storageService.downloadStream(payload.storage_key);
   const opened = await openCsvStream(stream, delimiter);
@@ -433,9 +464,12 @@ async function* streamValidCsvRows(
 
 /**
  * Fold the counting pass's validation skips into `data_imports.skip_reasons` for the sources
- * whose processors do not take a reasons argument. Runs after the processor finished, so it
- * appends to (never races) whatever the processor itself wrote; the persons path instead hands
- * its reasons to processImportRows via clientSkipReasons and needs no merge.
+ * whose processors do not take a reasons argument. Runs BEFORE the processor starts, so the
+ * reasons are durable before any chunk commits — a crash mid-import cannot lose them, and a
+ * resumed run (which skips the counting pass) finds them already on file. The households
+ * processor seeds its own reason list from the stored column, so its final write keeps these;
+ * the companies/tasks processors never touch the column. The persons path instead hands its
+ * reasons to processImportRows via clientSkipReasons and needs no merge.
  */
 async function mergeCsvSkipReasons(
   db: Kysely<Models>,
@@ -463,6 +497,67 @@ async function mergeCsvSkipReasons(
 }
 
 /**
+ * Valid rows fed to the entity processors in ONE execution of an `import_csv` job. A file with
+ * more valid rows than this is handled by a chain of short jobs: each run processes its budget,
+ * then enqueues a continuation job and exits well inside the 15-minute job timeout. The cursor
+ * is `data_imports.processed_row_offset` (written atomically with each chunk), so the chain —
+ * and any crash inside one link of it — always resumes at the last committed chunk. Same idiom
+ * as the year-end statement batches (receipts.handlers.ts) and boundary matching
+ * (lib/gis/boundary-jobs.ts): short-lived jobs are how this repo survives restarts.
+ */
+export const IMPORT_ROWS_PER_RUN = 20_000;
+
+interface BoundedImportFeed {
+  rows: AsyncGenerator<StoredImportRow, void, undefined>;
+  /** True once the budget filled with the source still holding more rows. Valid after `rows` ends. */
+  sourceHadMore: () => boolean;
+}
+
+/**
+ * Skip the first `skip` valid rows (rows earlier runs durably consumed) and feed at most
+ * `limit` rows onward. Exiting the inner loop early invokes the source generator's cleanup, so
+ * the underlying CSV parser and blob stream are torn down rather than left dangling.
+ */
+function boundImportFeed(source: AsyncIterable<StoredImportRow>, skip: number, limit: number): BoundedImportFeed {
+  let hadMore = false;
+  async function* rows(): AsyncGenerator<StoredImportRow, void, undefined> {
+    let index = 0;
+    let fed = 0;
+    for await (const row of source) {
+      if (index++ < skip) continue;
+      if (fed >= limit) {
+        // This row is beyond the run's budget — the continuation run imports it.
+        hadMore = true;
+        return;
+      }
+      fed += 1;
+      yield row;
+    }
+  }
+  return { rows: rows(), sourceHadMore: () => hadMore };
+}
+
+/**
+ * Queue the next link of the import chain. A plain insert, not a transactional enqueue: the
+ * resume cursor is already durable on `data_imports`, so the worst a crash here costs is the
+ * job row — which stale recovery of THIS job then re-delivers (same payload), losing nothing.
+ * Precedent: enqueueContinuation in receipts.handlers.ts.
+ */
+async function enqueueImportContinuation(db: Kysely<Models>, payload: JobPayloadOf<'import_csv'>): Promise<void> {
+  await db
+    .insertInto('background_jobs')
+    .values({
+      tenant_id: payload.tenant_id,
+      queue: 'default',
+      status: 'pending',
+      payload: JSON.stringify(payload),
+      run_at: new Date(),
+      max_attempts: 3,
+    })
+    .execute();
+}
+
+/**
  * Upload-based CSV import: the mutation stored only the file's storage key and the column
  * mapping; this job does everything the client used to — parse, map, validate — then feeds the
  * surviving rows to the same per-entity processors the legacy path uses.
@@ -470,85 +565,113 @@ async function mergeCsvSkipReasons(
  * Two streaming passes over the blob:
  *  1. Count data rows and pre-compute validation skips. `row_count` is written before anything
  *     else so an over-cap file can fail fast, with the real count on record and zero inserts.
- *  2. Stream the valid rows into the unchanged `processImportRows` chunk pipeline.
+ *     Skipped entirely when resuming (processed_row_offset > 0): the count and the pre-skips
+ *     are already durable, and re-counting would repeat work.
+ *  2. Stream the valid rows into the unchanged `processImportRows` chunk pipeline — at most
+ *     IMPORT_ROWS_PER_RUN of them per execution; the remainder goes to a continuation job.
  *
  * The source CSV is deliberately never deleted here — it is the retained original the History
- * page re-downloads, and the 90-day retention sweep owns its lifecycle.
+ * page re-downloads, and the 90-day retention sweep owns its lifecycle. (It also must outlive
+ * processing for resume/continuation to re-read it, which the 90-day retention guarantees.)
  */
-export async function handleImportCsvJob(payload: JobPayloadOf<'import_csv'>, db: Kysely<Models>): Promise<void> {
-  if (await shouldSkipCompletedImport(db, payload.tenant_id, payload.import_id)) return;
+export async function handleImportCsvJob(
+  payload: JobPayloadOf<'import_csv'>,
+  db: Kysely<Models>,
+  options?: { rowsPerRun?: number },
+): Promise<void> {
+  const runState = await readImportRunState(db, payload.tenant_id, payload.import_id);
+  if (runState.completedAlready) return;
+  const resuming = runState.resumeOffset > 0;
 
   await markImportProcessing(payload.tenant_id, payload.import_id);
 
   const rowSchema = CSV_IMPORT_ROW_SCHEMAS[payload.source];
 
-  // PASS 1 — detect the delimiter, count data rows, and record why invalid rows will be skipped.
-  let delimiter: CsvDelimiter = ',';
-  let rowCount = 0;
+  // PASS 1 — detect the delimiter, count data rows, and record why invalid rows will be
+  // skipped. Skipped when resuming; `delimiter` then stays undefined and pass 2 re-detects it
+  // from the same bytes (deterministic, so both passes parse identically).
+  let delimiter: CsvDelimiter | undefined;
   let preSkipped = 0;
   const preSkipReasons: CsvSkipReason[] = [];
-  try {
-    const { stream } = await storageService.downloadStream(payload.storage_key);
-    const opened = await openCsvStream(stream);
-    delimiter = opened.delimiter;
-    let headers: string[] | null = null;
-    for await (const record of opened.records) {
-      if (headers === null) {
-        headers = record;
-        continue;
+  if (!resuming) {
+    let rowCount = 0;
+    try {
+      const { stream } = await storageService.downloadStream(payload.storage_key);
+      const opened = await openCsvStream(stream);
+      delimiter = opened.delimiter;
+      let headers: string[] | null = null;
+      for await (const record of opened.records) {
+        if (headers === null) {
+          headers = record;
+          continue;
+        }
+        if (isSameRecord(record, headers)) continue;
+        rowCount += 1;
+        const failure = validateMappedCsvRow(rowSchema, applyColumnMapping(record, payload.mapping), rowCount);
+        if (failure) {
+          preSkipped += 1;
+          if (preSkipReasons.length < CSV_SKIP_REASONS_CAP) preSkipReasons.push(failure);
+        }
       }
-      if (isSameRecord(record, headers)) continue;
-      rowCount += 1;
-      const failure = validateMappedCsvRow(rowSchema, applyColumnMapping(record, payload.mapping), rowCount);
-      if (failure) {
-        preSkipped += 1;
-        if (preSkipReasons.length < CSV_SKIP_REASONS_CAP) preSkipReasons.push(failure);
-      }
+    } catch (err) {
+      logger.error(
+        { err, importId: payload.import_id, tenantId: payload.tenant_id },
+        'Uploaded import file could not be parsed as CSV',
+      );
+      await failImport(payload, 'This file could not be read as a CSV. Re-export it as CSV (UTF-8) and try again.');
+      return;
     }
-  } catch (err) {
-    logger.error(
-      { err, importId: payload.import_id, tenantId: payload.tenant_id },
-      'Uploaded import file could not be parsed as CSV',
-    );
-    await failImport(payload, 'This file could not be read as a CSV. Re-export it as CSV (UTF-8) and try again.');
-    return;
+
+    // The real count goes on record before the cap decision, so a refused file still shows what
+    // was in it.
+    await importsRepo.update({
+      tenant_id: payload.tenant_id,
+      id: payload.import_id,
+      row: { row_count: rowCount, updated_at: new Date() },
+    });
+
+    if (rowCount > MAX_IMPORT_ROWS) {
+      await failImport(
+        payload,
+        `This file has ${rowCount.toLocaleString('en-US')} data rows; imports are limited to ` +
+          `${MAX_IMPORT_ROWS.toLocaleString('en-US')} rows per file. Split the file and import the parts separately.`,
+      );
+      return;
+    }
+
+    // Persist the counting pass's skips for the non-persons sources BEFORE any chunk commits,
+    // so a crash cannot lose them (the persons path hands them to its processor instead, which
+    // persists them with its first chunk).
+    if (payload.source !== 'persons' && preSkipReasons.length > 0) {
+      await mergeCsvSkipReasons(db, payload.tenant_id, payload.import_id, preSkipReasons);
+    }
   }
 
-  // The real count goes on record before the cap decision, so a refused file still shows what
-  // was in it.
-  await importsRepo.update({
-    tenant_id: payload.tenant_id,
-    id: payload.import_id,
-    row: { row_count: rowCount, updated_at: new Date() },
-  });
-
-  if (rowCount > MAX_IMPORT_ROWS) {
-    await failImport(
-      payload,
-      `This file has ${rowCount.toLocaleString('en-US')} data rows; imports are limited to ` +
-        `${MAX_IMPORT_ROWS.toLocaleString('en-US')} rows per file. Split the file and import the parts separately.`,
-    );
-    return;
-  }
-
-  // PASS 2 — stream the valid rows into the unchanged per-entity chunk processors.
-  const validRows = streamValidCsvRows(payload, rowSchema, delimiter);
+  // PASS 2 — stream the valid rows into the unchanged per-entity chunk processors: skip what
+  // earlier runs durably consumed, feed at most this run's budget. On resume the pre-skips are
+  // already inside the persisted counters, so the base contribution must be zero.
+  const feed = boundImportFeed(
+    streamValidCsvRows(payload, rowSchema, delimiter),
+    runState.resumeOffset,
+    options?.rowsPerRun ?? IMPORT_ROWS_PER_RUN,
+  );
+  const skippedBase = resuming ? 0 : preSkipped;
   let verification: EmailVerificationSummary | null = null;
   if (payload.source === 'companies') {
     await new CompaniesController().processImportRows(
       payload.import_id,
       payload.tenant_id,
       payload.user_id,
-      preSkipped,
-      validRows,
+      skippedBase,
+      feed.rows,
     );
   } else if (payload.source === 'tasks') {
     await new TasksController().processImportRows(
       payload.import_id,
       payload.tenant_id,
       payload.user_id,
-      preSkipped,
-      validRows,
+      skippedBase,
+      feed.rows,
     );
   } else if (payload.source === 'households') {
     await new HouseholdsController().processImportRows(
@@ -557,8 +680,8 @@ export async function handleImportCsvJob(payload: JobPayloadOf<'import_csv'>, db
       payload.user_id,
       payload.campaign_id ?? '',
       payload.tags ?? [],
-      preSkipped,
-      validRows,
+      skippedBase,
+      feed.rows,
     );
   } else {
     // Persons. Collect just the email columns while the rows stream past, so the post-import
@@ -579,17 +702,22 @@ export async function handleImportCsvJob(payload: JobPayloadOf<'import_csv'>, db
       payload.user_id,
       payload.campaign_id ?? '',
       payload.tags ?? [],
-      preSkipped,
-      collectEmails(validRows),
+      skippedBase,
+      collectEmails(feed.rows),
       {
         duplicateDecision: payload.duplicate_decision ?? 'skip',
         listName: payload.list_name ?? undefined,
         // The counting pass's validation skips ride the same machinery the wizard's
-        // client-side skips used, so History's skipped-rows download covers them.
-        clientSkipReasons: preSkipReasons,
+        // client-side skips used, so History's skipped-rows download covers them. On resume
+        // they are already inside the persisted skip_reasons.
+        clientSkipReasons: resuming ? undefined : preSkipReasons,
       },
     );
 
+    // Verifies the emails THIS execution fed (suppression inserts are additive + idempotent).
+    // On a continued/resumed import each run checks its own segment; the stored summary
+    // reflects the last segment. Today's row cap fits one run, so a split summary only occurs
+    // after a crash mid-import.
     verification = await runImportEmailVerification(
       db,
       { tenant_id: payload.tenant_id, import_id: payload.import_id, user_id: payload.user_id },
@@ -597,8 +725,16 @@ export async function handleImportCsvJob(payload: JobPayloadOf<'import_csv'>, db
     );
   }
 
-  if (payload.source !== 'persons' && preSkipReasons.length > 0) {
-    await mergeCsvSkipReasons(db, payload.tenant_id, payload.import_id, preSkipReasons);
+  // Budget filled with rows still unread: hand the remainder to a fresh job and exit. The
+  // resume cursor is already durable, so the continuation (or a crash re-run) picks up exactly
+  // where this run's last committed chunk left off.
+  if (feed.sourceHadMore()) {
+    await enqueueImportContinuation(db, payload);
+    logger.info(
+      { importId: payload.import_id, tenantId: payload.tenant_id },
+      'Import run budget reached; continuation job enqueued',
+    );
+    return;
   }
 
   await markImportCompleted(payload.tenant_id, payload.import_id);

@@ -1502,6 +1502,13 @@ interface DataImports extends RecordType {
   source_file_size: number | null;
   /** Per-row reasons for skipped rows, so History can offer a "download skipped rows" CSV. */
   skip_reasons: Generated<Json>;
+  /**
+   * Crash-resume cursor: data rows of the import's row source durably consumed so far (committed
+   * inserts/merges plus counted skips/errors). Written atomically with the per-chunk counters, so
+   * a re-run after a worker crash resumes at the last committed chunk. bigint — pg returns it as a
+   * string, so readers must Number() it; writers may pass a number.
+   */
+  processed_row_offset: Generated<number | string>;
   /** Email-verification summary (EmailVerificationSummary) written by the import job's DNS/disposable checkup. */
   email_verification: Json | null;
 }

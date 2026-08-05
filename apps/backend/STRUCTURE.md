@@ -50,6 +50,7 @@ apps/
           2026-08-04-c-workflow-run-status.ts
           2026-08-04-d-task-automation-origin.ts
           2026-08-04-e-workflow-message-class.ts
+          2026-08-04-import-resume-offset.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -88,6 +89,7 @@ apps/
               ops.handlers.ts
               receipts.handlers.ts
               sync.handlers.ts
+              triggers.handlers.ts
               workflows.handlers.ts
             cron-registry.ts
             job-claim.ts

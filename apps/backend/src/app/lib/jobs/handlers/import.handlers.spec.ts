@@ -26,6 +26,15 @@ function makeFakeDb(): Kysely<Models> {
   return b as Kysely<Models>;
 }
 
+/** Like makeFakeDb, but the first read (the run-state guard) answers with the given row. */
+function makeFakeDbWithState(state: Record<string, unknown>): Kysely<Models> {
+  const b: any = {};
+  for (const m of ['selectFrom', 'leftJoin', 'select', 'where']) b[m] = vi.fn(() => b);
+  let call = 0;
+  b.executeTakeFirst = vi.fn(async () => (call++ === 0 ? state : undefined));
+  return b as Kysely<Models>;
+}
+
 function personsPayload(overrides: Record<string, unknown> = {}): any {
   return {
     import_id: '11',
@@ -97,6 +106,23 @@ describe('handleImportJob payload formats', () => {
     expect(vi.mocked(runImportEmailVerification).mock.calls[0]?.[2]).toHaveLength(3);
     const statuses = updateSpy.mock.calls.map((c: any[]) => c[0].row.status);
     expect(statuses[statuses.length - 1]).toBe('completed');
+  });
+
+  it('resumes a crashed run at the persisted offset: skips consumed rows, zero skip base, no re-sent client reasons', async () => {
+    downloadSpy.mockResolvedValue(serializeRowsToNdjson(ROWS) as any);
+    const processSpy = vi.mocked(PersonsService.prototype.processImportRows);
+
+    await handleImportJob(
+      personsPayload({ skipped: 1, client_skip_reasons: [{ row: 1, reason: 'client skip' }] }),
+      // A crashed run left the import 'processing' with 2 rows durably consumed.
+      makeFakeDbWithState({ status: 'processing', processed_row_offset: 2 }),
+    );
+
+    expect(capturedRows).toEqual(ROWS.slice(2));
+    const [, , , , , skippedBase, , options] = processSpy.mock.calls[0] ?? [];
+    // The client-side skips and their reasons are already inside the persisted counters.
+    expect(skippedBase).toBe(0);
+    expect(options?.clientSkipReasons).toBeUndefined();
   });
 
   it('routes both formats through the companies processor unchanged', async () => {

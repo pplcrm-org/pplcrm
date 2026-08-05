@@ -393,7 +393,33 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
     const results = { inserted: 0, errors: 0, skipped: 0 };
     const errorMessages: string[] = [];
 
+    // Crash/continuation resume: each per-chunk counter write below also records, atomically
+    // with the chunk's inserts, how many source rows have been durably consumed
+    // (`processed_row_offset`). This importer's plain inserts are NOT idempotent, so a re-run
+    // after a worker crash must skip exactly the committed rows: a re-entering run finds a
+    // non-zero offset, its caller has already stream-skipped that many rows, and the totals
+    // continue from what the database holds.
+    const importState = await this.importsRepo.db
+      .selectFrom('data_imports')
+      .select(['processed_row_offset', 'inserted_count', 'error_count', 'skipped_count'])
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', import_id)
+      .executeTakeFirst();
+    const resumeOffset = Number(importState?.processed_row_offset ?? 0);
+    const resuming = resumeOffset > 0;
+    // On resume the pre-processing skips (wizard/count-pass) are already inside the stored
+    // skipped_count, so the base contribution must not be added a second time.
+    const skippedBase = resuming ? 0 : skipped;
+    if (resuming) {
+      results.inserted = Number(importState?.inserted_count ?? 0);
+      results.errors = Number(importState?.error_count ?? 0);
+      results.skipped = Number(importState?.skipped_count ?? 0);
+    }
+    // Rows consumed from the source so far — starts at the resume offset.
+    let rowsSeen = resumeOffset;
+
     for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
+      rowsSeen += chunk.length;
       // 1. Filter valid rows upfront
       const validRows: Record<string, string>[] = [];
       for (const raw of chunk) {
@@ -404,6 +430,9 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
         }
       }
 
+      // Whether this chunk's transaction committed — committed chunks persist their counters
+      // and resume offset inside the transaction; everything else is recorded after the fact.
+      let chunkCommitted = false;
       if (validRows.length > 0) {
         try {
           // 2. Batch insert all valid company rows in one statement
@@ -424,25 +453,48 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
             .transaction()
             .execute(async (trx) => {
               await trx.insertInto('companies').values(companyRows).execute();
+              // The chunk's counters and the resume offset, in the SAME transaction as its
+              // rows, so a crash can never separate committed rows from the recorded offset.
+              await this.importsRepo.update(
+                {
+                  tenant_id: tenant_id,
+                  id: import_id,
+                  row: {
+                    inserted_count: results.inserted + validRows.length,
+                    error_count: results.errors,
+                    skipped_count: skippedBase + results.skipped,
+                    processed_row_offset: rowsSeen,
+                    updatedby_id: user_id,
+                    updated_at: new Date(),
+                  } as unknown as OperationDataType<'data_imports', 'update'>,
+                },
+                trx,
+              );
             });
           results.inserted += validRows.length;
+          chunkCommitted = true;
         } catch (err) {
           results.errors += validRows.length;
           errorMessages.push(err instanceof Error && err.message ? err.message : String(err));
         }
       }
 
-      await this.importsRepo.update({
-        tenant_id: tenant_id,
-        id: import_id,
-        row: {
-          inserted_count: results.inserted,
-          error_count: results.errors,
-          skipped_count: skipped + results.skipped,
-          updatedby_id: user_id,
-          updated_at: new Date(),
-        } as unknown as OperationDataType<'data_imports', 'update'>,
-      });
+      // Rolled-back and all-skipped chunks are recorded here, after the fact: a crash before
+      // this write just re-runs the chunk on resume — nothing was committed.
+      if (!chunkCommitted) {
+        await this.importsRepo.update({
+          tenant_id: tenant_id,
+          id: import_id,
+          row: {
+            inserted_count: results.inserted,
+            error_count: results.errors,
+            skipped_count: skippedBase + results.skipped,
+            processed_row_offset: rowsSeen,
+            updatedby_id: user_id,
+            updated_at: new Date(),
+          } as unknown as OperationDataType<'data_imports', 'update'>,
+        });
+      }
     }
 
     // Bulk-inserted rows get their record slugs in one set-based pass (spec §1).
@@ -455,7 +507,7 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
     return {
       inserted: results.inserted,
       errors: results.errors,
-      skipped: skipped + results.skipped,
+      skipped: skippedBase + results.skipped,
       errorMessages,
     };
   }

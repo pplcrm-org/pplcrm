@@ -18,14 +18,17 @@ import { StorageService } from '../../storage.service';
 import { handleImportCsvJob } from './import.handlers';
 
 /**
- * Chainable stand-in that answers each `executeTakeFirst()` from a queue: the completed-status
- * guard first, then (depending on the test) the skip-reason merge read and the summary-email
- * user lookup. `undefined` everywhere means "not completed, no stored reasons, no user" — the
- * handler proceeds and simply sends no email.
+ * Chainable stand-in that answers each `executeTakeFirst()` from a queue: the run-state read
+ * (status + resume offset) first, then (depending on the test) the skip-reason merge read and
+ * the summary-email user lookup. `undefined` everywhere means "not completed, offset 0, no
+ * stored reasons, no user" — the handler proceeds fresh and simply sends no email. The
+ * `insertInto` chain records continuation-job enqueues.
  */
 function makeScriptedDb(results: unknown[] = []): Kysely<Models> {
   const b: any = {};
-  for (const m of ['selectFrom', 'leftJoin', 'select', 'where']) b[m] = vi.fn(() => b);
+  for (const m of ['selectFrom', 'leftJoin', 'select', 'where', 'values']) b[m] = vi.fn(() => b);
+  b.insertInto = vi.fn(() => b);
+  b.execute = vi.fn(async () => []);
   let call = 0;
   b.executeTakeFirst = vi.fn(async () => results[call++]);
   return b as Kysely<Models>;
@@ -238,5 +241,53 @@ describe('handleImportCsvJob', () => {
     await handleImportCsvJob(csvPayload(), makeScriptedDb());
 
     expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it('resumes a crashed run: skips the counting pass and the already-committed rows, with a zero skip base', async () => {
+    mockCsvBlob('First,Email\nAda,ada@example.com\nBob,bob@example.com\nCyd,cyd@example.com\n');
+    const dlSpy = vi.spyOn(StorageService.prototype, 'downloadStream');
+
+    // A crashed run left the import 'processing' with 2 of 3 rows durably consumed.
+    await handleImportCsvJob(
+      csvPayload(),
+      makeScriptedDb([{ status: 'processing', processed_row_offset: 2, row_count: 3 }]),
+    );
+
+    // Only the un-consumed remainder is fed, numbered/counted from the persisted state.
+    expect(capturedRows).toEqual([{ first_name: 'Cyd', email: 'cyd@example.com' }]);
+    // Pass 1 skipped: the blob is streamed once, not twice, and row_count is not rewritten.
+    expect(dlSpy).toHaveBeenCalledTimes(1);
+    expect(updateRows().every((row) => row['row_count'] === undefined)).toBe(true);
+    // The pre-skips and their reasons are already inside the persisted counters/skip_reasons.
+    expect(capturedSkipped).toBe(0);
+    expect(capturedOptions.clientSkipReasons).toBeUndefined();
+    expect(statuses()[statuses().length - 1]).toBe('completed');
+  });
+
+  it('stops at the per-run row budget and enqueues a continuation job instead of completing', async () => {
+    mockCsvBlob('First,Email\nAda,ada@example.com\nBob,bob@example.com\n');
+    const db: any = makeScriptedDb();
+
+    await handleImportCsvJob(csvPayload(), db, { rowsPerRun: 1 });
+
+    // Only the budgeted row was fed; the rest belongs to the continuation run.
+    expect(capturedRows).toEqual([{ first_name: 'Ada', email: 'ada@example.com' }]);
+    // A fresh import_csv job with the same payload was enqueued...
+    expect(db.insertInto).toHaveBeenCalledWith('background_jobs');
+    const inserted = db.values.mock.calls[0][0];
+    expect(JSON.parse(String(inserted.payload))).toMatchObject({ type: 'import_csv', import_id: '11' });
+    // ...and the import was NOT marked completed (the continuation finishes it).
+    expect(statuses()).not.toContain('completed');
+  });
+
+  it('completes without a continuation when the file ends exactly at the budget', async () => {
+    mockCsvBlob('First,Email\nAda,ada@example.com\n');
+    const db: any = makeScriptedDb();
+
+    await handleImportCsvJob(csvPayload(), db, { rowsPerRun: 1 });
+
+    expect(capturedRows).toHaveLength(1);
+    expect(db.insertInto).not.toHaveBeenCalled();
+    expect(statuses()[statuses().length - 1]).toBe('completed');
   });
 });

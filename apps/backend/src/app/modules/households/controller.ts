@@ -785,9 +785,45 @@ export class HouseholdsController extends BaseController<'households', Household
     // Rows kept downloadable with the reason each was skipped or lost, same as the people
     // importer. Until now this importer wrote none, so a failed batch left an error count
     // with nothing behind it.
-    const skipReasons: Array<{ row: number; reason: string }> = [];
     const SKIP_REASONS_CAP = 500;
     const ERROR_MESSAGE_MAX = 1000;
+
+    // Crash/continuation resume: each per-chunk counter write below also records, atomically
+    // with the chunk's inserts, how many source rows have been durably consumed
+    // (`processed_row_offset`). A re-entering run (worker crash recovered by stale-job recovery,
+    // or a continuation job) finds a non-zero offset; its caller has already stream-skipped that
+    // many rows, so totals, skip reasons and row numbering continue from what the database holds.
+    const importState = await this.importsRepo.db
+      .selectFrom('data_imports')
+      .select(['processed_row_offset', 'inserted_count', 'error_count', 'skipped_count', 'skip_reasons'])
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', import_id)
+      .executeTakeFirst();
+    const resumeOffset = Number(importState?.processed_row_offset ?? 0);
+    const resuming = resumeOffset > 0;
+    // On resume the pre-processing skips (wizard/count-pass) are already inside the stored
+    // skipped_count, so the base contribution must not be added a second time.
+    const skippedBase = resuming ? 0 : skipped;
+    if (resuming) {
+      results.inserted = Number(importState?.inserted_count ?? 0);
+      results.errors = Number(importState?.error_count ?? 0);
+      results.skipped = Number(importState?.skipped_count ?? 0);
+    }
+    // Seeded from what is already on file — the CSV job records the counting pass's validation
+    // skips there before processing starts, and a resumed run must keep every reason an earlier
+    // run persisted (this importer's final write replaces the whole array).
+    const storedReasons: unknown = importState?.skip_reasons;
+    const skipReasons: Array<{ row: number; reason: string }> = Array.isArray(storedReasons)
+      ? storedReasons.filter(
+          (value): value is { row: number; reason: string } =>
+            typeof value === 'object' &&
+            value !== null &&
+            'row' in value &&
+            'reason' in value &&
+            typeof value.row === 'number' &&
+            typeof value.reason === 'string',
+        )
+      : [];
     const trim = (value: string | null | undefined): string | null => {
       const text = (value ?? '').toString().trim();
       return text.length > 0 ? text : null;
@@ -812,8 +848,9 @@ export class HouseholdsController extends BaseController<'households', Household
     const importJurisdiction = importCampaign?.jurisdiction ?? 'other';
 
     // Rows consumed from the source so far, so a skipped or lost row can be named by its
-    // 1-based position in the file.
-    let rowsSeen = 0;
+    // 1-based position in the file. Starts at the resume offset: the caller already
+    // stream-skipped that many rows.
+    let rowsSeen = resumeOffset;
     for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
       const chunkStartRow = rowsSeen;
       rowsSeen += chunk.length;
@@ -897,6 +934,9 @@ export class HouseholdsController extends BaseController<'households', Household
         });
       }
 
+      // Whether this chunk's transaction committed — committed chunks persist their counters and
+      // resume offset inside the transaction; everything else is recorded after the fact below.
+      let chunkCommitted = false;
       if (entries.length > 0) {
         try {
           // Counted inside the transaction but added to the running totals only after it
@@ -1024,10 +1064,32 @@ export class HouseholdsController extends BaseController<'households', Household
                 }
               }
 
+              // The chunk's counters and the resume offset, in the SAME transaction as its rows:
+              // committed-rows-without-offset (double import on resume) and offset-without-rows
+              // (row loss) are both impossible.
+              await this.importsRepo.update(
+                {
+                  tenant_id,
+                  id: import_id,
+                  row: {
+                    inserted_count: results.inserted + insertedInChunk,
+                    error_count: results.errors,
+                    skipped_count: skippedBase + results.skipped + skippedInChunk,
+                    households_created: results.inserted + insertedInChunk,
+                    skip_reasons: JSON.stringify(skipReasons),
+                    processed_row_offset: rowsSeen,
+                    updatedby_id: user_id,
+                    updated_at: new Date(),
+                  } as unknown as OperationDataType<'data_imports', 'update'>,
+                },
+                trx,
+              );
+
               return { inserted: insertedInChunk, skipped: skippedInChunk };
             });
           results.inserted += committed.inserted;
           results.skipped += committed.skipped;
+          chunkCommitted = true;
         } catch (err) {
           results.errors += entries.length;
           const message = err instanceof Error && err.message ? err.message : String(err);
@@ -1045,18 +1107,26 @@ export class HouseholdsController extends BaseController<'households', Household
         }
       }
 
-      await this.importsRepo.update({
-        tenant_id,
-        id: import_id,
-        row: {
-          inserted_count: results.inserted,
-          error_count: results.errors,
-          skipped_count: skipped + results.skipped,
-          households_created: results.inserted,
-          updatedby_id: user_id,
-          updated_at: new Date(),
-        } as unknown as OperationDataType<'data_imports', 'update'>,
-      });
+      // A committed chunk already persisted its counters and offset atomically with its rows.
+      // Rolled-back and all-skipped chunks are recorded here, after the fact: if the process
+      // dies before this write, the chunk simply re-runs on resume — nothing was committed, so
+      // nothing can be imported twice or double-counted.
+      if (!chunkCommitted) {
+        await this.importsRepo.update({
+          tenant_id,
+          id: import_id,
+          row: {
+            inserted_count: results.inserted,
+            error_count: results.errors,
+            skipped_count: skippedBase + results.skipped,
+            households_created: results.inserted,
+            skip_reasons: JSON.stringify(skipReasons),
+            processed_row_offset: rowsSeen,
+            updatedby_id: user_id,
+            updated_at: new Date(),
+          } as unknown as OperationDataType<'data_imports', 'update'>,
+        });
+      }
     }
 
     // Bulk-inserted rows get their record slugs in one set-based pass (spec §1).
@@ -1087,7 +1157,7 @@ export class HouseholdsController extends BaseController<'households', Household
     return {
       inserted: results.inserted,
       errors: results.errors,
-      skipped: skipped + results.skipped,
+      skipped: skippedBase + results.skipped,
       errorMessages,
     };
   }

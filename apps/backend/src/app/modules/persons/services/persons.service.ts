@@ -2,6 +2,7 @@ import { env } from '../../../../env';
 import type { IAuthKeyPayload, PersonMergeImpactType, UpdatePersonsType } from '../../../../../../../libs/common/src';
 import { TRPCError } from '@trpc/server';
 import { sql } from 'kysely';
+import type { Transaction } from 'kysely';
 
 import { BadRequestError } from '../../../errors/app-errors';
 import { fingerprintFull, fingerprintStreet } from '../../../lib/address-normalize';
@@ -20,11 +21,10 @@ import { CampaignsRepo } from '../../campaigns/repositories/campaigns.repo';
 import { CompaniesRepo } from '../../companies/repositories/companies.repo';
 import { MapTeamsPersonsRepo } from '../../teams/repositories/map-teams-persons.repo';
 import { TeamsRepo } from '../../teams/repositories/teams.repo';
-import type { OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
+import type { Models, OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { ImportsRepo } from '../../imports/repositories/imports.repo';
 import { createUploadImport } from '../../imports/upload-intake';
 import { ListsRepo } from '../../lists/repositories/lists.repo';
-import { MapListsPersonsRepo } from '../../lists/repositories/map-lists-persons.repo';
 import { NotificationsRepo } from '../../notifications/repositories/notifications.repo';
 import { UserActivityRepo } from '../../../lib/user-activity.repo';
 import { StorageService } from '../../../lib/storage.service';
@@ -35,6 +35,25 @@ import { logger } from '../../../logger';
 
 /** Longest text stored in `data_imports.error_message` — the History page shows it inline. */
 const ERROR_MESSAGE_MAX = 1000;
+
+/**
+ * Person-ids (or person/tag pairs) per automation-trigger background job enqueued by the import.
+ * Same size as the shipped list-creation batching (lists/controller.ts LIST_JOINED_TRIGGER_CHUNK_SIZE).
+ */
+const IMPORT_TRIGGER_JOB_CHUNK_SIZE = 500;
+
+type ImportSkipReason = { row: number; email?: string; reason: string };
+
+function isImportSkipReason(value: unknown): value is ImportSkipReason {
+  if (typeof value !== 'object' || value === null) return false;
+  if (!('row' in value) || !('reason' in value)) return false;
+  return typeof value.row === 'number' && typeof value.reason === 'string';
+}
+
+/** The skip reasons a previous run persisted on `data_imports.skip_reasons` (jsonb → JS array). */
+function storedSkipReasons(stored: unknown): ImportSkipReason[] {
+  return Array.isArray(stored) ? stored.filter(isImportSkipReason) : [];
+}
 
 /**
  * Legacy intake for `persons.import`: every mapped row (plus the raw CSV text) travels in the
@@ -119,7 +138,6 @@ export class PersonsService {
   private companiesRepo = new CompaniesRepo();
   private campaignsRepo = new CampaignsRepo();
   private listsRepo = new ListsRepo();
-  private mapListsPersonsRepo = new MapListsPersonsRepo();
 
   /**
    * `persons.household_id`, `persons.company_id`, and `persons.campaign_id` are single-column
@@ -893,6 +911,35 @@ export class PersonsService {
   ) {
     const households = new HouseholdRepo();
     const duplicateDecision = options?.duplicateDecision ?? 'skip';
+
+    // Crash/continuation resume: every per-chunk counter write below also records, atomically
+    // with the chunk's inserts, how many source rows have been durably consumed
+    // (`processed_row_offset`). A re-entering run (worker crash recovered by stale-job recovery,
+    // or a continuation job) finds a non-zero offset; its caller has already stream-skipped that
+    // many rows, so totals, the skip-reason list and the row numbering continue from what the
+    // database holds instead of restarting from zero — which is what used to re-import from the
+    // start.
+    const importState = await this.importsRepo.db
+      .selectFrom('data_imports')
+      .select([
+        'processed_row_offset',
+        'inserted_count',
+        'error_count',
+        'skipped_count',
+        'merged_count',
+        'households_created',
+        'skip_reasons',
+        'tag_id',
+      ])
+      .where('tenant_id', '=', tenant_id)
+      .where('id', '=', import_id)
+      .executeTakeFirst();
+    const resumeOffset = Number(importState?.processed_row_offset ?? 0);
+    const resuming = resumeOffset > 0;
+    // On resume the pre-processing skips (wizard/count-pass) are already inside the stored
+    // skipped_count, so the base contribution must not be added a second time.
+    const skippedBase = resuming ? 0 : skipped;
+
     const results: {
       inserted: number;
       errors: number;
@@ -900,24 +947,29 @@ export class PersonsService {
       skipped: number;
       merged: number;
     } = {
-      inserted: 0,
-      errors: 0,
-      households_created: 0,
-      skipped: 0,
-      merged: 0,
+      inserted: resuming ? Number(importState?.inserted_count ?? 0) : 0,
+      errors: resuming ? Number(importState?.error_count ?? 0) : 0,
+      households_created: resuming ? Number(importState?.households_created ?? 0) : 0,
+      skipped: resuming ? Number(importState?.skipped_count ?? 0) : 0,
+      merged: resuming ? Number(importState?.merged_count ?? 0) : 0,
     };
-    const importedPersonIds: string[] = [];
     // Rows kept downloadable with the reason each was skipped (History page, spec §17) —
-    // seeded with the wizard's own client-side skips (bad-email "Skip"), then appended to below.
-    const skipReasons: Array<{ row: number; email?: string; reason: string }> = [...(options?.clientSkipReasons ?? [])];
+    // seeded with the wizard's own client-side skips (bad-email "Skip") on a fresh run, or with
+    // the reasons earlier runs already persisted when resuming; appended to below.
+    const skipReasons: Array<{ row: number; email?: string; reason: string }> = resuming
+      ? storedSkipReasons(importState?.skip_reasons)
+      : [...(options?.clientSkipReasons ?? [])];
 
     const errorMessages: string[] = [];
     let cachedBlankHouseholdId: string | null = null;
     // Companies resolved so far, keyed by lower(name) — merged from each chunk's
     // transaction only after it commits, so a rolled-back create is never reused.
     const companyIdByName = new Map<string, string>();
-    let autoTagId: string | null = null;
+    let autoTagId: string | null = resuming && importState?.tag_id != null ? String(importState.tag_id) : null;
     const autoTag = tags.find((t) => t.startsWith('Imported-')) || tags[0];
+    // Static list every imported/merged person joins (spec §17), resolved lazily inside the
+    // first chunk transaction that has members for it and cached for the rest of the run.
+    let staticListId: string | null = null;
 
     // Which jurisdiction a boundary map created by this import belongs to. A spreadsheet never says,
     // so the importing campaign's own jurisdiction is the best available answer, and 'other' is the
@@ -936,7 +988,8 @@ export class PersonsService {
 
     // Total rows consumed from the source so far — replaces rows.length now
     // that the source may be a lazy iterator (also drives 1-based row numbers).
-    let rowsSeen = 0;
+    // Starts at the resume offset: the caller already stream-skipped that many rows.
+    let rowsSeen = resumeOffset;
     for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
       const chunkStartRow = rowsSeen;
       rowsSeen += chunk.length;
@@ -1033,7 +1086,567 @@ export class PersonsService {
         });
       }
 
-      if (validEntries.length === 0) {
+      // Whether this chunk's transaction committed — committed chunks persist their counters and
+      // resume offset inside the transaction; rolled-back and all-skipped chunks are recorded
+      // after the fact below.
+      let chunkCommitted = false;
+
+      if (validEntries.length > 0) {
+        try {
+          const outcome = await this.personsRepo.transaction().execute(async (trx) => {
+            let localBlankHouseholdId = cachedBlankHouseholdId;
+            let localAutoTagId = autoTagId;
+            let householdsCreatedDelta = 0;
+            // Skips discovered inside the transaction are folded into the running totals only
+            // once it commits. A chunk that rolls back has its rows counted as errors instead,
+            // and counting them here as well made one failed row count twice.
+            let skippedDelta = 0;
+            const chunkSkipReasons: Array<{ row: number; email?: string; reason: string }> = [];
+
+            // 2a. Resolve blank household once for the whole chunk. Also covers rows that look
+            // addressed but fingerprint to nothing (e.g. an address column holding only
+            // punctuation): they get no household of their own either, so they need the blank one.
+            if (validEntries.some((e) => e.isBlankAddress || !e.fp_full)) {
+              if (!localBlankHouseholdId) {
+                const existingBlank = await households.getBlankHousehold({ tenant_id }, trx);
+                if (existingBlank?.id) {
+                  localBlankHouseholdId = String(existingBlank.id);
+                } else {
+                  const created = await households.add(
+                    {
+                      row: {
+                        tenant_id,
+                        campaign_id,
+                        createdby_id: user_id,
+                        updatedby_id: user_id,
+                        file_id: import_id,
+                      } as OperationDataType<'households', 'insert'>,
+                    },
+                    trx,
+                  );
+                  localBlankHouseholdId = String(created?.id);
+                  householdsCreatedDelta += 1;
+                }
+              }
+            }
+
+            // 2b. Batch-resolve addressed households with a single IN query
+            const fpCache = new Map<string, string>(); // fp_full -> household_id
+            const uniqueFps = [
+              ...new Set(validEntries.filter((e) => !e.isBlankAddress && e.fp_full).map((e) => e.fp_full as string)),
+            ];
+            if (uniqueFps.length > 0) {
+              const existingHouseholds = await trx
+                .selectFrom('households')
+                .select(['id', 'address_fp_full'])
+                .where('tenant_id', '=', tenant_id)
+                .where('address_fp_full', 'in', uniqueFps)
+                .execute();
+              for (const h of existingHouseholds) {
+                if (h.address_fp_full) fpCache.set(h.address_fp_full, String(h.id));
+              }
+            }
+
+            // 2c. Create only missing households (deduplicated within this chunk)
+            for (const entry of validEntries) {
+              if (entry.isBlankAddress || !entry.fp_full) continue;
+              if (fpCache.has(entry.fp_full)) continue;
+              const { sanitized, fp_street, fp_full } = entry;
+              const hhRow = {
+                tenant_id,
+                campaign_id,
+                createdby_id: user_id,
+                updatedby_id: user_id,
+                home_phone: sanitized.home_phone ?? null,
+                street_num: sanitized.street_num ?? null,
+                street1: sanitized.street1 ?? null,
+                street2: sanitized.street2 ?? null,
+                apt: sanitized.apt ?? null,
+                city: sanitized.city ?? null,
+                state: sanitized.state ?? null,
+                zip: sanitized.zip ?? null,
+                country: sanitized.country ?? null,
+                address_fp_street: fp_street,
+                address_fp_full: fp_full,
+                notes: null,
+                file_id: import_id,
+              } as OperationDataType<'households', 'insert'>;
+              const household = await households.add({ row: hhRow }, trx);
+              fpCache.set(fp_full, String(household?.id));
+              householdsCreatedDelta += 1;
+            }
+
+            // 2c bis. Electoral areas the file named. This is the cheapest way a workspace gets real
+            // electoral geography, and it costs nothing at all: the area name arrived already
+            // assigned to the row, so there is no polygon to match and — the part that matters — no
+            // paid address lookup. Nothing below calls a geocoding service, and nothing below changes
+            // whether or when one is called: coordinates remain a separate concern, metered by the
+            // plan gate and per-workspace daily budget in lib/gis/geocode-queue.ts.
+            //
+            // Written with `upsertHouseholdAreas` (via `writeImportedAreas`) rather than
+            // `applyHouseholdMatches`, because that opens its own transaction and Kysely issues a
+            // fresh BEGIN/COMMIT on the same connection rather than a savepoint — calling it here
+            // would commit this import's transaction early.
+            //
+            // Areas are written for the household the row resolved to, whether this chunk created it
+            // or it was already on file, because a district is a fact about the address and a
+            // purchased voter file is exactly the case where the addresses already exist. Rows with
+            // no address at all are excluded: they all share the one blank household, so recording
+            // one voter's district there would attach it to every address-less person in the
+            // workspace.
+            //
+            // Several voters share one door, so the per-household areas are merged first. Two rows
+            // for the same household in one INSERT would make Postgres refuse the statement outright
+            // ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+            const areasByHousehold = new Map<string, Record<string, string>>();
+            for (const entry of validEntries) {
+              if (entry.isBlankAddress || !entry.fp_full) continue;
+              if (Object.keys(entry.areas).length === 0) continue;
+              const householdId = fpCache.get(entry.fp_full);
+              if (!householdId) continue;
+              areasByHousehold.set(householdId, { ...(areasByHousehold.get(householdId) ?? {}), ...entry.areas });
+            }
+            if (areasByHousehold.size > 0) {
+              const areaEntries = [...areasByHousehold].map(([household_id, areas]) => ({ household_id, areas }));
+              const usedFields = [...new Set(areaEntries.flatMap((e) => Object.keys(e.areas)))];
+              const setIdByField = await ensureImportedBoundarySets(
+                trx,
+                tenant_id,
+                user_id,
+                usedFields,
+                importJurisdiction,
+              );
+              await writeImportedAreas(trx, tenant_id, areaEntries, setIdByField);
+            }
+
+            // 2c'. Resolve companies by case-insensitive name: one IN query for the
+            // chunk's unmatched names, then create whatever is still missing —
+            // attributed to this import via file_id so deleting the import can
+            // clean them up. Kept in a chunk-local map and merged into the outer
+            // cache only after commit.
+            const localCompanyIdByName = new Map<string, string>(companyIdByName);
+            const chunkCompanyNames = new Map<string, string>(); // lower(name) -> original casing
+            for (const entry of validEntries) {
+              const name = entry.sanitized.company;
+              if (name && !localCompanyIdByName.has(name.toLowerCase())) {
+                if (!chunkCompanyNames.has(name.toLowerCase())) chunkCompanyNames.set(name.toLowerCase(), name);
+              }
+            }
+            if (chunkCompanyNames.size > 0) {
+              const existingCompanies = await trx
+                .selectFrom('companies')
+                .select(['id', 'name'])
+                .where('tenant_id', '=', tenant_id)
+                .where(sql`lower(name)`, 'in', [...chunkCompanyNames.keys()])
+                .execute();
+              for (const c of existingCompanies) {
+                localCompanyIdByName.set(c.name.toLowerCase(), String(c.id));
+              }
+              for (const [lowerName, name] of chunkCompanyNames) {
+                if (localCompanyIdByName.has(lowerName)) continue;
+                const created = await trx
+                  .insertInto('companies')
+                  .values({
+                    tenant_id,
+                    createdby_id: user_id,
+                    updatedby_id: user_id,
+                    name,
+                    file_id: import_id,
+                  } as OperationDataType<'companies', 'insert'>)
+                  .returning('id')
+                  .executeTakeFirst();
+                if (created?.id) localCompanyIdByName.set(lowerName, String(created.id));
+              }
+            }
+            const companyIdFor = (entry: (typeof validEntries)[number]): string | null => {
+              const name = entry.sanitized.company;
+              return name ? (localCompanyIdByName.get(name.toLowerCase()) ?? null) : null;
+            };
+
+            // 2d. Duplicate-email resolution (spec §17 Review step — a single
+            // decision governs every row whose email matches a person that
+            // already exists; email is the match key app-wide, same as
+            // Duplicates and Forms).
+            //  - 'skip' (default): exclude the row; counted + reasoned below.
+            //  - 'merge': fill the existing person's blank fields from the row
+            //    (never overwrite), don't insert a second person.
+            //  - 'import_new': insert as a brand-new person anyway; the email
+            //    is cleared first so it can't collide with the unique
+            //    (tenant_id, lower(email)) index — the row becomes a
+            //    name-only duplicate for the Duplicates page to reconcile.
+            const mergeEntries: Array<{ entry: (typeof validEntries)[number]; personId: string }> = [];
+            const insertEntries: typeof validEntries = [];
+            const candidateEmails = [
+              ...new Set(validEntries.map((e) => e.sanitized.email).filter((email): email is string => !!email)),
+            ];
+            const existingByEmail = new Map<string, { id: string }>();
+            if (candidateEmails.length > 0) {
+              const existing = await trx
+                .selectFrom('persons')
+                .select(['id', 'email'])
+                .where('tenant_id', '=', tenant_id)
+                .where(
+                  sql`lower(email)`,
+                  'in',
+                  candidateEmails.map((email) => email.toLowerCase()),
+                )
+                .execute();
+              for (const p of existing) {
+                if (p.email) existingByEmail.set(p.email.toLowerCase(), { id: String(p.id) });
+              }
+            }
+
+            for (const entry of validEntries) {
+              const match = entry.sanitized.email ? existingByEmail.get(entry.sanitized.email.toLowerCase()) : null;
+              if (!match) {
+                insertEntries.push(entry);
+                continue;
+              }
+              if (duplicateDecision === 'merge') {
+                mergeEntries.push({ entry, personId: match.id });
+              } else if (duplicateDecision === 'import_new') {
+                // Keep the row, but the email must go so the insert doesn't
+                // collide with the existing person's email.
+                insertEntries.push({ ...entry, sanitized: { ...entry.sanitized, email: undefined } });
+              } else {
+                skippedDelta += 1;
+                if (skipReasons.length + chunkSkipReasons.length < SKIP_REASONS_CAP) {
+                  chunkSkipReasons.push({
+                    row: entry.rowNumber,
+                    email: entry.sanitized.email,
+                    reason: 'Matches a person you already have. Duplicate decision was Skip',
+                  });
+                }
+              }
+            }
+
+            // 2e. Within-file duplicates: two rows of this chunk sharing one email cannot both
+            // insert — the batch insert's ON CONFLICT DO NOTHING used to drop the later row
+            // silently, which (a) left a skipped count with no matching skip-reason row and
+            // (b) made the returned rows fewer than the attempted rows, breaking the positional
+            // row↔person pairing that carries each row's Tags column. Drop the later rows here,
+            // named, before the insert. ('import_new' rows had their email cleared above, so they
+            // are never dropped by this.)
+            const emailsSeenInChunk = new Set<string>();
+            const attemptEntries: typeof validEntries = [];
+            for (const entry of insertEntries) {
+              const emailKey = entry.sanitized.email?.toLowerCase();
+              if (emailKey && emailsSeenInChunk.has(emailKey)) {
+                skippedDelta += 1;
+                if (skipReasons.length + chunkSkipReasons.length < SKIP_REASONS_CAP) {
+                  chunkSkipReasons.push({
+                    row: entry.rowNumber,
+                    email: entry.sanitized.email,
+                    reason: 'Duplicate of an earlier row in this file (same email address)',
+                  });
+                }
+                continue;
+              }
+              if (emailKey) emailsSeenInChunk.add(emailKey);
+              attemptEntries.push(entry);
+            }
+
+            // 3. Batch insert all persons in one statement
+            const personRows = attemptEntries.map((entry) => {
+              const { sanitized, isBlankAddress, fp_full } = entry;
+              return {
+                tenant_id,
+                campaign_id,
+                createdby_id: user_id,
+                updatedby_id: user_id,
+                household_id:
+                  (isBlankAddress || !fp_full
+                    ? localBlankHouseholdId
+                    : (fpCache.get(fp_full) ?? localBlankHouseholdId)) ?? '',
+                first_name: sanitized.first_name ?? null,
+                middle_names: sanitized.middle_names ?? null,
+                last_name: sanitized.last_name ?? null,
+                email: sanitized.email ?? null,
+                email2: sanitized.email2 ?? null,
+                mobile: sanitized.mobile ?? null,
+                home_phone: null,
+                company_id: companyIdFor(entry),
+                file_id: import_id,
+                notes: sanitized.notes ?? null,
+              };
+            });
+            const insertedPersons = personRows.length
+              ? await trx
+                  .insertInto('persons')
+                  .values(personRows)
+                  .onConflict((oc) => oc.doNothing())
+                  .returningAll()
+                  .execute()
+              : [];
+
+            // 3b. Merge decision: fill only the existing person's blank fields — never overwrite.
+            const mergedPersonIds: string[] = [];
+            for (const { entry, personId } of mergeEntries) {
+              await trx
+                .updateTable('persons')
+                .set({
+                  first_name: sql`COALESCE(persons.first_name, ${entry.sanitized.first_name ?? null})`,
+                  middle_names: sql`COALESCE(persons.middle_names, ${entry.sanitized.middle_names ?? null})`,
+                  last_name: sql`COALESCE(persons.last_name, ${entry.sanitized.last_name ?? null})`,
+                  email2: sql`COALESCE(persons.email2, ${entry.sanitized.email2 ?? null})`,
+                  mobile: sql`COALESCE(persons.mobile, ${entry.sanitized.mobile ?? null})`,
+                  company_id: sql`COALESCE(persons.company_id, ${companyIdFor(entry)})`,
+                  notes: sql`COALESCE(persons.notes, ${entry.sanitized.notes ?? null})`,
+                  updated_at: sql`now()`,
+                  updatedby_id: user_id,
+                })
+                .where('tenant_id', '=', tenant_id)
+                .where('id', '=', personId)
+                .execute();
+              mergedPersonIds.push(personId);
+            }
+
+            // 4. Upsert each unique tag name exactly once (not once per row) —
+            // the batch-level tags plus every name from a mapped Tags column,
+            // deduplicated case-insensitively (first casing wins).
+            const uniqueTagNames = new Map<string, string>(); // lower(name) -> original casing
+            for (const name of [...tags, ...validEntries.flatMap((e) => e.sanitized.tags)]) {
+              if (!uniqueTagNames.has(name.toLowerCase())) uniqueTagNames.set(name.toLowerCase(), name);
+            }
+            const tagIdByLowerName = new Map<string, string>();
+            const tagRecords: Array<{ name: string; id: string }> = [];
+            for (const name of uniqueTagNames.values()) {
+              const row = {
+                name,
+                tenant_id,
+                createdby_id: user_id,
+                updatedby_id: user_id,
+              } as OperationDataType<'tags', 'insert'>;
+              const tag = await this.tagsRepo.addOrGet({ row, onConflictColumn: 'name' }, trx);
+              if (name === autoTag && tag?.id != null && !localAutoTagId) localAutoTagId = String(tag.id);
+              if (tag?.id) {
+                tagRecords.push({ name, id: String(tag.id) });
+                tagIdByLowerName.set(name.toLowerCase(), String(tag.id));
+              }
+            }
+
+            // 5. Work out which tags each person gets: every batch-level tag, plus the row's own
+            // Tags-column names. Inserted persons are paired back to their source rows by position
+            // when the insert dropped nothing (the normal case now that within-file duplicates are
+            // removed before the insert). If ON CONFLICT DO NOTHING still dropped rows — a
+            // matching contact committed concurrently between the duplicate check and the insert —
+            // pairing must NOT key on email alone: a row whose invalid email the sanitizer blanked
+            // still carries a Tags column that must apply. Attempted emails are unique within the
+            // batch and email-less rows can never hit the unique-email index, so email rows pair
+            // by email and email-less rows pair positionally among the returned email-less rows
+            // (INSERT ... RETURNING yields rows in VALUES order — same reliance as the households
+            // importer's electoral-areas pairing).
+            const batchTagRecords = tagRecords.filter((t) =>
+              tags.some((n) => n.toLowerCase() === t.name.toLowerCase()),
+            );
+            const rowTagRecords = (
+              entry: (typeof validEntries)[number] | undefined,
+            ): Array<{ name: string; id: string }> => {
+              if (!entry) return batchTagRecords;
+              const names = new Set([...tags, ...entry.sanitized.tags].map((n) => n.toLowerCase()));
+              return tagRecords.filter((t) => names.has(t.name.toLowerCase()));
+            };
+
+            const personTags = new Map<string, Array<{ name: string; id: string }>>();
+            if (insertedPersons.length === attemptEntries.length) {
+              insertedPersons.forEach((p, idx) => personTags.set(String(p.id), rowTagRecords(attemptEntries[idx])));
+            } else {
+              const entryByEmail = new Map(
+                attemptEntries
+                  .filter((e) => e.sanitized.email)
+                  .map((e) => [(e.sanitized.email as string).toLowerCase(), e] as const),
+              );
+              const noEmailEntries = attemptEntries.filter((e) => !e.sanitized.email);
+              let noEmailIdx = 0;
+              const returnedEmails = new Set<string>();
+              for (const p of insertedPersons) {
+                const emailKey = p.email ? String(p.email).toLowerCase() : null;
+                const entry = emailKey ? entryByEmail.get(emailKey) : noEmailEntries[noEmailIdx++];
+                if (emailKey) returnedEmails.add(emailKey);
+                personTags.set(String(p.id), rowTagRecords(entry));
+              }
+              // Attempted email rows that did not come back were lost to the unique-email index.
+              // Count and name them — they used to be counted with no reason row.
+              for (const entry of attemptEntries) {
+                const emailKey = entry.sanitized.email?.toLowerCase();
+                if (!emailKey || returnedEmails.has(emailKey)) continue;
+                skippedDelta += 1;
+                if (skipReasons.length + chunkSkipReasons.length < SKIP_REASONS_CAP) {
+                  chunkSkipReasons.push({
+                    row: entry.rowNumber,
+                    email: entry.sanitized.email,
+                    reason: 'Matches a person you already have (duplicate email address)',
+                  });
+                }
+              }
+            }
+            for (const { entry, personId } of mergeEntries) {
+              personTags.set(personId, rowTagRecords(entry));
+            }
+
+            const tagMapRows = [...personTags.entries()].flatMap(([person_id, records]) =>
+              records.map(({ id: tag_id }) => ({
+                tenant_id,
+                person_id,
+                tag_id: tag_id as unknown as string,
+                createdby_id: user_id,
+                updatedby_id: user_id,
+              })),
+            );
+            // Which person/tag pairs this chunk actually created, as `${person_id}:${tag_id}`.
+            // A re-import of the same file hits onConflict-doNothing for every pair the contact
+            // already had; firing the tag_added automation for those would re-enroll the same
+            // people on every overlapping import, so only the returned rows are announced below.
+            const newTagPairs = new Set<string>();
+            if (tagMapRows.length > 0) {
+              // Merged persons may already carry a tag from an earlier import — don't fail the batch on that.
+              const insertedTagMaps = await trx
+                .insertInto('map_peoples_tags')
+                .values(tagMapRows)
+                .onConflict((oc) => oc.doNothing())
+                .returning(['person_id', 'tag_id'])
+                .execute();
+              for (const map of insertedTagMaps) {
+                newTagPairs.add(`${String(map.person_id)}:${String(map.tag_id)}`);
+              }
+            }
+
+            // 6. Queue the automation triggers as background jobs — INSIDE this transaction, so a
+            // rollback discards them with the rows (transactional outbox; same shipped pattern as
+            // list creation's trigger_list_joined). Firing them inline, one awaited evaluation per
+            // person, added minutes at 100k rows. Semantics preserved: contact_created only for
+            // newly-inserted persons; tag_added only for `.returning()`-confirmed new person/tag
+            // pairs (merged persons included); no list_joined firing on import (deliberate hold).
+            const contactCreatedIds = insertedPersons.map((p) => String(p.id));
+            const tagAddedPairs: Array<{ person_id: string; tag_id: string; tag_name: string }> = [];
+            for (const [personId, records] of personTags) {
+              for (const { id: tagId, name } of records) {
+                if (newTagPairs.has(`${personId}:${tagId}`)) {
+                  tagAddedPairs.push({ person_id: personId, tag_id: tagId, tag_name: name });
+                }
+              }
+            }
+            const triggerJobRows: OperationDataType<'background_jobs', 'insert'>[] = [];
+            for (let i = 0; i < contactCreatedIds.length; i += IMPORT_TRIGGER_JOB_CHUNK_SIZE) {
+              triggerJobRows.push({
+                tenant_id,
+                queue: 'default',
+                status: 'pending',
+                payload: JSON.stringify({
+                  type: 'trigger_contact_created',
+                  tenant_id,
+                  person_ids: contactCreatedIds.slice(i, i + IMPORT_TRIGGER_JOB_CHUNK_SIZE),
+                }),
+                run_at: new Date(),
+              } as OperationDataType<'background_jobs', 'insert'>);
+            }
+            for (let i = 0; i < tagAddedPairs.length; i += IMPORT_TRIGGER_JOB_CHUNK_SIZE) {
+              triggerJobRows.push({
+                tenant_id,
+                queue: 'default',
+                status: 'pending',
+                payload: JSON.stringify({
+                  type: 'trigger_tag_added',
+                  tenant_id,
+                  pairs: tagAddedPairs.slice(i, i + IMPORT_TRIGGER_JOB_CHUNK_SIZE),
+                }),
+                run_at: new Date(),
+              } as OperationDataType<'background_jobs', 'insert'>);
+            }
+            if (triggerJobRows.length > 0) {
+              await trx.insertInto('background_jobs').values(triggerJobRows).execute();
+            }
+
+            // 7. Static list membership for this chunk's imported + merged persons (spec §17) —
+            // also inside the transaction, so a crash can never lose a committed chunk's
+            // memberships and a resumed run never re-adds them (the insert skips conflicts).
+            let localStaticListId = staticListId;
+            const listMemberIds = [...contactCreatedIds, ...mergedPersonIds];
+            if (options?.listName && listMemberIds.length > 0) {
+              localStaticListId = await this.addImportedPersonsToStaticList(
+                tenant_id,
+                user_id,
+                campaign_id,
+                options.listName,
+                listMemberIds,
+                trx,
+                localStaticListId,
+              );
+            }
+
+            // 8. The chunk's counters, its skip reasons, and the resume offset — in the SAME
+            // transaction as its rows. Committed-rows-without-offset (re-import on resume) and
+            // offset-without-rows (row loss) are both impossible, and a crash loses at most the
+            // in-flight chunk's skip reasons, never a committed chunk's.
+            await this.importsRepo.update(
+              {
+                tenant_id,
+                id: import_id,
+                row: {
+                  tag_id: localAutoTagId,
+                  inserted_count: results.inserted + insertedPersons.length,
+                  error_count: results.errors,
+                  skipped_count: skippedBase + results.skipped + skippedDelta,
+                  merged_count: results.merged + mergedPersonIds.length,
+                  households_created: results.households_created + householdsCreatedDelta,
+                  skip_reasons: JSON.stringify([...skipReasons, ...chunkSkipReasons]),
+                  processed_row_offset: rowsSeen,
+                  updatedby_id: user_id,
+                  updated_at: new Date(),
+                },
+              },
+              trx,
+            );
+
+            return {
+              insertedPersons,
+              mergedPersonIds,
+              skippedDelta,
+              chunkSkipReasons,
+              householdsCreatedDelta,
+              blankHouseholdId: localBlankHouseholdId,
+              companyIdByName: localCompanyIdByName,
+              autoTagId: localAutoTagId,
+              staticListId: localStaticListId,
+            };
+          });
+
+          // The workflow triggers and the static-list memberships were queued/written inside
+          // the transaction above; nothing per-person runs out here any more.
+          results.inserted += outcome.insertedPersons.length;
+          results.merged += outcome.mergedPersonIds.length;
+          results.households_created += outcome.householdsCreatedDelta;
+          results.skipped += outcome.skippedDelta;
+          skipReasons.push(...outcome.chunkSkipReasons);
+          if (outcome.blankHouseholdId) cachedBlankHouseholdId = outcome.blankHouseholdId;
+          for (const [lowerName, companyId] of outcome.companyIdByName) companyIdByName.set(lowerName, companyId);
+          if (!autoTagId && outcome.autoTagId) autoTagId = outcome.autoTagId;
+          if (outcome.staticListId) staticListId = outcome.staticListId;
+          chunkCommitted = true;
+        } catch (err: unknown) {
+          // If the chunk transaction fails, count all valid rows in the chunk as errors
+          results.errors += validEntries.length;
+          const message = err instanceof Error ? err.message : String(err);
+          errorMessages.push(message);
+          logger.error({ err, message }, 'Import chunk failed');
+          // Name the rows that were lost. Without this the History page shows an error count
+          // with nothing behind it, and the user has no way to tell which rows to re-import.
+          for (const entry of validEntries) {
+            if (skipReasons.length >= SKIP_REASONS_CAP) break;
+            skipReasons.push({
+              row: entry.rowNumber,
+              email: entry.sanitized.email,
+              reason: `Row ${entry.rowNumber} was not imported: its batch failed and was rolled back (${message})`,
+            });
+          }
+        }
+      }
+
+      // A committed chunk already persisted its counters and offset atomically with its rows.
+      // Rolled-back and all-skipped chunks are recorded here, after the fact: if the process
+      // dies before this write, the chunk simply re-runs on resume — nothing was committed, so
+      // nothing can be imported twice or double-counted.
+      if (!chunkCommitted) {
         await this.importsRepo.update({
           tenant_id: tenant_id,
           id: import_id,
@@ -1041,490 +1654,15 @@ export class PersonsService {
             tag_id: autoTagId,
             inserted_count: results.inserted,
             error_count: results.errors,
-            skipped_count: skipped + results.skipped,
+            skipped_count: skippedBase + results.skipped,
+            merged_count: results.merged,
             households_created: results.households_created,
+            skip_reasons: JSON.stringify(skipReasons),
+            processed_row_offset: rowsSeen,
             updatedby_id: user_id,
             updated_at: new Date(),
           },
         });
-        continue;
-      }
-
-      try {
-        const outcome = await this.personsRepo.transaction().execute(async (trx) => {
-          let localBlankHouseholdId = cachedBlankHouseholdId;
-          let localAutoTagId = autoTagId;
-          let householdsCreatedDelta = 0;
-          // Skips discovered inside the transaction are folded into the running totals only
-          // once it commits. A chunk that rolls back has its rows counted as errors instead,
-          // and counting them here as well made one failed row count twice.
-          let skippedDelta = 0;
-          const chunkSkipReasons: Array<{ row: number; email?: string; reason: string }> = [];
-
-          // 2a. Resolve blank household once for the whole chunk. Also covers rows that look
-          // addressed but fingerprint to nothing (e.g. an address column holding only
-          // punctuation): they get no household of their own either, so they need the blank one.
-          if (validEntries.some((e) => e.isBlankAddress || !e.fp_full)) {
-            if (!localBlankHouseholdId) {
-              const existingBlank = await households.getBlankHousehold({ tenant_id }, trx);
-              if (existingBlank?.id) {
-                localBlankHouseholdId = String(existingBlank.id);
-              } else {
-                const created = await households.add(
-                  {
-                    row: {
-                      tenant_id,
-                      campaign_id,
-                      createdby_id: user_id,
-                      updatedby_id: user_id,
-                      file_id: import_id,
-                    } as OperationDataType<'households', 'insert'>,
-                  },
-                  trx,
-                );
-                localBlankHouseholdId = String(created?.id);
-                householdsCreatedDelta += 1;
-              }
-            }
-          }
-
-          // 2b. Batch-resolve addressed households with a single IN query
-          const fpCache = new Map<string, string>(); // fp_full -> household_id
-          const uniqueFps = [
-            ...new Set(validEntries.filter((e) => !e.isBlankAddress && e.fp_full).map((e) => e.fp_full as string)),
-          ];
-          if (uniqueFps.length > 0) {
-            const existingHouseholds = await trx
-              .selectFrom('households')
-              .select(['id', 'address_fp_full'])
-              .where('tenant_id', '=', tenant_id)
-              .where('address_fp_full', 'in', uniqueFps)
-              .execute();
-            for (const h of existingHouseholds) {
-              if (h.address_fp_full) fpCache.set(h.address_fp_full, String(h.id));
-            }
-          }
-
-          // 2c. Create only missing households (deduplicated within this chunk)
-          for (const entry of validEntries) {
-            if (entry.isBlankAddress || !entry.fp_full) continue;
-            if (fpCache.has(entry.fp_full)) continue;
-            const { sanitized, fp_street, fp_full } = entry;
-            const hhRow = {
-              tenant_id,
-              campaign_id,
-              createdby_id: user_id,
-              updatedby_id: user_id,
-              home_phone: sanitized.home_phone ?? null,
-              street_num: sanitized.street_num ?? null,
-              street1: sanitized.street1 ?? null,
-              street2: sanitized.street2 ?? null,
-              apt: sanitized.apt ?? null,
-              city: sanitized.city ?? null,
-              state: sanitized.state ?? null,
-              zip: sanitized.zip ?? null,
-              country: sanitized.country ?? null,
-              address_fp_street: fp_street,
-              address_fp_full: fp_full,
-              notes: null,
-              file_id: import_id,
-            } as OperationDataType<'households', 'insert'>;
-            const household = await households.add({ row: hhRow }, trx);
-            fpCache.set(fp_full, String(household?.id));
-            householdsCreatedDelta += 1;
-          }
-
-          // 2c bis. Electoral areas the file named. This is the cheapest way a workspace gets real
-          // electoral geography, and it costs nothing at all: the area name arrived already
-          // assigned to the row, so there is no polygon to match and — the part that matters — no
-          // paid address lookup. Nothing below calls a geocoding service, and nothing below changes
-          // whether or when one is called: coordinates remain a separate concern, metered by the
-          // plan gate and per-workspace daily budget in lib/gis/geocode-queue.ts.
-          //
-          // Written with `upsertHouseholdAreas` (via `writeImportedAreas`) rather than
-          // `applyHouseholdMatches`, because that opens its own transaction and Kysely issues a
-          // fresh BEGIN/COMMIT on the same connection rather than a savepoint — calling it here
-          // would commit this import's transaction early.
-          //
-          // Areas are written for the household the row resolved to, whether this chunk created it
-          // or it was already on file, because a district is a fact about the address and a
-          // purchased voter file is exactly the case where the addresses already exist. Rows with
-          // no address at all are excluded: they all share the one blank household, so recording
-          // one voter's district there would attach it to every address-less person in the
-          // workspace.
-          //
-          // Several voters share one door, so the per-household areas are merged first. Two rows
-          // for the same household in one INSERT would make Postgres refuse the statement outright
-          // ("ON CONFLICT DO UPDATE command cannot affect row a second time").
-          const areasByHousehold = new Map<string, Record<string, string>>();
-          for (const entry of validEntries) {
-            if (entry.isBlankAddress || !entry.fp_full) continue;
-            if (Object.keys(entry.areas).length === 0) continue;
-            const householdId = fpCache.get(entry.fp_full);
-            if (!householdId) continue;
-            areasByHousehold.set(householdId, { ...(areasByHousehold.get(householdId) ?? {}), ...entry.areas });
-          }
-          if (areasByHousehold.size > 0) {
-            const areaEntries = [...areasByHousehold].map(([household_id, areas]) => ({ household_id, areas }));
-            const usedFields = [...new Set(areaEntries.flatMap((e) => Object.keys(e.areas)))];
-            const setIdByField = await ensureImportedBoundarySets(
-              trx,
-              tenant_id,
-              user_id,
-              usedFields,
-              importJurisdiction,
-            );
-            await writeImportedAreas(trx, tenant_id, areaEntries, setIdByField);
-          }
-
-          // 2c'. Resolve companies by case-insensitive name: one IN query for the
-          // chunk's unmatched names, then create whatever is still missing —
-          // attributed to this import via file_id so deleting the import can
-          // clean them up. Kept in a chunk-local map and merged into the outer
-          // cache only after commit.
-          const localCompanyIdByName = new Map<string, string>(companyIdByName);
-          const chunkCompanyNames = new Map<string, string>(); // lower(name) -> original casing
-          for (const entry of validEntries) {
-            const name = entry.sanitized.company;
-            if (name && !localCompanyIdByName.has(name.toLowerCase())) {
-              if (!chunkCompanyNames.has(name.toLowerCase())) chunkCompanyNames.set(name.toLowerCase(), name);
-            }
-          }
-          if (chunkCompanyNames.size > 0) {
-            const existingCompanies = await trx
-              .selectFrom('companies')
-              .select(['id', 'name'])
-              .where('tenant_id', '=', tenant_id)
-              .where(sql`lower(name)`, 'in', [...chunkCompanyNames.keys()])
-              .execute();
-            for (const c of existingCompanies) {
-              localCompanyIdByName.set(c.name.toLowerCase(), String(c.id));
-            }
-            for (const [lowerName, name] of chunkCompanyNames) {
-              if (localCompanyIdByName.has(lowerName)) continue;
-              const created = await trx
-                .insertInto('companies')
-                .values({
-                  tenant_id,
-                  createdby_id: user_id,
-                  updatedby_id: user_id,
-                  name,
-                  file_id: import_id,
-                } as OperationDataType<'companies', 'insert'>)
-                .returning('id')
-                .executeTakeFirst();
-              if (created?.id) localCompanyIdByName.set(lowerName, String(created.id));
-            }
-          }
-          const companyIdFor = (entry: (typeof validEntries)[number]): string | null => {
-            const name = entry.sanitized.company;
-            return name ? (localCompanyIdByName.get(name.toLowerCase()) ?? null) : null;
-          };
-
-          // 2d. Duplicate-email resolution (spec §17 Review step — a single
-          // decision governs every row whose email matches a person that
-          // already exists; email is the match key app-wide, same as
-          // Duplicates and Forms).
-          //  - 'skip' (default): exclude the row; counted + reasoned below.
-          //  - 'merge': fill the existing person's blank fields from the row
-          //    (never overwrite), don't insert a second person.
-          //  - 'import_new': insert as a brand-new person anyway; the email
-          //    is cleared first so it can't collide with the unique
-          //    (tenant_id, lower(email)) index — the row becomes a
-          //    name-only duplicate for the Duplicates page to reconcile.
-          const mergeEntries: Array<{ entry: (typeof validEntries)[number]; personId: string }> = [];
-          const insertEntries: typeof validEntries = [];
-          const candidateEmails = [
-            ...new Set(validEntries.map((e) => e.sanitized.email).filter((email): email is string => !!email)),
-          ];
-          const existingByEmail = new Map<string, { id: string }>();
-          if (candidateEmails.length > 0) {
-            const existing = await trx
-              .selectFrom('persons')
-              .select(['id', 'email'])
-              .where('tenant_id', '=', tenant_id)
-              .where(
-                sql`lower(email)`,
-                'in',
-                candidateEmails.map((email) => email.toLowerCase()),
-              )
-              .execute();
-            for (const p of existing) {
-              if (p.email) existingByEmail.set(p.email.toLowerCase(), { id: String(p.id) });
-            }
-          }
-
-          for (const entry of validEntries) {
-            const match = entry.sanitized.email ? existingByEmail.get(entry.sanitized.email.toLowerCase()) : null;
-            if (!match) {
-              insertEntries.push(entry);
-              continue;
-            }
-            if (duplicateDecision === 'merge') {
-              mergeEntries.push({ entry, personId: match.id });
-            } else if (duplicateDecision === 'import_new') {
-              // Keep the row, but the email must go so the insert doesn't
-              // collide with the existing person's email.
-              insertEntries.push({ ...entry, sanitized: { ...entry.sanitized, email: undefined } });
-            } else {
-              skippedDelta += 1;
-              if (skipReasons.length + chunkSkipReasons.length < SKIP_REASONS_CAP) {
-                chunkSkipReasons.push({
-                  row: entry.rowNumber,
-                  email: entry.sanitized.email,
-                  reason: 'Matches a person you already have. Duplicate decision was Skip',
-                });
-              }
-            }
-          }
-
-          // 3. Batch insert all persons in one statement
-          const personRows = insertEntries.map((entry) => {
-            const { sanitized, isBlankAddress, fp_full } = entry;
-            return {
-              tenant_id,
-              campaign_id,
-              createdby_id: user_id,
-              updatedby_id: user_id,
-              household_id:
-                (isBlankAddress || !fp_full
-                  ? localBlankHouseholdId
-                  : (fpCache.get(fp_full) ?? localBlankHouseholdId)) ?? '',
-              first_name: sanitized.first_name ?? null,
-              middle_names: sanitized.middle_names ?? null,
-              last_name: sanitized.last_name ?? null,
-              email: sanitized.email ?? null,
-              email2: sanitized.email2 ?? null,
-              mobile: sanitized.mobile ?? null,
-              home_phone: null,
-              company_id: companyIdFor(entry),
-              file_id: import_id,
-              notes: sanitized.notes ?? null,
-            };
-          });
-          const insertedPersons = personRows.length
-            ? await trx
-                .insertInto('persons')
-                .values(personRows)
-                .onConflict((oc) => oc.doNothing())
-                .returningAll()
-                .execute()
-            : [];
-
-          // Count rows silently skipped due to a duplicate email under the 'skip' decision
-          const duplicatesSkipped = personRows.length - insertedPersons.length;
-          if (duplicatesSkipped > 0) skippedDelta += duplicatesSkipped;
-
-          // 3b. Merge decision: fill only the existing person's blank fields — never overwrite.
-          const mergedPersonIds: string[] = [];
-          for (const { entry, personId } of mergeEntries) {
-            await trx
-              .updateTable('persons')
-              .set({
-                first_name: sql`COALESCE(persons.first_name, ${entry.sanitized.first_name ?? null})`,
-                middle_names: sql`COALESCE(persons.middle_names, ${entry.sanitized.middle_names ?? null})`,
-                last_name: sql`COALESCE(persons.last_name, ${entry.sanitized.last_name ?? null})`,
-                email2: sql`COALESCE(persons.email2, ${entry.sanitized.email2 ?? null})`,
-                mobile: sql`COALESCE(persons.mobile, ${entry.sanitized.mobile ?? null})`,
-                company_id: sql`COALESCE(persons.company_id, ${companyIdFor(entry)})`,
-                notes: sql`COALESCE(persons.notes, ${entry.sanitized.notes ?? null})`,
-                updated_at: sql`now()`,
-                updatedby_id: user_id,
-              })
-              .where('tenant_id', '=', tenant_id)
-              .where('id', '=', personId)
-              .execute();
-            mergedPersonIds.push(personId);
-          }
-          results.merged += mergedPersonIds.length;
-
-          // 4. Upsert each unique tag name exactly once (not once per row) —
-          // the batch-level tags plus every name from a mapped Tags column,
-          // deduplicated case-insensitively (first casing wins).
-          const uniqueTagNames = new Map<string, string>(); // lower(name) -> original casing
-          for (const name of [...tags, ...validEntries.flatMap((e) => e.sanitized.tags)]) {
-            if (!uniqueTagNames.has(name.toLowerCase())) uniqueTagNames.set(name.toLowerCase(), name);
-          }
-          const tagIdByLowerName = new Map<string, string>();
-          const tagRecords: Array<{ name: string; id: string }> = [];
-          for (const name of uniqueTagNames.values()) {
-            const row = {
-              name,
-              tenant_id,
-              createdby_id: user_id,
-              updatedby_id: user_id,
-            } as OperationDataType<'tags', 'insert'>;
-            const tag = await this.tagsRepo.addOrGet({ row, onConflictColumn: 'name' }, trx);
-            if (name === autoTag && tag?.id != null && !localAutoTagId) localAutoTagId = String(tag.id);
-            if (tag?.id) {
-              tagRecords.push({ name, id: String(tag.id) });
-              tagIdByLowerName.set(name.toLowerCase(), String(tag.id));
-            }
-          }
-
-          // 5. Work out which tags each person gets: every batch-level tag,
-          // plus the row's own Tags-column names. Inserted persons are paired
-          // back to their source rows by position when the insert dropped
-          // nothing; if onConflict(doNothing) dropped rows the positions no
-          // longer line up, so fall back to email pairing (rows that can't be
-          // paired still get the batch-level tags).
-          const batchTagRecords = tagRecords.filter((t) => tags.some((n) => n.toLowerCase() === t.name.toLowerCase()));
-          const rowTagRecords = (
-            entry: (typeof validEntries)[number] | undefined,
-          ): Array<{ name: string; id: string }> => {
-            if (!entry) return batchTagRecords;
-            const names = new Set([...tags, ...entry.sanitized.tags].map((n) => n.toLowerCase()));
-            return tagRecords.filter((t) => names.has(t.name.toLowerCase()));
-          };
-
-          const personTags = new Map<string, Array<{ name: string; id: string }>>();
-          if (insertedPersons.length === insertEntries.length) {
-            insertedPersons.forEach((p, idx) => personTags.set(String(p.id), rowTagRecords(insertEntries[idx])));
-          } else {
-            const entryByEmail = new Map(
-              insertEntries
-                .filter((e) => e.sanitized.email)
-                .map((e) => [(e.sanitized.email as string).toLowerCase(), e] as const),
-            );
-            for (const p of insertedPersons) {
-              const entry = p.email ? entryByEmail.get(String(p.email).toLowerCase()) : undefined;
-              personTags.set(String(p.id), rowTagRecords(entry));
-            }
-          }
-          for (const { entry, personId } of mergeEntries) {
-            personTags.set(personId, rowTagRecords(entry));
-          }
-
-          const tagMapRows = [...personTags.entries()].flatMap(([person_id, records]) =>
-            records.map(({ id: tag_id }) => ({
-              tenant_id,
-              person_id,
-              tag_id: tag_id as unknown as string,
-              createdby_id: user_id,
-              updatedby_id: user_id,
-            })),
-          );
-          // Which person/tag pairs this chunk actually created, as `${person_id}:${tag_id}`.
-          // A re-import of the same file hits onConflict-doNothing for every pair the contact
-          // already had; firing the tag_added automation for those would re-enroll the same
-          // people on every overlapping import, so only the returned rows are announced below.
-          const newTagPairs = new Set<string>();
-          if (tagMapRows.length > 0) {
-            // Merged persons may already carry a tag from an earlier import — don't fail the batch on that.
-            const insertedTagMaps = await trx
-              .insertInto('map_peoples_tags')
-              .values(tagMapRows)
-              .onConflict((oc) => oc.doNothing())
-              .returning(['person_id', 'tag_id'])
-              .execute();
-            for (const map of insertedTagMaps) {
-              newTagPairs.add(`${String(map.person_id)}:${String(map.tag_id)}`);
-            }
-          }
-
-          return {
-            insertedPersons,
-            mergedPersonIds,
-            personTags,
-            newTagPairs,
-            skippedDelta,
-            chunkSkipReasons,
-            householdsCreatedDelta,
-            blankHouseholdId: localBlankHouseholdId,
-            companyIdByName: localCompanyIdByName,
-            autoTagId: localAutoTagId,
-          };
-        });
-
-        // 6. Trigger workflows outside the transaction (fire-and-forget per person)
-        const workflowsController = new WorkflowsController();
-        for (const person of outcome.insertedPersons) {
-          const personId = String(person.id);
-          importedPersonIds.push(personId);
-          try {
-            await workflowsController.triggerWorkflow(tenant_id, personId, 'contact_created', null);
-          } catch (err) {
-            logger.error({ err }, 'Failed to trigger contact_created workflow in CSV import');
-          }
-          for (const { name, id: tagId } of outcome.personTags.get(personId) ?? []) {
-            if (!outcome.newTagPairs.has(`${personId}:${tagId}`)) continue;
-            try {
-              await workflowsController.triggerTagAdded(tenant_id, personId, tagId, name);
-            } catch (err) {
-              logger.error({ err }, 'Failed to trigger tag_added workflow in CSV import');
-            }
-          }
-        }
-        // Merged persons aren't new contacts — only the tag_added workflow applies, and
-        // they still belong in the static-list membership pass below.
-        for (const personId of outcome.mergedPersonIds) {
-          importedPersonIds.push(personId);
-          // Only tags this import actually added to the contact. A merged contact usually
-          // already carries the file's tags from a previous import of the same list.
-          for (const { name, id: tagId } of outcome.personTags.get(personId) ?? []) {
-            if (!outcome.newTagPairs.has(`${personId}:${tagId}`)) continue;
-            try {
-              await workflowsController.triggerTagAdded(tenant_id, personId, tagId, name);
-            } catch (err) {
-              logger.error({ err }, 'Failed to trigger tag_added workflow after CSV import merge');
-            }
-          }
-        }
-
-        results.inserted += outcome.insertedPersons.length;
-        results.households_created += outcome.householdsCreatedDelta;
-        results.skipped += outcome.skippedDelta;
-        skipReasons.push(...outcome.chunkSkipReasons);
-        if (outcome.blankHouseholdId) cachedBlankHouseholdId = outcome.blankHouseholdId;
-        for (const [lowerName, companyId] of outcome.companyIdByName) companyIdByName.set(lowerName, companyId);
-        if (!autoTagId && outcome.autoTagId) autoTagId = outcome.autoTagId;
-      } catch (err: unknown) {
-        // If the chunk transaction fails, count all valid rows in the chunk as errors
-        results.errors += validEntries.length;
-        const message = err instanceof Error ? err.message : String(err);
-        errorMessages.push(message);
-        logger.error({ err, message }, 'Import chunk failed');
-        // Name the rows that were lost. Without this the History page shows an error count
-        // with nothing behind it, and the user has no way to tell which rows to re-import.
-        for (const entry of validEntries) {
-          if (skipReasons.length >= SKIP_REASONS_CAP) break;
-          skipReasons.push({
-            row: entry.rowNumber,
-            email: entry.sanitized.email,
-            reason: `Row ${entry.rowNumber} was not imported: its batch failed and was rolled back (${message})`,
-          });
-        }
-      }
-
-      // Update intermediate counts after each chunk
-      await this.importsRepo.update({
-        tenant_id: tenant_id,
-        id: import_id,
-        row: {
-          tag_id: autoTagId,
-          inserted_count: results.inserted,
-          error_count: results.errors,
-          skipped_count: skipped + results.skipped,
-          merged_count: results.merged,
-          households_created: results.households_created,
-          updatedby_id: user_id,
-          updated_at: new Date(),
-        },
-      });
-    }
-
-    // Add every imported (and merged-into) person to a static list, creating
-    // it if it doesn't already exist by that exact name (spec §17 "add
-    // everyone to a static list"). This runs here — not as a public
-    // lists.addMembers endpoint — because processImportRows is the only
-    // place that knows the final set of person ids; see pplcrm-forms-style
-    // note in the wizard skill for why no new public list-membership API
-    // was added for this track.
-    if (options?.listName && importedPersonIds.length > 0) {
-      try {
-        await this.addImportedPersonsToStaticList(tenant_id, user_id, options.listName, importedPersonIds);
-      } catch (err) {
-        logger.error({ err }, 'Failed to add imported people to the requested static list');
       }
     }
 
@@ -1576,7 +1714,7 @@ export class PersonsService {
           auto_tag: autoTag,
           households_created: results.households_created,
           errors: results.errors,
-          skipped: skipped + results.skipped,
+          skipped: skippedBase + results.skipped,
           import_id,
         },
       });
@@ -1584,7 +1722,7 @@ export class PersonsService {
       logger.error({ err: e }, 'Failed to log import activity');
     }
 
-    if (importedPersonIds.length > 0) {
+    if (results.inserted + results.merged > 0) {
       try {
         const { queueUsageLimitCheck } = await import('../../billing/usage-limits');
         await queueUsageLimitCheck(tenant_id, this.personsRepo.db);
@@ -1596,7 +1734,7 @@ export class PersonsService {
     return {
       inserted: results.inserted,
       errors: results.errors,
-      skipped: skipped + results.skipped,
+      skipped: skippedBase + results.skipped,
       merged: results.merged,
       households_created: results.households_created,
       tag_id: autoTagId,
@@ -1605,66 +1743,82 @@ export class PersonsService {
   }
 
   /**
-   * Find-or-create a static people list by exact, case-insensitive name and
-   * add every given person id to it (spec §17 "add everyone to a static
-   * list"). Runs inside the import job because that's the only place the
-   * final imported/merged person ids are known — see the call site comment
-   * in processImportRows.
+   * Find-or-create a static people list by exact, case-insensitive name and add the given person
+   * ids to it (spec §17 "add everyone to a static list"). Called once per committed import chunk,
+   * inside that chunk's transaction, so a crash can never lose a committed chunk's memberships
+   * and a rolled-back chunk leaves no list behind. Returns the list id so the caller can cache it
+   * across chunks (`knownListId` skips the find-or-create on every chunk after the first).
    */
   private async addImportedPersonsToStaticList(
     tenant_id: string,
     user_id: string,
+    campaign_id: string,
     listName: string,
     personIds: string[],
-  ): Promise<void> {
+    trx: Transaction<Models>,
+    knownListId: string | null,
+  ): Promise<string | null> {
     const trimmedName = listName.trim();
-    if (!trimmedName) return;
+    if (!trimmedName) return null;
 
-    const existingList = await this.listsRepo.db
-      .selectFrom('lists')
-      .select(['id'])
-      .where('tenant_id', '=', tenant_id)
-      .where(sql`lower(name)`, '=', trimmedName.toLowerCase())
-      .where('object', '=', 'people')
-      .executeTakeFirst();
-
-    let listId = existingList?.id != null ? String(existingList.id) : undefined;
+    let listId = knownListId ?? undefined;
+    if (!listId) {
+      const existingList = await trx
+        .selectFrom('lists')
+        .select(['id'])
+        .where('tenant_id', '=', tenant_id)
+        .where(sql`lower(name)`, '=', trimmedName.toLowerCase())
+        .where('object', '=', 'people')
+        .executeTakeFirst();
+      if (existingList?.id != null) listId = String(existingList.id);
+    }
 
     if (!listId) {
-      const created = await this.listsRepo.add({
-        row: {
-          tenant_id,
-          name: trimmedName,
-          description: `Created by the CSV import wizard on ${new Date().toLocaleDateString()}.`,
-          object: 'people',
-          is_dynamic: false,
-          definition: null,
-          status: 'idle',
-          createdby_id: user_id,
-          updatedby_id: user_id,
-        } as OperationDataType<'lists', 'insert'>,
-      });
+      // `lists.campaign_id` is NOT NULL (Campaigns §15 — every segment belongs to a context), so
+      // a new list can only be created when the import runs under a campaign. Without one the
+      // members can still join an existing list found by name above.
+      if (!campaign_id) return null;
+      const created = await this.listsRepo.add(
+        {
+          row: {
+            tenant_id,
+            campaign_id,
+            name: trimmedName,
+            description: `Created by the CSV import wizard on ${new Date().toLocaleDateString()}.`,
+            object: 'people',
+            is_dynamic: false,
+            definition: null,
+            status: 'idle',
+            createdby_id: user_id,
+            updatedby_id: user_id,
+          } as OperationDataType<'lists', 'insert'>,
+        },
+        trx,
+      );
       if (created?.id != null) listId = String(created.id);
     }
-    if (!listId) return;
+    if (!listId) return null;
 
+    const resolvedListId = listId;
     const uniqueIds = [...new Set(personIds)];
     const rows = uniqueIds.map((person_id) => ({
       tenant_id,
-      list_id: listId as string,
+      list_id: resolvedListId,
       person_id,
       createdby_id: user_id,
       updatedby_id: user_id,
     })) as OperationDataType<'map_lists_persons', 'insert'>[];
 
-    // A person may already belong to this list (e.g. re-running an import
-    // into the same list) — the primary key is (tenant_id, list_id,
+    // A person may already belong to this list (a resumed run's overlap with a committed chunk,
+    // or re-running an import into the same list) — the primary key is (tenant_id, list_id,
     // person_id), so skip rows that would collide instead of failing the batch.
-    await this.mapListsPersonsRepo.db
+    await trx
       .insertInto('map_lists_persons')
       .values(rows)
       .onConflict((oc) => oc.columns(['tenant_id', 'list_id', 'person_id']).doNothing())
       .execute();
+
+    return resolvedListId;
   }
 
   public async removeHousehold(person_id: string, auth: IAuthKeyPayload) {
