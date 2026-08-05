@@ -32,6 +32,7 @@ export const DATA_ARTICLES: HelpArticle[] = [
         items: [
           'Use a CSV with a header row. Column names like “First name”, “Email”, “Phone”, “Company”, or “Tags” are preselected automatically on the mapping step.',
           'For people: a **Company** column links each person to a company, creating the company if no existing one matches its name. Addresses do the same for households. A **Tags** column applies its comma-separated tags to just that person.',
+          'A file can be up to **50 MB** and **5,000 rows**. A bigger list still imports fine — split it into files under the limit and run them one at a time. An over-limit file is refused before anything is written: small files at the upload step, large ones as a failed import in history that names the actual row count.',
           'For companies and tasks the wizard needs a mapped **name** column. Rows without one are skipped. For households, rows matching an address you already have (or repeated in the file) are skipped, and new addresses are queued for geocoding — see [Geocoding, boundary matching, and what each costs](/help/geocoding-and-costs) for when that finishes.',
           'A households file that already names each row’s district, ward or precinct can bring those in too, with no lookup and no cost. See [Import district, ward and precinct columns](/help/importing-districts).',
           'Both UTF-8 and Excel-exported CSVs work as-is.',
@@ -43,7 +44,8 @@ export const DATA_ARTICLES: HelpArticle[] = [
         items: [
           {
             title: 'Upload',
-            detail: 'Drop the file or browse to it. You’ll see the row and column counts before anything else happens.',
+            detail:
+              'Drop the file or browse to it — up to 50 MB and 5,000 rows. Most files show their full row and column counts right away. A large file (over about 2 MB) shows a preview of its first rows instead, enough to set up the mapping; the exact totals are counted while the import runs.',
           },
           {
             title: 'Map columns',
@@ -53,12 +55,12 @@ export const DATA_ARTICLES: HelpArticle[] = [
           {
             title: 'Review',
             detail:
-              'For people, duplicates are matched by email, the same identity rule used everywhere in pplCRM. Rows that match an existing person let you **merge** (fills blank fields, never overwrites), **skip**, or **import as new anyway**. Rows with a broken email address get their own choice: skip them or import without an email. Add a comma-separated tag list and/or a list here too (tags also apply to household imports). Other types show a plain recap: how many rows will import and how many will be skipped, and why.',
+              'For people, duplicates are matched by email, the same identity rule used everywhere in pplCRM. One choice covers every row that matches an existing person: **merge** (fills blank fields, never overwrites), **skip**, or **import as new anyway**. Most files list the matches right here; a large file is too big to scan in the browser, so the wizard says so and simply applies your choice while the import runs, reporting the results in the completion summary. Rows with a broken email address import without the email — a row with nothing else in it is skipped and counted. Add a comma-separated tag list and/or a list here too (tags also apply to household imports). Other types show a plain recap: how many rows will import and how many will be skipped, and why.',
           },
           {
             title: 'Import',
             detail:
-              'Confirm the recap and click **Import N people** (or companies, households, tasks). The import runs in the background, so you can navigate away while it works. It lands in import history and the Activity log either way. If you stay, the done screen offers **View imported records**, **Import another file**, or **Back to import history**.',
+              'Confirm the recap and click **Import N people** (or companies, households, tasks). The wizard uploads your file and the server does the rest — parsing, matching, and writing — in the background, so you can navigate away while it works. It lands in import history and the Activity log either way. If you stay, the done screen offers **View imported records**, **Import another file**, or **Back to import history**.',
           },
         ],
       },
