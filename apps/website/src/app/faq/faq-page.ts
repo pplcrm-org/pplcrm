@@ -146,7 +146,7 @@ export class FaqPage {
       items: [
         {
           q: 'What do volunteers see?',
-          a: 'Only what you hand them: the turf they’re walking or the route they’re driving, on iOS, Android or the web. Not the whole list.',
+          a: 'Only what you hand them: the turf they’re walking or the route they’re driving, on iOS, Android or the web — never the contact list. By default an approved volunteer can also pick another turf inside their own campaign, never another campaign; admins can turn that off for the whole workspace or for one person. Not the whole list.',
         },
         {
           q: 'Do the apps work offline?',

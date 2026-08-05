@@ -181,7 +181,7 @@ export class HomePage {
     },
     {
       q: 'Will my newsletter land in spam?',
-      a: 'You send from your own verified domain, so inbox providers judge you on your record, not a stranger’s. New senders warm up gradually, and unsubscribes are honored automatically.',
+      a: 'You send from your own verified domain, so inbox providers judge you on your record, not a stranger’s. New Free-plan senders also warm up gradually under a daily cap, and unsubscribes are honored automatically.',
     },
     {
       q: 'How does pricing work?',

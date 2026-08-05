@@ -427,7 +427,7 @@ export const LIMITS: readonly Limit[] = [
   {
     icon: 'funnel',
     title: 'We tell you what did not match',
-    body: 'Every time you save an area we re-run the match and report two counts: households that landed in no area, and households that landed in more than one. You find out about the gap you left immediately, from us, instead of a month later from a volunteer standing on a sidewalk.',
+    body: 'We report two counts for every boundary set: households that landed in no area, and households that landed in more than one. They are counted when you open the map and again whenever you press Check again — a full count checks every located household against every area, so re-running it after each edit would make an editing session pay for that scan over and over, and a notice reminds you the numbers are out of date until you ask. You still find out about the gap you left, on demand, instead of a month later from a volunteer standing on a sidewalk.',
   },
   {
     icon: 'document-currency-dollar',
