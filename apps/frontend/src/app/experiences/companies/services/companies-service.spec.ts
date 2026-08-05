@@ -125,15 +125,19 @@ describe('CompaniesService', () => {
   });
 
   describe('Import & export', () => {
-    it('should import rows and pass through skipped count and file name', async () => {
-      const mockResponse = { inserted: 3, skipped: 1, file_name: 'companies.csv' };
+    it('should pass the upload handle, mapping and file name through to the import mutation', async () => {
+      const mockResponse = { import_id: 'imp-1', skipped: 0, file_name: 'companies.csv', status: 'pending' };
       mockApi.companies.import.mutate.mockResolvedValue(mockResponse);
 
-      const result = await service.import({ rows: [{ name: 'Acme' }], skipped: 1, file_name: 'companies.csv' });
+      const result = await service.import({
+        upload_handle: 'handle-1',
+        mapping: { '0': 'name' },
+        file_name: 'companies.csv',
+      });
 
       expect(mockApi.companies.import.mutate).toHaveBeenCalledWith({
-        rows: [{ name: 'Acme' }],
-        skipped: 1,
+        upload_handle: 'handle-1',
+        mapping: { '0': 'name' },
         file_name: 'companies.csv',
       });
       expect(result).toEqual(mockResponse);

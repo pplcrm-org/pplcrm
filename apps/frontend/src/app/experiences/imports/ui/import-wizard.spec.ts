@@ -3,8 +3,11 @@ import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router, convertToParamMap } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MAX_IMPORT_FILE_BYTES, MAX_IMPORT_ROWS } from '@common';
+import { signal } from '@angular/core';
+
+import { MAX_IMPORT_FILE_BYTES, importRowLimitFor } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { AuthService } from '../../../auth/auth-service';
 import { ImportWizard } from './import-wizard';
 import { ImportsService } from '../services/imports-service';
 import { CompaniesService } from '../../companies/services/companies-service';
@@ -53,9 +56,14 @@ describe('ImportWizard', () => {
   let mockRouter: any;
   let fetchMock: ReturnType<typeof vi.fn>;
   let queryParams: Record<string, string>;
+  /** The signed-in user the wizard reads `tenant_plan` from — per-plan row limit mirror. */
+  let userSignal: ReturnType<typeof signal<{ tenant_plan?: string } | null>>;
+  let mockAuthSvc: any;
 
   beforeEach(() => {
     queryParams = {};
+    userSignal = signal<{ tenant_plan?: string } | null>({ tenant_plan: 'free' });
+    mockAuthSvc = { getUserSignal: vi.fn(() => userSignal) };
     mockPersonsSvc = {
       checkDuplicateEmails: vi.fn().mockResolvedValue([]),
       import: vi.fn().mockResolvedValue({ import_id: 'imp-1', status: 'pending' }),
@@ -99,6 +107,7 @@ describe('ImportWizard', () => {
         { provide: ImportsService, useValue: mockImportsSvc },
         { provide: ListsService, useValue: mockListsSvc },
         { provide: AlertService, useValue: mockAlertSvc },
+        { provide: AuthService, useValue: mockAuthSvc },
         { provide: Router, useValue: mockRouter },
         { provide: ActivatedRoute, useValue: { snapshot: { queryParamMap: convertToParamMap(queryParams) } } },
       ],
@@ -172,18 +181,66 @@ describe('ImportWizard', () => {
     expect(component['rowCount']()).toBe(0);
   });
 
-  it('rejects a fully-parsed file with more rows than the import cap, naming the limit', async () => {
-    await createComponent();
-    const rows = Array.from({ length: MAX_IMPORT_ROWS + 1 }, (_, i) => ({ 'First Name': `P${i}`, Email: '' }));
+  /** Upload a stubbed-parse file with exactly `rowCount` data rows through the real handler. */
+  async function uploadParsedRows(rowCount: number): Promise<void> {
+    const rows = Array.from({ length: rowCount }, (_, i) => ({ 'First Name': `P${i}`, Email: '' }));
     (component as any).parseCsv = vi.fn().mockResolvedValue({ headers: ['First Name', 'Email'], rows });
     const input = document.createElement('input');
     Object.defineProperty(input, 'files', { value: [makeCsvFile('First Name,Email\n')] });
     component['onFileSelected']({ target: input } as unknown as Event);
     await flushAsync();
+  }
 
-    expect(mockAlertSvc.showError).toHaveBeenCalledWith(expect.stringContaining('5,000'));
+  it('rejects a Free-plan file over 5,000 rows, naming the limit and the plan that raises it', async () => {
+    await createComponent();
+    await uploadParsedRows(importRowLimitFor('free') + 1);
+
+    const message = String(mockAlertSvc.showError.mock.calls[0]?.[0]);
+    expect(message).toContain('5,000');
+    expect(message).toContain('Free');
+    expect(message).toContain('Grassroots');
+    expect(message).toContain('100,000');
     expect(component['fileName']()).toBeNull();
     expect(component['rowCount']()).toBe(0);
+  });
+
+  it('admits the same over-5,000-row file on a paid plan (the limit is the tenant plan, not 5,000)', async () => {
+    userSignal.set({ tenant_plan: 'grassroots' });
+    await createComponent();
+    await uploadParsedRows(importRowLimitFor('free') + 1);
+
+    expect(mockAlertSvc.showError).not.toHaveBeenCalled();
+    expect(component['rowCount']()).toBe(importRowLimitFor('free') + 1);
+    expect(component['maxRows']()).toBe(importRowLimitFor('grassroots'));
+  });
+
+  it('rejects a paid-plan file over 100,000 rows with the split-the-file message, no upgrade nudge', async () => {
+    userSignal.set({ tenant_plan: 'movement' });
+    await createComponent();
+    await uploadParsedRows(importRowLimitFor('movement') + 1);
+
+    const message = String(mockAlertSvc.showError.mock.calls[0]?.[0]);
+    expect(message).toContain('100,000');
+    expect(message).not.toContain('raises');
+    expect(component['fileName']()).toBeNull();
+  });
+
+  it('shows the address-locating note only for address-mapped people/household imports on a geocoding plan', async () => {
+    userSignal.set({ tenant_plan: 'movement' });
+    await createComponent();
+    await uploadFile('First Name,Street\nAmira,12 Main St\n');
+
+    expect(component['mapping']()).toContain('street1');
+    expect(component['showGeocodePacingNote']()).toBe(true);
+
+    // Below Movement the note is absent — those imports skip geocoding by design.
+    userSignal.set({ tenant_plan: 'grassroots' });
+    expect(component['showGeocodePacingNote']()).toBe(false);
+
+    // No address column mapped → nothing to locate → no note.
+    userSignal.set({ tenant_plan: 'movement' });
+    await uploadSampleFile();
+    expect(component['showGeocodePacingNote']()).toBe(false);
   });
 
   it('switches to preview mode for a large file, keeping at most the head rows', async () => {

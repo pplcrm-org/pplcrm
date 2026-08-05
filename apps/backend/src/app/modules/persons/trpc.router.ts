@@ -1,13 +1,11 @@
 import {
   PersonsImportMappingObj,
-  PersonsImportRowObj,
   UpdatePersonsObj,
   exportCsvInput,
   exportCsvResponse,
   getAllOptions,
   idSchema,
   MAX_BULK_IDS,
-  MAX_IMPORT_ROWS,
   MAX_PAGE_SIZE,
   PersonMergeImpactObj,
 } from '../../../../../../libs/common/src';
@@ -176,100 +174,41 @@ function removeHousehold() {
 }
 
 function importMany() {
-  // One input object serves both intakes, with exactly-one-of `rows`/`upload_handle` enforced by
-  // superRefine rather than a union: the frontend service derives its row type by indexing
-  // RouterInputs['persons']['import']['rows'], and indexing a union member-by-member would fold
-  // `undefined` into that type and break its compile. Row shape (including the electoral
-  // columns) lives in libs/common/src/lib/schemas/import-rows.schema.ts, shared with the
-  // background job so both validate against exactly the same fields.
-  const Input = z
-    .object({
-      // Legacy intake: every mapped row (plus the raw CSV text) travels in the mutation body.
-      rows: z
-        .array(PersonsImportRowObj)
-        .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`)
-        .optional(),
-      // Upload intake: the browser PUT the raw CSV to blob storage via imports.getUploadUrl;
-      // the mutation carries only the signed handle and the column mapping, and the import_csv
-      // background job stream-parses the file server-side (no rows in the body, no source_csv,
-      // no client-computed skips — the server derives all of those).
-      upload_handle: z.string().min(1).max(4096).optional(),
-      // Stringified 0-based column index → import field key; required with upload_handle.
-      mapping: PersonsImportMappingObj.optional(),
-      tags: z.array(z.string().trim().min(1, 'Tag cannot be empty').max(50, 'Tag too long')).optional(),
-      skipped: z.number().int().nonnegative().optional(),
-      file_name: z.string().trim().min(1).max(255).optional(),
-      // §17 CSV import wizard: how to handle rows whose email matches a person
-      // that already exists — one choice for the whole batch (spec review step
-      // is a single radio group, not a per-row decision).
-      duplicate_decision: z.enum(['merge', 'skip', 'import_new']).optional().default('skip'),
-      // Add every imported/merged person to this static list (created if it
-      // doesn't exist yet). Resolved by exact, case-insensitive name match.
-      list_name: z.string().trim().min(1).max(100).optional(),
-      // Raw uploaded CSV text, retained 90 days for the History page's
-      // per-import re-download (spec §17 footer copy). Legacy intake only —
-      // the upload intake's source file is already in blob storage.
-      source_csv: z.string().max(10_000_000).optional(),
-      // Rows the wizard's Review step already excluded/cleaned client-side
-      // (bad-email "Skip" decision) — recorded so History's "download skipped
-      // rows" export covers them too, not just server-detected skips.
-      client_skip_reasons: z
-        .array(
-          z.object({
-            row: z.number().int().nonnegative(),
-            email: z.string().optional(),
-            reason: z.string().max(200),
-          }),
-        )
-        .max(500)
-        .optional(),
-    })
-    .superRefine((val, ctx) => {
-      const hasRows = val.rows !== undefined;
-      const hasUpload = val.upload_handle !== undefined;
-      if (hasRows === hasUpload) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Provide exactly one of rows (rows in the body) or upload_handle (uploaded file).',
-        });
-      }
-      if (hasUpload && val.mapping === undefined) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['mapping'],
-          message: 'A column mapping is required with upload_handle.',
-        });
-      }
-    });
+  // Upload intake only (the legacy rows-in-body variant was removed 2026-08-05 once the wizard
+  // stopped sending it): the browser PUT the raw CSV to blob storage via imports.getUploadUrl;
+  // the mutation carries only the signed handle and the column mapping, and the import_csv
+  // background job stream-parses the file server-side (no rows in the body, no source_csv,
+  // no client-computed skips — the server derives all of those). Row shape (including the
+  // electoral columns) lives in libs/common/src/lib/schemas/import-rows.schema.ts, shared with
+  // the background job so both layers accept exactly the same fields.
+  const Input = z.object({
+    upload_handle: z.string().min(1).max(4096),
+    // Stringified 0-based column index → import field key.
+    mapping: PersonsImportMappingObj,
+    tags: z.array(z.string().trim().min(1, 'Tag cannot be empty').max(50, 'Tag too long')).optional(),
+    file_name: z.string().trim().min(1).max(255).optional(),
+    // §17 CSV import wizard: how to handle rows whose email matches a person
+    // that already exists — one choice for the whole batch (spec review step
+    // is a single radio group, not a per-row decision).
+    duplicate_decision: z.enum(['merge', 'skip', 'import_new']).optional().default('skip'),
+    // Add every imported/merged person to this static list (created if it
+    // doesn't exist yet). Resolved by exact, case-insensitive name match.
+    list_name: z.string().trim().min(1).max(100).optional(),
+  });
 
-  return authProcedure.input(Input).mutation(async ({ input, ctx }) => {
-    if (input.upload_handle !== undefined) {
-      return personsService.importRows(
-        {
-          upload_handle: input.upload_handle,
-          mapping: input.mapping ?? {},
-          tags: input.tags,
-          file_name: input.file_name,
-          duplicate_decision: input.duplicate_decision,
-          list_name: input.list_name,
-        },
-        ctx.auth,
-      );
-    }
-    return personsService.importRows(
+  return authProcedure.input(Input).mutation(async ({ input, ctx }) =>
+    personsService.importRows(
       {
-        rows: input.rows ?? [],
+        upload_handle: input.upload_handle,
+        mapping: input.mapping,
         tags: input.tags,
-        skipped: input.skipped,
         file_name: input.file_name,
         duplicate_decision: input.duplicate_decision,
         list_name: input.list_name,
-        source_csv: input.source_csv,
-        client_skip_reasons: input.client_skip_reasons,
       },
       ctx.auth,
-    );
-  });
+    ),
+  );
 }
 
 function checkDuplicateEmails() {

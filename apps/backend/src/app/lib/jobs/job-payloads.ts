@@ -378,6 +378,11 @@ export type JobPayloadOf<K extends JobType> = Extract<JobPayload, { type: K }>;
 /**
  * CSV imports are queued without a `type` discriminator (legacy shape) and are
  * matched by the presence of `import_id` + `storage_key` instead.
+ *
+ * 2026-08-05: the request path that ENQUEUED these jobs (the rows-in-body variant of the four
+ * `<entity>.import` mutations, which wrote an NDJSON payload blob) was removed. This schema and
+ * its handler (`handleImportJob`) are kept ONLY to drain jobs already in `background_jobs` from
+ * before that deploy; both can be deleted next release.
  */
 export const legacyImportJobSchema = z.object({
   import_id: idSchema,

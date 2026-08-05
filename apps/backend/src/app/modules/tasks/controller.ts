@@ -12,12 +12,7 @@ import { BaseController } from '../../lib/base.controller';
 
 import { TasksRepo } from './repositories/tasks.repo';
 import type { Selectable } from 'kysely';
-import type {
-  Models,
-  OperationDataType,
-  TypeId,
-  TypeTenantId,
-} from '../../../../../../libs/common/src/lib/kysely.models';
+import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import type { QueryParams } from '../../lib/base.repo';
 import { NotificationsRepo } from '../notifications/repositories/notifications.repo';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
@@ -25,9 +20,8 @@ import { notificationEnabled } from '../../lib/profile-preferences';
 import { assertAssigneeInTenant, findAssigneeForNotification } from '../../lib/tenant-members';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
 import { createUploadImport } from '../imports/upload-intake';
-import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../lib/ndjson';
+import { chunkRows, IMPORT_CHUNK_SIZE } from '../../lib/ndjson';
 import { StorageService } from '../../lib/storage.service';
-import { TRPCError } from '@trpc/server';
 import { logger } from '../../logger';
 import { TASK_STATUSES, calculateWorkingTimeMs } from '../../../../../../libs/common/src';
 import type { ReorderTasksType } from '../../../../../../libs/common/src';
@@ -313,158 +307,40 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
   private readonly importsRepo = new ImportsRepo();
   private readonly storageService = new StorageService();
 
+  /**
+   * Upload-based intake is the ONLY request shape since 2026-08-05 — the legacy rows-in-body
+   * variant was removed once the wizard stopped sending it. Already-queued legacy JOBS still
+   * drain through lib/jobs/handlers/import.handlers.ts `handleImportJob`.
+   */
   public async importRows(
-    input:
-      | {
-          rows: Array<{
-            name: string;
-            details?: string | null;
-            status?: string | null;
-            priority?: string | null;
-            due_at?: string | null;
-            assigned_to?: string | null;
-          }>;
-          skipped?: number;
-          file_name?: string | null;
-          source_csv?: string | null;
-        }
-      | {
-          /** Upload-based intake: the CSV is already in blob storage (imports.getUploadUrl). */
-          upload_handle: string;
-          /** Stringified 0-based CSV column index → import field key (TasksImportMappingObj). */
-          mapping: Record<string, string>;
-          file_name?: string | null;
-        },
+    input: {
+      /** Upload-based intake: the CSV is already in blob storage (imports.getUploadUrl). */
+      upload_handle: string;
+      /** Stringified 0-based CSV column index → import field key (TasksImportMappingObj). */
+      mapping: Record<string, string>;
+      file_name?: string | null;
+    },
     auth: IAuthKeyPayload,
   ) {
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const autoTag = `Imported-Tasks-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
 
-    if ('upload_handle' in input) {
-      const created = await createUploadImport({
-        auth,
-        importsRepo: this.importsRepo,
-        storageService: this.storageService,
-        source: 'tasks',
-        input,
-        fallbackFileName: `${autoTag}.csv`,
-        tagName: null,
-      });
-      return {
-        inserted: 0,
-        errors: 0,
-        skipped: 0,
-        file_name: created.file_name,
-        import_id: created.import_id,
-        tenant_id: auth.tenant_id,
-        status: 'pending',
-      };
-    }
-
-    const skippedFromClient = Math.max(0, Math.floor(input.skipped ?? 0));
-    const requestedFileName = (input.file_name ?? '').trim();
-    const baseFileName = requestedFileName || `${autoTag}.csv`;
-    const totalRows = input.rows.length + skippedFromClient;
-
-    const importRow = {
-      tenant_id: auth.tenant_id,
-      createdby_id: auth.user_id,
-      updatedby_id: auth.user_id,
-      file_name: baseFileName,
+    const created = await createUploadImport({
+      auth,
+      importsRepo: this.importsRepo,
+      storageService: this.storageService,
       source: 'tasks',
-      tag_name: null,
-      tag_id: null,
-      row_count: totalRows,
-      inserted_count: 0,
-      error_count: 0,
-      skipped_count: skippedFromClient,
-      households_created: 0,
-      status: 'pending',
-      metadata: null,
-      processed_at: now,
-    };
-
-    const savedImport = await this.importsRepo.add({ row: importRow });
-    if (!savedImport || !savedImport.id) {
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to create data import record',
-      });
-    }
-
-    const importRecordId = String(savedImport.id);
-    const storageKey = `imports/payloads/${auth.tenant_id}/${importRecordId}.json`;
-
-    try {
-      // NDJSON (one row object per line) so the import job can stream rows
-      // instead of parsing one giant array — see lib/ndjson.ts.
-      const payloadBuffer = serializeRowsToNdjson(input.rows);
-      await this.storageService.upload(storageKey, payloadBuffer, NDJSON_CONTENT_TYPE);
-    } catch (err) {
-      logger.error({ err }, 'Failed to upload import payload to storage');
-      await this.importsRepo.delete({
-        tenant_id: auth.tenant_id as TypeTenantId<'data_imports'>,
-        id: importRecordId as TypeId<'data_imports'>,
-      });
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to store import payload on server storage',
-      });
-    }
-
-    // Keep the original upload downloadable for 90 days (spec §17 History
-    // page footer). Best-effort: a failure here shouldn't fail the import.
-    let sourceFileKey: string | null = null;
-    let sourceFileSize: number | null = null;
-    if (input.source_csv) {
-      try {
-        const sourceBuffer = Buffer.from(input.source_csv, 'utf8');
-        sourceFileKey = `imports/source/${auth.tenant_id}/${importRecordId}.csv`;
-        sourceFileSize = sourceBuffer.byteLength;
-        await this.storageService.upload(sourceFileKey, sourceBuffer, 'text/csv');
-      } catch (err) {
-        logger.error({ err }, 'Failed to retain original CSV upload for the import history page');
-        sourceFileKey = null;
-        sourceFileSize = null;
-      }
-    }
-
-    await this.importsRepo.update({
-      tenant_id: auth.tenant_id,
-      id: importRecordId,
-      row: {
-        metadata: JSON.stringify({ storage_key: storageKey }),
-        source_file_key: sourceFileKey,
-        source_file_size: sourceFileSize,
-      },
+      input,
+      fallbackFileName: `${autoTag}.csv`,
+      tagName: null,
     });
-
-    await this.importsRepo.db
-      .insertInto('background_jobs')
-      .values({
-        tenant_id: auth.tenant_id,
-        queue: 'default',
-        status: 'pending',
-        payload: JSON.stringify({
-          import_id: importRecordId,
-          storage_key: storageKey,
-          skipped: skippedFromClient,
-          tenant_id: auth.tenant_id,
-          user_id: auth.user_id,
-          file_name: baseFileName,
-          source: 'tasks',
-        }),
-        run_at: new Date(),
-      })
-      .execute();
-
     return {
       inserted: 0,
       errors: 0,
-      skipped: skippedFromClient,
-      file_name: baseFileName,
-      import_id: importRecordId,
+      skipped: 0,
+      file_name: created.file_name,
+      import_id: created.import_id,
       tenant_id: auth.tenant_id,
       status: 'pending',
     };

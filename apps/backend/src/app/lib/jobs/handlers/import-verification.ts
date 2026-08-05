@@ -31,6 +31,65 @@ function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
+/** Typo-suspect entries kept on a MERGED summary — same bound the per-segment classifier uses. */
+const MERGED_TYPO_SUSPECT_CAP = 25;
+
+/** Narrow a stored `data_imports.email_verification` value back to a summary, or null. */
+function parseStoredSummary(value: unknown): EmailVerificationSummary | null {
+  const parsed: unknown = typeof value === 'string' ? JSON.parse(value) : value;
+  if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const candidate = parsed as Partial<EmailVerificationSummary>;
+  if (typeof candidate.checked !== 'number') return null;
+  return {
+    checked: candidate.checked,
+    valid: candidate.valid ?? 0,
+    dead_domain: candidate.dead_domain ?? 0,
+    disposable: candidate.disposable ?? 0,
+    already_suppressed: candidate.already_suppressed ?? 0,
+    unverifiable: candidate.unverifiable ?? 0,
+    role_accounts: candidate.role_accounts ?? 0,
+    suppressed_new: candidate.suppressed_new ?? 0,
+    typo_suspects: Array.isArray(candidate.typo_suspects) ? candidate.typo_suspects : [],
+    tripwire: candidate.tripwire === 'pause' || candidate.tripwire === 'warn' ? candidate.tripwire : 'none',
+  };
+}
+
+/**
+ * Fold one segment's verification summary into what earlier segments already stored. A large
+ * import runs as a chain of continuation jobs and each run verifies only the emails IT fed, so
+ * without this the stored summary (and the completion email built from it) reflected only the
+ * LAST segment. Counts add; typo suspects concatenate (de-duplicated by email, bounded); the
+ * tripwire keeps the most severe verdict any segment reached (pause > warn > none).
+ */
+export function mergeEmailVerificationSummaries(
+  prior: EmailVerificationSummary | null,
+  segment: EmailVerificationSummary,
+): EmailVerificationSummary {
+  if (!prior) return segment;
+  const seen = new Set(prior.typo_suspects.map((t) => t.email));
+  const typos = [...prior.typo_suspects];
+  for (const t of segment.typo_suspects) {
+    if (typos.length >= MERGED_TYPO_SUSPECT_CAP) break;
+    if (!seen.has(t.email)) {
+      seen.add(t.email);
+      typos.push(t);
+    }
+  }
+  const tripwires = [prior.tripwire, segment.tripwire];
+  return {
+    checked: prior.checked + segment.checked,
+    valid: prior.valid + segment.valid,
+    dead_domain: prior.dead_domain + segment.dead_domain,
+    disposable: prior.disposable + segment.disposable,
+    already_suppressed: prior.already_suppressed + segment.already_suppressed,
+    unverifiable: prior.unverifiable + segment.unverifiable,
+    role_accounts: prior.role_accounts + segment.role_accounts,
+    suppressed_new: prior.suppressed_new + segment.suppressed_new,
+    typo_suspects: typos,
+    tripwire: tripwires.includes('pause') ? 'pause' : tripwires.includes('warn') ? 'warn' : 'none',
+  };
+}
+
 /** Unique, lowercased, syntactically-valid emails drawn from the import rows' email + email2 columns. */
 function uniqueEmailsFromRows(rows: ImportRowEmails[]): string[] {
   const set = new Set<string>();
@@ -102,10 +161,22 @@ export async function runImportEmailVerification(
       tripwire: outcome === 'pause' ? 'pause' : outcome === 'warn' ? 'warn' : 'none',
     };
 
-    // 5. Persist the summary for the completion email and the History page.
+    // 5. Persist the summary for the completion email and the History page — MERGED into what
+    // earlier segments of a continued/resumed import already stored, so a multi-segment run
+    // (normal at the 100,000-row cap) reports the whole file, not just the last segment.
+    // A crash between a segment's verification and its cursor write can re-verify that
+    // segment's tail and count those emails twice — accepted: the summary is informative,
+    // and suppression inserts stay idempotent.
+    const storedRow = await db
+      .selectFrom('data_imports')
+      .select('email_verification')
+      .where('id', '=', payload.import_id)
+      .where('tenant_id', '=', payload.tenant_id)
+      .executeTakeFirst();
+    const merged = mergeEmailVerificationSummaries(parseStoredSummary(storedRow?.email_verification), full);
     await db
       .updateTable('data_imports')
-      .set({ email_verification: JSON.stringify(full) })
+      .set({ email_verification: JSON.stringify(merged) })
       .where('id', '=', payload.import_id)
       .where('tenant_id', '=', payload.tenant_id)
       .execute();
@@ -124,7 +195,8 @@ export async function runImportEmailVerification(
       );
     }
 
-    return full;
+    // The merged whole-import summary, so the completion email reports every segment.
+    return merged;
   } catch (err) {
     logger.error({ err, importId: payload.import_id }, 'Import email verification failed (import unaffected)');
     return null;

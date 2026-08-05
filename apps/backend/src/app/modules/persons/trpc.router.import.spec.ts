@@ -18,12 +18,13 @@ function mockAuthDb() {
 const AUTH = { tenant_id: '1', user_id: '1', session_id: 's1' };
 
 /**
- * The `persons.import` mutation accepts exactly one of two intakes — legacy rows-in-body or an
- * uploaded-file handle — through one input object. These tests pin the boundary: the exclusivity
- * rule, the column-index mapping keys, and that each shape reaches the service correctly
- * narrowed. The other three import routers use the identical structure.
+ * The `persons.import` mutation accepts ONLY the upload intake (upload_handle + column mapping)
+ * since 2026-08-05 — the legacy rows-in-body variant was removed once the wizard stopped
+ * sending it. These tests pin the boundary: the required fields, the column-index mapping keys,
+ * that a legacy-shaped body is refused, and that the shape reaches the service correctly. The
+ * other three import routers use the identical structure.
  */
-describe('persons.import intake shapes', () => {
+describe('persons.import intake shape', () => {
   let importSpy: any;
 
   beforeEach(() => {
@@ -36,14 +37,19 @@ describe('persons.import intake shapes', () => {
 
   const caller = () => PersonsRouter.createCaller({ auth: AUTH } as any);
 
-  it('rejects a call with neither rows nor upload_handle', async () => {
+  it('rejects a call without an upload_handle', async () => {
     await expect(caller().import({} as any)).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     expect(importSpy).not.toHaveBeenCalled();
   });
 
-  it('rejects a call carrying both rows and upload_handle', async () => {
+  it('rejects the removed legacy rows-in-body shape (no upload_handle)', async () => {
     await expect(
-      caller().import({ rows: [{ first_name: 'A' }], upload_handle: 'h', mapping: { '0': 'first_name' } } as any),
+      caller().import({
+        rows: [{ first_name: 'Ada', email: 'ada@example.com' }],
+        skipped: 2,
+        source_csv: 'First,Email\nAda,ada@example.com\n',
+        client_skip_reasons: [{ row: 3, reason: 'Email address is not valid' }],
+      } as any),
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     expect(importSpy).not.toHaveBeenCalled();
   });
@@ -87,28 +93,5 @@ describe('persons.import intake shapes', () => {
     });
     expect(input.rows).toBeUndefined();
     expect(input.source_csv).toBeUndefined();
-  });
-
-  it('still accepts the legacy rows shape unchanged', async () => {
-    await caller().import({
-      rows: [{ first_name: 'Ada', email: 'ada@example.com' }],
-      tags: [],
-      skipped: 2,
-      file_name: 'contacts.csv',
-      duplicate_decision: 'merge',
-      source_csv: 'First,Email\nAda,ada@example.com\n',
-      client_skip_reasons: [{ row: 3, reason: 'Email address is not valid' }],
-    } as any);
-
-    expect(importSpy).toHaveBeenCalledTimes(1);
-    const input = importSpy.mock.calls[0][0];
-    expect(input).toMatchObject({
-      rows: [{ first_name: 'Ada', email: 'ada@example.com' }],
-      skipped: 2,
-      duplicate_decision: 'merge',
-      source_csv: 'First,Email\nAda,ada@example.com\n',
-    });
-    expect(input.upload_handle).toBeUndefined();
-    expect(input.mapping).toBeUndefined();
   });
 });

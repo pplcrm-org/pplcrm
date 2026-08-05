@@ -5,15 +5,18 @@ import {
   CompaniesImportMappingObj,
   HouseholdsImportMappingObj,
   MAX_IMPORT_FILE_BYTES,
-  MAX_IMPORT_ROWS,
+  PLANS_BY_KEY,
   PersonsImportMappingObj,
   TasksImportMappingObj,
   emailSchema,
+  importRowLimitFor,
+  planAllowsGeocoding,
 } from '@common';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
+import { AuthService } from '../../../auth/auth-service';
 import { CompaniesService } from '../../companies/services/companies-service';
 import { HouseholdsService } from '../../households/services/households-service';
 import { ListsService } from '../../lists/services/lists-service';
@@ -89,6 +92,15 @@ export class ImportWizard {
   private readonly tasksService = inject(TasksService);
   private readonly importsService = inject(ImportsService);
   private readonly listsService = inject(ListsService);
+  private readonly auth = inject(AuthService);
+
+  /**
+   * The signed-in user carries `tenant_plan` (set server-side in sanitizeUser) — the same
+   * plan-mirror idiom the sidebar and settings page use. The row limit itself is computed by
+   * the shared `importRowLimitFor` from plans.ts, so the browser holds no plan-resolution
+   * logic of its own; the import job re-enforces the limit authoritatively server-side.
+   */
+  private readonly user = this.auth.getUserSignal();
 
   private readonly _duplicateCheck = createLoadingGate();
   protected readonly checkingDuplicates = this._duplicateCheck.visible;
@@ -114,7 +126,8 @@ export class ImportWizard {
 
   /** The limits the upload step states up front, so nobody maps columns for a file we then refuse. */
   protected readonly maxFileMb = MAX_IMPORT_FILE_MB;
-  protected readonly maxRows = MAX_IMPORT_ROWS;
+  /** THIS workspace's per-file row limit — per plan (5,000 Free / 100,000 paid), never a hardcoded number. */
+  protected readonly maxRows = computed(() => importRowLimitFor(this.user()?.tenant_plan));
 
   /** A step is reachable once its prerequisite data exists — never skip ahead of validation. */
   protected canReachStep(target: WizardStep): boolean {
@@ -241,6 +254,33 @@ export class ImportWizard {
    */
   protected readonly finalRowCount = computed(() => this.importableRowCount() - this.missingRequiredRowCount());
 
+  /** Mapped field keys that put an address on a record — the ones that queue geocoding. */
+  private static readonly ADDRESS_FIELDS = new Set([
+    'street_num',
+    'street1',
+    'street2',
+    'apt',
+    'city',
+    'state',
+    'zip',
+    'country',
+  ]);
+
+  /**
+   * Whether the completion screen mentions address locating (Task J disclosure). Shown only
+   * when this import actually mapped an address column (people/households create households
+   * from addresses) AND the workspace's plan includes address locating (Movement+, mirroring
+   * GEOCODING_MIN_PLAN via the shared planAllowsGeocoding). Below-Movement workspaces get no
+   * note at all — their imports skip geocoding by design, and we don't advertise the absence.
+   * Deliberately number-free: no user-facing copy states the daily lookup budget's size.
+   */
+  protected readonly showGeocodePacingNote = computed(() => {
+    const entity = this.entity();
+    if (entity !== 'people' && entity !== 'households') return false;
+    if (!planAllowsGeocoding(this.user()?.tenant_plan)) return false;
+    return this.mapping().some((field) => ImportWizard.ADDRESS_FIELDS.has(field));
+  });
+
   /** One line of "what the background job is doing" copy while the import runs. */
   protected readonly runningHint = computed(() => {
     const entity = this.entity();
@@ -342,11 +382,8 @@ export class ImportWizard {
       // file during the import, so nothing is lost by not parsing it here.
       const text = preview ? await this.readPreviewText(file) : await this.readFileAsText(file);
       const { headers, rows } = await this.parseCsv(text);
-      if (!preview && rows.length > MAX_IMPORT_ROWS) {
-        this.alerts.showError(
-          `That file has ${rows.length.toLocaleString()} rows and imports are capped at ` +
-            `${MAX_IMPORT_ROWS.toLocaleString()} rows per file. Split it into smaller files and import them one at a time.`,
-        );
+      if (!preview && rows.length > this.maxRows()) {
+        this.alerts.showError(this.overRowLimitMessage(rows.length));
         this.chooseAnotherFile();
         return;
       }
@@ -360,6 +397,28 @@ export class ImportWizard {
     } finally {
       this.parsing.set(false);
     }
+  }
+
+  /**
+   * Why a fully-parsed file was refused client-side. Plan-aware, matching the plan-gate
+   * "guide, don't error" convention: a Free workspace is told which plan raises the limit;
+   * a paid workspace already has the top limit, so splitting is the only path. The server's
+   * counting pass enforces the same limit with the same framing for preview-mode files.
+   */
+  private overRowLimitMessage(rowCount: number): string {
+    const limit = this.maxRows();
+    const paidLimit = PLANS_BY_KEY.grassroots.importRowsPerFile;
+    if (limit < paidLimit) {
+      return (
+        `That file has ${rowCount.toLocaleString()} rows and imports on the ${PLANS_BY_KEY.free.name} plan are ` +
+        `capped at ${limit.toLocaleString()} rows per file. The ${PLANS_BY_KEY.grassroots.name} plan raises this ` +
+        `to ${paidLimit.toLocaleString()} rows per file — or split the file and import the parts one at a time.`
+      );
+    }
+    return (
+      `That file has ${rowCount.toLocaleString()} rows and imports are capped at ${limit.toLocaleString()} rows ` +
+      `per file. Split it into smaller files and import them one at a time.`
+    );
   }
 
   private readFileAsText(file: Blob): Promise<string> {

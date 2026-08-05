@@ -11,7 +11,6 @@ import type { Models } from '../../../../../../../libs/common/src/lib/kysely.mod
 import { CompaniesController } from '../../../modules/companies/controller';
 import { ImportsRepo } from '../../../modules/imports/repositories/imports.repo';
 import { PersonsService } from '../../../modules/persons/services/persons.service';
-import { serializeRowsToNdjson } from '../../ndjson';
 import { StorageService } from '../../storage.service';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import { TransactionalSendBlockedError } from '../../mail/transactional-send-guard';
@@ -47,6 +46,13 @@ function personsPayload(overrides: Record<string, unknown> = {}): any {
     file_name: 'contacts.csv',
     ...overrides,
   };
+}
+
+/** Inline NDJSON builder — the production writer was deleted with the legacy request path
+ * (2026-08-05); this handler only DRAINS payload blobs already in storage, so the tests build
+ * that stored format directly. */
+function serializeRowsToNdjson(rows: readonly unknown[]): Buffer {
+  return Buffer.from(rows.map((row) => JSON.stringify(row)).join('\n'), 'utf8');
 }
 
 const ROWS: Record<string, string>[] = [

@@ -80,13 +80,11 @@ export const MAX_PAGE_SIZE = 5000;
 export const MAX_BULK_IDS = 2000;
 
 /**
- * Rows accepted in one CSV/bulk import call (finding M2).
- *
- * Imports were bounded only by Fastify's default 1 MiB body limit — an accident, not a
- * decision, so raising that limit for any unrelated reason would silently have opened an
- * unbounded import. This states the real intent; the UI chunks larger files.
+ * The CSV import row cap is PER PLAN since 2026-08-05 (5,000 on Free, 100,000 on paid) — see
+ * `importRowsPerFile` on PlanDef and `importRowLimitFor` in `../billing/plans.ts`. The old
+ * plan-independent `MAX_IMPORT_ROWS = 5000` constant was removed so no stale 5,000 lurks as
+ * "the" cap; the import job's counting pass enforces the tenant's own limit.
  */
-export const MAX_IMPORT_ROWS = 5000;
 
 /** Ceiling on the byte size of one uploaded import source CSV (50 MB); the server verifies the real blob size, never a client-declared one. */
 export const MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024;

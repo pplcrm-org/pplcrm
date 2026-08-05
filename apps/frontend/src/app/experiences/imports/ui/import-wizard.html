@@ -83,7 +83,7 @@
           } @if (config().reviewNote) {
           <li>{{ config().reviewNote }}</li>
           }
-          <li>UTF-8 and Excel both work. Files up to {{ maxFileMb }} MB and {{ maxRows.toLocaleString() }} rows.</li>
+          <li>UTF-8 and Excel both work. Files up to {{ maxFileMb }} MB and {{ maxRows().toLocaleString() }} rows.</li>
         </ul>
         } @else {
         <div class="flex items-center justify-between gap-4 rounded-lg border border-base-300 bg-base-200/40 p-4">
@@ -489,6 +489,12 @@
           <li>Tagged {{ r.tag }}</li>
           }
         </ul>
+        @if (showGeocodePacingNote()) {
+        <p class="text-sm text-base-content/60">
+          Imported addresses are located gradually in the background over the coming days, within your workspace's daily
+          lookup budget — results appear on household pages as they complete.
+        </p>
+        }
         <div class="flex flex-wrap gap-2 mt-2">
           <button type="button" class="btn btn-primary gap-2" (click)="viewImported()">
             <pc-icon [name]="config().icon" [size]="4"></pc-icon>

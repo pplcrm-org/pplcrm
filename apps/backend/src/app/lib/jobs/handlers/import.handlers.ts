@@ -4,9 +4,10 @@ import { env } from '../../../../env';
 import {
   CompaniesImportRowObj,
   HouseholdsImportRowObj,
-  MAX_IMPORT_ROWS,
   PersonsImportRowObj,
   TasksImportRowObj,
+  importRowLimitFor,
+  PLANS_BY_KEY,
 } from '../../../../../../../libs/common/src';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../../logger';
@@ -256,6 +257,12 @@ ${verificationHtml(verification)}
   }
 }
 
+/**
+ * 2026-08-05: legacy drain path only. The rows-in-body import mutations that enqueued these
+ * NDJSON-payload jobs were removed; this handler stays one release to finish jobs already in
+ * `background_jobs` at deploy time, then it (with `legacyImportJobSchema` and the NDJSON
+ * readers in lib/ndjson.ts) can be deleted.
+ */
 export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysely<Models>): Promise<void> {
   // 0. Where to pick up: refuse a completed import outright, and on a crash re-run skip the
   // rows earlier runs durably handled (see readImportRunState).
@@ -387,6 +394,42 @@ const CSV_SKIP_REASONS_CAP = 500;
 const CSV_SKIP_REASON_MAX = 200;
 
 type CsvSkipReason = { row: number; email?: string; reason: string };
+
+/**
+ * The row cap is per plan (5,000 on Free, 100,000 on paid — `importRowsPerFile` on PlanDef), so
+ * the counting pass resolves the importing tenant's own limit. An absent tenant/plan fails
+ * closed to Free's cap, same as every other plan gate.
+ */
+async function resolveTenantImportRowLimit(db: Kysely<Models>, tenantId: string): Promise<number> {
+  const tenant = await db
+    .selectFrom('tenants')
+    .select('subscription_plan')
+    .where('id', '=', tenantId)
+    .executeTakeFirst();
+  return importRowLimitFor(tenant?.subscription_plan);
+}
+
+/**
+ * Why an over-cap file was refused. Plan-gate convention ("guide, don't error"): a Free tenant
+ * is told which plan raises the limit; a paid tenant already has the top limit, so splitting
+ * the file is the only path.
+ */
+function overCapMessage(rowCount: number, limit: number): string {
+  const counted = rowCount.toLocaleString('en-US');
+  const capped = limit.toLocaleString('en-US');
+  const paidLimit = PLANS_BY_KEY.grassroots.importRowsPerFile;
+  if (limit < paidLimit) {
+    return (
+      `This file has ${counted} data rows; imports on the ${PLANS_BY_KEY.free.name} plan are limited to ` +
+      `${capped} rows per file. The ${PLANS_BY_KEY.grassroots.name} plan raises this to ` +
+      `${paidLimit.toLocaleString('en-US')} rows per file — or split the file and import the parts separately.`
+    );
+  }
+  return (
+    `This file has ${counted} data rows; imports are limited to ${capped} rows per file. ` +
+    `Split the file and import the parts separately.`
+  );
+}
 
 /** Terminal failure the member can act on: History shows `error_message` inline. */
 async function failImport(
@@ -594,6 +637,9 @@ export async function handleImportCsvJob(
   let preSkipped = 0;
   const preSkipReasons: CsvSkipReason[] = [];
   if (!resuming) {
+    // Per-plan row cap (5,000 Free / 100,000 paid). Resolved before streaming so the cap the
+    // failure message quotes is the tenant's own; a resumed run already passed this gate.
+    const rowLimit = await resolveTenantImportRowLimit(db, payload.tenant_id);
     let rowCount = 0;
     try {
       const { stream } = await storageService.downloadStream(payload.storage_key);
@@ -630,12 +676,8 @@ export async function handleImportCsvJob(
       row: { row_count: rowCount, updated_at: new Date() },
     });
 
-    if (rowCount > MAX_IMPORT_ROWS) {
-      await failImport(
-        payload,
-        `This file has ${rowCount.toLocaleString('en-US')} data rows; imports are limited to ` +
-          `${MAX_IMPORT_ROWS.toLocaleString('en-US')} rows per file. Split the file and import the parts separately.`,
-      );
+    if (rowCount > rowLimit) {
+      await failImport(payload, overCapMessage(rowCount, rowLimit));
       return;
     }
 
@@ -715,9 +757,10 @@ export async function handleImportCsvJob(
     );
 
     // Verifies the emails THIS execution fed (suppression inserts are additive + idempotent).
-    // On a continued/resumed import each run checks its own segment; the stored summary
-    // reflects the last segment. Today's row cap fits one run, so a split summary only occurs
-    // after a crash mid-import.
+    // On a continued/resumed import each run checks its own segment, and
+    // runImportEmailVerification MERGES each segment's numbers into the stored summary —
+    // multi-segment runs are normal at the 100,000-row cap, and the completion email must
+    // report the whole file, not the last segment.
     verification = await runImportEmailVerification(
       db,
       { tenant_id: payload.tenant_id, import_id: payload.import_id, user_id: payload.user_id },

@@ -7,9 +7,15 @@ import {
   importRowsFromNdjson,
   isLegacyJsonArrayPayload,
   iterateLines,
-  serializeRowsToNdjson,
   toStoredImportRow,
 } from './ndjson';
+
+/** Inline NDJSON writer — the production writer (`serializeRowsToNdjson`) was deleted with the
+ * legacy rows-in-body intake (2026-08-05); the readers stay to drain already-stored payloads,
+ * so the read tests build their input the way the retired writer did. */
+function ndjsonText(rows: readonly unknown[]): string {
+  return rows.map((row) => JSON.stringify(row)).join('\n');
+}
 
 function sampleRows(count: number): Record<string, string>[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -26,25 +32,25 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   return out;
 }
 
-describe('serializeRowsToNdjson / importRowsFromNdjson round-trip', () => {
+describe('importRowsFromNdjson round-trip over stored-payload text', () => {
   it('yields the exact same rows in the same order', () => {
     const rows = sampleRows(253);
-    const text = serializeRowsToNdjson(rows).toString('utf8');
+    const text = ndjsonText(rows);
     const back = [...importRowsFromNdjson(text)];
     expect(back).toHaveLength(rows.length);
     expect(back).toEqual(rows);
   });
 
-  it('escapes embedded newlines so one row is always one line', () => {
+  it('reads JSON-escaped embedded newlines back as one row per line', () => {
     const rows = [{ notes: 'line one\nline two' }, { notes: 'plain' }];
-    const text = serializeRowsToNdjson(rows).toString('utf8');
+    const text = ndjsonText(rows);
     expect(text.split('\n')).toHaveLength(2);
     expect([...importRowsFromNdjson(text)]).toEqual(rows);
   });
 
   it('handles an empty payload', () => {
     expect([...importRowsFromNdjson('')]).toEqual([]);
-    expect(serializeRowsToNdjson([]).toString('utf8')).toBe('');
+    expect(ndjsonText([])).toBe('');
   });
 });
 

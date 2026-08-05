@@ -2,12 +2,18 @@
  * Copy for the /switch hub and the four /switch/<tool> migration guides.
  *
  * Every claim here is bounded by what the CSV import wizard actually does
- * (people/companies/households/tasks, 5,000 rows per file, merge-by-email,
+ * (people/companies/households/tasks, merge-by-email,
  * tags + one list, the DNS/disposable email check-up) — see
  * `libs/uxcommon/src/components/csv-import/persons-field-mapping.ts` for
  * which header spellings auto-match. Two limits are stated deliberately and
  * must stay stated: giving history has no bulk import, and no import writes
  * newsletter consent. Do not soften either without the product changing first.
+ *
+ * Deliberately NO row numbers (operator decision 2026-08-05): the per-file row
+ * cap is per plan and is stated only in-app (the wizard shows the workspace's
+ * own limit; the import job's failure message names it). The site says only
+ * that a very large list can be split and imported in parts — do not
+ * reintroduce a numeric cap here.
  */
 
 export type SwitchSlug = 'breeze' | 'planning-center' | 'nationbuilder' | 'mailchimp';
@@ -43,7 +49,7 @@ export interface SwitchGuide {
 export const WIZARD_STEPS: readonly { title: string; body: string }[] = [
   {
     title: 'Upload',
-    body: 'A CSV with a header row — Excel’s save-as-CSV is fine. Up to 5,000 rows per file; split a bigger list and run the parts one after another.',
+    body: 'A CSV with a header row — Excel’s save-as-CSV is fine. A very large list can be split into smaller files and imported one after another.',
   },
   {
     title: 'Map',
@@ -91,7 +97,7 @@ export const SWITCH_GUIDES: readonly SwitchGuide[] = [
     exportSteps: [
       'In Breeze, open People and export everyone to a spreadsheet. If it opens in Excel, save it as a CSV — the import wizard reads CSV files, not .xlsx.',
       'Keep the header row. Columns named things like First Name, Last Name, Email, Mobile, Street Address, City, State and Zip are matched to pplCRM fields automatically; anything else gets a dropdown on the mapping step.',
-      'One file imports up to 5,000 rows. If your list is bigger, split the file and run the parts one after another.',
+      'A very large list can be split into smaller files and imported one after another.',
     ],
     mappings: [
       {
@@ -142,7 +148,7 @@ export const SWITCH_GUIDES: readonly SwitchGuide[] = [
     exportSteps: [
       'In Planning Center People, make a list of the people you want (or everyone) and export it as a CSV.',
       'Keep the header row. Name, email, phone and address columns are matched to pplCRM fields automatically under most common spellings; anything else gets a dropdown on the mapping step.',
-      'One file imports up to 5,000 rows; split a bigger list and run the parts one after another.',
+      'A very large list can be split into smaller files and imported one after another.',
     ],
     mappings: [
       {
@@ -203,7 +209,7 @@ export const SWITCH_GUIDES: readonly SwitchGuide[] = [
     exportSteps: [
       'In NationBuilder, filter People down to the set you want (or take everyone) and export a CSV.',
       'NationBuilder exports carry dozens of columns. The wizard matches the common ones — first_name, last_name, email, mobile, city, state, zip — automatically; columns it does not recognize get a dropdown, and anything left unmapped is simply left out.',
-      'One file imports up to 5,000 rows; split a bigger export and run the parts one after another.',
+      'A very large export can be split into smaller files and imported one after another.',
     ],
     mappings: [
       { theirs: 'first_name / last_name', lands: 'The person’s name', note: 'Matched automatically.' },
@@ -265,7 +271,7 @@ export const SWITCH_GUIDES: readonly SwitchGuide[] = [
     exportSteps: [
       'In Mailchimp, open your audience and export it as a CSV. Export only subscribed contacts — leave unsubscribed and cleaned addresses out of the file entirely. pplCRM cannot import an unsubscribe flag, so the safe, compliant move is to never import those rows at all.',
       'Keep the header row. Email Address, First Name, Last Name, Phone Number and Tags are matched to pplCRM fields automatically.',
-      'One file imports up to 5,000 rows; split a bigger audience and run the parts one after another.',
+      'A very large audience export can be split into smaller files and imported one after another.',
     ],
     mappings: [
       {

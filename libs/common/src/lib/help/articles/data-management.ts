@@ -32,7 +32,7 @@ export const DATA_ARTICLES: HelpArticle[] = [
         items: [
           'Use a CSV with a header row. Column names like “First name”, “Email”, “Phone”, “Company”, or “Tags” are preselected automatically on the mapping step.',
           'For people: a **Company** column links each person to a company, creating the company if no existing one matches its name. Addresses do the same for households. A **Tags** column applies its comma-separated tags to just that person.',
-          'A file can be up to **50 MB** and **5,000 rows**. A bigger list still imports fine — split it into files under the limit and run them one at a time. An over-limit file is refused before anything is written: small files at the upload step, large ones as a failed import in history that names the actual row count.',
+          'A file can be up to **50 MB**, and each import has a per-file row limit that depends on your workspace’s plan — the wizard’s upload step shows your own limit before you start mapping. A bigger list still imports fine: split it into files under the limit and run them one at a time. An over-limit file is refused before anything is written: small files at the upload step, large ones as a failed import in history that names the actual row count and your limit.',
           'For companies and tasks the wizard needs a mapped **name** column. Rows without one are skipped. For households, rows matching an address you already have (or repeated in the file) are skipped, and new addresses are queued for geocoding — see [Geocoding, boundary matching, and what each costs](/help/geocoding-and-costs) for when that finishes.',
           'A households file that already names each row’s district, ward or precinct can bring those in too, with no lookup and no cost. See [Import district, ward and precinct columns](/help/importing-districts).',
           'Both UTF-8 and Excel-exported CSVs work as-is.',
@@ -45,7 +45,7 @@ export const DATA_ARTICLES: HelpArticle[] = [
           {
             title: 'Upload',
             detail:
-              'Drop the file or browse to it — up to 50 MB and 5,000 rows. Most files show their full row and column counts right away. A large file (over about 2 MB) shows a preview of its first rows instead, enough to set up the mapping; the exact totals are counted while the import runs.',
+              'Drop the file or browse to it — up to 50 MB, and up to your workspace’s per-file row limit, which this step states. Most files show their full row and column counts right away. A large file (over about 2 MB) shows a preview of its first rows instead, enough to set up the mapping; the exact totals are counted while the import runs.',
           },
           {
             title: 'Map columns',

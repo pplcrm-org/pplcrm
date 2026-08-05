@@ -1,29 +1,42 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Readable } from 'node:stream';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { BaseRepository } from '../../lib/base.repo';
+// Fail-open verification is unit-tested in import-verification.spec.ts; stubbed here so these
+// tests never resolve DNS.
+vi.mock('../../lib/jobs/handlers/import-verification', () => ({
+  runImportEmailVerification: vi.fn(async () => null),
+}));
+
+import type { Kysely } from 'kysely';
+import {
+  HouseholdsImportMappingObj,
+  HouseholdsImportRowObj,
+  PersonsImportMappingObj,
+  PersonsImportRowObj,
+} from '../../../../../../libs/common/src';
+import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
+import { handleImportCsvJob } from '../../lib/jobs/handlers/import.handlers';
+import { ImportsRepo } from '../imports/repositories/imports.repo';
+import { PersonsService } from '../persons/services/persons.service';
 import { StorageService } from '../../lib/storage.service';
-import { hashToken } from '../../lib/token-hash';
-import { HouseholdsRouter } from './trpc.router';
-import { PersonsRouter } from '../persons/trpc.router';
+import { HouseholdsController } from './controller';
 import { IMPORTED_AREA_SETS } from './electoral-areas';
 import { ELECTORAL_IMPORT_ROW_FIELDS } from './electoral-import-schema';
 
 /**
- * The bug this file exists to prevent: both import endpoints validate each CSV row against a Zod
- * object, and a Zod object silently DROPS every key it does not name. So a district column the
- * wizard mapped and sent was discarded at the network boundary, the request still succeeded, and
- * the districts simply never arrived. Nothing failed and nothing was logged.
+ * The bug this file exists to prevent: import rows are validated against a Zod object, and a
+ * Zod object silently DROPS every key it does not name. So a district column the wizard mapped
+ * was discarded, the import still succeeded, and the districts simply never arrived — nothing
+ * failed and nothing was logged.
  *
- * Service-level tests cannot catch that, because they call the service directly and never cross the
- * boundary. These tests go through `createCaller`, which runs the real authentication middleware
- * and the real input schema, and then read the payload the endpoint actually stored for the
- * background job. If the schema stops naming these columns, the stored payload loses them and these
- * tests fail.
+ * Since the upload-based intake replaced rows-in-body (2026-08-05), the boundary is in two
+ * places: the mutation's MAPPING schema (which field keys a column may map to) and the
+ * `import_csv` job's row validation (which mapped keys survive to the entity processors).
+ * These tests pin both: the mapping schemas accept every electoral field, and a CSV streamed
+ * through the real job handler delivers the district columns to the processors intact.
  */
-const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);
-const db = BaseRepository.dbInstance;
 
-/** A voter file's district columns, as the import wizard sends them. */
+/** A voter file's district columns, as the import wizard maps them. */
 const DISTRICT_COLUMNS = {
   electoral_district: 'Ottawa Centre',
   congressional_district: 'OH-3',
@@ -34,155 +47,137 @@ const DISTRICT_COLUMNS = {
   precinct: 'Precinct 12',
 };
 
-describe('electoral import columns survive the request boundary', () => {
-  let tenantId: string;
-  let userId: string;
-  let campaignId: string;
-  let sessionToken: string;
-  /** Every NDJSON payload the endpoint stored for the background job, newest last. */
-  let storedPayloads: string[];
+const DISTRICT_FIELDS = Object.keys(DISTRICT_COLUMNS);
 
-  /**
-   * The tRPC context a signed-in request carries. `res` is stubbed because the households import
-   * endpoint sets the HTTP 202 status on it directly.
-   */
-  function ctx(): {
-    auth: { tenant_id: string; user_id: string; session_id: string };
-    res: { status: (code: number) => void };
-  } {
-    return {
-      auth: { tenant_id: tenantId, user_id: userId, session_id: sessionToken },
-      res: { status: (): void => undefined },
-    };
-  }
+/** Scripted DB stand-in (same idiom as import.handlers.csv.spec.ts): undefined everywhere =
+ * fresh run, no tenant plan row (fails closed to Free's cap — far above these tiny files). */
+function makeScriptedDb(): Kysely<Models> {
+  const b: any = {};
+  for (const m of ['selectFrom', 'leftJoin', 'select', 'where', 'values']) b[m] = vi.fn(() => b);
+  b.insertInto = vi.fn(() => b);
+  b.execute = vi.fn(async () => []);
+  b.executeTakeFirst = vi.fn(async () => undefined);
+  return b as Kysely<Models>;
+}
 
-  /** The row objects the endpoint queued for the background job to read back. */
-  function queuedRows(): Array<Record<string, unknown>> {
-    const payload = storedPayloads[storedPayloads.length - 1] ?? '';
-    return payload
-      .split('\n')
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line));
-  }
+function mockCsvBlob(text: string): void {
+  const buffer = Buffer.from(text, 'utf8');
+  vi.spyOn(StorageService.prototype, 'downloadStream').mockImplementation(async () => ({
+    stream: Readable.from([Buffer.from(buffer)]),
+    contentLength: buffer.length,
+  }));
+}
 
-  beforeEach(async () => {
-    tenantId = rand();
-    userId = rand();
-    campaignId = rand();
-    sessionToken = `session-${rand()}`;
-    storedPayloads = [];
+/** CSV whose data row carries every district value, plus the entity's own lead columns. */
+function districtCsv(leadHeaders: string[], leadValues: string[]): string {
+  const headers = [...leadHeaders, ...DISTRICT_FIELDS];
+  const values = [...leadValues, ...DISTRICT_FIELDS.map((f) => DISTRICT_COLUMNS[f as keyof typeof DISTRICT_COLUMNS])];
+  return `${headers.join(',')}\n${values.map((v) => `"${v}"`).join(',')}\n`;
+}
 
-    vi.spyOn(StorageService.prototype, 'upload').mockImplementation(
-      async (_key: string, body: Buffer, contentType?: string): Promise<void> => {
-        // Only the row payload, never the retained copy of the original CSV upload.
-        if (contentType !== 'text/csv') storedPayloads.push(body.toString('utf8'));
+/** Index mapping: lead columns to their fields, then each district column to its own field. */
+function districtMapping(leadFields: string[]): Record<string, string> {
+  const mapping: Record<string, string> = {};
+  leadFields.forEach((f, i) => (mapping[String(i)] = f));
+  DISTRICT_FIELDS.forEach((f, i) => (mapping[String(leadFields.length + i)] = f));
+  return mapping;
+}
+
+describe('electoral import columns survive to the entity processors', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('the mapping schemas accept every electoral field as a mapping target', () => {
+    for (const field of DISTRICT_FIELDS) {
+      expect(PersonsImportMappingObj.safeParse({ '0': field }).success).toBe(true);
+      expect(HouseholdsImportMappingObj.safeParse({ '0': field }).success).toBe(true);
+    }
+  });
+
+  it('keeps every district column on a People import', async () => {
+    vi.spyOn(ImportsRepo.prototype, 'update').mockResolvedValue({} as any);
+    const fed: Record<string, string>[] = [];
+    vi.spyOn(PersonsService.prototype, 'processImportRows').mockImplementation(
+      async (_i, _t, _u, _c, _tags, _skipped, rows) => {
+        for await (const row of rows) fed.push(row);
+        return {} as any;
       },
     );
+    mockCsvBlob(districtCsv(['first_name', 'street1'], ['Ada', 'Evergreen Terrace']));
 
-    await db.insertInto('tenants').values({ id: tenantId, name: 'Voter File Boundary Tenant' }).execute();
-    await db
-      .insertInto('authusers')
-      .values({
-        id: userId,
-        tenant_id: tenantId,
-        email: `organizer-${userId}@example.com`,
-        first_name: 'Organizer',
-        last_name: 'Person',
-        verified: true,
-        role: 'admin',
-        password: 'argon2id$not-a-real-hash',
-        createdby_id: userId,
-        updatedby_id: userId,
-      })
-      .execute();
-    await db
-      .insertInto('sessions')
-      .values({
-        id: rand(),
-        session_id: hashToken(sessionToken),
-        user_id: userId,
-        tenant_id: tenantId,
-        ip_address: '127.0.0.1',
-        status: 'active',
-        expires_at: new Date(Date.now() + 60 * 60 * 1000),
-      })
-      .execute();
-    await db
-      .insertInto('campaigns')
-      .values({
-        id: campaignId,
-        tenant_id: tenantId,
-        name: 'Ohio 3rd',
-        admin_id: userId,
-        kind: 'office',
-        jurisdiction: 'us_federal',
-        createdby_id: userId,
-        updatedby_id: userId,
-      })
-      .execute();
-    // The People import resolves the workspace's current campaign from settings before it stores
-    // anything, so a workspace without this row cannot import at all.
-    await db
-      .insertInto('settings')
-      .values({
-        tenant_id: tenantId,
-        key: 'current_campaign',
-        value: JSON.stringify(campaignId),
-        createdby_id: userId,
-        updatedby_id: userId,
-      })
-      .execute();
+    await handleImportCsvJob(
+      {
+        type: 'import_csv',
+        import_id: '11',
+        tenant_id: '1',
+        user_id: '2',
+        source: 'persons',
+        storage_key: 'imports/source/1/abc.csv',
+        mapping: districtMapping(['first_name', 'street1']),
+        campaign_id: '3',
+        tags: [],
+        file_name: 'voterfile.csv',
+        duplicate_decision: 'skip',
+        list_name: null,
+      },
+      makeScriptedDb(),
+    );
+
+    expect(fed).toHaveLength(1);
+    expect(fed[0]).toMatchObject(DISTRICT_COLUMNS);
   });
 
-  afterEach(async () => {
-    vi.restoreAllMocks();
-    await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
-    await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
-    await db.deleteFrom('data_imports').where('tenant_id', '=', tenantId).execute();
-    await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
-    await db.deleteFrom('sessions').where('tenant_id', '=', tenantId).execute();
-    await db.updateTable('tenants').set({ admin_id: null, createdby_id: null }).where('id', '=', tenantId).execute();
-    await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
-    await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
-  });
+  it('keeps every district column on a Households import', async () => {
+    vi.spyOn(ImportsRepo.prototype, 'update').mockResolvedValue({} as any);
+    const fed: Record<string, string>[] = [];
+    vi.spyOn(HouseholdsController.prototype, 'processImportRows').mockImplementation(
+      async (_i, _t, _u, _c, _tags, _skipped, rows) => {
+        for await (const row of rows) fed.push(row);
+        return {} as any;
+      },
+    );
+    mockCsvBlob(districtCsv(['street1', 'city'], ['Evergreen Terrace', 'Columbus']));
 
-  it('keeps every district column on a People import request', async () => {
-    const caller = PersonsRouter.createCaller(ctx());
+    await handleImportCsvJob(
+      {
+        type: 'import_csv',
+        import_id: '12',
+        tenant_id: '1',
+        user_id: '2',
+        source: 'households',
+        storage_key: 'imports/source/1/abc.csv',
+        mapping: districtMapping(['street1', 'city']),
+        campaign_id: '3',
+        tags: [],
+        file_name: 'addresses.csv',
+        duplicate_decision: null,
+        list_name: null,
+      },
+      makeScriptedDb(),
+    );
 
-    await caller.import({
-      rows: [{ first_name: 'Ada', last_name: 'Lovelace', street1: 'Evergreen Terrace', ...DISTRICT_COLUMNS }],
-      file_name: 'voterfile.csv',
-    });
-
-    expect(queuedRows()[0]).toMatchObject(DISTRICT_COLUMNS);
-  });
-
-  it('keeps every district column on a Households import request', async () => {
-    const caller = HouseholdsRouter.createCaller(ctx());
-
-    await caller.import({
-      rows: [{ street1: 'Evergreen Terrace', city: 'Columbus', ...DISTRICT_COLUMNS }],
-      file_name: 'addresses.csv',
-    });
-
-    expect(queuedRows()[0]).toMatchObject(DISTRICT_COLUMNS);
+    expect(fed).toHaveLength(1);
+    expect(fed[0]).toMatchObject(DISTRICT_COLUMNS);
   });
 
   it('names exactly the fields the row reader looks for', () => {
     // `readImportedAreas` reads a row under the keys in IMPORTED_AREA_SETS. A key named here but
-    // not there is never read; a key there but not here never gets past the request boundary.
+    // not there is never read; a key there but not here never gets past the row schema.
     expect(Object.keys(ELECTORAL_IMPORT_ROW_FIELDS).sort()).toEqual(
       IMPORTED_AREA_SETS.map((spec) => spec.field).sort(),
     );
   });
 
-  it('still refuses a column it does not name', async () => {
-    // The dropping behaviour is deliberate everywhere else — this confirms the schema was widened
-    // by exactly the seven electoral columns, not opened up to arbitrary keys.
-    const caller = PersonsRouter.createCaller(ctx());
-
-    await caller.import({ rows: [{ first_name: 'Ada', not_a_real_column: 'x' }], file_name: 'voterfile.csv' });
-
-    expect(queuedRows()[0]).not.toHaveProperty('not_a_real_column');
+  it('still refuses a column the row schemas do not name', () => {
+    // The dropping behaviour is deliberate everywhere else — this confirms the schemas were
+    // widened by exactly the seven electoral columns, not opened up to arbitrary keys.
+    const person = PersonsImportRowObj.parse({ first_name: 'Ada', not_a_real_column: 'x' });
+    expect(person).not.toHaveProperty('not_a_real_column');
+    const household = HouseholdsImportRowObj.parse({ street1: 'Evergreen Terrace', not_a_real_column: 'x' });
+    expect(household).not.toHaveProperty('not_a_real_column');
+    // And the mapping schemas refuse to target it at all.
+    expect(PersonsImportMappingObj.safeParse({ '0': 'not_a_real_column' }).success).toBe(false);
+    expect(HouseholdsImportMappingObj.safeParse({ '0': 'not_a_real_column' }).success).toBe(false);
   });
 });

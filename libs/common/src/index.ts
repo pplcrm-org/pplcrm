@@ -176,7 +176,6 @@ export {
   MAX_PAGE_SIZE,
   MAX_ROW_OFFSET,
   MAX_BULK_IDS,
-  MAX_IMPORT_ROWS,
   MAX_IMPORT_FILE_BYTES,
   rowCountSchema,
   rowOffsetSchema,
@@ -708,6 +707,7 @@ export {
   planAllowsFeature,
   GEOCODING_MIN_PLAN,
   planAllowsGeocoding,
+  importRowLimitFor,
   DATA_RESIDENCY_MIN_PLAN,
   planAllowsDataResidency,
 } from './lib/billing/plans';

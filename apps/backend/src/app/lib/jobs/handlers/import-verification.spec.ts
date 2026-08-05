@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import type { DomainResolver } from '../../mail/email-verifier.service';
 import { EmailVerifierService } from '../../mail/email-verifier.service';
-import { runImportEmailVerification } from './import-verification';
+import { mergeEmailVerificationSummaries, runImportEmailVerification } from './import-verification';
+import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
 
 function dnsError(code: string): Error & { code: string } {
   const err = new Error(code) as Error & { code: string };
@@ -46,6 +47,8 @@ function makeFakeDb(selectRows: Record<string, unknown[]>) {
       return b;
     });
     b['execute'] = vi.fn(async () => selectRows[table] ?? []);
+    // The summary-merge read (data_imports.email_verification) uses executeTakeFirst.
+    b['executeTakeFirst'] = vi.fn(async () => (selectRows[table] ?? [])[0]);
     return b;
   };
 
@@ -134,5 +137,85 @@ describe('runImportEmailVerification', () => {
     });
     const verifier = new EmailVerifierService(resolverWhereOk(['acme.org']));
     expect(await runImportEmailVerification(db, PAYLOAD, [{ email: 'jane@acme.org' }], verifier)).toBeNull();
+  });
+
+  it('merges this segment into a summary stored by earlier segments instead of overwriting it', async () => {
+    // A continuation run of a multi-segment import: segment 1 already stored its summary.
+    const stored: EmailVerificationSummary = {
+      checked: 3,
+      valid: 2,
+      dead_domain: 1,
+      disposable: 0,
+      already_suppressed: 0,
+      unverifiable: 0,
+      role_accounts: 0,
+      suppressed_new: 1,
+      typo_suspects: [{ email: 'a@gmial.com', suggested_domain: 'gmail.com' }],
+      tripwire: 'none',
+    };
+    const { db, updates } = makeFakeDb({
+      email_suppressions: [],
+      data_imports: [{ email_verification: JSON.stringify(stored) }],
+    });
+    const verifier = new EmailVerifierService(resolverWhereOk(['acme.org']));
+
+    const summary = await runImportEmailVerification(db, PAYLOAD, [{ email: 'jane@acme.org' }], verifier);
+
+    // Returned and persisted summary covers BOTH segments, not just this one.
+    expect(summary?.checked).toBe(4);
+    expect(summary?.valid).toBe(3);
+    expect(summary?.dead_domain).toBe(1);
+    expect(summary?.typo_suspects).toEqual([{ email: 'a@gmial.com', suggested_domain: 'gmail.com' }]);
+    const write = updates.find((u) => u.table === 'data_imports' && 'email_verification' in u.values);
+    expect(write).toBeDefined();
+    expect(JSON.parse(String(write?.values['email_verification']))).toMatchObject({ checked: 4, valid: 3 });
+  });
+});
+
+describe('mergeEmailVerificationSummaries', () => {
+  const base: EmailVerificationSummary = {
+    checked: 10,
+    valid: 8,
+    dead_domain: 1,
+    disposable: 1,
+    already_suppressed: 2,
+    unverifiable: 3,
+    role_accounts: 1,
+    suppressed_new: 2,
+    typo_suspects: [{ email: 'a@gmial.com', suggested_domain: 'gmail.com' }],
+    tripwire: 'none',
+  };
+
+  it('returns the segment unchanged when nothing was stored before it', () => {
+    expect(mergeEmailVerificationSummaries(null, base)).toBe(base);
+  });
+
+  it('adds counts and de-duplicates typo suspects by email', () => {
+    const segment: EmailVerificationSummary = {
+      ...base,
+      checked: 5,
+      valid: 4,
+      typo_suspects: [
+        { email: 'a@gmial.com', suggested_domain: 'gmail.com' }, // duplicate — dropped
+        { email: 'b@hotmial.com', suggested_domain: 'hotmail.com' },
+      ],
+    };
+    const merged = mergeEmailVerificationSummaries(base, segment);
+    expect(merged.checked).toBe(15);
+    expect(merged.valid).toBe(12);
+    expect(merged.dead_domain).toBe(2);
+    expect(merged.typo_suspects).toEqual([
+      { email: 'a@gmial.com', suggested_domain: 'gmail.com' },
+      { email: 'b@hotmial.com', suggested_domain: 'hotmail.com' },
+    ]);
+  });
+
+  it('keeps the most severe tripwire any segment reached', () => {
+    expect(mergeEmailVerificationSummaries({ ...base, tripwire: 'warn' }, { ...base, tripwire: 'none' }).tripwire).toBe(
+      'warn',
+    );
+    expect(
+      mergeEmailVerificationSummaries({ ...base, tripwire: 'none' }, { ...base, tripwire: 'pause' }).tripwire,
+    ).toBe('pause');
   });
 });

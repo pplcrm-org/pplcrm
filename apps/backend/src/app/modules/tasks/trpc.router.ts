@@ -3,14 +3,12 @@ import {
   ReorderSubtasksObj,
   ReorderTasksObj,
   TasksImportMappingObj,
-  TasksImportRowObj,
   UpdateTaskObj,
   exportCsvInput,
   exportCsvResponse,
   getAllOptions,
   idSchema,
   MAX_BULK_IDS,
-  MAX_IMPORT_ROWS,
 } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 
@@ -28,53 +26,21 @@ export const TasksRouter = router({
 
   import: authProcedure
     .input(
-      // One input object serves both intakes; exactly-one-of rows/upload_handle is enforced by
-      // superRefine rather than a union so RouterInputs indexing on the frontend keeps its
-      // shape. Row shape lives in libs/common/src/lib/schemas/import-rows.schema.ts.
-      z
-        .object({
-          // Legacy intake: mapped rows (plus the raw CSV text) in the mutation body.
-          rows: z
-            .array(TasksImportRowObj)
-            .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`)
-            .optional(),
-          // Upload intake: the CSV was PUT to blob storage via imports.getUploadUrl; the
-          // import_csv background job stream-parses it server-side.
-          upload_handle: z.string().min(1).max(4096).optional(),
-          // Stringified 0-based column index → import field key; required with upload_handle.
-          mapping: TasksImportMappingObj.optional(),
-          skipped: z.number().int().nonnegative().optional(),
-          file_name: z.string().trim().min(1).max(255).optional(),
-          source_csv: z.string().max(10_000_000).optional(),
-        })
-        .superRefine((val, ctx) => {
-          const hasRows = val.rows !== undefined;
-          const hasUpload = val.upload_handle !== undefined;
-          if (hasRows === hasUpload) {
-            ctx.addIssue({
-              code: 'custom',
-              message: 'Provide exactly one of rows (rows in the body) or upload_handle (uploaded file).',
-            });
-          }
-          if (hasUpload && val.mapping === undefined) {
-            ctx.addIssue({
-              code: 'custom',
-              path: ['mapping'],
-              message: 'A column mapping is required with upload_handle.',
-            });
-          }
-        }),
+      // Upload intake only (the legacy rows-in-body variant was removed 2026-08-05 once the
+      // wizard stopped sending it): the CSV was PUT to blob storage via imports.getUploadUrl;
+      // the import_csv background job stream-parses it server-side. Row shape lives in
+      // libs/common/src/lib/schemas/import-rows.schema.ts.
+      z.object({
+        upload_handle: z.string().min(1).max(4096),
+        // Stringified 0-based column index → import field key.
+        mapping: TasksImportMappingObj,
+        file_name: z.string().trim().min(1).max(255).optional(),
+      }),
     )
     .mutation(async ({ input, ctx }) => {
       ctx.res.status(202);
-      if (input.upload_handle !== undefined) {
-        return tasks.importRows(
-          { upload_handle: input.upload_handle, mapping: input.mapping ?? {}, file_name: input.file_name },
-          ctx.auth,
-        );
-      }
       return tasks.importRows(
-        { rows: input.rows ?? [], skipped: input.skipped, file_name: input.file_name, source_csv: input.source_csv },
+        { upload_handle: input.upload_handle, mapping: input.mapping, file_name: input.file_name },
         ctx.auth,
       );
     }),

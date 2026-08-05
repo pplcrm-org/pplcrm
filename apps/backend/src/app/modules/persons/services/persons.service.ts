@@ -6,7 +6,7 @@ import type { Transaction } from 'kysely';
 
 import { BadRequestError } from '../../../errors/app-errors';
 import { fingerprintFull, fingerprintStreet } from '../../../lib/address-normalize';
-import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../../lib/ndjson';
+import { chunkRows, IMPORT_CHUNK_SIZE } from '../../../lib/ndjson';
 import { backfillMissingSlugs } from '../../../lib/slug';
 import { backfillPersonPublicIds, insertPersonWithPublicId } from '../../../lib/person-public-id';
 import { notificationEnabled } from '../../../lib/profile-preferences';
@@ -53,60 +53,6 @@ function isImportSkipReason(value: unknown): value is ImportSkipReason {
 /** The skip reasons a previous run persisted on `data_imports.skip_reasons` (jsonb → JS array). */
 function storedSkipReasons(stored: unknown): ImportSkipReason[] {
   return Array.isArray(stored) ? stored.filter(isImportSkipReason) : [];
-}
-
-/**
- * Legacy intake for `persons.import`: every mapped row (plus the raw CSV text) travels in the
- * mutation body. Kept unchanged while the wizard still sends it; the upload-based shape below
- * replaces it.
- */
-export interface PersonsLegacyImportInput {
-  rows: Array<{
-    first_name?: string;
-    middle_names?: string;
-    last_name?: string;
-    email?: string;
-    email2?: string;
-    mobile?: string;
-    notes?: string;
-    home_phone?: string;
-    street_num?: string;
-    street1?: string;
-    street2?: string;
-    apt?: string;
-    city?: string;
-    state?: string;
-    zip?: string;
-    country?: string;
-    company?: string;
-    tags?: string;
-    /**
-     * Electoral columns the file itself named. A purchased US voter file is one row per voter,
-     * so it comes in through this importer rather than the households one, and it routinely
-     * already carries the congressional district, both state legislative district numbers, the
-     * precinct and the ward on every row. Taking those columns writes `household_districts`
-     * rows straight out of the file: no polygon data, no address lookup, nothing billed.
-     *
-     * The keys match `IMPORTED_AREA_SETS` in modules/households/electoral-areas.ts, which is
-     * what `readImportedAreas` reads them back out under.
-     */
-    electoral_district?: string;
-    congressional_district?: string;
-    legislative_district?: string;
-    state_house_district?: string;
-    state_senate_district?: string;
-    ward?: string;
-    precinct?: string;
-  }>;
-  tags?: string[];
-  skipped?: number;
-  file_name?: string | null;
-  duplicate_decision?: 'merge' | 'skip' | 'import_new';
-  list_name?: string;
-  /** Raw uploaded CSV text, kept 90 days so the History page can offer a re-download (spec §17). */
-  source_csv?: string;
-  /** Rows the wizard already excluded/cleaned client-side (bad-email "Skip"), recorded for History's skip-reasons export. */
-  client_skip_reasons?: Array<{ row: number; email?: string; reason: string }>;
 }
 
 /**
@@ -745,152 +691,14 @@ export class PersonsService {
     };
   }
 
-  public async importRows(input: PersonsLegacyImportInput | PersonsUploadImportInput, auth: IAuthKeyPayload) {
-    if ('upload_handle' in input) {
-      return this.importFromUpload(input, auth);
-    }
-    const campaign_id = (await this.settingsController.getCurrentCampaignId(auth)) as string;
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const autoTag = `Imported-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-
-    const tags = [...(input.tags ?? []), autoTag].filter((t) => !!t && t.trim().length > 0);
-    const skippedFromClient = Math.max(0, Math.floor(input.skipped ?? 0));
-    const requestedFileName = (input.file_name ?? '').trim();
-    const baseFileName = requestedFileName || `${autoTag}.csv`;
-    const totalRows = input.rows.length + skippedFromClient;
-
-    let hasImportableRow = false;
-    for (const candidate of input.rows) {
-      const sanitized = this.sanitizeRow(candidate);
-      if (sanitized.first_name || sanitized.last_name || sanitized.email || sanitized.mobile || sanitized.notes) {
-        hasImportableRow = true;
-        break;
-      }
-    }
-
-    if (!hasImportableRow) {
-      const totalSkipped = skippedFromClient + input.rows.length;
-      const personsBefore = await this.personsRepo.count(auth.tenant_id);
-      return {
-        inserted: 0,
-        errors: 0,
-        skipped: totalSkipped,
-        tag: null,
-        file_name: requestedFileName || null,
-        import_id: null,
-        tenant_id: auth.tenant_id,
-        campaign_id,
-        persons_total_after: personsBefore,
-        persons_total_before: personsBefore,
-        status: 'completed',
-      };
-    }
-
-    const importRow = {
-      tenant_id: auth.tenant_id,
-      createdby_id: auth.user_id,
-      updatedby_id: auth.user_id,
-      file_name: baseFileName,
-      source: 'persons',
-      tag_name: autoTag,
-      tag_id: null,
-      row_count: totalRows,
-      inserted_count: 0,
-      error_count: 0,
-      skipped_count: skippedFromClient,
-      households_created: 0,
-      status: 'pending',
-      metadata: null,
-      processed_at: now,
-    } as OperationDataType<'data_imports', 'insert'>;
-
-    const savedImport = await this.importsRepo.add({ row: importRow });
-    if (!savedImport || !savedImport.id) {
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to create data import record',
-      });
-    }
-
-    const importRecordId = String(savedImport.id);
-    const storageKey = `imports/payloads/${auth.tenant_id}/${importRecordId}.json`;
-
-    try {
-      // NDJSON (one row object per line) so the import job can stream rows
-      // instead of parsing one giant array — see lib/ndjson.ts.
-      const payloadBuffer = serializeRowsToNdjson(input.rows);
-      await this.storageService.upload(storageKey, payloadBuffer, NDJSON_CONTENT_TYPE);
-    } catch (err) {
-      logger.error({ err }, 'Failed to upload import payload to storage');
-      await this.importsRepo.delete({ tenant_id: auth.tenant_id, id: importRecordId });
-      throw new TRPCError({
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to store import payload on server storage',
-      });
-    }
-
-    // Keep the original upload downloadable for 90 days (spec §17 History
-    // page footer). Best-effort: a failure here shouldn't fail the import.
-    let sourceFileKey: string | null = null;
-    let sourceFileSize: number | null = null;
-    if (input.source_csv) {
-      try {
-        const sourceBuffer = Buffer.from(input.source_csv, 'utf8');
-        sourceFileKey = `imports/source/${auth.tenant_id}/${importRecordId}.csv`;
-        sourceFileSize = sourceBuffer.byteLength;
-        await this.storageService.upload(sourceFileKey, sourceBuffer, 'text/csv');
-      } catch (err) {
-        logger.error({ err }, 'Failed to retain original CSV upload for the import history page');
-        sourceFileKey = null;
-        sourceFileSize = null;
-      }
-    }
-
-    await this.importsRepo.update({
-      tenant_id: auth.tenant_id,
-      id: importRecordId,
-      row: {
-        metadata: JSON.stringify({ storage_key: storageKey }),
-        source_file_key: sourceFileKey,
-        source_file_size: sourceFileSize,
-      },
-    });
-
-    await this.importsRepo.db
-      .insertInto('background_jobs')
-      .values({
-        tenant_id: auth.tenant_id,
-        queue: 'default',
-        status: 'pending',
-        payload: JSON.stringify({
-          import_id: importRecordId,
-          storage_key: storageKey,
-          tags,
-          skipped: skippedFromClient,
-          campaign_id,
-          tenant_id: auth.tenant_id,
-          user_id: auth.user_id,
-          file_name: baseFileName,
-          duplicate_decision: input.duplicate_decision ?? 'skip',
-          list_name: input.list_name ?? null,
-          client_skip_reasons: input.client_skip_reasons ?? [],
-        }),
-        run_at: new Date(),
-      })
-      .execute();
-
-    return {
-      inserted: 0,
-      errors: 0,
-      skipped: skippedFromClient,
-      tag: autoTag,
-      file_name: baseFileName,
-      import_id: importRecordId,
-      tenant_id: auth.tenant_id,
-      campaign_id,
-      status: 'pending',
-    };
+  /**
+   * Upload-based intake is the ONLY request shape since 2026-08-05 — the legacy rows-in-body
+   * variant (rows + source_csv + client-computed skips in the mutation) was removed once the
+   * wizard stopped sending it. Already-queued legacy JOBS still drain through
+   * lib/jobs/handlers/import.handlers.ts `handleImportJob`.
+   */
+  public async importRows(input: PersonsUploadImportInput, auth: IAuthKeyPayload) {
+    return this.importFromUpload(input, auth);
   }
 
   public async processImportRows(

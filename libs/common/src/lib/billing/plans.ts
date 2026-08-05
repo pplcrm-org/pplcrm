@@ -157,6 +157,18 @@ export interface PlanDef {
   readonly seats: number | null;
   /** Included companion volunteers. 0 = none, null = unlimited. */
   readonly volunteers: number | null;
+  /**
+   * CSV import cap: data rows one uploaded file may contain (enforced by the import job's
+   * counting pass before anything is written; the wizard mirrors it client-side). Flat per tier
+   * like seats/storage — 5,000 on Free, 100,000 on every paid tier (operator decision
+   * 2026-08-04). The 50 MB file-size cap (MAX_IMPORT_FILE_BYTES) is plan-independent.
+   *
+   * Deliberately NOT surfaced in `features[]`, `FEATURE_MATRIX` or any apps/website copy
+   * (operator decision 2026-08-05): the numbers confuse marketing readers, so the site says
+   * only that big lists can be split, while the in-app wizard and the import job's failure
+   * message state the workspace's own numeric limit.
+   */
+  readonly importRowsPerFile: number;
   /** Bought via self-serve Stripe checkout (false for free + enterprise). */
   readonly purchasable: boolean;
   /** Highlighted as the recommended tier. */
@@ -217,6 +229,7 @@ export const PLANS: readonly PlanDef[] = [
     storageBytes: 1 * GB,
     seats: 2,
     volunteers: 0,
+    importRowsPerFile: 5_000,
     purchasable: false,
     featured: false,
     displayed: true,
@@ -242,6 +255,7 @@ export const PLANS: readonly PlanDef[] = [
     storageBytes: 10 * GB,
     seats: 5,
     volunteers: 0,
+    importRowsPerFile: 100_000,
     purchasable: true,
     featured: false,
     displayed: true,
@@ -268,6 +282,7 @@ export const PLANS: readonly PlanDef[] = [
     storageBytes: 200 * GB,
     seats: null,
     volunteers: null,
+    importRowsPerFile: 100_000,
     purchasable: true,
     featured: true,
     displayed: true,
@@ -293,6 +308,7 @@ export const PLANS: readonly PlanDef[] = [
     storageBytes: null,
     seats: null,
     volunteers: null,
+    importRowsPerFile: 100_000,
     purchasable: false,
     featured: false,
     displayed: false,
@@ -519,6 +535,16 @@ export function planAllowsFeature(planName: string | null | undefined, feature: 
  * plain household map pins / ward enrichment. Mock/test geocoding is free and stays ungated.
  */
 export const GEOCODING_MIN_PLAN: PlanKey = 'movement';
+
+/**
+ * CSV import cap (data rows per uploaded file) for a stored — possibly legacy/mixed-case —
+ * plan value. Unknown/absent plans fail closed to Free's cap, matching `planAllowsFeature`.
+ * The backend import job enforces this in its counting pass; the wizard mirrors it client-side.
+ */
+export function importRowLimitFor(planName: string | null | undefined): number {
+  const plan = getPlanDef(planName) ?? PLANS_BY_KEY.free;
+  return plan.importRowsPerFile;
+}
 
 /** Whether a stored plan value may incur real (paid) geocoding — Movement and up. See `GEOCODING_MIN_PLAN`. */
 export function planAllowsGeocoding(planName: string | null | undefined): boolean {

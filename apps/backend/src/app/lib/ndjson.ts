@@ -19,13 +19,12 @@ export type StoredImportRow = Record<string, string>;
 /** Rows per downstream processing chunk — matches the historical slice size in every processImportRows. */
 export const IMPORT_CHUNK_SIZE = 100;
 
-/** MIME type the NDJSON payload is uploaded with. */
-export const NDJSON_CONTENT_TYPE = 'application/x-ndjson';
-
-/** Serialize rows as NDJSON — one JSON object per line, no trailing newline. */
-export function serializeRowsToNdjson(rows: readonly unknown[]): Buffer {
-  return Buffer.from(rows.map((row) => JSON.stringify(row)).join('\n'), 'utf8');
-}
+// 2026-08-05: `serializeRowsToNdjson` and `NDJSON_CONTENT_TYPE` were deleted with the legacy
+// rows-in-body import intake — nothing writes NDJSON payload blobs anymore. The READERS below
+// stay for now: `handleImportJob` (lib/jobs/handlers/import.handlers.ts) still drains legacy
+// jobs enqueued before that deploy, whose payload blobs are already in storage. Once that
+// handler is deleted (next release), the NDJSON/legacy-array readers can go with it;
+// `chunkRows` and `IMPORT_CHUNK_SIZE` are used by every processImportRows and stay regardless.
 
 /**
  * True when the payload text is the legacy single-JSON-array format (first

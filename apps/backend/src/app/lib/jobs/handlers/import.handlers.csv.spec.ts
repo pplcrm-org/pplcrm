@@ -8,7 +8,7 @@ vi.mock('./import-verification', () => ({
 }));
 
 import type { Kysely } from 'kysely';
-import { MAX_IMPORT_ROWS } from '../../../../../../../libs/common/src';
+import { importRowLimitFor } from '../../../../../../../libs/common/src';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { CompaniesController } from '../../../modules/companies/controller';
 import { HouseholdsController } from '../../../modules/households/controller';
@@ -19,10 +19,12 @@ import { handleImportCsvJob } from './import.handlers';
 
 /**
  * Chainable stand-in that answers each `executeTakeFirst()` from a queue: the run-state read
- * (status + resume offset) first, then (depending on the test) the skip-reason merge read and
- * the summary-email user lookup. `undefined` everywhere means "not completed, offset 0, no
- * stored reasons, no user" — the handler proceeds fresh and simply sends no email. The
- * `insertInto` chain records continuation-job enqueues.
+ * (status + resume offset) first, then — on a fresh (non-resuming) run — the tenant-plan read
+ * that resolves the per-plan row cap, then (depending on the test) the skip-reason merge read
+ * and the summary-email user lookup. `undefined` everywhere means "not completed, offset 0,
+ * no plan row (fails closed to Free's 5,000-row cap), no stored reasons, no user" — the
+ * handler proceeds fresh and simply sends no email. The `insertInto` chain records
+ * continuation-job enqueues.
  */
 function makeScriptedDb(results: unknown[] = []): Kysely<Models> {
   const b: any = {};
@@ -193,17 +195,55 @@ describe('handleImportCsvJob', () => {
     expect(capturedRows).toEqual([{ street1: '1 Main St', city: 'Springfield' }]);
   });
 
-  it('fails fast on an over-cap file: row_count written, status failed, zero rows fed', async () => {
-    const lines = Array.from({ length: MAX_IMPORT_ROWS + 1 }, (_, i) => `row${i}`);
+  it('fails fast on an over-cap Free-plan file, naming the plan that raises the limit', async () => {
+    const freeLimit = importRowLimitFor('free');
+    const lines = Array.from({ length: freeLimit + 1 }, (_, i) => `row${i}`);
     mockCsvBlob(`First\n${lines.join('\n')}\n`);
 
+    // No tenant row scripted → the plan read fails closed to Free (5,000).
     await handleImportCsvJob(csvPayload({ mapping: { '0': 'first_name' } }), makeScriptedDb());
 
     expect(personsSpy).not.toHaveBeenCalled();
-    expect(updateRows().some((row) => row['row_count'] === MAX_IMPORT_ROWS + 1)).toBe(true);
+    expect(updateRows().some((row) => row['row_count'] === freeLimit + 1)).toBe(true);
     const failure = updateRows().find((row) => row['status'] === 'failed');
     expect(failure).toBeDefined();
-    expect(String(failure?.['error_message'])).toMatch(/limited to 5,000 rows/);
+    // Plan-gate message convention: name the tenant's own limit AND the plan that lifts it.
+    expect(String(failure?.['error_message'])).toMatch(/Free plan are limited to 5,000 rows per file/);
+    expect(String(failure?.['error_message'])).toMatch(/Grassroots plan raises this to 100,000 rows per file/);
+    expect(statuses()).not.toContain('completed');
+  });
+
+  it('admits a 20,000-row file on a paid plan (over the old flat 5,000 cap)', async () => {
+    const lines = Array.from({ length: 20_000 }, (_, i) => `row${i}`);
+    mockCsvBlob(`First\n${lines.join('\n')}\n`);
+
+    await handleImportCsvJob(
+      csvPayload({ mapping: { '0': 'first_name' } }),
+      makeScriptedDb([undefined, { subscription_plan: 'grassroots' }]),
+    );
+
+    expect(updateRows().some((row) => row['row_count'] === 20_000)).toBe(true);
+    expect(updateRows().every((row) => row['status'] !== 'failed')).toBe(true);
+    expect(capturedRows).toHaveLength(20_000);
+    expect(statuses()[statuses().length - 1]).toBe('completed');
+  });
+
+  it('blocks a paid-plan file over 100,000 rows with the split-the-file message', async () => {
+    const paidLimit = importRowLimitFor('grassroots');
+    const lines = Array.from({ length: paidLimit + 1 }, (_, i) => `row${i}`);
+    mockCsvBlob(`First\n${lines.join('\n')}\n`);
+
+    await handleImportCsvJob(
+      csvPayload({ mapping: { '0': 'first_name' } }),
+      makeScriptedDb([undefined, { subscription_plan: 'movement' }]),
+    );
+
+    expect(personsSpy).not.toHaveBeenCalled();
+    const failure = updateRows().find((row) => row['status'] === 'failed');
+    expect(failure).toBeDefined();
+    expect(String(failure?.['error_message'])).toMatch(/limited to 100,000 rows per file/);
+    // A paid tenant already has the top limit — no upgrade nudge, just the split guidance.
+    expect(String(failure?.['error_message'])).not.toMatch(/plan raises/);
     expect(statuses()).not.toContain('completed');
   });
 

@@ -36,6 +36,8 @@ export interface PlanLimits {
   emails: number;
   /** Storage quota in bytes (Infinity = unlimited). */
   storageBytes: number;
+  /** CSV import cap: data rows one uploaded file may contain (flat per tier, like seats). */
+  importRowsPerFile: number;
 }
 
 const settingsRepo = new SettingsRepo();
@@ -68,6 +70,7 @@ export function getPlanLimits(
       seats: orUnlimited(plan.seats),
       emails: Number.POSITIVE_INFINITY,
       storageBytes: orUnlimited(plan.storageBytes),
+      importRowsPerFile: plan.importRowsPerFile,
     };
   }
 
@@ -84,6 +87,7 @@ export function getPlanLimits(
     seats: orUnlimited(plan.seats),
     emails: emailCapForQuantity(plan.key, quantity),
     storageBytes: orUnlimited(plan.storageBytes),
+    importRowsPerFile: plan.importRowsPerFile,
   };
 }
 
