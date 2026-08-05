@@ -89,6 +89,19 @@ export class FundraisingFormComponent implements OnInit {
   /** Narrates "Unsaved changes · N fields" and powers canDeactivate below. */
   protected readonly unsavedChanges = injectUnsavedChanges(this.form, this.payload);
 
+  /**
+   * The list, tag and field pickers are plain signals, not signal-form fields, so the handle above
+   * cannot see them. Without this comparison, editing only the targeting and then leaving the page
+   * reported no unsaved work and threw the edits away.
+   */
+  private readonly savedSelections = signal(
+    selectionKey(this.selectedLists(), this.selectedTags(), this.selectedFields()),
+  );
+  private readonly currentSelections = computed(() =>
+    selectionKey(this.selectedLists(), this.selectedTags(), this.selectedFields()),
+  );
+  protected readonly selectionsDirty = computed(() => this.currentSelections() !== this.savedSelections());
+
   protected readonly isRecurring = computed(() => this.payload().form_type === 'recurring_donation');
 
   protected readonly embedSnippet = computed(() => {
@@ -309,6 +322,7 @@ export class FundraisingFormComponent implements OnInit {
               form_type: values.form_type,
             };
             const result = (await this.formsSvc.add(payload)) as { id: string };
+            this.savedSelections.set(this.currentSelections());
             this.alertSvc.showSuccess('Donation page created successfully!');
             saved = true;
             if (typeof done === 'function') done();
@@ -327,6 +341,7 @@ export class FundraisingFormComponent implements OnInit {
               send_alert: !!values.send_alert,
             };
             await this.formsSvc.update(id, payload);
+            this.savedSelections.set(this.currentSelections());
             this.alertSvc.showSuccess('Donation page updated successfully!');
             saved = true;
             if (typeof done === 'function') {
@@ -349,9 +364,29 @@ export class FundraisingFormComponent implements OnInit {
   }
 
   public canDeactivate(): Promise<boolean> {
-    return this.unsavedChanges.confirmDiscardIfDirty(this.payload().name || 'this donation page', () =>
-      this.save(() => undefined),
-    );
+    const name = this.payload().name || 'this donation page';
+    // The form handle prompts whenever a form field changed, and saving from that prompt writes the
+    // selections too. Only targeting-only edits need their own prompt.
+    if (this.unsavedChanges.dirtyCount() === 0 && this.selectionsDirty()) {
+      return this.confirmDiscardSelections(name);
+    }
+    return this.unsavedChanges.confirmDiscardIfDirty(name, () => this.save(() => undefined));
+  }
+
+  /** Same two-way-out prompt the form handle offers, for the list/tag/field pickers it cannot see. */
+  private async confirmDiscardSelections(name: string): Promise<boolean> {
+    const choice = await this.dialogs.choose<'save' | 'discard'>({
+      title: 'Leave without saving?',
+      message: `Your changes to ${name} (list, tag and field targeting) are not saved yet.`,
+      variant: 'warning',
+      choices: [
+        { label: 'Save changes', value: 'save', variant: 'info' },
+        { label: 'Discard changes', value: 'discard', variant: 'warning' },
+      ],
+      cancelText: 'Keep editing',
+    });
+    if (choice === 'save') return this.save(() => undefined);
+    return choice === 'discard';
   }
 
   private async loadLists(): Promise<void> {
@@ -400,6 +435,8 @@ export class FundraisingFormComponent implements OnInit {
           const fields = Array.isArray(record.fields) ? record.fields : JSON.parse(record.fields);
           this.selectedFields.set(fields);
         }
+        // What was loaded is what is saved — anything the user changes from here is unsaved work.
+        this.savedSelections.set(this.currentSelections());
       }
     } catch (err) {
       console.error('Failed to load page details', err);
@@ -412,4 +449,9 @@ export class FundraisingFormComponent implements OnInit {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+/** One comparable string for the three targeting pickers. Order is ignored: reordering saves nothing. */
+function selectionKey(lists: string[], tags: string[], fields: string[]): string {
+  return JSON.stringify([[...lists].sort(), [...tags].sort(), [...fields].sort()]);
 }
