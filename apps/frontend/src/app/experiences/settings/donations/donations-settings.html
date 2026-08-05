@@ -23,7 +23,9 @@
     <div>
       <span class="font-bold">Donations are paused</span>
       <p class="text-xs mt-0.5">
-        Confirm your residency restrictions below before this organization can accept donations.
+        Review the
+        <a href="#residency-restrictions-card" class="link link-primary font-semibold">Residency Restrictions</a>
+        card below, then click "Confirm residency settings" there before this organization can accept donations.
       </p>
     </div>
   </div>
@@ -239,11 +241,16 @@
             </button>
           </div>
         </div>
-        } @empty {
+        } @empty { @if (periodsLoadFailed()) {
+        <div class="text-xs text-error italic py-2 text-center space-y-1">
+          <div>Couldn't load donation periods — this list may be incomplete, not actually empty.</div>
+          <button type="button" class="btn btn-xs btn-outline" (click)="retryLoadPeriods()">Try again</button>
+        </div>
+        } @else {
         <div class="text-xs text-base-content/50 italic py-2 text-center">
           No periods defined. Using fallback annual limit.
         </div>
-        }
+        } }
       </div>
 
       <!-- Add period form -->
@@ -305,7 +312,10 @@
       <!-- Fallback annual limit (used when no period is active) -->
       <div class="border-t border-base-200 pt-4 mt-2">
         <p class="text-xs text-base-content/50 mb-2 font-semibold">Fallback: Calendar Year Limit</p>
-        <p class="text-[11px] text-base-content/40 mb-2">Used when no donation period covers the current date.</p>
+        <p class="text-[11px] text-base-content/40 mb-2">
+          Used when no donation period covers the current date. Required — must be at least $1; there is no "no limit"
+          option, so leaving it blank or $0 would refuse every donation.
+        </p>
         <div class="relative max-w-xs">
           <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs text-base-content/50 font-semibold">$</span>
           <input
@@ -313,19 +323,30 @@
             type="number"
             min="1"
             class="input input-bordered focus:input-primary w-full pl-8 bg-base-200/30 text-xs font-semibold no-spinner"
+            [class.input-error]="donationLimitInvalid()"
             [value]="donationLimit()"
             (input)="donationLimit.set($any($event.target).value)"
           />
         </div>
+        @if (donationLimitInvalid()) {
+        <p class="text-[11px] text-error mt-1">Enter an amount of at least $1.</p>
+        }
       </div>
     </div>
 
     <!-- Residency restrictions card -->
-    <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6">
-      <h3 class="text-lg font-semibold flex items-center gap-2 border-b border-base-200 pb-3">
-        <pc-icon name="map-pin" class="text-primary" [size]="5"></pc-icon>
-        Residency Restrictions
-      </h3>
+    <div class="space-y-4 rounded-xl border border-base-200 bg-base-50/50 p-6" id="residency-restrictions-card">
+      <div class="border-b border-base-200 pb-3 flex items-center justify-between gap-2">
+        <h3 class="text-lg font-semibold flex items-center gap-2">
+          <pc-icon name="map-pin" class="text-primary" [size]="5"></pc-icon>
+          Residency Restrictions
+        </h3>
+        @if (residencyAcknowledged()) {
+        <span class="badge badge-sm badge-success font-medium">Confirmed</span>
+        } @else {
+        <span class="badge badge-sm badge-warning font-medium">Not confirmed</span>
+        }
+      </div>
       <p class="text-xs text-base-content/60">
         Filter and restrict eligibility based on where the donor resides. Useful for regional municipal, provincial, or
         state elections.
@@ -346,6 +367,15 @@
 
         @if (restrictResidency()) {
         <div class="space-y-4 pt-2 animate-fade-in relative">
+          @if (residencyNoCountriesWarning()) {
+          <div class="alert alert-warning text-xs">
+            <pc-icon name="exclamation-triangle" [size]="4"></pc-icon>
+            <span>
+              Restriction is on but no countries are selected — donations from every country are currently allowed.
+              Select at least one allowed country to actually restrict who can donate.
+            </span>
+          </div>
+          }
           <!-- Autocomplete Allowed Countries Picker -->
           <div class="flex flex-col gap-1.5 relative">
             <label class="text-xs font-semibold text-base-content/85"> Allowed Countries </label>
@@ -499,6 +529,30 @@
           }
         </div>
         }
+
+        <!-- Explicit confirm — the only control that lifts the fail-closed residency gate. Kept
+             reachable whether or not "Enforce residency restrictions" is on, since deliberately
+             allowing every country is itself a residency decision that must be confirmable. -->
+        <div class="flex items-center gap-3 pt-3 border-t border-base-200">
+          <button
+            type="button"
+            class="btn btn-sm btn-primary"
+            (click)="confirmResidency()"
+            [disabled]="isConfirmingResidency()"
+          >
+            @if (isConfirmingResidency()) {
+            <span class="loading loading-spinner loading-xs mr-1"></span>
+            } Confirm residency settings
+          </button>
+          @if (residencyAcknowledged()) {
+          <span class="text-xs text-base-content/60 flex items-center gap-1">
+            <pc-icon name="check-circle" class="text-success" [size]="4"></pc-icon>
+            Confirmed — donations are not paused by this setting.
+          </span>
+          } @else {
+          <span class="text-xs text-warning">Not yet confirmed — donations stay paused until you confirm.</span>
+          }
+        </div>
       </div>
     </div>
   </div>
@@ -528,7 +582,9 @@
           <td class="font-bold text-base-content">Tier {{ $index + 1 }}</td>
           <td class="font-semibold text-base-content/80">${{ tier.limit.toLocaleString() }}</td>
           <td>
-            <span class="badge badge-success gap-1 font-semibold py-2 px-2.5"> {{ tier.rate * 100 }}% </span>
+            <span class="badge badge-success gap-1 font-semibold py-2 px-2.5">
+              {{ formatRatePercent(tier.rate) }}%
+            </span>
           </td>
           <td class="text-right">
             <button

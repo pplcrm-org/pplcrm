@@ -98,6 +98,9 @@ export class DonationsSettingsComponent implements OnInit {
   // Residency gate: donations stay paused until the tenant confirms residency restrictions once.
   protected readonly residencyAcknowledged = signal(false);
   protected readonly residencyContext = signal<ResidencyContext | null>(null);
+  /** Spinner state for the residency card's own "Confirm residency settings" control — separate
+   * from `isSaving` so confirming residency never reads as saving the whole page. */
+  protected readonly isConfirmingResidency = signal(false);
 
   protected readonly donationLimit = signal(1000);
   protected readonly restrictResidency = signal(false);
@@ -155,6 +158,9 @@ export class DonationsSettingsComponent implements OnInit {
 
   // Donation periods
   protected readonly donationPeriods = signal<DonationPeriod[]>([]);
+  /** True when the last load attempt failed, so the empty state can say "couldn't load" instead
+   * of the confident (and possibly false) "no periods exist". */
+  protected readonly periodsLoadFailed = signal(false);
   protected readonly showAddPeriod = signal(false);
   protected readonly newPeriodName = signal('');
   protected readonly newPeriodStartDate = signal('');
@@ -321,6 +327,19 @@ export class DonationsSettingsComponent implements OnInit {
     };
   });
 
+  /** Restricting by residency with no country selected is silently permissive — the backend
+   * matches on the donor's country against the allowed list, so an empty list denies nothing. */
+  protected readonly residencyNoCountriesWarning = computed(
+    () => this.restrictResidency() && this.selectedCountries().length === 0,
+  );
+
+  /** True when the fallback annual limit is cleared, zero, or negative — Number('') === 0, which
+   * would otherwise save a $0 limit that refuses every donation. */
+  protected readonly donationLimitInvalid = computed(() => {
+    const limit = Number(this.donationLimit());
+    return !Number.isFinite(limit) || limit <= 0;
+  });
+
   protected readonly isCanadaSelected = computed(() => this.selectedCountries().includes('CA'));
   protected readonly isUsaSelected = computed(() => this.selectedCountries().includes('US'));
   protected readonly isGermanySelected = computed(() => this.selectedCountries().includes('DE'));
@@ -339,7 +358,7 @@ export class DonationsSettingsComponent implements OnInit {
 
     for (let i = 0; i < sorted.length; i++) {
       const tier = sorted[i]!;
-      const ratePct = Math.round(tier.rate * 100);
+      const ratePct = this.formatRatePercent(tier.rate);
 
       if (i === 0) {
         lines.push(`${ratePct}% credit on the first $${tier.limit} donated.`);
@@ -415,9 +434,18 @@ export class DonationsSettingsComponent implements OnInit {
     try {
       const periods = await this.donationsSvc.getDonationPeriods();
       this.donationPeriods.set(periods as any);
+      this.periodsLoadFailed.set(false);
     } catch {
-      // non-fatal — periods table may not exist yet if migration hasn't run
+      // Could not load — leave any previously-loaded periods in place, but flag it so the empty
+      // state (if the list is in fact empty) doesn't claim "no periods exist" when the truth is
+      // "we don't know".
+      this.periodsLoadFailed.set(true);
     }
+  }
+
+  /** Template-facing retry for the failed-load empty state. */
+  protected retryLoadPeriods(): void {
+    void this.loadPeriods();
   }
 
   protected async addPeriod() {
@@ -495,7 +523,34 @@ export class DonationsSettingsComponent implements OnInit {
 
   protected formatDate(dateStr: string | null): string {
     if (!dateStr) return 'No end date';
-    return new Date(dateStr).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' });
+    return this.parseDateOnly(dateStr).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  /** Formats a stored fractional rate (e.g. 0.145) as a percentage, rounded to hundredths of a
+   * percent — avoids IEEE-754 remainders like "14.499999999999998" from a plain `rate * 100`
+   * while (unlike a whole-number `Math.round`) still showing a 14.5% tier as 14.5%, not 14%. */
+  protected formatRatePercent(rate: number): string {
+    return `${Math.round(rate * 10000) / 100}`;
+  }
+
+  /**
+   * Parses a plain `YYYY-MM-DD` date (no time or zone, as `donation_periods.start_date`/
+   * `end_date` are) as a local calendar date. `new Date(dateStr)` parses that same string as
+   * UTC midnight, and formatting it back with `toLocaleDateString` re-renders it in the viewer's
+   * timezone — for anyone west of UTC that shows the previous day.
+   */
+  private parseDateOnly(dateStr: string): Date {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
+  }
+
+  /** Today's calendar date as `YYYY-MM-DD` in the viewer's local timezone. `toISOString` (used
+   * previously) gives the UTC date instead, which can be a day ahead of local near midnight. */
+  private todayDateOnly(): string {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${now.getFullYear()}-${month}-${day}`;
   }
 
   /** Regime select change — narrow the raw DOM string to a known regime id (or none). */
@@ -551,7 +606,7 @@ export class DonationsSettingsComponent implements OnInit {
   }
 
   protected isPeriodActive(period: DonationPeriod): boolean {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = this.todayDateOnly();
     return period.is_active && period.start_date <= today && (!period.end_date || period.end_date >= today);
   }
 
@@ -728,19 +783,27 @@ export class DonationsSettingsComponent implements OnInit {
   }
 
   protected async save() {
+    const limit = Number(this.donationLimit());
+    if (!Number.isFinite(limit) || limit <= 0) {
+      this.alerts.showError(
+        'The fallback donation limit must be at least $1 — it has no "no limit" option, so a cleared or $0 value would refuse every donation.',
+      );
+      return;
+    }
+
     this.isSaving.set(true);
     try {
       // Stripe holds no keys — its connection is managed by the Connect onboarding buttons, not
-      // this save.
+      // this save. The residency acknowledgment is NOT written here: it is a deliberate,
+      // explicit confirmation made from the residency card's own "Confirm residency settings"
+      // control (confirmResidency() below), not a side effect of saving unrelated fields like
+      // the receipts configuration.
       const entries = [
-        { key: 'donations.limit', value: Number(this.donationLimit()) },
+        { key: 'donations.limit', value: limit },
         { key: 'donations.restrict_residency', value: this.restrictResidency() },
         { key: 'donations.allowed_countries', value: this.selectedCountries().join(',') },
         { key: 'donations.allowed_regions', value: this.selectedRegions().join(',') },
         { key: 'donations.tax_credit_tiers', value: JSON.stringify(this.taxCreditTiers()) },
-        // Saving the residency card — restricting or allowing everyone — is the explicit choice that
-        // lifts the "donations paused" gate, so record the acknowledgment alongside it.
-        { key: 'donations.residency_acknowledged', value: true },
         // Receipts: issuer details are snapshotted onto each receipt at issue time, so editing
         // these never rewrites an already-issued receipt.
         { key: 'receipts.regime', value: this.receiptRegime() },
@@ -758,8 +821,6 @@ export class DonationsSettingsComponent implements OnInit {
       ];
 
       await this.settingsSvc.upsert(entries);
-      this.residencyAcknowledged.set(true);
-      this.residencyContext.update((ctx) => (ctx ? { ...ctx, residencyAcknowledged: true } : ctx));
       this.alerts.showSuccess('Donations configuration saved successfully');
     } catch (err) {
       this.alerts.showError(
@@ -767,6 +828,34 @@ export class DonationsSettingsComponent implements OnInit {
       );
     } finally {
       this.isSaving.set(false);
+    }
+  }
+
+  /**
+   * The residency card's own confirm control — the ONLY action in this component that lifts the
+   * fail-closed `donations.residency_acknowledged` gate (see donation-guards.ts). Deliberately
+   * separate from the general `save()` above: that save covers unrelated fields (the fallback
+   * limit, tax tiers, the whole receipts configuration), and an admin filling those in has not
+   * necessarily read or confirmed the residency restrictions. Persists the residency fields as
+   * currently shown, since "confirm" means confirming what's on screen.
+   */
+  protected async confirmResidency() {
+    this.isConfirmingResidency.set(true);
+    try {
+      const entries = [
+        { key: 'donations.restrict_residency', value: this.restrictResidency() },
+        { key: 'donations.allowed_countries', value: this.selectedCountries().join(',') },
+        { key: 'donations.allowed_regions', value: this.selectedRegions().join(',') },
+        { key: 'donations.residency_acknowledged', value: true },
+      ];
+      await this.settingsSvc.upsert(entries);
+      this.residencyAcknowledged.set(true);
+      this.residencyContext.update((ctx) => (ctx ? { ...ctx, residencyAcknowledged: true } : ctx));
+      this.alerts.showSuccess('Residency settings confirmed. Donations are no longer paused.');
+    } catch (err) {
+      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to confirm residency settings');
+    } finally {
+      this.isConfirmingResidency.set(false);
     }
   }
 }
