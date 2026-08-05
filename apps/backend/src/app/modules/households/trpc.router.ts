@@ -1,4 +1,5 @@
 import {
+  HouseholdsImportRowObj,
   UpdateHouseholdsObj,
   getAllOptions,
   idSchema,
@@ -11,7 +12,6 @@ import { z } from 'zod';
 
 import { authProcedure, router } from '../../../trpc';
 import { HouseholdsController } from './controller';
-import { ELECTORAL_IMPORT_ROW_FIELDS } from './electoral-import-schema';
 import { createCrudRouter } from '../../lib/crud-router';
 
 const households = new HouseholdsController();
@@ -28,28 +28,10 @@ export const HouseholdsRouter = router({
   import: authProcedure
     .input(
       z.object({
-        rows: z
-          .array(
-            z.object({
-              street_num: z.string().trim().max(50).optional().nullable(),
-              apt: z.string().trim().max(50).optional().nullable(),
-              street1: z.string().trim().max(200).optional().nullable(),
-              street2: z.string().trim().max(200).optional().nullable(),
-              city: z.string().trim().max(100).optional().nullable(),
-              state: z.string().trim().max(100).optional().nullable(),
-              zip: z.string().trim().max(20).optional().nullable(),
-              country: z.string().trim().max(100).optional().nullable(),
-              home_phone: z.string().trim().max(50).optional().nullable(),
-              notes: z.string().trim().max(10000).optional().nullable(),
-              // Electoral columns the file itself named — district, ward, precinct and the US
-              // legislative district numbers. They MUST be listed: a Zod object drops every key it
-              // does not name, so a column the wizard mapped and sent would be discarded here and
-              // the controller behind this endpoint would never see it. Shared with the people
-              // importer so the two accept exactly the same columns.
-              ...ELECTORAL_IMPORT_ROW_FIELDS,
-            }),
-          )
-          .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
+        // Row shape (including the electoral columns) lives in
+        // libs/common/src/lib/schemas/import-rows.schema.ts, shared with the people importer so
+        // the two accept exactly the same columns.
+        rows: z.array(HouseholdsImportRowObj).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
         tags: z.array(z.string().trim().min(1).max(50)).optional(),
         skipped: z.number().int().nonnegative().optional(),
         file_name: z.string().trim().min(1).max(255).optional(),

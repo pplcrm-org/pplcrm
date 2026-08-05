@@ -1,4 +1,10 @@
-import { idSchema, CompanyInputObj, MAX_IMPORT_ROWS, MAX_PAGE_SIZE } from '../../../../../../libs/common/src';
+import {
+  idSchema,
+  CompaniesImportRowObj,
+  CompanyInputObj,
+  MAX_IMPORT_ROWS,
+  MAX_PAGE_SIZE,
+} from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
 import { CompaniesController } from './controller';
@@ -37,7 +43,9 @@ export const CompaniesRouter = router({
   import: authProcedure
     .input(
       z.object({
-        rows: z.array(CompanyInputSchema).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
+        // Row shape lives in libs/common/src/lib/schemas/import-rows.schema.ts (it is the same
+        // object as CompanyInputObj — the import has always validated rows as form payloads).
+        rows: z.array(CompaniesImportRowObj).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
         skipped: z.number().int().nonnegative().optional(),
         file_name: z.string().trim().min(1).max(255).optional(),
         source_csv: z.string().max(10_000_000).optional(),

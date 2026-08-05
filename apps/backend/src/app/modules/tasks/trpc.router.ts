@@ -2,6 +2,7 @@ import {
   AddTaskObj,
   ReorderSubtasksObj,
   ReorderTasksObj,
+  TasksImportRowObj,
   UpdateTaskObj,
   exportCsvInput,
   exportCsvResponse,
@@ -27,18 +28,8 @@ export const TasksRouter = router({
   import: authProcedure
     .input(
       z.object({
-        rows: z
-          .array(
-            z.object({
-              name: z.string().trim().min(1, 'Task name is required').max(200, 'Task name is too long'),
-              details: z.string().trim().max(10000).optional().nullable(),
-              status: z.string().trim().max(50).optional().nullable(),
-              priority: z.string().trim().max(50).optional().nullable(),
-              due_at: z.string().trim().max(50).optional().nullable(),
-              assigned_to: z.string().trim().max(50).optional().nullable(),
-            }),
-          )
-          .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
+        // Row shape lives in libs/common/src/lib/schemas/import-rows.schema.ts.
+        rows: z.array(TasksImportRowObj).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
         skipped: z.number().int().nonnegative().optional(),
         file_name: z.string().trim().min(1).max(255).optional(),
         source_csv: z.string().max(10_000_000).optional(),

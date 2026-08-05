@@ -1,4 +1,5 @@
 import {
+  PersonsImportRowObj,
   UpdatePersonsObj,
   exportCsvInput,
   exportCsvResponse,
@@ -11,7 +12,6 @@ import {
 } from '../../../../../../libs/common/src';
 import { z } from 'zod';
 import { authProcedure, router } from '../../../trpc';
-import { ELECTORAL_IMPORT_ROW_FIELDS } from '../households/electoral-import-schema';
 import { PersonsController } from './controller';
 import { PersonsService } from './services/persons.service';
 
@@ -175,45 +175,11 @@ function removeHousehold() {
 }
 
 function importMany() {
-  const ImportRow = z.object({
-    first_name: z.string().trim().max(100).optional(),
-    middle_names: z.string().trim().max(100).optional(),
-    last_name: z.string().trim().max(100).optional(),
-    email: z.string().trim().max(255).optional(),
-    email2: z.string().trim().max(255).optional(),
-    mobile: z.string().trim().max(30).optional(),
-    notes: z.string().trim().max(10000).optional(),
-    home_phone: z.string().trim().max(30).optional(),
-    street_num: z.string().trim().max(30).optional(),
-    street1: z.string().trim().max(150).optional(),
-    street2: z.string().trim().max(150).optional(),
-    apt: z.string().trim().max(30).optional(),
-    city: z.string().trim().max(100).optional(),
-    state: z.string().trim().max(100).optional(),
-    zip: z.string().trim().max(20).optional(),
-    country: z.string().trim().max(100).optional(),
-    // Company name from a mapped CSV column — matched case-insensitively to an
-    // existing company, created (attributed to this import) when there's no match.
-    company: z.string().trim().max(200).optional(),
-    // Raw comma/semicolon-separated tag names from a mapped CSV column,
-    // applied per person on top of the batch-level `tags` below.
-    tags: z.string().trim().max(500).optional(),
-    // Electoral columns the file itself named. A purchased US voter file is one row per voter, so
-    // it is imported here rather than through the households importer, and it routinely already
-    // carries the congressional district, both state legislative district numbers, the precinct and
-    // the ward on every row. Taking them writes `household_districts` rows straight out of the
-    // file, with no address lookup and nothing billed.
-    //
-    // These MUST be listed. A Zod object drops every key it does not name, so without them the
-    // mapped columns are silently discarded here and the service behind this endpoint never sees
-    // them. The names match ELECTORAL_IMPORT_FIELDS in
-    // libs/uxcommon/src/components/csv-import/persons-field-mapping.ts (what the wizard sends) and
-    // IMPORTED_AREA_SETS in modules/households/electoral-areas.ts (what reads them back out).
-    ...ELECTORAL_IMPORT_ROW_FIELDS,
-  });
-
+  // Row shape (including the electoral columns) lives in
+  // libs/common/src/lib/schemas/import-rows.schema.ts, shared with the background job so both
+  // validate against exactly the same fields.
   const Input = z.object({
-    rows: z.array(ImportRow).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
+    rows: z.array(PersonsImportRowObj).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
     tags: z.array(z.string().trim().min(1, 'Tag cannot be empty').max(50, 'Tag too long')).optional(),
     skipped: z.number().int().nonnegative().optional(),
     file_name: z.string().trim().min(1).max(255).optional(),

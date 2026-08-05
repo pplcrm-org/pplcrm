@@ -780,3 +780,25 @@ export { classifyHelpRoute } from './lib/help/help-links';
 export { blockToMarkdown, articleToMarkdown } from './lib/help/help-markdown';
 
 export { haversineKm, type LatLng } from './lib/geo/haversine';
+
+export {
+  ELECTORAL_IMPORT_ROW_FIELDS,
+  PersonsImportRowObj,
+  HouseholdsImportRowObj,
+  CompaniesImportRowObj,
+  TasksImportRowObj,
+  PersonsImportMappingObj,
+  HouseholdsImportMappingObj,
+  CompaniesImportMappingObj,
+  TasksImportMappingObj,
+} from './lib/schemas/import-rows.schema';
+export type {
+  PersonsImportRowType,
+  HouseholdsImportRowType,
+  CompaniesImportRowType,
+  TasksImportRowType,
+  PersonsImportMappingType,
+  HouseholdsImportMappingType,
+  CompaniesImportMappingType,
+  TasksImportMappingType,
+} from './lib/schemas/import-rows.schema';
