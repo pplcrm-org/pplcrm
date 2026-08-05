@@ -7,6 +7,7 @@ import superjson from 'superjson';
 import type { TRPCRouter } from '../../../../../backend/src/app/modules/trpc';
 import { environment } from '../../../environments/environment';
 import { isCurrentRoutePublic } from '../../routing/public-routes';
+import { discardSignedInUser } from '../error.service';
 import type { TokenService } from './token-service';
 
 interface JwtPayload {
@@ -95,6 +96,10 @@ function handleRefreshFailure(
   // user out during an outage would strand them on a sign-in form that can't work either.
   if (isUnauthorizedError(err)) {
     tokenSvc.clearAll();
+    // The refresh endpoint itself said the session is gone, so the signed-in user this app is
+    // still holding is stale. Clearing it is what lets /signin actually show: left set, the login
+    // guard treats the dead session as a live one and redirects back into the app.
+    discardSignedInUser();
     // Don't evict a guest from a legitimately public page (reset link, public form, etc.) just
     // because a stale token's refresh failed — surface the error instead.
     if (!isCurrentRoutePublic(router.url)) {

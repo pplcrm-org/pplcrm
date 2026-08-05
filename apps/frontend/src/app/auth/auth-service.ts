@@ -8,6 +8,7 @@ import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
 import { ApiError } from '../services/api/api-error';
+import { registerSessionDiscard } from '../services/error.service';
 import { isBrowserOffline, isServerUnreachable } from '../services/api/user-message';
 
 /**
@@ -36,6 +37,15 @@ export class AuthService extends TRPCService<'authusers'> {
   private readonly dialog = inject(ConfirmDialogService);
   private user = signal<IAuthUser | null>(null);
   private signOutInFlight: Promise<SignOutResult> | null = null;
+
+  constructor() {
+    super();
+    // The two places that react to a 401 (ErrorService and the tRPC refresh link) clear the tokens
+    // and navigate to /signin, but neither can reach this signal — they sit below this service in
+    // the dependency graph. Hand them a way to null it, or the login guard reads a user who is no
+    // longer signed in and bounces them straight back into the app.
+    registerSessionDiscard(() => this.user.set(null));
+  }
 
   public async getCurrentUser(opts?: { silent?: boolean }) {
     // The startup probe (init) passes silent: it swallows failures into `null` and lets the route

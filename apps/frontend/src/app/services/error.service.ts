@@ -18,6 +18,28 @@ import { STALE_BUNDLE_MESSAGE, isStaleBundleError } from '../routing/stale-bundl
  */
 const SIGNOUT_QUIET_MS = 3000;
 
+/**
+ * Drops the in-memory signed-in user. `AuthService` registers it at construction; nothing else
+ * can clear that signal.
+ *
+ * Registered rather than injected because the two places that handle a 401 — this service and the
+ * tRPC refresh link — sit underneath `AuthService` (it is built on the tRPC stack that reaches
+ * back here), so injecting it would be a cycle. Clearing tokens alone is not enough: the sign-in
+ * page's login guard reads the still-present user, decides they are signed in, and sends the dead
+ * session back to /dashboard, whose queries 401 again.
+ */
+let sessionDiscardHook: (() => void) | null = null;
+
+/** Called once by `AuthService` so the 401 paths below can clear its user signal. */
+export function registerSessionDiscard(discard: () => void): void {
+  sessionDiscardHook = discard;
+}
+
+/** Clear the signed-in user, if `AuthService` has been constructed and registered its hook. */
+export function discardSignedInUser(): void {
+  sessionDiscardHook?.();
+}
+
 @Service()
 export class ErrorService {
   private readonly alerts = inject(AlertService);
@@ -109,6 +131,7 @@ export class ErrorService {
     this.lastRedirect = now;
 
     this.tokenSvc.clearAll();
+    discardSignedInUser();
     // Mute the misleading "Failed to load …" toasts the other in-flight queries are about to raise;
     // the sign-in page tells the user what actually happened. Info/success toasts still show.
     this.alerts.muteErrorsFor(SIGNOUT_QUIET_MS);
