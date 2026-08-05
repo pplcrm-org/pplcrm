@@ -4,9 +4,15 @@ import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 import { createLoadingGate } from '@uxcommon/loading-gate';
-import { DONATION_METHODS, DONATION_METHOD_LABELS, type DonationMethod } from '../../../../../../../libs/common/src';
+import {
+  DONATION_METHODS,
+  DONATION_METHOD_LABELS,
+  STRIPE_CONNECT_COUNTRIES,
+  type DonationMethod,
+} from '../../../../../../../libs/common/src';
 import { CampaignContextService } from '../../../services/campaign-context.service';
 import { DonationsService } from '../../../services/api/donations-service';
+import { WorkspaceCurrencyService } from '../../../shared/services/currency.service';
 import { PersonsService } from '../../persons/services/persons-service';
 
 type DonorSearchResult = {
@@ -51,6 +57,7 @@ export class RecordDonationDialog {
   private readonly personsSvc = inject(PersonsService);
   private readonly alertSvc = inject(AlertService);
   private readonly context = inject(CampaignContextService);
+  private readonly money = inject(WorkspaceCurrencyService);
 
   /**
    * Campaigns §15 — a manually recorded gift joins the fund the recorder is working in, the same
@@ -106,8 +113,17 @@ export class RecordDonationDialog {
   protected readonly city = signal('');
   protected readonly province = signal('');
   protected readonly postal = signal('');
-  protected readonly country = signal('Canada');
+  protected readonly country = signal('');
   protected readonly touchedAddress = signal(false);
+
+  /**
+   * The workspace's own country, resolved once from the residency context and reused on every
+   * later open. It replaces a hardcoded "Canada" that was wrong for every other workspace, and it
+   * only fills the field while that field is still blank — the donor's own address always wins.
+   * Left blank when the workspace has no country recorded, so staff type it rather than be handed
+   * a country the receipt would then print.
+   */
+  private readonly workspaceCountry = signal('');
 
   protected readonly addressInvalid = (): boolean =>
     this.touchedAddress() &&
@@ -136,7 +152,24 @@ export class RecordDonationDialog {
   public open(): void {
     this.resetForm();
     void this.context.ensureLoaded();
+    void this.applyWorkspaceCountry();
     this.dlgRef().show();
+  }
+
+  /** Seeds the country field from the workspace's own country; see {@link workspaceCountry}. */
+  private async applyWorkspaceCountry(): Promise<void> {
+    if (!this.workspaceCountry()) {
+      try {
+        const ctx = await this.donationsSvc.getResidencyContext();
+        const code = (ctx.country ?? '').trim().toUpperCase();
+        this.workspaceCountry.set(STRIPE_CONNECT_COUNTRIES.find((c) => c.code === code)?.name ?? '');
+      } catch {
+        // Leave it blank — an unreachable setting is no reason to guess a country onto a receipt.
+        return;
+      }
+    }
+    const name = this.workspaceCountry();
+    if (name && !this.country().trim()) this.country.set(name);
   }
 
   public close(): void {
@@ -241,7 +274,7 @@ export class RecordDonationDialog {
           country: this.country().trim(),
         },
       });
-      this.alertSvc.showSuccess(`Saved. $${amt.toFixed(2)} from ${this.donorName(donor)} recorded`);
+      this.alertSvc.showSuccess(`Saved. ${this.money.formatUnits(amt)} from ${this.donorName(donor)} recorded`);
       this.saved.emit();
       this.close();
     } catch (err) {
@@ -274,7 +307,7 @@ export class RecordDonationDialog {
     this.city.set('');
     this.province.set('');
     this.postal.set('');
-    this.country.set('Canada');
+    this.country.set(this.workspaceCountry());
     this.touchedAddress.set(false);
   }
 }
