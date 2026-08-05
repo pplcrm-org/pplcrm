@@ -10,6 +10,17 @@
 /** Lines like "Page 3 of 12" that some report exports interleave between data rows. */
 const PAGE_MARKER = /^\s*Page\s+\d+\s+of\s+\d+\s*$/i;
 
+/**
+ * Bounds past which an opening quote is judged never to have been closed. A quoted cell
+ * longer than this, or spanning more lines than this, is far outside anything a real
+ * notes/description/details column produces, so the quote is re-read as literal text and
+ * the record ends at the next line break. Nothing is dropped when this trips: the parser
+ * rewinds to the opening quote and re-reads every character, so the only thing that
+ * changes is where the record ends.
+ */
+const MAX_QUOTED_CELL_CHARS = 100_000;
+const MAX_QUOTED_CELL_LINES = 500;
+
 export interface ParsedCsv {
   headers: string[];
   rows: Array<Record<string, string>>;
@@ -49,6 +60,15 @@ function tokenize(text: string, delimiter: string): CsvRecord[] {
   let current = '';
   let raw = '';
   let inQuotes = false;
+  // Captured when a quote opens so an unbalanced one can be undone instead of swallowing
+  // the rest of the file into one record. No cell or record is emitted while inside
+  // quotes, so restoring `current` and `raw` restores the whole parser position.
+  let quoteStart = -1;
+  let quoteStartCurrent = '';
+  let quoteStartRaw = '';
+  let quotedChars = 0;
+  let quotedLines = 0;
+  let quotesAreLiteral = false;
 
   const endRecord = (): void => {
     cells.push(current);
@@ -56,11 +76,35 @@ function tokenize(text: string, delimiter: string): CsvRecord[] {
     cells = [];
     current = '';
     raw = '';
+    quotesAreLiteral = false;
   };
 
-  for (let i = 0; i < text.length; i++) {
+  /** Re-scan from the opening quote with quoting switched off until the next line break. */
+  const rewindUnbalancedQuote = (): number => {
+    current = quoteStartCurrent;
+    raw = quoteStartRaw;
+    inQuotes = false;
+    quotesAreLiteral = true;
+    return quoteStart - 1; // the loop's i++ lands back on the opening quote
+  };
+
+  for (let i = 0; i <= text.length; i++) {
+    if (i === text.length) {
+      // Ran out of text with a quote still open: unbalanced, so undo it.
+      if (inQuotes) {
+        i = rewindUnbalancedQuote();
+        continue;
+      }
+      break;
+    }
     const ch = text[i];
     if (inQuotes) {
+      quotedChars++;
+      if (ch === '\n') quotedLines++;
+      if (quotedChars > MAX_QUOTED_CELL_CHARS || quotedLines > MAX_QUOTED_CELL_LINES) {
+        i = rewindUnbalancedQuote();
+        continue;
+      }
       raw += ch;
       if (ch === '"') {
         if (text[i + 1] === '"') {
@@ -73,8 +117,13 @@ function tokenize(text: string, delimiter: string): CsvRecord[] {
       } else {
         current += ch;
       }
-    } else if (ch === '"') {
+    } else if (ch === '"' && !quotesAreLiteral) {
       inQuotes = true;
+      quoteStart = i;
+      quoteStartCurrent = current;
+      quoteStartRaw = raw;
+      quotedChars = 0;
+      quotedLines = 0;
       raw += ch;
     } else if (ch === delimiter) {
       cells.push(current);
