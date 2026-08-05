@@ -81,7 +81,8 @@ export const TRIGGER_CARDS: readonly TriggerCardMeta[] = [
     type: 'new_unsubscriber',
     icon: 'x-circle',
     title: 'New unsubscriber',
-    description: 'Runs when someone opts out (a win-back or a quiet goodbye).',
+    description:
+      'Runs when someone opts out. This is the one automation that may email a person who just unsubscribed, and it may do so exactly once — enough for a win-back or a quiet goodbye. People who bounced, reported spam, or are marked do-not-contact are still never emailed.',
   },
   {
     type: 'supporter_lapsed',
