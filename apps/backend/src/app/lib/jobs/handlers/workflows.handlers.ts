@@ -728,11 +728,15 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
 
       // Consent (unsubscribed/suppressed/DNC — plus, for marketing-class automations, "must be
       // a subscribed contact") → skip this recipient, honestly narrated.
+      // The enrollment id is passed because the consent module keys its one deliberate
+      // exception — a single goodbye email for an automation on the `new_unsubscriber` trigger —
+      // on the enrollment's trigger. Every other automation is unaffected by passing it.
       const consent = await resolveAutomationSendConsent(
         trx,
         ctx.tenantId,
         { id: person.id, email: person.email },
         ctx.messageClass,
+        { enrollmentId: ctx.enrollmentId },
       );
       if (!consent.ok) throw new SkipStepError(consent.reason);
 
