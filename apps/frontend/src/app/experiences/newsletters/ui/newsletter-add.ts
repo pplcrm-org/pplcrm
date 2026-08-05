@@ -82,6 +82,13 @@ const FROM_ADDRESS_COACH = 'Choose a verified sender address.';
 const SCHEDULE_COACH = 'Pick a send date and time, or switch to "Send now".';
 // Sending identity is workspace config, not personal — the `communications` section is only
 // registered under /workspace. (/settings/communications resolved to an empty page.)
+/**
+ * How many lists and how many tags the audience pickers load. The pickers show every option at
+ * once (there is no paging control in the wizard), so at the old value of 100 a workspace with
+ * more than 100 lists or tags simply could not target the rest — silently. 1,000 is under the
+ * server's 5,000-row ceiling and above any realistic count.
+ */
+const AUDIENCE_PICKER_LIMIT = 1000;
 const COMMS_SETTINGS_LINK = '/workspace/communications';
 const VERIFY_SENDER_LINK = '/workspace/communications';
 
@@ -134,8 +141,12 @@ export class NewsletterAddComponent implements OnInit {
   protected readonly isDemo = computed(() => !!this.user()?.tenant_demo_mode_at);
   protected readonly demoSendTooltip = DEMO_SEND_TOOLTIP;
 
-  /** Draft id when opened as newsletters/:id/edit; null when creating a new newsletter. */
-  private readonly editId = this.route.snapshot.paramMap.get('id');
+  /**
+   * The newsletter this wizard writes to: the route id when opened as newsletters/:id/edit, null
+   * while creating. Not readonly — a create that succeeds but whose send then fails records the id
+   * here, so pressing Send again updates that newsletter instead of creating a second draft.
+   */
+  private editId = this.route.snapshot.paramMap.get('id');
   protected readonly isEditing = this.editId !== null;
   /** Edit mode: true once the stored draft has been hydrated into the wizard. */
   protected readonly editLoaded = signal(false);
@@ -874,6 +885,9 @@ export class NewsletterAddComponent implements OnInit {
       } else {
         const created = await this.newslettersSvc.add(this.buildPayload(scheduled ? 'scheduled' : 'draft'));
         targetId = this.extractId(created);
+        // The newsletter now exists. Remember it, so a send that fails below (and any later Save
+        // draft) updates this row instead of creating another draft on every retry.
+        if (targetId) this.editId = targetId;
       }
       if (!scheduled && targetId) {
         await this.newslettersSvc.send(targetId);
@@ -1126,7 +1140,7 @@ export class NewsletterAddComponent implements OnInit {
   private async loadLists(): Promise<void> {
     this.loadingLists.set(true);
     try {
-      const result = await this.listsSvc.getAll({ limit: 100, startRow: 0 });
+      const result = await this.listsSvc.getAll({ limit: AUDIENCE_PICKER_LIMIT, startRow: 0 });
       const rows = Array.isArray(result?.rows) ? result.rows : [];
       this.availableLists.set(
         rows
@@ -1149,7 +1163,7 @@ export class NewsletterAddComponent implements OnInit {
   private async loadTags(): Promise<void> {
     this.loadingTags.set(true);
     try {
-      const result = await this.tagsSvc.getAll({ limit: 100, startRow: 0 });
+      const result = await this.tagsSvc.getAll({ limit: AUDIENCE_PICKER_LIMIT, startRow: 0 });
       const rows = Array.isArray((result as { rows?: unknown })?.rows) ? (result as { rows: unknown[] }).rows : [];
       this.availableTags.set(
         rows
