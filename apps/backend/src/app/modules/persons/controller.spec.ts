@@ -220,11 +220,15 @@ describe('PersonsController', () => {
   });
 
   it('should move an entire household of persons to a new household', async () => {
-    const personA = await createPerson(db, tenantId, campaignId, householdId, userId);
-    const personB = await createPerson(db, tenantId, campaignId, householdId, userId);
+    // A real household of its own, not the shared fixture's `householdId` — that one is this
+    // tenant's placeholder (see the setup above), the bucket every person without an address
+    // sits in, and moving everyone out of it in one call is now refused on purpose.
+    const sourceHousehold = await createHousehold(db, tenantId, campaignId, userId);
+    const personA = await createPerson(db, tenantId, campaignId, sourceHousehold, userId);
+    const personB = await createPerson(db, tenantId, campaignId, sourceHousehold, userId);
     const newHousehold = await createHousehold(db, tenantId, campaignId, userId);
 
-    await controller.moveEntireHousehold(householdId, newHousehold, tenantId);
+    await controller.moveEntireHousehold(sourceHousehold, newHousehold, tenantId);
 
     const rows = await db.selectFrom('persons').selectAll().where('id', 'in', [personA, personB]).execute();
     for (const row of rows) {

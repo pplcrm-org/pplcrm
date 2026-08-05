@@ -91,22 +91,10 @@ describe('SettingsRouter', () => {
     expect(result).toEqual({ success: true, email: 'a@b.com' });
   });
 
-  it('should call scheduleTenantDeletion and cancelTenantDeletion on the controller', async () => {
-    const scheduleSpy = vi
-      .spyOn(SettingsController.prototype, 'scheduleTenantDeletion')
-      .mockResolvedValue({ success: true } as any);
-    const cancelSpy = vi
-      .spyOn(SettingsController.prototype, 'cancelTenantDeletion')
-      .mockResolvedValue({ success: true } as any);
-
-    const caller = SettingsRouter.createCaller({ auth } as any);
-
-    await caller.scheduleTenantDeletion();
-    expect(scheduleSpy).toHaveBeenCalledWith(auth);
-
-    await caller.cancelTenantDeletion();
-    expect(cancelSpy).toHaveBeenCalledWith(auth);
-  });
+  // The settings router used to carry its own scheduleTenantDeletion / cancelTenantDeletion
+  // procedures. They had no callers: the account page and the cancel-deletion page both call the
+  // auth router's versions, which additionally email the cancel link. The duplicates were removed
+  // so the two could not drift apart, and the test that exercised them went with them.
 
   it('should call addVerifiedDomain, verifyVerifiedDomain, and deleteVerifiedDomain with the domain', async () => {
     const addSpy = vi.spyOn(SettingsController.prototype, 'addVerifiedDomain').mockResolvedValue([] as any);
