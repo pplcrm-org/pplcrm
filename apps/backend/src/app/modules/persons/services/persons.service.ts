@@ -6,7 +6,7 @@ import type { Transaction } from 'kysely';
 
 import { BadRequestError } from '../../../errors/app-errors';
 import { fingerprintFull, fingerprintStreet } from '../../../lib/address-normalize';
-import { chunkRows, IMPORT_CHUNK_SIZE } from '../../../lib/ndjson';
+import { chunkRows, IMPORT_CHUNK_SIZE } from '../../../lib/import-rows';
 import { backfillMissingSlugs } from '../../../lib/slug';
 import { backfillPersonPublicIds, insertPersonWithPublicId } from '../../../lib/person-public-id';
 import { notificationEnabled } from '../../../lib/profile-preferences';
@@ -694,8 +694,7 @@ export class PersonsService {
   /**
    * Upload-based intake is the ONLY request shape since 2026-08-05 — the legacy rows-in-body
    * variant (rows + source_csv + client-computed skips in the mutation) was removed once the
-   * wizard stopped sending it. Already-queued legacy JOBS still drain through
-   * lib/jobs/handlers/import.handlers.ts `handleImportJob`.
+   * wizard stopped sending it.
    */
   public async importRows(input: PersonsUploadImportInput, auth: IAuthKeyPayload) {
     return this.importFromUpload(input, auth);
@@ -709,7 +708,7 @@ export class PersonsService {
     tags: string[],
     skipped: number,
     // Any row source works (arrays included); the import job passes a lazy
-    // NDJSON iterator so the full payload is never materialized at once.
+    // iterator so the full file is never materialized at once.
     rows: Iterable<Record<string, string>> | AsyncIterable<Record<string, string>>,
     options?: {
       duplicateDecision?: 'merge' | 'skip' | 'import_new';

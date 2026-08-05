@@ -15,6 +15,8 @@ import { HouseholdsController } from '../../../modules/households/controller';
 import { ImportsRepo } from '../../../modules/imports/repositories/imports.repo';
 import { PersonsService } from '../../../modules/persons/services/persons.service';
 import { StorageService } from '../../storage.service';
+import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { TransactionalSendBlockedError } from '../../mail/transactional-send-guard';
 import { handleImportCsvJob } from './import.handlers';
 
 /**
@@ -332,5 +334,49 @@ describe('handleImportCsvJob', () => {
     expect(capturedRows).toHaveLength(1);
     expect(db.insertInto).not.toHaveBeenCalled();
     expect(statuses()[statuses().length - 1]).toBe('completed');
+  });
+});
+
+describe('handleImportCsvJob completion summary email', () => {
+  let updateSpy: any;
+
+  beforeEach(() => {
+    updateSpy = vi.spyOn(ImportsRepo.prototype, 'update').mockResolvedValue({} as any);
+    vi.spyOn(PersonsService.prototype, 'processImportRows').mockResolvedValue({} as any);
+    mockCsvBlob('First,Email\nAda,ada@example.com\n');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The run-state read, the tenant-plan read, the user lookup, then the counts the email reports. */
+  const scripted = (): Kysely<Models> =>
+    makeScriptedDb([
+      undefined,
+      undefined,
+      { email: 'importer@example.com', first_name: 'Ivy', profile_preferences: null },
+      { inserted_count: 3, error_count: 0, skipped_count: 1 },
+    ]);
+
+  it('attributes the summary to the workspace so a bounce can be traced back to it', async () => {
+    // Without a tenant_id the anti-abuse gate has nothing to check and Postmark cannot report a
+    // bounce against a workspace, which is how abuse through this pipe stayed invisible before.
+    const sendMail = vi.spyOn(TransactionalEmailService.prototype, 'sendMail').mockResolvedValue(undefined);
+
+    await handleImportCsvJob(csvPayload(), scripted());
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    expect(sendMail.mock.calls[0]?.[0].tenant_id).toBe('1');
+  });
+
+  it('completes the import even when the gate withholds the summary email', async () => {
+    vi.spyOn(TransactionalEmailService.prototype, 'sendMail').mockRejectedValue(
+      new TransactionalSendBlockedError('Tenant 1 is suspended — transactional mail withheld.'),
+    );
+
+    await expect(handleImportCsvJob(csvPayload(), scripted())).resolves.toBeUndefined();
+    const statuses = updateSpy.mock.calls.map((c: any[]) => c[0].row.status).filter(Boolean);
+    expect(statuses[statuses.length - 1]).toBe('completed');
   });
 });

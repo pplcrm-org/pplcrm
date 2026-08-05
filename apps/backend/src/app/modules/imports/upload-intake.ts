@@ -48,7 +48,7 @@ interface CreateUploadImportArgs {
  *
  * `row_count` is left 0: only the job, which parses the file, knows it. The blob key becomes
  * `source_file_key`, which is what the 90-day retention sweep, the delete-import cleanup, and
- * the History re-download all key on — no NDJSON payload blob is written on this path.
+ * the History re-download all key on — no separate row-payload blob is written on this path.
  */
 export async function createUploadImport(
   args: CreateUploadImportArgs,

@@ -204,7 +204,7 @@ tenantId, newsletterRow)` (`modules/newsletters/preflight.service.ts`), called i
 4. **Import list-quality tripwire (2026-07-24)** — the contact-import background job verifies the
    imported email list in-house (no third-party service) and pauses sending on an egregious
    bad-email rate. `runImportEmailVerification` (`lib/jobs/handlers/import-verification.ts`) runs
-   inside `handleImportJob` for **persons imports only**, after `processImportRows` and before the
+   inside `handleImportCsvJob` for **persons imports only**, after `processImportRows` and before the
    completion email, fail-open (a thrown check never fails the import). It uses
    `EmailVerifierService` (`lib/mail/email-verifier.service.ts`): per unique domain an MX→A/AAAA
    DNS lookup (`node:dns/promises`, injectable resolver for tests, cached, ≤10 concurrent, 5s/lookup,

@@ -1,21 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  IMPORT_CHUNK_SIZE,
-  chunkRows,
-  importRowsFromLegacyJsonArray,
-  importRowsFromNdjson,
-  isLegacyJsonArrayPayload,
-  iterateLines,
-  toStoredImportRow,
-} from './ndjson';
-
-/** Inline NDJSON writer — the production writer (`serializeRowsToNdjson`) was deleted with the
- * legacy rows-in-body intake (2026-08-05); the readers stay to drain already-stored payloads,
- * so the read tests build their input the way the retired writer did. */
-function ndjsonText(rows: readonly unknown[]): string {
-  return rows.map((row) => JSON.stringify(row)).join('\n');
-}
+import { IMPORT_CHUNK_SIZE, chunkRows, toStoredImportRow } from './import-rows';
 
 function sampleRows(count: number): Record<string, string>[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -31,58 +16,6 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   for await (const item of source) out.push(item);
   return out;
 }
-
-describe('importRowsFromNdjson round-trip over stored-payload text', () => {
-  it('yields the exact same rows in the same order', () => {
-    const rows = sampleRows(253);
-    const text = ndjsonText(rows);
-    const back = [...importRowsFromNdjson(text)];
-    expect(back).toHaveLength(rows.length);
-    expect(back).toEqual(rows);
-  });
-
-  it('reads JSON-escaped embedded newlines back as one row per line', () => {
-    const rows = [{ notes: 'line one\nline two' }, { notes: 'plain' }];
-    const text = ndjsonText(rows);
-    expect(text.split('\n')).toHaveLength(2);
-    expect([...importRowsFromNdjson(text)]).toEqual(rows);
-  });
-
-  it('handles an empty payload', () => {
-    expect([...importRowsFromNdjson('')]).toEqual([]);
-    expect(ndjsonText([])).toBe('');
-  });
-});
-
-describe('isLegacyJsonArrayPayload', () => {
-  it('detects a JSON array, with or without leading whitespace', () => {
-    expect(isLegacyJsonArrayPayload('[{"a":"1"}]')).toBe(true);
-    expect(isLegacyJsonArrayPayload('  \n\t[{"a":"1"}]')).toBe(true);
-  });
-
-  it('treats NDJSON (and empty text) as non-legacy', () => {
-    expect(isLegacyJsonArrayPayload('{"a":"1"}\n{"a":"2"}')).toBe(false);
-    expect(isLegacyJsonArrayPayload('')).toBe(false);
-  });
-});
-
-describe('importRowsFromLegacyJsonArray', () => {
-  it('parses a legacy array payload into the same rows', () => {
-    const rows = sampleRows(7);
-    expect(importRowsFromLegacyJsonArray(JSON.stringify(rows))).toEqual(rows);
-  });
-
-  it('rejects a payload that is not an array', () => {
-    expect(() => importRowsFromLegacyJsonArray('{"a":"1"}')).toThrow(/not a JSON array/);
-  });
-});
-
-describe('iterateLines', () => {
-  it('skips blank lines and tolerates CRLF and trailing newlines', () => {
-    const text = 'one\r\n\n  \ntwo\nthree\n';
-    expect([...iterateLines(text)]).toEqual(['one', 'two', 'three']);
-  });
-});
 
 describe('toStoredImportRow', () => {
   it('keeps string cells and drops non-string cells', () => {

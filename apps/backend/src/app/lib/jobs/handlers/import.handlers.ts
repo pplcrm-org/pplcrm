@@ -18,19 +18,13 @@ import { PersonsService } from '../../../modules/persons/services/persons.servic
 import { TasksController } from '../../../modules/tasks/controller';
 import { StorageService } from '../../storage.service';
 import { applyColumnMapping, isSameRecord, openCsvStream, type CsvDelimiter } from '../../csv-import/csv-stream';
-import {
-  importRowsFromLegacyJsonArray,
-  importRowsFromNdjson,
-  isLegacyJsonArrayPayload,
-  toStoredImportRow,
-  type StoredImportRow,
-} from '../../ndjson';
+import { toStoredImportRow, type StoredImportRow } from '../../import-rows';
 import { notificationEnabled } from '../../profile-preferences';
 import { sendMailOrDrop } from '../../mail/send-or-drop';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
 import { IMPORT_CONTINUATION_PRIORITY } from '../job-claim';
-import type { JobPayloadOf, LegacyImportJobPayload } from '../job-payloads';
+import type { JobPayloadOf } from '../job-payloads';
 import { runImportEmailVerification } from './import-verification';
 
 const storageService = new StorageService();
@@ -162,18 +156,6 @@ async function readImportRunState(db: Kysely<Models>, tenantId: string, importId
   };
 }
 
-/** Skip the first `count` rows of a stored-row source — the rows earlier runs already handled. */
-function* skipStoredRows(
-  source: Iterable<StoredImportRow>,
-  count: number,
-): Generator<StoredImportRow, void, undefined> {
-  let index = 0;
-  for (const row of source) {
-    if (index++ < count) continue;
-    yield row;
-  }
-}
-
 async function markImportProcessing(tenantId: string, importId: string): Promise<void> {
   await importsRepo.update({
     tenant_id: tenantId,
@@ -258,126 +240,6 @@ ${verificationHtml(verification)}
   }
 }
 
-/**
- * 2026-08-05: legacy drain path only. The rows-in-body import mutations that enqueued these
- * NDJSON-payload jobs were removed; this handler stays one release to finish jobs already in
- * `background_jobs` at deploy time, then it (with `legacyImportJobSchema` and the NDJSON
- * readers in lib/ndjson.ts) can be deleted.
- */
-export async function handleImportJob(payload: LegacyImportJobPayload, db: Kysely<Models>): Promise<void> {
-  // 0. Where to pick up: refuse a completed import outright, and on a crash re-run skip the
-  // rows earlier runs durably handled (see readImportRunState).
-  const runState = await readImportRunState(db, payload.tenant_id, payload.import_id);
-  if (runState.completedAlready) return;
-  const resuming = runState.resumeOffset > 0;
-
-  // 1. Mark import status as 'processing' in data_imports
-  await markImportProcessing(payload.tenant_id, payload.import_id);
-
-  // 2. Download the mapping payload and iterate it lazily. The payload is
-  // NDJSON (one row object per line): rows are parsed line by line and handed
-  // to the processors in chunks, so beyond the downloaded string only the
-  // current chunk of row objects is alive — never one array of every row.
-  const buffer = await storageService.download(payload.storage_key);
-  const text = buffer.toString('utf8');
-
-  let rowSource: Iterable<StoredImportRow>;
-  if (isLegacyJsonArrayPayload(text)) {
-    // Legacy format: one JSON array holding every row. This branch exists only
-    // for jobs enqueued before the NDJSON switch whose payloads are already in
-    // storage — it can be removed after one deploy cycle.
-    rowSource = importRowsFromLegacyJsonArray(text);
-  } else {
-    rowSource = importRowsFromNdjson(text);
-  }
-  if (resuming) rowSource = skipStoredRows(rowSource, runState.resumeOffset);
-  // On resume the client-side skip count and reasons are already inside the persisted counters
-  // and skip_reasons, so passing them again would double-count them.
-  const skippedBase = resuming ? 0 : Number(payload.skipped || 0);
-
-  // 3. Process the import rows in chunks
-  let verification: EmailVerificationSummary | null = null;
-  if (payload.source === 'companies') {
-    const companiesController = new CompaniesController();
-    await companiesController.processImportRows(
-      payload.import_id,
-      payload.tenant_id,
-      payload.user_id,
-      skippedBase,
-      rowSource,
-    );
-  } else if (payload.source === 'tasks') {
-    const tasksController = new TasksController();
-    await tasksController.processImportRows(
-      payload.import_id,
-      payload.tenant_id,
-      payload.user_id,
-      skippedBase,
-      rowSource,
-    );
-  } else if (payload.source === 'households') {
-    const householdsController = new HouseholdsController();
-    await householdsController.processImportRows(
-      payload.import_id,
-      payload.tenant_id,
-      payload.user_id,
-      payload.campaign_id ?? '',
-      payload.tags ?? [],
-      skippedBase,
-      rowSource,
-    );
-  } else {
-    // Collect just the email columns while the rows stream past, so the
-    // post-import verification doesn't need a second pass over the payload.
-    // Worst case this holds two short strings per row — not the full rows.
-    const emailRows: Array<{ email?: string; email2?: string }> = [];
-    function* collectEmails(source: Iterable<StoredImportRow>): Generator<StoredImportRow, void, undefined> {
-      for (const row of source) {
-        if (row['email'] || row['email2']) emailRows.push({ email: row['email'], email2: row['email2'] });
-        yield row;
-      }
-    }
-
-    const personsService = new PersonsService();
-    await personsService.processImportRows(
-      payload.import_id,
-      payload.tenant_id,
-      payload.user_id,
-      payload.campaign_id ?? '',
-      payload.tags ?? [],
-      skippedBase,
-      collectEmails(rowSource),
-      {
-        duplicateDecision: payload.duplicate_decision ?? 'skip',
-        listName: payload.list_name ?? undefined,
-        clientSkipReasons: resuming ? undefined : (payload.client_skip_reasons ?? undefined),
-      },
-    );
-
-    // 3b. Verify the imported email list (DNS + disposable). Persons only — companies/households
-    // have no send-suppression semantics. Fail-open: a thrown/failed check never fails the import.
-    verification = await runImportEmailVerification(
-      db,
-      { tenant_id: payload.tenant_id, import_id: payload.import_id, user_id: payload.user_id },
-      emailRows,
-    );
-  }
-
-  // 4. Update import status to 'completed'
-  await markImportCompleted(payload.tenant_id, payload.import_id);
-
-  // Legacy path only: drop the NDJSON payload blob the mutation wrote. The upload-based CSV
-  // path never writes one, and its source CSV is deliberately NOT deleted (90-day retention
-  // owns it — see pruneExpiredImportSourceFiles in maintenance.handlers.ts).
-  try {
-    await storageService.delete(payload.storage_key);
-  } catch (storageErr) {
-    logger.error({ err: storageErr }, `Failed to clean up storage key ${payload.storage_key}`);
-  }
-
-  await sendImportSummaryEmail(db, payload, verification);
-}
-
 // ── Upload-based CSV imports (`import_csv` jobs) ──────────────────────────────
 
 /** Which shared row schema validates a mapped record, by `data_imports.source`. */
@@ -391,7 +253,7 @@ const CSV_IMPORT_ROW_SCHEMAS: Record<JobPayloadOf<'import_csv'>['source'], z.Zod
 /** Same cap the entity importers use for their own skip reasons (persons.service SKIP_REASONS_CAP). */
 const CSV_SKIP_REASONS_CAP = 500;
 
-/** Longest stored per-row skip reason — matches the legacy client_skip_reasons input cap. */
+/** Longest stored per-row skip reason — matches the cap the retired client-computed skips used. */
 const CSV_SKIP_REASON_MAX = 200;
 
 type CsvSkipReason = { row: number; email?: string; reason: string };
@@ -451,9 +313,9 @@ async function failImport(
 }
 
 /**
- * Why a mapped record cannot be imported, or null when it can. Mirrors what the wizard's legacy
- * path did client-side: rows with no mapped values are skipped, and rows the shared row schema
- * refuses are skipped with the first validation issue as the reason.
+ * Why a mapped record cannot be imported, or null when it can. Mirrors what the wizard once did
+ * client-side: rows with no mapped values are skipped, and rows the shared row schema refuses
+ * are skipped with the first validation issue as the reason.
  */
 function validateMappedCsvRow(
   rowSchema: z.ZodType,
@@ -610,7 +472,7 @@ async function enqueueImportContinuation(db: Kysely<Models>, payload: JobPayload
 /**
  * Upload-based CSV import: the mutation stored only the file's storage key and the column
  * mapping; this job does everything the client used to — parse, map, validate — then feeds the
- * surviving rows to the same per-entity processors the legacy path uses.
+ * surviving rows to the per-entity processors.
  *
  * Two streaming passes over the blob:
  *  1. Count data rows and pre-compute validation skips. `row_count` is written before anything

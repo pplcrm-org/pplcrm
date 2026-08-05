@@ -20,7 +20,7 @@ import { notificationEnabled } from '../../lib/profile-preferences';
 import { assertAssigneeInTenant, findAssigneeForNotification } from '../../lib/tenant-members';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
 import { createUploadImport } from '../imports/upload-intake';
-import { chunkRows, IMPORT_CHUNK_SIZE } from '../../lib/ndjson';
+import { chunkRows, IMPORT_CHUNK_SIZE } from '../../lib/import-rows';
 import { StorageService } from '../../lib/storage.service';
 import { logger } from '../../logger';
 import { TASK_STATUSES, calculateWorkingTimeMs } from '../../../../../../libs/common/src';
@@ -309,8 +309,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
 
   /**
    * Upload-based intake is the ONLY request shape since 2026-08-05 — the legacy rows-in-body
-   * variant was removed once the wizard stopped sending it. Already-queued legacy JOBS still
-   * drain through lib/jobs/handlers/import.handlers.ts `handleImportJob`.
+   * variant was removed once the wizard stopped sending it.
    */
   public async importRows(
     input: {
@@ -352,7 +351,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     user_id: string,
     skipped: number,
     // Any row source works (arrays included); the import job passes a lazy
-    // NDJSON iterator so the full payload is never materialized at once.
+    // iterator so the full file is never materialized at once.
     rows: Iterable<Record<string, string>> | AsyncIterable<Record<string, string>>,
   ) {
     const results = { inserted: 0, errors: 0, skipped: 0 };

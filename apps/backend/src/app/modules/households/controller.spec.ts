@@ -714,7 +714,7 @@ describe('HouseholdsController', () => {
       .executeTakeFirstOrThrow();
     const importId = String(importRow.id);
 
-    // A generator — the import job hands processImportRows a lazy NDJSON
+    // A generator — the import job hands processImportRows a lazy row
     // iterator, never a full array. 105 rows = chunks of 100 + 5:
     //   indexes 0..101  unique addresses            → 102 inserted
     //   index 102       repeats index 50 (cross-chunk duplicate) → skipped

@@ -1,13 +1,13 @@
 import type { Kysely } from 'kysely';
 import { z } from 'zod';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
-import { jobPayloadSchema, legacyImportJobSchema } from './job-payloads';
+import { jobPayloadSchema } from './job-payloads';
 import { handleCheckAllUsageLimits, handleCheckUsageLimits, handleZapierTrigger } from './handlers/billing.handlers';
 import { handleMatchBoundaries, handleSweepUnmatchedBoundaries } from './handlers/boundaries.handlers';
 import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
 import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
-import { handleImportCsvJob, handleImportJob } from './handlers/import.handlers';
+import { handleImportCsvJob } from './handlers/import.handlers';
 import { handleTriggerListJoined } from './handlers/lists.handlers';
 import { handleTriggerContactCreated, handleTriggerTagAdded } from './handlers/triggers.handlers';
 import {
@@ -65,13 +65,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
   const typed = jobPayloadSchema.safeParse(payload);
 
   if (!typed.success) {
-    // CSV imports are queued without a `type` discriminator (legacy shape).
-    const legacyImport = legacyImportJobSchema.safeParse(payload);
-    if (legacyImport.success) {
-      await handleImportJob(legacyImport.data, db);
-      return;
-    }
-
+    // Unrecognized payload (e.g. a job type retired in a newer deploy). Throwing is the correct
+    // terminal path: the worker retries with backoff up to the row's max_attempts, then
+    // dead-letters it as status='failed' with this message stored on the row.
     const probe = typeProbeSchema.safeParse(payload);
     const typeLabel = probe.success && probe.data.type !== undefined ? String(probe.data.type) : 'unknown';
     throw new Error(`Unsupported background job type: ${typeLabel}`);

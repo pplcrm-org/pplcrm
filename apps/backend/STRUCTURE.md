@@ -145,7 +145,7 @@ apps/
           file-references.ts
           hibp.ts
           html-escape.ts
-          ndjson.ts
+          import-rows.ts
           oauth-state.ts
           outbound-url-guard.ts
           paging.ts

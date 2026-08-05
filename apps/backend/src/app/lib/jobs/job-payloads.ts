@@ -337,8 +337,6 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
    * `imports.getUploadUrl`), and the mutation enqueued this job instead of shipping rows in its
    * body. The handler streams the blob twice — once to count and validate rows, once to insert —
    * applying `mapping` (stringified 0-based column index → import field key) to each record.
-   * Distinct from the legacy no-discriminator import payload below, which reads a pre-mapped
-   * NDJSON payload blob the mutation wrote.
    */
   z.object({
     type: z.literal('import_csv'),
@@ -374,32 +372,3 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
 export type JobPayload = z.infer<typeof jobPayloadSchema>;
 export type JobType = JobPayload['type'];
 export type JobPayloadOf<K extends JobType> = Extract<JobPayload, { type: K }>;
-
-/**
- * CSV imports are queued without a `type` discriminator (legacy shape) and are
- * matched by the presence of `import_id` + `storage_key` instead.
- *
- * 2026-08-05: the request path that ENQUEUED these jobs (the rows-in-body variant of the four
- * `<entity>.import` mutations, which wrote an NDJSON payload blob) was removed. This schema and
- * its handler (`handleImportJob`) are kept ONLY to drain jobs already in `background_jobs` from
- * before that deploy; both can be deleted next release.
- */
-export const legacyImportJobSchema = z.object({
-  import_id: idSchema,
-  storage_key: z.string(),
-  tenant_id: idSchema,
-  user_id: idSchema,
-  source: z.string().nullish(),
-  skipped: z.union([z.string(), z.number()]).nullish(),
-  campaign_id: idSchema.nullish(),
-  tags: z.array(z.string()).nullish(),
-  file_name: z.string().nullish(),
-  // §17 CSV import wizard — see PersonsService.importRows/processImportRows.
-  duplicate_decision: z.enum(['merge', 'skip', 'import_new']).nullish(),
-  list_name: z.string().nullish(),
-  client_skip_reasons: z
-    .array(z.object({ row: z.number(), email: z.string().optional(), reason: z.string() }))
-    .nullish(),
-});
-
-export type LegacyImportJobPayload = z.infer<typeof legacyImportJobSchema>;
