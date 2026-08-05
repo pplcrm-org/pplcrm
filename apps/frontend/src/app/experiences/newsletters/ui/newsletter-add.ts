@@ -200,8 +200,14 @@ export class NewsletterAddComponent implements OnInit {
   protected readonly scheduleCoach = SCHEDULE_COACH;
   protected readonly commsSettingsLink = COMMS_SETTINGS_LINK;
   protected readonly verifySenderLink = VERIFY_SENDER_LINK;
-  /** Rendered literally in the content-step helper; kept as a constant so Angular doesn't parse the braces. */
-  protected readonly mergeFieldExample = '{{first_name}}';
+  /**
+   * Rendered literally in the content-step helper; kept as a constant so Angular doesn't parse the
+   * braces. Must be a token the send-time renderer actually substitutes: single braces, one of the
+   * editor's own field names, with an optional "|fallback" after the name (see
+   * lib/mail/newsletter-render.ts). The old `{{first_name}}` matched neither the field list nor the
+   * single-brace pattern, so it reached recipients as the literal text "{}".
+   */
+  protected readonly mergeFieldExample = '{FirstName|there}';
 
   // --- Verified senders / workspace prefill ---------------------------------
 
@@ -912,6 +918,9 @@ export class NewsletterAddComponent implements OnInit {
         // Drafts saved without a subject fall back to a placeholder name; don't hydrate that back in.
         subject: str(row['subject']) || (name === 'Unnamed Newsletter' || name === 'Untitled draft' ? '' : name),
         previewText: str(row['preview_text']),
+        // Stored sender identity wins over the workspace default the prefill may already have put here.
+        fromName: str(row['from_name']) || p.fromName,
+        fromAddress: str(row['from_email']) || p.fromAddress,
         htmlContent: str(row['html_content']),
         plainTextContent: str(row['plain_text_content']),
         includeLists: lists.include,
@@ -1031,6 +1040,10 @@ export class NewsletterAddComponent implements OnInit {
       segments: JSON.stringify({ include: raw.includeTags, exclude: raw.excludeTags }),
       html_content: raw.htmlContent,
       plain_text_content: raw.plainTextContent,
+      // The sender identity chosen here is what the real send uses; null falls back to the
+      // workspace default. The server re-checks the address against the verified senders.
+      from_name: raw.fromName || null,
+      from_email: raw.fromAddress || null,
       send_date: scheduledAt,
       total_recipients: this.estimatedAudienceCount(),
     };
