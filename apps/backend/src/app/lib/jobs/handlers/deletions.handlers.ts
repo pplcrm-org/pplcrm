@@ -5,6 +5,7 @@ import { logger } from '../../../logger';
 import { StorageService } from '../../storage.service';
 import { tombstoneAuthUser } from '../../tombstone-user';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { cancelSubscriptionImmediately } from '../../../modules/billing/subscription-sync';
 import { CRON_JOBS } from '../cron-registry';
 import { scheduleNextRun } from '../reschedule';
 
@@ -200,6 +201,17 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
 
   for (const tenant of expiredTenants) {
     const tenantId = String(tenant.id);
+
+    // Cancel the paid subscription BEFORE the wipe: the `tenants` row about to be deleted is the
+    // only place the Stripe ids are stored, and a subscription left behind bills a workspace that
+    // no longer exists (T1-2). Deliberately here and not at scheduling time, so the 24-hour
+    // cancel-the-deletion link stays fully reversible. Failure is logged and the wipe proceeds — a
+    // Stripe outage must never hold up a deletion the user asked for.
+    try {
+      await cancelSubscriptionImmediately(tenantId);
+    } catch (err) {
+      logger.error({ err, tenantId }, 'Failed to cancel the Stripe subscription of a tenant being deleted');
+    }
 
     // Capture owner emails before deletion — the whole tenant (background_jobs included) is wiped
     // inside the transaction, so read this first.

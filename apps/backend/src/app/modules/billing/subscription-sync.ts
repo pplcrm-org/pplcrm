@@ -17,6 +17,56 @@ function asTenantSubscriptionRow(row: unknown): TenantSubscriptionRow | undefine
   return { stripe_subscription_id: typeof value === 'string' ? value : null };
 }
 
+/** The tenant's stored live Stripe subscription id, or null when it has never subscribed. */
+async function storedSubscriptionId(tenantId: string): Promise<string | null> {
+  const row = asTenantSubscriptionRow(await tenantsRepo.getOneBy('id', { tenant_id: tenantId, value: tenantId }));
+  return row?.stripe_subscription_id ?? null;
+}
+
+/**
+ * Stop or restart Stripe invoice collection for a workspace that was paused (or reactivated) from
+ * Settings → Account. The pause email promises "you will not be billed"; before this existed the
+ * subscription kept charging (REVIEW5 T1-1).
+ *
+ * `behavior: 'void'` keeps the subscription, its price and its bracket quantity intact and voids
+ * the invoices Stripe would otherwise raise, so a returning workspace resumes on exactly what it
+ * had. Resuming clears the field (Stripe's empty-string unset).
+ *
+ * No-ops in mock mode and for a tenant with no stored subscription. Callers wrap this in
+ * try/catch: a Stripe failure must not stop the in-app pause or resume from taking effect.
+ */
+export async function setSubscriptionCollectionPaused(tenantId: string, paused: boolean): Promise<void> {
+  if (isMockMode) return;
+
+  const subscriptionId = await storedSubscriptionId(tenantId);
+  if (!subscriptionId) return;
+
+  await getStripe().subscriptions.update(subscriptionId, {
+    pause_collection: paused ? { behavior: 'void' } : '',
+  });
+  logger.info(
+    `[setSubscriptionCollectionPaused] Tenant ${tenantId}: Stripe collection ${paused ? 'paused' : 'resumed'}`,
+  );
+}
+
+/**
+ * Cancel a workspace's Stripe subscription right now, with no final proration invoice. Called at
+ * the start of the tenant wipe, while the `tenants` row still holds the Stripe ids — after the wipe
+ * they are gone and the subscription would bill forever (REVIEW5 T1-2).
+ *
+ * No-ops in mock mode and for a tenant with no stored subscription. The caller wraps this in
+ * try/catch so a Stripe outage never blocks the data deletion.
+ */
+export async function cancelSubscriptionImmediately(tenantId: string): Promise<void> {
+  if (isMockMode) return;
+
+  const subscriptionId = await storedSubscriptionId(tenantId);
+  if (!subscriptionId) return;
+
+  await getStripe().subscriptions.cancel(subscriptionId);
+  logger.info(`[cancelSubscriptionImmediately] Tenant ${tenantId}: Stripe subscription ${subscriptionId} cancelled`);
+}
+
 /**
  * Sync a tenant's billed Stripe `quantity` (the 1-based bracket index — see
  * `libs/common/src/lib/billing/plans.ts`) to `quantity`.

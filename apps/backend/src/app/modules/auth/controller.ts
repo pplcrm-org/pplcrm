@@ -76,6 +76,7 @@ import {
   type TourStateType,
 } from '../../../../../../libs/common/src';
 import { getPlanLimits } from '../billing/usage-limits';
+import { setSubscriptionCollectionPaused } from '../billing/subscription-sync';
 import { isDisposableEmail } from '../../lib/mail/disposable-email-domains';
 import { TransactionalEmailService } from '../../lib/mail/transactional-mail.service';
 import { hashPassword, verifyPasswordConstantTime } from '../../lib/password-hash';
@@ -1137,6 +1138,15 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       await trx.deleteFrom('sessions').where('tenant_id', '=', auth.tenant_id).execute();
     });
 
+    // Stop Stripe from raising invoices while the workspace is paused — the email below promises
+    // exactly that (T1-1). Best-effort: a Stripe failure is logged, never allowed to undo the pause
+    // the user just asked for. Ops can clear a stuck collection pause from the Stripe dashboard.
+    try {
+      await setSubscriptionCollectionPaused(String(auth.tenant_id), true);
+    } catch (err) {
+      logger.error({ err, tenantId: auth.tenant_id }, 'Failed to pause Stripe collection for a paused workspace');
+    }
+
     if (ownerEmail?.email) {
       await this.mailService.sendMail({
         to: ownerEmail.email,
@@ -1364,6 +1374,14 @@ export class AuthController extends BaseController<'authusers', AuthUsersRepo> {
       .executeTakeFirst();
 
     await db.updateTable('tenants').set({ paused_at: null }).where('id', '=', auth.tenant_id).execute();
+
+    // Let Stripe invoice again on the same price and quantity the workspace paused on (T1-1).
+    // Best-effort, same as the pause side: a Stripe failure must not block the reactivation.
+    try {
+      await setSubscriptionCollectionPaused(String(auth.tenant_id), false);
+    } catch (err) {
+      logger.error({ err, tenantId: auth.tenant_id }, 'Failed to resume Stripe collection for a reactivated workspace');
+    }
 
     if (ownerEmail?.email) {
       await this.mailService.sendMail({

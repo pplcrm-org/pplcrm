@@ -659,16 +659,18 @@ export class BillingController {
     const interval: BillingInterval = priceMatch?.interval ?? tenant.subscription_interval;
 
     // A portal price-switch keeps the old quantity, which can exceed the target plan's ladder
-    // (e.g. Movement qty 11 → Grassroots max 10). Store the clamped value; the daily reconcile
-    // cron corrects the Stripe-side quantity itself (T2-10a).
+    // (e.g. Movement qty 11 → Grassroots max 10). Store the clamped value AND push it to Stripe
+    // below (T2-10a; REVIEW5 Tier 2 #4 — storing it alone hid the overcharge from both reconcilers,
+    // which compare their target against this same stored value, so nothing ever corrected Stripe).
     const stripeQuantity = item?.quantity ?? 1;
     const planDef = getPlanDef(planName);
     const quantity = planDef ? Math.min(stripeQuantity, maxQuantity(planDef.key)) : stripeQuantity;
-    if (quantity !== stripeQuantity) {
+    const clampedBelowStripe = quantity !== stripeQuantity;
+    if (clampedBelowStripe) {
       logger.warn(
         `[syncSubscriptionFromStripe] Tenant ${tenant.id}: Stripe quantity ${stripeQuantity} exceeds the ` +
-          `'${planName}' ladder max ${quantity} — storing the clamped value; the daily reconciliation will ` +
-          `correct the Stripe subscription.`,
+          `'${planName}' ladder max ${quantity} — storing the clamped value and correcting the Stripe ` +
+          `subscription now.`,
       );
     }
 
@@ -685,6 +687,24 @@ export class BillingController {
       },
     });
     logger.info(`[syncSubscriptionFromStripe] Tenant ${tenant.id} synced to plan '${planName}' (${live.status})`);
+
+    // Lower the Stripe-side quantity to the clamped value. Runs only on the clamp branch, after the
+    // row above stored the live subscription id that `syncSubscriptionQuantity` reads, and that
+    // helper is a no-op when the live quantity already matches — so the `customer.subscription.
+    // updated` webhook it raises (which mirrors state and never calls back into this method) cannot
+    // start a loop. A decrease uses proration_behavior 'none', so no mid-cycle credit is issued.
+    if (clampedBelowStripe) {
+      try {
+        await syncSubscriptionQuantity(tenant.id, quantity);
+      } catch (err) {
+        logger.error(
+          { err },
+          `[syncSubscriptionFromStripe] Failed to lower tenant ${tenant.id}'s Stripe quantity to ${quantity} — ` +
+            `Stripe is still billing ${stripeQuantity}.`,
+        );
+      }
+    }
+
     await syncInboxPurgeSchedule(tenantsRepo.db, tenant.id);
     return { synced: true, plan: planName };
   }
