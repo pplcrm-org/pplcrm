@@ -72,13 +72,15 @@
     <div class="flex flex-col gap-1.5">
       <label class="text-sm font-semibold text-base-content/80" for="rd-amount">Amount</label>
       <div class="relative">
-        <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-base-content/50 font-bold">$</span>
+        <span class="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm text-base-content/50 font-bold"
+          >{{ currencyCode() }}</span
+        >
         <input
           id="rd-amount"
           type="number"
           step="0.01"
           inputmode="decimal"
-          class="input input-bordered w-full pl-7 text-sm tabular-nums"
+          class="input input-bordered w-full pl-16 text-sm tabular-nums"
           [class.input-error]="amountInvalid()"
           placeholder="50.00"
           [formField]="amountForm"

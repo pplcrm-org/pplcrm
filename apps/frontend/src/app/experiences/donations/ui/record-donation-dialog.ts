@@ -65,6 +65,14 @@ export class RecordDonationDialog {
    */
   protected readonly fundName = computed(() => this.context.activeCampaign()?.name ?? 'the office fund');
 
+  /**
+   * The workspace's currency code, shown against the Amount field. It was a hardcoded "$", so a
+   * workspace billing in pounds asked for an amount under a dollar sign and then confirmed
+   * "£50.00 recorded" — the same quoted-one-currency-billed-another problem the workspace currency
+   * service exists to end.
+   */
+  protected readonly currencyCode = computed(() => this.money.currency());
+
   private readonly dlgRef = viewChild.required<ModalShell>('dlg');
   private readonly _loading = createLoadingGate();
 
