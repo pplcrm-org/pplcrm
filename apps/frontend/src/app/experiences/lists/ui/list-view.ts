@@ -179,7 +179,7 @@ export class ListView implements OnDestroy {
   }
 
   protected formatPercent(value: number | null | undefined): string {
-    if (value == null) return '0%';
+    if (value == null) return '—';
     return `${value.toFixed(1)}%`;
   }
 }

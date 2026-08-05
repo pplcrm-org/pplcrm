@@ -84,7 +84,7 @@
 
     <pc-stat-card
       [title]="'Avg Open Rate'"
-      [value]="formatPercent(stats()?.openRate)"
+      [value]="formatPercent(stats()?.avgOpenRate)"
       [icon]="'envelope'"
       [iconBgClass]="'bg-accent/10'"
       [iconColorClass]="'text-accent'"
@@ -96,7 +96,7 @@
 
     <pc-stat-card
       [title]="'Avg Click Rate'"
-      [value]="formatPercent(stats()?.clickRate)"
+      [value]="formatPercent(stats()?.avgClickRate)"
       [icon]="'chart-pie'"
       [iconBgClass]="'bg-info/10'"
       [iconColorClass]="'text-info'"
