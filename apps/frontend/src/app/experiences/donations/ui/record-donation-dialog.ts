@@ -1,10 +1,11 @@
-import { Component, inject, output, signal, viewChild } from '@angular/core';
+import { Component, computed, inject, output, signal, viewChild } from '@angular/core';
 import { FormField, form, min, required } from '@angular/forms/signals';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { DONATION_METHODS, DONATION_METHOD_LABELS, type DonationMethod } from '../../../../../../../libs/common/src';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { DonationsService } from '../../../services/api/donations-service';
 import { PersonsService } from '../../persons/services/persons-service';
 
@@ -37,6 +38,13 @@ export class RecordDonationDialog {
   private readonly donationsSvc = inject(DonationsService);
   private readonly personsSvc = inject(PersonsService);
   private readonly alertSvc = inject(AlertService);
+  private readonly context = inject(CampaignContextService);
+
+  /**
+   * Campaigns §15 — a manually recorded gift joins the fund the recorder is working in, the same
+   * way every other record they create does. Named in the dialog so it is never a surprise.
+   */
+  protected readonly fundName = computed(() => this.context.activeCampaign()?.name ?? 'the office fund');
 
   private readonly dlgRef = viewChild.required<ModalShell>('dlg');
   private readonly _loading = createLoadingGate();
@@ -99,6 +107,7 @@ export class RecordDonationDialog {
   protected readonly amountInvalid = () => this.amountForm().invalid() && this.amountForm().touched();
   public open(): void {
     this.resetForm();
+    void this.context.ensureLoaded();
     this.dlgRef().show();
   }
 
@@ -184,11 +193,14 @@ export class RecordDonationDialog {
 
     this.submitting.set(true);
     const end = this._loading.begin();
+    const campaignId = this.context.activeCampaignId();
     try {
       await this.donationsSvc.recordDonation({
         personId: donor.id,
         amountCents: Math.round(amt * 100),
         method: this.method(),
+        // Omitted when no context has loaded — the backend then files the gift under the office.
+        ...(campaignId ? { campaign_id: campaignId } : {}),
         address: {
           street: this.street().trim(),
           apt: this.apt().trim() || null,

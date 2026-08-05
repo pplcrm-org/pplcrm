@@ -122,6 +122,8 @@ export class DonationsService extends AbstractAPIService<'donations', Record<str
     personId: string;
     amountCents: number;
     method: 'card' | 'check' | 'cash' | 'bank_transfer';
+    /** Which fund the gift joins (§15). Omitted means the office fund. */
+    campaign_id?: string;
     address: DonationAddressType;
   }) {
     return this.api.donations.recordDonation.mutate(payload);
