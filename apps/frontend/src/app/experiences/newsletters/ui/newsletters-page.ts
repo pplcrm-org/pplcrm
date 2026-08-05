@@ -255,7 +255,7 @@ export class NewslettersPage {
     };
     const asText = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
     return {
-      has_audience: asText(record['target_lists']).length > 0 || asText(record['segments']).length > 0,
+      has_audience: hasIncludedTargets(record['target_lists']) || hasIncludedTargets(record['segments']),
       has_content:
         asText(record['subject']).length > 0 &&
         (asText(record['html_content']).length > 0 || asText(record['plain_text_content']).length > 0),
@@ -272,4 +272,31 @@ export class NewslettersPage {
       send_date: record['send_date'] instanceof Date ? record['send_date'] : null,
     };
   }
+}
+
+/**
+ * True when a stored audience document names at least one INCLUDED list or tag.
+ *
+ * The composer always writes `{"include":[],"exclude":[]}`, so the old test — "the column holds a
+ * non-empty string" — was true for every newsletter and the "no audience yet" hint never appeared.
+ * Tolerates every shape drafts have stored: the include/exclude object, a bare array of ids, a
+ * JSON string of either, or null.
+ */
+function hasIncludedTargets(value: unknown): boolean {
+  let parsed: unknown = value;
+  if (typeof parsed === 'string') {
+    if (!parsed.trim()) return false;
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return false;
+    }
+  }
+  if (Array.isArray(parsed)) return parsed.length > 0;
+  if (parsed && typeof parsed === 'object') {
+    // Safe: the object branch of a parsed JSON document, read by key only.
+    const include = (parsed as Record<string, unknown>)['include'];
+    return Array.isArray(include) && include.length > 0;
+  }
+  return false;
 }
