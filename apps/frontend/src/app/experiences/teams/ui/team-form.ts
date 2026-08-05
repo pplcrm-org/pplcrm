@@ -99,7 +99,25 @@ export class TeamFormComponent implements OnInit {
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
   protected signalPeople = signal<PersonOption[]>([]);
-  protected readonly people = computed(() => this.signalPeople());
+  /**
+   * Picker options = the eligible-to-add volunteers, plus everyone already on the team being
+   * edited. The add-list query is windowed (500 rows) and excludes 'former' volunteers, so a
+   * current member can be missing from it — and since saving replaces the whole roster, leaving
+   * them out of the options silently removed them from the team (REVIEW5 T1-11).
+   */
+  protected readonly people = computed<PersonOption[]>(() => {
+    const options = this.signalPeople();
+    const members = this.detail()?.volunteers ?? [];
+    const known = new Set(options.map((person) => person.id));
+    const missingMembers = members
+      .filter((member) => !known.has(String(member.id)))
+      .map((member) => ({
+        id: String(member.id),
+        label: `${member.first_name ?? ''} ${member.last_name ?? ''}`.trim() || member.email || 'Unknown',
+        email: member.email ?? null,
+      }));
+    return missingMembers.length ? [...options, ...missingMembers] : options;
+  });
   protected readonly users = signal<IAuthUser[]>([]);
   protected readonly availableLists = signal<TeamListOption[]>([]);
   protected readonly teamTasks = signal<any[]>([]);
