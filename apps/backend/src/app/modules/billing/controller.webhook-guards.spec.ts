@@ -18,9 +18,10 @@ vi.mock('../../../env', async (importOriginal) => {
 
 // `vi.mock` factories are hoisted above module-level consts, so the spies must go through
 // `vi.hoisted` (same shape the sibling controller.spec.ts uses).
-const { stripeSubscriptionsRetrieve, stripeSubscriptionsUpdate } = vi.hoisted(() => ({
+const { stripeSubscriptionsRetrieve, stripeSubscriptionsUpdate, stripeSubscriptionsCancel } = vi.hoisted(() => ({
   stripeSubscriptionsRetrieve: vi.fn(),
   stripeSubscriptionsUpdate: vi.fn(),
+  stripeSubscriptionsCancel: vi.fn(),
 }));
 vi.mock('stripe', () => ({
   default: class MockStripe {
@@ -30,6 +31,7 @@ vi.mock('stripe', () => ({
     subscriptions = {
       retrieve: stripeSubscriptionsRetrieve,
       update: stripeSubscriptionsUpdate,
+      cancel: stripeSubscriptionsCancel,
       list: vi.fn(),
     };
     checkout = { sessions: { create: vi.fn() } };
@@ -120,6 +122,8 @@ describe('BillingController.processWebhookEvent — stray-subscription guard on 
     vi.restoreAllMocks();
     stripeSubscriptionsRetrieve.mockReset();
     stripeSubscriptionsUpdate.mockReset();
+    stripeSubscriptionsCancel.mockReset();
+    stripeSubscriptionsCancel.mockResolvedValue({ id: 'canceled', status: 'canceled' });
   });
 
   afterEach(async () => {
@@ -233,13 +237,29 @@ describe('BillingController.processWebhookEvent — stray-subscription guard on 
   });
 
   /**
-   * Pinning the current, deliberately report-only behaviour of the duplicate-checkout branch: a
-   * second completed Checkout session OVERWRITES the stored subscription id with the new one and
-   * only logs about the old one. The tenant is then paying for two subscriptions, and the guard
-   * above will subsequently protect the NEW id — the old one becomes the stray.
+   * The duplicate-checkout branch. Two completed Checkout sessions (two tabs, back button) leave
+   * the customer with two live Stripe subscriptions. The handler stores the NEW id and cancels the
+   * OLD one in Stripe, so the workspace is not billed twice and no subscription is left running
+   * with nothing pointing at it.
    */
-  it('overwrites the stored subscription id when a second checkout session completes for the same tenant', async () => {
-    const { tenantId, customerId } = await seed();
+  function checkoutCompletedEvent(tenantId: string, customerId: string, subscriptionId: string): any {
+    return {
+      id: `evt_checkout_${subscriptionId}`,
+      type: 'checkout.session.completed',
+      created: 1_700_000_000,
+      data: {
+        object: {
+          id: `cs_${tenantId}`,
+          customer: customerId,
+          subscription: subscriptionId,
+          metadata: { tenantId },
+        },
+      },
+    };
+  }
+
+  it('cancels the previously stored subscription and stores the new one when a second checkout session completes', async () => {
+    const { tenantId, customerId, subscriptionId: firstSubscriptionId } = await seed();
     const secondSubscriptionId = `sub_second_${tenantId}`;
     stripeSubscriptionsRetrieve.mockResolvedValue({
       id: secondSubscriptionId,
@@ -247,22 +267,54 @@ describe('BillingController.processWebhookEvent — stray-subscription guard on 
       items: { data: [{ price: { id: 'price_test_movement' }, quantity: 2, current_period_end: null }] },
     });
 
-    await controller.processWebhookEvent({
-      id: `evt_checkout_${tenantId}`,
-      type: 'checkout.session.completed',
-      created: 1_700_000_000,
-      data: {
-        object: {
-          id: `cs_${tenantId}`,
-          customer: customerId,
-          subscription: secondSubscriptionId,
-          metadata: { tenantId },
-        },
-      },
-    } as any);
+    await controller.processWebhookEvent(checkoutCompletedEvent(tenantId, customerId, secondSubscriptionId));
+
+    // The OLD subscription is the one cancelled — never the one the customer just bought.
+    expect(stripeSubscriptionsCancel).toHaveBeenCalledTimes(1);
+    expect(stripeSubscriptionsCancel).toHaveBeenCalledWith(firstSubscriptionId);
+    expect(stripeSubscriptionsCancel).not.toHaveBeenCalledWith(secondSubscriptionId);
 
     const tenant = await readTenant(tenantId);
     expect(tenant.stripe_subscription_id).toBe(secondSubscriptionId);
     expect(tenant.subscription_plan).toBe('movement');
+  });
+
+  it('still stores the new subscription id, without throwing, when the Stripe cancel of the old one fails', async () => {
+    const { tenantId, customerId, subscriptionId: firstSubscriptionId } = await seed();
+    const secondSubscriptionId = `sub_second_fail_${tenantId}`;
+    stripeSubscriptionsRetrieve.mockResolvedValue({
+      id: secondSubscriptionId,
+      status: 'active',
+      items: { data: [{ price: { id: 'price_test_movement' }, quantity: 2, current_period_end: null }] },
+    });
+    stripeSubscriptionsCancel.mockRejectedValue(new Error('Stripe API unavailable'));
+
+    await expect(
+      controller.processWebhookEvent(checkoutCompletedEvent(tenantId, customerId, secondSubscriptionId)),
+    ).resolves.toBeUndefined();
+
+    expect(stripeSubscriptionsCancel).toHaveBeenCalledWith(firstSubscriptionId);
+
+    const tenant = await readTenant(tenantId);
+    expect(tenant.stripe_subscription_id).toBe(secondSubscriptionId);
+    expect(tenant.subscription_plan).toBe('movement');
+  });
+
+  it('does not call Stripe cancel on a first-ever checkout, when the tenant stores no subscription id', async () => {
+    const { tenantId, customerId } = await seed({ stripe_subscription_id: null, subscription_plan: 'free' });
+    const firstSubscriptionId = `sub_first_${tenantId}`;
+    stripeSubscriptionsRetrieve.mockResolvedValue({
+      id: firstSubscriptionId,
+      status: 'active',
+      items: { data: [{ price: { id: 'price_test_grassroots' }, quantity: 2, current_period_end: null }] },
+    });
+
+    await controller.processWebhookEvent(checkoutCompletedEvent(tenantId, customerId, firstSubscriptionId));
+
+    expect(stripeSubscriptionsCancel).not.toHaveBeenCalled();
+
+    const tenant = await readTenant(tenantId);
+    expect(tenant.stripe_subscription_id).toBe(firstSubscriptionId);
+    expect(tenant.subscription_plan).toBe('grassroots');
   });
 });

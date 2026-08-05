@@ -79,6 +79,56 @@ function subscriptionPeriodEnd(subscription: Stripe.Subscription): string | null
   return typeof periodEnd === 'number' ? new Date(periodEnd * 1000).toISOString() : null;
 }
 
+/**
+ * True when Stripe refused a subscription cancel because there is nothing left to cancel: the
+ * subscription is already canceled, or it no longer exists. Either way the workspace is not being
+ * charged for it, which is the outcome the caller wanted. Same shape as the donations controller's
+ * check of the same name (modules/donations/controller.ts).
+ */
+function isAlreadyCancelledInStripe(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const code = 'code' in err ? err.code : undefined;
+  const message = err instanceof Error ? err.message : '';
+  return code === 'resource_missing' || /no such subscription|already (been )?canceled/i.test(message);
+}
+
+/**
+ * Cancel the subscription a workspace is about to stop storing, immediately.
+ *
+ * Parallels `cancelSubscriptionImmediately` in subscription-sync.ts, which cancels whatever id the
+ * tenant row currently holds. Here the id to cancel is the OLD one that the incoming
+ * checkout.session.completed is about to overwrite, so it has to be passed in explicitly.
+ *
+ * Never throws. A failure here is secondary cleanup: the caller must still store the new
+ * subscription id (that is the id Stripe will send future events for), and a webhook handler that
+ * threw would be retried forever over a cleanup step. Failures are logged at error level so ops can
+ * cancel the leftover subscription in the Stripe dashboard. No-ops in mock mode, matching every
+ * other Stripe call in this file.
+ */
+async function cancelSupersededSubscription(tenantId: string, subscriptionId: string): Promise<void> {
+  if (isMockMode || !stripe) return;
+
+  try {
+    await getStripe().subscriptions.cancel(subscriptionId);
+    logger.info(
+      `[processWebhookEvent] Cancelled superseded Stripe subscription ${subscriptionId} for tenant ${tenantId}`,
+    );
+  } catch (err) {
+    if (isAlreadyCancelledInStripe(err)) {
+      logger.info(
+        `[processWebhookEvent] Superseded Stripe subscription ${subscriptionId} for tenant ${tenantId} was ` +
+          `already cancelled or no longer exists — nothing to do`,
+      );
+      return;
+    }
+    logger.error(
+      { err },
+      `[processWebhookEvent] FAILED to cancel superseded Stripe subscription ${subscriptionId} for tenant ` +
+        `${tenantId}. That subscription may still be billing — cancel it in the Stripe dashboard.`,
+    );
+  }
+}
+
 const tenantsRepo = new TenantsRepo();
 const settingsRepo = new SettingsRepo();
 const webhookEventsRepo = new WebhookEventsRepo();
@@ -761,8 +811,10 @@ export class BillingController {
 
         if (tenantId && subscriptionId) {
           // Two completed checkout sessions (two tabs, back button) create two live subscriptions
-          // — Stripe cancels neither. Report-only for now: name both ids loudly so ops can cancel
-          // the stray one in the Stripe dashboard (T2-10b; auto-cancel deliberately not done).
+          // — Stripe cancels neither, and the stored id below is about to become the new one, so
+          // the old subscription would keep billing with nothing left pointing at it. Name both ids
+          // loudly, then cancel the OLD one: a customer who completed a second checkout wants the
+          // subscription they just bought (T2-10b).
           const existing = asTenantBillingRow(
             await tenantsRepo.getOneBy('id', { tenant_id: tenantId, value: tenantId }),
           );
@@ -774,8 +826,11 @@ export class BillingController {
             logger.error(
               `[processWebhookEvent] checkout.session.completed created subscription ${subscriptionId} for ` +
                 `tenant ${tenantId}, which already has live subscription ${existing.stripe_subscription_id} ` +
-                `stored — the tenant is now paying for TWO subscriptions. Cancel one in the Stripe dashboard.`,
+                `stored — the tenant is now paying for TWO subscriptions. Cancelling the older one.`,
             );
+            // Never throws: if Stripe refuses, the new id below is still stored (it is the id
+            // Stripe sends future events for) and the failure is logged for ops.
+            await cancelSupersededSubscription(tenantId, existing.stripe_subscription_id);
           }
 
           const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
