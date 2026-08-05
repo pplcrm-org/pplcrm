@@ -61,7 +61,15 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'callout',
         tone: 'warning',
         title: 'Donations are paused until you confirm residency',
-        text: 'A new organization cannot accept donations until you confirm your residency restrictions under [Workspace → Donations](/workspace/donations). Saving that card once lifts the pause, whether you restrict donors to certain places or allow everyone.',
+        text: 'A new organization cannot accept donations until you confirm your residency restrictions under [Workspace → Donations](/workspace/donations). Press **Confirm residency settings** on that card once and the pause lifts, whether you restrict donors to certain places or allow everyone. Saving the rest of the page does not lift it — confirming residency is its own deliberate act.',
+      },
+      {
+        kind: 'p',
+        text: 'If you do restrict where donors may live, the provinces or states you pick apply only to donors from the country they belong to. Allowing Canada and Ontario alongside the United Kingdom accepts every UK donor, because no UK regions were named — it does not refuse them for living outside Ontario. Contribution-limit windows and the Stripe connection itself are administrator or owner settings; editors can record and view gifts but cannot change them.',
+      },
+      {
+        kind: 'p',
+        text: 'When you record an offline gift by hand, the **Gift date** field is the day the money arrived, not the day you typed it in. A cheque dropped off on December 31st and entered in January is still a December gift, so it lands in the right tax year on the receipt. Future dates are refused. The gift also joins the campaign you are currently working in, so keep an eye on the campaign switcher before recording one.',
       },
       { kind: 'h2', id: 'pledges', text: 'Pledges: money promised' },
       {

@@ -109,7 +109,7 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
         kind: 'list',
         items: [
           'Every newsletter goes out with a compliance footer — your organization’s name and mailing address, your footer disclaimer, an unsubscribe link and a small “powered by pplCRM” line — added automatically at send time. The design editor previews it beneath your blocks; it is not an editable block and cannot be removed. Anti-spam laws require the mailing address, so sending stays disabled until an administrator sets it under **Workspace → Organization**; the disclaimer text lives under **Workspace → Communications**.',
-          'The default from-name and from-address also live there. Only verified sender addresses can be used, which protects your deliverability.',
+          'The default from-name and from-address also live there. Each newsletter can send from a different verified address — the one you choose in the composer is what the real send uses, not just the test — and only verified sender addresses can be used, which protects your deliverability. Leave the composer’s sender fields as they are and the workspace default is used.',
           'With **double opt-in** enabled, people who subscribe through a web form must confirm by email before they receive newsletters.',
         ],
       },
@@ -439,7 +439,7 @@ export const OUTREACH_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Whatever the type, people who unsubscribed, bounced, or are marked do-not-contact are skipped automatically (the run shows a neutral **Skipped** with the reason, not a failure). Every automation email carries an unsubscribe link and counts toward your plan’s monthly email allowance and sending limits; if your workspace’s sending is paused, the step waits and retries instead of losing the email. In Recent runs an email step shows **Queued** from the moment the sequence reaches it until it has actually been handed to our mail provider — usually seconds — and then becomes **Success**, **Skipped** or **Failed**. If someone unsubscribes, or your workspace’s sending is stopped, in that gap, the email is dropped and the run says **Skipped** rather than claiming it was sent.',
+        text: 'Whatever the type, people who unsubscribed, bounced, or are marked do-not-contact are skipped automatically (the run shows a neutral **Skipped** with the reason, not a failure). There is one deliberate exception: an automation on the **New unsubscriber** trigger may send one — and only one — final email to the person who just unsubscribed, so a goodbye or win-back message can actually reach them. Anyone who hard-bounced, reported spam, or is marked do-not-contact is still never emailed, and a second unsubscribe later does not earn a second message. Every automation email carries an unsubscribe link and counts toward your plan’s monthly email allowance and sending limits; if your workspace’s sending is paused, the step waits and retries instead of losing the email. In Recent runs an email step shows **Queued** from the moment the sequence reaches it until it has actually been handed to our mail provider — usually seconds — and then becomes **Success**, **Skipped** or **Failed**. If someone unsubscribes, or your workspace’s sending is stopped, in that gap, the email is dropped and the run says **Skipped** rather than claiming it was sent.',
       },
       { kind: 'h2', id: 'enrolled', text: 'Who’s enrolled' },
       {

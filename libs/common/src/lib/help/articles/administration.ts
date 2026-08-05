@@ -285,7 +285,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'approve', text: 'Approving a volunteer' },
       {
         kind: 'p',
-        text: 'When someone verifies for the first time, every admin gets an email, an in-app notification in the bell menu, and a badge on [Volunteer access](/volunteer-access) in the Admin section. Opening the notification takes you straight there. Each row shows the volunteer, their contact on file, and a status chip: **Invited** (link sent, not yet verified), **Awaiting approval**, **Approved**, or **Revoked**. Click **Approve** and their open Companion page unlocks by itself within seconds. They never re-enter a code, and the sidebar badge drops as you approve.',
+        text: 'When someone verifies for the first time, every admin gets an email, an in-app notification in the bell menu, and a badge on [Volunteer access](/volunteer-access) in the Admin section. Opening the notification takes you straight there. Each row shows the volunteer, their contact on file, and a status chip: **Invited** (link sent, not yet verified), **Awaiting approval**, **Approved**, or **Revoked**. Click **Approve** and their open Companion page unlocks by itself within seconds. They never re-enter a code, and the sidebar badge drops as you approve. Someone you did not expect — a stranger who scanned a QR code on a poster — can be turned away with **Decline** on the same row, which stops their link and clears them off the waiting list. Declining is not permanent: approve them later if you change your mind.',
       },
       {
         kind: 'p',
