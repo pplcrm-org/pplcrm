@@ -1,4 +1,13 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  OnDestroy,
+  OnInit,
+  computed,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import type { PcIconNameType } from '@icons/icons.index';
 import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
@@ -124,7 +133,7 @@ const BUILDER_CARDS: readonly BuilderCard[] = [
   ],
   templateUrl: './forms-page.html',
 })
-export class FormsPageComponent implements OnInit {
+export class FormsPageComponent implements OnInit, OnDestroy {
   private readonly formsSvc = inject(FormsService);
   private readonly listsSvc = inject(ListsService);
   private readonly router = inject(Router);
@@ -149,6 +158,8 @@ export class FormsPageComponent implements OnInit {
   protected readonly submissions = signal<FormSubmissionRow[]>([]);
   protected readonly submissionsTotal = signal(0);
   protected readonly submissionsLoading = signal(false);
+  protected readonly submissionsCursor = signal<number | null>(null);
+  protected readonly submissionsLoadingMore = signal(false);
 
   /** True once the current form's responses have loaded at least once. Guards the
    *  responses tab's skeleton so the empty state never flashes before a fetch starts. */
@@ -210,9 +221,18 @@ export class FormsPageComponent implements OnInit {
   /** The form the queued `pendingPatch` belongs to — captured when the patch is queued,
    *  so a debounced flush can never write one form's edits onto another after a switch. */
   private pendingPatchId: string | null = null;
+  /** Failed patches for forms other than the one currently occupying `pendingPatch` — the
+   *  single-slot queue can't hold them, so they wait here and are merged back in the next
+   *  time that form is edited (see `patch()`), instead of being silently dropped. */
+  private readonly retryQueue = new Map<string, UpdateFormType>();
 
   public ngOnInit(): void {
     void Promise.all([this.loadForms(), this.loadOrg(), this.loadLists()]);
+  }
+
+  public ngOnDestroy(): void {
+    // Don't strand a queued edit behind the 400ms debounce when the page is torn down.
+    void this.flushPatch();
   }
 
   // ── Loading ────────────────────────────────────────────────────────────
@@ -268,6 +288,7 @@ export class FormsPageComponent implements OnInit {
     this.submissions.set([]);
     this.submissionsTotal.set(0);
     this.submissionsLoaded.set(false);
+    this.submissionsCursor.set(null);
   }
 
   /** Donation forms aren't editable inline; open the Stripe-backed fundraising editor instead. */
@@ -514,6 +535,12 @@ export class FormsPageComponent implements OnInit {
     }
     // Optimistic local update so the preview reflects the change immediately.
     this.replaceForm({ ...form, ...(p as Partial<FormDetail>) });
+    // Pick up any previously-failed patch for this form before queuing the new edit.
+    const retry = this.retryQueue.get(form.id);
+    if (retry) {
+      this.retryQueue.delete(form.id);
+      Object.assign(this.pendingPatch, retry);
+    }
     Object.assign(this.pendingPatch, p);
     this.pendingPatchId = form.id;
     this.saveDebounced();
@@ -538,6 +565,12 @@ export class FormsPageComponent implements OnInit {
         this.pendingPatchId = id;
       } else if (this.pendingPatchId === id) {
         this.pendingPatch = { ...patch, ...this.pendingPatch };
+      } else {
+        // The slot now belongs to a different form's edit — stash this one in the retry
+        // queue instead of discarding it; `patch()` merges it back in next time this
+        // form is edited.
+        const existing = this.retryQueue.get(id);
+        this.retryQueue.set(id, existing ? { ...existing, ...patch } : patch);
       }
       this.alerts.showError('Couldn’t save that change. Check your connection and try again.');
     }
@@ -689,11 +722,29 @@ export class FormsPageComponent implements OnInit {
       const res = await this.formsSvc.getSubmissions(id);
       this.submissions.set(res.items);
       this.submissionsTotal.set(res.total);
+      this.submissionsCursor.set(res.nextCursor);
     } catch {
       this.alerts.showError('Could not load responses. Please try again.');
     } finally {
       this.submissionsLoaded.set(true);
       this.submissionsLoading.set(false);
+    }
+  }
+
+  protected async loadMoreSubmissions(): Promise<void> {
+    const id = this.selectedId();
+    const cursor = this.submissionsCursor();
+    if (!id || cursor == null) return;
+    this.submissionsLoadingMore.set(true);
+    try {
+      const res = await this.formsSvc.getSubmissions(id, cursor);
+      this.submissions.update((items) => [...items, ...res.items]);
+      this.submissionsTotal.set(res.total);
+      this.submissionsCursor.set(res.nextCursor);
+    } catch {
+      this.alerts.showError('Could not load more responses. Please try again.');
+    } finally {
+      this.submissionsLoadingMore.set(false);
     }
   }
 
