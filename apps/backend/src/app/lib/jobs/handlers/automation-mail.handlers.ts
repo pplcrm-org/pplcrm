@@ -159,6 +159,11 @@ async function deliverAutomationEmail(db: Kysely<Models>, payload: SendAutomatio
         email: payload.to,
       },
       payload.messageClass ?? 'relationship',
+      // The goodbye carve-out has to be recognisable here too. This re-check runs hours after the
+      // step queued the email, by which time the person has unsubscribed from everything — which
+      // is exactly the state the carve-out exists for. The run id lets the consent module find the
+      // enrollment behind this email and exclude this very run from its once-per-person test.
+      { workflowRunId: payload.workflowRunId },
     );
     if (!consent.ok) {
       logger.info(
