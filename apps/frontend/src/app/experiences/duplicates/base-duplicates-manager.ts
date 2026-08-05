@@ -184,15 +184,24 @@ export abstract class BaseDuplicateManager<T extends { id: string; created_at: s
       await this.mergeInService(targetId, sourceId);
       this.alertSvc.showSuccess(`Successfully merged into "${primaryName}"`);
 
-      let updatedGroups = this.groups().filter((_, idx) => idx !== groupIndex);
-      updatedGroups = updatedGroups.map((g) => ({
-        ...g,
-        items: g.items.filter((i) => i.id !== sourceId),
-      }));
+      // The merged-away record leaves every group it appears in, including the one just merged.
+      // A cluster of three or more still has a pair left to review, so a group disappears only
+      // when fewer than two records remain in it — dropping the whole group hid that pair until
+      // the page was reloaded.
+      let updatedGroups = this.groups().map((g) => {
+        const items = g.items.filter((i) => i.id !== sourceId);
+        if (items.length === g.items.length) return g;
+        return {
+          ...g,
+          items,
+          selectedTargetId: g.selectedTargetId === sourceId ? undefined : g.selectedTargetId,
+          selectedSourceId: g.selectedSourceId === sourceId ? undefined : g.selectedSourceId,
+        };
+      });
 
       const initialLength = updatedGroups.length;
       updatedGroups = updatedGroups.filter((g) => g.items.length > 1);
-      const groupsRemovedCount = 1 + (initialLength - updatedGroups.length);
+      const groupsRemovedCount = initialLength - updatedGroups.length;
 
       this.groups.set(updatedGroups);
       this.totalGroups.update((t) => Math.max(0, t - groupsRemovedCount));
