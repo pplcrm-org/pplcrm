@@ -495,14 +495,23 @@ export class PersonView {
       return;
     }
 
-    this.isCheckingEligibility.set(true);
     this.eligibilityError.set(null);
 
+    // Donation eligibility and contribution limits are decided by where the donor lives, so an
+    // assumed country/province would run those legal checks against an address the donor never
+    // gave. Ask for the real one instead of inventing Canada/Ontario (REVIEW5 Tier 2 item 27).
     const hh = this.householdResource.value() as Households | null | undefined;
-    const address = {
-      country: hh?.country || 'CA',
-      state: hh?.state || 'ON',
-    };
+    const country = hh?.country?.trim() || null;
+    const state = hh?.state?.trim() || null;
+    if (!country || !state) {
+      this.eligibilityError.set(
+        "Add this donor's address first — the country and province or state decide whether they may give and how much.",
+      );
+      return;
+    }
+    const address = { country, state };
+
+    this.isCheckingEligibility.set(true);
 
     try {
       const eligibility = await this.donationsSvc.checkEligibility({
