@@ -13,7 +13,11 @@
     [title]="isNew() ? 'New campaign' : (detailName() || 'Campaign')"
     [eyebrow]="isNew() ? 'New' : 'Editing'"
     [crumbs]="crumbs()"
-    subtitle="An election campaign keeps its own supporter data, email consent, and outreach, separate from the office."
+    [subtitle]="
+      isOfficeContext()
+        ? 'The office is your permanent context. It holds the supporter data, email consent, and outreach that belong to the organization rather than to any one campaign.'
+        : 'An election campaign keeps its own supporter data, email consent, and outreach, separate from the office.'
+    "
     [form]="form"
     [isLoading]="saving()"
     buttonsToShow="two"
@@ -237,7 +241,12 @@
         ></pc-input>
 
         <pc-input id="campaign-start" label="Start date" type="date" [formField]="form.startdate"></pc-input>
-        <pc-input id="campaign-end" label="End date (election day)" type="date" [formField]="form.enddate"></pc-input>
+        <pc-input
+          id="campaign-end"
+          [label]="isOfficeContext() ? 'End date' : 'End date (election day)'"
+          type="date"
+          [formField]="form.enddate"
+        ></pc-input>
       </div>
 
       <pc-textarea

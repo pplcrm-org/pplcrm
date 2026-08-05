@@ -133,6 +133,15 @@ export class CampaignFormComponent implements OnInit {
   protected readonly error = signal<string | null>(null);
   protected readonly saving = signal(false);
 
+  /**
+   * The permanent office context is edited through this same form, and it is not an election
+   * campaign — its subtitle and its end-date label must not say it is. New records are always
+   * elections, so only a loaded record can be the office. The detail view branches the same way.
+   */
+  protected readonly isOfficeContext = computed<boolean>(
+    () => (this.detail() as Record<string, unknown> | null)?.['kind'] === 'office',
+  );
+
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
 
