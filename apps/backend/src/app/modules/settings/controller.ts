@@ -1046,10 +1046,28 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
 
     const updatedList = currentList.filter((d) => d.domain !== domainVal);
 
+    // The From/reply-to pickers only ever offer addresses on a verified domain (DMARC needs
+    // the domain, not just the address). Removing the domain out from under a stored choice
+    // would otherwise surface as a send-guard failure at the next newsletter instead of here.
+    const entries: { key: string; value: unknown }[] = [{ key: 'communications.verified_domains', value: updatedList }];
+    const [fromRow, replyToRow] = await Promise.all([
+      this.getRepo().getByKey({ tenant_id: auth.tenant_id, key: 'communications.default_from_email' }),
+      this.getRepo().getByKey({ tenant_id: auth.tenant_id, key: 'communications.reply_to' }),
+    ]);
+    const addressOnRemovedDomain = (value: unknown): boolean =>
+      typeof value === 'string' && value.toLowerCase().trim().split('@')[1] === domainVal;
+
+    if (addressOnRemovedDomain(fromRow?.value)) {
+      entries.push({ key: 'communications.default_from_email', value: '' });
+    }
+    if (addressOnRemovedDomain(replyToRow?.value)) {
+      entries.push({ key: 'communications.reply_to', value: '' });
+    }
+
     await this.getRepo().upsertMany({
       tenant_id: auth.tenant_id,
       user_id: auth.user_id,
-      entries: [{ key: 'communications.verified_domains', value: updatedList }],
+      entries,
     });
 
     return updatedList;
