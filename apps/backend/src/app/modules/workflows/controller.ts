@@ -108,7 +108,17 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
         // step NUMBER, and the delete-and-reinsert renumbers by array position.
         const oldSteps = await trx
           .selectFrom('workflow_steps')
-          .select(['step_number', 'kind', 'config'])
+          .select([
+            'step_number',
+            'kind',
+            'config',
+            'subject',
+            'preview_text',
+            'html_content',
+            'plain_text_content',
+            'delay_days',
+            'delay_unit',
+          ])
           .where('tenant_id', '=', tenantId)
           .where('workflow_id', '=', workflowId)
           .orderBy('step_number', 'asc')
@@ -148,18 +158,19 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
         // inserting a step re-sends someone the step they just got, deleting one skips a step,
         // and shortening the sequence silently completes people. The incoming payload carries no
         // step ids (AddWorkflowStepObj), so matching runs in two passes: first by content
-        // signature (kind + canonical config JSON, first unmatched wins in order — handles
-        // inserts, deletes and pure reorders), then the leftovers are paired by position, so a
-        // step whose subject/body/delay was edited in place reads as "same step, new content"
-        // rather than delete-plus-add. Only old steps unmatched by BOTH passes count as deleted.
+        // signature (kind + every content-bearing column, first unmatched wins in order —
+        // handles inserts, deletes and pure reorders), then the leftovers are paired by
+        // position, so a step whose subject/body/delay was edited in place reads as "same step,
+        // new content" rather than delete-plus-add. Only old steps unmatched by BOTH passes
+        // count as deleted.
         const newSignatures = steps.map((step, idx) => ({
-          signature: stepContentSignature(step.kind, step.config ?? null),
+          signature: stepContentSignature(step),
           step_number: idx + 1,
           claimed: false,
         }));
         const stepNumberMap = new Map<number, number>(); // old step_number → new step_number
         for (const old of oldSteps) {
-          const sig = stepContentSignature(old.kind, old.config ?? null);
+          const sig = stepContentSignature(old);
           const match = newSignatures.find((n) => !n.claimed && n.signature === sig);
           if (match) {
             match.claimed = true;
@@ -755,8 +766,44 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 // An in-place subject/body/delay edit changes this signature, which is why the remap runs a
 // second, position-based pass over the leftovers — without it, editing an email's text would
 // read as delete-plus-add and bump everyone mid-sequence off that step.
-function stepContentSignature(kind: string, config: unknown): string {
-  return `${kind}|${canonicalJson(config ?? null)}`;
+//
+// REVIEW5 T1-6 — every content-bearing column has to be in here, not just `kind` and `config`.
+// An email's text lives in subject/preview_text/html_content/plain_text_content and a wait's
+// delay in delay_days/delay_unit, while the editor sends `config: null` for waits and for
+// emails with no engagement condition. On `kind` + `config` alone every email in a sequence had
+// the identical signature, so the first pass paired the k-th old email with the k-th new one
+// and inserts/deletes silently shifted people onto the wrong step.
+//
+// The normalization below must stay identical to the one the insert in saveSteps applies
+// (email columns nulled for non-email kinds, delay columns zeroed for non-wait kinds, empty
+// subject defaulted) — the incoming payload and the row read back from Postgres are compared
+// against each other, so a difference on either side means nothing ever matches.
+function stepContentSignature(step: StepContentFields): string {
+  const isWait = step.kind === 'wait';
+  const isEmail = step.kind === 'send_email';
+  return canonicalJson({
+    kind: step.kind,
+    config: step.config ?? null,
+    delay_days: isWait ? Number(step.delay_days || 0) : 0,
+    delay_unit: isWait ? step.delay_unit || 'days' : 'days',
+    subject: isEmail ? step.subject || 'Automated message' : null,
+    preview_text: isEmail ? step.preview_text || null : null,
+    html_content: isEmail ? step.html_content || null : null,
+    plain_text_content: isEmail ? step.plain_text_content || null : null,
+  });
+}
+
+/** The columns `stepContentSignature` reads — satisfied both by an incoming `SequenceStepInput`
+ * and by a `workflow_steps` row read back from Postgres. */
+interface StepContentFields {
+  kind: string;
+  config?: unknown;
+  delay_days?: number | null;
+  delay_unit?: string | null;
+  subject?: string | null;
+  preview_text?: string | null;
+  html_content?: string | null;
+  plain_text_content?: string | null;
 }
 
 // JSON with recursively sorted object keys, so `{a:1,b:2}` from the client equals the same
