@@ -1075,6 +1075,17 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         .where('household_id', '=', input.source_id)
         .execute();
 
+      // 8b. user_activity keys history by a plain (entity, entity_id) text pair with no foreign
+      // key, so the source address's logged visits and notes would keep naming an id that no
+      // longer exists and become unreachable from either record. Re-point them onto the survivor.
+      await trx
+        .updateTable('user_activity')
+        .set({ entity_id: String(input.target_id), updated_at: sql`now()`, updatedby_id: input.user_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('entity', '=', 'households')
+        .where('entity_id', '=', String(input.source_id))
+        .execute();
+
       // 9. Delete source household
       await this.delete({ tenant_id: input.tenant_id, id: input.source_id }, trx);
 

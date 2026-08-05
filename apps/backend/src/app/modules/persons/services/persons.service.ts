@@ -1709,6 +1709,8 @@ export class PersonsService {
       user_id: auth.user_id,
       activity: 'merge',
       entity: 'persons',
+      // Without the surviving record's id the merge shows up on no record's activity log at all.
+      entity_id: input.target_id,
       quantity: 1,
       metadata: {
         target_id: input.target_id,

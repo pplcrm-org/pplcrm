@@ -1408,6 +1408,18 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         }
       }
 
+      // 9b. user_activity keys history by a plain (entity, entity_id) text pair with no foreign
+      // key, so the duplicate's logged door-knocks, calls and notes would keep naming an id that
+      // no longer exists and become unreachable from either record. Re-point them onto the
+      // survivor so the merged person's history stays complete.
+      await trx
+        .updateTable('user_activity')
+        .set({ entity_id: String(input.target_id), updated_at: sql`now()`, updatedby_id: input.user_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('entity', '=', 'persons')
+        .where('entity_id', '=', String(input.source_id))
+        .execute();
+
       // 10. Delete source person. Remaining references clean themselves up: the source's
       // potential_duplicates rows are ON DELETE CASCADE (stale groups are recomputed by the
       // duplicate-maintenance service), and dismissed_duplicate_groups carries no person FK.
