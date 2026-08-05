@@ -17,6 +17,7 @@ import { DonationsService } from '../../../services/api/donations-service';
 import { environment } from '../../../../environments/environment';
 import { donationPageUrl } from '../../../shared/public-pages';
 import { AuthService } from '../../../auth/auth-service';
+import { WorkspaceCurrencyService } from '../../../shared/services/currency.service';
 import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
 @Component({
@@ -34,6 +35,15 @@ export class FundraisingFormComponent implements OnInit {
   private readonly dialogs = inject(ConfirmDialogService);
   private readonly settingsSvc = inject(SettingsService);
   private readonly donationsSvc = inject(DonationsService);
+  private readonly money = inject(WorkspaceCurrencyService);
+
+  /**
+   * The currency the charge is actually made in. The snippet and the preview used to say "$ CAD"
+   * whatever the workspace was set to, so a donor in a non-Canadian workspace typed an amount under
+   * a label naming a currency they would not be billed in.
+   */
+  protected readonly amountLabel = computed(() => `Donation Amount (${this.money.currency()})`);
+  protected readonly monthlyAmountLabel = computed(() => `Monthly Pledge Amount (${this.money.currency()})`);
 
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
@@ -91,13 +101,13 @@ export class FundraisingFormComponent implements OnInit {
     const amountField = recurring
       ? `
   <div style="margin-bottom: 16px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Monthly Pledge Amount ($) *</label>
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">${this.monthlyAmountLabel()} *</label>
     <input type="number" name="monthly_amount" min="1" step="1" placeholder="25" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
     <small style="font-size: 12px; color: #666;">You will be billed this amount every month.</small>
   </div>`
       : `
   <div style="margin-bottom: 12px;">
-    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">Donation Amount ($ CAD) *</label>
+    <label style="display: block; font-size: 14px; font-weight: 600; margin-bottom: 4px;">${this.amountLabel()} *</label>
     <input type="number" name="amount" min="1" step="any" placeholder="E.g. 50.00" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;" />
   </div>`;
 

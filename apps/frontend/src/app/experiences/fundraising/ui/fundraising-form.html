@@ -217,7 +217,7 @@
                     Donation pages always collect:
                   </p>
                   <ul class="list-disc list-inside space-y-1 pl-1 font-semibold text-base-content/85">
-                    <li>{{ isRecurring() ? 'Monthly Pledge Amount ($)' : 'Donation Amount ($ CAD)' }}</li>
+                    <li>{{ isRecurring() ? monthlyAmountLabel() : amountLabel() }}</li>
                     <li>First Name & Last Name</li>
                     <li>Email Address</li>
                     <li>Street Address, City, State / Province, Zip / Postal Code, Country</li>
@@ -294,7 +294,7 @@
               <div class="space-y-4">
                 <div class="form-control">
                   <label class="label text-[11px] font-semibold py-0.5">
-                    {{ isRecurring() ? 'Monthly Pledge Amount ($) *' : 'Donation Amount ($ CAD) *' }}
+                    {{ (isRecurring() ? monthlyAmountLabel() : amountLabel()) + ' *' }}
                   </label>
                   <input type="number" class="input input-bordered input-sm w-full" placeholder="E.g. 50" disabled />
                 </div>
