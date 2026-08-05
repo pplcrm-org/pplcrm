@@ -145,27 +145,25 @@ describe('PersonsService', () => {
   });
 
   describe('import', () => {
-    it('forwards rows/tags/skipped/fileName and defaults the duplicate decision to skip', async () => {
+    it('forwards the upload handle, mapping, tags and fileName, defaulting the duplicate decision to skip', async () => {
       const response = { imported: 2, skipped: 0 };
       mockApi.persons.import.mutate.mockResolvedValue(response);
 
       const result = await service.import({
-        rows: [{ first_name: 'A' }] as any,
+        upload_handle: 'handle-1',
+        mapping: { '0': 'first_name' },
         tags: ['tag1'],
-        skipped: 1,
         file_name: 'people.csv',
       });
 
       expect(mockApi.persons.import.mutate).toHaveBeenCalledWith(
         {
-          rows: [{ first_name: 'A' }],
+          upload_handle: 'handle-1',
+          mapping: { '0': 'first_name' },
           tags: ['tag1'],
-          skipped: 1,
           file_name: 'people.csv',
           duplicate_decision: 'skip',
           list_name: undefined,
-          source_csv: undefined,
-          client_skip_reasons: undefined,
         },
         undefined,
       );
@@ -175,7 +173,7 @@ describe('PersonsService', () => {
     it('opts out of the global error handler when asked', async () => {
       mockApi.persons.import.mutate.mockResolvedValue({ imported: 0, skipped: 0 });
 
-      await service.import({ rows: [] }, { skipErrorHandler: true });
+      await service.import({ upload_handle: 'handle-1', mapping: {} }, { skipErrorHandler: true });
 
       expect(mockApi.persons.import.mutate).toHaveBeenCalledWith(expect.anything(), {
         context: { skipErrorHandler: true },

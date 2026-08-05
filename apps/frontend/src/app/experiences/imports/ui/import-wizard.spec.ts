@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router, convertToParamMap } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { MAX_IMPORT_FILE_BYTES, MAX_IMPORT_ROWS } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ImportWizard } from './import-wizard';
 import { ImportsService } from '../services/imports-service';
@@ -27,9 +28,17 @@ function splitCsv(text: string): { headers: string[]; rows: Array<Record<string,
   return { headers, rows };
 }
 
-function makeCsvFile(text: string, name = 'canvass-signups.csv'): File {
-  return new File([text], name, { type: 'text/csv' });
+/** A CSV File whose reported byte size can be forced, to steer the wizard's parse-mode decision. */
+function makeCsvFile(text: string, name = 'canvass-signups.csv', sizeBytes?: number): File {
+  const file = new File([text], name, { type: 'text/csv' });
+  if (sizeBytes !== undefined) {
+    Object.defineProperty(file, 'size', { value: sizeBytes });
+  }
+  return file;
 }
+
+/** Just over the wizard's 2 MiB full-parse threshold, so the file lands in preview mode. */
+const PREVIEW_MODE_SIZE = 3 * 1024 * 1024;
 
 describe('ImportWizard', () => {
   let component: ImportWizard;
@@ -42,6 +51,7 @@ describe('ImportWizard', () => {
   let mockListsSvc: any;
   let mockAlertSvc: any;
   let mockRouter: any;
+  let fetchMock: ReturnType<typeof vi.fn>;
   let queryParams: Record<string, string>;
 
   beforeEach(() => {
@@ -54,6 +64,7 @@ describe('ImportWizard', () => {
     mockHouseholdsSvc = { import: vi.fn().mockResolvedValue({ import_id: 'imp-1', status: 'pending' }) };
     mockTasksSvc = { import: vi.fn().mockResolvedValue({ import_id: 'imp-1', status: 'pending' }) };
     mockImportsSvc = {
+      getUploadUrl: vi.fn().mockResolvedValue({ uploadUrl: 'https://blob.example/sas', uploadHandle: 'handle-1' }),
       list: vi.fn().mockResolvedValue([
         {
           id: 'imp-1',
@@ -72,6 +83,9 @@ describe('ImportWizard', () => {
     };
     mockAlertSvc = { showError: vi.fn(), showSuccess: vi.fn() };
     mockRouter = { navigate: vi.fn().mockResolvedValue(true) };
+    // The SAS PUT goes through fetch, never through tRPC — stub it globally.
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 201 });
+    vi.stubGlobal('fetch', fetchMock);
   });
 
   async function createComponent(): Promise<void> {
@@ -96,26 +110,28 @@ describe('ImportWizard', () => {
 
   afterEach(() => {
     fixture?.destroy();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
   /** Stub the private parseCsv (the shared uxcommon Worker isn't available in jsdom) then upload a file through the real handler. */
-  async function uploadFile(text: string): Promise<void> {
+  async function uploadFile(text: string, sizeBytes?: number): Promise<void> {
     (component as any).parseCsv = vi.fn().mockResolvedValue(splitCsv(text));
-    const file = makeCsvFile(text);
+    const file = makeCsvFile(text, 'canvass-signups.csv', sizeBytes);
     const input = document.createElement('input');
     Object.defineProperty(input, 'files', { value: [file] });
     component['onFileSelected']({ target: input } as unknown as Event);
     await flushAsync();
   }
 
-  async function uploadSampleFile(): Promise<void> {
-    await uploadFile('First Name,Email\nAmira,amira@example.com\nDana,dana@example.com\n');
+  async function uploadSampleFile(sizeBytes?: number): Promise<void> {
+    await uploadFile('First Name,Email\nAmira,amira@example.com\nDana,dana@example.com\n', sizeBytes);
   }
 
   async function flushAsync(): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let i = 0; i < 4; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   it('starts on the upload step importing people by default', async () => {
@@ -141,6 +157,40 @@ describe('ImportWizard', () => {
     await createComponent();
     await uploadSampleFile();
 
+    expect(component['headers']()).toEqual(['First Name', 'Email']);
+    expect(component['rowCount']()).toBe(2);
+    expect(component['mapping']()).toEqual(['first_name', 'email']);
+    expect(component['previewMode']()).toBe(false);
+  });
+
+  it('rejects a file over the 50 MB limit at step 1 with a plain error and no state change', async () => {
+    await createComponent();
+    await uploadSampleFile(MAX_IMPORT_FILE_BYTES + 1);
+
+    expect(mockAlertSvc.showError).toHaveBeenCalledWith(expect.stringContaining('50 MB'));
+    expect(component['fileName']()).toBeNull();
+    expect(component['rowCount']()).toBe(0);
+  });
+
+  it('rejects a fully-parsed file with more rows than the import cap, naming the limit', async () => {
+    await createComponent();
+    const rows = Array.from({ length: MAX_IMPORT_ROWS + 1 }, (_, i) => ({ 'First Name': `P${i}`, Email: '' }));
+    (component as any).parseCsv = vi.fn().mockResolvedValue({ headers: ['First Name', 'Email'], rows });
+    const input = document.createElement('input');
+    Object.defineProperty(input, 'files', { value: [makeCsvFile('First Name,Email\n')] });
+    component['onFileSelected']({ target: input } as unknown as Event);
+    await flushAsync();
+
+    expect(mockAlertSvc.showError).toHaveBeenCalledWith(expect.stringContaining('5,000'));
+    expect(component['fileName']()).toBeNull();
+    expect(component['rowCount']()).toBe(0);
+  });
+
+  it('switches to preview mode for a large file, keeping at most the head rows', async () => {
+    await createComponent();
+    await uploadSampleFile(PREVIEW_MODE_SIZE);
+
+    expect(component['previewMode']()).toBe(true);
     expect(component['headers']()).toEqual(['First Name', 'Email']);
     expect(component['rowCount']()).toBe(2);
     expect(component['mapping']()).toEqual(['first_name', 'email']);
@@ -192,6 +242,30 @@ describe('ImportWizard', () => {
     expect(component['canContinueToReview']()).toBe(true);
   });
 
+  it('runs the duplicate pre-check on Review in full-parse mode', async () => {
+    await createComponent();
+    await uploadSampleFile();
+
+    await component['goToReview']();
+
+    expect(mockPersonsSvc.checkDuplicateEmails).toHaveBeenCalledWith(['amira@example.com', 'dana@example.com']);
+  });
+
+  it('skips the duplicate pre-check in preview mode and shows the not-checked notice', async () => {
+    await createComponent();
+    await uploadSampleFile(PREVIEW_MODE_SIZE);
+
+    await component['goToReview']();
+
+    expect(mockPersonsSvc.checkDuplicateEmails).not.toHaveBeenCalled();
+    expect(component['duplicateMatches']()).toEqual([]);
+
+    fixture.detectChanges();
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('not checked for duplicates ahead of time');
+    expect(text).toContain('counted while the import runs');
+  });
+
   it('resets all wizard state and returns to the upload step on "Import another file"', async () => {
     await createComponent();
     await uploadSampleFile();
@@ -205,22 +279,32 @@ describe('ImportWizard', () => {
     expect(component['tagsText']()).toBe('');
   });
 
-  it('runs a people import, polls until completion, and reports the done state', async () => {
+  it('uploads the original file then runs a people import with the upload handle and index-keyed mapping', async () => {
     await createComponent();
     await uploadSampleFile();
     component['step'].set('confirm');
 
     await component['runImport']();
 
+    expect(mockImportsSvc.getUploadUrl).toHaveBeenCalledWith('canvass-signups.csv', 'text/csv');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://blob.example/sas',
+      expect.objectContaining({
+        method: 'PUT',
+        headers: expect.objectContaining({ 'x-ms-blob-type': 'BlockBlob' }),
+      }),
+    );
     expect(mockPersonsSvc.import).toHaveBeenCalledWith(
       expect.objectContaining({
-        rows: [
-          { first_name: 'Amira', email: 'amira@example.com' },
-          { first_name: 'Dana', email: 'dana@example.com' },
-        ],
+        upload_handle: 'handle-1',
+        mapping: { '0': 'first_name', '1': 'email' },
         duplicate_decision: 'merge',
       }),
     );
+    const payload = mockPersonsSvc.import.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('rows');
+    expect(payload).not.toHaveProperty('source_csv');
+    expect(payload).not.toHaveProperty('client_skip_reasons');
     expect(mockImportsSvc.list).toHaveBeenCalled();
     expect(component['run']()).toEqual({
       status: 'done',
@@ -233,7 +317,33 @@ describe('ImportWizard', () => {
     });
   });
 
-  it('runs a companies import, dropping rows without the required name', async () => {
+  it('emits only mapped columns in the mapping payload', async () => {
+    await createComponent();
+    await uploadFile('First Name,Mystery,Email\nAmira,x,amira@example.com\n');
+    component['setMapping'](1, ''); // ensure the unrecognized column stays unmapped
+
+    await component['runImport']();
+
+    expect(mockPersonsSvc.import).toHaveBeenCalledWith(
+      expect.objectContaining({ mapping: { '0': 'first_name', '2': 'email' } }),
+    );
+  });
+
+  it('surfaces an upload failure as an error and never calls the import mutation', async () => {
+    await createComponent();
+    await uploadSampleFile();
+    fetchMock.mockResolvedValue({ ok: false, status: 403 });
+
+    await component['runImport']();
+
+    expect(mockAlertSvc.showError).toHaveBeenCalledWith(expect.stringContaining('status 403'));
+    expect(mockPersonsSvc.import).not.toHaveBeenCalled();
+    expect(component['run']()).toEqual(
+      expect.objectContaining({ status: 'error', message: expect.stringContaining('status 403') }),
+    );
+  });
+
+  it('runs a companies import with the upload handle and mapping', async () => {
     queryParams = { type: 'companies' };
     await createComponent();
     await uploadFile('Company Name,Website\nAcme,acme.com\n,orphan.com\n');
@@ -242,10 +352,12 @@ describe('ImportWizard', () => {
 
     expect(mockCompaniesSvc.import).toHaveBeenCalledWith(
       expect.objectContaining({
-        rows: [expect.objectContaining({ name: 'Acme', website: 'acme.com' })],
-        skipped: 1,
+        upload_handle: 'handle-1',
+        mapping: { '0': 'name', '1': 'website' },
+        file_name: 'canvass-signups.csv',
       }),
     );
+    expect(mockCompaniesSvc.import.mock.calls[0][0]).not.toHaveProperty('rows');
     expect(component['run']()).toEqual(expect.objectContaining({ status: 'done' }));
   });
 
@@ -259,7 +371,8 @@ describe('ImportWizard', () => {
 
     expect(mockHouseholdsSvc.import).toHaveBeenCalledWith(
       expect.objectContaining({
-        rows: [expect.objectContaining({ street1: '12 Oak St', city: 'Springfield' })],
+        upload_handle: 'handle-1',
+        mapping: { '0': 'street1', '1': 'city' },
         tags: ['yard-sign', 'canvass'],
       }),
     );
@@ -274,7 +387,8 @@ describe('ImportWizard', () => {
 
     expect(mockTasksSvc.import).toHaveBeenCalledWith(
       expect.objectContaining({
-        rows: [expect.objectContaining({ name: 'Call printers', priority: 'high' })],
+        upload_handle: 'handle-1',
+        mapping: { '0': 'name', '1': 'priority' },
       }),
     );
   });

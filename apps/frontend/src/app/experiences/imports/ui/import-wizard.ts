@@ -1,10 +1,17 @@
 import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
-import { emailSchema } from '@common';
+import {
+  CompaniesImportMappingObj,
+  HouseholdsImportMappingObj,
+  MAX_IMPORT_FILE_BYTES,
+  MAX_IMPORT_ROWS,
+  PersonsImportMappingObj,
+  TasksImportMappingObj,
+  emailSchema,
+} from '@common';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
-import { ELECTORAL_IMPORT_FIELDS } from '@uxcommon/components/csv-import/persons-field-mapping';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
 import { CompaniesService } from '../../companies/services/companies-service';
@@ -20,28 +27,10 @@ import {
 } from '../import-entity-config';
 import { ImportsService } from '../services/imports-service';
 
-/**
- * The district, ward and precinct values a mapped row carries, if any.
- *
- * The people branch sends its rows to the server exactly as mapped, so it needs nothing. The
- * households branch rebuilds each row field by field — which is what silently dropped these columns
- * — so it spreads this in. Absent keys are left out rather than sent as undefined, so a file with
- * no electoral columns sends the same payload it always did.
- */
-function electoralFieldsOf(row: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const field of ELECTORAL_IMPORT_FIELDS) {
-    const value = row[field];
-    if (value) out[field] = value;
-  }
-  return out;
-}
-
 /** The four steps of the CSV import wizard (spec §17), in order. */
 type WizardStep = 'upload' | 'map' | 'review' | 'confirm';
 
 type DuplicateDecision = 'merge' | 'skip' | 'import_new';
-type BadEmailDecision = 'skip' | 'strip';
 
 interface DuplicateMatch {
   email: string;
@@ -71,6 +60,18 @@ const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 120_000;
 /** The backend's `checkDuplicateEmails` input cap (persons/trpc.router.ts) — chunk requests to stay under it. */
 const DUPLICATE_CHECK_BATCH_SIZE = 2000;
+/**
+ * Files at or under this size are parsed in full in the browser, exactly as before the upload
+ * transport: full row counts, the duplicate pre-check, and per-row email review all still run.
+ * Bigger files switch to preview mode (head-only parse, server-side checks).
+ */
+const FULL_PARSE_MAX_BYTES = 2 * 1024 * 1024;
+/** Preview mode reads only this much of the file's head for headers + mapping samples. */
+const PREVIEW_HEAD_BYTES = 512 * 1024;
+/** Preview mode keeps at most this many parsed rows — plenty for mapping samples. */
+const PREVIEW_ROW_LIMIT = 1000;
+/** The file-size cap in the unit the error message quotes. */
+const MAX_IMPORT_FILE_MB = MAX_IMPORT_FILE_BYTES / (1024 * 1024);
 
 @Component({
   selector: 'pc-import-wizard',
@@ -111,6 +112,10 @@ export class ImportWizard {
   };
   protected readonly currentStepIndex = computed(() => this.stepOrder.indexOf(this.step()));
 
+  /** The limits the upload step states up front, so nobody maps columns for a file we then refuse. */
+  protected readonly maxFileMb = MAX_IMPORT_FILE_MB;
+  protected readonly maxRows = MAX_IMPORT_ROWS;
+
   /** A step is reachable once its prerequisite data exists — never skip ahead of validation. */
   protected canReachStep(target: WizardStep): boolean {
     const targetIdx = this.stepOrder.indexOf(target);
@@ -124,7 +129,17 @@ export class ImportWizard {
   protected readonly parsing = signal(false);
   protected readonly dragOver = signal(false);
   protected readonly fileName = signal<string | null>(null);
-  private fileText = '';
+  /**
+   * The picked file, exactly as picked. On Confirm it is PUT to blob storage whole and the server
+   * parses it — the mutation payload is never built from the parsed rows, in either parse mode.
+   */
+  private sourceFile: File | null = null;
+  /**
+   * True when the file was too big to parse fully in the browser: only its head was parsed, for
+   * headers and mapping samples. Row totals, skips and duplicate handling then happen server-side
+   * during the import, and the Review step says so instead of quoting preview-only numbers.
+   */
+  protected readonly previewMode = signal(false);
   protected readonly headers = signal<string[]>([]);
   protected readonly rawRows = signal<Array<Record<string, string>>>([]);
 
@@ -151,7 +166,7 @@ export class ImportWizard {
     () => this.mappedColumnCount() > 0 && this.missingRequiredFields().length === 0,
   );
 
-  /** Every row, with only its mapped, non-blank fields — the shape the backend import mutation expects. */
+  /** Every parsed row, with only its mapped, non-blank fields — drives the Review step's numbers. */
   protected readonly mappedRows = computed(() => {
     const headers = this.headers();
     const mapping = this.mapping();
@@ -181,7 +196,6 @@ export class ImportWizard {
 
   // --- Review ---
   protected readonly duplicateDecision = signal<DuplicateDecision>('merge');
-  protected readonly badEmailDecision = signal<BadEmailDecision>('skip');
   protected readonly tagsText = signal('');
   protected readonly listName = signal('');
   protected readonly existingListNames = signal<string[]>([]);
@@ -220,14 +234,12 @@ export class ImportWizard {
   protected readonly run = signal<RunState>({ status: 'idle' });
   private pollHandle: ReturnType<typeof setTimeout> | undefined;
 
-  /** The exact row count the Confirm button and working-state sentence quote (spec §17). */
-  protected readonly finalRowCount = computed(() => {
-    let count = this.importableRowCount() - this.missingRequiredRowCount();
-    if (this.config().supportsEmailReview && this.badEmailDecision() === 'skip') {
-      count -= this.badEmailRows().length;
-    }
-    return count;
-  });
+  /**
+   * The exact row count the Confirm button and working-state sentence quote (spec §17).
+   * Full-parse mode only — in preview mode the totals are counted server-side, so the
+   * template never quotes this number there.
+   */
+  protected readonly finalRowCount = computed(() => this.importableRowCount() - this.missingRequiredRowCount());
 
   /** One line of "what the background job is doing" copy while the import runs. */
   protected readonly runningHint = computed(() => {
@@ -259,7 +271,6 @@ export class ImportWizard {
     this.entity.set(type);
     this.mapping.set(this.headers().map((h) => IMPORT_ENTITY_CONFIGS[type].autoMapHeader(h)));
     this.duplicateDecision.set('merge');
-    this.badEmailDecision.set('skip');
     this.tagsText.set('');
     this.listName.set('');
     this.duplicateMatches.set([]);
@@ -312,34 +323,59 @@ export class ImportWizard {
   }
 
   private async readFile(file: File): Promise<void> {
+    if (file.size > MAX_IMPORT_FILE_BYTES) {
+      this.alerts.showError(
+        `That file is larger than the ${MAX_IMPORT_FILE_MB} MB import limit. ` +
+          `Split it into smaller files and import them one at a time.`,
+      );
+      return;
+    }
     this.parsing.set(true);
     this.fileName.set(file.name);
+    this.sourceFile = file;
+    const preview = file.size > FULL_PARSE_MAX_BYTES;
+    this.previewMode.set(preview);
     try {
       // UTF-8 and Excel-exported CSVs both decode correctly as text — Excel's
       // CSV export is UTF-8 (sometimes BOM-prefixed), which readAsText handles.
-      // FileReader (not the newer File.text()) matches the shared csv-import
-      // worker's original reading approach.
-      const text = await this.readFileAsText(file);
-      this.fileText = text;
+      // Preview mode reads only the head of the file; the server parses the whole
+      // file during the import, so nothing is lost by not parsing it here.
+      const text = preview ? await this.readPreviewText(file) : await this.readFileAsText(file);
       const { headers, rows } = await this.parseCsv(text);
+      if (!preview && rows.length > MAX_IMPORT_ROWS) {
+        this.alerts.showError(
+          `That file has ${rows.length.toLocaleString()} rows and imports are capped at ` +
+            `${MAX_IMPORT_ROWS.toLocaleString()} rows per file. Split it into smaller files and import them one at a time.`,
+        );
+        this.chooseAnotherFile();
+        return;
+      }
       this.headers.set(headers);
-      this.rawRows.set(rows);
+      this.rawRows.set(preview ? rows.slice(0, PREVIEW_ROW_LIMIT) : rows);
       this.mapping.set(headers.map((h) => this.config().autoMapHeader(h)));
     } catch {
       this.alerts.showError('Failed to read that file. Make sure it is a CSV export.');
       this.fileName.set(null);
+      this.sourceFile = null;
     } finally {
       this.parsing.set(false);
     }
   }
 
-  private readFileAsText(file: File): Promise<string> {
+  private readFileAsText(file: Blob): Promise<string> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve((reader.result as string) || '');
       reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
       reader.readAsText(file);
     });
+  }
+
+  /** The file's head as text, cut at the last complete line so no partial row reaches the parser. */
+  private async readPreviewText(file: File): Promise<string> {
+    const head = await this.readFileAsText(file.slice(0, PREVIEW_HEAD_BYTES));
+    const lastNewline = head.lastIndexOf('\n');
+    return lastNewline > 0 ? head.slice(0, lastNewline) : head;
   }
 
   /** Reuses the shared CSV/TSV parsing worker (libs/uxcommon/components/csv-import) — no second parser. */
@@ -373,7 +409,8 @@ export class ImportWizard {
 
   protected chooseAnotherFile(): void {
     this.fileName.set(null);
-    this.fileText = '';
+    this.sourceFile = null;
+    this.previewMode.set(false);
     this.headers.set([]);
     this.rawRows.set([]);
     this.mapping.set([]);
@@ -398,7 +435,9 @@ export class ImportWizard {
   protected async goToReview(): Promise<void> {
     this.step.set('review');
     this.duplicateCheckFailed.set(false);
-    if (!this.config().supportsEmailReview) {
+    if (!this.config().supportsEmailReview || this.previewMode()) {
+      // Preview mode: the file is too big to scan in the browser, so the pre-check is skipped.
+      // The Review step says so; the import itself still applies the duplicate decision.
       this.duplicateMatches.set([]);
       return;
     }
@@ -437,9 +476,19 @@ export class ImportWizard {
 
   protected async runImport(): Promise<void> {
     if (this.run().status === 'running') return;
+    const file = this.sourceFile;
+    if (!file) {
+      this.run.set({ status: 'error', message: 'The file is no longer available. Start over and pick it again.' });
+      return;
+    }
     this.run.set({ status: 'running' });
     try {
-      const result = this.entity() === 'people' ? await this.importPeople() : await this.importSimple();
+      // Both parse modes send the ORIGINAL file: PUT it to blob storage, then hand the
+      // server the signed handle plus the column mapping. The server parses, validates,
+      // counts and skips — no rows travel in the mutation body.
+      const uploadHandle = await this.uploadSourceFile(file);
+      const result =
+        this.entity() === 'people' ? await this.importPeople(uploadHandle) : await this.importSimple(uploadHandle);
 
       if (result.import_id) {
         await this.pollUntilDone(result.import_id, Date.now());
@@ -461,141 +510,122 @@ export class ImportWizard {
     }
   }
 
-  /** People import — the full duplicate-decision / bad-email / tags / list pipeline. */
-  private async importPeople(): Promise<{
+  /**
+   * PUT the original file to blob storage via a short-lived SAS URL minted by
+   * `imports.getUploadUrl`, and return the signed handle the import mutation needs.
+   * Same direct-upload pattern as files/boundaries — the bytes never travel through tRPC.
+   */
+  private async uploadSourceFile(file: File): Promise<string> {
+    const contentType = file.type || 'text/csv';
+    const { uploadUrl, uploadHandle } = await this.importsService.getUploadUrl(file.name, contentType);
+    const response = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': contentType },
+      body: file,
+    });
+    if (!response.ok) {
+      const message = `Uploading the file failed (status ${response.status}). Check your connection and try again.`;
+      this.alerts.showError(message);
+      throw new Error(message);
+    }
+    return uploadHandle;
+  }
+
+  /**
+   * The wizard's per-column mapping as the payload shape: stringified 0-based column index →
+   * field key, only for columns actually mapped to a field. Validated against the entity's
+   * shared mapping schema so a drift between the wizard's field lists and the row schemas
+   * fails loudly here instead of silently 400ing at the server.
+   */
+  private mappingPayload<T>(schema: {
+    safeParse: (value: unknown) => { success: true; data: T } | { success: false };
+  }): T {
+    const built: Record<string, string> = {};
+    this.mapping().forEach((field, idx) => {
+      if (field) built[String(idx)] = field;
+    });
+    const parsed = schema.safeParse(built);
+    if (!parsed.success) {
+      throw new Error('The column mapping is not valid. Go back to Map columns and re-check each column.');
+    }
+    return parsed.data;
+  }
+
+  /** People import — duplicate decision, tags and list travel with the upload handle. */
+  private async importPeople(uploadHandle: string): Promise<{
     import_id: string | null;
     inserted: number;
     skipped: number;
     errors: number;
     tag: string | null;
   }> {
-    const badEmailRows = this.badEmailRows();
-    const badEmailIdx = new Set(badEmailRows.map((r) => r.idx - 1));
-    const skipBadEmail = this.badEmailDecision() === 'skip';
-    const rowsToSend = this.mappedRows()
-      .map((row, idx) => {
-        if (!badEmailIdx.has(idx)) return row;
-        if (skipBadEmail) return null; // dropped below
-        const { email: _unused, ...rest } = row; // "Import without an email"
-        return rest;
-      })
-      .filter((row): row is Record<string, string> => row !== null && Object.keys(row).length > 0);
-    const skippedCount = this.rawRows().length - rowsToSend.length;
-    const clientSkipReasons = skipBadEmail
-      ? badEmailRows.map((r) => ({ row: r.idx, email: r.email, reason: 'Email address is not valid' }))
-      : [];
-
     const result = await this.personsService.import({
-      rows: rowsToSend,
+      upload_handle: uploadHandle,
+      mapping: this.mappingPayload(PersonsImportMappingObj),
       tags: this.parsedTags(),
-      skipped: skippedCount,
       file_name: this.fileName() ?? undefined,
       duplicate_decision: this.duplicateDecision(),
       list_name: this.listName().trim() || undefined,
-      source_csv: this.fileText || undefined,
-      client_skip_reasons: clientSkipReasons,
     });
     return {
       import_id: result?.import_id ?? null,
       inserted: result?.inserted ?? 0,
-      skipped: result?.skipped ?? skippedCount,
+      skipped: result?.skipped ?? 0,
       errors: result?.errors ?? 0,
       tag: result?.tag ?? null,
     };
   }
 
-  /**
-   * Companies / households / tasks import — no client-side review pipeline, but
-   * rows missing a required field are dropped here (and counted as skipped) so
-   * one bad row can't fail the whole mutation's input validation.
-   */
-  private async importSimple(): Promise<{
+  /** Companies / households / tasks import — upload handle + mapping, plus the entity's extras. */
+  private async importSimple(uploadHandle: string): Promise<{
     import_id: string | null;
     inserted: number;
     skipped: number;
     errors: number;
     tag: string | null;
   }> {
-    const required = this.config().requiredFields;
-    const rowsToSend = this.mappedRows().filter(
-      (row) => Object.keys(row).length > 0 && required.every((field) => !!row[field]),
-    );
-    const skippedCount = this.rawRows().length - rowsToSend.length;
-    const common = {
-      skipped: skippedCount,
-      file_name: this.fileName() ?? undefined,
-      source_csv: this.fileText || undefined,
-    };
-
+    const file_name = this.fileName() ?? undefined;
     const entity = this.entity();
     switch (entity) {
       case 'companies': {
         const result = await this.companiesService.import({
-          rows: rowsToSend.map((row) => ({
-            name: row['name'] ?? '',
-            description: row['description'],
-            website: row['website'],
-            email: row['email'],
-            phone: row['phone'],
-            industry: row['industry'],
-            notes: row['notes'],
-          })),
-          ...common,
+          upload_handle: uploadHandle,
+          mapping: this.mappingPayload(CompaniesImportMappingObj),
+          file_name,
         });
         return {
           import_id: result?.import_id ?? null,
           inserted: 0,
-          skipped: result?.skipped ?? skippedCount,
+          skipped: result?.skipped ?? 0,
           errors: 0,
           tag: null,
         };
       }
       case 'households': {
         const result = await this.householdsService.import({
-          rows: rowsToSend.map((row) => ({
-            street_num: row['street_num'],
-            apt: row['apt'],
-            street1: row['street1'],
-            street2: row['street2'],
-            city: row['city'],
-            state: row['state'],
-            zip: row['zip'],
-            country: row['country'],
-            home_phone: row['home_phone'],
-            notes: row['notes'],
-            // District, ward and precinct columns the person mapped. Listed by name like every
-            // other field above, because this object is rebuilt field by field and anything not
-            // named here never leaves the browser. Each becomes its own boundary map on the
-            // backend, with no address lookup and no cost.
-            ...electoralFieldsOf(row),
-          })),
+          upload_handle: uploadHandle,
+          mapping: this.mappingPayload(HouseholdsImportMappingObj),
           tags: this.parsedTags(),
-          ...common,
+          file_name,
         });
         return {
           import_id: result?.import_id ?? null,
           inserted: 0,
-          skipped: result?.skipped ?? skippedCount,
+          skipped: result?.skipped ?? 0,
           errors: 0,
           tag: null,
         };
       }
       case 'tasks': {
         const result = await this.tasksService.import({
-          rows: rowsToSend.map((row) => ({
-            name: row['name'] ?? '',
-            details: row['details'],
-            status: row['status'],
-            priority: row['priority'],
-            due_at: row['due_at'],
-            assigned_to: row['assigned_to'],
-          })),
-          ...common,
+          upload_handle: uploadHandle,
+          mapping: this.mappingPayload(TasksImportMappingObj),
+          file_name,
         });
         return {
           import_id: result?.import_id ?? null,
           inserted: 0,
-          skipped: result?.skipped ?? skippedCount,
+          skipped: result?.skipped ?? 0,
           errors: 0,
           tag: null,
         };
@@ -656,7 +686,6 @@ export class ImportWizard {
     this.chooseAnotherFile();
     this.mapping.set([]);
     this.duplicateDecision.set('merge');
-    this.badEmailDecision.set('skip');
     this.tagsText.set('');
     this.listName.set('');
     this.duplicateMatches.set([]);

@@ -13,10 +13,10 @@ import { PersonsService } from '../../persons/services/persons-service';
 import { TasksService } from '../../tasks/services/tasks-service';
 
 /**
- * A purchased voter file's district columns have to reach the server. The people branch of the
- * wizard sends each mapped row to the server as it is, so it carries them for free; the households
- * branch rebuilds each row field by field, and anything not named there never leaves the browser.
- * That is how these columns were lost before, so both branches are checked here.
+ * A purchased voter file's district columns have to reach the server. On the upload transport the
+ * rows never leave the browser — the server re-parses the file — so what must survive is the
+ * COLUMN MAPPING: each district column's index has to arrive mapped to its electoral field key,
+ * for both the People and the Households importer. That is what this file checks.
  */
 
 /** Minimal CSV splitter mirroring the shared csv worker's header/row shape, used to stub `parseCsv`. */
@@ -37,7 +37,7 @@ function splitCsv(text: string): { headers: string[]; rows: Array<Record<string,
 const VOTER_FILE_HEADERS = 'Address,City,CD,Legislative District,State House District,Precinct,Ward';
 const VOTER_FILE_ROW = '12 Oak St,Springfield,OH-3,18,21,Precinct 12,Ward 5';
 
-/** The district values the row above should arrive at the server carrying. */
+/** The district values a parsed preview row should carry (drives the Review step's counts). */
 const EXPECTED_DISTRICTS = {
   congressional_district: 'OH-3',
   legislative_district: '18',
@@ -46,7 +46,16 @@ const EXPECTED_DISTRICTS = {
   ward: 'Ward 5',
 };
 
-describe('ImportWizard sends a voter file’s district columns', () => {
+/** Column index → electoral field key entries the mapping payload must contain for the file above. */
+const EXPECTED_DISTRICT_MAPPING = {
+  '2': 'congressional_district',
+  '3': 'legislative_district',
+  '4': 'state_house_district',
+  '5': 'precinct',
+  '6': 'ward',
+};
+
+describe('ImportWizard maps a voter file’s district columns', () => {
   let component: ImportWizard;
 
   /**
@@ -56,7 +65,7 @@ describe('ImportWizard sends a voter file’s district columns', () => {
    * compile time instead of at runtime — which is the whole reason `any` is banned here.
    */
   interface ImportWizardInternals {
-    parseCsv: (file: File) => Promise<ReturnType<typeof splitCsv>>;
+    parseCsv: (text: string) => Promise<ReturnType<typeof splitCsv>>;
     onFileSelected: (event: Event) => void;
     runImport: () => Promise<void>;
     mappedRows: () => Record<string, string>[];
@@ -75,6 +84,7 @@ describe('ImportWizard sends a voter file’s district columns', () => {
       import: vi.fn().mockResolvedValue({ import_id: 'imp-1', status: 'pending' }),
     };
     mockHouseholdsSvc = { import: vi.fn().mockResolvedValue({ import_id: 'imp-1', status: 'pending' }) };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 201 }));
   });
 
   async function createComponent(): Promise<void> {
@@ -85,7 +95,15 @@ describe('ImportWizard sends a voter file’s district columns', () => {
         { provide: CompaniesService, useValue: { import: vi.fn() } },
         { provide: HouseholdsService, useValue: mockHouseholdsSvc },
         { provide: TasksService, useValue: { import: vi.fn() } },
-        { provide: ImportsService, useValue: { list: vi.fn().mockResolvedValue([]) } },
+        {
+          provide: ImportsService,
+          useValue: {
+            getUploadUrl: vi
+              .fn()
+              .mockResolvedValue({ uploadUrl: 'https://blob.example/sas', uploadHandle: 'handle-1' }),
+            list: vi.fn().mockResolvedValue([]),
+          },
+        },
         { provide: ListsService, useValue: { getAll: vi.fn().mockResolvedValue({ rows: [], count: 0 }) } },
         { provide: AlertService, useValue: { showError: vi.fn(), showSuccess: vi.fn() } },
         { provide: Router, useValue: { navigate: vi.fn().mockResolvedValue(true) } },
@@ -99,12 +117,14 @@ describe('ImportWizard sends a voter file’s district columns', () => {
 
   afterEach(() => {
     fixture?.destroy();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
   async function flushAsync(): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let i = 0; i < 4; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   /** Stub the private parseCsv (the shared worker is unavailable in jsdom) and upload through the real handler. */
@@ -131,20 +151,24 @@ describe('ImportWizard sends a voter file’s district columns', () => {
     expect(mapped).toMatchObject(EXPECTED_DISTRICTS);
   });
 
-  it('sends the district columns to the People import endpoint', async () => {
+  it('sends the district column mapping to the People import endpoint', async () => {
     await runVoterFileImport('people');
 
     expect(mockPersonsSvc.import).toHaveBeenCalledWith(
-      expect.objectContaining({ rows: [expect.objectContaining(EXPECTED_DISTRICTS)] }),
+      expect.objectContaining({
+        upload_handle: 'handle-1',
+        mapping: expect.objectContaining(EXPECTED_DISTRICT_MAPPING),
+      }),
     );
   });
 
-  it('sends the district columns to the Households import endpoint', async () => {
+  it('sends the district column mapping to the Households import endpoint', async () => {
     await runVoterFileImport('households');
 
     expect(mockHouseholdsSvc.import).toHaveBeenCalledWith(
       expect.objectContaining({
-        rows: [expect.objectContaining({ street1: '12 Oak St', city: 'Springfield', ...EXPECTED_DISTRICTS })],
+        upload_handle: 'handle-1',
+        mapping: expect.objectContaining({ '0': 'street1', '1': 'city', ...EXPECTED_DISTRICT_MAPPING }),
       }),
     );
   });
@@ -155,8 +179,8 @@ describe('ImportWizard sends a voter file’s district columns', () => {
     await uploadFile('Address,City\n12 Oak St,Springfield\n');
     await internals().runImport();
 
-    const sentRow = mockHouseholdsSvc.import.mock.calls[0]?.[0]?.rows?.[0] ?? {};
-    expect(Object.keys(sentRow)).not.toContain('ward');
-    expect(Object.keys(sentRow)).not.toContain('precinct');
+    const sentMapping: Record<string, string> = mockHouseholdsSvc.import.mock.calls[0]?.[0]?.mapping ?? {};
+    expect(Object.values(sentMapping)).not.toContain('ward');
+    expect(Object.values(sentMapping)).not.toContain('precinct');
   });
 });

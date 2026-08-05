@@ -83,14 +83,15 @@
           } @if (config().reviewNote) {
           <li>{{ config().reviewNote }}</li>
           }
-          <li>UTF-8 and Excel both work.</li>
+          <li>UTF-8 and Excel both work. Files up to {{ maxFileMb }} MB and {{ maxRows.toLocaleString() }} rows.</li>
         </ul>
         } @else {
         <div class="flex items-center justify-between gap-4 rounded-lg border border-base-300 bg-base-200/40 p-4">
           <div class="flex items-center gap-3 min-w-0">
             <pc-icon name="document-text" class="text-primary shrink-0" [size]="6"></pc-icon>
             <span class="font-mono text-sm text-base-content truncate">
-              {{ fileName() }} · {{ rowCount() }} rows · {{ columnCount() }} columns
+              @if (previewMode()) { {{ fileName() }} · previewing the first {{ rowCount() }} rows · {{ columnCount() }}
+              columns } @else { {{ fileName() }} · {{ rowCount() }} rows · {{ columnCount() }} columns }
             </span>
           </div>
           <button type="button" class="btn btn-ghost btn-sm" (click)="chooseAnotherFile()">Choose another file</button>
@@ -182,6 +183,14 @@
     <!-- What will happen, in numbers -->
     <div class="card bg-base-100 border border-base-300 shadow-xl">
       <div class="card-body gap-2">
+        @if (previewMode()) {
+        <p class="text-sm text-base-content">
+          This file is large, so only its first {{ rowCount() }} rows were read to set up the column mapping.
+        </p>
+        <p class="text-xs text-base-content/60">
+          Row totals and skipped rows are counted while the import runs and reported in the completion summary.
+        </p>
+        } @else {
         <p class="text-sm text-base-content">
           <span class="font-medium">{{ finalRowCount() }}</span> of {{ rowCount() }} rows will be imported as {{
           config().noun }}
@@ -191,13 +200,68 @@
           {{ missingRequiredRowCount() }} rows are missing {{ missingRequiredFieldLabels() || 'a required field' }} and
           will be skipped
         </p>
-        } @if (config().reviewNote) {
+        } } @if (config().reviewNote) {
         <p class="text-xs text-base-content/60">{{ config().reviewNote }}</p>
         }
       </div>
     </div>
 
-    @if (config().supportsEmailReview) { @if (duplicateCheckFailed()) {
+    @if (config().supportsEmailReview && previewMode()) {
+    <!-- Preview mode: the duplicate pre-check did not run, and this says so plainly. The
+         decision below still applies — the server enforces it while the import runs. -->
+    <div class="card bg-base-100 border border-base-300 shadow-xl">
+      <div class="card-body gap-3">
+        <p class="pc-eyebrow">Duplicates</p>
+        <p class="text-sm text-base-content/70">
+          This file was not checked for duplicates ahead of time; it is too large to scan in the browser. Rows matching
+          an email you already have are handled during the import by the choice below and reported in the completion
+          summary.
+        </p>
+        <div class="form-control gap-2 mt-2">
+          <label class="flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="duplicateDecision"
+              class="radio radio-primary radio-sm mt-1"
+              [checked]="duplicateDecision() === 'merge'"
+              (change)="duplicateDecision.set('merge')"
+            />
+            <span class="text-sm">
+              <span class="font-medium text-base-content">Merge into existing</span>
+              <span class="block text-xs text-base-content/60">
+                Recommended: fills blank fields, never overwrites
+              </span>
+            </span>
+          </label>
+          <label class="flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="duplicateDecision"
+              class="radio radio-primary radio-sm mt-1"
+              [checked]="duplicateDecision() === 'skip'"
+              (change)="duplicateDecision.set('skip')"
+            />
+            <span class="text-sm font-medium text-base-content">Skip duplicate rows</span>
+          </label>
+          <label class="flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="duplicateDecision"
+              class="radio radio-primary radio-sm mt-1"
+              [checked]="duplicateDecision() === 'import_new'"
+              (change)="duplicateDecision.set('import_new')"
+            />
+            <span class="text-sm">
+              <span class="font-medium text-base-content">Import as new anyway</span>
+              <span class="block text-xs text-base-content/60">
+                Creates duplicates to resolve later in Duplicates
+              </span>
+            </span>
+          </label>
+        </div>
+      </div>
+    </div>
+    } @if (config().supportsEmailReview && !previewMode()) { @if (duplicateCheckFailed()) {
     <div class="alert bg-warning/10 border border-warning/30 gap-2 text-sm text-base-content">
       <pc-icon name="exclamation-triangle" class="text-warning" [size]="5"></pc-icon>
       <span
@@ -288,37 +352,10 @@
           </li>
           }
         </ul>
-
-        <div class="form-control gap-2 mt-2">
-          <label class="flex items-start gap-3 cursor-pointer">
-            <input
-              type="radio"
-              name="badEmailDecision"
-              class="radio radio-primary radio-sm mt-1"
-              [checked]="badEmailDecision() === 'skip'"
-              (change)="badEmailDecision.set('skip')"
-            />
-            <span class="text-sm">
-              <span class="font-medium text-base-content">Skip the {{ badEmailRows().length }} rows</span>
-              <span class="block text-xs text-base-content/60">Download them after the import to fix and retry</span>
-            </span>
-          </label>
-          <label class="flex items-start gap-3 cursor-pointer">
-            <input
-              type="radio"
-              name="badEmailDecision"
-              class="radio radio-primary radio-sm mt-1"
-              [checked]="badEmailDecision() === 'strip'"
-              (change)="badEmailDecision.set('strip')"
-            />
-            <span class="text-sm">
-              <span class="font-medium text-base-content">Import without an email</span>
-              <span class="block text-xs text-base-content/60">
-                They can't receive newsletters until an email is added
-              </span>
-            </span>
-          </label>
-        </div>
+        <p class="text-xs text-base-content/60">
+          These addresses are not valid, so the import keeps the rows but leaves the email out. Rows with nothing else
+          in them are skipped and counted in the completion summary.
+        </p>
       </div>
     </div>
     } }
@@ -381,7 +418,8 @@
       @let r = run(); @switch (r.status) { @case ('idle') {
       <div class="space-y-2 text-sm text-base-content">
         <p class="font-mono text-base-content/70">
-          {{ fileName() }} · {{ finalRowCount() }} rows · {{ mappedColumnCount() }} columns mapped
+          @if (previewMode()) { {{ fileName() }} · {{ mappedColumnCount() }} columns mapped · rows counted during the
+          import } @else { {{ fileName() }} · {{ finalRowCount() }} rows · {{ mappedColumnCount() }} columns mapped }
         </p>
         <ul class="list-disc list-inside text-base-content/70 space-y-1">
           <li>Importing as {{ config().noun }}</li>
@@ -391,8 +429,8 @@
             'skip duplicate rows' : 'import as new anyway' }}
           </li>
           @if (badEmailRows().length > 0) {
-          <li>Email problems: {{ badEmailDecision() === 'skip' ? 'skip those rows' : 'import without an email' }}</li>
-          } } @if (missingRequiredRowCount() > 0) {
+          <li>{{ badEmailRows().length }} rows with an invalid email are imported without one</li>
+          } } @if (!previewMode() && missingRequiredRowCount() > 0) {
           <li>{{ missingRequiredRowCount() }} rows missing {{ missingRequiredFieldLabels() }} will be skipped</li>
           } @if (parsedTags().length > 0 && config().supportsTags) {
           <li>Tags: {{ parsedTags().join(', ') }}</li>
@@ -412,13 +450,18 @@
         </button>
         <button type="button" class="btn btn-primary gap-2" (click)="runImport()">
           <pc-icon name="paper-airplane" [size]="4"></pc-icon>
-          Import {{ finalRowCount() }} {{ config().noun }}
+          @if (previewMode()) { Import {{ config().noun }} from {{ fileName() }} } @else { Import {{ finalRowCount() }}
+          {{ config().noun }} }
         </button>
       </div>
       } @case ('running') {
       <div class="flex flex-col items-center gap-3 py-10">
         <pc-icon name="arrow-path" class="animate-spin text-primary" [size]="8"></pc-icon>
+        @if (previewMode()) {
+        <p class="text-base-content font-medium">Uploading and importing {{ fileName() }}…</p>
+        } @else {
         <p class="text-base-content font-medium">Importing {{ finalRowCount() }} rows…</p>
+        }
         <p class="text-sm text-base-content/60">{{ runningHint() }}</p>
         <p class="text-sm text-base-content/60">
           You can leave this page. The import keeps running in the background and its result lands in import history.

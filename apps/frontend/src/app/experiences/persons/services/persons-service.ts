@@ -137,30 +137,32 @@ export class PersonsService extends AbstractAPIService<DATA_TYPE, UpdatePersonsT
     return tags.map((tag: { name: string }) => tag.name);
   }
 
+  /**
+   * Queue a people import from an already-uploaded CSV (spec §17). The wizard PUTs the raw file
+   * to blob storage via `imports.getUploadUrl` and hands over the signed handle plus the column
+   * mapping — no rows travel in the mutation body; the server parses, validates and skips.
+   */
   public import(
     input: {
-      rows: RouterInputs['persons']['import']['rows'];
+      upload_handle: string;
+      /** Stringified 0-based CSV column index → import field key (PersonsImportMappingObj). */
+      mapping: NonNullable<RouterInputs['persons']['import']['mapping']>;
       tags?: string[];
-      skipped?: number;
       file_name?: string | null;
       duplicate_decision?: 'merge' | 'skip' | 'import_new';
       list_name?: string;
-      source_csv?: string;
-      client_skip_reasons?: Array<{ row: number; email?: string; reason: string }>;
     },
     options?: { skipErrorHandler?: boolean },
   ): Promise<RouterOutputs['persons']['import']> {
     // Wizard shows its own error state — opt out of the global error toast when asked.
     return this.api.persons.import.mutate(
       {
-        rows: input.rows,
+        upload_handle: input.upload_handle,
+        mapping: input.mapping,
         tags: input.tags ?? [],
-        skipped: input.skipped ?? 0,
         file_name: input.file_name ?? undefined,
         duplicate_decision: input.duplicate_decision ?? 'skip',
         list_name: input.list_name,
-        source_csv: input.source_csv,
-        client_skip_reasons: input.client_skip_reasons,
       },
       options?.skipErrorHandler ? { context: { skipErrorHandler: true } } : undefined,
     );
