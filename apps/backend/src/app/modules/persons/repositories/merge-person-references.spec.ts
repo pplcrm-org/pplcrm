@@ -535,13 +535,20 @@ describe('mergePersons re-points everything that names the source person', () =>
   };
 
   it('fails when a new column names a person and the merge was not taught about it', async () => {
-    // Deliberately NOT a foreign-key audit. companion_volunteers.person_id,
-    // workflow_runs.person_id, turf_assignments.volunteer_person_id and
-    // turf_segment_claims.volunteer_person_id all name a person with no foreign key at
-    // all, so a constraint-only sweep sees none of them. Match on the column NAME, and
-    // take the foreign keys as well so a differently-named one (teams.team_captain_id)
-    // is still covered.
-    const columns = await sql<{ table_name: string; column_name: string }>`
+    // Two sources, because neither alone is enough:
+    //
+    //  - Column NAME, so a table that names a person with no foreign key at all is still
+    //    caught — companion_volunteers.person_id, workflow_runs.person_id,
+    //    turf_assignments.volunteer_person_id and turf_segment_claims.volunteer_person_id
+    //    all name a person this way.
+    //  - Foreign keys read from `pg_catalog`, so a reference under a differently-named
+    //    column (teams.team_captain_id) is caught too. This deliberately does NOT use
+    //    `information_schema.constraint_column_usage`: that view only shows constraints on
+    //    tables the current role owns, the specs connect as `pplcrm_app` while the tables
+    //    are owned by `pplcrm_owner`, and it therefore returns zero rows here — a
+    //    foreign-key clause written against it is silently dead, which is exactly how
+    //    teams.team_captain_id slipped past this guard before.
+    const byName = await sql<{ table_name: string; column_name: string }>`
       SELECT c.table_name, c.column_name
         FROM information_schema.columns c
         JOIN information_schema.tables t
@@ -550,21 +557,37 @@ describe('mergePersons re-points everything that names the source person', () =>
          AND t.table_type = 'BASE TABLE'
        WHERE c.table_schema = 'public'
          AND c.column_name LIKE '%person_id'
-      UNION
-      SELECT kcu.table_name, kcu.column_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON kcu.constraint_name = tc.constraint_name
-         AND kcu.constraint_schema = tc.constraint_schema
-        JOIN information_schema.constraint_column_usage ccu
-          ON ccu.constraint_name = tc.constraint_name
-         AND ccu.constraint_schema = tc.constraint_schema
-       WHERE tc.constraint_type = 'FOREIGN KEY'
-         AND tc.table_schema = 'public'
-         AND ccu.table_name = 'persons'
-         AND kcu.table_name <> 'persons'
        ORDER BY 1, 2
     `.execute(db);
+
+    const byForeignKey = await sql<{ table_name: string; column_name: string }>`
+      SELECT child.relname AS table_name, att.attname AS column_name
+        FROM pg_constraint con
+        JOIN pg_class child ON child.oid = con.conrelid
+        JOIN pg_class parent ON parent.oid = con.confrelid
+        JOIN pg_namespace ns ON ns.oid = child.relnamespace
+        JOIN unnest(con.conkey) AS k(attnum) ON true
+        JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = k.attnum
+       WHERE con.contype = 'f'
+         AND ns.nspname = 'public'
+         AND parent.relname = 'persons'
+         AND child.relname <> 'persons'
+       ORDER BY 1, 2
+    `.execute(db);
+
+    // A half that silently matches nothing is not a guard, so assert each one found something
+    // before trusting the combined list.
+    expect(byName.rows.length, 'no column named like %person_id was found at all').toBeGreaterThan(0);
+    expect(byForeignKey.rows.length, 'no foreign key to persons(id) was found at all').toBeGreaterThan(0);
+
+    const columns = {
+      rows: [...new Set([...byName.rows, ...byForeignKey.rows].map((r) => `${r.table_name}.${r.column_name}`))]
+        .sort()
+        .map((key) => {
+          const [table_name, column_name] = key.split('.');
+          return { table_name, column_name };
+        }),
+    };
 
     const source = readFileSync(join(__dirname, 'persons.repo.ts'), 'utf8');
     const markerIndex = source.indexOf('public async mergePersons');

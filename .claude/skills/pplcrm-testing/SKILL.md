@@ -34,6 +34,10 @@ cd apps/frontend && npx vitest run src/app/layout/favourite-toggle/favourite-tog
 
 Backend specs need Postgres reachable — DB env is injected by `apps/backend/vite.config.ts` (`test.env`), so the DB in that block must exist locally.
 
+**Trap: `nx test backend --args="apps/backend/src/..."` reports success while running ZERO tests.** Vitest's cwd is `apps/backend`, so a repo-root-prefixed path filter matches no files — and the config sets `passWithNoTests: true`, so the run prints success anyway. A whole batch of specs was once "verified" this way without ever executing. Path filters must be `src/`-relative (`--args="src/app/modules/x/y.spec.ts"`), and after any filtered run, confirm the reported test count is non-zero and plausible for the file.
+
+**Rebuilding the test DB:** if `globalSetup` dies with `corrupted migrations` (e.g. a new migration file sorts before one already applied — happens with in-flight work in a shared worktree), drop and re-provision the disposable test DB; the next run rebuilds the schema from the baseline: `psql -U "$(whoami)" -d postgres -c 'DROP DATABASE IF EXISTS pplcrm_test' && apps/backend/scripts/setup-test-db.sh` (check `pg_stat_activity` for open connections first).
+
 ## Backend isolation: one shared Postgres, spec files in parallel
 
 There is no DB mocking layer — every backend spec hits the same local database, and Vitest runs spec _files_ concurrently. Two helpers in `apps/backend/src/app/lib/test-utils/` cover the two different ways that bites. **A spec that passes alone but fails in a full run is almost always one of these.**

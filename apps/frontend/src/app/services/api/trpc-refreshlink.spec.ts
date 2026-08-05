@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { refreshLink, silentRefresh } from './trpc-refreshlink';
+import { registerSessionDiscard } from '../error.service';
 import { TRPCClientError } from '@trpc/client';
 import type { Operation } from '@trpc/client';
 import type { Observer } from '@trpc/server/observable';
@@ -309,6 +310,74 @@ describe('trpc-refreshlink', () => {
     expect(result).toBe('result');
     expect(fetchCount).toBe(1);
     expect(mockTokenSvc.setAuthToken).toHaveBeenCalledWith(validToken);
+  });
+
+  describe('session discard on refresh failure (REVIEW5 T1-4)', () => {
+    // AuthService cannot be reached from here (it sits above this module in the dependency
+    // graph), so the 401 path clears the stale signed-in user through the registered
+    // `discardSignedInUser` hook instead. Pin that it fires exactly when the refresh endpoint
+    // itself proves the session is gone, and not for failures that say nothing about the session.
+    let discardSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      discardSpy = vi.fn();
+      registerSessionDiscard(discardSpy);
+    });
+
+    it('clears the stale signed-in user when the refresh endpoint answers UNAUTHORIZED (pre-flight)', async () => {
+      currentAuthToken = expiredToken;
+      globalThis.fetch = failingRenewFetch();
+      const link = refreshLink(mockTokenSvc, mockRouter)({} as any);
+
+      await expect(runLink(link, makeOp('persons.getAll'), successNext())).rejects.toBeInstanceOf(TRPCClientError);
+
+      expect(discardSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('clears the stale signed-in user when the post-UNAUTHORIZED retry refresh itself 401s', async () => {
+      currentAuthToken = validToken;
+      globalThis.fetch = failingRenewFetch();
+      const link = refreshLink(mockTokenSvc, mockRouter)({} as any);
+      const mockNext = errorNext(unauthorizedClientError());
+
+      await expect(runLink(link, makeOp('persons.getAll'), mockNext)).rejects.toBeInstanceOf(TRPCClientError);
+
+      expect(discardSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('still clears the stale signed-in user on a public route, even though it does not redirect', async () => {
+      currentAuthToken = expiredToken;
+      mockRouter.url = '/f/some-form';
+      globalThis.fetch = failingRenewFetch();
+      const link = refreshLink(mockTokenSvc, mockRouter)({} as any);
+
+      await expect(runLink(link, makeOp('persons.getAll'), successNext())).rejects.toBeInstanceOf(TRPCClientError);
+
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+      expect(discardSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT clear the signed-in user when the refresh dies on the network (outage, not proof the session is gone)', async () => {
+      currentAuthToken = expiredToken;
+      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch')) as any;
+      const link = refreshLink(mockTokenSvc, mockRouter)({} as any);
+
+      await expect(runLink(link, makeOp('persons.getAll'), successNext())).rejects.toBeInstanceOf(TRPCClientError);
+
+      expect(discardSpy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT clear the signed-in user for a non-UNAUTHORIZED error that never touches the refresh path', async () => {
+      currentAuthToken = validToken;
+      const link = refreshLink(mockTokenSvc, mockRouter)({} as any);
+      const badRequest = TRPCClientError.from({
+        error: { message: 'Name is required', code: -32600, data: { code: 'BAD_REQUEST', httpStatus: 400 } },
+      } as any);
+
+      await expect(runLink(link, makeOp('persons.update'), errorNext(badRequest))).rejects.toBe(badRequest);
+
+      expect(discardSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe('silentRefresh', () => {

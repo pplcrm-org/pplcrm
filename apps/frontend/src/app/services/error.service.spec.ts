@@ -8,7 +8,7 @@ import { ApiError } from './api/api-error';
 import { TokenService } from './api/token-service';
 import { SERVER_UNREACHABLE_MESSAGE } from './api/user-message';
 import { STALE_BUNDLE_MESSAGE } from '../routing/stale-bundle';
-import { ErrorService } from './error.service';
+import { ErrorService, registerSessionDiscard } from './error.service';
 
 const FALLBACK = 'Something went wrong, please try again';
 
@@ -173,6 +173,38 @@ describe('ErrorService', () => {
 
       expect(mockRouter.navigate).toHaveBeenCalledTimes(2);
       expect(mockTokenSvc.clearAll).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('session discard on 401 (REVIEW5 T1-4)', () => {
+    // AuthService registers this hook at construction; ErrorService cannot reach the user signal
+    // directly (it sits below AuthService in the dependency graph). Clearing tokens alone left the
+    // stale user in place, so the login guard read a dead session as live and bounced it back into
+    // the app — this pins that the sign-out path also drops the in-memory user.
+    let discardSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      discardSpy = vi.fn();
+      registerSessionDiscard(discardSpy);
+    });
+
+    it('clears the stale signed-in user alongside the tokens on a 401', () => {
+      service.handle(new JSendServerError('Unauthorized', undefined, 401));
+
+      expect(mockTokenSvc.clearAll).toHaveBeenCalledTimes(1);
+      expect(discardSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT clear the signed-in user for a non-401 error', () => {
+      service.handle(badRequestClientError('Name is required'));
+
+      expect(discardSpy).not.toHaveBeenCalled();
+    });
+
+    it('clears it via the public redirectToSignIn() entry point too', () => {
+      service.redirectToSignIn();
+
+      expect(discardSpy).toHaveBeenCalledTimes(1);
     });
   });
 

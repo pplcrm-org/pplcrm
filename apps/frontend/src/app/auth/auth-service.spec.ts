@@ -1,8 +1,14 @@
 import { signal } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { Router } from '@angular/router';
 import { TRPCError } from '@trpc/server';
 import { TRPCClientError } from '@trpc/client';
+import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from './auth-service';
+import { TokenService } from '../services/api/token-service';
+import { ErrorService, discardSignedInUser } from '../services/error.service';
 
 vi.mock('@simplewebauthn/browser', () => ({
   startAuthentication: vi.fn(),
@@ -10,10 +16,18 @@ vi.mock('@simplewebauthn/browser', () => ({
 }));
 
 // The real module opens a network connection to mint an access token from the refresh cookie.
-// `refreshLink` is only read inside the TRPCService constructor, which these tests never run.
+// `refreshLink` is read inside the TRPCService constructor — most tests here never run that
+// constructor (they build a bare instance instead), but the "session discard registration" tests
+// below do, via TestBed, so this stub must still satisfy the TRPCLink shape
+// (`() => (ctx) => Observable`) rather than being a bare `vi.fn()`.
 vi.mock('../services/api/trpc-refreshlink', () => ({
   silentRefresh: vi.fn(() => Promise.resolve(null)),
-  refreshLink: vi.fn(),
+  refreshLink: vi.fn(
+    () =>
+      () =>
+      ({ op, next }: any) =>
+        next(op),
+  ),
 }));
 
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser';
@@ -360,6 +374,36 @@ describe('AuthService', () => {
       await service.signOut();
 
       expect(mockApi.auth.signOut.mutate).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('session discard registration (REVIEW5 T1-4)', () => {
+    // The bare-instance construction used by every other test in this file
+    // (`Object.create(AuthService.prototype)`) skips the real constructor, so it never runs
+    // `registerSessionDiscard`. These tests build a real instance through Angular DI instead, to
+    // pin the actual wiring: AuthService registers a hook that nulls its own `user` signal, and
+    // the 401 handlers (ErrorService, trpc-refreshlink) call it through `discardSignedInUser()`
+    // because they sit below AuthService in the dependency graph and cannot reach the signal
+    // directly.
+    it('registers a hook at construction that nulls the in-memory user signal when invoked', () => {
+      TestBed.configureTestingModule({
+        providers: [
+          AuthService,
+          { provide: AlertService, useValue: { showWarn: vi.fn(), showError: vi.fn() } },
+          { provide: ConfirmDialogService, useValue: { choose: vi.fn() } },
+          { provide: ErrorService, useValue: {} },
+          { provide: Router, useValue: { navigate: vi.fn() } },
+          { provide: TokenService, useValue: { getAuthToken: vi.fn(), clearAll: vi.fn() } },
+        ],
+      });
+
+      const realService = TestBed.inject(AuthService);
+      (realService as any).user.set(mockUser);
+      expect(realService.getUser()).toEqual(mockUser);
+
+      discardSignedInUser();
+
+      expect(realService.getUser()).toBeNull();
     });
   });
 

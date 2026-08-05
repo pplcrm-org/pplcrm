@@ -63,13 +63,25 @@ describe('SignInPage', () => {
     expect(component).toBeTruthy();
   });
 
-  it('should redirect to summary if user is already logged in', () => {
-    mockAuthSvc.getUserSignal.mockReturnValue(signal({ id: '123' }));
+  it('should redirect to summary if user is already logged in and verified', () => {
+    mockAuthSvc.getUserSignal.mockReturnValue(signal({ id: '123', email_verified: true }));
 
     const fixture2 = TestBed.createComponent(SignInPage);
     fixture2.detectChanges();
 
     expect(mockRouter.navigate).toHaveBeenCalledWith(['dashboard']);
+  });
+
+  it('should NOT redirect a signed-in user whose email is not verified — avoids the authGuard redirect loop', () => {
+    // Regression guard (REVIEW5 T1-5): navigating an unverified user to /dashboard bounces off
+    // authGuard (which sends unverified users back to /signin) into an infinite redirect loop
+    // that hangs the page.
+    mockAuthSvc.getUserSignal.mockReturnValue(signal({ id: '123', email_verified: false }));
+
+    const fixture2 = TestBed.createComponent(SignInPage);
+    fixture2.detectChanges();
+
+    expect(mockRouter.navigate).not.toHaveBeenCalled();
   });
 
   it('should toggle token persistence', () => {

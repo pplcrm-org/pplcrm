@@ -3,6 +3,15 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BaseRepository } from '../../base.repo';
 import { performScheduledDeletions, TENANT_SCOPED_TABLES } from './deletions.handlers';
+import { cancelSubscriptionImmediately } from '../../../modules/billing/subscription-sync';
+
+// Only `cancelSubscriptionImmediately` is mocked (rest of the module stays real) — the ordering
+// test below needs to control/observe exactly when it is called relative to the tenant wipe,
+// without needing a live/mocked Stripe client of its own.
+vi.mock('../../../modules/billing/subscription-sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../modules/billing/subscription-sync')>();
+  return { ...actual, cancelSubscriptionImmediately: vi.fn() };
+});
 
 /**
  * Guard against the 2026-07-24 regression: a tenant-scoped table left out of the wipe list holds a
@@ -209,5 +218,56 @@ describe('scheduled user deletion (tombstone)', () => {
     const row = await db.selectFrom('authusers').selectAll().where('id', '=', userId).executeTakeFirstOrThrow();
     expect(row.deleted_at).toBeNull();
     expect(row.deletion_scheduled_at).not.toBeNull();
+  });
+});
+
+describe('scheduled tenant deletion — Stripe cancellation ordering (T1-2)', () => {
+  const db = BaseRepository.dbInstance;
+  const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);
+
+  let tenantId: string;
+
+  beforeEach(async () => {
+    tenantId = rand();
+    await db
+      .insertInto('tenants')
+      .values({
+        id: tenantId,
+        name: 'Stripe Ordering Test',
+        stripe_subscription_id: 'sub_ordering_test',
+        deletion_scheduled_at: new Date(Date.now() - 1000),
+      })
+      .execute();
+    vi.mocked(cancelSubscriptionImmediately).mockReset();
+  });
+
+  afterEach(async () => {
+    await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
+  });
+
+  it('cancels the Stripe subscription while the tenants row (holding the Stripe ids) still exists, before the wipe deletes it', async () => {
+    let tenantExistedAtCancelTime = false;
+    vi.mocked(cancelSubscriptionImmediately).mockImplementationOnce(async (id: string) => {
+      expect(id).toBe(tenantId);
+      const row = await db.selectFrom('tenants').select('id').where('id', '=', tenantId).executeTakeFirst();
+      tenantExistedAtCancelTime = row !== undefined;
+    });
+
+    await performScheduledDeletions(db);
+
+    expect(cancelSubscriptionImmediately).toHaveBeenCalledExactlyOnceWith(tenantId);
+    expect(tenantExistedAtCancelTime).toBe(true);
+
+    const after = await db.selectFrom('tenants').select('id').where('id', '=', tenantId).executeTakeFirst();
+    expect(after).toBeUndefined();
+  });
+
+  it('continues the wipe (log-and-continue) when Stripe cancellation throws — a Stripe outage must never block a requested deletion', async () => {
+    vi.mocked(cancelSubscriptionImmediately).mockRejectedValueOnce(new Error('Stripe outage'));
+
+    await performScheduledDeletions(db);
+
+    const after = await db.selectFrom('tenants').select('id').where('id', '=', tenantId).executeTakeFirst();
+    expect(after).toBeUndefined(); // wipe proceeded despite the Stripe failure
   });
 });
