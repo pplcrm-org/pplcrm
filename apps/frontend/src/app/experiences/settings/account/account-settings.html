@@ -10,10 +10,10 @@
 <div class="alert alert-error mb-6">
   <pc-icon name="exclamation-triangle" [size]="5"></pc-icon>
   <div>
-    <h4 class="font-bold">Account Deletion In Progress</h4>
+    <h4 class="font-bold">Account Deletion Scheduled</h4>
     <p class="text-xs">
-      Your account is being permanently deleted. All data will be removed. You will receive a confirmation email when
-      the process is complete.
+      Your account and all its data are scheduled to be permanently deleted on {{ status()!.deletion_scheduled_at | date
+      : 'medium' }}. You can still cancel the deletion below at any time before then.
     </p>
   </div>
 </div>
@@ -98,8 +98,8 @@
   @if (status()!.deletion_scheduled_at) {
   <div class="space-y-3">
     <p class="text-xs text-error font-medium">
-      Deletion was initiated on {{ status()!.deletion_scheduled_at | date : 'medium' }}. Your data is being permanently
-      removed.
+      Deletion is scheduled for {{ status()!.deletion_scheduled_at | date : 'medium' }}. Your data is untouched until
+      then — cancel any time before that to keep your account.
     </p>
     <button
       type="button"
