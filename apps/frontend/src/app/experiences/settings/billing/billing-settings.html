@@ -1,11 +1,22 @@
-@if (!details()) {
+@if (!details()) { @if (loadError()) {
+<!-- A failed load used to leave the spinner below running forever, with only a toast that had
+     already faded. Say what happened and give the user the one action that can fix it. -->
+<div class="pc-panel flex flex-col items-center gap-3 p-8 text-center">
+  <pc-icon name="exclamation-triangle" [size]="6" class="text-error" />
+  <div class="space-y-1">
+    <p class="text-sm font-semibold">We couldn't load your subscription details</p>
+    <p class="text-xs text-base-content/60">{{ loadError() }}</p>
+  </div>
+  <button type="button" class="btn btn-sm btn-primary" [disabled]="loading()" (click)="loadBilling()">Retry</button>
+</div>
+} @else {
 <div class="flex h-48 items-center justify-center">
   <div class="flex flex-col items-center gap-3 text-base-content/50">
     <span class="loading loading-spinner loading-md"></span>
     <p class="text-xs font-medium">Retrieving subscription details…</p>
   </div>
 </div>
-} @else {
+} } @else {
 <div class="space-y-8">
   <!-- Sandbox/Mock Warning Notice -->
   @if (details()?.isMockMode) {

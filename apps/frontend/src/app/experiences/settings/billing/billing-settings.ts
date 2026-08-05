@@ -90,6 +90,10 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   protected readonly details = signal<BillingDetailsSnapshot | null>(null);
   protected readonly usage = signal<BillingUsageSnapshot | null>(null);
 
+  /** Why the last load failed, so the page can offer a Retry instead of spinning forever when
+   * `details` never arrives. Cleared at the start of every load attempt. */
+  protected readonly loadError = signal<string | null>(null);
+
   /**
    * Which card is mid-redirect, rather than a page-wide "something is pending" flag.
    *
@@ -299,6 +303,7 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
 
   protected async loadBilling() {
     const end = this._loading.begin();
+    this.loadError.set(null);
     try {
       const [details, usage] = await Promise.all([
         this.api.billing.getDetails.query(),
@@ -312,7 +317,9 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
       await this.auth.getCurrentUser().catch(() => undefined);
     } catch (err) {
       console.error(err);
-      this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load subscription details.');
+      const message = err instanceof Error && err.message ? err.message : 'Failed to load subscription details.';
+      this.loadError.set(message);
+      this.alerts.showError(message);
     } finally {
       end();
     }
