@@ -1,7 +1,14 @@
 <label class="flex flex-col gap-1">
   @if (showLabel()) {
   <span class="text-[11px] font-medium text-base-content/60" i18n>Yard sign</span>
-  } @if (householdId()) {
+  } @if (householdId()) { @if (loadError(); as message) {
+  <!-- A read that failed is not an answer. Showing "None requested" here would state, on the
+       record, that nobody asked for a sign — including on plans where the read is refused. -->
+  <p class="py-1 text-[11px] text-warning">{{ message }}</p>
+  <button type="button" class="link self-start text-[11px] text-base-content/60" (click)="retry()" i18n>
+    Try again
+  </button>
+  } @else {
   <select
     class="select select-bordered select-sm w-full"
     [value]="request()?.status ?? ''"
@@ -20,7 +27,7 @@
     <ng-container i18n>Sign already requested in</ng-container> {{ openElsewhere()?.campaign_name }}
     <ng-container i18n>— one open request per household.</ng-container>
   </p>
-  } } @else {
+  } } } @else {
   <!-- No address, no lawn — guide to the fix instead of a dead disabled control. -->
   <p class="py-1 text-[11px] text-base-content/40" i18n>Needs an address. Assign a household first.</p>
   }

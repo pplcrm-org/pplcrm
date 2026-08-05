@@ -1,6 +1,7 @@
 import type { Transaction } from 'kysely';
 import type { AnyQB } from '../../../lib/base.repo';
 import { sql } from 'kysely';
+import { ConflictError } from '../../../errors/app-errors';
 import type { JoinedQueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
 import { resolvePageWindow } from '../../../lib/paging';
@@ -156,7 +157,9 @@ export class VolunteerEventsRepo extends BaseRepository<'volunteer_events'> {
       .executeTakeFirst();
 
     if (existing) {
-      throw new Error('This person is already signed up for this event.');
+      // A plain Error is redacted to "Something went wrong, please try again" in production.
+      // ConflictError is a recognised app error, so the real sentence reaches the organizer.
+      throw new ConflictError('This person is already signed up for this event.');
     }
 
     const row = {

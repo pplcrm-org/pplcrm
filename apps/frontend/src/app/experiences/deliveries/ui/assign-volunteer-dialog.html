@@ -44,6 +44,13 @@
     </div>
     } @else if (isSearching() && search().length > 0) {
     <span class="text-xs text-base-content/40 italic">Searching...</span>
+    } @else if (searchError(); as message) {
+    <!-- A search that failed says nothing about who is in the database, so it must not
+         be reported as "nobody matched". -->
+    <span class="text-xs text-warning">
+      {{ message }}
+      <button type="button" class="link text-base-content/60" (click)="retrySearch()">Search again</button>
+    </span>
     } @else if (search().trim().length > 0) {
     <span class="text-xs text-base-content/40 italic">No people match that search.</span>
     }

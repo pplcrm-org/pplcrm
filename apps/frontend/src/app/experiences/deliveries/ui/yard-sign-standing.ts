@@ -47,6 +47,11 @@ export class YardSignStanding {
   protected readonly request = signal<YardSignRequest | null>(null);
   /** Set when ANOTHER campaign holds the household's one open request — creating here can only 409. */
   protected readonly openElsewhere = signal<YardSignOpenElsewhere | null>(null);
+  /**
+   * Non-null when the last read failed. Without it the control rendered every failure — and
+   * every plan-gate refusal below Movement — as the authoritative answer "None requested".
+   */
+  protected readonly loadError = signal<string | null>(null);
 
   protected readonly readonlyContext = this.context.isArchivedContext;
   /** No local open request to manage and another campaign holds the slot: the select is a dead end. */
@@ -109,10 +114,16 @@ export class YardSignStanding {
     }
   }
 
+  /** Retry after a failed read, without reloading the surrounding page. */
+  protected retry(): void {
+    void this.load(this.householdId(), this.context.activeCampaignId());
+  }
+
   private async load(householdId: string | null, campaignId: string | null): Promise<void> {
     if (!householdId || !campaignId) {
       this.request.set(null);
       this.openElsewhere.set(null);
+      this.loadError.set(null);
       return;
     }
     const end = this._loading.begin();
@@ -120,10 +131,13 @@ export class YardSignStanding {
       const res = await this.svc.getSignStatus(householdId, campaignId);
       this.request.set(res.request);
       this.openElsewhere.set(res.open_in_other_campaign ?? null);
-    } catch {
-      // Degrade to "None requested" rather than blocking the page.
+      this.loadError.set(null);
+    } catch (err) {
+      // Say the read failed instead of asserting "None requested", which is a claim about
+      // the data that a failed read cannot support.
       this.request.set(null);
       this.openElsewhere.set(null);
+      this.loadError.set(getUserErrorMessage(err, 'Could not load the yard sign status.'));
     } finally {
       end();
     }

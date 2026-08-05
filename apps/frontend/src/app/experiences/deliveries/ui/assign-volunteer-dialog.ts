@@ -2,6 +2,7 @@ import { Component, inject, output, signal, viewChild } from '@angular/core';
 import { Icon } from '@icons/icon';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 
+import { getUserErrorMessage } from '@frontend/services/api/user-message';
 import { PersonsService } from '../../persons/services/persons-service';
 
 type PersonSearchResult = { id: string; first_name: string | null; last_name: string | null; email: string | null };
@@ -31,6 +32,8 @@ export class AssignVolunteerDialog {
   protected readonly results = signal<PersonSearchResult[]>([]);
   protected readonly isSearching = signal(false);
   protected readonly hasCurrent = signal(false);
+  /** Non-null when the search request itself failed, which is not the same as finding nobody. */
+  protected readonly searchError = signal<string | null>(null);
 
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -52,6 +55,7 @@ export class AssignVolunteerDialog {
   protected onSearchChange(value: string): void {
     this.search.set(value);
     if (this.searchTimer) clearTimeout(this.searchTimer);
+    this.searchError.set(null);
     if (!value.trim()) {
       this.results.set([]);
       this.isSearching.set(false);
@@ -75,11 +79,22 @@ export class AssignVolunteerDialog {
           return { id: String(p.id), first_name: p.first_name, last_name: p.last_name, email: p.email };
         }),
       );
-    } catch {
+      this.searchError.set(null);
+    } catch (err) {
       this.results.set([]);
+      this.searchError.set(getUserErrorMessage(err, 'Could not search your people.'));
     } finally {
       this.isSearching.set(false);
     }
+  }
+
+  /** Re-runs the last search after a failure, so the user does not have to retype it. */
+  protected retrySearch(): void {
+    const value = this.search();
+    if (!value.trim()) return;
+    this.searchError.set(null);
+    this.isSearching.set(true);
+    void this.executeSearch(value);
   }
 
   protected pick(p: PersonSearchResult): void {
@@ -97,5 +112,6 @@ export class AssignVolunteerDialog {
     this.search.set('');
     this.results.set([]);
     this.isSearching.set(false);
+    this.searchError.set(null);
   }
 }

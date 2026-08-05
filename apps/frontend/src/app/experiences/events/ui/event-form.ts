@@ -23,6 +23,12 @@ import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { EventsFrontendService } from '../services/events-frontend-service';
 import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
+/** True only for a real typed zero — a blank field (null or '') means "unlimited". */
+function isZeroCapacity(capacity: number | null): boolean {
+  if (capacity == null || String(capacity).trim() === '') return false;
+  return Number(capacity) === 0;
+}
+
 @Component({
   selector: 'pc-event-form',
   imports: [
@@ -306,6 +312,15 @@ export class EventFormComponent implements OnInit {
 
     if (this.endBeforeStartError()) {
       this.alerts.showError('The event cannot end before it starts, please check the dates and times again.');
+      return false;
+    }
+
+    // A typed 0 used to be saved as null and displayed as "Unlimited" — the opposite of
+    // what the organizer asked for. Say so, and name the control that does close signups.
+    if (isZeroCapacity(this.payload().capacity)) {
+      this.alerts.showError(
+        'A capacity of 0 is not a limit we can save. Leave it blank for unlimited, or unpublish the event to stop taking registrations.',
+      );
       return false;
     }
 
