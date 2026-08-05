@@ -15,6 +15,7 @@ import {
 } from '../../../../../../libs/common/src';
 import { AuthService } from '../../auth/auth-service';
 import { OrgModeService } from '../../services/org-mode.service';
+import { ConfirmDialogService } from '../../services/shared-dialog.service';
 import { HouseholdsService } from '../households/services/households-service';
 import { AccountSettingsComponent } from './account/account-settings';
 import { ApiKeysSettingsComponent } from './api-keys/api-keys-settings';
@@ -174,6 +175,7 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
 export class SettingsPage implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly auth = inject(AuthService);
+  private readonly dialogs = inject(ConfirmDialogService);
   private readonly orgMode = inject(OrgModeService);
   private readonly router = inject(Router);
 
@@ -285,10 +287,15 @@ export class SettingsPage implements OnInit {
   }
 
   /** Sections gated on a plan TIER (distinct from `isPlanLocked`'s "no plan settled yet"):
-   *  the shared inbox — and so mailbox sync — is Grassroots+. Demo mode wins in the template,
-   *  so a demo workspace sees the demo banner, not this one. */
+   *  the shared inbox — and so mailbox sync — is Grassroots+, donations is Grassroots+, and
+   *  deliveries route defaults are Movement+. Demo mode wins in the template, so a demo
+   *  workspace sees the demo banner, not this one. */
   protected isTierLocked(sectionId: string): boolean {
-    return sectionId === 'email-sync' && !planAllowsFeature(this.userSignal()?.tenant_plan, 'inbox');
+    const plan = this.userSignal()?.tenant_plan;
+    if (sectionId === 'email-sync') return !planAllowsFeature(plan, 'inbox');
+    if (sectionId === 'donations') return !planAllowsFeature(plan, 'donations');
+    if (sectionId === 'deliveries') return !planAllowsFeature(plan, 'deliveries');
+    return false;
   }
 
   /** Nav-button classes shared by config-driven and custom section buttons. */
@@ -418,6 +425,21 @@ export class SettingsPage implements OnInit {
 
   public ngOnInit(): void {
     void this.loadOnInit();
+  }
+
+  /** Route-level guard (unsavedChangesGuard): any config-driven section with unsaved edits —
+   *  not just the one currently shown — blocks navigating away, matching the per-section dirty
+   *  dot that's otherwise only visible while the user stays on this page. */
+  public async canDeactivate(): Promise<boolean> {
+    if (!this.sectionStates.some((s) => s.form().dirty())) return true;
+    return this.dialogs.confirm({
+      title: 'Leave without saving?',
+      message: 'Your unsaved workspace settings changes will be lost.',
+      variant: 'warning',
+      confirmText: 'Discard changes',
+      cancelText: 'Keep editing',
+      emphasizeCancel: true,
+    });
   }
 
   private async loadOnInit(): Promise<void> {

@@ -495,6 +495,7 @@ export const dashboardRoutes: Routes = [
       {
         path: ':section',
         loadComponent: () => import('./experiences/settings/settings-page').then((m) => m.SettingsPage),
+        canDeactivate: [unsavedChangesGuard],
         data: { mode: 'workspace' },
       },
     ],

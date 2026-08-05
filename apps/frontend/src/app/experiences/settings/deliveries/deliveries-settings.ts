@@ -17,7 +17,15 @@ import { DeliveriesRequestsService } from '../../deliveries/services/deliveries-
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="space-y-5">
-      <fieldset class="space-y-4" [disabled]="saving()">
+      @if (loadFailed()) {
+        <div class="flex items-start gap-2.5 rounded-lg border border-error/30 bg-error/10 px-3.5 py-2.5">
+          <span class="text-xs leading-relaxed text-base-content/80">
+            Couldn't load your saved delivery planning defaults. The values below are placeholders, not your stored
+            settings — saving is disabled until this page reloads successfully.
+          </span>
+        </div>
+      }
+      <fieldset class="space-y-4" [disabled]="saving() || loadFailed()">
         <div class="grid gap-x-5 gap-y-4 md:grid-cols-2">
           <label class="flex flex-col gap-1">
             <span class="text-xs font-medium text-base-content/70">Minutes per stop</span>
@@ -77,7 +85,7 @@ import { DeliveriesRequestsService } from '../../deliveries/services/deliveries-
       </fieldset>
 
       <div class="flex items-center gap-2 border-t border-base-200 pt-4">
-        <button type="button" class="btn btn-primary btn-sm" [disabled]="saving()" (click)="save()">
+        <button type="button" class="btn btn-primary btn-sm" [disabled]="saving() || loadFailed()" (click)="save()">
           @if (saving()) {
             <span class="loading loading-spinner loading-xs"></span>
           }
@@ -96,6 +104,10 @@ export class DeliveriesSettingsComponent implements OnInit {
 
   protected readonly loading = createLoadingGate();
   protected readonly saving = signal(false);
+  /** True when the stored route defaults failed to load — the fields below are showing this
+   *  component's own fallback values, not the tenant's real settings, so Save must not be
+   *  allowed to write them over what's actually stored (§deliveries-settings). */
+  protected readonly loadFailed = signal(false);
 
   protected readonly serviceMinutes = signal(5);
   protected readonly avgSpeedKmh = signal(30);
@@ -126,13 +138,17 @@ export class DeliveriesSettingsComponent implements OnInit {
       this.includeReturnLeg.set(defaults.includeReturnLeg);
       this.drivers.set(defaults.drivers);
     } catch {
-      // Leave the engine defaults showing; the user can still save over them.
+      // The fields still show this component's own fallback values (not the tenant's stored
+      // ones) — say so and block Save so it can't write them over the real settings.
+      this.loadFailed.set(true);
+      this.alerts.showError("Couldn't load your delivery planning defaults. The values shown here are not saved.");
     } finally {
       end();
     }
   }
 
   protected async save(): Promise<void> {
+    if (this.loadFailed()) return;
     this.saving.set(true);
     try {
       await this.svc.setRouteDefaults({
