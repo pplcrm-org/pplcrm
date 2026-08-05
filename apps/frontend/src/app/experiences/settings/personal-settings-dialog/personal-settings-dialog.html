@@ -50,6 +50,7 @@
               type="checkbox"
               class="checkbox checkbox-primary checkbox-sm"
               [checked]="isOn(emailKey, row.defaultOn)"
+              [disabled]="loadFailed()"
               (change)="toggle(emailKey, row.defaultOn)"
               [attr.aria-label]="row.label + ': email'"
             />
@@ -61,6 +62,7 @@
               type="checkbox"
               class="checkbox checkbox-primary checkbox-sm"
               [checked]="isOn(inAppKey, row.defaultOn)"
+              [disabled]="loadFailed()"
               (change)="toggle(inAppKey, row.defaultOn)"
               [attr.aria-label]="row.label + ': in-app'"
             />
@@ -72,6 +74,7 @@
               type="checkbox"
               class="checkbox checkbox-primary checkbox-sm"
               [checked]="isOn(smsKey, row.defaultOn)"
+              [disabled]="loadFailed()"
               (change)="toggle(smsKey, row.defaultOn)"
               [attr.aria-label]="row.label + ': text message'"
             />
@@ -80,6 +83,11 @@
         </div>
         }
       </div>
+      <!-- The load failure is toasted once (§AlertService), but the matrix stays open in the
+           dialog until closed — repeat it inline so it's still visible after the toast fades. -->
+      @if (loadFailed()) {
+      <p class="mt-1 text-xs text-error">Couldn't load your settings. Notification preferences are unavailable.</p>
+      }
       <!-- A text preference that is on with no number on file does nothing. Say so here, next to
            the switch, and point at the one page that fixes it (§3 guide, don't error). -->
       @if (needsMobileForSms()) {
@@ -135,8 +143,14 @@
     <div class="my-4 border-t border-base-200"></div>
 
     <!-- Footer contract (§5a) -->
-    <p class="text-xs" [class.text-base-content/45]="!savedJustNow()" [class.text-success]="savedJustNow()">
-      {{ savedJustNow() ? 'Saved just now' : 'Changes apply instantly; nothing to save' }}
+    <p
+      class="text-xs"
+      [class.text-error]="loadFailed()"
+      [class.text-base-content/45]="!savedJustNow() && !loadFailed()"
+      [class.text-success]="savedJustNow() && !loadFailed()"
+    >
+      {{ loadFailed() ? "Settings couldn't be loaded" : savedJustNow() ? 'Saved just now' : 'Changes apply instantly;
+      nothing to save' }}
     </p>
   </div>
 </div>

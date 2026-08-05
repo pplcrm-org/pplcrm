@@ -131,6 +131,9 @@ export class PersonalSettingsDialog {
   private loadStarted = false;
   protected readonly prefs = signal<Record<string, boolean>>({});
   protected readonly savedJustNow = signal<boolean>(false);
+  /** True when the profile load failed — the notification matrix would otherwise look live
+   *  while `persistNotifications` silently no-ops for lack of a loaded user (§personal-settings). */
+  protected readonly loadFailed = signal<boolean>(false);
 
   /**
    * The text preference is on but we have no number to send to, so it silently governs nothing.
@@ -198,6 +201,8 @@ export class PersonalSettingsDialog {
       this.prefs.set(next);
     } catch (err) {
       console.error('Failed to load personal settings', err);
+      this.loadFailed.set(true);
+      this.alerts.showError('Could not load your settings. Notification preferences are unavailable right now.');
     }
   }
 
