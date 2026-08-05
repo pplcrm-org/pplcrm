@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
 
+import { getUserErrorMessage } from '../../../services/api/user-message';
 import { CanvassingService } from '../services/canvassing-service';
 
 const MAX_ISSUES = 30;
@@ -121,8 +122,10 @@ export class CompanionSettingsDialog implements OnInit {
       });
       this.alerts.showSuccess('Saved. Companions pick this up on their next sync');
       this.closed.emit();
-    } catch {
-      this.alerts.showError('Could not save settings. Try again');
+    } catch (err) {
+      // The server's own sentence matters here: saving these settings is admin-or-owner, and
+      // "Try again" is false for an editor who can never succeed (§3, fail specifically).
+      this.alerts.showError(getUserErrorMessage(err, 'Could not save settings. Try again'));
     } finally {
       this.saving.set(false);
     }

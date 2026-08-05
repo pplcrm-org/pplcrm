@@ -7,6 +7,7 @@ import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.servic
 import { Qr } from '@uxcommon/components/qr/qr';
 
 import type { JoinCodePhoneSendResult, JoinCodeQr, JoinCodeRow } from '../../../../../../../libs/common/src';
+import { getUserErrorMessage } from '../../../services/api/user-message';
 import { JoinCodesService } from '../services/join-codes-service';
 
 /**
@@ -169,8 +170,10 @@ export class JoinCodePanel {
       const created = await this.svc.create({ turf_id: this.turfId(), label: this.turfName() });
       this.rows.update((r) => [created, ...r]);
       await this.loadQr(created.id);
-    } catch {
-      this.alerts.showError('Could not create a join code. Try again');
+    } catch (err) {
+      // Creating/rotating/texting a code is admin-or-owner. An editor's 403 must reach them
+      // as the server wrote it, not as a "Try again" that can never work (§3).
+      this.alerts.showError(getUserErrorMessage(err, 'Could not create a join code. Try again'));
     } finally {
       this.busy.set(false);
     }
@@ -193,8 +196,8 @@ export class JoinCodePanel {
       await this.svc.rotate(code.id);
       await this.reload();
       this.alerts.showSuccess('New code created. Reprint anything with the old one on it');
-    } catch {
-      this.alerts.showError('Could not rotate the code. Try again');
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Could not rotate the code. Try again'));
     } finally {
       this.busy.set(false);
     }
@@ -218,9 +221,9 @@ export class JoinCodePanel {
     this.busy.set(true);
     try {
       this.phoneSend.set(await this.svc.sendToMyPhone(code.id));
-    } catch {
+    } catch (err) {
       this.phoneSend.set(null);
-      this.alerts.showError('Could not send that. Try again');
+      this.alerts.showError(getUserErrorMessage(err, 'Could not send that. Try again'));
     } finally {
       this.busy.set(false);
     }
