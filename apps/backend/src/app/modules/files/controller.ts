@@ -5,7 +5,7 @@ import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth
 import type { getAllOptionsType } from '../../../../../../libs/common/src';
 import { logger } from '../../logger';
 import { ConflictError, ForbiddenError } from '../../errors/app-errors';
-import { describeFileReferences, findFileReferences } from '../../lib/file-references';
+import { describeFileReferences, findFileReferences, isReceiptSignatureFile } from '../../lib/file-references';
 import { getPlanLimits } from '../billing/usage-limits';
 import { verifyUploadHandle } from '../../lib/signed-download';
 import { sanitizeFilename } from '../../lib/storage-key';
@@ -163,6 +163,12 @@ export class FilesController extends BaseController<'files', FilesRepo> {
     const referrers = await findFileReferences(this.getRepo().db, tenant_id, id, {
       includeEntityOwnership: false,
     });
+    // The receipt signature image has no self-service replace-then-delete flow through this
+    // endpoint and no reference column anywhere — `receipts.signature_file_id` is its only
+    // liveness pointer, so it stays checked here even with entity ownership otherwise off.
+    if (await isReceiptSignatureFile(this.getRepo().db, tenant_id, id)) {
+      referrers.push({ table: 'settings', column: 'receipts.signature_file_id', label: 'the receipt signature' });
+    }
     if (referrers.length > 0) {
       throw new ConflictError(`This file can't be deleted because ${describeFileReferences(referrers)} still uses it.`);
     }

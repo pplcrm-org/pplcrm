@@ -267,20 +267,32 @@ async function entityOwnerExists(
           .where('id', '=', entityId)
           .executeTakeFirst(),
       );
-    case 'receipt_signature': {
+    case 'receipt_signature':
       // Owned by workspace settings, not a record: live while `receipts.signature_file_id`
       // still points at this file. A replaced signature becomes deletable.
-      const setting = await db
-        .selectFrom('settings')
-        .select('value')
-        .where('tenant_id', '=', tenantId)
-        .where('key', '=', 'receipts.signature_file_id')
-        .executeTakeFirst();
-      return typeof setting?.value === 'string' && setting.value === fileId;
-    }
+      return isReceiptSignatureFile(db, tenantId, fileId);
     default:
       return true;
   }
+}
+
+/**
+ * Whether the tenant's receipts configuration still points at this file as its signature image
+ * (`receipts.signature_file_id`). Unlike the rest of the entity-ownership tag machinery, this is
+ * checked independently of `includeEntityOwnership` — the Files-page delete path (Storage page)
+ * turns that flag off so an owning feature (newsletter/team images) can delete its own attachment
+ * through the same endpoint, but a receipt signature has no such self-service delete flow and no
+ * reference column anywhere else, so it must stay protected there too. See
+ * `FilesController.delete`.
+ */
+export async function isReceiptSignatureFile(db: DbHandle, tenantId: string, fileId: string): Promise<boolean> {
+  const setting = await db
+    .selectFrom('settings')
+    .select('value')
+    .where('tenant_id', '=', tenantId)
+    .where('key', '=', 'receipts.signature_file_id')
+    .executeTakeFirst();
+  return typeof setting?.value === 'string' && setting.value === fileId;
 }
 
 /** The entity-ownership tag on the row itself, when it names a record that still exists. */
