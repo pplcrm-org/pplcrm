@@ -22,6 +22,7 @@ import { MapTeamsPersonsRepo } from '../../teams/repositories/map-teams-persons.
 import { TeamsRepo } from '../../teams/repositories/teams.repo';
 import type { OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { ImportsRepo } from '../../imports/repositories/imports.repo';
+import { createUploadImport } from '../../imports/upload-intake';
 import { ListsRepo } from '../../lists/repositories/lists.repo';
 import { MapListsPersonsRepo } from '../../lists/repositories/map-lists-persons.repo';
 import { NotificationsRepo } from '../../notifications/repositories/notifications.repo';
@@ -34,6 +35,75 @@ import { logger } from '../../../logger';
 
 /** Longest text stored in `data_imports.error_message` — the History page shows it inline. */
 const ERROR_MESSAGE_MAX = 1000;
+
+/**
+ * Legacy intake for `persons.import`: every mapped row (plus the raw CSV text) travels in the
+ * mutation body. Kept unchanged while the wizard still sends it; the upload-based shape below
+ * replaces it.
+ */
+export interface PersonsLegacyImportInput {
+  rows: Array<{
+    first_name?: string;
+    middle_names?: string;
+    last_name?: string;
+    email?: string;
+    email2?: string;
+    mobile?: string;
+    notes?: string;
+    home_phone?: string;
+    street_num?: string;
+    street1?: string;
+    street2?: string;
+    apt?: string;
+    city?: string;
+    state?: string;
+    zip?: string;
+    country?: string;
+    company?: string;
+    tags?: string;
+    /**
+     * Electoral columns the file itself named. A purchased US voter file is one row per voter,
+     * so it comes in through this importer rather than the households one, and it routinely
+     * already carries the congressional district, both state legislative district numbers, the
+     * precinct and the ward on every row. Taking those columns writes `household_districts`
+     * rows straight out of the file: no polygon data, no address lookup, nothing billed.
+     *
+     * The keys match `IMPORTED_AREA_SETS` in modules/households/electoral-areas.ts, which is
+     * what `readImportedAreas` reads them back out under.
+     */
+    electoral_district?: string;
+    congressional_district?: string;
+    legislative_district?: string;
+    state_house_district?: string;
+    state_senate_district?: string;
+    ward?: string;
+    precinct?: string;
+  }>;
+  tags?: string[];
+  skipped?: number;
+  file_name?: string | null;
+  duplicate_decision?: 'merge' | 'skip' | 'import_new';
+  list_name?: string;
+  /** Raw uploaded CSV text, kept 90 days so the History page can offer a re-download (spec §17). */
+  source_csv?: string;
+  /** Rows the wizard already excluded/cleaned client-side (bad-email "Skip"), recorded for History's skip-reasons export. */
+  client_skip_reasons?: Array<{ row: number; email?: string; reason: string }>;
+}
+
+/**
+ * Upload-based intake for `persons.import`: the browser PUT the raw CSV to blob storage via
+ * `imports.getUploadUrl`, and the mutation carries only the signed handle and the column
+ * mapping. The `import_csv` background job stream-parses the file server-side.
+ */
+export interface PersonsUploadImportInput {
+  upload_handle: string;
+  /** Stringified 0-based CSV column index → import field key (PersonsImportMappingObj). */
+  mapping: Record<string, string>;
+  file_name?: string | null;
+  tags?: string[];
+  duplicate_decision?: 'merge' | 'skip' | 'import_new';
+  list_name?: string;
+}
 
 export class PersonsService {
   private mapPersonsTagRepo = new MapPersonsTagRepo();
@@ -617,57 +687,50 @@ export class PersonsService {
     };
   }
 
-  public async importRows(
-    input: {
-      rows: Array<{
-        first_name?: string;
-        middle_names?: string;
-        last_name?: string;
-        email?: string;
-        email2?: string;
-        mobile?: string;
-        notes?: string;
-        home_phone?: string;
-        street_num?: string;
-        street1?: string;
-        street2?: string;
-        apt?: string;
-        city?: string;
-        state?: string;
-        zip?: string;
-        country?: string;
-        company?: string;
-        tags?: string;
-        /**
-         * Electoral columns the file itself named. A purchased US voter file is one row per voter,
-         * so it comes in through this importer rather than the households one, and it routinely
-         * already carries the congressional district, both state legislative district numbers, the
-         * precinct and the ward on every row. Taking those columns writes `household_districts`
-         * rows straight out of the file: no polygon data, no address lookup, nothing billed.
-         *
-         * The keys match `IMPORTED_AREA_SETS` in modules/households/electoral-areas.ts, which is
-         * what `readImportedAreas` reads them back out under.
-         */
-        electoral_district?: string;
-        congressional_district?: string;
-        legislative_district?: string;
-        state_house_district?: string;
-        state_senate_district?: string;
-        ward?: string;
-        precinct?: string;
-      }>;
-      tags?: string[];
-      skipped?: number;
-      file_name?: string | null;
-      duplicate_decision?: 'merge' | 'skip' | 'import_new';
-      list_name?: string;
-      /** Raw uploaded CSV text, kept 90 days so the History page can offer a re-download (spec §17). */
-      source_csv?: string;
-      /** Rows the wizard already excluded/cleaned client-side (bad-email "Skip"), recorded for History's skip-reasons export. */
-      client_skip_reasons?: Array<{ row: number; email?: string; reason: string }>;
-    },
-    auth: IAuthKeyPayload,
-  ) {
+  /**
+   * Upload-based intake: verify the handle and size, record the import, and enqueue the
+   * `import_csv` job — the file is already in blob storage, so nothing row-shaped happens here.
+   */
+  private async importFromUpload(input: PersonsUploadImportInput, auth: IAuthKeyPayload) {
+    const campaign_id = (await this.settingsController.getCurrentCampaignId(auth)) as string;
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const autoTag = `Imported-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+    const tags = [...(input.tags ?? []), autoTag].filter((t) => !!t && t.trim().length > 0);
+
+    const created = await createUploadImport({
+      auth,
+      importsRepo: this.importsRepo,
+      storageService: this.storageService,
+      source: 'persons',
+      input,
+      fallbackFileName: `${autoTag}.csv`,
+      tagName: autoTag,
+      jobExtras: {
+        campaign_id,
+        tags,
+        duplicate_decision: input.duplicate_decision ?? 'skip',
+        list_name: input.list_name ?? null,
+      },
+    });
+
+    return {
+      inserted: 0,
+      errors: 0,
+      skipped: 0,
+      tag: autoTag,
+      file_name: created.file_name,
+      import_id: created.import_id,
+      tenant_id: auth.tenant_id,
+      campaign_id,
+      status: 'pending',
+    };
+  }
+
+  public async importRows(input: PersonsLegacyImportInput | PersonsUploadImportInput, auth: IAuthKeyPayload) {
+    if ('upload_handle' in input) {
+      return this.importFromUpload(input, auth);
+    }
     const campaign_id = (await this.settingsController.getCurrentCampaignId(auth)) as string;
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');

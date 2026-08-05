@@ -177,6 +177,7 @@ export {
   MAX_ROW_OFFSET,
   MAX_BULK_IDS,
   MAX_IMPORT_ROWS,
+  MAX_IMPORT_FILE_BYTES,
   rowCountSchema,
   rowOffsetSchema,
   refinePageSpan,

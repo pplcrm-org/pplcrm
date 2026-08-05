@@ -54,6 +54,7 @@
     "@types/google.maps": "^3.64.0",
     "argon2": "^0.44.0",
     "cally": "^0.8.0",
+    "csv-parse": "^7.0.2",
     "dompurify": "^3.4.1",
     "fast-jwt": "^6.2.2",
     "fastify": "^5.8.5",

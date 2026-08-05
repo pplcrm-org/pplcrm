@@ -1,4 +1,5 @@
 import {
+  HouseholdsImportMappingObj,
   HouseholdsImportRowObj,
   UpdateHouseholdsObj,
   getAllOptions,
@@ -27,20 +28,69 @@ export const HouseholdsRouter = router({
 
   import: authProcedure
     .input(
-      z.object({
-        // Row shape (including the electoral columns) lives in
-        // libs/common/src/lib/schemas/import-rows.schema.ts, shared with the people importer so
-        // the two accept exactly the same columns.
-        rows: z.array(HouseholdsImportRowObj).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
-        tags: z.array(z.string().trim().min(1).max(50)).optional(),
-        skipped: z.number().int().nonnegative().optional(),
-        file_name: z.string().trim().min(1).max(255).optional(),
-        source_csv: z.string().max(10_000_000).optional(),
-      }),
+      // One input object serves both intakes; exactly-one-of rows/upload_handle is enforced by
+      // superRefine rather than a union so RouterInputs indexing on the frontend keeps its
+      // shape. Row shape (including the electoral columns) lives in
+      // libs/common/src/lib/schemas/import-rows.schema.ts, shared with the people importer so
+      // the two accept exactly the same columns.
+      z
+        .object({
+          // Legacy intake: mapped rows (plus the raw CSV text) in the mutation body.
+          rows: z
+            .array(HouseholdsImportRowObj)
+            .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`)
+            .optional(),
+          // Upload intake: the CSV was PUT to blob storage via imports.getUploadUrl; the
+          // import_csv background job stream-parses it server-side.
+          upload_handle: z.string().min(1).max(4096).optional(),
+          // Stringified 0-based column index → import field key; required with upload_handle.
+          mapping: HouseholdsImportMappingObj.optional(),
+          tags: z.array(z.string().trim().min(1).max(50)).optional(),
+          skipped: z.number().int().nonnegative().optional(),
+          file_name: z.string().trim().min(1).max(255).optional(),
+          source_csv: z.string().max(10_000_000).optional(),
+        })
+        .superRefine((val, ctx) => {
+          const hasRows = val.rows !== undefined;
+          const hasUpload = val.upload_handle !== undefined;
+          if (hasRows === hasUpload) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'Provide exactly one of rows (rows in the body) or upload_handle (uploaded file).',
+            });
+          }
+          if (hasUpload && val.mapping === undefined) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['mapping'],
+              message: 'A column mapping is required with upload_handle.',
+            });
+          }
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       ctx.res.status(202);
-      return households.importRows(input, ctx.auth);
+      if (input.upload_handle !== undefined) {
+        return households.importRows(
+          {
+            upload_handle: input.upload_handle,
+            mapping: input.mapping ?? {},
+            tags: input.tags,
+            file_name: input.file_name,
+          },
+          ctx.auth,
+        );
+      }
+      return households.importRows(
+        {
+          rows: input.rows ?? [],
+          tags: input.tags,
+          skipped: input.skipped,
+          file_name: input.file_name,
+          source_csv: input.source_csv,
+        },
+        ctx.auth,
+      );
     }),
 
   // Overrides the generic CRUD delete on purpose. That one deletes the row directly, which both

@@ -21,6 +21,7 @@ import { StorageService } from '../../lib/storage.service';
 import { HouseholdRepo } from './repositories/households.repo';
 import { MapHouseholdsTagsRepo } from './repositories/map-households-tags.repo';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
+import { createUploadImport } from '../imports/upload-intake';
 import { TagsRepo } from '../tags/repositories/tags.repo';
 import { applyHouseholdMatchesBatch, matchPointToSets, requiredSetIdsForTenant } from '../../lib/gis/boundary-match';
 import { ensureImportedBoundarySets, readImportedAreas, writeImportedAreas } from './electoral-areas';
@@ -603,13 +604,22 @@ export class HouseholdsController extends BaseController<'households', Household
    * shape as the persons/companies/tasks imports.
    */
   public async importRows(
-    input: {
-      rows: Array<Record<string, string | null | undefined>>;
-      tags?: string[];
-      skipped?: number;
-      file_name?: string | null;
-      source_csv?: string | null;
-    },
+    input:
+      | {
+          rows: Array<Record<string, string | null | undefined>>;
+          tags?: string[];
+          skipped?: number;
+          file_name?: string | null;
+          source_csv?: string | null;
+        }
+      | {
+          /** Upload-based intake: the CSV is already in blob storage (imports.getUploadUrl). */
+          upload_handle: string;
+          /** Stringified 0-based CSV column index → import field key (HouseholdsImportMappingObj). */
+          mapping: Record<string, string>;
+          tags?: string[];
+          file_name?: string | null;
+        },
     auth: IAuthKeyPayload,
   ) {
     const campaign_id = await this.settingsController.getCurrentCampaignId(auth);
@@ -617,6 +627,28 @@ export class HouseholdsController extends BaseController<'households', Household
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const autoName = `Imported-Households-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+
+    if ('upload_handle' in input) {
+      const created = await createUploadImport({
+        auth,
+        importsRepo: this.importsRepo,
+        storageService: this.storageService,
+        source: 'households',
+        input,
+        fallbackFileName: `${autoName}.csv`,
+        tagName: null,
+        jobExtras: { campaign_id, tags: input.tags ?? [] },
+      });
+      return {
+        inserted: 0,
+        errors: 0,
+        skipped: 0,
+        file_name: created.file_name,
+        import_id: created.import_id,
+        tenant_id: auth.tenant_id,
+        status: 'pending',
+      };
+    }
 
     const skippedFromClient = Math.max(0, Math.floor(input.skipped ?? 0));
     const requestedFileName = (input.file_name ?? '').trim();

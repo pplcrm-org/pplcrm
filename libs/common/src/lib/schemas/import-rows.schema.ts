@@ -129,28 +129,33 @@ export const TasksImportRowObj = z.object({
 export type TasksImportRowType = z.infer<typeof TasksImportRowObj>;
 
 /**
- * A CSV header cell as a mapping key. Headers are user data straight out of the file's first
- * line, so the only constraints are non-empty and bounded.
+ * A CSV column position as a mapping key: the 0-based column index, stringified (`"0"`, `"1"`, …).
+ *
+ * Keyed by column index rather than header text because real files can repeat a header name —
+ * two "Phone" columns are two different columns — and the wizard's map step assigns a field per
+ * column position (its mapping signal is index-aligned with the header array), not per header
+ * string. An index key survives duplicate headers; a header key silently collapses them.
  */
-const importCsvHeaderSchema = z.string().min(1).max(200);
+const importColumnIndexSchema = z.string().regex(/^(0|[1-9]\d{0,3})$/, 'Column index must be a whole number');
 
 /**
- * Import column mappings: CSV header → importable field key, one schema per entity so the value
- * set is constrained to exactly that entity's row-schema keys. `.keyof()` derives the allowed
- * keys from the row schema itself, so adding a field to a row schema automatically makes it
- * mappable — there is no second string list to keep in sync.
+ * Import column mappings: stringified 0-based CSV column index → importable field key, one schema
+ * per entity so the value set is constrained to exactly that entity's row-schema keys. `.keyof()`
+ * derives the allowed keys from the row schema itself, so adding a field to a row schema
+ * automatically makes it mappable — there is no second string list to keep in sync.
  *
- * Not consumed anywhere yet: the staged import redesign's server-side CSV parsing will validate
- * the wizard's saved mapping against these before applying it to file rows.
+ * Consumed by the upload-based import path: the four `<entity>.import` mutations validate the
+ * wizard's saved mapping against these, and the `import_csv` background job applies it to the
+ * file's records column by column.
  */
-export const PersonsImportMappingObj = z.record(importCsvHeaderSchema, PersonsImportRowObj.keyof());
+export const PersonsImportMappingObj = z.record(importColumnIndexSchema, PersonsImportRowObj.keyof());
 export type PersonsImportMappingType = z.infer<typeof PersonsImportMappingObj>;
 
-export const HouseholdsImportMappingObj = z.record(importCsvHeaderSchema, HouseholdsImportRowObj.keyof());
+export const HouseholdsImportMappingObj = z.record(importColumnIndexSchema, HouseholdsImportRowObj.keyof());
 export type HouseholdsImportMappingType = z.infer<typeof HouseholdsImportMappingObj>;
 
-export const CompaniesImportMappingObj = z.record(importCsvHeaderSchema, CompaniesImportRowObj.keyof());
+export const CompaniesImportMappingObj = z.record(importColumnIndexSchema, CompaniesImportRowObj.keyof());
 export type CompaniesImportMappingType = z.infer<typeof CompaniesImportMappingObj>;
 
-export const TasksImportMappingObj = z.record(importCsvHeaderSchema, TasksImportRowObj.keyof());
+export const TasksImportMappingObj = z.record(importColumnIndexSchema, TasksImportRowObj.keyof());
 export type TasksImportMappingType = z.infer<typeof TasksImportMappingObj>;

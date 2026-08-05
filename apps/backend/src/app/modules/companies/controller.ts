@@ -18,6 +18,7 @@ import { slugifyRecordName } from '../../../../../../libs/common/src';
 import { backfillMissingSlugs, uniqueSlug } from '../../lib/slug';
 import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../lib/ndjson';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
+import { createUploadImport } from '../imports/upload-intake';
 import { StorageService } from '../../lib/storage.service';
 import { TRPCError } from '@trpc/server';
 import { logger } from '../../logger';
@@ -223,25 +224,54 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
   }
 
   public async importRows(
-    input: {
-      rows: Array<{
-        name: string;
-        description?: string | null;
-        website?: string | null;
-        email?: string | null;
-        phone?: string | null;
-        industry?: string | null;
-        notes?: string | null;
-      }>;
-      skipped?: number;
-      file_name?: string | null;
-      source_csv?: string | null;
-    },
+    input:
+      | {
+          rows: Array<{
+            name: string;
+            description?: string | null;
+            website?: string | null;
+            email?: string | null;
+            phone?: string | null;
+            industry?: string | null;
+            notes?: string | null;
+          }>;
+          skipped?: number;
+          file_name?: string | null;
+          source_csv?: string | null;
+        }
+      | {
+          /** Upload-based intake: the CSV is already in blob storage (imports.getUploadUrl). */
+          upload_handle: string;
+          /** Stringified 0-based CSV column index → import field key (CompaniesImportMappingObj). */
+          mapping: Record<string, string>;
+          file_name?: string | null;
+        },
     auth: IAuthKeyPayload,
   ) {
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const autoTag = `Imported-Companies-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+
+    if ('upload_handle' in input) {
+      const created = await createUploadImport({
+        auth,
+        importsRepo: this.importsRepo,
+        storageService: this.storageService,
+        source: 'companies',
+        input,
+        fallbackFileName: `${autoTag}.csv`,
+        tagName: null,
+      });
+      return {
+        inserted: 0,
+        errors: 0,
+        skipped: 0,
+        file_name: created.file_name,
+        import_id: created.import_id,
+        tenant_id: auth.tenant_id,
+        status: 'pending',
+      };
+    }
 
     const skippedFromClient = Math.max(0, Math.floor(input.skipped ?? 0));
     const requestedFileName = (input.file_name ?? '').trim();

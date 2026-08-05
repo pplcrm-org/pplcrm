@@ -304,6 +304,32 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('check_all_usage_limits') }),
 
+  // ── Imports ──────────────────────────────────────────────────────────────
+  /**
+   * Upload-based CSV import: the browser PUT the raw file to blob storage (a write SAS from
+   * `imports.getUploadUrl`), and the mutation enqueued this job instead of shipping rows in its
+   * body. The handler streams the blob twice — once to count and validate rows, once to insert —
+   * applying `mapping` (stringified 0-based column index → import field key) to each record.
+   * Distinct from the legacy no-discriminator import payload below, which reads a pre-mapped
+   * NDJSON payload blob the mutation wrote.
+   */
+  z.object({
+    type: z.literal('import_csv'),
+    import_id: idSchema,
+    tenant_id: idSchema,
+    user_id: idSchema,
+    source: z.enum(['persons', 'households', 'companies', 'tasks']),
+    storage_key: z.string(),
+    mapping: z.record(z.string(), z.string()),
+    campaign_id: idSchema.nullish(),
+    tags: z.array(z.string()).nullish(),
+    file_name: z.string().nullish(),
+    // Persons only — how rows whose email matches an existing person are handled.
+    duplicate_decision: z.enum(['merge', 'skip', 'import_new']).nullish(),
+    // Persons only — static list every imported/merged person is added to.
+    list_name: z.string().nullish(),
+  }),
+
   // ── Exports ──────────────────────────────────────────────────────────────
   z.object({
     type: z.literal('export_csv'),

@@ -24,6 +24,7 @@ import { TransactionalEmailService } from '../../lib/mail/transactional-mail.ser
 import { notificationEnabled } from '../../lib/profile-preferences';
 import { assertAssigneeInTenant, findAssigneeForNotification } from '../../lib/tenant-members';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
+import { createUploadImport } from '../imports/upload-intake';
 import { chunkRows, IMPORT_CHUNK_SIZE, NDJSON_CONTENT_TYPE, serializeRowsToNdjson } from '../../lib/ndjson';
 import { StorageService } from '../../lib/storage.service';
 import { TRPCError } from '@trpc/server';
@@ -313,24 +314,53 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
   private readonly storageService = new StorageService();
 
   public async importRows(
-    input: {
-      rows: Array<{
-        name: string;
-        details?: string | null;
-        status?: string | null;
-        priority?: string | null;
-        due_at?: string | null;
-        assigned_to?: string | null;
-      }>;
-      skipped?: number;
-      file_name?: string | null;
-      source_csv?: string | null;
-    },
+    input:
+      | {
+          rows: Array<{
+            name: string;
+            details?: string | null;
+            status?: string | null;
+            priority?: string | null;
+            due_at?: string | null;
+            assigned_to?: string | null;
+          }>;
+          skipped?: number;
+          file_name?: string | null;
+          source_csv?: string | null;
+        }
+      | {
+          /** Upload-based intake: the CSV is already in blob storage (imports.getUploadUrl). */
+          upload_handle: string;
+          /** Stringified 0-based CSV column index → import field key (TasksImportMappingObj). */
+          mapping: Record<string, string>;
+          file_name?: string | null;
+        },
     auth: IAuthKeyPayload,
   ) {
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const autoTag = `Imported-Tasks-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+
+    if ('upload_handle' in input) {
+      const created = await createUploadImport({
+        auth,
+        importsRepo: this.importsRepo,
+        storageService: this.storageService,
+        source: 'tasks',
+        input,
+        fallbackFileName: `${autoTag}.csv`,
+        tagName: null,
+      });
+      return {
+        inserted: 0,
+        errors: 0,
+        skipped: 0,
+        file_name: created.file_name,
+        import_id: created.import_id,
+        tenant_id: auth.tenant_id,
+        status: 'pending',
+      };
+    }
 
     const skippedFromClient = Math.max(0, Math.floor(input.skipped ?? 0));
     const requestedFileName = (input.file_name ?? '').trim();

@@ -1,5 +1,6 @@
 import {
   idSchema,
+  CompaniesImportMappingObj,
   CompaniesImportRowObj,
   CompanyInputObj,
   MAX_IMPORT_ROWS,
@@ -42,18 +43,56 @@ export const CompaniesRouter = router({
 
   import: authProcedure
     .input(
-      z.object({
-        // Row shape lives in libs/common/src/lib/schemas/import-rows.schema.ts (it is the same
-        // object as CompanyInputObj — the import has always validated rows as form payloads).
-        rows: z.array(CompaniesImportRowObj).max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`),
-        skipped: z.number().int().nonnegative().optional(),
-        file_name: z.string().trim().min(1).max(255).optional(),
-        source_csv: z.string().max(10_000_000).optional(),
-      }),
+      // One input object serves both intakes; exactly-one-of rows/upload_handle is enforced by
+      // superRefine rather than a union so RouterInputs indexing on the frontend keeps its
+      // shape. Row shape lives in libs/common/src/lib/schemas/import-rows.schema.ts (it is the
+      // same object as CompanyInputObj — the import has always validated rows as form payloads).
+      z
+        .object({
+          // Legacy intake: mapped rows (plus the raw CSV text) in the mutation body.
+          rows: z
+            .array(CompaniesImportRowObj)
+            .max(MAX_IMPORT_ROWS, `Import at most ${MAX_IMPORT_ROWS} rows at a time`)
+            .optional(),
+          // Upload intake: the CSV was PUT to blob storage via imports.getUploadUrl; the
+          // import_csv background job stream-parses it server-side.
+          upload_handle: z.string().min(1).max(4096).optional(),
+          // Stringified 0-based column index → import field key; required with upload_handle.
+          mapping: CompaniesImportMappingObj.optional(),
+          skipped: z.number().int().nonnegative().optional(),
+          file_name: z.string().trim().min(1).max(255).optional(),
+          source_csv: z.string().max(10_000_000).optional(),
+        })
+        .superRefine((val, ctx) => {
+          const hasRows = val.rows !== undefined;
+          const hasUpload = val.upload_handle !== undefined;
+          if (hasRows === hasUpload) {
+            ctx.addIssue({
+              code: 'custom',
+              message: 'Provide exactly one of rows (rows in the body) or upload_handle (uploaded file).',
+            });
+          }
+          if (hasUpload && val.mapping === undefined) {
+            ctx.addIssue({
+              code: 'custom',
+              path: ['mapping'],
+              message: 'A column mapping is required with upload_handle.',
+            });
+          }
+        }),
     )
     .mutation(async ({ input, ctx }) => {
       ctx.res.status(202);
-      return companies.importRows(input, ctx.auth);
+      if (input.upload_handle !== undefined) {
+        return companies.importRows(
+          { upload_handle: input.upload_handle, mapping: input.mapping ?? {}, file_name: input.file_name },
+          ctx.auth,
+        );
+      }
+      return companies.importRows(
+        { rows: input.rows ?? [], skipped: input.skipped, file_name: input.file_name, source_csv: input.source_csv },
+        ctx.auth,
+      );
     }),
 
   getPotentialDuplicates: authProcedure

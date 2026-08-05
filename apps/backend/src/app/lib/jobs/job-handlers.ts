@@ -7,7 +7,7 @@ import { handleMatchBoundaries, handleSweepUnmatchedBoundaries } from './handler
 import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
 import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
-import { handleImportJob } from './handlers/import.handlers';
+import { handleImportCsvJob, handleImportJob } from './handlers/import.handlers';
 import { handleTriggerListJoined } from './handlers/lists.handlers';
 import {
   handleCleanupActivities,
@@ -209,6 +209,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'export_csv':
       await handleExportCsv(job, db);
+      break;
+    case 'import_csv':
+      await handleImportCsvJob(job, db);
       break;
     default: {
       const _exhaustive: never = job;
