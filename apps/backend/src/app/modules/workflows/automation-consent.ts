@@ -8,10 +8,16 @@ type Db = Kysely<Models> | Transaction<Models>;
 
 export type AutomationSendConsent = { ok: true } | { ok: false; reason: string };
 
-/** Which enrollment the send belongs to. Supplied by the drip worker; it is the only thing that
- * can unlock the one-goodbye-email carve-out below, which is keyed on the enrollment's TRIGGER. */
+/** Which automation step the send belongs to. Either field identifies the enrollment, which is
+ * the only thing that can unlock the one-goodbye-email carve-out below — it is keyed on that
+ * enrollment's TRIGGER. Callers with neither field get the ordinary consent rules. */
 export interface AutomationSendContext {
+  /** The drip worker's case: the step has not been recorded as a run yet. */
   enrollmentId?: string | null;
+  /** The delivery handler's case: this send already has a `workflow_runs` row, written as
+   * 'pending' before the delivery job was queued. The enrollment is read from that row, and the
+   * row itself is not counted against the one-goodbye allowance — it IS the goodbye email. */
+  workflowRunId?: string | null;
 }
 
 /** The trigger that fires when someone unsubscribes from everything — the only trigger whose
@@ -70,7 +76,7 @@ export async function resolveAutomationSendConsent(
   switch (messageClass) {
     case 'relationship':
       if (subscriptions.length > 0 && !hasSubscribedRow) {
-        if (await goodbyeCarveOutApplies(db, tenantId, person.id, context?.enrollmentId ?? null)) {
+        if (await goodbyeCarveOutApplies(db, tenantId, person.id, context)) {
           return { ok: true };
         }
         return { ok: false, reason: 'Contact has unsubscribed from your emails' };
@@ -105,11 +111,11 @@ export async function resolveAutomationSendConsent(
  * This carve-out lets such an automation send ONE last email.
  *
  * It is narrow on purpose:
- *  - Keyed on the ENROLLMENT'S TRIGGER, not on the message class. The caller must name the
+ *  - Keyed on the ENROLLMENT'S TRIGGER, not on the message class. The caller must identify the
  *    enrollment, that enrollment must belong to this person, and its workflow must be on the
  *    `new_unsubscriber` trigger. No other automation gains the ability to email an unsubscribed
  *    person, even another relationship-class one.
- *  - Genuinely once PER PERSON, not per enrollment: any earlier email step of any
+ *  - Genuinely once PER PERSON, not per enrollment: any OTHER email step of any
  *    `new_unsubscriber` automation that is queued ('pending') or sent ('success') closes it. A
  *    second email step in the same sequence, and a second enrollment from a later unsubscribe,
  *    both find that run and are refused. (A run that ended 'skipped' or 'failed' delivered no
@@ -122,8 +128,21 @@ async function goodbyeCarveOutApplies(
   db: Db,
   tenantId: string,
   personId: string,
-  enrollmentId: string | null,
+  context: AutomationSendContext | undefined,
 ): Promise<boolean> {
+  // The run this send already has, if any: it is the goodbye email itself, so it must not be
+  // read as an earlier goodbye that already spent the allowance.
+  const currentRunId = context?.workflowRunId ?? null;
+  let enrollmentId = context?.enrollmentId ?? null;
+  if (!enrollmentId && currentRunId) {
+    const run = await db
+      .selectFrom('workflow_runs')
+      .select('enrollment_id')
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', currentRunId)
+      .executeTakeFirst();
+    enrollmentId = run?.enrollment_id ?? null;
+  }
   if (!enrollmentId) return false;
 
   const enrollment = await db
@@ -138,7 +157,7 @@ async function goodbyeCarveOutApplies(
     .executeTakeFirst();
   if (!enrollment) return false;
 
-  const alreadyUsed = await db
+  let spent = db
     .selectFrom('workflow_runs')
     .innerJoin('workflows', 'workflows.id', 'workflow_runs.workflow_id')
     .select('workflow_runs.id')
@@ -147,8 +166,10 @@ async function goodbyeCarveOutApplies(
     .where('workflow_runs.step_kind', '=', 'send_email')
     .where('workflow_runs.status', 'in', ['pending', 'success'])
     .where('workflows.tenant_id', '=', tenantId)
-    .where('workflows.trigger_type', '=', GOODBYE_TRIGGER)
-    .executeTakeFirst();
+    .where('workflows.trigger_type', '=', GOODBYE_TRIGGER);
+  if (currentRunId) {
+    spent = spent.where('workflow_runs.id', '!=', currentRunId);
+  }
 
-  return !alreadyUsed;
+  return !(await spent.executeTakeFirst());
 }
