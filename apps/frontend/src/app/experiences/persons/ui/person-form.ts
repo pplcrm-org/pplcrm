@@ -396,16 +396,38 @@ export class PersonForm implements OnInit {
       return;
     }
 
-    // Ask scope: just this person vs everyone in current household
-    const applyToAll = await this.confirmDlg.confirm({
-      title: 'Change household',
-      message: 'Apply to everyone in the current household, or just this person?',
-      variant: 'info',
-      confirmText: 'Everyone',
-      cancelText: 'Just this person',
-    });
-
     const currentHousehold = this.householdId();
+
+    // Everyone-in-the-household is only meaningful for a real household. The placeholder
+    // household is the shared bucket every address-less person sits in, so "everyone" there
+    // would move unrelated contacts across the whole workspace (REVIEW5 T1-10).
+    const canMoveEveryone = !!currentHousehold && !this.isPlaceholderHousehold();
+
+    // Three-way choice so dismissing the dialog moves nobody.
+    let applyToAll = false;
+    if (canMoveEveryone) {
+      const scope = await this.confirmDlg.choose<'all' | 'one'>({
+        title: 'Change household',
+        message: 'Apply to everyone in the current household, or just this person?',
+        variant: 'info',
+        choices: [
+          { label: 'Everyone in the current household', value: 'all' },
+          { label: 'Just this person', value: 'one' },
+        ],
+        cancelText: 'Cancel',
+      });
+      if (scope === null) return;
+      applyToAll = scope === 'all';
+    } else {
+      const confirmed = await this.confirmDlg.confirm({
+        title: 'Change household',
+        message: 'Move this person to the selected household?',
+        variant: 'info',
+        confirmText: 'Move this person',
+        cancelText: 'Cancel',
+      });
+      if (!confirmed) return;
+    }
 
     const end = this._loading.begin();
     try {
@@ -520,6 +542,10 @@ export class PersonForm implements OnInit {
       await this.tagOptionsSvc.invalidate('tag');
     } catch (err) {
       console.error('Failed to attach tag:', err);
+      // The chip is rendered optimistically, so a failed save left a tag on screen that was
+      // never stored. Take it back off and say why, as the remove path already does.
+      this.tags.update((curr) => curr.filter((t) => t !== tag));
+      this.alertSvc.showError(getUserErrorMessage(err, `Could not add the tag "${tag}". Please try again.`));
     }
   }
 
@@ -538,6 +564,7 @@ export class PersonForm implements OnInit {
     } catch (err) {
       console.error('Failed to detach tag:', err);
       restoreTag();
+      this.alertSvc.showError(getUserErrorMessage(err, `Could not remove the tag "${tag}". Please try again.`));
     }
   }
 
@@ -549,6 +576,8 @@ export class PersonForm implements OnInit {
       await this.tagOptionsSvc.invalidate('issue');
     } catch (err) {
       console.error('Failed to attach issue:', err);
+      this.issues.update((curr) => curr.filter((i) => i !== issue));
+      this.alertSvc.showError(getUserErrorMessage(err, `Could not add the issue "${issue}". Please try again.`));
     }
   }
 
@@ -565,6 +594,7 @@ export class PersonForm implements OnInit {
     } catch (err) {
       console.error('Failed to detach issue:', err);
       restoreIssue();
+      this.alertSvc.showError(getUserErrorMessage(err, `Could not remove the issue "${issue}". Please try again.`));
     }
   }
 

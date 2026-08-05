@@ -148,6 +148,14 @@ export class PersonsController extends BaseController<'persons', PersonsRepo> {
     if (!targetHousehold) {
       throw new BadRequestError('That household does not belong to this workspace.');
     }
+    // The placeholder household is the shared bucket every address-less person sits in, so a bulk
+    // move out of it would drag unrelated contacts along with an address they never had.
+    const placeholders = await this.householdRepo.getPlaceholderIds(tenantId, [oldHouseholdId]);
+    if (placeholders.has(String(oldHouseholdId))) {
+      throw new BadRequestError(
+        'These people have no address in common, so they cannot be moved as a household. Move them one at a time.',
+      );
+    }
     return this.getRepo()
       .transaction()
       .execute(
