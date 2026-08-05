@@ -16,6 +16,7 @@ import { Icon } from '@icons/icon';
 import type { PcIconNameType } from '@icons/icons.index';
 import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
 
+import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { SettingsService } from '../../settings/services/settings-service';
 import {
   createBlock,
@@ -34,6 +35,13 @@ import {
   compileBlocksToHtml,
   compileBlocksToPlainText,
 } from './newsletter-templates';
+
+/**
+ * The block-model JSON comment the compiled document embeds. ngOnInit rebuilds the visual design
+ * from it, so it must not survive a hand edit of the HTML (the send path strips it as well, in
+ * lib/mail/newsletter-render.ts).
+ */
+const BLOCK_DATA_COMMENT_RE = /<!--\s*PPLCRM_VISUAL_BLOCKS_DATA:[\s\S]*?-->/g;
 
 /** One merge field in the quick-insert panel; clicking the chip drops `{name}` at the caret. */
 interface MergeVariable {
@@ -63,6 +71,17 @@ export class VisualNewsletterEditorComponent implements OnInit {
   protected readonly previewMode = signal<'desktop' | 'mobile'>('desktop');
   protected readonly editorMode = signal<'visual' | 'code'>('visual');
   protected readonly activeTab = signal<'blocks' | 'edit'>('blocks');
+
+  /**
+   * Exactly what the code view's textarea holds. Kept separate from `htmlContent` because the
+   * saved HTML has the block-data comment stripped out of it (see handleRawHtmlEdit) — binding the
+   * textarea to the saved value would rewrite the text under the user's cursor as they type.
+   */
+  protected readonly rawHtmlDraft = signal<string>('');
+
+  /** True once the HTML has been hand-edited in the code view, so it is no longer the compiled
+   * output of `blocks()` and switching back to visual would replace the user's own markup. */
+  protected readonly rawHtmlEdited = signal(false);
 
   /** Seam index whose "+" insert picker is open, or null when closed. */
   protected readonly insertMenuIndex = signal<number | null>(null);
@@ -176,6 +195,7 @@ export class VisualNewsletterEditorComponent implements OnInit {
     );
   }
 
+  private readonly confirmDlg = inject(ConfirmDialogService);
   private readonly settingsSvc = inject(SettingsService);
 
   /** Org name shown in the compliance-footer preview (the server appends the real footer at send time). */
@@ -248,6 +268,9 @@ export class VisualNewsletterEditorComponent implements OnInit {
       this.selectedBlockId.set(imported[0]?.id ?? null);
       this.activeTab.set('edit');
     } else {
+      // Hand-written HTML that does not survive the round-trip: show it as it is, in code view.
+      this.rawHtmlDraft.set(this.htmlContent());
+      this.rawHtmlEdited.set(true);
       this.editorMode.set('code');
     }
   }
@@ -270,14 +293,36 @@ export class VisualNewsletterEditorComponent implements OnInit {
   }
 
   protected toggleEditorMode(): void {
-    const current = this.editorMode();
-    if (current === 'visual') {
+    if (this.editorMode() === 'visual') {
+      // The code view starts from the HTML that is actually stored, not from a recompile.
+      this.rawHtmlDraft.set(this.htmlContent());
       this.editorMode.set('code');
-    } else {
-      // Switch back to visual, warning that edits made in code view will be reset
-      this.editorMode.set('visual');
-      this.updateBlocks();
+      return;
     }
+    // Going back to visual recompiles the HTML from the blocks, which throws away anything typed
+    // in the code view. Ask first, and name what is about to be replaced.
+    if (this.rawHtmlEdited()) {
+      void this.confirmReturnToVisual();
+      return;
+    }
+    this.editorMode.set('visual');
+    this.updateBlocks();
+  }
+
+  /** Confirms replacing hand-written HTML with the visual design before switching modes. */
+  private async confirmReturnToVisual(): Promise<void> {
+    const confirmed = await this.confirmDlg.confirm({
+      title: 'Replace your HTML with the visual design?',
+      message:
+        'The HTML you edited by hand will be replaced by the blocks in the visual editor, and your hand-written changes will be lost. Stay in code view to keep them.',
+      variant: 'warning',
+      confirmText: 'Replace with the visual design',
+      cancelText: 'Keep my HTML',
+    });
+    if (!confirmed) return;
+    this.rawHtmlEdited.set(false);
+    this.editorMode.set('visual');
+    this.updateBlocks();
   }
 
   /** Click-to-add path: inserts after the selected block, or appends when nothing is selected. */
@@ -414,7 +459,13 @@ export class VisualNewsletterEditorComponent implements OnInit {
   }
 
   protected handleRawHtmlEdit(html: string): void {
-    this.htmlContent.set(html);
+    this.rawHtmlDraft.set(html);
+    this.rawHtmlEdited.set(true);
+    // The compiled document carries the block model in a JSON comment, and ngOnInit rebuilds the
+    // design from that comment when the draft is reopened — which would silently discard whatever
+    // was typed here. Once the HTML has been edited by hand it is no longer the output of those
+    // blocks, so the comment goes with the edit and the draft stays raw HTML from now on.
+    this.htmlContent.set(html.replace(BLOCK_DATA_COMMENT_RE, '').trimStart());
     // Simple text version conversion from html tags
     const text = html
       .replace(/<[^>]*>/g, '')

@@ -388,13 +388,14 @@
         <div class="alert alert-warning text-xs py-2">
           <pc-icon name="exclamation-triangle" [size]="4" class="mr-1"></pc-icon>
           <span>
-            <strong>Caution:</strong> Editing raw HTML directly is fully supported, but manual changes cannot be
-            converted back into visual blocks.
+            <strong>Caution:</strong> Editing raw HTML directly is fully supported, and your HTML is what gets sent. It
+            cannot be converted back into visual blocks: switching back to the visual editor replaces it with the
+            blocks, and asks you first.
           </span>
         </div>
         <textarea
           class="textarea textarea-bordered font-mono text-xs w-full flex-1"
-          [value]="compiledHtml()"
+          [value]="rawHtmlDraft()"
           (input)="onRawHtmlInput($event)"
           placeholder="Paste or edit HTML here..."
         ></textarea>
