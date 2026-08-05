@@ -333,14 +333,22 @@ export class BackgroundJobWorker {
           .where('id', '=', job.id)
           .execute();
       } else {
-        logger.error({ jobId: job.id, maxAttempts }, 'Job exceeded maximum attempts, marking as failed');
+        // Short reference id so a user's bug report ("my newsletter paused itself") can be matched
+        // to a log line — same generation pattern as the ms_sync/google_sync correlationId below,
+        // but this one is also persisted (as a prefix) on the job row itself, since the generic
+        // dead-letter path has no other record a user could ever quote back to support.
+        const correlationId = Math.random().toString(36).slice(2, 10).toUpperCase();
+        logger.error(
+          { jobId: job.id, queue: job.queue, correlationId, maxAttempts },
+          'Job exceeded maximum attempts, marking as failed',
+        );
         await this.db
           .updateTable('background_jobs')
           .set({
             status: 'failed',
             locked_at: null,
             locked_by: null,
-            error: errorMsg,
+            error: `[ref:${correlationId}] ${errorMsg}`,
             updated_at: new Date(),
           })
           .where('id', '=', job.id)

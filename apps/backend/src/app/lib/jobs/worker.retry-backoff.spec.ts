@@ -187,7 +187,10 @@ describe('worker dead-lettering (attempts exhausted)', () => {
     expect(Number(row.attempts)).toBe(1);
     expect(row.locked_at).toBeNull();
     expect(row.locked_by).toBeNull();
-    expect(String(row.error)).toBe(mocks.handlerErrorMessage);
+    // The dead-letter path prefixes the stored error with a short support reference (see below)
+    // but the original handler error text is still present in full.
+    expect(String(row.error)).toMatch(/^\[ref:[A-Z0-9]{8}\] /);
+    expect(String(row.error)).toContain(mocks.handlerErrorMessage);
   });
 
   it('never hands a dead-lettered job to a claimer again, even though it is the oldest row', async () => {
@@ -357,18 +360,18 @@ describe('dead-lettered newsletter send releases the newsletter from sending', (
     expect(await newsletterStatus()).toBe('sending');
   });
 
-  // GAP (production code, not fixed here): the dead-letter path stores only the raw handler error
-  // on the job row. No correlationId / support code is generated for the generic path (only the
-  // ms_sync and google_sync branches mint one, and even those only log it — it is never written to
-  // background_jobs.error), so a user who reports "my newsletter paused itself" carries no
-  // identifier that can be matched to a log line.
-  it.skip('records a correlationId on the dead-lettered job row so support can find the log line', async () => {
+  // The dead-letter path now stamps a short reference id as a `[ref:XXXXXXXX]` prefix on the
+  // stored error, so a user who reports "my newsletter paused itself" carries an identifier that
+  // can be matched to the 'Job exceeded maximum attempts' log line (same generation pattern as the
+  // ms_sync/google_sync correlationId, but this one is also persisted on the job row).
+  it('records a correlationId on the dead-lettered job row so support can find the log line', async () => {
     await seed('sending');
     const jobId = await insertSendJob(`${queuePrefix}-correlation`, 1);
 
     await asInternals(worker).processNextJob();
 
     const row = await readJob(jobId);
-    expect(String(row.error)).toMatch(/support code: [A-Z0-9]{8}/);
+    expect(String(row.error)).toMatch(/^\[ref:[A-Z0-9]{8}\] /);
+    expect(String(row.error)).toContain(mocks.handlerErrorMessage);
   });
 });
