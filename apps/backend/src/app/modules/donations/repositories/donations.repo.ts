@@ -207,10 +207,18 @@ export class DonationsRepo extends BaseRepository<'donations'> {
     const startRow = page.offset;
     const limit = page.limit;
 
+    // Campaigns §15 — this override does not go through the base getAll, so the campaign filter the
+    // base applies has to be repeated here; without it a pinned Editor or Viewer read every
+    // campaign's gifts. Null for admins/owners and background callers, who see the whole tenant.
+    // Office-fund gifts carry the office campaign's id, so they are visible to callers pinned to
+    // the office context and not to callers pinned to a real campaign.
+    const campaignId = this.campaignPin();
+
     const applyFilters = (qb: AnyQB): AnyQB => {
       let q: AnyQB = qb
         .leftJoin('persons', 'persons.id', 'donations.person_id')
         .where('donations.tenant_id', '=', tenantId)
+        .$if(campaignId != null, (b: AnyQB) => b.where('donations.campaign_id', '=', String(campaignId)))
         // The ledger is money actually received; refunded/disputed gifts drop out of it.
         .where('donations.status', '=', 'succeeded')
         .$if(oneTimeOnly, (b: AnyQB) => b.where('donations.pledge_id', 'is', null))
@@ -302,6 +310,11 @@ export class DonationsRepo extends BaseRepository<'donations'> {
     const monthStart = sql`date_trunc('month', now())`;
     const prevMonthStart = sql`date_trunc('month', now()) - interval '1 month'`;
 
+    // Campaigns §15 — the tiles must add up to the rows the same caller can see in the ledger, so
+    // they take the caller's campaign pin too (null for admins/owners, who see the whole tenant).
+    // `donation_pledges` is campaign-scoped on the same pin.
+    const campaignId = this.campaignPin();
+
     const totalsQuery = this.getSelect()
       .select([
         sql<string>`COALESCE(SUM(donations.amount), 0)`.as('total_cents'),
@@ -316,6 +329,7 @@ export class DonationsRepo extends BaseRepository<'donations'> {
       ])
       .where('donations.tenant_id', '=', tenantId)
       .where('donations.status', '=', 'succeeded')
+      .$if(campaignId != null, (b) => b.where('donations.campaign_id', '=', String(campaignId)))
       .$if(scope === 'one-time', (b) => b.where('donations.pledge_id', 'is', null));
 
     // "Thanked" = an issued acknowledgement or an issued tax receipt covers the gift. Year-end
@@ -325,6 +339,7 @@ export class DonationsRepo extends BaseRepository<'donations'> {
       .select(({ fn }) => [fn.count<string>('donations.id').as('total')])
       .where('donations.tenant_id', '=', tenantId)
       .where('donations.status', '=', 'succeeded')
+      .$if(campaignId != null, (b) => b.where('donations.campaign_id', '=', String(campaignId)))
       .$if(scope === 'one-time', (b) => b.where('donations.pledge_id', 'is', null))
       .where(sql<boolean>`donations.created_at >= ${monthStart}`)
       .where(
@@ -344,7 +359,8 @@ export class DonationsRepo extends BaseRepository<'donations'> {
       .selectFrom('donation_pledges')
       .select(({ fn }) => [fn.count<string>('id').as('total')])
       .where('tenant_id', '=', tenantId)
-      .where('status', '=', 'active');
+      .where('status', '=', 'active')
+      .$if(campaignId != null, (b) => b.where('campaign_id', '=', String(campaignId)));
 
     const [totals, acknowledged, pledges] = await Promise.all([
       totalsQuery.executeTakeFirst(),

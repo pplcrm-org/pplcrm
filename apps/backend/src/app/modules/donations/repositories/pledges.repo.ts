@@ -8,6 +8,11 @@ export class DonationPledgesRepo extends BaseRepository<'donation_pledges'> {
   }
 
   public async getAllForTenant(tenantId: string) {
+    // Campaigns §15 — the caller's campaign pin, null for admins/owners (who see the whole tenant)
+    // and for background callers. A pinned Editor or Viewer used to read every campaign's pledges.
+    // Office-fund pledges carry the office campaign's id, so callers pinned to the office see
+    // them and callers pinned to a real campaign do not.
+    const campaignId = this.campaignPin();
     return this.db
       .selectFrom('donation_pledges')
       .leftJoin('persons', 'persons.id', 'donation_pledges.person_id')
@@ -30,6 +35,7 @@ export class DonationPledgesRepo extends BaseRepository<'donation_pledges'> {
         this.db.fn.coalesce('persons.email', 'donation_pledges.email').as('person_email'),
       ])
       .where('donation_pledges.tenant_id', '=', tenantId)
+      .$if(campaignId != null, (b) => b.where('donation_pledges.campaign_id', '=', String(campaignId)))
       .orderBy('donation_pledges.created_at', 'desc')
       .execute();
   }
