@@ -94,6 +94,7 @@ interface SeedStep {
   kind: 'wait' | 'send_email' | 'add_tag' | 'create_task' | 'notify_team';
   subject?: string | null;
   html_content?: string | null;
+  plain_text_content?: string | null;
   config?: Record<string, unknown> | null;
   delay_days?: number;
 }
@@ -115,6 +116,7 @@ async function seedSteps(db: Db, tenantId: string, workflowId: string, steps: Se
         delay_unit: 'days',
         subject: step.subject ?? null,
         html_content: step.html_content ?? null,
+        plain_text_content: step.plain_text_content ?? null,
       })
       .execute();
   }
@@ -194,6 +196,21 @@ function email(subject: string): SequenceStepInput {
   };
 }
 
+/**
+ * The stored `workflow_steps` row that `saveSteps` writes for `email(subject)`. The remap
+ * compares a row read back from Postgres against the incoming payload, so a fixture that seeds
+ * the row directly has to carry the same subject/body columns -- otherwise every email differs
+ * from its own payload and the content pass can never match, no matter what the controller does.
+ */
+function seededEmail(subject: string): SeedStep {
+  return {
+    kind: 'send_email',
+    subject,
+    html_content: `<p>${subject}</p>`,
+    plain_text_content: subject,
+  };
+}
+
 function wait(days: number): SequenceStepInput {
   return { kind: 'wait', config: null, delay_days: days, delay_unit: 'days' };
 }
@@ -236,9 +253,9 @@ describe('WorkflowsController.saveSteps enrollment remap', () => {
   it('leaves a mid-sequence enrollee on the same step when the steps are re-saved unchanged', async () => {
     const workflowId = await seedWorkflow(db, { tenantId, userId });
     await seedSteps(db, tenantId, workflowId, [
-      { kind: 'send_email', subject: 'Welcome', html_content: '<p>Welcome</p>' },
+      seededEmail('Welcome'),
       { kind: 'wait', delay_days: 3 },
-      { kind: 'send_email', subject: 'Follow up', html_content: '<p>Follow up</p>' },
+      seededEmail('Follow up'),
     ]);
     const enrollmentId = await seedEnrollment(db, { tenantId, workflowId, personId, stepNumber: 3 });
 
@@ -268,19 +285,18 @@ describe('WorkflowsController.saveSteps enrollment remap', () => {
     expect(enrollment.status).toBe('active');
   });
 
-  // FAILS against the current code -- defect T1-6 from the production-risk review.
-  // `stepContentSignature` (controller.ts, bottom of file) hashes only `kind` + `config`, but an
-  // email's identity lives in the `subject` / `html_content` / `plain_text_content` columns and
-  // the editor sends `config: null` for emails. Every email step therefore signs as the same
-  // string, `send_email|null`, so the remap's first pass pairs emails by order instead of by
-  // content: the enrollee waiting on email "B" is remapped onto the copy of email "A" they have
-  // already been sent, and receives it a second time.
-  it.skip('does not re-send an already-sent email when a new email step is inserted above the enrollee (T1-6)', async () => {
+  // Defect T1-6 from the production-risk review. `stepContentSignature` (controller.ts, bottom of
+  // file) used to hash only `kind` + `config`, but an email's identity lives in the `subject` /
+  // `preview_text` / `html_content` / `plain_text_content` columns and the editor sends
+  // `config: null` for emails. Every email step then signed as the same string, so the remap's
+  // first pass paired emails by order instead of by content: the enrollee waiting on email "B"
+  // was remapped onto the copy of email "A" they had already been sent, and received it twice.
+  it('does not re-send an already-sent email when a new email step is inserted above the enrollee (T1-6)', async () => {
     const workflowId = await seedWorkflow(db, { tenantId, userId });
     await seedSteps(db, tenantId, workflowId, [
-      { kind: 'send_email', subject: 'Email A', html_content: '<p>A</p>' },
+      seededEmail('Email A'),
       { kind: 'wait', delay_days: 1 },
-      { kind: 'send_email', subject: 'Email B', html_content: '<p>B</p>' },
+      seededEmail('Email B'),
     ]);
     // Email A has been sent; the enrollee is waiting on Email B.
     const enrollmentId = await seedEnrollment(db, { tenantId, workflowId, personId, stepNumber: 3 });
@@ -317,18 +333,13 @@ describe('WorkflowsController.saveSteps enrollment remap', () => {
     expect(enrollment.status).toBe('active');
   });
 
-  // FAILS against the current code -- same defect T1-6 as above. With every email signing as
-  // `send_email|null`, deleting the first of three emails pairs old email 1 -> new email 1 and
-  // old email 2 -> new email 2, leaving old email 3 (the one the enrollee is waiting on)
-  // unmatched with no surviving later step. The enrollee is marked `completed` and never
-  // receives email C.
-  it.skip('does not silently complete an enrollee when an earlier email step is deleted (T1-6)', async () => {
+  // Same defect T1-6 as above. With every email signing identically, deleting the first of three
+  // emails paired old email 1 -> new email 1 and old email 2 -> new email 2, leaving old email 3
+  // (the one the enrollee is waiting on) unmatched with no surviving later step. The enrollee was
+  // marked `completed` and never received email C.
+  it('does not silently complete an enrollee when an earlier email step is deleted (T1-6)', async () => {
     const workflowId = await seedWorkflow(db, { tenantId, userId });
-    await seedSteps(db, tenantId, workflowId, [
-      { kind: 'send_email', subject: 'Email A', html_content: '<p>A</p>' },
-      { kind: 'send_email', subject: 'Email B', html_content: '<p>B</p>' },
-      { kind: 'send_email', subject: 'Email C', html_content: '<p>C</p>' },
-    ]);
+    await seedSteps(db, tenantId, workflowId, [seededEmail('Email A'), seededEmail('Email B'), seededEmail('Email C')]);
     const enrollmentId = await seedEnrollment(db, { tenantId, workflowId, personId, stepNumber: 3 });
 
     await controller.saveSteps(tenantId, workflowId, [email('Email B'), email('Email C')], userId);
@@ -338,16 +349,14 @@ describe('WorkflowsController.saveSteps enrollment remap', () => {
     expect(enrollment.current_step_number).toBe(2); // Email C's new position
   });
 
-  // FAILS against the current code -- this is the direct pin on defect T1-6. Two email steps
-  // whose only difference is subject/body must produce DIFFERENT content signatures. They do
-  // not (`stepContentSignature` reads only kind + config), which is observable here: swapping
-  // the order of two emails leaves the remap unable to see that anything moved.
-  it.skip('gives two email steps with different subject/body different content signatures (T1-6)', async () => {
+  // The direct pin on defect T1-6: two email steps whose only difference is subject/body must
+  // produce DIFFERENT content signatures, and an unchanged step must produce the SAME signature
+  // whether it comes from the payload or is read back out of Postgres. Both are observable here
+  // -- swapping the order of two emails is only visible to the remap if signatures distinguish
+  // them and survive the round trip.
+  it('gives two email steps with different subject/body different content signatures (T1-6)', async () => {
     const workflowId = await seedWorkflow(db, { tenantId, userId });
-    await seedSteps(db, tenantId, workflowId, [
-      { kind: 'send_email', subject: 'First', html_content: '<p>First</p>' },
-      { kind: 'send_email', subject: 'Second', html_content: '<p>Second</p>' },
-    ]);
+    await seedSteps(db, tenantId, workflowId, [seededEmail('First'), seededEmail('Second')]);
     // "First" has been sent; the enrollee is waiting on "Second".
     const enrollmentId = await seedEnrollment(db, { tenantId, workflowId, personId, stepNumber: 2 });
 
