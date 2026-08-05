@@ -206,11 +206,13 @@ export class ImportsController extends BaseController<'data_imports', ImportsRep
     const wantsCompanyDeletion = Boolean(input.deleteCompanies);
     const wantsTaskDeletion = Boolean(input.deleteTasks);
 
-    // Blobs first, row second — the row holds the only copy of these storage keys, so dropping it
-    // first orphans the files permanently with nothing left to find them by. That is exactly what
-    // this path used to do: every uploaded CSV a member deleted from History stayed in storage
-    // forever. Same ordering as the expired-export sweep in maintenance.handlers.ts.
-    await this.deleteImportBlobs(auth.tenant_id, stats.id, stats.source_file_key);
+    // The row holds the only copy of these storage keys, so it must be read BEFORE the delete
+    // transaction — dropping the row first orphans the files permanently with nothing left to
+    // find them by, which is exactly what this path used to do: every uploaded CSV a member
+    // deleted from History stayed in storage forever. The blobs themselves are removed after the
+    // transaction commits, so a transaction that rolls back leaves the import whole, files
+    // included, instead of a surviving row whose download button now fails.
+    const payloadKey = await this.readImportPayloadKey(auth.tenant_id, stats.id);
 
     await this.getRepo()
       .transaction()
@@ -312,6 +314,8 @@ export class ImportsController extends BaseController<'data_imports', ImportsRep
         await this.getRepo().delete({ tenant_id: auth.tenant_id, id: stats.id }, trx);
       });
 
+    await this.deleteImportBlobs(auth.tenant_id, stats.id, [stats.source_file_key, payloadKey]);
+
     return { deleted: true, contactsRemoved: wantsPeopleDeletion };
   }
 
@@ -343,25 +347,36 @@ export class ImportsController extends BaseController<'data_imports', ImportsRep
   }
 
   /**
-   * Remove the blobs an import owns: the retained original upload (`source_file_key`), and the
-   * normalized row payload the import job reads, whose key the row carries in `metadata`. A
-   * successful import job already deletes the payload; one that failed or never ran has not.
-   *
-   * Best-effort by design — `StorageService.delete` is `deleteIfExists`, so an already-gone blob
-   * is a success, and a genuine storage failure only leaks bytes and must not block the delete the
-   * member asked for.
+   * The key of the normalized row payload the import job reads, which the row carries in
+   * `metadata`. Read before the delete transaction, because afterwards the row is gone.
    */
-  private async deleteImportBlobs(tenantId: string, importId: string, sourceFileKey: string | null): Promise<void> {
-    const storageService = new StorageService();
-
+  private async readImportPayloadKey(tenantId: string, importId: string): Promise<string | null> {
     const row = await this.getRepo()
       .db.selectFrom('data_imports')
       .select(sql<string | null>`metadata->>'storage_key'`.as('payload_key'))
       .where('tenant_id', '=', tenantId)
       .where('id', '=', importId)
       .executeTakeFirst();
+    return row?.payload_key ?? null;
+  }
 
-    for (const key of [sourceFileKey, row?.payload_key ?? null]) {
+  /**
+   * Remove the blobs an import owns: the retained original upload (`source_file_key`), and the
+   * normalized row payload the import job reads. A successful import job already deletes the
+   * payload; one that failed or never ran has not.
+   *
+   * Best-effort by design — `StorageService.delete` is `deleteIfExists`, so an already-gone blob
+   * is a success, and a genuine storage failure only leaks bytes and must not block the delete the
+   * member asked for.
+   */
+  private async deleteImportBlobs(
+    tenantId: string,
+    importId: string,
+    keys: ReadonlyArray<string | null>,
+  ): Promise<void> {
+    const storageService = new StorageService();
+
+    for (const key of keys) {
       if (!key) continue;
       try {
         await storageService.delete(key);

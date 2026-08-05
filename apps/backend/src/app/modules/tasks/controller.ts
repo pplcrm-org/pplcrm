@@ -29,6 +29,66 @@ import { NotFoundError } from '../../errors/app-errors';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import { type SlaPolicy, settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
 
+/**
+ * The formats an imported due-date column may be written in, in plain words — quoted by the
+ * wizard's field hint and by the skip reason a value that matches none of them produces.
+ */
+export const IMPORT_DUE_DATE_FORMATS = 'YYYY-MM-DD or DD/MM/YYYY';
+
+/** Noon, so a date-only value is the same calendar day in every timezone the app displays it in. */
+const DATE_ONLY_HOUR = 12;
+const MONTHS_IN_YEAR = 12;
+
+/**
+ * Read one imported due-date cell.
+ *
+ * Handing the raw text to `new Date()` was wrong in three separate ways, all silent: a
+ * day-first cell like `05/06/2026` (June 5th on a Canadian file, the product's main market) was
+ * read as May 6th; an impossible-in-US cell like `13/05/2026` became no due date at all with no
+ * reason recorded; and a date-only ISO cell was read as UTC midnight, which displays as the
+ * previous day west of Greenwich. So the formats are now explicit:
+ *
+ *  - `YYYY-MM-DD` (and `YYYY/MM/DD`) — year first, unambiguous.
+ *  - `D/M/YYYY`, `D-M-YYYY`, `D.M.YYYY` — day first. When the second number is above 12 the cell
+ *    can only be month-first (`05/13/2026`), so it is read that way; when both numbers are 12 or
+ *    below the cell is genuinely ambiguous and day-first wins, which is what the wizard's field
+ *    hint tells the person mapping the column.
+ *  - Anything else (`13 May 2026`, a full ISO timestamp with a `T`) falls through to the
+ *    JavaScript parser, which handles month names and offsets correctly.
+ *
+ * Date-only values are built at local noon so no timezone can shift the calendar day.
+ * Returns null when the cell cannot be read as a date at all — the caller records that.
+ */
+export function parseImportedDueDate(raw: string): Date | null {
+  const text = raw.trim();
+  if (!text) return null;
+
+  const build = (year: number, month: number, day: number): Date | null => {
+    if (month < 1 || month > MONTHS_IN_YEAR || day < 1 || day > 31) return null;
+    const date = new Date(year, month - 1, day, DATE_ONLY_HOUR, 0, 0, 0);
+    // Rejects a real-calendar impossibility such as 31/02: the Date constructor rolls it over.
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+    return date;
+  };
+
+  const yearFirst = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text);
+  if (yearFirst) {
+    return build(Number(yearFirst[1]), Number(yearFirst[2]), Number(yearFirst[3]));
+  }
+
+  const dayFirst = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(text);
+  if (dayFirst) {
+    const first = Number(dayFirst[1]);
+    const second = Number(dayFirst[2]);
+    const year = Number(dayFirst[3]);
+    // Only a month-first file can put something above 12 in the middle position.
+    return second > MONTHS_IN_YEAR ? build(year, first, second) : build(year, second, first);
+  }
+
+  const parsed = new Date(text);
+  return isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export class TasksController extends BaseController<'tasks', TasksRepo> {
   private mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
 
@@ -356,6 +416,11 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
   ) {
     const results = { inserted: 0, errors: 0, skipped: 0 };
     const errorMessages: string[] = [];
+    // Rows kept downloadable with the reason each was lost or partly dropped, same as the people
+    // and households importers. Until now this importer wrote none, so a rolled-back batch left
+    // an error count with nothing behind it and an import that still read as a clean success.
+    const SKIP_REASONS_CAP = 500;
+    const ERROR_MESSAGE_MAX = 1000;
 
     // Crash/continuation resume: each per-chunk counter write below also records, atomically
     // with the chunk's inserts, how many source rows have been durably consumed
@@ -365,7 +430,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     // continue from what the database holds.
     const importState = await this.importsRepo.db
       .selectFrom('data_imports')
-      .select(['processed_row_offset', 'inserted_count', 'error_count', 'skipped_count'])
+      .select(['processed_row_offset', 'inserted_count', 'error_count', 'skipped_count', 'skip_reasons'])
       .where('tenant_id', '=', tenant_id)
       .where('id', '=', import_id)
       .executeTakeFirst();
@@ -379,6 +444,21 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
       results.errors = Number(importState?.error_count ?? 0);
       results.skipped = Number(importState?.skipped_count ?? 0);
     }
+    // Seeded from what is already on file — the CSV job records the counting pass's validation
+    // skips there before processing starts, and a resumed run must keep every reason an earlier
+    // run persisted (the writes below replace the whole array).
+    const storedReasons: unknown = importState?.skip_reasons;
+    const skipReasons: Array<{ row: number; reason: string }> = Array.isArray(storedReasons)
+      ? storedReasons.filter(
+          (value): value is { row: number; reason: string } =>
+            typeof value === 'object' &&
+            value !== null &&
+            'row' in value &&
+            'reason' in value &&
+            typeof value.row === 'number' &&
+            typeof value.reason === 'string',
+        )
+      : [];
     // Rows consumed from the source so far — starts at the resume offset.
     let rowsSeen = resumeOffset;
 
@@ -412,10 +492,15 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     }
 
     for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
+      // 1-based position of this chunk's first row in the file, so a lost row can be named.
+      const chunkStartRow = rowsSeen;
       rowsSeen += chunk.length;
       // 1. Normalize and filter valid rows upfront
       const taskRows: any[] = [];
-      for (const raw of chunk) {
+      // Index-aligned with taskRows: the file position each pending insert came from.
+      const taskRowNumbers: number[] = [];
+      for (const [chunkIdx, raw] of chunk.entries()) {
+        const rowNumber = chunkStartRow + chunkIdx + 1;
         if (!raw['name'] || !raw['name'].trim()) {
           results.skipped += 1;
           continue;
@@ -441,11 +526,19 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
         }
 
         let due_at: Date | null = null;
-        if (raw['due_at']) {
-          const parsedDate = new Date(raw['due_at']);
-          if (!isNaN(parsedDate.getTime())) due_at = parsedDate;
+        if (raw['due_at'] && raw['due_at'].trim()) {
+          due_at = parseImportedDueDate(raw['due_at']);
+          if (due_at === null && skipReasons.length < SKIP_REASONS_CAP) {
+            // The task is still imported — it just has no due date. Recording why keeps the
+            // dropped value on the History page's skipped-rows download instead of losing it.
+            skipReasons.push({
+              row: rowNumber,
+              reason: `Row ${rowNumber}: the due date "${raw['due_at'].trim()}" could not be read (expected ${IMPORT_DUE_DATE_FORMATS}); the task was imported without a due date`,
+            });
+          }
         }
 
+        taskRowNumbers.push(rowNumber);
         taskRows.push({
           tenant_id,
           createdby_id: user_id,
@@ -488,10 +581,13 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
                     inserted_count: results.inserted + taskRows.length,
                     error_count: results.errors,
                     skipped_count: skippedBase + results.skipped,
+                    // Carried in the same transaction as the rows, so the unreadable due dates
+                    // this chunk recorded survive a crash exactly as its inserts do.
+                    skip_reasons: JSON.stringify(skipReasons),
                     processed_row_offset: rowsSeen,
                     updatedby_id: user_id,
                     updated_at: new Date(),
-                  },
+                  } as unknown as OperationDataType<'data_imports', 'update'>,
                 },
                 trx,
               );
@@ -500,7 +596,18 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
           chunkCommitted = true;
         } catch (err: unknown) {
           results.errors += taskRows.length;
-          errorMessages.push(err instanceof Error ? err.message : String(err));
+          const message = err instanceof Error && err.message ? err.message : String(err);
+          errorMessages.push(message);
+          logger.error({ err, message, importId: import_id }, 'Task import chunk failed');
+          // Name the rows that were lost, so History can list them instead of showing an
+          // error count with nothing behind it.
+          for (const rowNumber of taskRowNumbers) {
+            if (skipReasons.length >= SKIP_REASONS_CAP) break;
+            skipReasons.push({
+              row: rowNumber,
+              reason: `Row ${rowNumber} was not imported: its batch failed and was rolled back (${message})`,
+            });
+          }
         }
       }
 
@@ -514,12 +621,32 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
             inserted_count: results.inserted,
             error_count: results.errors,
             skipped_count: skippedBase + results.skipped,
+            skip_reasons: JSON.stringify(skipReasons),
             processed_row_offset: rowsSeen,
             updatedby_id: user_id,
             updated_at: new Date(),
-          },
+          } as unknown as OperationDataType<'data_imports', 'update'>,
         });
       }
+    }
+
+    // What was lost and why. The job handler discards the returned errorMessages and marks the
+    // import completed regardless, so an import that dropped a batch used to read as a clean
+    // success on the History page with no reasons to download.
+    try {
+      await this.importsRepo.update({
+        tenant_id: tenant_id,
+        id: import_id,
+        row: {
+          skip_reasons: JSON.stringify(skipReasons),
+          error_message:
+            errorMessages.length > 0 ? [...new Set(errorMessages)].join('; ').substring(0, ERROR_MESSAGE_MAX) : null,
+          updatedby_id: user_id,
+          updated_at: new Date(),
+        } as unknown as OperationDataType<'data_imports', 'update'>,
+      });
+    } catch (err) {
+      logger.error({ err }, 'Failed to persist final task import stats');
     }
 
     return {

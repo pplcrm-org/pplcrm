@@ -220,14 +220,16 @@ async function sendImportSummaryEmail(
               // no tenant to check, so the message was never gated at all.
               tenant_id: payload.tenant_id,
               notificationSettingsLink: true,
-              text: `Hi ${user.first_name || 'there'},\n\nYour contact spreadsheet import has completed.\n\nStatistics:\n- Inserted: ${inserted}\n- Errors: ${errors}\n- Skipped: ${skipped}\n${verificationText(verification)}\nView imported rows: ${env.appUrl}/imports/${payload.import_id}`,
+              // `/imports` is the import History page — the app has no per-import route, so a
+              // `/imports/<id>` link landed every recipient on the app-wide Not Found page.
+              text: `Hi ${user.first_name || 'there'},\n\nYour contact spreadsheet import has completed.\n\nStatistics:\n- Inserted: ${inserted}\n- Errors: ${errors}\n- Skipped: ${skipped}\n${verificationText(verification)}\nView your imports: ${env.appUrl}/imports`,
               html: `<h2>Spreadsheet import complete</h2>
 <p>Hi ${user.first_name || 'there'},</p>
 <p>Your contact spreadsheet import has completed.</p>
 <div class="panel"><p><strong>Inserted:</strong> ${inserted}</p><p><strong>Errors:</strong> ${errors}</p><p><strong>Skipped:</strong> ${skipped}</p></div>
 ${verificationHtml(verification)}
 <div class="btn-container">
-  <a href="${env.appUrl}/imports/${payload.import_id}" class="btn">View imported rows</a>
+  <a href="${env.appUrl}/imports" class="btn">View your imports</a>
 </div>`,
             },
             'import completion summary',

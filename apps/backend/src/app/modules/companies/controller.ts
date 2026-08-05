@@ -267,6 +267,11 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
   ) {
     const results = { inserted: 0, errors: 0, skipped: 0 };
     const errorMessages: string[] = [];
+    // Rows kept downloadable with the reason each was lost, same as the people and households
+    // importers. Until now this importer wrote none, so a rolled-back batch left an error count
+    // with nothing behind it and an import that still read as a clean success.
+    const SKIP_REASONS_CAP = 500;
+    const ERROR_MESSAGE_MAX = 1000;
 
     // Crash/continuation resume: each per-chunk counter write below also records, atomically
     // with the chunk's inserts, how many source rows have been durably consumed
@@ -276,7 +281,7 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
     // continue from what the database holds.
     const importState = await this.importsRepo.db
       .selectFrom('data_imports')
-      .select(['processed_row_offset', 'inserted_count', 'error_count', 'skipped_count'])
+      .select(['processed_row_offset', 'inserted_count', 'error_count', 'skipped_count', 'skip_reasons'])
       .where('tenant_id', '=', tenant_id)
       .where('id', '=', import_id)
       .executeTakeFirst();
@@ -290,18 +295,35 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
       results.errors = Number(importState?.error_count ?? 0);
       results.skipped = Number(importState?.skipped_count ?? 0);
     }
+    // Seeded from what is already on file — the CSV job records the counting pass's validation
+    // skips there before processing starts, and a resumed run must keep every reason an earlier
+    // run persisted (the writes below replace the whole array).
+    const storedReasons: unknown = importState?.skip_reasons;
+    const skipReasons: Array<{ row: number; reason: string }> = Array.isArray(storedReasons)
+      ? storedReasons.filter(
+          (value): value is { row: number; reason: string } =>
+            typeof value === 'object' &&
+            value !== null &&
+            'row' in value &&
+            'reason' in value &&
+            typeof value.row === 'number' &&
+            typeof value.reason === 'string',
+        )
+      : [];
     // Rows consumed from the source so far — starts at the resume offset.
     let rowsSeen = resumeOffset;
 
     for await (const chunk of chunkRows(rows, IMPORT_CHUNK_SIZE)) {
+      // 1-based position of this chunk's first row in the file, so a lost row can be named.
+      const chunkStartRow = rowsSeen;
       rowsSeen += chunk.length;
       // 1. Filter valid rows upfront
-      const validRows: Record<string, string>[] = [];
-      for (const raw of chunk) {
+      const validRows: Array<{ raw: Record<string, string>; rowNumber: number }> = [];
+      for (const [chunkIdx, raw] of chunk.entries()) {
         if (!raw['name'] || !raw['name'].trim()) {
           results.skipped += 1;
         } else {
-          validRows.push(raw);
+          validRows.push({ raw, rowNumber: chunkStartRow + chunkIdx + 1 });
         }
       }
 
@@ -311,7 +333,7 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
       if (validRows.length > 0) {
         try {
           // 2. Batch insert all valid company rows in one statement
-          const companyRows = validRows.map((raw) => ({
+          const companyRows = validRows.map(({ raw }) => ({
             tenant_id,
             createdby_id: user_id,
             updatedby_id: user_id,
@@ -350,7 +372,18 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
           chunkCommitted = true;
         } catch (err) {
           results.errors += validRows.length;
-          errorMessages.push(err instanceof Error && err.message ? err.message : String(err));
+          const message = err instanceof Error && err.message ? err.message : String(err);
+          errorMessages.push(message);
+          logger.error({ err, message, importId: import_id }, 'Company import chunk failed');
+          // Name the rows that were lost, so History can list them instead of showing an
+          // error count with nothing behind it.
+          for (const { rowNumber } of validRows) {
+            if (skipReasons.length >= SKIP_REASONS_CAP) break;
+            skipReasons.push({
+              row: rowNumber,
+              reason: `Row ${rowNumber} was not imported: its batch failed and was rolled back (${message})`,
+            });
+          }
         }
       }
 
@@ -364,6 +397,7 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
             inserted_count: results.inserted,
             error_count: results.errors,
             skipped_count: skippedBase + results.skipped,
+            skip_reasons: JSON.stringify(skipReasons),
             processed_row_offset: rowsSeen,
             updatedby_id: user_id,
             updated_at: new Date(),
@@ -377,6 +411,25 @@ export class CompaniesController extends BaseController<'companies', CompaniesRe
       await backfillMissingSlugs(this.getRepo().db, 'companies', tenant_id);
     } catch (err) {
       logger.error({ err }, 'Failed to backfill company slugs after import');
+    }
+
+    // What was lost and why. The job handler discards the returned errorMessages and marks the
+    // import completed regardless, so an import that dropped a batch used to read as a clean
+    // success on the History page with no reasons to download.
+    try {
+      await this.importsRepo.update({
+        tenant_id: tenant_id,
+        id: import_id,
+        row: {
+          skip_reasons: JSON.stringify(skipReasons),
+          error_message:
+            errorMessages.length > 0 ? [...new Set(errorMessages)].join('; ').substring(0, ERROR_MESSAGE_MAX) : null,
+          updatedby_id: user_id,
+          updated_at: new Date(),
+        } as unknown as OperationDataType<'data_imports', 'update'>,
+      });
+    } catch (err) {
+      logger.error({ err }, 'Failed to persist final company import stats');
     }
 
     return {

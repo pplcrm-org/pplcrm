@@ -277,9 +277,17 @@ export class BackgroundJobWorker {
         extra: { jobId: job.id, attempts: job.attempts },
       });
 
+      const attempts = Number(job.attempts || 0);
+      const maxAttempts = Number(job.max_attempts || 3);
+
       try {
-        // If it was an import job, mark the import as failed and store the error message
-        if (payload.import_id) {
+        // If it was an import job, mark the import as failed and store the error message —
+        // but ONLY once no retry is left. A retry is still scheduled below while attempts
+        // remain, and a `failed` import is terminal to the wizard: it stops polling, shows the
+        // error and offers "Try again", which starts a SECOND import of the same file. The
+        // companies, households and tasks importers do not deduplicate, so every row would land
+        // twice while the original attempt was still on its way to succeeding.
+        if (payload.import_id && attempts >= maxAttempts) {
           await this.importsRepo.update({
             tenant_id: payload.tenant_id,
             id: payload.import_id,
@@ -294,9 +302,6 @@ export class BackgroundJobWorker {
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to mark data_imports as failed');
       }
-
-      const attempts = Number(job.attempts || 0);
-      const maxAttempts = Number(job.max_attempts || 3);
 
       if (attempts < maxAttempts) {
         // Retry with backoff (exponential backoff for mail, linear for others)
@@ -485,8 +490,37 @@ export class BackgroundJobWorker {
         .where('status', '=', 'processing')
         .where('locked_at', '<', staleTime)
         .where(sql<boolean>`attempts >= coalesce(max_attempts, 3)`)
-        .returning(sql<string | null>`payload->>'type'`.as('type'))
+        .returning([
+          sql<string | null>`payload->>'type'`.as('type'),
+          sql<string | null>`payload->>'import_id'`.as('import_id'),
+          sql<string | null>`payload->>'tenant_id'`.as('tenant_id'),
+        ])
         .execute();
+
+      // A CSV import whose worker process died never reaches the in-process catch that stamps
+      // `data_imports`, so the row stayed at 'processing' forever: the History page narrated a
+      // running import that no longer existed, and delete refuses a processing row, so it could
+      // not even be cleared. Now that its job is dead-lettered, the import it belongs to is
+      // failed too — the same thing the exports sweep below does for stuck exports.
+      for (const row of deadLettered) {
+        if (!row.import_id || !row.tenant_id) continue;
+        try {
+          await this.db
+            .updateTable('data_imports')
+            .set({
+              status: 'failed',
+              error_message: 'The import stopped unexpectedly and could not be finished. Please try importing again.',
+              processed_at: new Date(),
+              updated_at: new Date(),
+            })
+            .where('tenant_id', '=', row.tenant_id)
+            .where('id', '=', row.import_id)
+            .where('status', 'in', ['pending', 'processing'])
+            .execute();
+        } catch (importErr) {
+          logger.error({ err: importErr }, 'Failed to mark a dead-lettered import as failed');
+        }
+      }
 
       // Mirror of the in-process dead-letter path in processNextJob: a dead-lettered recurring
       // (cron) job whose chain isn't re-seeded silently stops until the next deploy — retention
