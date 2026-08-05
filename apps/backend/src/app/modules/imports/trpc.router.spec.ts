@@ -2,6 +2,8 @@ import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { ImportsRouter } from './trpc.router';
 import { ImportsController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
+import { verifyUploadHandle } from '../../lib/signed-download';
+import { StorageService } from '../../lib/storage.service';
 
 function mockAuthDb() {
   const mockQB: any = {
@@ -63,5 +65,51 @@ describe('ImportsRouter', () => {
 
     const caller = ImportsRouter.createCaller({ auth: AUTH } as any);
     await expect(caller.delete({ id: '1' })).rejects.toThrow();
+  });
+
+  describe('getUploadUrl', () => {
+    it('mints a SAS for a key under the tenant imports/source prefix and returns a verifiable handle', async () => {
+      const sasSpy = vi
+        .spyOn(StorageService.prototype, 'generateWriteSasUrl')
+        .mockResolvedValue('https://mock-storage.example.com/sas-url');
+
+      const caller = ImportsRouter.createCaller({ auth: AUTH } as any);
+      const result = await caller.getUploadUrl({ filename: 'contacts.csv', mimeType: 'text/csv' });
+
+      expect(result.uploadUrl).toBe('https://mock-storage.example.com/sas-url');
+      // The SAS is minted for a server-generated key in the retained-source namespace
+      // (the retention sweep, delete-import cleanup, and hard-delete sweep all key on it)...
+      const signedKey = sasSpy.mock.calls[0]?.[0] as string;
+      expect(signedKey).toMatch(new RegExp(`^imports/source/${AUTH.tenant_id}/[0-9a-f-]{36}\\.csv$`));
+      // ...but the key itself is never handed to the client — only a signed handle is,
+      // and that handle verifies back to the same key for this tenant only.
+      expect(result).not.toHaveProperty('storageKey');
+      expect(verifyUploadHandle(result.uploadHandle, AUTH.tenant_id)).toBe(signedKey);
+      expect(() => verifyUploadHandle(result.uploadHandle, '999')).toThrow();
+    });
+
+    it('refuses a blocked content type before minting a SAS', async () => {
+      const sasSpy = vi.spyOn(StorageService.prototype, 'generateWriteSasUrl');
+
+      const caller = ImportsRouter.createCaller({ auth: AUTH } as any);
+      await expect(
+        caller.getUploadUrl({ filename: 'contacts.csv', mimeType: 'application/x-msdownload' }),
+      ).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+      });
+
+      expect(sasSpy).not.toHaveBeenCalled();
+    });
+
+    it('refuses a blocked file extension before minting a SAS', async () => {
+      const sasSpy = vi.spyOn(StorageService.prototype, 'generateWriteSasUrl');
+
+      const caller = ImportsRouter.createCaller({ auth: AUTH } as any);
+      await expect(caller.getUploadUrl({ filename: 'payload.exe', mimeType: null })).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+      });
+
+      expect(sasSpy).not.toHaveBeenCalled();
+    });
   });
 });

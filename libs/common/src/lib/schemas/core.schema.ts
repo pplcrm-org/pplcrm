@@ -88,6 +88,9 @@ export const MAX_BULK_IDS = 2000;
  */
 export const MAX_IMPORT_ROWS = 5000;
 
+/** Ceiling on the byte size of one uploaded import source CSV (50 MB); the server verifies the real blob size, never a client-declared one. */
+export const MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024;
+
 /** A row index/count: a non-negative integer, never a float or a negative that reaches Postgres. */
 export const rowCountSchema = z.number().int().min(0).max(MAX_PAGE_SIZE);
 /**

@@ -3,8 +3,11 @@ import type { IAuthKeyPayload, ImportListItem } from '../../../../../../libs/com
 import { isPrivilegedRole } from '../../../../../../libs/common/src';
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
+import { signUploadHandle } from '../../lib/signed-download';
 import { StorageService } from '../../lib/storage.service';
+import { assertUploadAllowed } from '../../lib/upload-content-types';
 import { logger } from '../../logger';
+import crypto from 'crypto';
 import { sql } from 'kysely';
 import { MapListsPersonsRepo } from '../lists/repositories/map-lists-persons.repo';
 import { HouseholdRepo } from '../households/repositories/households.repo';
@@ -76,6 +79,33 @@ export class ImportsController extends BaseController<'data_imports', ImportsRep
 
   constructor() {
     super(new ImportsRepo());
+  }
+
+  /**
+   * Mint a short-lived write-only SAS URL so the wizard can PUT the raw CSV straight to
+   * blob storage instead of sending it inside a tRPC mutation body (which the 1 MiB
+   * Fastify body limit caps). Mirrors `files.getUploadUrl`.
+   *
+   * The key lives under `imports/source/<tenantId>/` — the same namespace the import
+   * mutations already write their retained source CSV to — so the 90-day retention
+   * sweep, the delete-import blob cleanup, and the tenant hard-delete prefix sweep all
+   * cover this blob with no changes. Deliberately NO `files` table row is created:
+   * import source files must not appear in the Files UI or count against the storage
+   * quota; their lifecycle is owned by `data_imports.source_file_key`.
+   */
+  public async getUploadUrl(
+    auth: IAuthKeyPayload,
+    input: { filename: string; mimeType?: string | null },
+  ): Promise<{ uploadUrl: string; uploadHandle: string }> {
+    // Reject the upload before minting a SAS, so a refused type never reaches storage.
+    assertUploadAllowed(input.filename, input.mimeType);
+    // The filename is deliberately not part of the key — a server-generated uuid is,
+    // so the client cannot influence the key at all.
+    const storageKey = `imports/source/${auth.tenant_id}/${crypto.randomUUID()}.csv`;
+    const uploadUrl = await new StorageService().generateWriteSasUrl(storageKey);
+    // The key itself is deliberately NOT returned — the client hands back the signed
+    // handle instead, so it can never choose which blob the import reads.
+    return { uploadUrl, uploadHandle: signUploadHandle(storageKey, auth.tenant_id) };
   }
 
   public async list(auth: IAuthKeyPayload): Promise<ImportListItem[]> {
