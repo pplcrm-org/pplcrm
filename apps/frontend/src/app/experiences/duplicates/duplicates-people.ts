@@ -90,10 +90,12 @@ export class PeopleDuplicatesComponent extends BaseDuplicateManager<PersonDuplic
     return field === 'email' ? reason.includes('email') : reason.includes('name');
   }
 
-  /** Spec §9.3 result-preview line: "One record: Mia Osei · both emails kept · tags donor +
-   * volunteer · nothing overwritten". Mirrors the field list `PersonsRepo.mergePersons` actually
-   * fills (email/mobile/home_phone/notes/company_id/...) so the preview never promises more
-   * than the merge does. */
+  /** Spec §9.3 result-preview line: "One record: Mia Osei · email filled in from the duplicate ·
+   * tags donor + volunteer". Mirrors the field list `PersonsRepo.mergePersons` actually fills
+   * (email/mobile/home_phone/notes/company_id/...) so the preview never promises more than the
+   * merge does. A field the kept record already has is NOT overwritten and the duplicate row is
+   * deleted, so a differing value is lost — the line names it instead of claiming agreement
+   * (REVIEW5 Tier 2 item 24). */
   protected resultPreview(group: DuplicateGroup<PersonDuplicateItem>): string {
     const target = group.items.find((i) => i.id === group.selectedTargetId);
     const source = group.items.find((i) => i.id === group.selectedSourceId);
@@ -101,15 +103,38 @@ export class PeopleDuplicatesComponent extends BaseDuplicateManager<PersonDuplic
 
     const name = this.getItemDisplayName(target);
     const filled: string[] = [];
+    const discarded: string[] = [];
+
     if (!target.email && source.email) filled.push('email');
+    else if (target.email && source.email && !this.sameEmail(target.email, source.email)) {
+      discarded.push(`email ${source.email}`);
+    }
+
     if (!target.mobile && source.mobile) filled.push('mobile');
+    else if (target.mobile && source.mobile && !this.samePhone(target.mobile, source.mobile)) {
+      discarded.push(`mobile ${source.mobile}`);
+    }
 
     const mergedTags = Array.from(new Set([...(target.tags ?? []), ...(source.tags ?? [])]));
 
     const parts = [`One record: ${name}`];
-    parts.push(filled.length ? `${filled.join(' and ')} filled in from the duplicate` : 'both records already agreed');
+    if (filled.length) parts.push(`${filled.join(' and ')} filled in from the duplicate`);
     if (mergedTags.length) parts.push(`tags ${mergedTags.join(' + ')}`);
-    parts.push('nothing overwritten');
+    if (discarded.length) {
+      parts.push(`the duplicate's ${discarded.join(' and ')} will be deleted, not kept`);
+    } else if (!filled.length) {
+      parts.push('both records already agreed');
+    }
+    if (!discarded.length) parts.push('nothing overwritten');
     return parts.join(' · ');
+  }
+
+  private sameEmail(a: string, b: string): boolean {
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
+  }
+
+  /** Compare on digits alone so "555-0100" and "5550100" are not reported as a lost value. */
+  private samePhone(a: string, b: string): boolean {
+    return a.replace(/\D/g, '') === b.replace(/\D/g, '');
   }
 }
