@@ -371,11 +371,32 @@ export class ImportWizard {
     });
   }
 
-  /** The file's head as text, cut at the last complete line so no partial row reaches the parser. */
+  /**
+   * The file's head as text, cut at the last complete record so no partial row reaches the
+   * parser. "Complete" is quote-aware: a newline inside an open quoted field is field content,
+   * not a record boundary, so cutting there would split the record into garbage. The cut lands
+   * on the last newline OUTSIDE quotes, dropping the trailing incomplete record whole.
+   */
   private async readPreviewText(file: File): Promise<string> {
     const head = await this.readFileAsText(file.slice(0, PREVIEW_HEAD_BYTES));
-    const lastNewline = head.lastIndexOf('\n');
+    const lastNewline = this.lastUnquotedNewline(head);
     return lastNewline > 0 ? head.slice(0, lastNewline) : head;
+  }
+
+  /**
+   * Index of the last newline that is not inside a quoted CSV field, or -1. A plain quote
+   * toggle is enough: an escaped quote (`""`) toggles twice with no newline between, so the
+   * in/out state at every newline is still correct.
+   */
+  private lastUnquotedNewline(text: string): number {
+    let inQuotes = false;
+    let last = -1;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '"') inQuotes = !inQuotes;
+      else if (ch === '\n' && !inQuotes) last = i;
+    }
+    return last;
   }
 
   /** Reuses the shared CSV/TSV parsing worker (libs/uxcommon/components/csv-import) — no second parser. */
@@ -491,6 +512,13 @@ export class ImportWizard {
         this.entity() === 'people' ? await this.importPeople(uploadHandle) : await this.importSimple(uploadHandle);
 
       if (result.import_id) {
+        if (this.previewMode()) {
+          // Big files can take minutes — don't hold the user hostage in the wizard.
+          // The imports history page narrates live progress from here on.
+          this.alerts.showSuccess('Your import is running. Progress appears on the imports page.');
+          await this.router.navigate(['/imports']);
+          return;
+        }
         await this.pollUntilDone(result.import_id, Date.now());
       } else {
         // Nothing importable — the backend already reported the terminal state synchronously.

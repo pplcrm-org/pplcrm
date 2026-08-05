@@ -317,6 +317,52 @@ describe('ImportWizard', () => {
     });
   });
 
+  it('hands off to the imports page instead of polling when a preview-mode import starts', async () => {
+    await createComponent();
+    await uploadSampleFile(PREVIEW_MODE_SIZE);
+    component['step'].set('confirm');
+
+    await component['runImport']();
+
+    expect(mockPersonsSvc.import).toHaveBeenCalledWith(expect.objectContaining({ upload_handle: 'handle-1' }));
+    // No inline wait: the wizard never reads the import back, it points at the history page.
+    expect(mockImportsSvc.list).not.toHaveBeenCalled();
+    expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith(expect.stringContaining('imports page'));
+    expect(mockRouter.navigate).toHaveBeenCalledWith(['/imports']);
+  });
+
+  it('keeps the inline wait-and-complete flow for a small fully-parsed file', async () => {
+    await createComponent();
+    await uploadSampleFile();
+    component['step'].set('confirm');
+
+    await component['runImport']();
+
+    expect(mockImportsSvc.list).toHaveBeenCalled();
+    expect(mockRouter.navigate).not.toHaveBeenCalledWith(['/imports']);
+    expect(component['run']()).toEqual(expect.objectContaining({ status: 'done' }));
+  });
+
+  it('cuts the preview slice at a record boundary, never inside an open quoted field', async () => {
+    await createComponent();
+    const HEAD_BYTES = 512 * 1024; // the wizard's PREVIEW_HEAD_BYTES
+    const header = 'name,notes\n';
+    const filler = 'p,ok\n';
+    const fillerCount = Math.floor((HEAD_BYTES - 20 - header.length) / filler.length);
+    // The quoted field opens just before the 512 KiB boundary and closes after it, with a
+    // line break inside the quotes on the near side of the boundary. A quote-blind cut at
+    // the last newline would slice the record mid-field into garbage.
+    const straddler = 'Bad,"first line\nsecond line of a quoted note that runs far past the preview boundary"\n';
+    const text = header + filler.repeat(fillerCount) + straddler + 'after,row\n';
+    const file = makeCsvFile(text);
+
+    const preview: string = await (component as any).readPreviewText(file);
+
+    expect(preview.endsWith('p,ok')).toBe(true); // last complete record survives
+    expect(preview).not.toContain('Bad'); // the straddling record is dropped whole
+    expect((preview.match(/"/g) ?? []).length % 2).toBe(0); // no quote left open
+  });
+
   it('emits only mapped columns in the mapping payload', async () => {
     await createComponent();
     await uploadFile('First Name,Mystery,Email\nAmira,x,amira@example.com\n');

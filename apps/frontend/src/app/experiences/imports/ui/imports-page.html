@@ -56,9 +56,7 @@
       <tr>
         <td>
           <div class="font-mono text-xs text-base-content">{{ item.fileName }}</div>
-          <div class="text-xs text-base-content/60">
-            {{ item.rowCount }} rows @if (formatFileSize(item.sourceFileSize); as size) { · {{ size }} }
-          </div>
+          <div class="text-xs text-base-content/60">{{ fileMetaLabel(item) }}</div>
         </td>
         <td>
           <span class="badge badge-ghost text-xs">{{ sourceLabel(item.source) }}</span>
@@ -78,13 +76,25 @@
         </td>
         <td>
           @switch (item.status) { @case ('pending') {
-          <pc-status-badge type="ghost">Pending</pc-status-badge>
-          } @case ('processing') {
+          <pc-status-badge type="ghost">Waiting to start</pc-status-badge>
+          } @case ('processing') { @if (item.rowCount > 0) {
+          <!-- Live progress: the job updates its counters after every chunk, and this page
+               re-reads them every few seconds while the import is active. -->
+          <div class="text-xs text-base-content">
+            <span>{{ processedCount(item) }} of {{ item.rowCount }} rows</span>
+            <progress
+              class="progress progress-info w-32 block mt-1"
+              [value]="processedCount(item)"
+              [max]="item.rowCount"
+            ></progress>
+          </div>
+          } @else {
+          <!-- The job counts the file's rows before importing any, so there is no total yet. -->
           <span class="badge badge-info text-xs gap-1">
             <span class="loading loading-spinner loading-xs"></span>
-            Processing
+            Counting rows
           </span>
-          } @case ('completed') {
+          } } @case ('completed') {
           <div class="text-xs text-base-content">
             <div>{{ item.insertedCount }} imported</div>
             @if (item.mergedCount > 0) {

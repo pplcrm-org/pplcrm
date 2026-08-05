@@ -26,6 +26,9 @@ import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
  */
 type HistoryTab = 'imports' | 'exports';
 
+/** How long to wait between history refreshes while at least one import is still running. */
+const IMPORT_POLL_INTERVAL_MS = 4000;
+
 @Component({
   selector: 'pc-imports-page',
   imports: [Icon, TabBar, Table, GridHeaderComponent, ModalShell, StatusBadge],
@@ -132,6 +135,25 @@ export class ImportsPage {
 
   private pollInterval: ReturnType<typeof setInterval> | undefined;
 
+  /** True while any listed import is still being worked on — drives the polling effect. */
+  protected readonly hasActiveImports = computed(() =>
+    this.items().some((item) => item.status === 'pending' || item.status === 'processing'),
+  );
+
+  /** Rows the job has dealt with so far, however each one ended (inserted, skipped, or errored). */
+  protected processedCount(item: ImportListItem): number {
+    return item.insertedCount + item.skippedCount + item.errorCount;
+  }
+
+  /** The File cell's second line: "N rows · 1.2 MB". Row count is left out until the job has counted. */
+  protected fileMetaLabel(item: ImportListItem): string {
+    const parts: string[] = [];
+    if (item.rowCount > 0) parts.push(`${item.rowCount} rows`);
+    const size = this.formatFileSize(item.sourceFileSize);
+    if (size) parts.push(size);
+    return parts.join(' · ');
+  }
+
   // --- Exports tab ---
   protected readonly exportJobs = signal<DataExportRecordType[]>([]);
   protected readonly exportCount = computed(() => this.exportJobs().length);
@@ -167,7 +189,13 @@ export class ImportsPage {
       }
     });
 
-    this.startPolling();
+    // Poll only while an import is actually running: the effect starts the interval when an
+    // active import appears in the list and stops it as soon as none are left, so an idle
+    // history page makes no background requests.
+    effect(() => {
+      if (this.hasActiveImports()) this.startPolling();
+      else this.stopPolling();
+    });
 
     this.destroyRef.onDestroy(() => {
       this.imports.abort();
@@ -184,18 +212,17 @@ export class ImportsPage {
   }
 
   private startPolling() {
-    this.pollInterval = setInterval(() => void this.pollStep(), 4000);
+    if (this.pollInterval) return;
+    this.pollInterval = setInterval(() => void this.pollStep(), IMPORT_POLL_INTERVAL_MS);
   }
 
   private async pollStep(): Promise<void> {
-    const hasActiveJobs = this.items().some((item) => item.status === 'pending' || item.status === 'processing');
-    if (hasActiveJobs) {
-      try {
-        const list = await this.imports.list();
-        this.items.set(list ?? []);
-      } catch (err) {
-        console.error('Failed to poll imports status:', err);
-      }
+    try {
+      const list = await this.imports.list();
+      this.items.set(list ?? []);
+    } catch (err) {
+      // Transient — the next tick retries; the effect stops the interval once nothing is active.
+      console.error('Failed to poll imports status:', err);
     }
   }
 

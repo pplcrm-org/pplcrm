@@ -230,26 +230,98 @@ describe('ImportsPage', () => {
     expect(component['deleting']()).toBe(false);
   });
 
-  it('should refresh items during polling only while a job is pending or processing', async () => {
+  it('should poll only while an import is pending or processing, and stop once none are left', async () => {
+    fixture.destroy();
+    const setIntervalSpy = vi.spyOn(global, 'setInterval');
+    const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
+    mockImportsSvc.list.mockResolvedValue([{ ...baseItem, status: 'processing' }]);
+
+    fixture = TestBed.createComponent(ImportsPage);
+    component = fixture.componentInstance;
+    await fixture.whenStable();
+    fixture.detectChanges(); // flush the polling effect
+
+    expect(component['hasActiveImports']()).toBe(true);
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 4000);
+
+    // A refresh finds every import finished: the effect stops the interval.
+    clearIntervalSpy.mockClear();
+    component['items'].set([{ ...baseItem, status: 'completed' }]);
+    fixture.detectChanges();
+
+    expect(component['hasActiveImports']()).toBe(false);
+    expect(clearIntervalSpy).toHaveBeenCalled();
+  });
+
+  it('should not start polling when nothing in the list is active', async () => {
+    fixture.destroy();
+    const setIntervalSpy = vi.spyOn(global, 'setInterval');
+    mockImportsSvc.list.mockResolvedValue([{ ...baseItem, status: 'completed' }]);
+
+    fixture = TestBed.createComponent(ImportsPage);
+    component = fixture.componentInstance;
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), 4000);
+  });
+
+  it('should replace the list with the latest server state on each poll step', async () => {
     await fixture.whenStable();
     mockImportsSvc.list.mockClear();
-
-    // No active jobs: pollStep should not query the server again.
-    await component['pollStep']();
-    expect(mockImportsSvc.list).not.toHaveBeenCalled();
-
-    // With an active job, pollStep should refresh the list.
-    component['items'].set([{ ...baseItem, status: 'processing' }]);
-    mockImportsSvc.list.mockResolvedValue([{ ...baseItem, status: 'completed' }]);
+    mockImportsSvc.list.mockResolvedValue([{ ...baseItem, status: 'completed', insertedCount: 99 }]);
 
     await component['pollStep']();
 
     expect(mockImportsSvc.list).toHaveBeenCalled();
-    expect(component['items']()).toEqual([{ ...baseItem, status: 'completed' }]);
+    expect(component['items']()).toEqual([{ ...baseItem, status: 'completed', insertedCount: 99 }]);
   });
 
-  it('should abort in-flight requests and stop polling on destroy', async () => {
+  it('should show live progress for a processing import once the row count is known', async () => {
+    fixture.destroy();
+    mockImportsSvc.list.mockResolvedValue([
+      { ...baseItem, status: 'processing', rowCount: 200, insertedCount: 40, skippedCount: 6, errorCount: 4 },
+    ]);
+
+    fixture = TestBed.createComponent(ImportsPage);
+    component = fixture.componentInstance;
     await fixture.whenStable();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('50 of 200 rows');
+    const bar = el.querySelector('progress.progress-info') as HTMLProgressElement | null;
+    expect(bar).toBeTruthy();
+    expect(bar?.max).toBe(200);
+    expect(bar?.value).toBe(50);
+  });
+
+  it('should show a counting state, not a 0-of-0 bar, while the row count is unknown', async () => {
+    fixture.destroy();
+    mockImportsSvc.list.mockResolvedValue([
+      { ...baseItem, status: 'processing', rowCount: 0, insertedCount: 0, skippedCount: 0, errorCount: 0 },
+    ]);
+
+    fixture = TestBed.createComponent(ImportsPage);
+    component = fixture.componentInstance;
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Counting rows');
+    expect(el.textContent).not.toContain('0 of 0');
+    expect(el.querySelector('progress.progress-info')).toBeNull();
+    // The File cell must not claim "0 rows" while the job is still counting.
+    expect(el.textContent).not.toContain('0 rows');
+  });
+
+  it('should abort in-flight requests and stop an active poll on destroy', async () => {
+    fixture.destroy();
+    mockImportsSvc.list.mockResolvedValue([{ ...baseItem, status: 'processing' }]);
+    fixture = TestBed.createComponent(ImportsPage);
+    component = fixture.componentInstance;
+    await fixture.whenStable();
+    fixture.detectChanges(); // flush the polling effect so an interval is running
     const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
 
     fixture.destroy();
