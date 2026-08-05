@@ -106,6 +106,31 @@
       </select>
     </div>
 
+    <!-- Date received — the day the money arrived, which decides the receipt's tax year. -->
+    <div class="flex flex-col gap-1.5">
+      <label class="text-sm font-semibold text-base-content/80" for="rd-gift-date">Date received</label>
+      <input
+        id="rd-gift-date"
+        type="date"
+        class="input input-bordered w-full text-sm"
+        [class.input-error]="giftDateError() !== null"
+        [max]="latestGiftDate()"
+        [value]="giftDate()"
+        (input)="giftDate.set($any($event.target).value)"
+      />
+      @if (giftDateError(); as dateError) {
+      <p class="text-xs text-error mt-1 flex items-center gap-1">
+        <pc-icon name="exclamation-triangle" [size]="3"></pc-icon>
+        {{ dateError }}
+      </p>
+      } @else {
+      <p class="text-xs text-base-content/50">
+        The day the money was received — not the day you are entering it. A cheque dated in December and entered in
+        January is receipted for December's tax year.
+      </p>
+      }
+    </div>
+
     <!-- Mailing address (required — receipts must print one, so gifts are not recorded without it) -->
     <div class="flex flex-col gap-1.5">
       <label class="text-sm font-semibold text-base-content/80" for="rd-street">Mailing address</label>

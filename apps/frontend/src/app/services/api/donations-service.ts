@@ -124,6 +124,8 @@ export class DonationsService extends AbstractAPIService<'donations', Record<str
     method: 'card' | 'check' | 'cash' | 'bank_transfer';
     /** Which fund the gift joins (§15). Omitted means the office fund. */
     campaign_id?: string;
+    /** "YYYY-MM-DD", the day the gift was received. Omitted means today; a future date is refused. */
+    gift_date?: string;
     address: DonationAddressType;
   }) {
     return this.api.donations.recordDonation.mutate(payload);

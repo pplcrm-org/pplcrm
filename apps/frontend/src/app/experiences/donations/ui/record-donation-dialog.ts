@@ -25,6 +25,18 @@ type DonorSearchResult = {
 };
 
 /**
+ * Today in the viewer's own timezone, as "YYYY-MM-DD". Built from the local calendar parts rather
+ * than `toISOString()`, which returns the UTC day and would call a gift entered at 9pm in Toronto
+ * tomorrow's.
+ */
+function todayIso(): string {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/**
  * Fig. 15 "Record donation" dialog — records an offline gift (cash, check, bank transfer, or a
  * card payment taken outside Stripe checkout) against a donor. Distinct from the "Collect
  * donation" flow on the person page, which redirects to Stripe Checkout for a real card charge.
@@ -70,6 +82,22 @@ export class RecordDonationDialog {
   protected readonly method = signal<DonationMethod>('card');
   protected readonly submitting = signal(false);
   protected readonly isLoading = this._loading.visible;
+
+  /**
+   * The day the money was received, not the day it was typed in. A cheque dropped off on
+   * December 31st and entered in January belongs to December's tax year on the receipt, so the
+   * field defaults to today and accepts any earlier date.
+   */
+  protected readonly giftDate = signal(todayIso());
+  /** Recomputed each time the dialog opens, so a tab left open overnight still refuses tomorrow. */
+  protected readonly latestGiftDate = signal(todayIso());
+
+  protected readonly giftDateError = computed<string | null>(() => {
+    const value = this.giftDate().trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 'Enter the date this gift was received, as YYYY-MM-DD.';
+    if (value > this.latestGiftDate()) return 'A gift cannot be dated in the future. Use today or an earlier date.';
+    return null;
+  });
 
   // Donor mailing address — required (no gift without an address; receipts must print one).
   // Prefilled from the donor's household when the search row carries it; staff can edit.
@@ -190,6 +218,8 @@ export class RecordDonationDialog {
     const donor = this.selectedDonor();
     const amt = this.amount();
     if (!donor || amt === null || amt <= 0 || this.amountForm().invalid() || !this.addressComplete()) return;
+    // Refused here as well as on the server so the recorder is told before the round-trip.
+    if (this.giftDateError()) return;
 
     this.submitting.set(true);
     const end = this._loading.begin();
@@ -201,6 +231,7 @@ export class RecordDonationDialog {
         method: this.method(),
         // Omitted when no context has loaded — the backend then files the gift under the office.
         ...(campaignId ? { campaign_id: campaignId } : {}),
+        gift_date: this.giftDate().trim(),
         address: {
           street: this.street().trim(),
           apt: this.apt().trim() || null,
@@ -235,6 +266,8 @@ export class RecordDonationDialog {
     this.amount.set(null);
     this.amountForm().reset();
     this.method.set('card');
+    this.latestGiftDate.set(todayIso());
+    this.giftDate.set(todayIso());
     this.submitting.set(false);
     this.street.set('');
     this.apt.set('');
