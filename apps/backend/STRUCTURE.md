@@ -79,6 +79,7 @@ apps/
               import-verification.ts
               import.handlers.ts
               inbox-purge.handlers.ts
+              lists.handlers.ts
               maintenance.handlers.ts
               newsletter.handlers.ts
               notifications.handlers.ts
