@@ -113,10 +113,13 @@ describe('NewsletterAddComponent', () => {
   });
 
   it('loads available lists and tags on init', () => {
-    expect(mockListsSvc.getAll).toHaveBeenCalledWith({ limit: 100, startRow: 0 });
-    expect(mockTagsSvc.getAll).toHaveBeenCalledWith({ limit: 100, startRow: 0 });
+    // The pickers show every option at once, so they request 1,000 — at 100 a workspace with more
+    // lists or tags than that could not target the rest, and was never told.
+    expect(mockListsSvc.getAll).toHaveBeenCalledWith({ limit: 1000, startRow: 0 });
+    expect(mockTagsSvc.getAll).toHaveBeenCalledWith({ limit: 1000, startRow: 0 });
     expect(component['availableLists']()).toEqual([{ id: 'l1', name: 'VIP Donors', size: 50 }]);
-    expect(component['availableTags']()).toEqual([{ id: 't1', name: 'volunteer', usage: 15 }]);
+    // A tag's usage counts its people only (10), not its households (5) — a newsletter reaches people.
+    expect(component['availableTags']()).toEqual([{ id: 't1', name: 'volunteer', usage: 10 }]);
   });
 
   it('lands on the template step with the welcome template preselected', () => {
@@ -279,12 +282,13 @@ describe('NewsletterAddComponent', () => {
     expect(component['estimatedAudienceCount']()).toBe(0);
   });
 
-  it('subtracts excluded tag usage from the estimated audience', () => {
+  it('subtracts an excluded tag’s people count from the estimated audience', () => {
     component['addIncludeList']('l1');
     component['addExcludeTag']('volunteer');
 
-    // include list (50) - exclude tag usage (15)
-    expect(component['estimatedAudienceCount']()).toBe(35);
+    // include list (50) - the excluded tag's people (10). The tag's 5 households are not
+    // subtracted: a newsletter is sent to people, so households were never in the estimate.
+    expect(component['estimatedAudienceCount']()).toBe(40);
   });
 
   it('does not offer the same list as both an include and exclude suggestion', () => {

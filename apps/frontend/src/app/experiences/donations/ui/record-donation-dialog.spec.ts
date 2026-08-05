@@ -15,6 +15,18 @@ describe('RecordDonationDialog', () => {
 
   const donor = { id: 'p1', first_name: 'Jane', last_name: 'Doe', email: 'jane@example.com' };
 
+  /**
+   * The gift date the dialog defaults to: today in the viewer's own timezone as YYYY-MM-DD.
+   * Built from the local calendar parts, matching the component — `toISOString()` would give the
+   * UTC day and disagree with the component after 7pm in Toronto.
+   */
+  const todayIso = (): string => {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${now.getFullYear()}-${month}-${day}`;
+  };
+
   beforeEach(async () => {
     mockDonationsSvc = {
       recordDonation: vi.fn().mockResolvedValue({ id: 'd1' }),
@@ -72,7 +84,7 @@ describe('RecordDonationDialog', () => {
     expect(component['addressInvalid']()).toBe(true);
   });
 
-  it('should record the donation with the donor, amount in cents, method, and mailing address', async () => {
+  it('should record the donation with the donor, amount in cents, method, gift date, and mailing address', async () => {
     component['selectDonor'](donor);
     component['amount'].set(50);
     component['method'].set('cash');
@@ -80,14 +92,18 @@ describe('RecordDonationDialog', () => {
 
     await component['submit']();
 
+    // No `campaign_id`: no campaign context has loaded here, so the gift is left for the backend
+    // to file under the office fund rather than sent with an empty campaign.
     expect(mockDonationsSvc.recordDonation).toHaveBeenCalledWith({
       personId: 'p1',
       amountCents: 5000,
       method: 'cash',
+      gift_date: todayIso(),
       address: { street: '12 Maple Ave', apt: null, city: 'Ottawa', state: 'ON', zip: 'K1A 0A1', country: 'Canada' },
     });
     // No receipt claim in the toast: whether a receipt is issued depends on workspace settings.
-    expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Saved. $50.00 from Jane Doe recorded');
+    // The amount is formatted in the workspace currency — here the CAD default, so "CA$".
+    expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Saved. CA$50.00 from Jane Doe recorded');
   });
 
   it('should show an error alert when the save fails', async () => {

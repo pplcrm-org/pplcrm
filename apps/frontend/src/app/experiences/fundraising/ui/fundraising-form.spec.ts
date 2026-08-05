@@ -1,3 +1,4 @@
+import { signal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -26,7 +27,9 @@ describe('FundraisingFormComponent', () => {
       getById: vi.fn(),
       add: vi.fn(),
       update: vi.fn(),
-      delete: vi.fn(),
+      // The page deletes through the draft-only guarded verb, which refuses a published or
+      // already-answered page, not the generic CRUD delete.
+      deleteDraft: vi.fn(),
       triggerRefresh: vi.fn(),
     };
 
@@ -44,9 +47,13 @@ describe('FundraisingFormComponent', () => {
     };
 
     mockConfirmDialogSvc = { confirm: vi.fn().mockResolvedValue(true) };
+    // `snapshotSignal` is what WorkspaceCurrencyService reads to resolve the workspace currency;
+    // the component names that currency on the amount fields. Left empty here, so the currency
+    // falls back to the project default (CAD).
     mockSettingsSvc = {
       getValue: vi.fn().mockReturnValue(''),
       load: vi.fn().mockResolvedValue({}),
+      snapshotSignal: signal<Record<string, unknown>>({}),
     };
   });
 
@@ -223,7 +230,7 @@ describe('FundraisingFormComponent', () => {
   it('should confirm, delete, and navigate back on deleteForm', async () => {
     mockActivatedRoute.snapshot.paramMap.get.mockReturnValue('page-123');
     mockFormsSvc.getById.mockResolvedValue({ id: 'page-123', name: 'Annual Gala', form_type: 'donation' });
-    mockFormsSvc.delete.mockResolvedValue(true);
+    mockFormsSvc.deleteDraft.mockResolvedValue(true);
 
     await createComponent();
     fixture.detectChanges();
@@ -232,7 +239,7 @@ describe('FundraisingFormComponent', () => {
     await component['deleteForm']();
 
     expect(mockConfirmDialogSvc.confirm).toHaveBeenCalledWith(expect.objectContaining({ variant: 'danger' }));
-    expect(mockFormsSvc.delete).toHaveBeenCalledWith('page-123');
+    expect(mockFormsSvc.deleteDraft).toHaveBeenCalledWith('page-123');
     expect(mockFormsSvc.triggerRefresh).toHaveBeenCalled();
     expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Donation page deleted');
     expect(mockRouter.navigate).toHaveBeenCalledWith(['/donations']);
@@ -249,7 +256,7 @@ describe('FundraisingFormComponent', () => {
 
     await component['deleteForm']();
 
-    expect(mockFormsSvc.delete).not.toHaveBeenCalled();
+    expect(mockFormsSvc.deleteDraft).not.toHaveBeenCalled();
   });
 
   it('should generate a recurring-donation embed snippet with a monthly pledge field once an id is known', async () => {
@@ -266,7 +273,9 @@ describe('FundraisingFormComponent', () => {
     await flush();
 
     const snippet = component['embedSnippet']();
-    expect(snippet).toContain('Monthly Pledge Amount');
+    // The amount label names the workspace currency, so a donor is never asked for an amount
+    // under one currency and then charged in another.
+    expect(snippet).toContain('Monthly Pledge Amount (CAD)');
     expect(snippet).toContain('Start Monthly Pledge');
     expect(snippet).toContain(`/api/forms/submit/monthly-giving?t=testorg`);
   });
@@ -285,7 +294,7 @@ describe('FundraisingFormComponent', () => {
     await flush();
 
     const snippet = component['embedSnippet']();
-    expect(snippet).toContain('Donation Amount');
+    expect(snippet).toContain('Donation Amount (CAD)');
     expect(snippet).toContain('Donate Now');
   });
 

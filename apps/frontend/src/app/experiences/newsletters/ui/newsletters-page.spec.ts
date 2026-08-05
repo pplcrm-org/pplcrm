@@ -222,7 +222,15 @@ describe('NewslettersPage', () => {
   it('derives audience and content readiness from the raw record', async () => {
     svc.getAll.mockResolvedValue({
       rows: [
-        sentRow({ id: '1', status: 'draft', target_lists: 'Supporters', subject: 'Hi', html_content: '<p>x</p>' }),
+        // The wizard stores targeting as a JSON include/exclude document. A draft only has an
+        // audience when `include` actually names something.
+        sentRow({
+          id: '1',
+          status: 'draft',
+          target_lists: JSON.stringify({ include: ['list-supporters'], exclude: [] }),
+          subject: 'Hi',
+          html_content: '<p>x</p>',
+        }),
         sentRow({ id: '2', status: 'draft' }),
       ],
       count: 2,
