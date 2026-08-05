@@ -25,8 +25,6 @@ export const SettingsRouter = router({
   verifySenderEmail: publicProcedure
     .input(z.object({ token: z.string() }))
     .mutation(({ input }) => settings.verifySenderEmail(input.token)),
-  scheduleTenantDeletion: adminOrOwnerProcedure.mutation(({ ctx }) => settings.scheduleTenantDeletion(ctx.auth)),
-  cancelTenantDeletion: adminOrOwnerProcedure.mutation(({ ctx }) => settings.cancelTenantDeletion(ctx.auth)),
   addVerifiedDomain: adminOrOwnerProcedure
     .input(z.object({ domain: z.string().min(1), linkSubdomain: z.string().max(MAX_DNS_LABEL_LENGTH).optional() }))
     .mutation(({ ctx, input }) => settings.addVerifiedDomain(ctx.auth, input.domain, input.linkSubdomain)),
