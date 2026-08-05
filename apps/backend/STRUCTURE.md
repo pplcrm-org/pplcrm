@@ -51,6 +51,7 @@ apps/
           2026-08-04-d-task-automation-origin.ts
           2026-08-04-e-workflow-message-class.ts
           2026-08-04-import-resume-offset.ts
+          2026-08-05-background-jobs-priority.ts
           schema.sql
         config/
           email-folders.config.ts
