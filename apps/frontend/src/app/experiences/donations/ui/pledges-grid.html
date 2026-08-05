@@ -14,7 +14,8 @@
   <progress class="progress w-full text-primary mb-6"></progress>
   }
 
-  <!-- Summary stats -->
+  <!-- Summary stats. Hidden after a failed load: zeros derived from nothing read are not facts. -->
+  @if (!loadFailed()) {
   <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
     <div class="stat rounded-xl border border-base-200 bg-base-50/50 p-4">
       <div class="stat-title text-xs">Active Pledges</div>
@@ -22,16 +23,25 @@
     </div>
     <div class="stat rounded-xl border border-base-200 bg-base-50/50 p-4">
       <div class="stat-title text-xs">Monthly Committed</div>
-      <div class="stat-value text-2xl text-primary tabular-nums">${{ totalMonthlyCommitted().toFixed(2) }}</div>
+      <div class="stat-value text-2xl text-primary tabular-nums">{{ formatUnits(totalMonthlyCommitted()) }}</div>
     </div>
     <div class="stat rounded-xl border border-base-200 bg-base-50/50 p-4">
       <div class="stat-title text-xs">Total Pledges</div>
       <div class="stat-value text-2xl tabular-nums">{{ pledges().length }}</div>
     </div>
   </div>
+  }
 
-  <!-- Pledges table -->
-  @if (_loading.loaded() && pledges().length === 0) {
+  <!-- Pledges table. A failed load is not an empty list — say which one this is. -->
+  @if (loadFailed() && pledges().length === 0) {
+  <pc-empty-state
+    icon="exclamation-triangle"
+    title="Pledges could not be loaded"
+    hint="This is not the same as having no pledges — nothing was read. Check your connection and try again."
+  >
+    <button type="button" class="btn btn-sm btn-primary" (click)="retry()">Try again</button>
+  </pc-empty-state>
+  } @else if (_loading.loaded() && pledges().length === 0) {
   <pc-empty-state
     icon="arrow-path"
     title="No pledges yet"
@@ -57,7 +67,7 @@
           {{ pledge.person_first_name }} {{ pledge.person_last_name }}
         </a>
         } @else {
-        <span class="font-semibold">{{ pledge.first_name }} {{ pledge.last_name }}</span>
+        <span class="font-semibold">{{ pledge.person_first_name }} {{ pledge.person_last_name }}</span>
         }
         <div class="text-base-content/50">{{ pledge.person_email }}</div>
       </td>

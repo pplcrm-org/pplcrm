@@ -29,6 +29,11 @@ export class PledgesGridComponent implements OnInit {
   protected readonly pledges = signal<any[]>([]);
   protected readonly _loading = createLoadingGate();
   protected readonly cancelling = signal<string | null>(null);
+  /**
+   * True when the last load threw. Without it a failed fetch left an empty list, and the page said
+   * "No pledges yet" — a confident statement about the data that nobody had actually read.
+   */
+  protected readonly loadFailed = signal(false);
 
   protected readonly activePledgeCount = computed(() => this.pledges().filter((p) => p.status === 'active').length);
 
@@ -50,7 +55,7 @@ export class PledgesGridComponent implements OnInit {
       'this donor';
     const confirmed = await this.dialogs.confirm({
       title: `Cancel pledge for ${name}?`,
-      message: `This will stop the $${this.formatCurrency(pledge.monthly_amount)}/month recurring donation immediately. This cannot be undone.`,
+      message: `This will stop the ${this.formatCurrency(pledge.monthly_amount)}/month recurring donation immediately. This cannot be undone.`,
       confirmText: 'Cancel pledge',
       cancelText: 'Keep pledge',
       variant: 'danger',
@@ -71,6 +76,11 @@ export class PledgesGridComponent implements OnInit {
 
   protected formatCurrency(amountCents: number | null | undefined): string {
     return this.money.format(amountCents);
+  }
+
+  /** The Monthly Committed tile holds an already-divided total, not cents. */
+  protected formatUnits(amount: number | null | undefined): string {
+    return this.money.formatUnits(amount);
   }
 
   protected formatDate(dateStr: string | null | undefined): string {
@@ -100,12 +110,19 @@ export class PledgesGridComponent implements OnInit {
     return map[status] ?? 'badge-neutral';
   }
 
+  /** Retry button on the load-failure state. */
+  protected retry(): void {
+    void this.load();
+  }
+
   private async load() {
     const end = this._loading.begin();
     try {
       const data = await this.donationsSvc.listPledges();
       this.pledges.set(data || []);
+      this.loadFailed.set(false);
     } catch {
+      this.loadFailed.set(true);
       this.alertSvc.showError('Failed to load pledges. Please try again.');
     } finally {
       end();
