@@ -2,6 +2,7 @@ import { Component, DestroyRef, computed, effect, inject, signal } from '@angula
 import { Router } from '@angular/router';
 import { Icon } from '@icons/icon';
 
+import { planAllowsGeocoding } from '@common';
 import type { DataExportRecordType, ImportListItem } from '../../../../../../../libs/common/src';
 
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -15,6 +16,7 @@ import { downloadWithAuthHeader } from '../../../services/api/http-download';
 import { TokenService } from '../../../services/api/token-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { environment } from '../../../../environments/environment';
+import { AuthService } from '../../../auth/auth-service';
 import { ExportsService } from '../../exports/services/exports-service';
 import { ImportsService } from '../services/imports-service';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
@@ -28,6 +30,13 @@ type HistoryTab = 'imports' | 'exports';
 
 /** How long to wait between history refreshes while at least one import is still running. */
 const IMPORT_POLL_INTERVAL_MS = 4000;
+
+/**
+ * How long after an import completes the address-locating note stays on the History page. The
+ * daily lookup budget spreads a large import's geocoding over days, so the note covers the window
+ * in which "why has my map pin not appeared yet" is a live question, then retires.
+ */
+const GEOCODE_NOTE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 @Component({
   selector: 'pc-imports-page',
@@ -43,6 +52,13 @@ export class ImportsPage {
   private readonly router = inject(Router);
   private readonly dialogs = inject(ConfirmDialogService);
   private readonly breadcrumbs = inject(BreadcrumbsService);
+  private readonly auth = inject(AuthService);
+
+  /**
+   * The signed-in user carries `tenant_plan` (set server-side in sanitizeUser) — the same
+   * plan-mirror idiom the sidebar, settings page, and import wizard use.
+   */
+  private readonly user = this.auth.getUserSignal();
 
   protected readonly tab = signal<HistoryTab>('imports');
 
@@ -83,6 +99,28 @@ export class ImportsPage {
       `${this.importsThisYear()} imports this year · ${this.recordsCreatedThisYear()} records created · ` +
       `${this.duplicatesMergedThisYear()} duplicates merged`,
   );
+
+  /**
+   * Whether the History page shows the address-locating disclosure (Task J) — the same sentence
+   * the wizard's completion screen shows, surfaced here because large files take the hand-off
+   * path (toast → History) and never render that screen. One quiet line for the whole page, not
+   * a per-row badge: it appears while any recently completed people/households import created
+   * households (i.e. involved addresses), and only for workspaces whose plan includes address
+   * locating (Movement+, mirroring GEOCODING_MIN_PLAN via the shared planAllowsGeocoding).
+   * Below-Movement workspaces get no note: their imports skip geocoding by design, and we don't
+   * advertise the absence. Deliberately number-free, like the wizard's note.
+   */
+  protected readonly showGeocodePacingNote = computed(() => {
+    if (!planAllowsGeocoding(this.user()?.tenant_plan)) return false;
+    const cutoff = Date.now() - GEOCODE_NOTE_WINDOW_MS;
+    return this.items().some(
+      (item) =>
+        item.status === 'completed' &&
+        (item.source === 'persons' || item.source === 'households') &&
+        item.householdsCreated > 0 &&
+        item.processedAt.getTime() >= cutoff,
+    );
+  });
 
   /**
    * What ticking "Also delete people" would take with it, in plain words, or null when those

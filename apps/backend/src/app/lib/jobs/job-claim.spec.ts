@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { BaseRepository } from '../base.repo';
 import { DB_TEST_LOCKS, useExclusiveDbLock } from '../test-utils/exclusive-db-lock';
-import { claimNextPendingJob } from './job-claim';
+import { IMPORT_CONTINUATION_PRIORITY, claimNextPendingJob } from './job-claim';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test reaches the shared Kysely handle
 const db = (BaseRepository as any)._db;
@@ -28,13 +28,18 @@ describe('claimNextPendingJob (per-tenant in-flight fairness)', () => {
     return id;
   }
 
-  async function insertJob(tenantId: string | null, status: 'pending' | 'processing'): Promise<string> {
+  async function insertJob(
+    tenantId: string | null,
+    status: 'pending' | 'processing',
+    priority: number = 0,
+  ): Promise<string> {
     const row = await db
       .insertInto('background_jobs')
       .values({
         tenant_id: tenantId,
         queue: 'default',
         status,
+        priority,
         payload: JSON.stringify({ type: 'noop' }),
         run_at: new Date(),
         max_attempts: 3,
@@ -96,5 +101,108 @@ describe('claimNextPendingJob (per-tenant in-flight fairness)', () => {
     const claimed = await claimNextPendingJob(db, 'test-worker', 2);
     expect(claimed?.tenant_id).toBeNull();
     expect(String(claimed?.id)).toBe(sysJob);
+  });
+});
+
+describe('claimNextPendingJob (priority ordering)', () => {
+  const createdJobs: string[] = [];
+  const createdTenants: string[] = [];
+
+  async function tenant(): Promise<string> {
+    const id = rand();
+    await db
+      .insertInto('tenants')
+      .values({ id, name: `Priority Tenant ${id}` })
+      .execute();
+    createdTenants.push(id);
+    return id;
+  }
+
+  async function insertJob(tenantId: string, priority: number, payloadType = 'noop'): Promise<string> {
+    const row = await db
+      .insertInto('background_jobs')
+      .values({
+        tenant_id: tenantId,
+        queue: 'default',
+        status: 'pending',
+        priority,
+        payload: JSON.stringify({ type: payloadType }),
+        run_at: new Date(),
+        max_attempts: 3,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    createdJobs.push(String(row.id));
+    return String(row.id);
+  }
+
+  beforeEach(() => {
+    createdJobs.length = 0;
+    createdTenants.length = 0;
+  });
+
+  afterEach(async () => {
+    if (createdJobs.length > 0) {
+      await db.deleteFrom('background_jobs').where('id', 'in', createdJobs).execute();
+    }
+    if (createdTenants.length > 0) {
+      await db.deleteFrom('tenants').where('id', 'in', createdTenants).execute();
+    }
+  });
+
+  it('claims a ready import continuation before a large batch of earlier-enqueued fan-out jobs', async () => {
+    const importer = await tenant();
+
+    // The observed live shape, scaled down: a segment fans out a batch of default-priority
+    // geocode jobs (lower ids), THEN enqueues its continuation (highest id). Same-second run_at
+    // throughout, exactly as observed — id order alone would drain the whole batch first.
+    for (let i = 0; i < 50; i++) {
+      await insertJob(importer, 0, 'geocode_household');
+    }
+    const continuation = await insertJob(importer, IMPORT_CONTINUATION_PRIORITY, 'import_csv');
+
+    const claimed = await claimNextPendingJob(db, 'test-worker', 2);
+    expect(String(claimed?.id)).toBe(continuation);
+  });
+
+  it('keeps plain FIFO (lowest id first) among default-priority jobs', async () => {
+    const a = await tenant();
+    const b = await tenant();
+
+    const first = await insertJob(a, 0);
+    await insertJob(b, 0);
+    await insertJob(a, 0);
+
+    const claimed = await claimNextPendingJob(db, 'test-worker', 2);
+    expect(String(claimed?.id)).toBe(first);
+  });
+
+  it('still skips a prioritized job whose tenant is at its in-flight cap (fairness beats priority)', async () => {
+    const busy = await tenant();
+    const other = await tenant();
+
+    // busy is at cap (2) with default-priority work in flight.
+    for (let i = 0; i < 2; i++) {
+      const row = await db
+        .insertInto('background_jobs')
+        .values({
+          tenant_id: busy,
+          queue: 'default',
+          status: 'processing',
+          payload: JSON.stringify({ type: 'noop' }),
+          run_at: new Date(),
+          max_attempts: 3,
+          locked_at: new Date(),
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      createdJobs.push(String(row.id));
+    }
+    await insertJob(busy, IMPORT_CONTINUATION_PRIORITY, 'import_csv'); // prioritized but throttled
+    const otherJob = await insertJob(other, 0);
+
+    const claimed = await claimNextPendingJob(db, 'test-worker', 2);
+    expect(String(claimed?.tenant_id)).toBe(other);
+    expect(String(claimed?.id)).toBe(otherJob);
   });
 });

@@ -29,6 +29,7 @@ import { notificationEnabled } from '../../profile-preferences';
 import { sendMailOrDrop } from '../../mail/send-or-drop';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
+import { IMPORT_CONTINUATION_PRIORITY } from '../job-claim';
 import type { JobPayloadOf, LegacyImportJobPayload } from '../job-payloads';
 import { runImportEmailVerification } from './import-verification';
 
@@ -585,6 +586,11 @@ function boundImportFeed(source: AsyncIterable<StoredImportRow>, skip: number, l
  * resume cursor is already durable on `data_imports`, so the worst a crash here costs is the
  * job row — which stale recovery of THIS job then re-delivers (same payload), losing nothing.
  * Precedent: enqueueContinuation in receipts.handlers.ts.
+ *
+ * Enqueued above the default claim priority so the next segment does not queue behind THIS
+ * segment's thousands of geocode/trigger fan-out jobs (they all carry the same enqueue-time
+ * run_at, so id order alone put the continuation ~15 minutes out per 25,000-row segment). See
+ * IMPORT_CONTINUATION_PRIORITY in job-claim.ts for why this cannot starve other tenants.
  */
 async function enqueueImportContinuation(db: Kysely<Models>, payload: JobPayloadOf<'import_csv'>): Promise<void> {
   await db
@@ -593,6 +599,7 @@ async function enqueueImportContinuation(db: Kysely<Models>, payload: JobPayload
       tenant_id: payload.tenant_id,
       queue: 'default',
       status: 'pending',
+      priority: IMPORT_CONTINUATION_PRIORITY,
       payload: JSON.stringify(payload),
       run_at: new Date(),
       max_attempts: 3,

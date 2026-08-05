@@ -172,6 +172,12 @@
       }
     </pc-table>
 
+    @if (showGeocodePacingNote()) {
+    <p class="text-xs text-base-content/50 mt-4">
+      Imported addresses are located gradually in the background over the coming days, within your workspace's daily
+      lookup budget — results appear on household pages as they complete.
+    </p>
+    }
     <p class="text-xs text-base-content/50 mt-4">
       Every import keeps its source file for 90 days, and skipped rows stay downloadable with the reason each was
       skipped.

@@ -1536,6 +1536,8 @@ export interface BackgroundJobs {
   payload: Json;
   attempts: Generated<number>;
   max_attempts: Generated<number>;
+  /** Claim order: higher first, then id ASC. Default 0; only import continuations enqueue above it. */
+  priority: Generated<number>;
   error: string | null;
   run_at: Generated<Timestamp>;
   locked_at: Timestamp | null;

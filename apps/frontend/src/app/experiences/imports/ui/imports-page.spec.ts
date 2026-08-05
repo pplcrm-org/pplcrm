@@ -1,3 +1,4 @@
+import { signal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import { TestBed } from '@angular/core/testing';
 import { Router } from '@angular/router';
@@ -7,6 +8,7 @@ import type { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 import { ImportsPage } from './imports-page';
 import { ImportsService } from '../services/imports-service';
 import { ExportsService } from '../../exports/services/exports-service';
+import { AuthService } from '../../../auth/auth-service';
 import { TokenService } from '../../../services/api/token-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import * as httpDownload from '../../../services/api/http-download';
@@ -70,9 +72,14 @@ describe('ImportsPage', () => {
   let mockTokenSvc: any;
   let mockDialogSvc: any;
   let mockRouter: any;
+  /** The signed-in user the page reads `tenant_plan` from — the address-locating note's plan gate. */
+  let userSignal: ReturnType<typeof signal<{ tenant_plan?: string } | null>>;
+  let mockAuthSvc: any;
 
   beforeEach(async () => {
     vi.mocked(httpDownload.downloadWithAuthHeader).mockReset().mockResolvedValue(undefined);
+    userSignal = signal<{ tenant_plan?: string } | null>({ tenant_plan: 'free' });
+    mockAuthSvc = { getUserSignal: vi.fn(() => userSignal) };
     mockImportsSvc = {
       list: vi.fn().mockResolvedValue([baseItem]),
       delete: vi.fn().mockResolvedValue(true),
@@ -102,6 +109,7 @@ describe('ImportsPage', () => {
         { provide: ImportsService, useValue: mockImportsSvc },
         { provide: ExportsService, useValue: mockExportsSvc },
         { provide: AlertService, useValue: mockAlertSvc },
+        { provide: AuthService, useValue: mockAuthSvc },
         { provide: TokenService, useValue: mockTokenSvc },
         { provide: ConfirmDialogService, useValue: mockDialogSvc },
         { provide: Router, useValue: mockRouter },
@@ -336,6 +344,76 @@ describe('ImportsPage', () => {
     component['startNewImport']();
 
     expect(mockRouter.navigate).toHaveBeenCalledWith(['/imports/new']);
+  });
+
+  // Large files take the hand-off path (toast → History) and never render the wizard's
+  // completion screen, so the address-locating disclosure must also live here: one quiet line
+  // under the table while a recent completed people/households import created households, for
+  // plans that include address locating.
+  describe('address-locating (geocode pacing) note', () => {
+    const recentQualifyingItem = {
+      ...baseItem,
+      source: 'persons',
+      status: 'completed' as const,
+      householdsCreated: 3,
+      processedAt: new Date(Date.now() - 60 * 60 * 1000), // an hour ago
+    };
+
+    async function renderImportsTabWith(items: unknown[], plan: string): Promise<string> {
+      fixture.destroy();
+      userSignal.set({ tenant_plan: plan });
+      mockImportsSvc.list.mockResolvedValue(items);
+      fixture = TestBed.createComponent(ImportsPage);
+      component = fixture.componentInstance;
+      await fixture.whenStable();
+      fixture.detectChanges();
+      return (fixture.nativeElement as HTMLElement).textContent ?? '';
+    }
+
+    it('shows the note for a recent completed people import that created households, on a geocoding plan', async () => {
+      const text = await renderImportsTabWith([recentQualifyingItem], 'movement');
+
+      expect(component['showGeocodePacingNote']()).toBe(true);
+      expect(text).toContain('Imported addresses are located gradually');
+    });
+
+    it('shows the note for a households import too', async () => {
+      await renderImportsTabWith([{ ...recentQualifyingItem, source: 'households' }], 'movement');
+
+      expect(component['showGeocodePacingNote']()).toBe(true);
+    });
+
+    it('stays silent on a plan below the geocoding tier — those imports skip geocoding by design', async () => {
+      const text = await renderImportsTabWith([recentQualifyingItem], 'free');
+
+      expect(component['showGeocodePacingNote']()).toBe(false);
+      expect(text).not.toContain('Imported addresses are located gradually');
+    });
+
+    it('stays silent when the import created no households (no addresses involved)', async () => {
+      await renderImportsTabWith([{ ...recentQualifyingItem, householdsCreated: 0 }], 'movement');
+
+      expect(component['showGeocodePacingNote']()).toBe(false);
+    });
+
+    it('stays silent for sources that never geocode (companies, tasks)', async () => {
+      await renderImportsTabWith([{ ...recentQualifyingItem, source: 'companies' }], 'movement');
+
+      expect(component['showGeocodePacingNote']()).toBe(false);
+    });
+
+    it('retires the note once the most recent qualifying import is older than the window', async () => {
+      const old = { ...recentQualifyingItem, processedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) };
+      await renderImportsTabWith([old], 'movement');
+
+      expect(component['showGeocodePacingNote']()).toBe(false);
+    });
+
+    it('waits for the import to complete — a still-processing import shows progress, not the note', async () => {
+      await renderImportsTabWith([{ ...recentQualifyingItem, status: 'processing' }], 'movement');
+
+      expect(component['showGeocodePacingNote']()).toBe(false);
+    });
   });
 
   describe('Exports tab', () => {
