@@ -68,8 +68,16 @@ export class ShiftViewComponent {
   // Active tab state
   protected activeTab = signal<string>('roster');
 
+  /**
+   * A cancelled shift has given its spot back, so it is not one of the people coming.
+   * The whole page counts volunteers this way — the tab badge, the "Signed Up" tile and
+   * "Remaining Capacity" all read this, so they cannot disagree with each other or with
+   * the public signup page's capacity check.
+   */
+  protected readonly activeRoster = computed(() => this.roster().filter((r) => r.status !== 'cancelled'));
+
   protected readonly eventTabs = computed<PcTabOption[]>(() => [
-    { id: 'roster', label: 'Volunteer roster', badge: this.roster().length },
+    { id: 'roster', label: 'Volunteer roster', badge: this.activeRoster().length },
     { id: 'activity', label: 'Activity' },
   ]);
 
@@ -84,7 +92,7 @@ export class ShiftViewComponent {
     if (!detail || detail.capacity === null || detail.capacity === undefined) {
       return 'Unlimited';
     }
-    const count = this.roster().length;
+    const count = this.activeRoster().length;
     return Math.max(0, detail.capacity - count);
   });
 

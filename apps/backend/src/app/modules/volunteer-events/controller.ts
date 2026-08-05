@@ -497,6 +497,10 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
         eb
           .selectFrom('volunteer_shifts')
           .whereRef('volunteer_shifts.event_id', '=', 'volunteer_events.id')
+          // A cancelled shift has given its spot back, so it must not count towards the
+          // event being full. Mirrors the RSVP events module, which excludes cancelled
+          // registrations everywhere.
+          .where('volunteer_shifts.status', '!=', 'cancelled')
           .select(({ fn }) => [fn.count<number>('volunteer_shifts.id').as('volunteers_count')])
           .as('volunteers_count'),
       ])
@@ -534,6 +538,9 @@ export class VolunteerEventsController extends BaseController<'volunteer_events'
         eb
           .selectFrom('volunteer_shifts')
           .whereRef('volunteer_shifts.event_id', '=', 'volunteer_events.id')
+          // Excluding cancelled shifts here is what lets the public signup capacity check
+          // below (step 5) hand a freed spot to the next volunteer.
+          .where('volunteer_shifts.status', '!=', 'cancelled')
           .select(({ fn }) => [fn.count<number>('volunteer_shifts.id').as('volunteers_count')])
           .as('volunteers_count'),
       ])
