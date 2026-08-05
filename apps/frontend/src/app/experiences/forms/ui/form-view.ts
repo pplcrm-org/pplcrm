@@ -269,14 +269,18 @@ ${
     const backRoute: string = this.route.snapshot.data['backRoute'] ?? '/forms';
     const confirmed = await this.dialogs.confirm({
       title: 'Delete Web Form',
-      message: 'Are you sure you want to delete this web form? This action cannot be undone.',
+      message:
+        'Are you sure you want to delete this web form? This action cannot be undone. ' +
+        'Only a draft with no responses can be deleted this way — a published or already-used ' +
+        'form must be archived instead, which keeps its history and disables its public link.',
       variant: 'danger',
       confirmText: 'Delete',
     });
     if (!confirmed) return;
     const end = this._loading.begin();
     try {
-      await this.formsSvc.delete(this.id());
+      // Guarded verb: refuses anything but a zero-response draft (unlike the generic CRUD delete).
+      await this.formsSvc.deleteDraft(this.id());
       this.formsSvc.triggerRefresh();
       this.alertSvc.showSuccess('Web form deleted');
       await this.router.navigate([backRoute]);
