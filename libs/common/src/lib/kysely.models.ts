@@ -1614,7 +1614,7 @@ export interface DismissedDuplicateGroups {
   dismissed_at: Generated<Timestamp>;
 }
 
-interface MsOauthTokens {
+export interface MsOauthTokens {
   id: Generated<string>;
   tenant_id: string;
   /** The campaign context this mailbox connection belongs to (§15). */
