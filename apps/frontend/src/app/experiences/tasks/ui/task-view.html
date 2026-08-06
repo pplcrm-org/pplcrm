@@ -2,7 +2,7 @@
   [title]="pageTitle()"
   eyebrow="Task"
   [crumbs]="crumbs()"
-  [isLoading]="isLoading() && !task()"
+  [gate]="_loading"
   [hasRecord]="!!task()"
   [showActions]="false"
   [showDelete]="!!task()"

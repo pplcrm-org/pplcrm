@@ -77,7 +77,7 @@ export class TaskView {
   protected readonly comments = signal<any[]>([]);
   protected readonly attachments = signal<any[]>([]);
   protected readonly subtasks = signal<any[]>([]);
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
   protected readonly isLoading = this._loading.visible;
   protected readonly users = signal<IAuthUser[]>([]);

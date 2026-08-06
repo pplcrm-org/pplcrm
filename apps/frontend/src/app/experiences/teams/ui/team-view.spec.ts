@@ -120,7 +120,7 @@ describe('TeamViewComponent', () => {
     });
     expect(component['team']()).toEqual(mockTeamData);
     expect(component['teamTasks']()).toEqual(mockTasksResult.rows);
-    expect(component['initialized']()).toBe(true);
+    expect(component['_loading'].loaded()).toBe(true);
   });
 
   it('should surface an app-authored Error message when loading the team fails', async () => {

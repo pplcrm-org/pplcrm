@@ -2,8 +2,8 @@
   [title]="donorName() ? 'Gift from ' + donorName() : 'Gift'"
   [eyebrow]="'Donation'"
   [crumbs]="crumbs()"
-  [isLoading]="isLoading() && !donation()"
-  [hasRecord]="!initialized() || !!donation()"
+  [gate]="_loading"
+  [hasRecord]="!!donation()"
   [showActions]="false"
   [showDelete]="false"
 >

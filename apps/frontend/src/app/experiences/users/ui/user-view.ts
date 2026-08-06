@@ -62,10 +62,8 @@ export class UserViewComponent {
   private readonly dialogs = inject(ConfirmDialogService);
   private readonly campaignContext = inject(CampaignContextService);
 
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
-  protected readonly loading = this._loading.visible;
-  protected readonly initialized = signal(false);
   protected readonly error = signal<string | null>(null);
   protected readonly stats = signal<IUserStatsSnapshot | null>(null);
   protected readonly detail = signal<IAuthUserDetail | null>(null);
@@ -516,7 +514,6 @@ export class UserViewComponent {
       this.alerts.showError(message);
     } finally {
       end();
-      this.initialized.set(true);
     }
   }
 

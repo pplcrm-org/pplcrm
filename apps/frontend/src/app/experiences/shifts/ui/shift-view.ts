@@ -53,10 +53,8 @@ export class ShiftViewComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly dialogs = inject(ConfirmDialogService);
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
-  protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
   protected readonly event = signal<any | null>(null);
   protected readonly roster = signal<any[]>([]);
 
@@ -126,7 +124,6 @@ export class ShiftViewComponent {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the shift. Please try again.'));
     } finally {
       end();
-      this.initialized.set(true);
     }
   }
 

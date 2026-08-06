@@ -51,10 +51,8 @@ export class TeamViewComponent {
   private readonly userService = inject(UserService);
   private readonly dialogs = inject(ConfirmDialogService);
 
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
-  protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
   protected readonly team = signal<any>(null);
   protected readonly teamTasks = signal<any[]>([]);
   protected readonly volunteers = computed(() => this.team()?.volunteers ?? []);
@@ -130,7 +128,6 @@ export class TeamViewComponent {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the team. Please try again.'));
     } finally {
       end();
-      this.initialized.set(true);
     }
   }
 

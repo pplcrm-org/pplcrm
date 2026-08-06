@@ -54,9 +54,7 @@ export class DonationViewComponent {
   private readonly money = inject(WorkspaceCurrencyService);
   private readonly orgMode = inject(OrgModeService);
 
-  private readonly _loading = createLoadingGate();
-  protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
+  protected readonly _loading = createLoadingGate();
   protected readonly donation = signal<DonationDetail | null>(null);
   protected readonly receipts = signal<ReceiptRowT[]>([]);
   protected readonly acting = signal(false);
@@ -258,7 +256,6 @@ export class DonationViewComponent {
       this.alertSvc.showError(err instanceof Error && err.message ? err.message : 'Failed to load this gift');
       void this.router.navigate(['/donations']);
     } finally {
-      this.initialized.set(true);
       end();
     }
   }

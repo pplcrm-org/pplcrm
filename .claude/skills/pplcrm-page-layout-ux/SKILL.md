@@ -15,18 +15,55 @@ the orientation rules (below) fall out for free.
 view. It owns the padded `bg-base-200/50` container, the loading/error/not-found states, and a
 content slot. **Do not hand-roll a page frame** — pass inputs to this and project your body into it.
 
-Key inputs (`detail-layout.ts`): `title` (required), `eyebrow`, `crumbs`, `icon`,
-`isLoading` (required), `hasRecord`, `showDelete`, `deleteText`, `btn1Text`, `btn1Icon`, plus the
-pager inputs `positionLabel`/`hasPrev`/`hasNext`/`prevLabel`/`nextLabel`. Outputs: `save` (the
-primary/Edit button), `delete`, `prevRecord`, `nextRecord`.
+Key inputs (`detail-layout.ts`): `title` (required), `gate` (required), `eyebrow`, `crumbs`,
+`icon`, `hasRecord`, `error`, `notFoundText`, `showDelete`, `deleteText`, `btn1Text`, `btn1Icon`,
+plus the pager inputs `positionLabel`/`hasPrev`/`hasNext`/`prevLabel`/`nextLabel`. Outputs: `save`
+(the primary/Edit button), `delete`, `prevRecord`, `nextRecord`.
 
 It internally renders `pc-detail-header`, which renders `pc-breadcrumbs`. You almost never
 reference the header or breadcrumbs directly on a page — you feed the layout and it wires them.
 
-Gotcha: the layout's own `@if (isLoading())` / `error()` / `hasRecord()` branches
-already render skeleton/error/not-found. Your projected body should
-guard its own render on the record existing (e.g. `@if (company())` in
-`company-view.html`) so you don't flash empty cards before data lands.
+### Loading, not-found and refetch — the layout owns all of it
+
+**Pass the gate object and the raw record check. Nothing else. Never a hand-derived boolean.**
+
+```html
+<pc-detail-layout [title]="pageTitle()" [gate]="_loading" [hasRecord]="!!company()"></pc-detail-layout>
+```
+
+That means the page's gate field must be `protected readonly _loading = createLoadingGate();`
+(not `private`, or the template cannot bind it). A page needs no `initialized`/`loaded` signal of
+its own — the gate already publishes `loaded`, and the layout reads it.
+
+What the layout renders, in the order it decides:
+
+| Situation                                        | Body                                  |
+| ------------------------------------------------ | ------------------------------------- |
+| first load, past the gate's 300ms delay          | skeleton, held for the gate's minimum |
+| the load failed (`error` set)                    | error alert                           |
+| first load, still inside the 300ms delay         | nothing — page chrome only            |
+| load finished and returned no record             | `notFoundText` alert                  |
+| a record is on screen and a refetch is in flight | that record, dimmed to 60%            |
+| otherwise                                        | your projected body                   |
+
+Why it is built this way (the numbers are not arbitrary — don't re-tune them casually):
+
+- **Under ~300ms, no indicator at all.** GitHub Primer and NN/g both put the "show nothing"
+  ceiling at about 1 second; Vue's async-component default delay is 200ms. An indicator the user
+  cannot finish reading makes the page feel slower, not faster.
+- **A skeleton, not a spinner, for a whole content area** (Primer, NN/g). A spinner is for one
+  small module.
+- **The skeleton is latched for the gate's full minimum-display window.** If a record arriving
+  mid-hold swapped the skeleton out after 40ms, that swap would be exactly the flash the minimum
+  exists to prevent. This is the bug the old per-page `[isLoading]="isLoading() && !record()"`
+  expression caused: it cancelled the minimum-display timer.
+- **A refetch keeps the previous record on screen and dims it** rather than blanking to a
+  skeleton — the same call React's transitions and TanStack Query's `keepPreviousData` make. This
+  is what you see pressing J/K through records.
+
+Gotcha: your projected body should still guard its own render on the record existing (e.g.
+`@if (company())` in `company-view.html`) — the layout decides _whether_ to project, but the
+body's own bindings still run.
 
 Gotcha: `showDelete` demotes Delete into an overflow (⋯) menu, not an inline button, and it
 suppresses the third form-action button to keep the layout stable (`detail-header.ts`).
@@ -185,8 +222,9 @@ Every page must answer three orientation questions:
 - [ ] **Where am I going?** Counts shown before clicks — tab labels carry counts
       (`Employees (${employeeCount()})`, see `company-view.ts`); prev/next pager shows "N of M
       filtered" when a grid handed off context.
-- [ ] `pc-detail-layout` is the frame (no hand-rolled page shell); body guarded on the record
-      existing so nothing flashes before load.
+- [ ] `pc-detail-layout` is the frame (no hand-rolled page shell), fed `[gate]="_loading"` and a
+      bare `[hasRecord]="!!record()"` — never a hand-derived loading/not-found boolean; body
+      guarded on the record existing.
 - [ ] Prev/next wired via `injectRecordNavigation` + bound through to the layout, or deliberately
       omitted (fine — pager self-hides with no context).
 - [ ] `<pc-record-activities>` present with the correct **DB table name** as `entity` and `id()` as

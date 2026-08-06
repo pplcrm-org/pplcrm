@@ -55,10 +55,8 @@ export class CompanyView {
   private readonly userService = inject(UserService);
   private readonly dialogs = inject(ConfirmDialogService);
 
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
-  protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
 
   protected readonly company = signal<any | null>(null);
   protected readonly employeeCount = signal(0);
@@ -152,7 +150,6 @@ export class CompanyView {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the company. Please try again.'));
     } finally {
       end();
-      this.initialized.set(true);
     }
   }
 

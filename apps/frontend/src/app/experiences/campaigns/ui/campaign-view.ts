@@ -46,10 +46,8 @@ export class CampaignViewComponent {
   private readonly router = inject(Router);
   private readonly dialogs = inject(ConfirmDialogService);
 
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
-  protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
   protected readonly campaign = signal<Record<string, unknown> | null>(null);
 
   protected readonly crumbs = computed<PcBreadcrumb[]>(() => [
@@ -260,7 +258,6 @@ export class CampaignViewComponent {
       this.alerts.showError(getUserErrorMessage(err, 'Could not load the campaign. Please try again.'));
     } finally {
       end();
-      this.initialized.set(true);
     }
   }
 

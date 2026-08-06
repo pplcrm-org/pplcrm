@@ -54,10 +54,8 @@ export class FormViewComponent {
 
   readonly id = input.required<string>();
   protected readonly recordNav = injectRecordNavigation('form', this.id);
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
-  protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
   protected readonly formRecord = signal<any | null>(null);
   protected readonly submissionsCount = signal(0);
 
@@ -256,7 +254,6 @@ ${
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the form. Please try again.'));
     } finally {
       end();
-      this.initialized.set(true);
     }
   }
 

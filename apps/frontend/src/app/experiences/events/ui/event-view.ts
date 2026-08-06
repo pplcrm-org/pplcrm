@@ -58,10 +58,8 @@ export class EventViewComponent {
   private readonly router = inject(Router);
   private readonly dialogs = inject(ConfirmDialogService);
 
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
-  protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
 
   protected readonly event = signal<any | null>(null);
   protected readonly ticketTypes = signal<any[]>([]);
@@ -137,7 +135,6 @@ export class EventViewComponent {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the event. Please try again.'));
     } finally {
       end();
-      this.initialized.set(true);
     }
   }
 

@@ -1,24 +1,42 @@
-import { Component } from '@angular/core';
+import { Component, signal, type WritableSignal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router } from '@angular/router';
 import { By } from '@angular/platform-browser';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { loadingGate } from '../../loading-gate';
 import { DetailLayout } from './detail-layout';
+
+/**
+ * A loading gate whose timers are driven by the test instead of by the clock.
+ * `visible` is the delayed + minimum-held indicator flag; `loaded` flips once a load
+ * has finished at least once.
+ */
+type StubGate = loadingGate & { visible: WritableSignal<boolean>; loaded: WritableSignal<boolean> };
+
+function stubGate(state: { visible?: boolean; loaded?: boolean } = {}): StubGate {
+  const visible = signal(state.visible ?? false);
+  const loaded = signal(state.loaded ?? false);
+  const active = signal(false);
+  return { visible, loaded, active, begin: () => () => undefined };
+}
 
 @Component({
   template: `
-    <pc-detail-layout [title]="'Jane Doe'" [isLoading]="false">
+    <pc-detail-layout [title]="'Jane Doe'" [gate]="gate">
       <p>Projected body</p>
     </pc-detail-layout>
   `,
   imports: [DetailLayout],
 })
-class HostComponent {}
+class HostComponent {
+  public readonly gate = stubGate({ loaded: true });
+}
 
 describe('DetailLayout', () => {
   let fixture: ComponentFixture<DetailLayout>;
   let component: DetailLayout;
+  let gate: StubGate;
   const appendedElements: HTMLElement[] = [];
 
   beforeEach(async () => {
@@ -32,8 +50,9 @@ describe('DetailLayout', () => {
 
     fixture = TestBed.createComponent(DetailLayout);
     component = fixture.componentInstance;
+    gate = stubGate();
     fixture.componentRef.setInput('title', 'Jane Doe');
-    fixture.componentRef.setInput('isLoading', false);
+    fixture.componentRef.setInput('gate', gate);
   });
 
   afterEach(() => {
@@ -43,25 +62,58 @@ describe('DetailLayout', () => {
   });
 
   describe('body states', () => {
-    it('shows a loading spinner when isLoading is true', () => {
-      fixture.componentRef.setInput('isLoading', true);
+    /** The regression this component exists to prevent: a record page must not accuse the
+     * user of a missing record while its very first fetch is still in flight. */
+    it('shows nothing — no skeleton, no not-found alert — before the first load settles', () => {
+      fixture.componentRef.setInput('hasRecord', false);
+      fixture.componentRef.setInput('notFoundText', 'No such person');
       fixture.detectChanges();
 
-      expect(fixture.debugElement.query(By.css('progress'))).not.toBeNull();
+      expect(fixture.debugElement.query(By.css('.skeleton'))).toBeNull();
       expect(fixture.debugElement.query(By.css('.alert-error'))).toBeNull();
     });
 
-    it('shows the error alert when error is set and not loading', () => {
+    it('shows the skeleton once the gate reveals the indicator with no record on screen', () => {
+      fixture.componentRef.setInput('hasRecord', false);
+      gate.visible.set(true);
+      fixture.detectChanges();
+
+      expect(fixture.debugElement.query(By.css('.skeleton'))).not.toBeNull();
+      expect(fixture.debugElement.query(By.css('.alert-error'))).toBeNull();
+    });
+
+    /** The gate holds its indicator for a minimum duration. If the record landing mid-hold
+     * swapped the skeleton out, that swap would be the brief flash the hold prevents. */
+    it('keeps the skeleton up when the record arrives while the gate is still holding', () => {
+      fixture.componentRef.setInput('hasRecord', false);
+      gate.visible.set(true);
+      fixture.detectChanges();
+
+      gate.loaded.set(true);
+      fixture.componentRef.setInput('hasRecord', true);
+      fixture.detectChanges();
+
+      expect(fixture.debugElement.query(By.css('.skeleton'))).not.toBeNull();
+
+      gate.visible.set(false);
+      fixture.detectChanges();
+
+      expect(fixture.debugElement.query(By.css('.skeleton'))).toBeNull();
+    });
+
+    it('shows the error alert when error is set and the gate is idle', () => {
+      gate.loaded.set(true);
       fixture.componentRef.setInput('error', 'Something went wrong');
       fixture.detectChanges();
 
       const alert = fixture.debugElement.query(By.css('.alert-error'));
       expect(alert).not.toBeNull();
       expect(alert.nativeElement.textContent).toContain('Something went wrong');
-      expect(fixture.debugElement.query(By.css('progress'))).toBeNull();
+      expect(fixture.debugElement.query(By.css('.skeleton'))).toBeNull();
     });
 
-    it('shows the not-found alert when hasRecord is false and there is no error', () => {
+    it('shows the not-found alert once the load settled with no record and no error', () => {
+      gate.loaded.set(true);
       fixture.componentRef.setInput('hasRecord', false);
       fixture.componentRef.setInput('notFoundText', 'No such person');
       fixture.detectChanges();
@@ -71,16 +123,18 @@ describe('DetailLayout', () => {
       expect(alert.nativeElement.textContent).toContain('No such person');
     });
 
-    it('prioritizes the loading state over an error', () => {
-      fixture.componentRef.setInput('isLoading', true);
+    it('prioritizes the skeleton over an error', () => {
+      fixture.componentRef.setInput('hasRecord', false);
+      gate.visible.set(true);
       fixture.componentRef.setInput('error', 'boom');
       fixture.detectChanges();
 
-      expect(fixture.debugElement.query(By.css('progress'))).not.toBeNull();
+      expect(fixture.debugElement.query(By.css('.skeleton'))).not.toBeNull();
       expect(fixture.debugElement.query(By.css('.alert-error'))).toBeNull();
     });
 
     it('prioritizes the error state over not-found', () => {
+      gate.loaded.set(true);
       fixture.componentRef.setInput('error', 'boom');
       fixture.componentRef.setInput('hasRecord', false);
       fixture.componentRef.setInput('notFoundText', 'No such person');
@@ -91,16 +145,33 @@ describe('DetailLayout', () => {
       expect(alert.nativeElement.textContent).not.toContain('No such person');
     });
 
-    it('projects main content when not loading, no error, and record is present', async () => {
+    it('projects main content when the load settled, there is no error, and a record is present', async () => {
       const hostFixture = TestBed.createComponent(HostComponent);
       hostFixture.detectChanges();
       await hostFixture.whenStable();
       hostFixture.detectChanges();
 
-      expect(hostFixture.debugElement.query(By.css('progress'))).toBeNull();
+      expect(hostFixture.debugElement.query(By.css('.skeleton'))).toBeNull();
       expect(hostFixture.debugElement.query(By.css('.alert-error'))).toBeNull();
       const projected = hostFixture.debugElement.query(By.css('p'));
       expect(projected.nativeElement.textContent.trim()).toBe('Projected body');
+    });
+
+    /** Refetching with a record already on screen keeps that record visible and dims it,
+     * rather than replacing it with a skeleton (React transitions / TanStack Query
+     * keepPreviousData both behave this way). */
+    it('keeps the record on screen and dims it while a refetch is in flight', async () => {
+      const hostFixture = TestBed.createComponent(HostComponent);
+      hostFixture.detectChanges();
+      await hostFixture.whenStable();
+      hostFixture.detectChanges();
+
+      hostFixture.componentInstance.gate.visible.set(true);
+      hostFixture.detectChanges();
+
+      expect(hostFixture.debugElement.query(By.css('.skeleton'))).toBeNull();
+      expect(hostFixture.debugElement.query(By.css('p')).nativeElement.textContent.trim()).toBe('Projected body');
+      expect(hostFixture.debugElement.query(By.css('.opacity-60'))).not.toBeNull();
     });
   });
 

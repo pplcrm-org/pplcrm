@@ -79,10 +79,9 @@ export class PersonView {
   private readonly eventsSvc = inject(EventsService);
   private readonly connectionsSvc = inject(ConnectionsService);
 
-  private readonly _loading = createLoadingGate();
+  protected readonly _loading = createLoadingGate();
   private readonly _requestGuard = createRequestGuard();
   protected readonly isLoading = this._loading.visible;
-  protected readonly initialized = signal(false);
 
   /**
    * True while the per-tab payloads (emails, donations, shifts, events, tags)
@@ -426,7 +425,6 @@ export class PersonView {
       this.alertSvc.showError(getUserErrorMessage(err, 'Could not load the person. Please try again.'));
     } finally {
       end();
-      this.initialized.set(true);
     }
   }
 
