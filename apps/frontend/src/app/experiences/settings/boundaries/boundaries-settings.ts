@@ -182,6 +182,18 @@ export class BoundariesSettingsComponent implements OnInit {
   protected readonly maxPointsPerArea = BOUNDARY_MAX_VERTICES_PER_FEATURE.toLocaleString();
   protected readonly maxUploadLabel = BOUNDARY_UPLOAD_MAX_LABEL;
 
+  /**
+   * Deep-link for the two "import the names you already have" links.
+   *
+   * The import wizard reads `?type=` from the URL and falls back to People when it is absent, so a
+   * bare `/imports/new` link from this page dropped the reader on a People import with no hint that
+   * area names ride along in a HOUSEHOLDS import. Electoral columns are offered by the people
+   * importer too, but a boundary belongs to a door, so this page names one path and names it
+   * exactly. Held as a field rather than an inline object literal so the href is not recomputed on
+   * every change-detection pass.
+   */
+  protected readonly importAreaNamesParams = { type: 'households' } as const;
+
   // ── Page state ────────────────────────────────────────────────────────────────────────────────
 
   protected readonly mode = signal<BoundariesMode>('list');

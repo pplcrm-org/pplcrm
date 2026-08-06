@@ -182,7 +182,9 @@ describe('BoundariesSettingsComponent', () => {
       const hrefs = [...(fixture.nativeElement as HTMLElement).querySelectorAll('a')].map((a) =>
         a.getAttribute('href'),
       );
-      expect(hrefs).toContain('/imports/new');
+      // The record type matters as much as the screen. Without ?type= the wizard opens on People,
+      // which offers no reason to believe it is where area names come from.
+      expect(hrefs).toContain('/imports/new?type=households');
     });
   });
 

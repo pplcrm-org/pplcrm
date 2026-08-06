@@ -47,7 +47,9 @@
           draw.
         </p>
         <div class="flex flex-wrap items-center gap-2">
-          <a routerLink="/imports/new" class="btn btn-outline btn-primary btn-sm">Go to import</a>
+          <a routerLink="/imports/new" [queryParams]="importAreaNamesParams" class="btn btn-outline btn-primary btn-sm"
+            >Go to import</a
+          >
           <a routerLink="/help/importing-districts" class="link text-xs text-primary">Which columns are read</a>
         </div>
       </div>
@@ -105,7 +107,9 @@
       {{ sets().length }} of {{ maxSetsPerWorkspace }} maps used in this workspace.
     </p>
     <div class="flex flex-wrap items-center gap-2">
-      <a routerLink="/imports/new" class="btn btn-outline btn-primary btn-sm">Import area names</a>
+      <a routerLink="/imports/new" [queryParams]="importAreaNamesParams" class="btn btn-outline btn-primary btn-sm"
+        >Import area names</a
+      >
       <button
         type="button"
         class="btn btn-outline btn-primary btn-sm"
