@@ -550,7 +550,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
     category: 'admin',
     title: 'Boundary maps: wards, ridings, districts and precincts',
     summary:
-      'A boundary map tells pplCRM which electoral areas each household sits in. There are three ways to get one: import the names, upload a published file, or draw it yourself.',
+      'A boundary map tells pplCRM which electoral areas each household sits in. There are four ways to get one: select a published map, import the names, upload a file, or draw it yourself.',
     keywords: [
       'boundary',
       'boundaries',
@@ -589,20 +589,30 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         title: 'Old and new maps live side by side',
         text: 'Canada redrew its federal ridings for the 2023 representation order, the United States redraws congressional and legislative districts after each census, and several states redraw again mid-decade by court order. You often need the outgoing map to compare with past results and the incoming one to target. Each is its own set with its own **vintage** label, and one household holds both without either being wrong.',
       },
-      { kind: 'h2', id: 'three-ways', text: 'Three ways to get a map' },
+      { kind: 'h2', id: 'ways-to-get-a-map', text: 'Four ways to get a map' },
       {
         kind: 'list',
         items: [
-          '**Import the names you already have.** Cheapest and fastest. If your rows already carry a district, ward or precinct column — a purchased voter file almost always does — the import wizard writes those names straight onto each household. No shapes to find, no lookups, no cost. See [Import district, ward and precinct columns](/help/importing-districts).',
-          '**Upload a published map.** A GeoJSON file from whoever publishes it: an elections body, a provincial commission, a city open-data portal. You name the set, declare its role, and say which property in the file holds each area’s name.',
+          '**Select a published map.** The fastest option when one covers your seat. pplCRM keeps ready-made maps for Canadian federal ridings, Ontario and Alberta provincial ridings, and US congressional, state senate and state house districts. Pick it from a list and it is downloaded and matched for you — nothing to find, convert or upload, and no cost. Municipal wards and precincts are not among them.',
+          '**Import the names you already have.** Cheapest and fastest when no published map covers you. If your rows already carry a district, ward or precinct column — a purchased voter file almost always does — the import wizard writes those names straight onto each household. No shapes to find, no lookups, no cost. See [Import district, ward and precinct columns](/help/importing-districts).',
+          '**Upload a map file.** A GeoJSON file from whoever publishes it: an elections body, a provincial commission, a city open-data portal. You name the set, declare its role, and say which property in the file holds each area’s name.',
           '**Draw it yourself.** For the many municipalities that publish nothing usable, draw the areas on the map with your own household pins visible underneath. See [Drawing boundaries on the map](/help/drawing-boundaries).',
         ],
       },
       {
         kind: 'p',
-        text: 'These are not exclusive. A workspace commonly imports precinct names from its voter file, uploads the state’s legislative districts, and draws its own organizing areas, all at once. Each is a separate set and each household holds all three.',
+        text: 'These are not exclusive. A workspace commonly selects the state’s legislative districts, imports precinct names from its voter file, and draws its own organizing areas, all at once. Each is a separate set and each household holds all of them.',
       },
-      { kind: 'h2', id: 'upload', text: 'Uploading a published map' },
+      { kind: 'h2', id: 'select-published', text: 'Selecting a published map' },
+      {
+        kind: 'p',
+        text: 'Open **Boundaries** in [Workspace settings](/workspace) and choose to add a published map. Maps that match a campaign you are already running are listed first. Each row names the body that publishes it, the edition, and how many areas it holds; adding one shows the licence and the attribution the publisher requires. The areas are then matched against every household that has coordinates, which costs nothing.',
+      },
+      {
+        kind: 'p',
+        text: 'A published map is read-only, because every workspace using it shares the same file — you can delete it, but you cannot rename or reshape its areas. If you need to change the lines, upload your own copy or draw them instead. When a legislature redraws its boundaries the new edition is added as a separate map with its own vintage, and the one you already added stays exactly as it is.',
+      },
+      { kind: 'h2', id: 'upload', text: 'Uploading your own map file' },
       {
         kind: 'steps',
         items: [

@@ -207,9 +207,8 @@ describe('BoundariesController', () => {
 
   describe('adding a map from the published catalog', () => {
     it('refuses a slug the catalog does not publish, and names the two paths that do work', async () => {
-      // This is also the whole behaviour while the catalog is empty, which is what this release
-      // ships: every slug is unknown, and the error has to point somewhere useful rather than
-      // reading as a bug.
+      // A slug can go unknown two ways: a typo, or a map retired from the catalog between the page
+      // loading and the click. The error has to point somewhere useful rather than reading as a bug.
       await expect(
         controller.addPublishedSet(auth, { catalog_slug: 'not-a-real-published-map' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });

@@ -20,9 +20,9 @@ const rand = (): string => String(Math.floor(Math.random() * 100000000) + 100000
  * storage account, and the gate is the part that must not be got wrong — matching households against
  * boundaries nobody can vouch for is worse than matching them against none.
  *
- * The catalog is empty in this release, so every test here builds its own temporary entry and points
- * `GIS_BOUNDARY_DATA_DIR` at a directory it wrote. That is also why they are honest as written: they
- * describe the mechanism, not any particular published map.
+ * Every test here builds its own temporary entry and points `GIS_BOUNDARY_DATA_DIR` at a directory
+ * it wrote, rather than reading a real published map. That keeps them describing the mechanism
+ * instead of any one jurisdiction, so adding or retiring a map in the catalog cannot break them.
  */
 
 function box(minLng: number, minLat: number, maxLng: number, maxLat: number): BoundaryGeometryType {

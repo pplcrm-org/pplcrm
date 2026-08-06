@@ -83,7 +83,7 @@ export class FaqPage {
         },
         {
           q: 'Do the boundary maps come with pplCRM?',
-          a: 'No. pplCRM does not ship riding, congressional district or precinct maps for anyone, and a new workspace does not already know your city’s lines. A map arrives in exactly three ways: you import the district columns your voter file already carries, you upload a GeoJSON from an open data portal, or you draw the areas yourself.',
+          a: 'Some do. You can select a published map for Canadian federal ridings, Ontario and Alberta provincial ridings, and US congressional, state senate and state house districts — pplCRM downloads it for you and places your households in it, at no cost. Municipal ward and precinct maps are not included, so a new workspace does not already know your city council’s lines. Beyond selecting a published map, a map arrives three other ways: you import the district columns your voter file already carries, you upload a GeoJSON from an open data portal, or you draw the areas yourself.',
         },
         {
           q: 'My town publishes nothing usable. Now what?',

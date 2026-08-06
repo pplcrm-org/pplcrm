@@ -177,20 +177,26 @@ the outgoing and incoming maps on the same household on the same day. Never
 infer meaning from a layer's **name** — an Ontario "ward" is a seat area, a
 Massachusetts "ward" is not. Read `boundary_sets.role`.
 
-**Four ways a workspace gets a map, and only three of them work today.** A CSV
-import that already carries district columns (`source = 'import'` — those sets
-hold no polygons and are skipped by the matcher), an uploaded GeoJSON
-(`'upload'`), polygons drawn on the map (`'drawn'`), or a map picked from the
-published catalog (`'bundled'`).
+**Four ways a workspace gets a map, and all four work.** A CSV import that
+already carries district columns (`source = 'import'` — those sets hold no
+polygons and are skipped by the matcher), an uploaded GeoJSON (`'upload'`),
+polygons drawn on the map (`'drawn'`), or a map picked from the published
+catalog (`'bundled'`).
 
-**The published catalog is empty in this release, so in practice there are still
-three.** The mechanism is complete and tested end to end; what is missing is
-data. Adding an entry needs a person to read the publisher's licence and confirm
-it permits redistribution, and to convert and upload the file. Until then the
-picker is hidden from the boundaries page entirely, the empty state still says
-"three ways", and the website and FAQ are still correct as written. **Do not
-tell a user the product knows their riding out of the box, and do not change the
-site copy until `PUBLISHED_BOUNDARY_ENTRIES` is non-empty.**
+**The published catalog holds six maps as of 2026-08-06** (built and checksummed
+by `npm run boundary-catalog -- build`): Canadian federal ridings, Ontario and
+Alberta provincial ridings, and US congressional, state senate and state house
+districts. **Municipal wards and precincts are deliberately absent** — there is
+no common publisher or format, and a single state's precinct file exceeds the
+5,000-areas-per-set cap. So the product knows a user's riding or legislative
+district out of the box, and does **not** know their city council ward. Say
+exactly that and no more.
+
+Adding a jurisdiction means a person reads the publisher's licence, then runs
+the build and upload commands; the entry file is generated, never hand-edited.
+Whenever `PUBLISHED_BOUNDARY_ENTRIES` gains or loses a jurisdiction, the site
+and help copy listing the covered jurisdictions changes in the same commit —
+see the boundary row in `pplcrm-website-claims` for the exact locations.
 
 ### The published catalog (`libs/common/src/lib/boundaries/catalog/`)
 

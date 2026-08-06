@@ -162,10 +162,15 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
 /**
  * Workspace settings → Boundaries.
  *
- * A boundary map says which electoral areas cover which households. Nothing here ships with the
- * product: a workspace gets a map by importing the names it already has, uploading a published
- * GeoJSON file, or drawing the areas over its own household pins. Those three ways are the whole
- * of it, and the empty state teaches them rather than reporting that something is missing.
+ * A boundary map says which electoral areas cover which households. A workspace gets one by picking
+ * a published map from the catalog, importing the names it already has, uploading a GeoJSON file,
+ * or drawing the areas over its own household pins. Those four ways are the whole of it, and the
+ * empty state teaches them rather than reporting that something is missing.
+ *
+ * The empty state and the button row count the ways from `catalogHasEntries` rather than hard-coding
+ * four, because the catalog ships as a generated file that can be empty. Do not replace that with a
+ * literal — an empty catalog must show three ways and hide the picker, or the page offers a button
+ * that leads to an empty list.
  *
  * THE COST RULE, said here because the page says it to the user too: nothing on this page calls a
  * paid service. Drawing, uploading, reshaping and re-matching re-read coordinates already stored on

@@ -51,7 +51,7 @@ export class DistrictsPage {
   protected readonly importMappings = IMPORT_MAPPINGS;
   protected readonly drawnAreas = DRAWN_AREAS;
   protected readonly mapPins = MAP_PINS;
-  /** Import, upload, draw. There is no fourth way, and nothing is bundled with the product. */
+  /** Select, import, upload, draw. There is no fifth way. Only the published maps are included. */
   protected readonly mapSources = MAP_SOURCES;
   protected readonly limits = LIMITS;
 

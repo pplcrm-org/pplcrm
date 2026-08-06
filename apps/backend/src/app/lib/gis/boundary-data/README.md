@@ -17,10 +17,16 @@ one `boundary_sets` row with `source = 'bundled'` and the catalog slug. The poly
 into the database — `apps/backend/src/app/lib/gis/boundary-store.ts` loads the file the slug names and
 shares one parsed copy across every workspace that added the same map.
 
-**The catalog is empty in this release.** The mechanism is complete and is exercised the moment an
-entry and its file exist. Nothing has been converted yet, for two reasons that are work rather than
-unknowns: each publisher's licence has to be read and confirmed to permit redistribution, and the
-converted files have to be uploaded. No coordinates have been invented in the meantime.
+**The catalog holds six maps as of 2026-08-06**: Canadian federal ridings, Ontario and Alberta
+provincial ridings, and US congressional, state senate and state house districts. They were built
+and checksummed by `npm run boundary-catalog -- build` and uploaded by `-- upload`. Adding a
+jurisdiction means reading that publisher's licence, adding it to `scripts/boundary-catalog-sources.ts`,
+and running both commands again.
+
+**A catalog entry without its uploaded file matches nothing.** The entry records the file's SHA-256,
+and the loader refuses a file whose bytes do not match, so a build that was never uploaded leaves the
+map selectable in the app and silently matching no households. Run `-- upload` in the same change
+that lands new entries.
 
 ## The file format
 

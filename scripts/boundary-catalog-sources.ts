@@ -89,11 +89,11 @@ export const PUBLISHED_BOUNDARY_SOURCES: readonly PublishedBoundarySource[] = [
     sourceUrl: 'https://open.canada.ca/data/en/dataset/18bf3ea7-1940-46ec-af52-9ba3f77ed708',
     downloadUrl:
       'https://ftp.maps.canada.ca/pub/elections_elections/Electoral-districts_Circonscription-electorale/federal_electoral_districts_boundaries_2023/FED_CA_2023_EN-SHP.zip',
-    // UNVERIFIED against the actual archive — the field names could not be read without downloading
-    // it. These follow the Statistics Canada federal-electoral-district convention. If they are
-    // wrong, the build stops with a missing-field error naming the fields the file really has.
-    sourceNameProperty: 'FEDENAME',
-    sourceCodeProperty: 'FEDNUM',
+    // Verified 2026-08-06 by running the conversion: the archive's fields are FED_NUM, ED_NAMEE,
+    // ED_NAMEF, REP_ORDER, SHAPE_AREA, SHAPE_LEN. ED_NAMEE is the English name; the French name
+    // (ED_NAMEF) is dropped because the app shows one name per area.
+    sourceNameProperty: 'ED_NAMEE',
+    sourceCodeProperty: 'FED_NUM',
     licenceVerified: true,
   },
 
@@ -206,8 +206,10 @@ export const PUBLISHED_BOUNDARY_SOURCES: readonly PublishedBoundarySource[] = [
     sourceUrl: 'https://www.elections.on.ca/en/voting-in-ontario/electoral-district-shapefiles.html',
     downloadUrl:
       'https://www.elections.on.ca/content/dam/NGW/sitecontent/2017/preo/shapefiles/Electoral%20District%20Shapefile%20-%202022%20General%20Election.zip',
-    // Unverified against the archive; a wrong name stops the build with a missing-field error.
-    sourceNameProperty: 'ED_NAME_EN',
+    // Verified 2026-08-06 by running the conversion: the archive's fields are ED_ID, ENGLISH_NA,
+    // FRENCH_NAM, Shape_Leng, Shape_Area. The English name column is truncated to ENGLISH_NA
+    // because a shapefile attribute name cannot exceed ten characters.
+    sourceNameProperty: 'ENGLISH_NA',
     sourceCodeProperty: 'ED_ID',
     licenceVerified: true,
   },
@@ -229,9 +231,11 @@ export const PUBLISHED_BOUNDARY_SOURCES: readonly PublishedBoundarySource[] = [
     attribution: 'Contains information licensed under the Open Government Licence – Alberta.',
     sourceUrl: 'https://open.canada.ca/data/en/dataset/d2eff235-4c11-416f-b4e2-791c305594b1',
     downloadUrl: 'https://www.elections.ab.ca/wp-content/uploads/2019Boundaries_ED-Shapefiles.zip',
-    // Unverified against the archive; a wrong name stops the build with a missing-field error.
-    sourceNameProperty: 'ED_NAME',
-    sourceCodeProperty: 'ED_NUM',
+    // Verified 2026-08-06 by running the conversion: the archive's fields are EDNumber20,
+    // EDName2017, Km2, Hectares, Acres, Authority, Shape_Leng, Shape_Area. The name and number
+    // columns carry a year suffix because the shapefile predates the 2019 boundaries taking effect.
+    sourceNameProperty: 'EDName2017',
+    sourceCodeProperty: 'EDNumber20',
     licenceVerified: true,
   },
 ];

@@ -268,12 +268,15 @@ export const AT_LARGE_EXAMPLES: readonly string[] = [
 ];
 
 /**
- * The three ways a boundary map reaches a workspace, and there are only three.
+ * The four ways a boundary map reaches a workspace, and there are only four.
  *
- * No boundary data is bundled with the product. Elections Canada riding maps and US Census
- * district and precinct maps are not shipped, pre-loaded or included, so the site must never
- * imply that a new workspace already knows your city's lines. If bundled sets are ever added,
- * this list and the copy around it change in the same commit.
+ * What "Select" covers is exactly the list in `PUBLISHED_BOUNDARY_ENTRIES`
+ * (`libs/common/src/lib/boundaries/catalog/catalog.entries.ts`) and nothing more: Canadian federal
+ * ridings, Ontario and Alberta provincial ridings, and US congressional, state senate and state
+ * house districts. **Municipal wards and precincts are not published and are not included** — those
+ * still arrive by import, upload or drawing, so the site must never say the product knows your
+ * city council's lines. When a jurisdiction is added to or removed from that file, this list and
+ * the copy around it change in the same commit.
  */
 export interface MapSource {
   readonly n: string;
@@ -282,9 +285,10 @@ export interface MapSource {
 }
 
 export const MAP_SOURCES: readonly MapSource[] = [
-  { n: '1', label: 'Import', note: 'columns your file already has' },
-  { n: '2', label: 'Upload', note: 'a GeoJSON from open data' },
-  { n: '3', label: 'Draw', note: 'by hand, over your own doors' },
+  { n: '1', label: 'Select', note: 'a published federal or state map' },
+  { n: '2', label: 'Import', note: 'columns your file already has' },
+  { n: '3', label: 'Upload', note: 'a GeoJSON from open data' },
+  { n: '4', label: 'Draw', note: 'by hand, over your own doors' },
 ];
 
 /** A CSV column in the import mock, and the field it lands in. */

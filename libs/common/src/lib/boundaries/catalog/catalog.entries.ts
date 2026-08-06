@@ -1,33 +1,128 @@
 /**
  * GENERATED FILE — do not edit by hand.
  *
- * Written by `tools/boundary-catalog/` (`npm run boundary-catalog -- build`). That script downloads
- * each publisher's file, converts and simplifies it, and records the feature count, byte size and
- * SHA-256 of the bytes it produced. Editing this file by hand would let those three fields describe
- * a file that does not exist; the loader verifies the checksum and refuses a file that does not
- * match, so a hand-typed value does not fail quietly, it fails the whole map.
- *
- * ## Why this list is empty right now
- *
- * The mechanism is complete and the script is written, but no publisher's file has been converted
- * and published yet, for two reasons, both of which are work rather than unknowns:
- *
- *  1. Each source's licence has to be checked individually before its file can be redistributed.
- *     US Census Bureau TIGER/Line files and the Canadian federal file are expected to permit it;
- *     provincial and territorial terms vary and some may not. A source whose terms do not clearly
- *     permit redistribution gets no entry at all.
- *  2. The converted files have to be uploaded to the catalog storage prefix, which is a maintainer
- *     action against a real storage account.
- *
- * While this list is empty the product's behaviour is exactly what it was before the catalog
- * existed: the picker says no published maps are available yet, and a workspace gets a map by
- * importing names, uploading a GeoJSON, or drawing it. Nothing anywhere claims otherwise, and no
- * coordinates have been invented to fill the gap — that mistake was already made once in this
- * codebase with three rectangles over downtown Chicago, and is recorded in
- * `apps/backend/src/app/lib/gis/boundary-data/README.md`.
+ * Written by `npm run boundary-catalog -- build` from `scripts/boundary-catalog-sources.ts`.
+ * The feature count, byte size and checksum below describe files that exist; the backend verifies
+ * the checksum before it will match a household against any of these boundaries, so a hand-typed
+ * value does not fail quietly, it fails the whole map.
  */
 
 import type { PublishedBoundaryEntry } from './catalog.types';
 
 /** Every published map available to add, in the order the picker lists them within a group. */
-export const PUBLISHED_BOUNDARY_ENTRIES: readonly PublishedBoundaryEntry[] = [];
+export const PUBLISHED_BOUNDARY_ENTRIES: readonly PublishedBoundaryEntry[] = [
+  {
+    slug: 'ca-fed-2023',
+    label: 'Canada — federal ridings',
+    jurisdiction: 'ca_federal',
+    region: null,
+    chamber: null,
+    role: 'seat_area',
+    vintage: '2023 representation order',
+    publisher: 'Elections Canada',
+    licence: 'Open Government Licence – Canada',
+    attribution: 'Contains information licensed under the Open Government Licence – Canada.',
+    sourceUrl: 'https://open.canada.ca/data/en/dataset/18bf3ea7-1940-46ec-af52-9ba3f77ed708',
+    nameProperty: 'name',
+    codeProperty: 'code',
+    featureCount: 343,
+    bytes: 5396372,
+    sha256: 'dde361e0ddea81c25a2576e43dc611469ac5ba6a1815156d022ad1922f896fcc',
+    supersededBy: null,
+  },
+  {
+    slug: 'us-cd-119',
+    label: 'United States — congressional districts',
+    jurisdiction: 'us_federal',
+    region: null,
+    chamber: null,
+    role: 'seat_area',
+    vintage: '119th Congress (2024 boundaries)',
+    publisher: 'United States Census Bureau',
+    licence: 'Public domain — Creative Commons CC0 1.0 Universal',
+    attribution: 'Boundaries published by the United States Census Bureau (2024 cartographic boundary files).',
+    sourceUrl: 'https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.html',
+    nameProperty: 'name',
+    codeProperty: 'code',
+    featureCount: 441,
+    bytes: 3042013,
+    sha256: '91d5969dc7a07590ab77ba37b383787e5e270f9a25b772e5cdd02c0190cb6a86',
+    supersededBy: null,
+  },
+  {
+    slug: 'us-sldu-2024',
+    label: 'United States — state senate districts',
+    jurisdiction: 'us_state',
+    region: null,
+    chamber: 'upper',
+    role: 'seat_area',
+    vintage: '2024 boundaries',
+    publisher: 'United States Census Bureau',
+    licence: 'Public domain — Creative Commons CC0 1.0 Universal',
+    attribution: 'Boundaries published by the United States Census Bureau (2024 cartographic boundary files).',
+    sourceUrl: 'https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.html',
+    nameProperty: 'name',
+    codeProperty: 'code',
+    featureCount: 1960,
+    bytes: 5396917,
+    sha256: '181fc302b22414cc22cd3b519a69d2bc408eb8c0d31ed412b155cecaafa88471',
+    supersededBy: null,
+  },
+  {
+    slug: 'us-sldl-2024',
+    label: 'United States — state house districts',
+    jurisdiction: 'us_state',
+    region: null,
+    chamber: 'lower',
+    role: 'seat_area',
+    vintage: '2024 boundaries',
+    publisher: 'United States Census Bureau',
+    licence: 'Public domain — Creative Commons CC0 1.0 Universal',
+    attribution: 'Boundaries published by the United States Census Bureau (2024 cartographic boundary files).',
+    sourceUrl: 'https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.html',
+    nameProperty: 'name',
+    codeProperty: 'code',
+    featureCount: 4874,
+    bytes: 8155812,
+    sha256: 'f3d2a7312a36f88a201f2c0355543277cca4f18f2e172c1ef4290bc7f4b640b9',
+    supersededBy: null,
+  },
+  {
+    slug: 'ca-prov-on-2022',
+    label: 'Ontario — provincial ridings',
+    jurisdiction: 'ca_provincial',
+    region: 'ON',
+    chamber: null,
+    role: 'seat_area',
+    vintage: '2022 general election',
+    publisher: 'Elections Ontario',
+    licence: 'Elections Ontario Open-Use Data Product Licence Agreement',
+    attribution: 'Boundaries published by Elections Ontario.',
+    sourceUrl: 'https://www.elections.on.ca/en/voting-in-ontario/electoral-district-shapefiles.html',
+    nameProperty: 'name',
+    codeProperty: 'code',
+    featureCount: 124,
+    bytes: 890110,
+    sha256: 'bcb6f855032446dae2a843460cd18113c6e8ea1df39a4d89e5a236e3d4c86cbc',
+    supersededBy: null,
+  },
+  {
+    slug: 'ca-prov-ab-2019',
+    label: 'Alberta — provincial constituencies',
+    jurisdiction: 'ca_provincial',
+    region: 'AB',
+    chamber: null,
+    role: 'seat_area',
+    vintage: '2019 boundaries',
+    publisher: 'Elections Alberta',
+    licence: 'Open Government Licence – Alberta',
+    attribution: 'Contains information licensed under the Open Government Licence – Alberta.',
+    sourceUrl: 'https://open.canada.ca/data/en/dataset/d2eff235-4c11-416f-b4e2-791c305594b1',
+    nameProperty: 'name',
+    codeProperty: 'code',
+    featureCount: 87,
+    bytes: 1415659,
+    sha256: '089c64e772dc4895fa7acaf8f6a91ba5e34df6027cf86cfeb7f186a31703ecb3',
+    supersededBy: null,
+  },
+];
