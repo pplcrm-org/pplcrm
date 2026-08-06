@@ -2,9 +2,12 @@ import type { Kysely, Transaction } from 'kysely';
 
 import type { IAuthKeyPayload } from '../../../../../../libs/common/src';
 import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
+import { findPublishedBoundary } from '../../../../../../libs/common/src/lib/boundaries/catalog';
 import type {
   AddBoundaryFeatureType,
   AddDrawnBoundarySetType,
+  AddPublishedBoundarySetType,
+  BoundaryFeatureListType,
   BoundaryFeatureRowType,
   BoundaryGeometryType,
   BoundaryHouseholdPinsType,
@@ -14,6 +17,7 @@ import type {
   UploadBoundarySetType,
 } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
 import {
+  BOUNDARY_FEATURES_MAX_RESPONSE_BYTES,
   BOUNDARY_FEATURE_CODE_MAX,
   BOUNDARY_FEATURE_NAME_MAX,
   BOUNDARY_MAX_FEATURES_PER_SET,
@@ -87,9 +91,48 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
     }));
   }
 
-  public async listFeatures(auth: IAuthKeyPayload, setId: string): Promise<BoundaryFeatureRowType[]> {
-    await this.requireSet(auth.tenant_id, setId);
-    const rows = await this.featuresRepo.listForSet(auth.tenant_id, setId);
+  /**
+   * The areas of one layer, from wherever that layer keeps them.
+   *
+   * Two backends, one shape. An uploaded or drawn layer's areas are rows a person can rename and
+   * reshape, so they carry their real row ids. A published layer's areas come from the shared
+   * GeoJSON file the catalog describes and have no rows at all, so their ids are synthesised from
+   * the set id and the area's position in the layer's fixed sort order. Nothing may be edited by
+   * such an id — `requireEditableSet` refuses a published layer before any write reaches it — and
+   * the ids are stable across loads because the sort order is.
+   *
+   * The response stops adding areas once the serialized geometry reaches the byte budget and
+   * reports the layer's true size either way. A hand-drawn ward map never approaches it; a
+   * published national map can, and a map that quietly drew two thirds of a country and said
+   * nothing would read as complete.
+   */
+  public async listFeatures(auth: IAuthKeyPayload, setId: string): Promise<BoundaryFeatureListType> {
+    const set = await this.requireSet(auth.tenant_id, setId);
+
+    const all =
+      set.source === 'bundled'
+        ? await this.publishedFeatures(auth.tenant_id, setId)
+        : await this.storedFeatures(auth.tenant_id, setId);
+
+    const features: BoundaryFeatureRowType[] = [];
+    let bytes = 0;
+    for (const feature of all) {
+      bytes += JSON.stringify(feature.geometry).length;
+      if (bytes > BOUNDARY_FEATURES_MAX_RESPONSE_BYTES && features.length > 0) break;
+      features.push(feature);
+    }
+
+    return {
+      set_id: setId,
+      features,
+      total: all.length,
+      truncated: features.length < all.length,
+    };
+  }
+
+  /** Areas of an editable layer, read from the rows that hold them. */
+  private async storedFeatures(tenantId: string, setId: string): Promise<BoundaryFeatureRowType[]> {
+    const rows = await this.featuresRepo.listForSet(tenantId, setId);
 
     const features: BoundaryFeatureRowType[] = [];
     for (const row of rows) {
@@ -108,6 +151,21 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
       });
     }
     return features;
+  }
+
+  /** Areas of a published layer, read through the same loader the matcher uses. */
+  private async publishedFeatures(tenantId: string, setId: string): Promise<BoundaryFeatureRowType[]> {
+    const loaded = await loadBoundarySets(this.getRepo().db, tenantId, [setId]);
+    const layer = loaded[0];
+    if (!layer) return [];
+    return layer.features.map((feature, index) => ({
+      id: `${setId}:${index}`,
+      set_id: setId,
+      name: feature.name,
+      code: feature.code,
+      geometry: feature.geometry,
+      bbox: feature.bbox,
+    }));
   }
 
   /**
@@ -194,6 +252,68 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
 
       const inserted = await repo.add({ row }, trx);
       if (!inserted) throw new NotFoundError('Failed to create the boundary set');
+      return inserted;
+    });
+
+    return this.setRowOf(auth.tenant_id, String(created.id));
+  }
+
+  /**
+   * Add a map from the published catalog.
+   *
+   * The polygons are not copied anywhere. One row is written naming the catalog slug, and the file
+   * behind that slug is loaded on demand and shared by every workspace that added the same map —
+   * which is the whole reason a national riding map can be offered at all. That also makes this the
+   * cheapest way to get a map: no upload, no parse, no per-workspace copy of five thousand areas,
+   * and still no paid service, because matching re-reads coordinates already on the household.
+   *
+   * Everything descriptive is copied from the catalog entry rather than taken from the caller, so a
+   * row cannot end up claiming to be Ontario's ridings while naming Alberta's file.
+   */
+  public async addPublishedSet(auth: IAuthKeyPayload, input: AddPublishedBoundarySetType): Promise<BoundarySetRowType> {
+    const entry = findPublishedBoundary(input.catalog_slug);
+    if (!entry) {
+      throw new NotFoundError(
+        'That map is not in this version of the published catalog. Upload a GeoJSON file or draw the areas instead.',
+      );
+    }
+
+    const repo = this.getRepo();
+    await this.assertSetBudget(auth.tenant_id);
+
+    // `(tenant_id, slug)` is unique, and a published set always uses the catalog slug verbatim so
+    // that two workspaces holding the same map are recognisably holding the same map. A second add
+    // is therefore a duplicate rather than a second copy, and is refused by name.
+    const taken = await repo.takenSlugs(auth.tenant_id);
+    if (taken.has(entry.slug)) {
+      throw new BadRequestError(`This workspace already has "${entry.label}".`);
+    }
+
+    const created = await repo.transaction().execute(async (trx) => {
+      const row = {
+        tenant_id: auth.tenant_id,
+        slug: entry.slug,
+        label: entry.label,
+        jurisdiction: entry.jurisdiction,
+        role: entry.role,
+        chamber: entry.chamber,
+        region: entry.region,
+        vintage: entry.vintage,
+        source: 'bundled',
+        file_id: null,
+        name_property: entry.nameProperty,
+        code_property: entry.codeProperty,
+        feature_count: entry.featureCount,
+        createdby_id: auth.user_id,
+      } as OperationDataType<'boundary_sets', 'insert'>;
+
+      const inserted = await repo.add({ row }, trx);
+      if (!inserted) throw new NotFoundError('Failed to add the published map');
+
+      // Transactional outbox, exactly as the upload path does it: the match job is queued inside
+      // the transaction that created the row, so a rolled-back add leaves no job pointing at a set
+      // that never existed.
+      await enqueueBoundaryMatch(trx, auth.tenant_id, String(inserted.id), 'all');
       return inserted;
     });
 

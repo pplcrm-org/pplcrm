@@ -4,6 +4,7 @@ import { idSchema } from '../../../../../../libs/common/src';
 import {
   AddBoundaryFeatureObj,
   AddDrawnBoundarySetObj,
+  AddPublishedBoundarySetObj,
   UpdateBoundaryFeatureObj,
   UploadBoundarySetObj,
 } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
@@ -50,6 +51,19 @@ function createDrawn() {
   return adminOrOwnerProcedure
     .input(AddDrawnBoundarySetObj)
     .mutation(({ ctx, input }) => controller.createDrawnSet(ctx.auth, input));
+}
+
+/**
+ * Add a map from the published catalog — one slug in, one boundary set out.
+ *
+ * There is no matching read procedure. The catalog is a constant in `@common` that both the picker
+ * and this controller import, so the browser filters it directly and the two sides cannot disagree
+ * about which maps exist.
+ */
+function addPublished() {
+  return adminOrOwnerProcedure
+    .input(AddPublishedBoundarySetObj)
+    .mutation(({ ctx, input }) => controller.addPublishedSet(ctx.auth, input));
 }
 
 function upload() {
@@ -101,6 +115,7 @@ export const BoundariesRouter = router({
   features: listFeatures(),
   householdPins: householdPins(),
   createDrawn: createDrawn(),
+  addPublished: addPublished(),
   upload: upload(),
   deleteSet: deleteSet(),
   addFeature: addFeature(),

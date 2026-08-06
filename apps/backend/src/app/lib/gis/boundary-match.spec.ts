@@ -291,14 +291,19 @@ describe('boundary matching', () => {
     expect(stored.map((r: { name: string }) => r.name).sort()).toEqual(['OH-3', 'Zone A']);
   });
 
-  it('keeps rows in a layer the workspace no longer requires when a re-match runs', async () => {
-    // The workspace requires only its drawn layer (no active campaigns). A row in a bundled layer —
-    // an archived campaign's map — was not matched against, so a re-match must not delete it. The
-    // batch job already scoped its replace this way; this pins the single-household path.
+  it('keeps rows in a published layer whose file could not be read when a re-match runs', async () => {
+    // The distinction this pins is the difference between two answers that look identical in the
+    // database and are not: "that map places this household in none of its areas" (a real result a
+    // re-match may store) and "that map could not be opened at all" (not a result). The second must
+    // leave the household's existing area alone. Treating it as the first would erase every
+    // household's riding across the workspace because one download failed.
+    //
+    // The published layer here names a slug the catalog does not publish, which is exactly the
+    // state a missing file, a failed download or a checksum mismatch produces.
     const drawn = await makeSet({ slug: 'drawn-4', label: 'Drawn', jurisdiction: 'other', role: 'subdivision' });
-    const archived = await makeSet({
-      slug: 'az-cd-old',
-      label: 'Arizona congressional (archived campaign)',
+    const unreadable = await makeSet({
+      slug: 'az-cd-not-in-catalog',
+      label: 'Arizona congressional',
       jurisdiction: 'us_federal',
       role: 'seat_area',
       region: 'AZ',
@@ -309,7 +314,7 @@ describe('boundary matching', () => {
     const householdId = await makeHousehold(45.4, -75.7);
     await db
       .insertInto('household_districts')
-      .values({ tenant_id: tenantId, household_id: householdId, set_id: archived, name: 'AZ-1', code: null })
+      .values({ tenant_id: tenantId, household_id: householdId, set_id: unreadable, name: 'AZ-1', code: null })
       .execute();
 
     const matches = await matchHouseholdBoundaries(db, tenantId, householdId, 45.4, -75.7);
@@ -356,7 +361,10 @@ describe('boundary matching', () => {
     expect(await loadBoundarySets(db, tenantId, [imported])).toEqual([]);
   });
 
-  it('requires every set the workspace drew, plus the ones its active campaigns need', async () => {
+  it('requires every map the workspace holds that has polygons, whatever its campaigns contest', async () => {
+    // All three of these were chosen by somebody in the workspace: one drawn here, two added from
+    // the published catalog. A map that was chosen and then silently not matched would show up in
+    // the boundaries list while never placing a single household.
     const drawn = await makeSet({ slug: 'drawn-3', label: 'Drawn', jurisdiction: 'other', role: 'subdivision' });
     const ohio = await makeSet({
       slug: 'oh-cd',
@@ -366,6 +374,8 @@ describe('boundary matching', () => {
       region: 'OH',
       source: 'bundled',
     });
+    // Added for a neighbouring race, and no active campaign names Arizona. It is still matched:
+    // scoping happens when somebody picks a map from the catalog, not on every match pass.
     const arizona = await makeSet({
       slug: 'az-cd',
       label: 'Arizona congressional',
@@ -394,6 +404,17 @@ describe('boundary matching', () => {
     const required = await requiredSetIdsForTenant(db, tenantId);
     expect(required).toContain(drawn);
     expect(required).toContain(ohio);
-    expect(required).not.toContain(arizona);
+    expect(required).toContain(arizona);
+  });
+
+  it('never requires an imported layer, so a re-match cannot erase imported area names', async () => {
+    const imported = await makeSet({
+      slug: 'imported-required',
+      label: 'From the voter file',
+      jurisdiction: 'us_federal',
+      role: 'seat_area',
+      source: 'import',
+    });
+    expect(await requiredSetIdsForTenant(db, tenantId)).not.toContain(imported);
   });
 });

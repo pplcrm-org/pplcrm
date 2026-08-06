@@ -462,7 +462,7 @@ describe('HouseholdsController', () => {
     expect(await resolveSeatSetId(db, tenantId)).toBe(String(second.id));
   });
 
-  it('replaces only the layers an address edit re-matched, never a set outside the required list', async () => {
+  it('replaces only the layers an address edit re-matched, never an imported area name', async () => {
     const created = (await controller.addHousehold({ street1: '7 Rematch Rd' }, auth)) as { id: string };
 
     const addSet = (slug: string, source: string, jurisdiction: string) =>
@@ -479,9 +479,10 @@ describe('HouseholdsController', () => {
         })
         .returning('id')
         .executeTakeFirstOrThrow();
-    // Bundled federal map while the only active campaign contests 'other' — NOT in the required
-    // list, so an address edit never looks at it and must not touch its rows.
-    const outsideSet = await addSet(`outside-${rand()}`, 'bundled', 'ca_federal');
+    // An imported layer holds no polygons — its area names arrived already assigned per household
+    // in a CSV — so it is never in the required list and a re-match must never touch its rows.
+    // This is the invariant that stops a geocode quietly erasing a riding somebody imported.
+    const outsideSet = await addSet(`outside-${rand()}`, 'import', 'ca_federal');
     // A drawn map is always required. It holds no polygons here, so the re-match finds nothing
     // in it and the household's old row in it is honestly cleared.
     const requiredSet = await addSet(`required-${rand()}`, 'drawn', 'other');
@@ -508,7 +509,7 @@ describe('HouseholdsController', () => {
       .where('household_id', '=', created.id)
       .execute();
     const bySet = new Map(rows.map((r: any) => [String(r.set_id), r.name]));
-    // The layer outside the required list kept its row…
+    // The imported layer, which the re-match never examined, kept its row…
     expect(bySet.get(String(outsideSet.id))).toBe('Old Riding');
     // …while the re-matched layer's stale row was replaced (by nothing — no polygon contains it).
     expect(bySet.has(String(requiredSet.id))).toBe(false);

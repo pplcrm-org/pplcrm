@@ -14,7 +14,10 @@ import {
   CHAMBER_LABELS,
   JURISDICTIONS,
   JURISDICTION_IDS,
+  PUBLISHED_BOUNDARY_ENTRIES,
+  formatPublishedBoundarySize,
   isJurisdictionId,
+  publishedBoundariesForOffices,
   regionsForCountry,
   seatLabelPluralFor,
   subdivisionLabelPluralFor,
@@ -27,6 +30,8 @@ import type {
   BoundarySource,
   BoundaryValidationType,
   JurisdictionId,
+  PublishedBoundaryEntry,
+  PublishedBoundaryMatch,
   Region,
 } from '@common';
 import { Icon } from '@icons/icon';
@@ -43,6 +48,7 @@ import { Textarea } from '@uxcommon/components/textarea/textarea';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
 import { AuthService } from '../../../auth/auth-service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { getUserErrorMessage } from '../../../services/api/user-message';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import {
@@ -86,7 +92,22 @@ const EMPTY_MAP_VIEW_UNITED_STATES = { center: { lat: 39.8, lng: -98.6 }, zoom: 
 const EMPTY_MAP_VIEW_WORLD = { center: { lat: 30, lng: 0 }, zoom: 2 } as const;
 
 /** What the page is showing. These are modes rather than routes; "All maps" is the way back. */
-type BoundariesMode = 'list' | 'draw-new' | 'upload' | 'map';
+type BoundariesMode = 'list' | 'draw-new' | 'upload' | 'map' | 'catalog';
+
+/**
+ * One published map as the picker lists it: the catalog entry plus what this workspace knows about
+ * it. `added` is why the entry stays visible instead of disappearing — a map already in the
+ * workspace should read as done, not as missing.
+ */
+interface CatalogRow {
+  entry: PublishedBoundaryEntry;
+  /** True when this workspace already holds this map. */
+  added: boolean;
+  /** True when a campaign in this workspace contests an office this map covers. */
+  suggested: boolean;
+  /** Download size, written the way a person reads it. */
+  size: string;
+}
 
 /** The set form, shared by "draw a new map" and "upload a map". Values are strings from selects. */
 interface SetFormValue {
@@ -97,6 +118,11 @@ interface SetFormValue {
   chamber: string;
   vintage: string;
   description: string;
+}
+
+/** The catalog picker's search box. A form because `pc-input` binds a signal-form field. */
+interface CatalogSearchValue {
+  search: string;
 }
 
 /** The upload form's own two questions: which property holds the name, and which holds the code. */
@@ -159,6 +185,7 @@ export class BoundariesSettingsComponent implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly auth = inject(AuthService);
   private readonly boundaries = inject(BoundariesService);
+  private readonly campaignContext = inject(CampaignContextService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly dialogs = inject(ConfirmDialogService);
 
@@ -201,6 +228,10 @@ export class BoundariesSettingsComponent implements OnInit {
   protected readonly activeSetId = signal<string | null>(null);
   protected readonly features = signal<BoundaryFeatureRowType[]>([]);
   protected readonly featuresLoaded = signal(false);
+  /** Areas in the open layer, including any the byte budget stopped the server sending. */
+  protected readonly featuresTotal = signal(0);
+  /** True when the map on screen is a prefix of the layer rather than all of it. */
+  protected readonly featuresTruncated = signal(false);
   protected readonly validation = signal<BoundaryValidationType | null>(null);
   protected readonly validating = signal(false);
   /**
@@ -296,6 +327,71 @@ export class BoundariesSettingsComponent implements OnInit {
   });
 
   protected readonly atSetLimit = computed(() => this.sets().length >= BOUNDARY_MAX_SETS_PER_TENANT);
+
+  // ── The published catalog ─────────────────────────────────────────────────────────────────────
+  //
+  // The catalog is a constant compiled into the app, not a request: the backend validates an add
+  // against the same array this filters, so the two cannot disagree about which maps exist. That is
+  // why there is no loading state here and no spinner on opening the picker.
+
+  protected readonly catalogSearchPayload = signal<CatalogSearchValue>({ search: '' });
+  protected readonly catalogSearchForm = form(this.catalogSearchPayload, () => {
+    // No validators: any text is a legitimate search, including text that matches nothing.
+  });
+  private readonly catalogSearch = computed(() => this.catalogSearchPayload().search);
+  protected readonly catalogHasEntries = PUBLISHED_BOUNDARY_ENTRIES.length > 0;
+
+  /** The offices this workspace's campaigns contest, which is what makes a map worth suggesting. */
+  private readonly campaignOffices = computed<PublishedBoundaryMatch[]>(() =>
+    this.campaignContext.campaigns().map((campaign) => ({
+      jurisdiction: isJurisdictionId(campaign.jurisdiction) ? campaign.jurisdiction : 'other',
+      region: campaign.office_region ?? null,
+      chamber: campaign.chamber === 'upper' || campaign.chamber === 'lower' ? campaign.chamber : null,
+    })),
+  );
+
+  /**
+   * Maps already in this workspace, by catalog slug.
+   *
+   * A published set always carries the catalog slug verbatim, which is what lets the picker say
+   * "already added" rather than offering a second copy the server would refuse anyway.
+   */
+  private readonly addedCatalogSlugs = computed(
+    () =>
+      new Set(
+        this.sets()
+          .filter((set) => set.source === 'bundled')
+          .map((set) => set.slug),
+      ),
+  );
+
+  private readonly suggestedCatalogSlugs = computed(
+    () => new Set(publishedBoundariesForOffices(this.campaignOffices()).map((entry) => entry.slug)),
+  );
+
+  /** Every catalog entry, suggested ones first, filtered by the search box. */
+  protected readonly catalogRows = computed<CatalogRow[]>(() => {
+    const added = this.addedCatalogSlugs();
+    const suggested = this.suggestedCatalogSlugs();
+    const term = this.catalogSearch().trim().toLowerCase();
+
+    const rows = PUBLISHED_BOUNDARY_ENTRIES.filter((entry) => {
+      if (!term) return true;
+      return [entry.label, entry.publisher, entry.vintage, entry.region ?? ''].join(' ').toLowerCase().includes(term);
+    }).map<CatalogRow>((entry) => ({
+      entry,
+      added: added.has(entry.slug),
+      suggested: suggested.has(entry.slug),
+      size: formatPublishedBoundarySize(entry.bytes),
+    }));
+
+    // A stable two-group order: what this workspace's campaigns need, then everything else in
+    // catalog order. Sorting inside a group would reorder the list as campaigns change, which makes
+    // a list somebody is reading move under them.
+    return [...rows.filter((row) => row.suggested), ...rows.filter((row) => !row.suggested)];
+  });
+
+  protected readonly suggestedCatalogCount = computed(() => this.catalogRows().filter((row) => row.suggested).length);
 
   protected readonly activeSet = computed<BoundarySetRowType | null>(() => {
     const id = this.activeSetId();
@@ -473,7 +569,10 @@ export class BoundariesSettingsComponent implements OnInit {
   private async loadFeatures(setId: string): Promise<void> {
     const end = this._loading.begin();
     try {
-      this.features.set(await this.boundaries.listFeatures(setId));
+      const result = await this.boundaries.listFeatures(setId);
+      this.features.set(result.features);
+      this.featuresTotal.set(result.total);
+      this.featuresTruncated.set(result.truncated);
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not load the areas in this map.'));
     } finally {
@@ -524,6 +623,8 @@ export class BoundariesSettingsComponent implements OnInit {
     this.activeSetId.set(null);
     this.features.set([]);
     this.featuresLoaded.set(false);
+    this.featuresTotal.set(0);
+    this.featuresTruncated.set(false);
     this.validation.set(null);
     this.validationStale.set(false);
     this.drawing.set(false);
@@ -536,6 +637,59 @@ export class BoundariesSettingsComponent implements OnInit {
     this.setPayload.set(emptySetForm());
     this.setForm().reset();
     this.mode.set('draw-new');
+  }
+
+  /**
+   * Open the published-map picker.
+   *
+   * The campaign list is loaded on the way in rather than on page load, because it is only used to
+   * decide which maps to put first and most visits to this page never open the picker at all.
+   * `ensureLoaded` is a no-op when something else already loaded it.
+   */
+  protected async startCatalog(): Promise<void> {
+    this.catalogSearchPayload.set({ search: '' });
+    this.catalogSearchForm().reset();
+    this.mode.set('catalog');
+    try {
+      await this.campaignContext.ensureLoaded();
+    } catch {
+      // Suggestions are an ordering nicety. Losing them leaves the full catalog listed and usable,
+      // so this stays silent rather than putting an error toast in front of a working picker.
+    }
+  }
+
+  /**
+   * Add a published map, after saying plainly what is about to happen.
+   *
+   * The confirm step is not ceremony: adding a map re-matches every located household in the
+   * workspace, which changes the area shown on every household card and the lines canvassing turfs
+   * are cut along. It costs nothing and calls no paid service, and the dialog says both.
+   */
+  protected async addPublishedMap(row: CatalogRow): Promise<void> {
+    if (row.added || this.atSetLimit() || this.saving()) return;
+
+    const confirmed = await this.dialogs.confirm({
+      title: `Add ${row.entry.label}?`,
+      message:
+        `${row.entry.publisher} — ${row.entry.vintage}. ${row.entry.featureCount.toLocaleString()} areas. ` +
+        'Every household that already has coordinates will be matched into one of them. This is free and calls no paid service.',
+      confirmText: 'Add map',
+    });
+    if (!confirmed) return;
+
+    this.saving.set(true);
+    const end = this._loading.begin();
+    try {
+      await this.boundaries.addPublishedSet(row.entry.slug);
+      this.alerts.showSuccess(`${row.entry.label} added. Your households are being matched now.`);
+      await this.loadSets();
+      this.mode.set('list');
+    } catch (err) {
+      this.alerts.showError(getUserErrorMessage(err, 'Could not add that map.'));
+    } finally {
+      this.saving.set(false);
+      end();
+    }
   }
 
   protected startUpload(): void {

@@ -5,8 +5,11 @@ import type { BoundaryGeometryType } from '../../../../../../libs/common/src/lib
 import {
   BOUNDARY_FEATURE_CODE_MAX,
   BOUNDARY_FEATURE_NAME_MAX,
+  BOUNDARY_MAX_SETS_PER_TENANT,
   boundaryBBoxOf,
 } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
+import type { PublishedBoundaryEntry } from '../../../../../../libs/common/src/lib/boundaries/catalog';
+import { PUBLISHED_BOUNDARY_ENTRIES } from '../../../../../../libs/common/src/lib/boundaries/catalog';
 import { BaseRepository } from '../../lib/base.repo';
 import { invalidateBoundarySetCache } from '../../lib/gis/boundary-store';
 import { BoundariesController } from './controller';
@@ -199,6 +202,97 @@ describe('BoundariesController', () => {
       expect(stored).toHaveLength(1);
       expect(stored[0]?.name).toBe('N'.repeat(BOUNDARY_FEATURE_NAME_MAX));
       expect(stored[0]?.code).toBe('C'.repeat(BOUNDARY_FEATURE_CODE_MAX));
+    });
+  });
+
+  describe('adding a map from the published catalog', () => {
+    it('refuses a slug the catalog does not publish, and names the two paths that do work', async () => {
+      // This is also the whole behaviour while the catalog is empty, which is what this release
+      // ships: every slug is unknown, and the error has to point somewhere useful rather than
+      // reading as a bug.
+      await expect(
+        controller.addPublishedSet(auth, { catalog_slug: 'not-a-real-published-map' }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    });
+
+    // These need a populated catalog. They are skipped rather than silently passing while it is
+    // empty, so the runner reports honestly that they did not exercise anything.
+    describe.skipIf(PUBLISHED_BOUNDARY_ENTRIES.length === 0)('once the catalog holds an entry', () => {
+      /** Never throws inside this block — it is skipped entirely when the catalog is empty. */
+      const anEntry = (): PublishedBoundaryEntry => {
+        const entry = PUBLISHED_BOUNDARY_ENTRIES[0];
+        if (!entry) throw new Error('This block is skipped when the catalog is empty.');
+        return entry;
+      };
+
+      it('refuses even a real catalog slug when the workspace is at its map limit', async () => {
+        const entry = anEntry();
+        // Budget is checked first, so a full workspace gets the limit message rather than a
+        // confusing "not in the catalog" for a map that does exist.
+        for (let i = 0; i < BOUNDARY_MAX_SETS_PER_TENANT; i++) await makeSet(`budget-${rand()}-${i}`, 'drawn');
+        await expect(controller.addPublishedSet(auth, { catalog_slug: entry.slug })).rejects.toMatchObject({
+          code: 'BAD_REQUEST',
+        });
+      });
+
+      it('copies the catalog entry onto the row and queues a match in the same transaction', async () => {
+        const entry = anEntry();
+        const created = await controller.addPublishedSet(auth, { catalog_slug: entry.slug });
+
+        // Nothing descriptive comes from the caller: a row that could disagree with the file it
+        // names is how "Ontario ridings" ends up being a map of Alberta.
+        expect(created.slug).toBe(entry.slug);
+        expect(created.label).toBe(entry.label);
+        expect(created.source).toBe('bundled');
+        expect(created.feature_count).toBe(entry.featureCount);
+        expect(created.editable).toBe(false);
+
+        const jobs = await db
+          .selectFrom('background_jobs')
+          .select(['payload'])
+          .where('tenant_id', '=', tenantId)
+          .execute();
+        expect(jobs.some((job) => JSON.stringify(job.payload).includes('match_boundaries'))).toBe(true);
+      });
+
+      it('refuses a second copy of a map the workspace already has', async () => {
+        const entry = anEntry();
+        await controller.addPublishedSet(auth, { catalog_slug: entry.slug });
+        await expect(controller.addPublishedSet(auth, { catalog_slug: entry.slug })).rejects.toMatchObject({
+          code: 'BAD_REQUEST',
+        });
+      });
+    });
+  });
+
+  describe('listing the areas of a map', () => {
+    it('reports the layer size alongside the areas, so a caption cannot quote the sample', async () => {
+      const setId = await makeSet(`areas-${rand()}`, 'drawn');
+      await addFeature(setId, 'Ward 1', box(-76, 45, -75, 46));
+      await addFeature(setId, 'Ward 2', box(-75, 45, -74, 46));
+
+      const listed = await controller.listFeatures(auth, setId);
+      expect(listed.set_id).toBe(setId);
+      expect(listed.features).toHaveLength(2);
+      expect(listed.total).toBe(2);
+      expect(listed.truncated).toBe(false);
+    });
+
+    it('returns no areas for a published map whose file is not present, rather than failing', async () => {
+      // A `bundled` row naming a slug with no readable file behind it logs loudly and matches
+      // nothing. The page must still render — an empty layer is a state, not an error.
+      const setId = await makeSet(`published-${rand()}`, 'bundled');
+      const listed = await controller.listFeatures(auth, setId);
+      expect(listed.features).toEqual([]);
+      expect(listed.total).toBe(0);
+      expect(listed.truncated).toBe(false);
+    });
+
+    it('refuses to edit an area of a published map', async () => {
+      const setId = await makeSet(`published-edit-${rand()}`, 'bundled');
+      await expect(
+        controller.addFeature(auth, { set_id: setId, name: 'Invented ward', geometry: box(-76, 45, -75, 46) }),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     });
   });
 });

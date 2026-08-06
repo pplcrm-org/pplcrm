@@ -184,7 +184,15 @@ export async function handleMatchBoundaries(
       householdId: household.id,
       matches: matchPointToLoadedSets(household.lat, household.lng, sets),
     }));
-    await applyHouseholdMatchesBatch(db, tenantId, entries, setIds);
+    // Scoped to the layers that actually loaded, not to the ones this pass asked for. A published
+    // layer whose file could not be read is missing from `sets`, so this pass leaves its existing
+    // rows alone instead of clearing every household's area for a map it never managed to open.
+    await applyHouseholdMatchesBatch(
+      db,
+      tenantId,
+      entries,
+      sets.map((set) => set.id),
+    );
 
     // Stamp every household this pass examined, matched or not, in one batch. The stamp — not the
     // presence of a district row — is what the 'unmatched' scope reads, so a household outside

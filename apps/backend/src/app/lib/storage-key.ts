@@ -14,6 +14,31 @@ export const MAX_ENTITY_REF_LENGTH = 128;
 const FALLBACK_FILENAME = 'file';
 
 /**
+ * Key prefixes that hold product data rather than a workspace's own files.
+ *
+ * Everything a workspace uploads is keyed `uploads/<tenant_id>/…`, built in the files router and
+ * signed into an upload handle that is verified against the caller's tenant, so a client cannot
+ * choose its own key. These prefixes are the other side of that: they are written by maintainer
+ * tooling, they are shared by every workspace, and nothing tenant-owned may ever live under them.
+ *
+ * `catalog/boundaries` holds the published electoral boundary files that back a `bundled` boundary
+ * set — one GeoJSON per catalog entry, uploaded by `tools/boundary-catalog` and read by
+ * `lib/gis/boundary-store.ts`. They are shared reference data, identical for every workspace that
+ * adds the same map, so keying them per tenant would store the same national file hundreds of times.
+ */
+export const RESERVED_STORAGE_PREFIXES = ['catalog/'] as const;
+
+/**
+ * True when a key belongs to shared product data rather than to a workspace.
+ *
+ * Used to keep the two spaces from touching: a tenant-scoped delete or listing must never act on a
+ * reserved key, and a reserved read must never be satisfied by a tenant key.
+ */
+export function isReservedStorageKey(key: string): boolean {
+  return RESERVED_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+/**
  * Reduce a filename to a single safe path component.
  *
  * Strips directory separators and traversal, drops control characters, and collapses

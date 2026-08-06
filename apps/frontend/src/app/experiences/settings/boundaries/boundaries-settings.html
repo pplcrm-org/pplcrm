@@ -32,9 +32,38 @@
   <pc-empty-state
     icon="map"
     title="No boundary map yet"
-    hint="Nothing is broken. A workspace starts with no map, and there are three ways to get one."
+    [hint]="
+      catalogHasEntries
+        ? 'Nothing is broken. A workspace starts with no map, and there are four ways to get one.'
+        : 'Nothing is broken. A workspace starts with no map, and there are three ways to get one.'
+    "
   >
-    <div class="mt-2 grid w-full gap-4 text-left md:grid-cols-3">
+    <div
+      [class]="
+        catalogHasEntries
+          ? 'mt-2 grid w-full gap-4 text-left md:grid-cols-2 xl:grid-cols-4'
+          : 'mt-2 grid w-full gap-4 text-left md:grid-cols-3'
+      "
+    >
+      <!-- 0. Add a published map: nothing to find, nothing to convert — when one is published. -->
+      @if (catalogHasEntries) {
+      <div class="pc-panel flex h-full flex-col gap-2 p-4">
+        <div class="flex items-center gap-2">
+          <pc-icon name="map" [size]="5" class="text-primary"></pc-icon>
+          <span class="text-sm font-semibold">Add a published map</span>
+        </div>
+        <p class="grow text-xs leading-relaxed text-base-content/70">
+          Where a government publishes the boundaries — federal ridings, congressional districts, state legislative
+          districts — pick the one you need and we load it. Nothing to download, convert or upload.
+        </p>
+        <div class="flex flex-wrap items-center gap-2">
+          <button type="button" class="btn btn-primary btn-sm" [disabled]="!canEdit()" (click)="startCatalog()">
+            Browse published maps
+          </button>
+        </div>
+      </div>
+      }
+
       <!-- 1. Import: cheapest, and most voter files already carry the columns. -->
       <div class="pc-panel flex h-full flex-col gap-2 p-4">
         <div class="flex items-center gap-2">
@@ -108,7 +137,7 @@
     </p>
     <div class="flex flex-wrap items-center gap-2">
       <a routerLink="/imports/new" [queryParams]="importAreaNamesParams" class="btn btn-outline btn-primary btn-sm"
-        >Import area names</a
+        >Import households</a
       >
       <button
         type="button"
@@ -118,6 +147,16 @@
       >
         Re-match every map
       </button>
+      @if (catalogHasEntries) {
+      <button
+        type="button"
+        class="btn btn-outline btn-primary btn-sm"
+        [disabled]="!canEdit() || atSetLimit()"
+        (click)="startCatalog()"
+      >
+        Add a published map
+      </button>
+      }
       <button
         type="button"
         class="btn btn-outline btn-primary btn-sm"
@@ -206,6 +245,99 @@
       </p>
     </ng-container>
   </pc-table>
+  } }
+
+  <!-- ────────────────────────────── The published catalog ────────────────────────────── -->
+  @case ('catalog') {
+  <div class="flex items-center gap-2">
+    <button type="button" class="btn btn-outline btn-accent btn-sm" (click)="showList()">All maps</button>
+    <span class="text-xs text-base-content/60">Maps published by a government body, ready to add.</span>
+  </div>
+
+  @if (!catalogHasEntries) {
+  <pc-empty-state
+    icon="map"
+    title="No published maps in this version"
+    hint="Published maps are added to pplCRM release by release, as each publisher's licence is confirmed and their file is converted. Until one covers your race, upload a GeoJSON or draw the areas yourself — both work exactly as well."
+  >
+    <div class="mt-2 flex flex-wrap items-center justify-center gap-2">
+      <button type="button" class="btn btn-outline btn-primary btn-sm" [disabled]="!canEdit()" (click)="startUpload()">
+        Upload GeoJSON
+      </button>
+      <button type="button" class="btn btn-primary btn-sm" [disabled]="!canEdit()" (click)="startDrawNew()">
+        Draw a map
+      </button>
+    </div>
+  </pc-empty-state>
+  } @else {
+
+  <!-- Said before anybody adds one: what a published map is, and what it is not. -->
+  <div class="flex items-start gap-2.5 rounded-lg border border-info/30 bg-info/10 px-3.5 py-2.5">
+    <pc-icon name="information-circle" [size]="5" class="mt-0.5 shrink-0 text-info"></pc-icon>
+    <p class="text-xs leading-relaxed text-base-content/80">
+      These are the official lines as their publisher drew them, loaded for you instead of downloaded and converted by
+      you. Adding one is free and calls no paid service. Municipal wards are not here — thousands of municipalities
+      publish nothing usable — so for those, upload a file or draw the areas.
+    </p>
+  </div>
+
+  <pc-input
+    label="Search"
+    placeholder="Riding, district, province, state, publisher"
+    [formField]="catalogSearchForm.search"
+  ></pc-input>
+
+  @if (atSetLimit()) {
+  <p class="text-xs text-warning">
+    This workspace is at its limit of {{ maxSetsPerWorkspace }} maps. Delete one you no longer use before adding
+    another.
+  </p>
+  } @if (catalogRows().length === 0) {
+  <p class="text-xs text-base-content/60">No published map matches that search.</p>
+  } @else {
+  <div class="grid gap-3 md:grid-cols-2">
+    @for (row of catalogRows(); track row.entry.slug) {
+    <div class="pc-panel flex h-full flex-col gap-2 p-4">
+      <div class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <p class="truncate text-sm font-semibold">{{ row.entry.label }}</p>
+          <p class="text-xs text-base-content/70">{{ row.entry.publisher }} · {{ row.entry.vintage }}</p>
+        </div>
+        @if (row.suggested) {
+        <span class="badge badge-primary badge-sm shrink-0">Your race</span>
+        }
+      </div>
+
+      <p class="grow text-xs text-base-content/60">
+        {{ row.entry.featureCount.toLocaleString() }} areas · {{ row.size }} · {{ row.entry.licence }}
+      </p>
+
+      <div class="flex flex-wrap items-center gap-2">
+        @if (row.added) {
+        <span class="inline-flex items-center gap-1 text-xs font-medium text-success">
+          <pc-icon name="check-circle" [size]="4"></pc-icon>
+          Already added
+        </span>
+        } @else {
+        <button
+          type="button"
+          class="btn btn-primary btn-sm"
+          [disabled]="!canEdit() || atSetLimit() || saving()"
+          (click)="addPublishedMap(row)"
+        >
+          Add this map
+        </button>
+        }
+      </div>
+    </div>
+    }
+  </div>
+  }
+
+  <p class="text-xs text-base-content/60">
+    A published map is loaded from its publisher's file and is not editable area by area — a new edition arrives as its
+    own map, so the lines an election was fought under never change underneath you.
+  </p>
   } }
 
   <!-- ────────────────────────────── Draw a new map ────────────────────────────── -->
@@ -592,9 +724,18 @@
       <div class="pc-panel p-4">
         <div class="flex items-center justify-between gap-2 pb-2">
           <span class="text-sm font-semibold">Areas in this map</span>
-          <span class="text-xs text-base-content/60">{{ features().length.toLocaleString() }}</span>
+          <span class="text-xs text-base-content/60">
+            @if (featuresTruncated()) { {{ features().length.toLocaleString() }} of {{ featuresTotal().toLocaleString()
+            }} } @else { {{ features().length.toLocaleString() }} }
+          </span>
         </div>
-        @if (!featuresLoaded()) {
+        @if (featuresTruncated()) {
+        <p class="pb-2 text-xs leading-relaxed text-warning">
+          This map is too large to draw all at once, so only the first {{ features().length.toLocaleString() }} of its
+          {{ featuresTotal().toLocaleString() }} areas are shown here. Every area is still matched against your
+          households — this limit is only on what one screen loads.
+        </p>
+        } @if (!featuresLoaded()) {
         <div class="space-y-2">
           <div class="skeleton h-5 w-full"></div>
           <div class="skeleton h-5 w-full"></div>

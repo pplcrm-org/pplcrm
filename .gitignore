@@ -30,3 +30,7 @@ package-lock.json
 .claude/settings.local.json
 docs/no-explicit-any-cleanup-plan.md
 server.log
+
+# Maintainer tooling: downloaded and converted boundary files (npm run boundary-catalog).
+# Tens of megabytes of publisher data that is uploaded to storage, never committed.
+.boundary-catalog/

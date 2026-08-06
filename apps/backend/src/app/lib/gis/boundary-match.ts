@@ -29,61 +29,42 @@ export interface HouseholdBoundaryMatches {
 }
 
 /**
- * Which boundary sets this tenant's active campaigns require.
+ * Which boundary sets a household is matched against.
  *
- * Matching every household against every layer would be wasted work, and with United States data
- * the waste is large: an Arizona state house campaign needs its own lower-chamber legislative
- * districts and its own precincts, and has no use for the other 49 states' maps or for the upper
- * chamber's. So the required list is derived from what the workspace is actually contesting.
+ * Every layer the workspace holds that has polygons — one it uploaded, one it drew, or one it added
+ * from the published catalog. All three are things somebody in the workspace chose deliberately, and
+ * a map that was chosen and then quietly not used would be the worst of both: the admin sees it in
+ * the list and no household ever falls into it.
  *
- * Two rules produce the list, and the second one is not in the plan text:
+ * Layers whose source is `import` are excluded, and that exclusion is load-bearing rather than an
+ * optimisation. An imported layer holds no polygons at all — its area names arrived already assigned
+ * per household in a CSV — so there is nothing to match against, and because
+ * {@link applyHouseholdMatchesBatch} only clears rows for the layers it examined, leaving imports
+ * out is what stops a re-match erasing area names a person imported.
  *
- *  1. A layer is required when an active campaign's jurisdiction, region and chamber all agree with
- *     it. A national layer (no region) serves any campaign of its jurisdiction; a layer for one
- *     province or state serves only campaigns in that region; a layer for one chamber serves only
- *     campaigns in that chamber.
- *  2. Every layer the workspace made itself — uploaded or drawn — is always required, whatever the
- *     campaigns say. An admin who draws "the three neighbourhoods we are targeting" expects
- *     households to fall into them immediately, and a workspace is capped at 50 layers of at most
- *     5,000 areas, so this costs almost nothing. Requiring a campaign to be configured first would
- *     make drawing a map appear to do nothing.
+ * ## Why this is no longer derived from the campaigns
  *
- * Layers whose source is `import` are never included: they hold no polygons, because their area
- * names arrived already assigned per household in a CSV. There is nothing to match against.
+ * It used to be. A layer was required only when an active campaign's jurisdiction, region and
+ * chamber agreed with it, so that an Arizona campaign did not pay to match against 49 other states'
+ * maps. That derivation only ever governed `bundled` layers, and it made sense while a bundled layer
+ * was imagined as something the product attached on the workspace's behalf.
+ *
+ * Published maps are not attached on anyone's behalf. An admin picks one from the catalog, one row
+ * is written, and the question "is this map relevant to us?" was answered by the person who added
+ * it. Scoping is therefore done at the moment of adding rather than on every match pass, which is
+ * both simpler and the reason an Arizona workspace never holds another state's map to begin with.
+ * A workspace is capped at 50 layers of at most 5,000 areas each, so the ceiling is bounded either
+ * way.
  */
 export async function requiredSetIdsForTenant(db: Kysely<Models>, tenantId: string): Promise<string[]> {
-  const campaigns = await db
-    .selectFrom('campaigns')
-    .select(['jurisdiction', 'office_region', 'chamber'])
-    .where('tenant_id', '=', tenantId)
-    .where('status', '=', 'active')
-    .execute();
-
-  // A workspace holds at most BOUNDARY_MAX_SETS_PER_TENANT (50) layers, so reading them all and
-  // filtering here is cheaper and far clearer than composing one OR-per-campaign SQL predicate.
   const sets = await db
     .selectFrom('boundary_sets')
-    .select(['id', 'jurisdiction', 'region', 'chamber', 'source'])
+    .select(['id'])
     .where('tenant_id', '=', tenantId)
     .where('source', '<>', 'import')
     .execute();
 
-  const required = new Set<string>();
-  for (const set of sets) {
-    if (set.source === 'upload' || set.source === 'drawn') {
-      required.add(String(set.id));
-      continue;
-    }
-    for (const campaign of campaigns) {
-      if (set.jurisdiction !== campaign.jurisdiction) continue;
-      if (set.region != null && set.region !== campaign.office_region) continue;
-      if (set.chamber != null && set.chamber !== campaign.chamber) continue;
-      required.add(String(set.id));
-      break;
-    }
-  }
-
-  return [...required].sort();
+  return sets.map((set) => String(set.id)).sort();
 }
 
 /**
@@ -231,13 +212,23 @@ export async function matchHouseholdBoundaries(
   lng: number,
 ): Promise<BoundaryMatch[]> {
   const setIds = await requiredSetIdsForTenant(db, tenantId);
-  // Replace only the layers this call matched against, exactly as the batch job does. Rows in a
-  // layer the workspace no longer requires — an archived campaign's map — were not looked at, so
-  // they are not an answer this pass can overwrite. With no required layers there is nothing to
-  // match and nothing to replace.
   if (setIds.length === 0) return [];
-  const matches = await matchPointToSets(db, tenantId, lat, lng, setIds);
-  await applyHouseholdMatchesBatch(db, tenantId, [{ householdId, matches }], setIds);
+
+  // Replace only the layers this call actually consulted, exactly as the batch job does — and note
+  // that this is the LOADED list, not the required one. A published layer whose file could not be
+  // read is absent from the loaded list, so its rows survive: "we could not open that map" is not
+  // the same answer as "that map places this household nowhere", and storing the second in place of
+  // the first would erase a household's riding because of a storage hiccup.
+  const sets = await loadBoundarySets(db, tenantId, setIds);
+  if (sets.length === 0) return [];
+
+  const matches = matchPointToLoadedSets(lat, lng, sets);
+  await applyHouseholdMatchesBatch(
+    db,
+    tenantId,
+    [{ householdId, matches }],
+    sets.map((set) => set.id),
+  );
   return matches;
 }
 

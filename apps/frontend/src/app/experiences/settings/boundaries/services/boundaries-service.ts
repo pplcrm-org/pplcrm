@@ -2,6 +2,7 @@ import { Service, inject } from '@angular/core';
 import type {
   AddBoundaryFeatureType,
   AddDrawnBoundarySetType,
+  BoundaryFeatureListType,
   BoundaryFeatureRowType,
   BoundarySetRowType,
   BoundaryValidationType,
@@ -53,12 +54,24 @@ export class BoundariesService extends TRPCService<BoundarySetRowType> {
     return this.api.boundaries.list.query(undefined, { signal: this.ac.signal });
   }
 
-  public listFeatures(setId: string): Promise<BoundaryFeatureRowType[]> {
+  /**
+   * The areas of one layer, plus how many the layer really has.
+   *
+   * The server stops sending outlines once the payload reaches its byte budget, which a drawn or
+   * uploaded ward map never reaches and a published national map can. `total` is what a caption must
+   * quote as the layer's size; `truncated` says whether the map on screen is all of it.
+   */
+  public listFeatures(setId: string): Promise<BoundaryFeatureListType> {
     return this.api.boundaries.features.query({ setId }, { signal: this.ac.signal });
   }
 
   public createDrawnSet(input: AddDrawnBoundarySetType): Promise<BoundarySetRowType> {
     return this.api.boundaries.createDrawn.mutate(input);
+  }
+
+  /** Add a map from the published catalog. One slug in — everything else comes from the catalog. */
+  public addPublishedSet(catalogSlug: string): Promise<BoundarySetRowType> {
+    return this.api.boundaries.addPublished.mutate({ catalog_slug: catalogSlug });
   }
 
   public uploadSet(input: UploadBoundarySetType): Promise<BoundarySetRowType> {

@@ -177,13 +177,54 @@ the outgoing and incoming maps on the same household on the same day. Never
 infer meaning from a layer's **name** — an Ontario "ward" is a seat area, a
 Massachusetts "ward" is not. Read `boundary_sets.role`.
 
-**No boundary data ships with the product.** A workspace gets a map exactly
-three ways: a CSV import that already carries district columns (`source =
-'import'` — those sets hold no polygons and are skipped by the matcher), an
-uploaded GeoJSON (`'upload'`), or polygons drawn on the map (`'drawn'`). A
-`'bundled'` source and its file-loading path exist and work, but
-`lib/gis/boundary-data/` contains only a README — nothing has been converted.
-Do not tell a user the product knows their riding out of the box.
+**Four ways a workspace gets a map, and only three of them work today.** A CSV
+import that already carries district columns (`source = 'import'` — those sets
+hold no polygons and are skipped by the matcher), an uploaded GeoJSON
+(`'upload'`), polygons drawn on the map (`'drawn'`), or a map picked from the
+published catalog (`'bundled'`).
+
+**The published catalog is empty in this release, so in practice there are still
+three.** The mechanism is complete and tested end to end; what is missing is
+data. Adding an entry needs a person to read the publisher's licence and confirm
+it permits redistribution, and to convert and upload the file. Until then the
+picker is hidden from the boundaries page entirely, the empty state still says
+"three ways", and the website and FAQ are still correct as written. **Do not
+tell a user the product knows their riding out of the box, and do not change the
+site copy until `PUBLISHED_BOUNDARY_ENTRIES` is non-empty.**
+
+### The published catalog (`libs/common/src/lib/boundaries/catalog/`)
+
+| File                 | What it is                                                                                |
+| -------------------- | ----------------------------------------------------------------------------------------- |
+| `catalog.types.ts`   | `PublishedBoundaryEntry` — slug, office, vintage, publisher, licence, counts, `sha256`    |
+| `catalog.entries.ts` | **Generated.** Written by `npm run boundary-catalog -- build`. Never hand-edit            |
+| `index.ts`           | `findPublishedBoundary`, `publishedBoundariesFor(Offices)`, `publishedBoundaryStorageKey` |
+
+Four rules that are load-bearing rather than stylistic:
+
+- **A catalog entry is immutable, and a file is never rewritten in place.** A
+  redistricting is a NEW slug with a new `vintage`; the old entry gets
+  `supersededBy`. A workspace keeps the edition it added, because a campaign
+  fighting an election under the old lines needs the old lines.
+- **The bytes are checked against the entry's `sha256` before they are parsed.**
+  A file that does not match what the catalog describes is refused.
+- **Published features are cached by CATALOG SLUG, not by set id.** Every
+  workspace holding the same map shares one parsed, frozen copy. Keyed by set id
+  a dozen workspaces would exhaust the whole cache budget with one national map.
+- **A layer whose file cannot be read is OMITTED from `loadBoundarySets`, not
+  returned empty**, and callers scope `applyHouseholdMatchesBatch` to the layers
+  they actually got back. "We could not open that map" must never be stored as
+  "that map places this household nowhere" — that would erase every household's
+  riding because of one failed download.
+
+Files are looked for in `GIS_BOUNDARY_DATA_DIR`, then `gis-boundaries/` beside
+the bundle, then `boundary-data/` beside the source, then blob storage under the
+reserved `catalog/boundaries/` prefix. The last step is what lets the catalog
+cover every province and state without any of it being in the container image.
+
+Maintainer tooling is `scripts/boundary-catalog.ts` (`npm run boundary-catalog --
+build | validate | upload`) with its input in `scripts/boundary-catalog-sources.ts`.
+It refuses any source whose `licenceVerified` is false.
 
 ### The functions in `apps/backend/src/app/lib/gis/`
 

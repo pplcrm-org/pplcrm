@@ -2,6 +2,7 @@ import { signal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
+import { PUBLISHED_BOUNDARY_ENTRIES } from '@common';
 import type { BoundaryFeatureRowType, BoundaryGeometryType, BoundarySetRowType } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { PC_MAP_DEFAULT_ZOOM } from '@uxcommon/components/map/map';
@@ -48,6 +49,22 @@ function makeSet(overrides: Partial<BoundarySetRowType> = {}): BoundarySetRowTyp
   };
 }
 
+/**
+ * The envelope `features` returns: the areas plus how many the layer really has.
+ *
+ * The server stops sending outlines at a byte budget, so a caller must never read the layer's size
+ * off the array it was handed. Tests build the envelope through this helper so a change to that
+ * shape shows up in one place.
+ */
+function featureList(features: BoundaryFeatureRowType[], overrides: { total?: number; truncated?: boolean } = {}) {
+  return {
+    set_id: features[0]?.set_id ?? '1',
+    features,
+    total: overrides.total ?? features.length,
+    truncated: overrides.truncated ?? false,
+  };
+}
+
 function makeFeature(overrides: Partial<BoundaryFeatureRowType> = {}): BoundaryFeatureRowType {
   return {
     id: '10',
@@ -84,6 +101,7 @@ describe('BoundariesSettingsComponent', () => {
   let component: BoundariesSettingsComponent;
   let boundaries: {
     addFeature: ReturnType<typeof vi.fn>;
+    addPublishedSet: ReturnType<typeof vi.fn>;
     createDrawnSet: ReturnType<typeof vi.fn>;
     deleteFeature: ReturnType<typeof vi.fn>;
     deleteSet: ReturnType<typeof vi.fn>;
@@ -111,10 +129,11 @@ describe('BoundariesSettingsComponent', () => {
   beforeEach(() => {
     boundaries = {
       addFeature: vi.fn().mockResolvedValue(makeFeature({ id: '11', name: 'Ward 13' })),
+      addPublishedSet: vi.fn().mockResolvedValue(makeSet({ id: '4', label: 'Federal ridings', source: 'bundled' })),
       createDrawnSet: vi.fn().mockResolvedValue(makeSet({ id: '2', label: 'Neighbourhoods', feature_count: 0 })),
       deleteFeature: vi.fn().mockResolvedValue(true),
       deleteSet: vi.fn().mockResolvedValue(true),
-      listFeatures: vi.fn().mockResolvedValue([makeFeature()]),
+      listFeatures: vi.fn().mockResolvedValue(featureList([makeFeature()])),
       listHouseholdPins: vi
         .fn()
         .mockResolvedValue({ pins: [{ id: '5', lat: 45.42, lng: -75.69, label: '1 Main St' }], totalLocated: 1 }),
@@ -149,18 +168,19 @@ describe('BoundariesSettingsComponent', () => {
       await build([]);
     });
 
-    it('names all three ways to get a map, and no fourth', () => {
+    it('names the ways to get a map that this build can actually deliver', () => {
       const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
       expect(text).toContain('Import the names you have');
       expect(text).toContain('Upload a published map');
       expect(text).toContain('Draw it yourself');
+      // The catalog card appears only when the catalog holds something. Offering "add a published
+      // map" over an empty catalog would be a promise nothing behind this page can keep.
+      expect(text.includes('Add a published map')).toBe(PUBLISHED_BOUNDARY_ENTRIES.length > 0);
     });
 
-    it('offers exactly three ways and no fourth', () => {
-      // No boundary data ships with pplCRM, so import, upload and draw are the whole list. A fourth
-      // card here would be a promise nothing behind this page can keep.
+    it('offers one card per way, and no card for a way that does not exist', () => {
       const cards = (fixture.nativeElement as HTMLElement).querySelectorAll('pc-empty-state .pc-panel');
-      expect(cards).toHaveLength(3);
+      expect(cards).toHaveLength(PUBLISHED_BOUNDARY_ENTRIES.length > 0 ? 4 : 3);
     });
 
     it('says plainly that adding and re-matching a map costs nothing', () => {
@@ -469,9 +489,100 @@ describe('BoundariesSettingsComponent', () => {
     });
   });
 
+  describe('the published-map picker', () => {
+    it('opens without a round trip, because the catalog is compiled in', async () => {
+      await build([makeSet()]);
+      await component['startCatalog']();
+      fixture.detectChanges();
+      expect(component['mode']()).toBe('catalog');
+    });
+
+    it('says what an empty catalog means and offers the two paths that do work', async () => {
+      // This is the state this release ships in: the mechanism is complete, no publisher's file has
+      // been converted yet. The picker must say that plainly rather than showing an empty list that
+      // reads as a loading failure.
+      if (PUBLISHED_BOUNDARY_ENTRIES.length > 0) return;
+
+      await build([makeSet()]);
+      await component['startCatalog']();
+      fixture.detectChanges();
+
+      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      expect(text).toContain('No published maps in this version');
+      expect(text).toContain('Upload GeoJSON');
+      expect(text).toContain('Draw a map');
+      expect(component['catalogRows']()).toEqual([]);
+    });
+
+    it('never offers a map the workspace already holds', async () => {
+      // Every published set carries the catalog slug verbatim, which is what makes this comparison
+      // work — a second add would be a duplicate the server refuses, not a second copy.
+      await build([makeSet({ id: '7', slug: 'ca-fed-2023', source: 'bundled' })]);
+      await component['startCatalog']();
+      fixture.detectChanges();
+      for (const row of component['catalogRows']()) {
+        if (row.entry.slug === 'ca-fed-2023') expect(row.added).toBe(true);
+      }
+    });
+
+    it('refuses to add when the workspace is already at its map limit', async () => {
+      await build(Array.from({ length: 50 }, (_, i) => makeSet({ id: String(i + 1), slug: `map-${i}` })));
+      await component['addPublishedMap']({
+        entry: {
+          slug: 'ca-fed-2023',
+          label: 'Canada — federal ridings',
+          jurisdiction: 'ca_federal',
+          region: null,
+          chamber: null,
+          role: 'seat_area',
+          vintage: '2023 representation order',
+          publisher: 'Elections Canada',
+          licence: 'Open Government Licence — Canada 2.0',
+          attribution: 'Contains information licensed under the Open Government Licence — Canada.',
+          sourceUrl: 'https://example.invalid/',
+          nameProperty: 'name',
+          codeProperty: 'code',
+          featureCount: 343,
+          bytes: 3_000_000,
+          sha256: 'a'.repeat(64),
+          supersededBy: null,
+        },
+        added: false,
+        suggested: true,
+        size: '2.9 MB',
+      });
+      expect(boundaries.addPublishedSet).not.toHaveBeenCalled();
+      expect(dialogs.confirm).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a map too large to draw all at once', () => {
+    it('says how much of it is on screen instead of reporting the sample as the whole map', async () => {
+      const set = makeSet({ id: '1', source: 'bundled', editable: false, feature_count: 343 });
+      boundaries.listFeatures.mockResolvedValue(featureList([makeFeature()], { total: 343, truncated: true }));
+      await build([set]);
+      await component['openMap'](set);
+      fixture.detectChanges();
+
+      const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      expect(text).toContain('too large to draw all at once');
+      expect(text).toContain('343');
+      // The limit is on the screen, not on the matching, and the copy has to say so.
+      expect(text).toContain('Every area is still matched against your households');
+    });
+
+    it('shows no truncation warning for a map that fits', async () => {
+      const set = makeSet();
+      await build([set]);
+      await component['openMap'](set);
+      fixture.detectChanges();
+      expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('too large to draw all at once');
+    });
+  });
+
   describe('the draw view of an empty workspace', () => {
     async function buildEmpty(set: BoundarySetRowType): Promise<void> {
-      boundaries.listFeatures.mockResolvedValue([]);
+      boundaries.listFeatures.mockResolvedValue(featureList([]));
       boundaries.listHouseholdPins.mockResolvedValue({ pins: [], totalLocated: 0 });
       await build([set]);
       await component['openMap'](set);

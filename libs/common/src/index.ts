@@ -464,11 +464,13 @@ export type {
   BoundaryGeometryType,
   BoundaryBBoxType,
   AddDrawnBoundarySetType,
+  AddPublishedBoundarySetType,
   UploadBoundarySetType,
   AddBoundaryFeatureType,
   UpdateBoundaryFeatureType,
   BoundarySetRowType,
   BoundaryFeatureRowType,
+  BoundaryFeatureListType,
   BoundaryValidationType,
 } from './lib/schemas/boundaries.schema';
 export {
@@ -481,17 +483,40 @@ export {
   BOUNDARY_MAX_FEATURES_PER_SET,
   BOUNDARY_MAX_VERTICES_PER_FEATURE,
   BOUNDARY_MAX_SETS_PER_TENANT,
+  BOUNDARY_FEATURES_MAX_RESPONSE_BYTES,
   boundaryGeometrySchema,
   boundaryBBoxOf,
   countBoundaryVertices,
   AddDrawnBoundarySetObj,
+  AddPublishedBoundarySetObj,
   UploadBoundarySetObj,
   AddBoundaryFeatureObj,
   UpdateBoundaryFeatureObj,
   BoundarySetObj,
   BoundaryFeatureObj,
+  BoundaryFeatureListObj,
   BoundaryValidationObj,
 } from './lib/schemas/boundaries.schema';
+
+export type {
+  PublishedBoundaryCountry,
+  PublishedBoundaryEntry,
+  PublishedBoundaryMatch,
+} from './lib/boundaries/catalog';
+export {
+  PUBLISHED_BOUNDARY_ENTRIES,
+  PUBLISHED_BOUNDARY_STORAGE_PREFIX,
+  findPublishedBoundary,
+  formatPublishedBoundarySize,
+  isCurrentPublishedBoundary,
+  isPublishedBoundarySlug,
+  publishedBoundariesFor,
+  publishedBoundariesForOffices,
+  publishedBoundaryCatalogIsEmpty,
+  publishedBoundaryCountry,
+  publishedBoundaryJurisdictions,
+  publishedBoundaryStorageKey,
+} from './lib/boundaries/catalog';
 
 export type {
   ReceiptRegimeId,

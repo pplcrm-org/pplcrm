@@ -62,6 +62,20 @@ export const BOUNDARY_MAX_VERTICES_PER_FEATURE = 50_000;
 export const BOUNDARY_MAX_SETS_PER_TENANT = 50;
 
 /**
+ * Most serialized geometry one `features` response carries.
+ *
+ * A layer may legitimately be far larger than a browser should be handed at once: an uploaded file
+ * is allowed up to {@link BOUNDARY_UPLOAD_MAX_BYTES}, and a published national map is the largest
+ * thing a workspace can hold without ever having uploaded anything. Past this budget the response
+ * stops adding areas and says how many the layer really has, exactly as the pin read does — a map
+ * that quietly drew two thirds of a country's ridings and reported nothing would read as complete.
+ *
+ * Chosen well under the upload cap because this is the parsed, re-serialized payload crossing the
+ * wire to a browser tab, not a file being written to storage once.
+ */
+export const BOUNDARY_FEATURES_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/**
  * Most household pins one request returns for the drawing map.
  *
  * A workspace can hold far more located households than a map can usefully draw or a browser can
@@ -253,6 +267,23 @@ export const UploadBoundarySetObj = z
   });
 export type UploadBoundarySetType = z.infer<typeof UploadBoundarySetObj>;
 
+/**
+ * Add a map from the published catalog.
+ *
+ * The whole input is one catalog slug, because everything else that would describe the layer — its
+ * label, jurisdiction, region, chamber, role, vintage, which properties hold the name and code, and
+ * how many areas it holds — is already recorded in the catalog entry and is copied from there. A
+ * client that could send those fields could also send a label that contradicts the file, which is
+ * how "Ontario ridings" ends up being a map of Alberta.
+ *
+ * The slug is validated for shape here and for existence in the controller, so an unknown slug
+ * produces "that map is not in the catalog" rather than a shape error.
+ */
+export const AddPublishedBoundarySetObj = z.object({
+  catalog_slug: boundarySetSlugSchema,
+});
+export type AddPublishedBoundarySetType = z.infer<typeof AddPublishedBoundarySetObj>;
+
 // ── Features ────────────────────────────────────────────────────────────────────────────────────
 
 export const AddBoundaryFeatureObj = z.object({
@@ -311,6 +342,28 @@ export const BoundaryFeatureObj = z.object({
   bbox: z.tuple([z.number(), z.number(), z.number(), z.number()]),
 });
 export type BoundaryFeatureRowType = z.infer<typeof BoundaryFeatureObj>;
+
+/**
+ * The areas of one layer, plus how many the layer really has.
+ *
+ * Both numbers are here for the same reason the pin read carries two: only one of them is the
+ * sample. `features` stops once the serialized geometry reaches
+ * {@link BOUNDARY_FEATURES_MAX_RESPONSE_BYTES}, which a hand-drawn ward map will never reach and a
+ * published national map can. `total` counts every area in the layer, so a caption drawn from
+ * `features.length` cannot silently report a truncated map as the whole thing.
+ *
+ * Matching is unaffected by the cap. It runs server-side against every area of the layer; this
+ * bounds only what one browser tab is handed.
+ */
+export const BoundaryFeatureListObj = z.object({
+  set_id: z.string(),
+  features: z.array(BoundaryFeatureObj),
+  /** Areas in the layer, whether or not their outlines were returned. */
+  total: z.number(),
+  /** True when the byte budget stopped the list short of `total`. */
+  truncated: z.boolean(),
+});
+export type BoundaryFeatureListType = z.infer<typeof BoundaryFeatureListObj>;
 
 /**
  * One household with coordinates, thinned to what a map pin needs: where to put it and enough of
