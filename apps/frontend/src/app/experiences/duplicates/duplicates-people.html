@@ -102,40 +102,44 @@
           <tr class="text-xs">
             <td class="text-base-content/50 uppercase tracking-wide">Keep as</td>
             <td>
-              <button
-                type="button"
-                class="btn btn-xs"
-                [class]="group.selectedTargetId === left.id ? 'btn-success' : 'btn-outline btn-primary'"
-                (click)="selectRole(gIdx, left.id, 'target')"
-              >
-                Keep primary
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs"
-                [class]="group.selectedSourceId === left.id ? 'btn-error' : 'btn-outline btn-primary'"
-                (click)="selectRole(gIdx, left.id, 'source')"
-              >
-                Merge away
-              </button>
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  class="btn btn-xs"
+                  [class]="group.selectedTargetId === left.id ? 'btn-success' : 'btn-outline btn-primary'"
+                  (click)="selectRole(gIdx, left.id, 'target')"
+                >
+                  Keep primary
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-xs"
+                  [class]="group.selectedSourceId === left.id ? 'btn-error' : 'btn-outline btn-primary'"
+                  (click)="selectRole(gIdx, left.id, 'source')"
+                >
+                  Merge away
+                </button>
+              </div>
             </td>
             <td>
-              <button
-                type="button"
-                class="btn btn-xs"
-                [class]="group.selectedTargetId === right.id ? 'btn-success' : 'btn-outline btn-primary'"
-                (click)="selectRole(gIdx, right.id, 'target')"
-              >
-                Keep primary
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs"
-                [class]="group.selectedSourceId === right.id ? 'btn-error' : 'btn-outline btn-primary'"
-                (click)="selectRole(gIdx, right.id, 'source')"
-              >
-                Merge away
-              </button>
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  class="btn btn-xs"
+                  [class]="group.selectedTargetId === right.id ? 'btn-success' : 'btn-outline btn-primary'"
+                  (click)="selectRole(gIdx, right.id, 'target')"
+                >
+                  Keep primary
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-xs"
+                  [class]="group.selectedSourceId === right.id ? 'btn-error' : 'btn-outline btn-primary'"
+                  (click)="selectRole(gIdx, right.id, 'source')"
+                >
+                  Merge away
+                </button>
+              </div>
             </td>
             <td></td>
           </tr>
