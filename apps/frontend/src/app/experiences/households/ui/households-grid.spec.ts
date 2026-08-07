@@ -45,8 +45,8 @@ const mockCampaignContext = {
 
 /**
  * The workspace's boundary maps, as the grid asks for them. Two here: the ward map the campaign
- * contests (already the `electoral_area` column, so it must not get a second one) and a precinct
- * map, which is a subdivision and therefore starts hidden in the column chooser.
+ * contests (already the `electoral_area` column, so it must not get a second one) and a polling
+ * division map, which gets a column of its own. Every per-map column starts hidden.
  */
 const mockAreaColumns = {
   list: vi.fn().mockResolvedValue([
@@ -154,8 +154,8 @@ describe('HouseholdsGrid', () => {
     await fixture.whenStable();
     const col = component['col'].find((c) => c.field === 'seat_status');
     expect(col?.headerName).toBe('In your ward');
-    // Hidden by default: the area column beside it names the ward outright, which answers the same
-    // question and also says which other ward a door outside yours is in.
+    // Hidden by default: the District column beside it names the ward outright, which answers the
+    // same question and also says which other ward a door outside yours is in.
     expect(col?.hide).toBe(true);
   });
 
@@ -179,10 +179,27 @@ describe('HouseholdsGrid', () => {
     // "Ward" — a second column of the same area names would just repeat it.
     expect(fields).not.toContain('area_set_1');
     // The polling-division map is a different map, so it gets a column of its own, headed with the
-    // map's own name and hidden by default because a subdivision elects nobody.
+    // map's own name and hidden by default, like every other per-map column.
     const polls = component['col'].find((c) => c.field === 'area_set_2');
     expect(polls?.headerName).toBe('Polling divisions');
     expect(polls?.hide).toBe(true);
+  });
+
+  it('shows only the District column once the workspace holds a boundary map', async () => {
+    await settleColumns(fixture);
+    // "District" lists every area a door falls in, so it is the one electoral column on screen.
+    const anyCol = component['col'].find((c) => c.field === 'any_electoral_area');
+    expect(anyCol?.headerName).toBe('District');
+    expect(anyCol?.hide).toBe(false);
+    // The campaign's own map repeats part of that same answer, so it waits in the column chooser.
+    expect(component['col'].find((c) => c.field === 'electoral_area')?.hide).toBe(true);
+  });
+
+  it('hides the District column while the workspace holds no boundary map', async () => {
+    mockAreaColumns.list.mockResolvedValueOnce([]);
+    await settleColumns(fixture);
+    // Nothing to fill it from, so every cell would be blank.
+    expect(component['col'].find((c) => c.field === 'any_electoral_area')?.hide).toBe(true);
   });
 
   it('keeps "outside the map" distinct from "not looked yet"', () => {

@@ -1,12 +1,12 @@
 import { Component, inject, input, OnInit, signal, viewChild } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
+import type { BoundaryAreaColumnType } from '@common';
 import { DataGrid } from '@frontend/shared/components/datagrid/datagrid';
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
 import { DataGridUtilsService } from '@frontend/shared/components/datagrid/services/utils.service';
 import { GrainTabs } from '@frontend/shared/components/grain-tabs/grain-tabs';
 import { Icon } from '@icons/icon';
 import { PcIconNameType } from '@icons/icons.index';
-import type { BoundaryAreaColumnType } from '@common';
 import {
   SUPPORT_LEVEL_LABELS,
   UpdatePersonsObj,
@@ -160,12 +160,12 @@ export class PersonsGrid implements OnInit {
         VOTING_STATUS_LABELS[params.value as keyof typeof VOTING_STATUS_LABELS] ?? '',
     },
     { field: 'company_name', headerName: 'Company', editable: false, hide: true },
-    // Where this person lives, electorally, read off their household. The area's NAME, not a yes/no
-    // — "Milton" says everything "Yes" says and also answers the question for the people who are
-    // somewhere else. Headed with the campaign's own word for its areas by applyAreaColumns below,
-    // and shown only once the workspace has a boundary map to fill it from.
+    // Where this person lives on the campaign's OWN map, read off their household. Hidden by
+    // default: the District column below already names this area along with every other boundary
+    // the door falls in. Headed with the campaign's own word for its areas by applyAreaLabels, and
+    // available from the column chooser whenever one level alone is what you want to sort by.
     {
-      // Placeholder only: applyAreaColumns always overwrites it before the grid is created, and
+      // Placeholder only: applyAreaLabels always overwrites it before the grid is created, and
       // seatLabel() always resolves ("District" via the 'other' spec at worst).
       field: 'electoral_area',
       headerName: 'Electoral area',
@@ -173,9 +173,9 @@ export class PersonsGrid implements OnInit {
       hide: true,
       minWidth: 140,
     },
-    // Every area the person's household is in, from every map, joined into one cell. Hidden by
-    // default now that each map has a column of its own; still the honest answer to "what else
-    // covers this door" and what a `contains` filter searches.
+    // Every area the person's household is in, from every map, joined into one cell — the "District"
+    // column, and the one electoral column shown by default. It is also what a `contains` filter
+    // searches. `applyAreaColumns` unhides it once the workspace holds a boundary map to fill it.
     {
       field: 'any_electoral_area',
       headerName: 'All boundaries',
@@ -185,9 +185,9 @@ export class PersonsGrid implements OnInit {
     },
     // Whether this person's household is in the campaign's own territory. Comes from the household,
     // so a person with no address, or one not yet placed on the map, reads as blank rather than
-    // "no". Hidden by default: the area column above names the riding outright, and a second column
-    // repeating "Yes / No — another area" only restates it. Still available in the column chooser,
-    // where it is the fastest way to sort your own doors to the top.
+    // "no". Hidden by default: the District column above names the riding outright, and a second
+    // column repeating "Yes / No — another area" only restates it. Still available in the column
+    // chooser, where it is the fastest way to sort your own doors to the top.
     {
       field: 'seat_status',
       headerName: 'In your seat',
@@ -370,7 +370,7 @@ export class PersonsGrid implements OnInit {
         c.headerName = this.campaignCtx.seatLabel();
       }
       if (c.field === 'any_electoral_area') {
-        c.headerName = `All boundaries (${this.campaignCtx.seatLabelPlural().toLowerCase()} and any other map)`;
+        c.headerName = `District`;
       }
       if (c.field === 'seat_status') {
         c.headerName = this.campaignCtx.seatTerritoryLabel();
@@ -386,24 +386,20 @@ export class PersonsGrid implements OnInit {
   }
 
   /**
-   * Show the area columns the workspace actually has maps for: the campaign's own areas, plus one
-   * column per other boundary map, each headed with that map's own name.
+   * Build one column per boundary map the workspace holds, each headed with that map's own name,
+   * and decide which electoral columns the grid opens with.
    *
-   * A household sits inside several boundaries at once. A provincial campaign in Toronto holds a
-   * riding map and a ward map, and the ward answers a real question ("who is my councillor's
-   * constituent") that a riding column cannot, while a joined "Ward 4 · Milton" string can only be
-   * searched as text. So each map gets a cell of its own, and the two grids and the CSV export now
-   * all say the same thing the same way.
-   *
-   * Seat-area maps are shown; subdivision and locality maps start hidden in the column chooser,
-   * because a precinct list is a canvassing detail rather than an at-a-glance fact. Which is which
-   * comes from the map's `role`, never from what its areas are called — a ward elects a councillor
-   * in Ontario and elects nobody in Massachusetts.
+   * A household sits inside several boundaries at once. The "District" column is the default
+   * answer: it lists every one of those areas in a single cell. A provincial campaign in Toronto
+   * holds a riding map and a ward map, and each still gets a column of its own so a single level
+   * can be sorted or filtered on its own — the same split the CSV export writes — but those
+   * per-map columns all start hidden, because each only repeats part of what District already
+   * shows. Any of them can be switched on from the column chooser.
    */
   private applyAreaColumns(areaColumns: readonly BoundaryAreaColumnType[]): void {
-    // Nothing to show it from until the workspace has a map, so the column stays hidden.
-    const seatCol = this.col.find((c) => c.field === 'electoral_area');
-    if (seatCol) seatCol.hide = areaColumns.length === 0;
+    // Nothing to fill the District column from until the workspace has a map, so it stays hidden.
+    const anyCol = this.col.find((c) => c.field === 'any_electoral_area');
+    if (anyCol) anyCol.hide = areaColumns.length === 0;
 
     // The campaign's own map is already the `electoral_area` column above, under the campaign's
     // word for it, so it does not get a second column here.
@@ -413,7 +409,7 @@ export class PersonsGrid implements OnInit {
         field: column.field,
         headerName: column.label,
         editable: false,
-        hide: column.role !== 'seat_area',
+        hide: true,
         minWidth: 140,
         cellClass: SECONDARY_CELL_CLASS,
       }));

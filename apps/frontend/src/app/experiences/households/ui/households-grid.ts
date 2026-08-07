@@ -1,12 +1,12 @@
 import { Component, inject, input, OnInit, signal, viewChild } from '@angular/core';
 import { Router } from '@angular/router';
+import type { BoundaryAreaColumnType } from '@common';
 import { DataGrid } from '@frontend/shared/components/datagrid/datagrid';
-import { SECONDARY_CELL_CLASS } from '@frontend/shared/components/datagrid/grid-defaults';
 import type { CellParams, ColumnDef as ColDef } from '@frontend/shared/components/datagrid/grid-defaults';
+import { SECONDARY_CELL_CLASS } from '@frontend/shared/components/datagrid/grid-defaults';
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
 import { DataGridUtilsService } from '@frontend/shared/components/datagrid/services/utils.service';
 import { GrainTabs } from '@frontend/shared/components/grain-tabs/grain-tabs';
-import type { BoundaryAreaColumnType } from '@common';
 import { UpdateHouseholdsObj } from '../../../../../../../libs/common/src';
 
 import { provideDataGridConfig } from '@frontend/shared/components/datagrid/datagrid.tokens';
@@ -14,9 +14,9 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
 import { AreaColumnsService } from '../../../services/area-columns.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { PersonsService } from '../../persons/services/persons-service';
-import { CampaignContextService } from '../../../services/campaign-context.service';
 import { HouseholdsService } from '../services/households-service';
 
 @Component({
@@ -189,7 +189,8 @@ export class HouseholdsGrid implements OnInit {
     },
     // Electoral geography, replacing the three fixed text columns (district / precinct / ward) that
     // could only ever hold three answers. A household is inside several boundaries at once, so the
-    // visible column shows its area on THIS campaign's map and the hidden one shows all of them.
+    // one column shown by default is "District", which lists every area the door falls in; the
+    // per-map columns beside it start hidden because they only repeat parts of that same answer.
     // Both headings are rewritten with the campaign's own word in `applyJurisdictionLabels`.
     {
       field: 'electoral_area',
@@ -197,18 +198,23 @@ export class HouseholdsGrid implements OnInit {
       // created, and seatLabel() always resolves ("District" via the 'other' spec at worst).
       headerName: 'Electoral area',
       editable: false,
+      // Hidden by default — the "District" column below already names this campaign's area, along
+      // with every other boundary the door is in. Still one click away in the column chooser.
+      hide: true,
       minWidth: 140,
     },
     {
       field: 'any_electoral_area',
       headerName: 'All boundaries',
       editable: false,
+      // Shown by default, but only once the workspace holds a boundary map to fill it from —
+      // `applyAreaColumns` unhides it. Without a map every cell would be blank.
       hide: true,
       minWidth: 220,
     },
-    // Whether the door is in THIS campaign's seat, as a yes/no. Hidden by default: the area column
-    // above already names the riding, which answers the same question and also says which other
-    // riding a door outside yours is in. Kept in the column chooser, where it is the quickest way
+    // Whether the door is in THIS campaign's seat, as a yes/no. Hidden by default: the District
+    // column above already names the riding, which answers the same question and also says which
+    // other riding a door outside yours is in. Kept in the column chooser, where it is the quickest way
     // to sort your own doors to the top, and hidden outright for an at-large office, which has no
     // seat area to be inside or outside of.
     {
@@ -285,15 +291,17 @@ export class HouseholdsGrid implements OnInit {
   /**
    * One more area column per boundary map the workspace holds, headed with that map's own name.
    *
-   * A household is inside several boundaries at once, and until now only the campaign's own map had
-   * a column: a provincial campaign's ward, precinct and municipality all shared the hidden "All
-   * boundaries" cell, where they can only be searched as text. One column each is what the CSV
-   * export already does, and what makes "sort by ward" a thing the grid can do.
-   *
-   * Seat-area maps are shown, subdivisions and localities start hidden — decided by the map's
-   * `role`, never by what its areas are called.
+   * A household is inside several boundaries at once. The "District" column is the default answer,
+   * listing every one of those areas in a single cell. Each map also gets a column of its own so a
+   * single level can be sorted and filtered on its own — matching what the CSV export writes — but
+   * those columns all start hidden, because on their own they only repeat part of what District
+   * already shows. Any of them can be switched on from the column chooser.
    */
   private applyAreaColumns(areaColumns: readonly BoundaryAreaColumnType[]): void {
+    // Nothing to fill the District column from until the workspace has a map, so it stays hidden.
+    const anyCol = this.col.find((c) => c.field === 'any_electoral_area');
+    if (anyCol) anyCol.hide = areaColumns.length === 0;
+
     // The campaign's own map is the `electoral_area` column, under the campaign's word for it.
     const extras: ColDef[] = areaColumns
       .filter((column) => !column.is_seat_set)
@@ -301,7 +309,7 @@ export class HouseholdsGrid implements OnInit {
         field: column.field,
         headerName: column.label,
         editable: false,
-        hide: column.role !== 'seat_area',
+        hide: true,
         minWidth: 140,
         cellClass: SECONDARY_CELL_CLASS,
       }));
@@ -319,13 +327,12 @@ export class HouseholdsGrid implements OnInit {
     // Both labels always resolve: seatLabelFor falls back to the 'other' spec ("District" /
     // "Districts") when the campaign declares no jurisdiction, so no local fallback exists here.
     const seat = this.campaignCtx.seatLabel();
-    const seatPlural = this.campaignCtx.seatLabelPlural();
     for (const c of this.col) {
       if (c.field === 'electoral_area') c.headerName = seat;
       // The hidden column spans every map the workspace holds, not just this campaign's, so it
       // names the campaign's own areas first and then says there may be more.
       if (c.field === 'any_electoral_area') {
-        c.headerName = `All boundaries (${seatPlural.toLowerCase()} and any other map)`;
+        c.headerName = `District`;
       }
       if (c.field === 'seat_status') {
         // Headed with this level of government's own word — "In your riding", "In your wards".

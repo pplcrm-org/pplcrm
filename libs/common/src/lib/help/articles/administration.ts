@@ -586,7 +586,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The [People](/people) and [Households](/households) grids follow the same rule: one column per map you hold. The campaign’s own map is the first one, headed with your word for it (**Riding**, **Ward**, **Congressional district**), and every other map you hold gets its own column beside it — so if you also hold a ward map, a **Wards** column is there, sortable and filterable on its own. Maps whose areas elect nobody, such as precincts and polling divisions, start switched off; turn them on from the column chooser. A CSV export writes the same columns.',
+        text: 'The [People](/people) and [Households](/households) grids follow the same rule. The column you see by default is **District**, which lists every area a household falls in, across every map you hold, in one cell. Each map also has a column of its own — your campaign’s map under your word for it (**Riding**, **Ward**, **Congressional district**), plus a **Wards** column if you hold a ward map, and so on — sortable and filterable one level at a time. Those per-map columns all start switched off, because **District** already names the same areas; turn on the ones you want from the column chooser. A CSV export writes every one of them.',
       },
       {
         kind: 'callout',

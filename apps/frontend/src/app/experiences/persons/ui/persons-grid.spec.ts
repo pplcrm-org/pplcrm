@@ -139,13 +139,18 @@ describe('PersonsGrid', () => {
     expect(component['col']).toBeDefined();
   });
 
-  it('names the riding a person lives in, instead of answering yes or no', async () => {
+  it('names every area a person lives in, instead of answering yes or no', async () => {
     await settleColumns(fixture);
+    // "District" lists every boundary the person's household falls in, so it is the one electoral
+    // column on screen. "Milton · Ward 4" says everything "Yes" says and also answers the question
+    // for the people who live somewhere else.
+    const anyCol = component['col'].find((c) => c.field === 'any_electoral_area');
+    expect(anyCol?.headerName).toBe('District');
+    expect(anyCol?.hide).toBe(false);
+    // The campaign's own map repeats part of that answer, so it waits in the column chooser.
     const areaCol = component['col'].find((c) => c.field === 'electoral_area');
-    // The area's own name, headed with the campaign's word for it. "Milton" says everything "Yes"
-    // says and also answers the question for the people who live somewhere else.
     expect(areaCol?.headerName).toBe('Riding');
-    expect(areaCol?.hide).toBe(false);
+    expect(areaCol?.hide).toBe(true);
     // The yes/no column is still available, just no longer the only answer on screen.
     const seatCol = component['col'].find((c) => c.field === 'seat_status');
     expect(seatCol?.headerName).toBe('In your riding');
@@ -159,15 +164,17 @@ describe('PersonsGrid', () => {
     expect(fields).not.toContain('area_set_1');
     const wards = component['col'].find((c) => c.field === 'area_set_2');
     expect(wards?.headerName).toBe('Wards');
-    // A ward elects a councillor, so it is shown rather than tucked into the column chooser.
-    expect(wards?.hide).toBe(false);
+    // Sortable and filterable on its own from the column chooser, but hidden to begin with: the
+    // ward name is already part of the District cell.
+    expect(wards?.hide).toBe(true);
   });
 
-  it('hides the area column while the workspace holds no boundary map', async () => {
+  it('hides the electoral columns while the workspace holds no boundary map', async () => {
     mockAreaColumns.list.mockResolvedValueOnce([]);
     await settleColumns(fixture);
-    const areaCol = component['col'].find((c) => c.field === 'electoral_area');
-    expect(areaCol?.hide).toBe(true);
+    // With no map loaded both would be blank in every row, so neither is shown.
+    expect(component['col'].find((c) => c.field === 'any_electoral_area')?.hide).toBe(true);
+    expect(component['col'].find((c) => c.field === 'electoral_area')?.hide).toBe(true);
   });
 
   it('should stop deletion when first delete confirmation is rejected', async () => {
