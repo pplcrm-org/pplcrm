@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   AddCampaignObj,
   CarryOverCampaignObj,
+  SeatAreaSuggestionsObj,
   SetCampaignSubscriptionObj,
   UpdateCampaignObj,
   UpsertCampaignPersonFactObj,
@@ -52,6 +53,21 @@ export const CampaignsRouter = router({
     .mutation(({ input, ctx }) => campaigns.setActiveCampaign(input, ctx.auth)),
 
   archive: adminOrOwnerProcedure.input(idSchema).mutation(({ input, ctx }) => campaigns.archive(input, ctx.auth)),
+
+  /** The areas a campaign represents — one riding, or the several wards that elect one councillor. */
+  getAreas: adminOrOwnerProcedure
+    .input(idSchema)
+    .query(({ input, ctx }) => campaigns.getCampaignAreas(ctx.auth, input)),
+
+  /**
+   * Area names to offer in the campaign form, from whichever map covers this office.
+   *
+   * Read rather than guessed, and NOT limited to published maps: municipal wards are the case with
+   * no publisher, so a workspace's own drawn or uploaded ward map is the only source there.
+   */
+  areaSuggestions: adminOrOwnerProcedure
+    .input(SeatAreaSuggestionsObj)
+    .query(({ input, ctx }) => campaigns.getAreaSuggestions(ctx.auth, input)),
 
   /** Set/clear a person's support level / voting status in one campaign (§15). */
   upsertPersonFact: authProcedure

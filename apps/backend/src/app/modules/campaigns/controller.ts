@@ -2,8 +2,12 @@ import { sql } from 'kysely';
 
 import type {
   AddCampaignType,
+  CampaignAreaInputType,
+  CampaignAreaRowType,
   CarryOverCampaignType,
   IAuthKeyPayload,
+  SeatAreaSuggestionType,
+  SeatAreaSuggestionsType,
   SetCampaignSubscriptionType,
   UpdateCampaignType,
   UpsertCampaignPersonFactType,
@@ -13,6 +17,7 @@ import { UpdateCampaignObj, isJurisdictionId, isPrivilegedRole } from '../../../
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
 import { enqueueBoundaryMatch } from '../../lib/gis/boundary-jobs';
+import { loadBoundarySets } from '../../lib/gis/boundary-store';
 import { logger } from '../../logger';
 import { parseProfilePreferences } from '../../lib/profile-preferences';
 import { pinnedCampaignId } from '../../lib/tenant-context';
@@ -110,8 +115,9 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
         (assignedId ? campaigns.find((c) => String(c.id) === assignedId && c.status === 'active') : undefined) ??
         campaigns.find((c) => c.kind === 'office') ??
         campaigns[0];
+      const areas = await this.areasByCampaign(auth.tenant_id);
       return {
-        campaigns: assigned ? [this.toContextItem(assigned)] : [],
+        campaigns: assigned ? [this.toContextItem(assigned, areas)] : [],
         active_campaign_id: assigned ? String(assigned.id) : null,
       };
     }
@@ -122,8 +128,9 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       (preferred ? campaigns.find((c) => String(c.id) === preferred) : undefined) ??
       campaigns.find((c) => c.kind === 'office') ??
       campaigns[0];
+    const areas = await this.areasByCampaign(auth.tenant_id);
     return {
-      campaigns: campaigns.map((c) => this.toContextItem(c)),
+      campaigns: campaigns.map((c) => this.toContextItem(c, areas)),
       active_campaign_id: active ? String(active.id) : null,
     };
   }
@@ -166,6 +173,9 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       ...officeColumnsFrom(input),
     } as OperationDataType<'campaigns', 'insert'>;
     const created = await this.add(row);
+    if (created?.id != null) {
+      await this.replaceCampaignAreas(auth, String(created.id), input.seat_areas);
+    }
     // A new campaign's office can require boundary layers the workspace's households were never
     // matched against, so queue a catch-up pass for the unmatched ones now rather than waiting up
     // to a day for the nightly sweep. The write above holds no transaction, so this runs right
@@ -209,11 +219,17 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       }
     }
 
+    // `seat_areas` is rows in another table, not a column here — passing it through would send an
+    // unknown column to the UPDATE. Pulled out before the write and applied separately below.
+    const { seat_areas: seatAreas, ...columns } = input;
+
     const updated = await this.update({
       tenant_id: auth.tenant_id,
       id,
-      row: { ...input, updatedby_id: auth.user_id } as OperationDataType<'campaigns', 'update'>,
+      row: { ...columns, updatedby_id: auth.user_id } as OperationDataType<'campaigns', 'update'>,
     });
+
+    await this.replaceCampaignAreas(auth, id, seatAreas);
 
     // A change to the layer-deciding columns (see BOUNDARY_MATCH_FIELDS) can leave households
     // unmatched against a newly required boundary set. Same enqueue as addCampaign: right after
@@ -229,6 +245,138 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       }
     }
     return updated;
+  }
+
+  /**
+   * The areas this campaign represents, for the campaign form and anything showing its territory.
+   *
+   * Ordered by name so a seat made of several wards reads "Ward 3, Ward 4" in the same order every
+   * time rather than in insertion order, which nobody can predict.
+   */
+  public async getCampaignAreas(auth: IAuthKeyPayload, campaignId: string): Promise<CampaignAreaRowType[]> {
+    await this.getCampaignOrThrow(auth.tenant_id, campaignId);
+    const rows = await this.getRepo()
+      .db.selectFrom('campaign_areas')
+      .select(['id', 'name', 'code', 'set_id'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('campaign_id', '=', campaignId)
+      .orderBy('name')
+      .execute();
+    return rows.map((row) => ({
+      id: String(row.id),
+      name: row.name,
+      code: row.code,
+      set_id: row.set_id == null ? null : String(row.set_id),
+    }));
+  }
+
+  /**
+   * Area names to offer in the campaign form, gathered from the maps that cover this office.
+   *
+   * Every seat-area map matching the jurisdiction is read, published or not. That breadth is the
+   * point: most municipalities publish no ward map, so for a council candidate the only source is a
+   * ward map the workspace drew or uploaded itself. A workspace with no matching map gets an empty
+   * list and the form falls back to plain typing, which is a supported answer rather than a failure.
+   *
+   * Names are deduplicated across maps but keep the map they came from, so the form can show
+   * "Ward 3 — Town wards" when two maps both name a Ward 3.
+   */
+  public async getAreaSuggestions(
+    auth: IAuthKeyPayload,
+    input: SeatAreaSuggestionsType,
+  ): Promise<SeatAreaSuggestionType[]> {
+    const db = this.getRepo().db;
+    let query = db
+      .selectFrom('boundary_sets')
+      .select(['id', 'label'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('role', '=', 'seat_area')
+      .where('jurisdiction', '=', input.jurisdiction);
+
+    const region = input.office_region?.trim();
+    if (region) {
+      query = query.where((eb) => eb.or([eb('region', 'is', null), eb('region', '=', region)]));
+    }
+    if (input.chamber) {
+      query = query.where((eb) => eb.or([eb('chamber', 'is', null), eb('chamber', '=', input.chamber ?? null)]));
+    }
+
+    const sets = await query.execute();
+    if (sets.length === 0) return [];
+
+    const labelById = new Map(sets.map((set) => [String(set.id), set.label]));
+    // Reads stored rows and published files alike, so a drawn ward map and a published riding map
+    // both answer here without the caller knowing which is which.
+    const loaded = await loadBoundarySets(
+      db,
+      auth.tenant_id,
+      sets.map((set) => String(set.id)),
+    );
+
+    const seen = new Set<string>();
+    const suggestions: SeatAreaSuggestionType[] = [];
+    for (const set of loaded) {
+      for (const feature of set.features) {
+        const name = feature.name.trim();
+        const key = name.toLowerCase();
+        if (name.length === 0 || seen.has(key)) continue;
+        seen.add(key);
+        suggestions.push({ name, set_id: set.id, set_label: labelById.get(set.id) ?? set.label });
+      }
+    }
+    suggestions.sort((a, b) => a.name.localeCompare(b.name));
+    return suggestions;
+  }
+
+  /**
+   * Replace a campaign's areas with exactly the list given. Undefined means "leave them alone".
+   *
+   * Replace rather than merge because the form always sends the whole list: a councillor who loses
+   * a ward in a boundary review edits the list down, and a merge would keep the ward they removed.
+   *
+   * Deduped case-insensitively before writing, matching the unique index. Two spellings of one ward
+   * are one ward, and letting both through would make a campaign claim two areas that are the same
+   * place. Done in a transaction so a failed insert cannot leave the campaign with no areas at all.
+   */
+  private async replaceCampaignAreas(
+    auth: IAuthKeyPayload,
+    campaignId: string,
+    areas: readonly CampaignAreaInputType[] | undefined,
+  ): Promise<void> {
+    if (areas === undefined) return;
+
+    const seen = new Set<string>();
+    const rows: { name: string; set_id: string | null }[] = [];
+    for (const area of areas) {
+      const name = area.name.trim();
+      const key = name.toLowerCase();
+      if (name.length === 0 || seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ name, set_id: area.set_id ?? null });
+    }
+
+    await this.getRepo()
+      .transaction()
+      .execute(async (trx) => {
+        await trx
+          .deleteFrom('campaign_areas')
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('campaign_id', '=', campaignId)
+          .execute();
+        if (rows.length === 0) return;
+        await trx
+          .insertInto('campaign_areas')
+          .values(
+            rows.map((row) => ({
+              tenant_id: auth.tenant_id,
+              campaign_id: campaignId,
+              name: row.name,
+              set_id: row.set_id,
+              createdby_id: auth.user_id,
+            })),
+          )
+          .execute();
+      });
   }
 
   public async archive(id: string, auth: IAuthKeyPayload) {
@@ -510,7 +658,10 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
    * region and the campaign's own override, so all three have to be here or nothing can be
    * labelled without another round trip.
    */
-  private toContextItem(c: Awaited<ReturnType<CampaignsRepo['getSwitcherList']>>[number]) {
+  private toContextItem(
+    c: Awaited<ReturnType<CampaignsRepo['getSwitcherList']>>[number],
+    areasByCampaign?: Map<string, string[]>,
+  ) {
     return {
       id: String(c.id),
       name: c.name,
@@ -527,7 +678,30 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       seat_position: c.seat_position,
       seat_label_override: c.seat_label_override,
       office_title: c.office_title,
+      /**
+       * The areas this campaign represents. Carried on the context so the app can word a heading
+       * with the right number ("in your ward" against "in your wards") without a second request.
+       */
+      seat_area_names: areasByCampaign?.get(String(c.id)) ?? [],
     };
+  }
+
+  /** Every campaign's areas in one read, keyed by campaign, so the context costs one query not N. */
+  private async areasByCampaign(tenantId: string): Promise<Map<string, string[]>> {
+    const rows = await this.getRepo()
+      .db.selectFrom('campaign_areas')
+      .select(['campaign_id', 'name'])
+      .where('tenant_id', '=', tenantId)
+      .orderBy('name')
+      .execute();
+    const byCampaign = new Map<string, string[]>();
+    for (const row of rows) {
+      const key = String(row.campaign_id);
+      const list = byCampaign.get(key);
+      if (list) list.push(row.name);
+      else byCampaign.set(key, [row.name]);
+    }
+    return byCampaign;
   }
 
   private async getCampaignOrThrow(tenant_id: string, id: string) {

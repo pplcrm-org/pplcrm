@@ -137,6 +137,8 @@ async function cleanTenant(db: any, tenantId: string) {
     .execute();
 
   await db.deleteFrom('household_districts').where('tenant_id', '=', tenantId).execute();
+  // Before boundary_sets: campaign_areas may reference a set, and these tests reuse one tenant.
+  await db.deleteFrom('campaign_areas').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('boundary_sets').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('map_households_tags').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('data_imports').where('tenant_id', '=', tenantId).execute();
@@ -386,14 +388,18 @@ describe('HouseholdsController', () => {
   });
 
   it('answers "in my riding" four ways, and never calls an unchecked household outside the map', async () => {
-    // The campaign contests one riding. Most campaigns do not care which of Ontario's 124 a door is
-    // in — only whether it is in theirs — and "outside Ontario" has to be distinguishable from
+    // The campaign represents one riding. Most campaigns do not care which of Ontario's 124 a door
+    // is in — only whether it is in theirs — and "outside Ontario" has to be distinguishable from
     // "nobody has looked yet", or a Vancouver donor reads as a rejected Milton voter.
     await db
       .updateTable('campaigns')
       .set({ jurisdiction: 'ca_provincial', office_region: 'ON', seat_type: 'district', seat_name: 'Milton' })
       .where('tenant_id', '=', tenantId)
       .where('id', '=', campaignId)
+      .execute();
+    await db
+      .insertInto('campaign_areas')
+      .values({ tenant_id: tenantId, campaign_id: campaignId, name: 'Milton' })
       .execute();
 
     const mapAddedAt = new Date('2026-05-01T00:00:00Z');
@@ -452,8 +458,70 @@ describe('HouseholdsController', () => {
     expect(statusById.get(String(stale.id))).toBe('unknown');
   });
 
-  it('leaves the riding question unanswered for an at-large office, which contests no single area', async () => {
-    // A mayoral campaign wants every ward listed, not one of them marked "mine".
+  it('treats a seat made of several wards as one territory — a door in either ward is in it', async () => {
+    // A regional councillor is elected by two wards at once. Both are theirs, and the area column
+    // still says WHICH ward, which is what a canvass plan needs.
+    await db
+      .updateTable('campaigns')
+      .set({ jurisdiction: 'ca_municipal', seat_type: 'district', seat_name: 'Town of Milton' })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', campaignId)
+      .execute();
+    await db
+      .insertInto('campaign_areas')
+      .values([
+        { tenant_id: tenantId, campaign_id: campaignId, name: 'Ward 3' },
+        { tenant_id: tenantId, campaign_id: campaignId, name: 'Ward 4' },
+      ])
+      .execute();
+
+    const wards = await db
+      .insertInto('boundary_sets')
+      .values({
+        tenant_id: tenantId,
+        slug: `town-wards-${rand()}`,
+        label: 'Town wards',
+        jurisdiction: 'ca_municipal',
+        role: 'seat_area',
+        source: 'drawn',
+        createdby_id: userId,
+        created_at: new Date('2026-05-01T00:00:00Z'),
+        updated_at: new Date('2026-05-01T00:00:00Z'),
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const mk = async (street: string, ward: string | null) => {
+      const hh = (await controller.addHousehold({ street1: street }, auth)) as { id: string };
+      await db
+        .updateTable('households')
+        .set({ boundary_checked_at: new Date('2026-06-01T00:00:00Z') })
+        .where('tenant_id', '=', tenantId)
+        .where('id', '=', hh.id)
+        .execute();
+      if (ward) {
+        await db
+          .insertInto('household_districts')
+          .values({ tenant_id: tenantId, household_id: hh.id, set_id: String(wards.id), name: ward })
+          .execute();
+      }
+      return hh;
+    };
+    const three = await mk('1 Ward Three Rd', 'Ward 3');
+    const four = await mk('2 Ward Four Rd', 'Ward 4');
+    const five = await mk('3 Ward Five Rd', 'Ward 5');
+
+    const result = await controller.getAllWithPeopleCount(auth, { campaignId });
+    const statusById = new Map(result.rows.map((r: any) => [String(r.id), r.seat_status]));
+
+    expect(statusById.get(String(three.id))).toBe('in');
+    expect(statusById.get(String(four.id))).toBe('in');
+    expect(statusById.get(String(five.id))).toBe('other');
+  });
+
+  it('leaves the riding question unanswered for an at-large office, which represents no named area', async () => {
+    // A mayoral campaign wants every ward listed, not one of them marked "mine". It has no
+    // campaign_areas rows at all, which is what makes the question inapplicable.
     await db
       .updateTable('campaigns')
       .set({ jurisdiction: 'ca_municipal', seat_type: 'at_large', seat_name: null })

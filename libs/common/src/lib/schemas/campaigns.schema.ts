@@ -47,6 +47,59 @@ const officeTextSchema = (max: number) =>
   z.string().trim().max(max, `Use ${max} characters or fewer.`).nullable().optional();
 
 /**
+ * How many map areas one seat may be made of.
+ *
+ * Generous because the real cases vary: most seats are one area, a regional councillor is elected
+ * by two or three wards, and a county-wide seat can gather more. The cap exists to stop a paste
+ * accident becoming a hundred rows, not to express a rule about elections.
+ */
+export const SEAT_AREAS_MAX = 25;
+
+/**
+ * One area a campaign represents, as the campaign form sends it.
+ *
+ * `set_id` is the map the name was chosen from, and is null when the name was typed by hand. That
+ * is the ordinary case for municipal wards, which most municipalities do not publish, so free text
+ * is a first-class answer here rather than a fallback.
+ */
+export const CampaignAreaInputObj = z.object({
+  name: z.string().trim().min(1, 'Name the area.').max(SEAT_NAME_MAX, `Use ${SEAT_NAME_MAX} characters or fewer.`),
+  set_id: idSchema.nullable().optional(),
+});
+export type CampaignAreaInputType = z.infer<typeof CampaignAreaInputObj>;
+
+/**
+ * What the campaign form asks for when it wants area names to suggest.
+ *
+ * Takes the office fields rather than a campaign id, because the form needs suggestions while the
+ * campaign is still being created and has no id yet.
+ */
+export const SeatAreaSuggestionsObj = z.object({
+  jurisdiction: z.enum(JURISDICTION_IDS),
+  office_region: z.string().trim().max(OFFICE_REGION_MAX).nullable().optional(),
+  chamber: z.enum(CHAMBERS).nullable().optional(),
+});
+export type SeatAreaSuggestionsType = z.infer<typeof SeatAreaSuggestionsObj>;
+
+/** One suggestible area, and which map it came from so the form can say. */
+export const SeatAreaSuggestionObj = z.object({
+  name: z.string(),
+  set_id: z.string(),
+  set_label: z.string(),
+});
+export type SeatAreaSuggestionType = z.infer<typeof SeatAreaSuggestionObj>;
+
+/** One stored area of a campaign, as read back for the form. */
+export const CampaignAreaObj = z.object({
+  id: z.string(),
+  name: z.string(),
+  code: z.string().nullable(),
+  /** The map it was chosen from, or null when it was typed by hand. */
+  set_id: z.string().nullable(),
+});
+export type CampaignAreaRowType = z.infer<typeof CampaignAreaObj>;
+
+/**
  * The nine office fields, shared by the add and update shapes so they cannot drift.
  *
  * `jurisdiction` and `seat_type` differ between the two: adding a campaign defaults them (matching
@@ -63,8 +116,26 @@ const officeFieldsForAdd = {
   chamber: z.enum(CHAMBERS).nullable().optional(),
   /** Whether the seat has its own territory, or is elected across the whole region or locality. */
   seat_type: z.enum(SEAT_TYPES).default('district'),
-  /** The seat's name — 'Ottawa Centre', 'OH-3', 'Ward 14'. Empty for an at-large seat. */
+  /**
+   * The seat's official name, and the district printed on a donation tax receipt.
+   *
+   * NOT the same question as {@link officeFieldsForAdd.seat_areas}, and for a municipal candidate
+   * not the same answer: someone running in Ward 12 is still a City of Toronto candidate, and the
+   * receipt has to say the city. Asked separately for exactly that reason. Empty for an at-large
+   * seat.
+   */
   seat_name: officeTextSchema(SEAT_NAME_MAX),
+  /**
+   * The map areas this campaign represents — what decides whether a door is in its territory.
+   *
+   * Usually one. Several when one seat is elected by several areas, such as a regional councillor
+   * elected by two wards; a door in either is in their territory. Empty for an at-large office,
+   * which is elected across a whole city or state rather than by one area of it.
+   *
+   * Omitted (rather than an empty array) means "leave the areas alone", so an update that only
+   * renames a campaign does not silently erase them.
+   */
+  seat_areas: z.array(CampaignAreaInputObj).max(SEAT_AREAS_MAX).optional(),
   /** Which seat, where one area elects several — 'Position 2', 'Seat B', 'Place 4'. */
   seat_position: officeTextSchema(SEAT_POSITION_MAX),
   /** Overrides the word shown for the seat area everywhere, beating the automatic regional word. */

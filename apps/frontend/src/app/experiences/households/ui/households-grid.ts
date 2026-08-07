@@ -287,11 +287,12 @@ export class HouseholdsGrid implements OnInit {
         c.headerName = `All boundaries (${seatPlural.toLowerCase()} and any other map)`;
       }
       if (c.field === 'seat_status') {
-        const seatName = this.campaignCtx.activeSeatName();
-        // Shown only when there is a named seat to be in or out of. An at-large office has none,
-        // and a column headed "In your riding" over an empty answer is worse than no column.
-        c.hide = seatName == null;
-        c.headerName = seatName == null ? `In your ${seat.toLowerCase()}` : `In ${seatName}`;
+        // Headed with this level of government's own word — "In your riding", "In your wards" —
+        // rather than the area's name, and shown only when the campaign represents an area at all.
+        // An at-large office represents none, and a column headed "In your ward" over a permanently
+        // empty answer is worse than no column.
+        c.hide = this.campaignCtx.activeSeatAreaNames().length === 0;
+        c.headerName = this.campaignCtx.seatTerritoryLabel();
       }
     }
   }

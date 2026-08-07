@@ -29,10 +29,12 @@ const mailService = new TransactionalEmailService({ defaultAudience: 'account' }
  */
 export const TENANT_SCOPED_TABLES = [
   'background_jobs',
-  // Boundary layers and their polygons. Children first: boundary_features and household_districts
-  // both point at boundary_sets, and household_districts also points at households.
+  // Boundary layers and their polygons. Children first: boundary_features, household_districts and
+  // campaign_areas all point at boundary_sets; household_districts also points at households and
+  // campaign_areas also points at campaigns.
   'boundary_features',
   'household_districts',
+  'campaign_areas',
   'boundary_sets',
   'bug_reports',
   'companion_organizer_tokens',

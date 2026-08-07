@@ -450,7 +450,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.geocoding_status',
         'households.updated_at',
       ])
-      .select(seatStatusSelect(seatSetId, seat.seatName, seat.setStampedAt))
+      .select(seatStatusSelect(seatSetId, seat.seatAreaNames, seat.setStampedAt))
       .select((eb) => [
         eb
           .selectFrom('persons')

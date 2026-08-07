@@ -104,20 +104,31 @@ export async function resolveSeatSetId(db: Db, tenantId: string, campaignId?: st
  */
 export type SeatStatus = 'in' | 'other' | 'outside' | 'unknown';
 
-/** The seat set, when it was added, and the name of the seat the campaign is contesting. */
+/** The seat set, when it was added, and every area the campaign represents. */
 export interface SeatContext {
   setId: string | null;
   /** The seat set's `updated_at` (falling back to `created_at`). See {@link seatStatusSelect}. */
   setStampedAt: Date | null;
-  /** `campaigns.seat_name`, trimmed. NULL for an at-large office, which contests no single area. */
-  seatName: string | null;
+  /**
+   * Every area the campaign represents, trimmed. Empty when it represents none.
+   *
+   * Usually one — a provincial candidate contests one riding. Several for a seat made of several
+   * areas, such as a regional councillor elected by two wards; a door in either is in their
+   * territory. Empty for an at-large office (a mayor, a governor), which contests a whole city or
+   * state rather than one area of it, so there is nothing to be inside or outside of. That is the
+   * distinction that keeps a mayoral campaign seeing every ward listed rather than one singled out.
+   *
+   * NOT `campaigns.seat_name`, which is the single district name printed on a tax receipt and, for
+   * a municipal candidate, is the city rather than the ward.
+   */
+  seatAreaNames: readonly string[];
 }
 
 /**
  * Everything the seat-status expression needs, resolved once per request.
  *
  * Split from {@link resolveSeatSetId} rather than folded into it because that function has other
- * callers (tag ranking) that want only the id and should not pay for two more columns.
+ * callers (tag ranking) that want only the id and should not pay for the extra reads.
  */
 export async function resolveSeatContext(db: Db, tenantId: string, campaignId?: string | null): Promise<SeatContext> {
   const setId = await resolveSeatSetId(db, tenantId, campaignId);
@@ -132,22 +143,19 @@ export async function resolveSeatContext(db: Db, tenantId: string, campaignId?: 
           .where('id', '=', setId)
           .executeTakeFirst();
 
-  const campaign = campaignId
+  const areas = campaignId
     ? await db
-        .selectFrom('campaigns')
-        .select(['seat_name', 'seat_type'])
+        .selectFrom('campaign_areas')
+        .select(['name'])
         .where('tenant_id', '=', tenantId)
-        .where('id', '=', campaignId)
-        .executeTakeFirst()
-    : undefined;
+        .where('campaign_id', '=', campaignId)
+        .execute()
+    : [];
 
-  // An at-large office (a mayor, a governor) contests no single area, so there is no "my riding" to
-  // be in or out of. Its wards and precincts stay listed individually, which is the whole point of
-  // the distinction: a mayoral campaign cares about every ward in the city, not one of them.
-  const seatName = campaign?.seat_type === 'at_large' ? null : campaign?.seat_name?.trim() || null;
+  const seatAreaNames = areas.map((area) => area.name.trim()).filter((name) => name.length > 0);
   const stamped = set?.updated_at ?? set?.created_at ?? null;
 
-  return { setId, setStampedAt: stamped == null ? null : new Date(stamped), seatName };
+  return { setId, setStampedAt: stamped == null ? null : new Date(stamped), seatAreaNames };
 }
 
 /**
@@ -165,12 +173,12 @@ export async function resolveSeatContext(db: Db, tenantId: string, campaignId?: 
  */
 export function seatStatusSelect(
   seatSetId: string | null,
-  seatName: string | null,
+  seatAreaNames: readonly string[],
   setStampedAt: Date | null,
 ): AliasedRawBuilder<SeatStatus | null, 'seat_status'> {
-  // No map, or an office that contests no single area: the question does not apply, and NULL says
-  // so more honestly than inventing a fourth-and-a-half state.
-  if (seatSetId == null || seatName == null) {
+  // No map, or an office that represents no named area: the question does not apply, and NULL says
+  // so more honestly than inventing a fifth state.
+  if (seatSetId == null || seatAreaNames.length === 0) {
     return sql<SeatStatus | null>`null::text`.as('seat_status');
   }
 
@@ -179,11 +187,15 @@ export function seatStatusSelect(
       ? sql<boolean>`households.boundary_checked_at is not null`
       : sql<boolean>`households.boundary_checked_at is not null and households.boundary_checked_at >= ${setStampedAt}`;
 
-  // Compared case-insensitively and trimmed: the seat name is typed by a person and the area name
-  // comes from the publisher's file, so "milton " and "Milton" must not read as different ridings.
+  // Compared case-insensitively and trimmed: an area name is typed by a person in the campaign form
+  // and read from a publisher's file on the map, so "milton " and "Milton" must not read as two
+  // different ridings. `= any(...)` rather than a chain of ORs so a seat made of a dozen areas
+  // builds one parameter instead of a dozen.
+  const wanted = seatAreaNames.map((name) => name.trim().toLowerCase());
+
   return sql<SeatStatus>`case
     when hd_areas.electoral_area is not null
-      and lower(btrim(hd_areas.electoral_area)) = lower(btrim(${seatName})) then 'in'
+      and lower(btrim(hd_areas.electoral_area)) = any(${wanted}) then 'in'
     when hd_areas.electoral_area is not null then 'other'
     when ${checked} then 'outside'
     else 'unknown'

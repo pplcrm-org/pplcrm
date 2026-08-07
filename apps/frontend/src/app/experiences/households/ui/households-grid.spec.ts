@@ -36,8 +36,10 @@ const mockCampaignContext = {
   seatLabelPlural: () => 'Wards',
   subdivisionLabel: () => 'Poll',
   subdivisionLabelPlural: () => 'Polls',
-  /** The seat this campaign contests, which decides whether the "in your seat" column is shown. */
-  activeSeatName: () => 'Ward 4',
+  /** The areas this campaign represents, deciding whether the territory column is shown at all. */
+  activeSeatAreaNames: () => ['Ward 4'],
+  /** Always the level's own word, plural once the seat is made of several areas. */
+  seatTerritoryLabel: () => 'In your ward',
 };
 
 describe('HouseholdsGrid', () => {
@@ -121,24 +123,24 @@ describe('HouseholdsGrid', () => {
     expect(fields).not.toContain('ward');
   });
 
-  it('offers an "in my seat" column headed with the seat the campaign contests', async () => {
+  it('heads the territory column with this level of government’s own word, not the area name', async () => {
     fixture.detectChanges();
     await fixture.whenStable();
     const col = component['col'].find((c) => c.field === 'seat_status');
-    expect(col?.headerName).toBe('In Ward 4');
+    expect(col?.headerName).toBe('In your ward');
     expect(col?.hide).toBe(false);
   });
 
-  it('hides the "in my seat" column for an at-large office, which contests no single area', async () => {
+  it('hides the territory column for an at-large office, which represents no single area', async () => {
     // A mayoral campaign runs city-wide. Every ward matters to it, so singling one out is wrong.
-    mockCampaignContext.activeSeatName = () => null;
+    mockCampaignContext.activeSeatAreaNames = () => [];
     try {
       fixture.detectChanges();
       await fixture.whenStable();
       const col = component['col'].find((c) => c.field === 'seat_status');
       expect(col?.hide).toBe(true);
     } finally {
-      mockCampaignContext.activeSeatName = () => 'Ward 4';
+      mockCampaignContext.activeSeatAreaNames = () => ['Ward 4'];
     }
   });
 

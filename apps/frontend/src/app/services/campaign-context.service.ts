@@ -74,17 +74,33 @@ export class CampaignContextService extends TRPCService<unknown> {
   public readonly activeJurisdictionSpec = computed(() => JURISDICTIONS[this.activeJurisdiction()]);
 
   /**
-   * The name of the seat this campaign is contesting — "Milton" — or null when there is not one.
+   * The map areas this campaign represents — one riding, or the several wards electing one seat.
    *
-   * Null for an at-large office (a mayor, a governor), which contests a whole city or state rather
-   * than one area of it. That is the difference that decides whether "is this door in my seat?" is
-   * even a question: a mayoral campaign wants every ward listed, not one of them singled out.
+   * Empty for an at-large office (a mayor, a governor), which is elected across a whole city or
+   * state rather than by one area of it. That is the difference deciding whether "is this door in
+   * our territory?" is even a question: a mayoral campaign wants every ward listed, not one singled
+   * out.
+   *
+   * NOT the campaign's `seat_name`, which is the district printed on a tax receipt and, for a
+   * municipal candidate, is the city rather than the ward.
    */
-  public readonly activeSeatName = computed<string | null>(() => {
-    const campaign = this.activeCampaign();
-    if (campaign?.seat_type === 'at_large') return null;
-    const name = campaign?.seat_name;
-    return typeof name === 'string' && name.trim().length > 0 ? name.trim() : null;
+  public readonly activeSeatAreaNames = computed<readonly string[]>(() => {
+    const names = this.activeCampaign()?.seat_area_names;
+    if (!Array.isArray(names)) return [];
+    return names.map((name) => String(name).trim()).filter((name) => name.length > 0);
+  });
+
+  /**
+   * The heading for "is this door in our territory", in the word this level of government uses.
+   *
+   * Always the level's own word — riding, ward, constituency, congressional district — resolved by
+   * `seatLabel`, never the area's name. Plural once the seat is made of several areas, so a
+   * regional councillor reads "In your wards" rather than a heading naming only one of them.
+   */
+  public readonly seatTerritoryLabel = computed<string>(() => {
+    const count = this.activeSeatAreaNames().length;
+    const word = count > 1 ? this.seatLabelPlural() : this.seatLabel();
+    return `In your ${word.toLowerCase()}`;
   });
 
   private readonly seatLabelOverride = computed<string | null>(() => {

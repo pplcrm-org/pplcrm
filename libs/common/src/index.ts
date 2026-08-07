@@ -130,6 +130,11 @@ export {
   AddBugReportObj,
   AddCampaignObj,
   UpdateCampaignObj,
+  CampaignAreaInputObj,
+  CampaignAreaObj,
+  SeatAreaSuggestionObj,
+  SeatAreaSuggestionsObj,
+  SEAT_AREAS_MAX,
   UpsertCampaignPersonFactObj,
   SetCampaignSubscriptionObj,
   CarryOverCampaignObj,
@@ -383,6 +388,10 @@ export type {
 } from './lib/schemas/join-codes.schema';
 
 export type {
+  CampaignAreaInputType,
+  CampaignAreaRowType,
+  SeatAreaSuggestionType,
+  SeatAreaSuggestionsType,
   CampaignKind,
   CampaignStatus,
   SupportLevel,

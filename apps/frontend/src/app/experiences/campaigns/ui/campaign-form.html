@@ -159,12 +159,87 @@
 
       <!-- 6. The seat itself, named with this jurisdiction's own word. Gone when there is no area. -->
       @if (showSeatName()) {
-      <pc-input
-        id="campaign-seat-name"
-        [label]="seatWord()"
-        [formField]="form.seat_name"
-        [placeholder]="'Name the ' + seatWordLower() + ' this campaign is contesting'"
-      ></pc-input>
+      <div class="grid gap-1">
+        <pc-input
+          id="campaign-seat-name"
+          [label]="seatWord() + ' name (for tax receipts)'"
+          [formField]="form.seat_name"
+          [placeholder]="'Name the ' + seatWordLower() + ' this campaign is contesting'"
+        ></pc-input>
+        <p class="text-xs text-base-content/60">
+          The district printed on donation receipts. A municipal candidate running in one ward is still a candidate of
+          the whole municipality, so this is usually the municipality rather than the ward.
+        </p>
+      </div>
+
+      <!-- 6b. Which map areas the seat is made of. Several when several elect one seat. -->
+      <div class="grid gap-2">
+        <div>
+          <span class="text-sm font-semibold">{{ areaSectionLabel() }}</span>
+          <p class="text-xs text-base-content/60">
+            Used to tell whether an address is in your territory. Most campaigns represent one. Add every one if your
+            seat is elected by several — a regional councillor elected by two wards represents both.
+          </p>
+        </div>
+
+        @if (seatAreas().length > 0) {
+        <ul class="flex flex-wrap gap-2">
+          @for (area of seatAreas(); track area.name) {
+          <li class="inline-flex items-center gap-1.5 rounded-full border border-base-300 bg-base-200 px-3 py-1">
+            <span class="text-sm">{{ area.name }}</span>
+            <button
+              type="button"
+              class="text-base-content/60 hover:text-error"
+              [attr.aria-label]="'Remove ' + area.name"
+              (click)="removeArea(area.name)"
+            >
+              <pc-icon name="x-mark" [size]="4"></pc-icon>
+            </button>
+          </li>
+          }
+        </ul>
+        } @if (!atAreaLimit()) {
+        <pc-input
+          id="campaign-area-search"
+          [label]="'Add ' + (areaSuggestions().length > 0 ? 'from your map, or type your own' : 'an area')"
+          [formField]="areaDraftForm.name"
+          [placeholder]="'Start typing a ' + seatWordLower() + ' name'"
+        ></pc-input>
+
+        @if (visibleAreaSuggestions().length > 0) {
+        <ul class="flex flex-wrap gap-2">
+          @for (suggestion of visibleAreaSuggestions(); track suggestion.name) {
+          <li>
+            <button
+              type="button"
+              class="btn btn-outline btn-primary btn-xs"
+              (click)="addArea(suggestion.name, suggestion.set_id)"
+            >
+              {{ suggestion.name }}
+            </button>
+          </li>
+          }
+        </ul>
+        }
+
+        <div class="flex flex-wrap items-center gap-2">
+          @if (canAddTypedArea()) {
+          <button type="button" class="btn btn-primary btn-xs" (click)="addTypedArea()">
+            Add “{{ areaDraft().name.trim() }}”
+          </button>
+          }
+          <!-- Not an error. Most municipalities publish no ward map, so typing is the normal path. -->
+          @if (!loadingAreaSuggestions() && areaSuggestions().length === 0) {
+          <span class="text-xs text-base-content/60">
+            No map covers this office yet, so type the name. You can add a map later under
+            <a routerLink="/workspace/boundaries" class="link text-primary">Boundaries</a>.
+          </span>
+          }
+        </div>
+        } @else {
+        <p class="text-xs text-base-content/60">That is as many areas as one seat can list.</p>
+        }
+      </div>
       }
 
       <!-- 7. Seat position. Deliberately quiet: most campaigns never need it. -->

@@ -19,14 +19,16 @@ import {
   JURISDICTIONS,
   JURISDICTION_IDS,
   ORG_MODE_IS_ELECTORAL,
+  SEAT_AREAS_MAX,
   SEAT_TYPES,
   UpdateCampaignType,
   US_AT_LARGE_CONGRESSIONAL_STATES,
   isJurisdictionId,
   regionsForCountry,
   seatLabelFor,
+  seatLabelPluralFor,
 } from '../../../../../../../libs/common/src';
-import type { JurisdictionId } from '../../../../../../../libs/common/src';
+import type { JurisdictionId, SeatAreaSuggestionType } from '../../../../../../../libs/common/src';
 import { injectUnsavedChanges } from '@frontend/services/unsaved-changes-guard';
 
 import { CampaignContextService } from '../../../services/campaign-context.service';
@@ -98,6 +100,14 @@ const CampaignFormSchema = z.preprocess(blanksToNull, AddCampaignObj);
  * district elects one representative, so the field would be noise there.
  */
 const MULTI_MEMBER_JURISDICTIONS: readonly JurisdictionId[] = ['us_state', 'us_local', 'ca_municipal', 'other'];
+
+/**
+ * How many area names to show at once before typing narrows them.
+ *
+ * A published US state house map holds 4,874 areas. Rendering all of them is not a chooser, it is a
+ * wall, so the list shows a workable number and the search box does the rest.
+ */
+const AREA_SUGGESTION_LIMIT = 8;
 
 /**
  * Campaigns §15 — create/edit. New campaigns are always elections: the office
@@ -217,6 +227,57 @@ export class CampaignFormComponent implements OnInit {
   protected readonly showChamber = computed(() => this.spec().usesChamber && !this.isAtLarge());
   protected readonly showSeatType = computed(() => this.spec().supportsAtLarge);
   protected readonly showSeatName = computed(() => !this.isAtLarge());
+
+  // ── The areas this campaign represents ────────────────────────────────────────────────────────
+  //
+  // Separate from the seat's name on purpose, and the two are different answers for a municipal
+  // candidate: someone running in Ward 12 is still a City of Toronto candidate, so the receipt says
+  // the city and the areas say the ward. Several areas because one seat can be elected by several —
+  // a regional councillor by two wards — and a door in any of them is in their territory.
+
+  /** The areas chosen so far. `set_id` records the map a name came from, null when it was typed. */
+  protected readonly seatAreas = signal<{ name: string; set_id: string | null }[]>([]);
+  /** Names offered by whichever map covers this office. Empty is ordinary: most wards have no map. */
+  protected readonly areaSuggestions = signal<SeatAreaSuggestionType[]>([]);
+  protected readonly loadingAreaSuggestions = signal(false);
+
+  /** What has been typed into the add-an-area box, wrapped so pc-input can bind to it. */
+  protected readonly areaDraft = signal({ name: '' });
+  protected readonly areaDraftForm = form(this.areaDraft, () => {
+    // No rules: any text is a valid area name. The list this feeds is validated when the form saves.
+  });
+
+  /** Areas already chosen, lower-cased, so a suggestion cannot be offered or added twice. */
+  private readonly chosenAreaKeys = computed(() => new Set(this.seatAreas().map((a) => a.name.toLowerCase())));
+
+  /**
+   * Suggestions still worth showing: not already chosen, and matching what has been typed.
+   *
+   * Capped because a US state house map holds 4,874 areas and a list that long is not a chooser.
+   * Typing narrows it; the cap only decides how many are shown before you do.
+   */
+  protected readonly visibleAreaSuggestions = computed<SeatAreaSuggestionType[]>(() => {
+    const typed = this.areaDraft().name.trim().toLowerCase();
+    const chosen = this.chosenAreaKeys();
+    return this.areaSuggestions()
+      .filter((s) => !chosen.has(s.name.toLowerCase()) && (typed === '' || s.name.toLowerCase().includes(typed)))
+      .slice(0, AREA_SUGGESTION_LIMIT);
+  });
+
+  /** True when what has been typed is not among the suggestions, so "add it anyway" is the answer. */
+  protected readonly canAddTypedArea = computed<boolean>(() => {
+    const typed = this.areaDraft().name.trim();
+    if (typed === '') return false;
+    return !this.chosenAreaKeys().has(typed.toLowerCase());
+  });
+
+  protected readonly atAreaLimit = computed(() => this.seatAreas().length >= SEAT_AREAS_MAX);
+
+  /** The word for one area at this level of government, pluralised once several are chosen. */
+  protected readonly areaSectionLabel = computed(() => {
+    const word = seatLabelPluralFor(this.jurisdiction(), this.region(), this.payload().seat_label_override || null);
+    return `Which ${word.toLowerCase()} does this campaign represent?`;
+  });
   protected readonly showSeatPosition = computed(() => MULTI_MEMBER_JURISDICTIONS.includes(this.jurisdiction()));
   protected readonly officeTitles = computed(() => this.spec().officeTitles);
   /**
@@ -257,6 +318,16 @@ export class CampaignFormComponent implements OnInit {
       const jurisdiction = this.jurisdiction();
       const atLarge = this.isAtLarge();
       untracked(() => this.dropAnswersThatNoLongerApply(jurisdiction, atLarge));
+    });
+
+    // Which map covers this office depends on the jurisdiction, the region and the chamber, so the
+    // suggestions are re-read whenever one of those three changes. Reading the signals here is what
+    // subscribes to them; the request itself is untracked so its own signal writes do not re-run it.
+    effect(() => {
+      const raw = this.payload();
+      const key = [raw.jurisdiction, raw.office_region.trim(), raw.chamber, raw.seat_type].join('|');
+      void key;
+      untracked(() => void this.loadAreaSuggestions());
     });
   }
 
@@ -343,6 +414,54 @@ export class CampaignFormComponent implements OnInit {
    * A new campaign always sends them: in a workspace that runs no elections the untouched values
    * are `other` and `district`, which is exactly what the database would default to anyway.
    */
+  /** Add an area, either chosen from a map (with its set) or typed by hand (without one). */
+  protected addArea(name: string, setId: string | null): void {
+    const trimmed = name.trim();
+    if (trimmed === '' || this.atAreaLimit()) return;
+    if (this.chosenAreaKeys().has(trimmed.toLowerCase())) return;
+    this.seatAreas.update((areas) => [...areas, { name: trimmed, set_id: setId }]);
+    this.areaDraft.set({ name: '' });
+  }
+
+  /** Add exactly what was typed, for an area no map offers — the ordinary case for a ward. */
+  protected addTypedArea(): void {
+    this.addArea(this.areaDraft().name, null);
+  }
+
+  protected removeArea(name: string): void {
+    const key = name.toLowerCase();
+    this.seatAreas.update((areas) => areas.filter((area) => area.name.toLowerCase() !== key));
+  }
+
+  /**
+   * Load the names this office's map offers, whenever the office changes.
+   *
+   * Failure is deliberately quiet: suggestions are a convenience, and a campaign is still perfectly
+   * describable by typing the area name. Showing an error for a failed convenience would suggest
+   * the form is broken when it is not.
+   */
+  protected async loadAreaSuggestions(): Promise<void> {
+    if (!this.isElectoral() || this.isAtLarge()) {
+      this.areaSuggestions.set([]);
+      return;
+    }
+    this.loadingAreaSuggestions.set(true);
+    try {
+      const raw = this.payload();
+      this.areaSuggestions.set(
+        await this.campaignsSvc.getAreaSuggestions({
+          jurisdiction: raw.jurisdiction,
+          office_region: raw.office_region.trim() || null,
+          chamber: raw.chamber === 'upper' || raw.chamber === 'lower' ? raw.chamber : null,
+        }),
+      );
+    } catch {
+      this.areaSuggestions.set([]);
+    } finally {
+      this.loadingAreaSuggestions.set(false);
+    }
+  }
+
   private officeFields(): Pick<
     AddCampaignType,
     | 'jurisdiction'
@@ -354,18 +473,23 @@ export class CampaignFormComponent implements OnInit {
     | 'seat_position'
     | 'seat_label_override'
     | 'office_title'
+    | 'seat_areas'
   > {
     const raw = this.payload();
+    const atLarge = raw.seat_type === 'at_large';
     return {
       jurisdiction: raw.jurisdiction,
       office_region: raw.office_region.trim() || null,
       office_locality: raw.office_locality.trim() || null,
       chamber: raw.chamber === 'upper' || raw.chamber === 'lower' ? raw.chamber : null,
-      seat_type: raw.seat_type === 'at_large' ? 'at_large' : 'district',
+      seat_type: atLarge ? 'at_large' : 'district',
       seat_name: raw.seat_name.trim() || null,
       seat_position: raw.seat_position.trim() || null,
       seat_label_override: raw.seat_label_override.trim() || null,
       office_title: raw.office_title.trim() || null,
+      // An at-large office is elected across the whole city or state, so it represents no one area
+      // and sends an empty list — which clears any areas left behind by an earlier district answer.
+      seat_areas: atLarge ? [] : this.seatAreas().map((area) => ({ name: area.name, set_id: area.set_id })),
     };
   }
 
@@ -425,6 +549,17 @@ export class CampaignFormComponent implements OnInit {
       seat_label_override: this.text(c, 'seat_label_override'),
       office_title: this.text(c, 'office_title'),
     });
+
+    // The areas live in their own table, so they are fetched rather than read off the campaign row.
+    // Quiet on failure for the same reason the suggestions are: the rest of the form still works,
+    // and an error banner over a list that simply has not arrived yet reads as a broken page.
+    const id = c['id'];
+    if (id != null) {
+      void this.campaignsSvc
+        .getAreas(String(id))
+        .then((areas) => this.seatAreas.set(areas.map((area) => ({ name: area.name, set_id: area.set_id }))))
+        .catch(() => this.seatAreas.set([]));
+    }
   }
 
   private text(source: Record<string, unknown>, key: string): string {

@@ -128,6 +128,7 @@ export interface Models {
   boundary_sets: BoundarySets;
   boundary_features: BoundaryFeatures;
   household_districts: HouseholdDistricts;
+  campaign_areas: CampaignAreas;
   geocode_cache: GeocodeCache;
 }
 
@@ -455,6 +456,30 @@ export interface HouseholdDistricts {
   name: string;
   code: string | null;
   matched_at: Generated<Timestamp>;
+}
+
+/**
+ * Which map areas a campaign represents. One row per area, because a seat can be several.
+ *
+ * A provincial candidate covers one riding; a regional councillor covers two or more wards. This is
+ * the answer to "is this door in our territory", and it is deliberately NOT `campaigns.seat_name` —
+ * that column holds the one district name printed on a tax receipt, which for a municipal candidate
+ * is the city rather than the ward they are running in.
+ *
+ * `set_id` is null when the area was typed rather than chosen from a map, which is ordinary: most
+ * municipalities publish no ward map, and a campaign can be created before any map is added.
+ * `name` is what matching compares, case-insensitively.
+ */
+export interface CampaignAreas {
+  id: Generated<string>;
+  tenant_id: string;
+  campaign_id: string;
+  /** The map the name was chosen from, or null when it was typed by hand. */
+  set_id: string | null;
+  name: string;
+  code: string | null;
+  created_at: Generated<Timestamp>;
+  createdby_id: string | null;
 }
 
 /**

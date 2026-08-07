@@ -1,9 +1,12 @@
 import { Service } from '@angular/core';
 import {
   AddCampaignType,
+  CampaignAreaRowType,
   CarryOverCampaignType,
   ExportCsvInputType,
   ExportCsvResponseType,
+  SeatAreaSuggestionType,
+  SeatAreaSuggestionsType,
   SetCampaignSubscriptionType,
   UpdateCampaignType,
   UpsertCampaignPersonFactType,
@@ -64,6 +67,21 @@ export class CampaignsService extends AbstractAPIService<'campaigns', UpdateCamp
 
   public getSwitcherList(): Promise<RouterOutputs['campaigns']['getSwitcherList']> {
     return this.api.campaigns.getSwitcherList.query(undefined, { signal: this.ac.signal });
+  }
+
+  /** The areas a campaign represents — one riding, or the wards that together elect one seat. */
+  public getAreas(campaignId: string): Promise<CampaignAreaRowType[]> {
+    return this.api.campaigns.getAreas.query(campaignId, { signal: this.ac.signal });
+  }
+
+  /**
+   * Area names to offer for this office, read from whichever map covers it.
+   *
+   * Returns an empty list when the workspace holds no map for that jurisdiction, which is ordinary
+   * for municipal wards — the form then accepts typed names, which is a real answer, not a failure.
+   */
+  public getAreaSuggestions(input: SeatAreaSuggestionsType): Promise<SeatAreaSuggestionType[]> {
+    return this.api.campaigns.areaSuggestions.query(input, { signal: this.ac.signal });
   }
 
   public getPersonFacts(personId: string): Promise<PersonCampaignFact[]> {
