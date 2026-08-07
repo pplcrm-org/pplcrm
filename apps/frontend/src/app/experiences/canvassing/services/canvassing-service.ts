@@ -3,6 +3,7 @@ import { Service } from '@angular/core';
 import type {
   AddTurfType,
   AssignTurfType,
+  CoverageRequestType,
   CutTurfsType,
   FieldReportRangeType,
   RemoveCanvasserType,
@@ -50,7 +51,16 @@ export class CanvassingService extends TRPCService<unknown> {
     return this.api.canvassing.exportFieldReport.query(input);
   }
 
-  public getCoverage(input: FieldReportRangeType): Promise<Coverage> {
+  /**
+   * How far each turf has been walked, and where its doors are.
+   *
+   * `input.viewport` is the rectangle the map is showing. Pass none on the first load, before the
+   * map has framed itself. Inside that rectangle, few enough doors come back individually and too
+   * many come back not at all — the per-turf outlines and their exact counts are always returned
+   * and are what the map shades instead. A campaign that has cut a whole riding into turfs has as
+   * many doors as it has households, which is far more than a browser can draw.
+   */
+  public getCoverage(input: CoverageRequestType): Promise<Coverage> {
     return this.api.canvassing.getCoverage.query(input);
   }
 

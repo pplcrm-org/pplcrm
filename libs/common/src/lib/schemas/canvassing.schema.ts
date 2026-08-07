@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { SupportLevel, VotingStatus } from './campaigns.schema';
-import { idSchema, nameSchema, notesSchema } from './core.schema';
+import { MapViewportObj, idSchema, nameSchema, notesSchema } from './core.schema';
 
 /**
  * Canvassing §13 schemas. The turf/knock status vocabularies are `as const` so
@@ -149,6 +149,30 @@ export const FieldReportRangeObj = z.object({
   from: z.string().datetime().nullable().optional(),
   to: z.string().datetime().nullable().optional(),
 });
+
+/**
+ * Most doors the coverage map draws one by one.
+ *
+ * Each door is a marker, and a marker is a DOM node. A campaign that has cut its whole riding into
+ * turfs has as many doors as it has households — 35,000 or more for an Ontario provincial seat —
+ * which no browser draws smoothly and nobody could read if it did.
+ *
+ * Past this many inside the rectangle on screen, the coverage answer carries no individual doors at
+ * all. What it always carries instead is one outline per turf with that turf's exact counts, so the
+ * zoomed-out map is a true picture of how far each turf has been walked rather than a sample of
+ * whichever doors happened to be sent. Zooming in shrinks the rectangle until the doors come back.
+ */
+export const COVERAGE_MAX_DOORS = 2_000;
+
+/**
+ * What the coverage screen asks for: a date range for the knock counts, and optionally the
+ * rectangle the map is showing. No rectangle means the first load, before the map has framed
+ * itself; then the whole workspace is the rectangle.
+ */
+export const CoverageRequestObj = FieldReportRangeObj.extend({
+  viewport: MapViewportObj.nullable().optional(),
+});
+export type CoverageRequestType = z.infer<typeof CoverageRequestObj>;
 
 /**
  * Companion knock payload. Arrives over the tokenised public route (no account),

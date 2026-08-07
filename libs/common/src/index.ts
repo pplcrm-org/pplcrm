@@ -111,6 +111,7 @@ export type {
   AssignTurfType,
   RemoveCanvasserType,
   FieldReportRangeType,
+  CoverageRequestType,
   LogKnockType,
 } from './lib/models';
 
@@ -264,6 +265,8 @@ export {
   AssignTurfObj,
   RemoveCanvasserObj,
   FieldReportRangeObj,
+  CoverageRequestObj,
+  COVERAGE_MAX_DOORS,
   LogKnockObj,
   TURF_STATUSES,
   KNOCK_OUTCOMES,
@@ -402,7 +405,8 @@ export type {
 } from './lib/schemas/campaigns.schema';
 export type { DncChannel, VolunteerStatus, StaffStatus } from './lib/schemas/persons.schema';
 export type { PersonMergeImpactType } from './lib/models';
-export type { GridColumnFilter, GridFilterModel } from './lib/schemas/core.schema';
+export type { GridColumnFilter, GridFilterModel, MapViewportType } from './lib/schemas/core.schema';
+export { MapViewportObj } from './lib/schemas/core.schema';
 
 export { DEFAULT_LINK_SUBDOMAIN, MAX_DNS_LABEL_LENGTH, isValidDnsLabel, normalizeDnsLabel } from './lib/dns-label';
 export { normalizeE164 } from './lib/phone';
@@ -478,6 +482,8 @@ export type {
   AddBoundaryFeatureType,
   UpdateBoundaryFeatureType,
   BoundarySetRowType,
+  BoundaryAreaColumnType,
+  BoundaryAreaColumnsInputType,
   BoundaryFeatureRowType,
   BoundaryFeatureListType,
   BoundaryValidationType,
@@ -507,6 +513,8 @@ export {
   AddBoundaryFeatureObj,
   UpdateBoundaryFeatureObj,
   BoundarySetObj,
+  BoundaryAreaColumnObj,
+  BoundaryAreaColumnsInputObj,
   BoundaryFeatureObj,
   BoundaryFeatureListObj,
   BoundaryValidationObj,

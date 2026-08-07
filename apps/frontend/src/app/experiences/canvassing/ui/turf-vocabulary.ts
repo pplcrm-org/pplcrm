@@ -148,3 +148,52 @@ export function refreshResultMessage(
   if (res.removed > 0) parts.push(`${res.removed} ${res.removed === 1 ? 'door' : 'doors'} removed`);
   return `Refreshed from "${listName}": ${parts.join(', ')}. Knocks already logged were kept.`;
 }
+
+/**
+ * How far one turf has been walked, as the four steps the map shades it by.
+ *
+ * Four rather than a continuous scale because a shaded polygon is read at a glance, not measured:
+ * what an organiser needs off this map is which turfs to send people to next, and "somewhere
+ * between 37 and 41 percent" is not that question. The exact numbers are one click away in the
+ * table beside the map, and the turf's own label carries its percentage.
+ */
+export type TurfWalkedBucket = 'not_started' | 'started' | 'over_half' | 'finished';
+
+/** The percentage at or above which a turf enters each step. Stated in the legend the user reads. */
+export const TURF_WALKED_STARTED_PCT = 1;
+export const TURF_WALKED_OVER_HALF_PCT = 50;
+export const TURF_WALKED_FINISHED_PCT = 90;
+
+export const TURF_WALKED_VARIANT: Record<TurfWalkedBucket, PcMapVariant> = {
+  not_started: 'muted',
+  started: 'warning',
+  over_half: 'info',
+  finished: 'success',
+};
+
+/**
+ * The shading legend for the zoomed-out coverage map. Its wording has to say what "walked" counts,
+ * because a door that was knocked with nobody home is walked but is not a conversation, and an
+ * organiser reading "90% walked" as "90% talked to" would badly overstate the campaign's contact.
+ */
+export const TURF_WALKED_LEGEND: { bucket: TurfWalkedBucket; label: string; dot: string }[] = [
+  { bucket: 'not_started', label: 'Not started', dot: 'bg-base-300' },
+  { bucket: 'started', label: `Under ${TURF_WALKED_OVER_HALF_PCT}% knocked`, dot: 'bg-warning' },
+  { bucket: 'over_half', label: `${TURF_WALKED_OVER_HALF_PCT}% or more knocked`, dot: 'bg-info' },
+  { bucket: 'finished', label: `${TURF_WALKED_FINISHED_PCT}% or more knocked`, dot: 'bg-success' },
+];
+
+/** What share of a turf's doors have been knocked at all, answered or not, as a whole percent. */
+export function turfWalkedPct(doors: number, notYet: number): number {
+  if (doors <= 0) return 0;
+  const knocked = Math.max(0, Math.min(doors, doors - notYet));
+  return Math.round((knocked / doors) * 100);
+}
+
+/** Which of the four shading steps a percentage falls in. */
+export function turfWalkedBucket(pct: number): TurfWalkedBucket {
+  if (pct >= TURF_WALKED_FINISHED_PCT) return 'finished';
+  if (pct >= TURF_WALKED_OVER_HALF_PCT) return 'over_half';
+  if (pct >= TURF_WALKED_STARTED_PCT) return 'started';
+  return 'not_started';
+}

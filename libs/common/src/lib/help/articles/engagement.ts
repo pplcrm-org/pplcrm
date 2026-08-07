@@ -553,7 +553,29 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The **Coverage** card shows where you have actually walked. On the **Street map** every door is a dot (green where a volunteer had a conversation, amber where they knocked and got no answer, and grey where no one has been yet), with each turf drawn as a dashed boundary. Flip to the **By area** tab for the same picture as a table: doors, how much of each area has been knocked, and how many are still waiting. That tab is named with your campaign’s own word — **By ward**, **By riding**, **By precinct** — from the office it is running for (see [What office a campaign is running for](/help/campaign-jurisdictions)), and doors that fall in no area are grouped under **Unbounded**. Like the rest of the report it follows the range you pick, and it appears as soon as turfs are cut, even before the first knock.',
+        text: 'The **Coverage** card shows where you have actually walked. Flip to the **By area** tab for the picture as a table: doors, how much of each area has been knocked, and how many are still waiting. That tab is named with your campaign’s own word — **By ward**, **By riding**, **By precinct** — from the office it is running for (see [What office a campaign is running for](/help/campaign-jurisdictions)), and doors that fall in no area are grouped under **Unbounded**. Like the rest of the report it follows the range you pick, and it appears as soon as turfs are cut, even before the first knock.',
+      },
+      { kind: 'h2', id: 'coverage-map', text: 'Reading the Street map' },
+      {
+        kind: 'p',
+        text: 'The **Street map** shows one of two things, and it says underneath which one you are looking at. Which you get depends only on how many doors are inside the part of the map on screen.',
+      },
+      {
+        kind: 'list',
+        items: [
+          '**Zoomed out, or any view holding more than 2,000 doors** — each turf is shaded by how much of it has been knocked: grey for not started, amber for under half, blue for half or more, green for 90% or more. Those percentages count **every** door in the turf, not just the ones on screen, and they count every door that was knocked at all — a door where nobody came was still walked. So the shading is exact, not a sample.',
+          '**Zoomed in past that** — the individual doors come back, one dot each: green where a volunteer had a conversation, amber where they knocked and got no answer, grey where no one has been yet.',
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'Turf outlines are drawn dashed at both zooms, and clicking one opens that turf. The dashes are not decoration: the outline is drawn around the turf’s own doors rather than along a real boundary, so it is the right shape for finding a turf and the wrong shape for reading a border off.',
+      },
+      {
+        kind: 'callout',
+        tone: 'info',
+        title: 'Why the doors disappear when you zoom out',
+        text: 'A campaign that has cut its whole riding into turfs has as many doors as it has households — 35,000 or more for a provincial seat. No browser draws that many dots smoothly, and nobody could read them if it did. Rather than draw a few thousand of them and let you assume you were seeing everything, the map switches to shaded turfs, which is both faster and a truer answer to "where have we been". Zoom in and the doors return.',
       },
     ],
   },

@@ -281,8 +281,11 @@
       </div>
     </div>
 
-    <!-- Coverage — where we've walked (§13.3) -->
-    @if (coverage(); as cov) { @if (cov.doors.length > 0) {
+    <!-- Coverage — where we've walked (§13.3). Shown whenever this campaign has any located door in
+         a cut turf, NOT when doors were sent: past a couple of thousand doors in view the server
+         sends none at all and the shaded turf outlines are the map. Testing the sent doors here
+         hid the whole card from exactly the large campaigns that need it most. -->
+    @if (coverage(); as cov) { @if (hasCoverage()) {
     <div class="card mb-4 border border-base-300 bg-base-100">
       <div class="flex flex-wrap items-center justify-between gap-2 p-4 pb-2">
         <h3 class="text-sm font-semibold">Coverage</h3>
@@ -308,23 +311,48 @@
       </div>
       <div class="p-4 pt-0">
         @if (coverageView() === 'map') {
+        <!-- fitBounds is off on purpose. This page frames the coverage map itself and also listens
+             for where the map ends up; a map that re-framed on every content change would move,
+             report the move, fetch the doors for the new frame, and move again on the answer. -->
         <pc-map
+          #coverageMap
           class="block h-72 w-full rounded-lg"
           [markers]="coverageMarkers()"
           [polygons]="coveragePolygons()"
+          [fitBounds]="false"
           ariaLabel="Coverage map"
+          (polygonClicked)="openTurfPolygon($event)"
+          (viewportChanged)="onCoverageViewport($event)"
         ></pc-map>
+
+        <!-- Two legends, because the map means two different things at two different zooms. Only
+             the one that matches what is drawn is shown, so nothing on screen is unexplained. -->
         <div class="mt-2 flex flex-wrap gap-3 text-xs text-base-content/70">
-          @for (l of coverageLegend; track l.status) {
+          @if (showingDoors()) { @for (l of coverageLegend; track l.status) {
           <span class="flex items-center gap-1">
             <span class="inline-block h-2 w-2 rounded-full {{ l.dot }}"></span>{{ l.label }}
           </span>
-          }
+          } } @else { @for (l of turfWalkedLegend; track l.bucket) {
+          <span class="flex items-center gap-1">
+            <span class="inline-block h-2 w-3 rounded-sm {{ l.dot }}"></span>{{ l.label }}
+          </span>
+          } }
           <span class="flex items-center gap-1">
             <span class="inline-block h-2 w-3 rounded-sm border border-dashed border-base-content/40"></span>
             Turf boundary
           </span>
         </div>
+
+        <p class="mt-1 text-xs text-base-content/60">
+          @if (showingDoors()) { {{ doorsInView().toLocaleString() }} of your {{ doorsTotal().toLocaleString() }} doors
+          are in this view, each shown on its own. Click a turf outline to open that turf. } @else { {{
+          doorsInView().toLocaleString() }} doors are in this view — too many to draw one by one, so each turf is shaded
+          by how much of it has been knocked. Those percentages count every door in the turf, not just the ones on
+          screen. Zoom in to see the doors themselves, or click a turf outline to open it. } @if (coverageRefreshing())
+          {
+          <span class="loading loading-spinner loading-xs align-middle"></span>
+          }
+        </p>
         } @else {
         <div class="overflow-x-auto">
           <table class="table pc-table">

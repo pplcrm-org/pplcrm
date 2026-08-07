@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { IAuthKeyPayload } from '@common';
+import { COVERAGE_MAX_DOORS } from '@common';
 
 import { BaseRepository } from '../../lib/base.repo';
 import { hashToken } from '../../lib/token-hash';
@@ -1452,9 +1453,19 @@ describe('CanvassingController', () => {
     expect(byStatus.attempted).toBe(1);
     expect(byStatus.not_yet).toBe(38);
 
-    // Every turf gets a boundary hull of at least a triangle.
+    // Every turf gets a boundary hull of at least a triangle, and carries its own exact counts.
     expect(cov.turfs.length).toBeGreaterThanOrEqual(1);
     for (const t of cov.turfs) expect(t.path.length).toBeGreaterThanOrEqual(3);
+    // The per-turf counts are what the map shades by when there are too many doors to draw, so
+    // they have to account for every door exactly once, like the by-area roll-up below does.
+    expect(cov.turfs.reduce((n, t) => n + t.doors, 0)).toBe(40);
+    expect(cov.turfs.reduce((n, t) => n + t.conversation, 0)).toBe(1);
+    expect(cov.turfs.reduce((n, t) => n + t.attempted, 0)).toBe(1);
+    expect(cov.turfs.reduce((n, t) => n + t.not_yet, 0)).toBe(38);
+
+    // Both counts describe the same 40 doors when no rectangle was asked for.
+    expect(cov.doors_in_view).toBe(40);
+    expect(cov.doors_total).toBe(40);
 
     // By-boundary roll-up covers every mapped door exactly once.
     const areaDoors = cov.byBoundary.reduce((n, a) => n + a.doors, 0);
@@ -1463,6 +1474,83 @@ describe('CanvassingController', () => {
     // The campaign declares no office, so the word is the neutral default rather than a guess.
     expect(cov.boundary_label).toBe('Subdivision');
     expect(cov.boundary_label_plural).toBe('Subdivisions');
+  });
+
+  it('maps coverage for only the rectangle asked for, without changing the turf or area totals', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+
+    // The seeded doors run from latitude 41.850 to 41.857. This rectangle takes the lower part of
+    // that spread and every longitude, so it holds some doors but not all of them.
+    const cov = await controller.getCoverage(auth, {
+      range: 'campaign',
+      viewport: { north: 41.8525, south: 41.8495, east: -87.6, west: -87.7 },
+    });
+
+    expect(cov.doors_total).toBe(40);
+    expect(cov.doors_in_view).toBeGreaterThan(0);
+    expect(cov.doors_in_view).toBeLessThan(cov.doors_total);
+    expect(cov.doors.length).toBe(cov.doors_in_view);
+    for (const d of cov.doors) {
+      expect(d.lat).toBeGreaterThanOrEqual(41.8495);
+      expect(d.lat).toBeLessThanOrEqual(41.8525);
+    }
+
+    // The turf outlines and the by-area roll-up describe the whole workspace whatever the map is
+    // looking at. They are what the zoomed-out map shades, so scoping them to the rectangle would
+    // make a turf read as barely walked purely because most of it was off screen.
+    expect(cov.turfs.reduce((n, t) => n + t.doors, 0)).toBe(40);
+    expect(cov.byBoundary.reduce((n, a) => n + a.doors, 0)).toBe(40);
+  });
+
+  it('sends no doors at all once too many are in view, rather than a sample of them', async () => {
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const [turf] = await controller.getTurfs(auth);
+    if (!turf) throw new Error('expected a turf');
+
+    // Enough extra doors in this turf to cross the cap. A sample would be worse than nothing here:
+    // whichever doors happened to be sent would decide which parts of the map look walked.
+    const extra = COVERAGE_MAX_DOORS + 1 - 40;
+    const base = Number(rand()) * 10_000;
+    const ids = Array.from({ length: extra }, (_unused, i) => String(base + i));
+    await db
+      .insertInto('households')
+      .values(
+        ids.map((id, i) => ({
+          id,
+          tenant_id: s.tenantId,
+          campaign_id: s.campaignId,
+          createdby_id: s.userId,
+          updatedby_id: s.userId,
+          street_num: String(i),
+          street1: 'Crowded Ave',
+          city: 'Springfield',
+          lat: 41.85 + (i % 40) * 0.0005,
+          lng: -87.69 + Math.floor(i / 40) * 0.0005,
+          geocoding_status: 'success',
+        })),
+      )
+      .execute();
+    await db
+      .insertInto('turf_households')
+      .values(
+        ids.map((id) => ({
+          tenant_id: s.tenantId,
+          turf_id: turf.id,
+          household_id: id,
+          createdby_id: s.userId,
+          updatedby_id: s.userId,
+        })),
+      )
+      .execute();
+
+    const cov = await controller.getCoverage(auth, { range: 'campaign' });
+
+    expect(cov.doors_in_view).toBe(COVERAGE_MAX_DOORS + 1);
+    expect(cov.doors).toEqual([]);
+    // The shaded outlines are what the map falls back to, so they must still be there and must
+    // still account for every door — that is the whole reason dropping the doors is acceptable.
+    expect(cov.turfs.length).toBeGreaterThanOrEqual(1);
+    expect(cov.turfs.reduce((n, t) => n + t.doors, 0)).toBe(COVERAGE_MAX_DOORS + 1);
   });
 
   it('refreshes a turf from its list, dropping members that left (knocks preserved)', async () => {

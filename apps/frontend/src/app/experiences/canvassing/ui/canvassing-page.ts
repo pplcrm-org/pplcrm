@@ -1,4 +1,4 @@
-import { Component, type OnInit, computed, inject, signal } from '@angular/core';
+import { Component, type OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 
@@ -9,12 +9,18 @@ import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
 import { Icon } from '@icons/icon';
 import { PcMap } from '@uxcommon/components/map/map';
-import type { PcMapMarker, PcMapPolygon, PcMapVariant } from '@uxcommon/components/map/map-types';
+import type {
+  PcLatLng,
+  PcMapMarker,
+  PcMapPolygon,
+  PcMapVariant,
+  PcMapViewport,
+} from '@uxcommon/components/map/map-types';
 import { RowActions } from '@uxcommon/components/row-actions/row-actions';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
 import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
 
-import type { FieldReportRangeType } from '../../../../../../../libs/common/src';
+import type { FieldReportRangeType, MapViewportType } from '../../../../../../../libs/common/src';
 import {
   CanvassingService,
   type Coverage,
@@ -32,6 +38,10 @@ import {
   TURF_STATUS_LABEL,
   TURF_STATUS_MAP_VARIANT,
   TURF_STATUS_TONE,
+  TURF_WALKED_LEGEND,
+  TURF_WALKED_VARIANT,
+  turfWalkedBucket,
+  turfWalkedPct,
   refreshFromListExplainer,
   refreshResultMessage,
   renameResultMessage,
@@ -62,6 +72,12 @@ const COVERAGE_LEGEND: { status: CoverageStatus; label: string; dot: string }[] 
   { status: 'attempted', label: 'Knocked, no answer', dot: 'bg-warning' },
   { status: 'not_yet', label: 'Not yet knocked', dot: 'bg-base-300' },
 ];
+
+/**
+ * How long the coverage map sits still after a pan or zoom before its doors are re-read. Long
+ * enough that crossing a city costs one request rather than six, short enough to feel immediate.
+ */
+const COVERAGE_SETTLE_MS = 350;
 
 /** The three steps of the whole feature, shown until the first turfs exist. */
 const GETTING_STARTED: { title: string; detail: string }[] = [
@@ -148,6 +164,19 @@ export class CanvassingPage implements OnInit {
   protected readonly report = signal<FieldReport | null>(null);
   protected readonly coverage = signal<Coverage | null>(null);
   protected readonly coverageView = signal<CoverageView>('map');
+  /** True while a pan or zoom is being answered, so the caption can say the map is catching up. */
+  protected readonly coverageRefreshing = signal(false);
+
+  /**
+   * The coverage map, named in the template because this page holds two maps: the turf strip at the
+   * top frames itself and is left alone, while this one is framed here and reports where it ends up.
+   */
+  private readonly coverageMap = viewChild<PcMap>('coverageMap');
+
+  /** The pan waiting to settle, the guard against an old answer landing last, and the held frame. */
+  private coverageTimer: ReturnType<typeof setTimeout> | null = null;
+  private coverageSeq = 0;
+  private wantedCoverageFrame: PcLatLng[] | null = null;
 
   protected readonly cutOpen = signal(false);
   /** Turf currently being assigned in the pick-a-volunteer dialog (null = closed). */
@@ -162,10 +191,34 @@ export class CanvassingPage implements OnInit {
   protected readonly statusHint = TURF_STATUS_HINT;
   protected readonly statusTone = TURF_STATUS_TONE;
   protected readonly coverageLegend = COVERAGE_LEGEND;
+  protected readonly turfWalkedLegend = TURF_WALKED_LEGEND;
+
+  /**
+   * Whether individual doors are on the map, or the shaded turf outlines are standing in for them.
+   *
+   * Read off the response rather than guessed from a threshold here: the server owns the decision,
+   * and a page that re-derived it could disagree with what it was actually sent.
+   */
+  protected readonly showingDoors = computed<boolean>(() => (this.coverage()?.doors.length ?? 0) > 0);
+  protected readonly doorsInView = computed<number>(() => this.coverage()?.doors_in_view ?? 0);
+  protected readonly doorsTotal = computed<number>(() => this.coverage()?.doors_total ?? 0);
+  /** True when this campaign has any located door in any cut turf — what the Coverage card needs. */
+  protected readonly hasCoverage = computed<boolean>(() => this.doorsTotal() > 0);
   protected readonly gettingStarted = GETTING_STARTED;
 
   /** First load has answered. Guards the getting-started panel against a false empty flash. */
   protected readonly loaded = signal(false);
+
+  constructor() {
+    // The coverage map only exists while the field-report tab is open and coverage has loaded, so
+    // it may appear after the page has already worked out how it wants the map framed. Applying the
+    // held frame when the map arrives is what stops it opening on the wrong place.
+    effect(() => {
+      const map = this.coverageMap();
+      const wanted = untracked(() => this.wantedCoverageFrame);
+      if (map && wanted) map.focusOn(wanted);
+    });
+  }
 
   ngOnInit(): void {
     void this.loadTurfs();
@@ -257,10 +310,21 @@ export class CanvassingPage implements OnInit {
   protected async loadReport(): Promise<void> {
     const end = this._loading.begin();
     const range = { range: this.reportRange(), from: null, to: null };
+    // A pan still waiting out its timer belongs to the range being replaced, so it is dropped here.
+    this.cancelCoverageRefresh();
+    const seq = ++this.coverageSeq;
     try {
-      const [report, coverage] = await Promise.all([this.svc.getFieldReport(range), this.svc.getCoverage(range)]);
+      // No rectangle on this first read: the map has not framed itself yet, so the answer covers
+      // every turf, and comes back as shaded outlines alone when there are too many doors to draw.
+      const [report, coverage] = await Promise.all([
+        this.svc.getFieldReport(range),
+        this.svc.getCoverage({ ...range, viewport: null }),
+      ]);
       this.report.set(report);
+      if (seq !== this.coverageSeq) return;
       this.coverage.set(coverage);
+      // Frame what was just loaded. After this the map moves only when the reader moves it.
+      this.frameCoverageMap();
     } catch (err) {
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load field report.');
     } finally {
@@ -302,18 +366,112 @@ export class CanvassingPage implements OnInit {
       'doors fell outside every area of it. Closeness was the only thing that placed those doors.',
   );
 
-  /** Dashed turf boundaries (convex hull of each turf's doors). */
+  /**
+   * One outline per turf (the convex hull of its doors), shaded by how far that turf has been
+   * walked in the window on screen.
+   *
+   * These are always drawn, and they are the whole of the map whenever there are too many doors to
+   * draw individually. The shading comes from exact per-turf totals rather than from the doors that
+   * happened to be sent, so a turf shaded "half knocked" really is half knocked.
+   *
+   * Still dashed: the outline is the convex hull of the turf's own doors, not a real boundary, and
+   * the dashes are what say so.
+   */
   protected readonly coveragePolygons = computed<PcMapPolygon[]>(() => {
     const cov = this.coverage();
     if (!cov) return [];
-    return cov.turfs.map((t) => ({
-      path: t.path,
-      variant: 'neutral' as const,
-      dashed: true,
-      label: t.name,
-      id: t.id,
-    }));
+    return cov.turfs.map((t) => {
+      const pct = turfWalkedPct(t.doors, t.not_yet);
+      return {
+        path: t.path,
+        variant: TURF_WALKED_VARIANT[turfWalkedBucket(pct)],
+        dashed: true,
+        label: `${t.name} — ${pct}% knocked`,
+        id: t.id,
+        payload: t.id,
+      };
+    });
   });
+
+  /** A turf outline carries its turf id — clicking it opens that turf, like a pin on the strip map. */
+  protected openTurfPolygon(polygon: PcMapPolygon): void {
+    const id = typeof polygon.payload === 'string' ? polygon.payload : polygon.id;
+    if (id) void this.router.navigate(['/canvassing', id]);
+  }
+
+  /**
+   * The coverage map came to rest somewhere new: re-read its doors for the rectangle now on screen,
+   * once the panning has stopped.
+   *
+   * One direction only. The map reports where it is; nothing here moves the map in reply, or the
+   * two would chase each other. That is also why this map has auto-fit turned off and is framed
+   * explicitly in `loadReport`.
+   */
+  protected onCoverageViewport(viewport: PcMapViewport): void {
+    if (this.coverageTimer) clearTimeout(this.coverageTimer);
+    this.coverageTimer = setTimeout(() => {
+      this.coverageTimer = null;
+      void this.loadCoverage({
+        north: viewport.north,
+        south: viewport.south,
+        east: viewport.east,
+        west: viewport.west,
+      });
+    }, COVERAGE_SETTLE_MS);
+  }
+
+  /**
+   * Re-read coverage for one rectangle, or for everything when given none.
+   *
+   * The sequence number matters here for the same reason it does anywhere a map drives a fetch:
+   * panning twice quickly starts two requests and the first can answer last, which would leave the
+   * map showing the doors of a place the reader has already left.
+   */
+  private async loadCoverage(viewport: MapViewportType | null): Promise<void> {
+    const seq = ++this.coverageSeq;
+    this.coverageRefreshing.set(true);
+    try {
+      const coverage = await this.svc.getCoverage({
+        range: this.reportRange(),
+        from: null,
+        to: null,
+        viewport,
+      });
+      if (seq !== this.coverageSeq) return;
+      this.coverage.set(coverage);
+    } catch (err) {
+      if (seq === this.coverageSeq) {
+        this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load coverage.');
+      }
+    } finally {
+      if (seq === this.coverageSeq) this.coverageRefreshing.set(false);
+    }
+  }
+
+  /** Stop a pending coverage re-read and ignore whatever is already in flight for it. */
+  private cancelCoverageRefresh(): void {
+    if (this.coverageTimer) {
+      clearTimeout(this.coverageTimer);
+      this.coverageTimer = null;
+    }
+    this.coverageSeq += 1;
+    this.coverageRefreshing.set(false);
+  }
+
+  /**
+   * Frame the coverage map on every turf it holds.
+   *
+   * Framed from the turf outlines rather than from the doors, because the outlines always describe
+   * the whole workspace while the doors describe only what is currently in view — framing the doors
+   * would slowly zoom the map into whatever corner the last fetch returned.
+   */
+  private frameCoverageMap(): void {
+    const cov = this.coverage();
+    if (!cov) return;
+    const points = cov.turfs.flatMap((t) => t.path);
+    this.wantedCoverageFrame = points.length > 0 ? points : null;
+    if (points.length > 0) this.coverageMap()?.focusOn(points);
+  }
 
   protected selectTab(tab: string): void {
     if (tab !== 'turfs' && tab !== 'report') return;

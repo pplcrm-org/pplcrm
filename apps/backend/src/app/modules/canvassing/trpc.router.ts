@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   AddTurfObj,
   AssignTurfObj,
+  CoverageRequestObj,
   CutTurfsObj,
   FieldReportRangeObj,
   RemoveCanvasserObj,
@@ -71,7 +72,9 @@ export const CanvassingRouter = router({
   exportFieldReport: authProcedure
     .input(FieldReportRangeObj)
     .query(({ ctx, input }) => controller.exportFieldReportCsv(ctx.auth, input)),
+  // Takes the rectangle the map is showing as well as the date range: past a couple of thousand
+  // doors in view the answer switches from individual doors to shaded turf outlines.
   getCoverage: authProcedure
-    .input(FieldReportRangeObj)
+    .input(CoverageRequestObj)
     .query(({ ctx, input }) => controller.getCoverage(ctx.auth, input)),
 });

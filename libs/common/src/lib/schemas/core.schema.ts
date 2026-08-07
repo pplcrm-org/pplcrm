@@ -284,3 +284,22 @@ export const phoneSchema = (fieldName: string) =>
   z.string().trim().max(30, `${fieldName} is too long`).nullable().optional();
 
 export const notesSchema = z.string().trim().max(10000, 'Notes are too long').nullable().optional();
+
+/**
+ * A rectangle of the world, in the compass words a map uses. Degrees.
+ *
+ * Shared by every screen that asks the server "what is inside what I am looking at", because a
+ * campaign holds far more addresses than a browser can draw and those screens all answer the same
+ * way: individually where there are few enough, summarised where there are too many.
+ *
+ * `east` may be numerically smaller than `west` for a view straddling the 180th meridian. Nothing
+ * this product covers does, so a reader of this shape should treat such a rectangle as "no
+ * rectangle" and answer for everything rather than returning an empty map.
+ */
+export const MapViewportObj = z.object({
+  north: z.number().min(-90).max(90),
+  south: z.number().min(-90).max(90),
+  east: z.number().min(-180).max(180),
+  west: z.number().min(-180).max(180),
+});
+export type MapViewportType = z.infer<typeof MapViewportObj>;

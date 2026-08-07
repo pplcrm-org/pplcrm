@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 import type { BoundaryRole, BoundarySource } from '../jurisdictions/jurisdiction.types';
 import { JURISDICTION_IDS } from '../jurisdictions/jurisdiction.types';
-import { descriptionSchema, idSchema, nameSchema } from './core.schema';
+import { MapViewportObj, descriptionSchema, idSchema, nameSchema } from './core.schema';
+import type { MapViewportType } from './core.schema';
 
 /**
  * Boundary sets and their polygons — the shapes every tRPC procedure under
@@ -359,6 +360,38 @@ export const BoundarySetObj = z.object({
 });
 export type BoundarySetRowType = z.infer<typeof BoundarySetObj>;
 
+/**
+ * One boundary map, described as a grid column.
+ *
+ * The people and household grids show one area column per map the workspace holds — a riding
+ * column AND a ward column, rather than every area name joined into one cell — and this is the
+ * list they build those columns from. The column heading is the map's own `label`; `role` decides
+ * whether the grid shows it by default (seat areas elect somebody, so they are the answer a
+ * campaign asks for first, while precinct-level maps start hidden).
+ */
+export const BoundaryAreaColumnObj = z.object({
+  /** `boundary_sets.id`. */
+  set_id: z.string(),
+  /** The key the column reads off each grid row, `area_set_<set_id>`. */
+  field: z.string(),
+  /** The map's own name, which is the column heading. */
+  label: z.string(),
+  /** `seat_area` | `subdivision` | `locality`. */
+  role: z.string(),
+  /**
+   * True for the map the active campaign's own seat is drawn on. That map already has a column of
+   * its own, headed with the campaign's word for its areas ("Riding"), so the grid skips this one.
+   */
+  is_seat_set: z.boolean(),
+});
+export type BoundaryAreaColumnType = z.infer<typeof BoundaryAreaColumnObj>;
+
+/** Which campaign's seat map to mark. Absent for a caller with no campaign chosen. */
+export const BoundaryAreaColumnsInputObj = z.object({
+  campaignId: idSchema.nullable().optional(),
+});
+export type BoundaryAreaColumnsInputType = z.infer<typeof BoundaryAreaColumnsInputObj>;
+
 export const BoundaryFeatureObj = z.object({
   id: z.string(),
   set_id: z.string(),
@@ -407,19 +440,13 @@ export const BoundaryHouseholdPinObj = z.object({
 export type BoundaryHouseholdPinType = z.infer<typeof BoundaryHouseholdPinObj>;
 
 /**
- * A rectangle of the world, in the compass words a map uses. Latitudes and longitudes in degrees.
- *
- * `east` may be numerically smaller than `west` for a view straddling the 180th meridian. Nothing
- * this product ships crosses it, so the pin read treats such a rectangle as "no rectangle" and
- * answers for the whole workspace instead of silently returning an empty map.
+ * The rectangle a boundary map is showing. One definition of "the rectangle on screen" is shared
+ * with every other map screen — see `MapViewportObj` in `core.schema.ts` — because two copies of the
+ * same four numbers would eventually disagree about what they validate. These names are kept so a
+ * reader of this file does not have to leave it to learn the shape.
  */
-export const BoundaryViewportObj = z.object({
-  north: z.number().min(-90).max(90),
-  south: z.number().min(-90).max(90),
-  east: z.number().min(-180).max(180),
-  west: z.number().min(-180).max(180),
-});
-export type BoundaryViewportType = z.infer<typeof BoundaryViewportObj>;
+export const BoundaryViewportObj = MapViewportObj;
+export type BoundaryViewportType = MapViewportType;
 
 /** What the browser asks for: the rectangle on screen, or nothing on the first load. */
 export const BoundaryHouseholdPinsInputObj = z.object({

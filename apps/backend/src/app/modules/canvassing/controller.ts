@@ -15,9 +15,11 @@ import type {
   CompanionTurfChoice,
   CompanionTurfChoices,
   CompanionTurfPayload,
+  CoverageRequestType,
   CutTurfsType,
   FieldReportRangeType,
   IAuthKeyPayload,
+  MapViewportType,
   KnockResponse,
   SupportLevel,
   UpdateCompanionSettingsType,
@@ -25,6 +27,7 @@ import type {
   VotingStatus,
 } from '../../../../../../libs/common/src';
 import {
+  COVERAGE_MAX_DOORS,
   CompanionOpResultObj,
   SUPPORT_LEVELS,
   TASK_OPEN_STATUSES,
@@ -212,13 +215,24 @@ export interface CoverageDoor extends LatLng {
   status: CoverageStatus;
 }
 
-/** A turf boundary drawn as the convex hull of its doors (dashed on the map). */
+/**
+ * A turf boundary drawn as the convex hull of its doors (dashed on the map), with how far it has
+ * been walked in the window asked for.
+ *
+ * The counts ride with the outline because the outline is what the map draws when there are too
+ * many doors to draw individually. They are exact totals over every door in the turf, not a
+ * summary of whichever doors were sent, so a turf shaded "half walked" really is half walked.
+ */
 export interface CoverageTurf {
   id: string;
   name: string;
   /** The area this turf covers, or null when it has none (no map, or outside every area of it). */
   boundary_name: string | null;
   path: LatLng[];
+  doors: number;
+  conversation: number;
+  attempted: number;
+  not_yet: number;
 }
 
 /** One row of the coverage roll-up: how far one area has been walked. */
@@ -232,9 +246,18 @@ export interface CoverageArea {
 }
 
 export interface Coverage {
+  /**
+   * Individual doors, coloured by what happened at them — but only when few enough are inside the
+   * rectangle asked for. Empty otherwise, and the shaded turf outlines are then what the map shows.
+   * See {@link COVERAGE_MAX_DOORS}.
+   */
   doors: CoverageDoor[];
   turfs: CoverageTurf[];
   byBoundary: CoverageArea[];
+  /** Located doors inside the rectangle asked for; the same as `doors_total` when none was given. */
+  doors_in_view: number;
+  /** Every located door in a cut turf, workspace-wide, whether or not any of them were sent. */
+  doors_total: number;
   /**
    * The campaign's own word for one of these areas — 'Polling division', 'Precinct', 'Ward',
    * 'Riding'. Sent with the data because the right word depends on the campaign's declared
@@ -333,6 +356,11 @@ export interface CutPreviewResult extends CutPreview {
  */
 const UNBOUNDED_AREA_LABEL = 'Unbounded';
 const MIN_HULL_POINTS = 3;
+
+/** Whether one point sits inside the rectangle a map is showing. Edges count as inside. */
+function withinViewport(point: LatLng, view: MapViewportType): boolean {
+  return point.lat >= view.south && point.lat <= view.north && point.lng >= view.west && point.lng <= view.east;
+}
 
 // A turf is "in the field" if a knock landed within this window.
 const IN_FIELD_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -550,19 +578,43 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   }
 
   /**
-   * §13.3 Coverage — every geocoded door in a turf, coloured by whether it was
-   * talked to, knocked with no answer, or not yet reached in the window, plus a
-   * dashed boundary hull per turf and a roll-up by area. Unlike the report tiles
-   * this returns doors even when nothing has been knocked (a freshly-cut universe
-   * reads as an all-grey map), so the caller shows it independently of `doors`.
+   * §13.3 Coverage — how far each turf has been walked in the window, and where the doors are.
+   *
+   * Two drawings, and which one comes back depends only on how many located doors sit inside the
+   * rectangle the caller is looking at:
+   *
+   * - At most {@link COVERAGE_MAX_DOORS} in that rectangle → every one of them, as its own point
+   *   coloured by whether it was talked to, knocked with no answer, or not yet reached.
+   * - More than that → no doors at all. The turf outlines, which are always returned, carry exact
+   *   per-turf counts and are what the map shades instead.
+   *
+   * The reason for the second case is size, and it is ordinary rather than exceptional. A campaign
+   * that has cut its whole riding into turfs has as many doors as it has households: 35,000 or more
+   * for an Ontario provincial seat. Sending a capped sample of those would be worse than sending
+   * none, because a sample that happened to favour one turf would read as "we walked the north"
+   * when nobody had. The per-turf counts are exact totals over every door, so the shaded map is
+   * true at any zoom, and zooming in shrinks the rectangle until real doors return.
+   *
+   * Both counts are returned so a caption can never report one as the other. Turf outlines and the
+   * area roll-up are unaffected by the rectangle — they always describe the whole workspace.
+   *
+   * Doors are returned even when nothing has been knocked (a freshly-cut universe reads as an
+   * all-grey map), so the caller shows this independently of whether any knocks exist.
    *
    * The word for one area travels with the response because it depends on the campaign's declared
    * jurisdiction and region: the same table is headed "By polling division" for a Canadian federal
    * campaign, "By precinct" in most of the United States, "By election district" in New York, and
    * "By ward" for a Toronto council race.
    */
-  public async getCoverage(auth: IAuthKeyPayload, input: FieldReportRangeType): Promise<Coverage> {
+  public async getCoverage(auth: IAuthKeyPayload, input: CoverageRequestType): Promise<Coverage> {
     const { from, to } = this.rangeToDates(input);
+    // A rectangle whose east edge is west of its west edge straddles the 180th meridian. Nothing
+    // this product covers does, so it is treated as no rectangle rather than as an empty map.
+    const view =
+      input.viewport && input.viewport.east >= input.viewport.west && input.viewport.north >= input.viewport.south
+        ? input.viewport
+        : null;
+
     const [rows, boundary] = await Promise.all([
       this.turfHouseholds.getCoverageRows({ tenant_id: auth.tenant_id, from, to }),
       // This report spans every campaign in the workspace, so there is no one campaign to read the
@@ -574,8 +626,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       }),
     ]);
 
-    const doors: CoverageDoor[] = [];
+    const inView: CoverageDoor[] = [];
     const turfPoints = new Map<string, { name: string; boundary_name: string | null; pts: LatLng[] }>();
+    const turfCounts = new Map<string, { doors: number; conversation: number; attempted: number; not_yet: number }>();
     // Keyed on the raw name with null as its own key, not on the display label, so a real area
     // that happens to be named exactly like the bucket label can never be merged into the bucket.
     const areas = new Map<string | null, CoverageArea>();
@@ -583,7 +636,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     for (const r of rows) {
       const status = this.coverageStatus(r);
       const point: LatLng = { lat: r.lat, lng: r.lng };
-      doors.push({ ...point, status });
+      if (view === null || withinViewport(point, view)) inView.push({ ...point, status });
 
       let turf = turfPoints.get(r.turf_id);
       if (!turf) {
@@ -591,6 +644,14 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         turfPoints.set(r.turf_id, turf);
       }
       turf.pts.push(point);
+
+      let counts = turfCounts.get(r.turf_id);
+      if (!counts) {
+        counts = { doors: 0, conversation: 0, attempted: 0, not_yet: 0 };
+        turfCounts.set(r.turf_id, counts);
+      }
+      counts.doors += 1;
+      counts[status] += 1;
 
       let area = areas.get(r.boundary_name);
       if (!area) {
@@ -610,14 +671,18 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     const turfs: CoverageTurf[] = [];
     for (const [id, turf] of turfPoints) {
       const path = convexHull(turf.pts);
-      if (path.length >= MIN_HULL_POINTS) {
-        turfs.push({ id, name: turf.name, boundary_name: turf.boundary_name, path });
-      }
+      if (path.length < MIN_HULL_POINTS) continue;
+      const counts = turfCounts.get(id) ?? { doors: 0, conversation: 0, attempted: 0, not_yet: 0 };
+      turfs.push({ id, name: turf.name, boundary_name: turf.boundary_name, path, ...counts });
     }
 
     const byBoundary = [...areas.values()].sort((a, b) => b.doors - a.doors);
     return {
-      doors,
+      // Past the cap the doors are dropped rather than truncated: a sample of a riding's doors
+      // would misreport which parts of it have been walked, and that is what this screen is for.
+      doors: inView.length > COVERAGE_MAX_DOORS ? [] : inView,
+      doors_in_view: inView.length,
+      doors_total: rows.length,
       turfs,
       byBoundary,
       boundary_label: boundary.label,
