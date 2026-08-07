@@ -6,12 +6,14 @@ import type { CellParams, ColumnDef as ColDef } from '@frontend/shared/component
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
 import { DataGridUtilsService } from '@frontend/shared/components/datagrid/services/utils.service';
 import { GrainTabs } from '@frontend/shared/components/grain-tabs/grain-tabs';
+import type { BoundaryAreaColumnType } from '@common';
 import { UpdateHouseholdsObj } from '../../../../../../../libs/common/src';
 
 import { provideDataGridConfig } from '@frontend/shared/components/datagrid/datagrid.tokens';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
+import { AreaColumnsService } from '../../../services/area-columns.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { PersonsService } from '../../persons/services/persons-service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
@@ -97,6 +99,7 @@ export class HouseholdsGrid implements OnInit {
   public readonly _loading = createLoadingGate();
   private readonly householdsService = inject(HouseholdsService);
   private readonly campaignCtx = inject(CampaignContextService);
+  private readonly areaColumnsSvc = inject(AreaColumnsService);
 
   private readonly grid = viewChild<DataGrid<'households', never>>('grid');
   private readonly grainTabs = viewChild(GrainTabs);
@@ -203,9 +206,11 @@ export class HouseholdsGrid implements OnInit {
       hide: true,
       minWidth: 220,
     },
-    // The question most campaigns actually ask. Which of Ontario's 124 ridings a door is in is the
-    // column above; this one says whether it is in THIS campaign's. Hidden unless the campaign
-    // names a seat, because for an at-large office there is no seat to be inside or outside of.
+    // Whether the door is in THIS campaign's seat, as a yes/no. Hidden by default: the area column
+    // above already names the riding, which answers the same question and also says which other
+    // riding a door outside yours is in. Kept in the column chooser, where it is the quickest way
+    // to sort your own doors to the top, and hidden outright for an at-large office, which has no
+    // seat area to be inside or outside of.
     {
       field: 'seat_status',
       headerName: 'In your seat',
@@ -261,13 +266,49 @@ export class HouseholdsGrid implements OnInit {
       // jurisdiction spec — so a failed load costs a word, not the page. Everything below runs.
       console.error('Failed to load campaign context for household column headings', err);
     }
+    // Headings first, so the words the campaign uses do not wait on a second request.
     this.applyJurisdictionLabels();
+    try {
+      this.applyAreaColumns(await this.areaColumnsSvc.list(this.campaignCtx.activeCampaignId()));
+    } catch (err) {
+      // A failed read costs the per-map columns, not the grid: every fixed column is already built.
+      console.error('Failed to load boundary maps for household area columns', err);
+    }
     this.columnsReady.set(true);
 
     await this.loadTagOptions();
     await this.loadIssueOptions();
     void this.loadGrainSentence();
     if (!this.inline()) void this.loadUnhoused();
+  }
+
+  /**
+   * One more area column per boundary map the workspace holds, headed with that map's own name.
+   *
+   * A household is inside several boundaries at once, and until now only the campaign's own map had
+   * a column: a provincial campaign's ward, precinct and municipality all shared the hidden "All
+   * boundaries" cell, where they can only be searched as text. One column each is what the CSV
+   * export already does, and what makes "sort by ward" a thing the grid can do.
+   *
+   * Seat-area maps are shown, subdivisions and localities start hidden — decided by the map's
+   * `role`, never by what its areas are called.
+   */
+  private applyAreaColumns(areaColumns: readonly BoundaryAreaColumnType[]): void {
+    // The campaign's own map is the `electoral_area` column, under the campaign's word for it.
+    const extras: ColDef[] = areaColumns
+      .filter((column) => !column.is_seat_set)
+      .map((column) => ({
+        field: column.field,
+        headerName: column.label,
+        editable: false,
+        hide: column.role !== 'seat_area',
+        minWidth: 140,
+        cellClass: SECONDARY_CELL_CLASS,
+      }));
+    if (extras.length === 0) return;
+
+    const anchor = this.col.findIndex((c) => c.field === 'any_electoral_area');
+    this.col.splice(anchor < 0 ? this.col.length : anchor, 0, ...extras);
   }
 
   /**
@@ -287,13 +328,16 @@ export class HouseholdsGrid implements OnInit {
         c.headerName = `All boundaries (${seatPlural.toLowerCase()} and any other map)`;
       }
       if (c.field === 'seat_status') {
-        // Headed with this level of government's own word — "In your riding", "In your wards" —
-        // rather than the area's name, and shown only when the campaign represents an area at all.
-        // An at-large office represents none, and a column headed "In your ward" over a permanently
-        // empty answer is worse than no column.
-        c.hide = this.campaignCtx.activeSeatAreaNames().length === 0;
+        // Headed with this level of government's own word — "In your riding", "In your wards".
         c.headerName = this.campaignCtx.seatTerritoryLabel();
       }
+    }
+
+    // An at-large office (a mayor, a governor) represents no area, so "in your seat" has no answer
+    // for any door. Drop the column rather than offering an empty one in the column chooser.
+    if (this.campaignCtx.activeSeatAreaNames().length === 0) {
+      const at = this.col.findIndex((c) => c.field === 'seat_status');
+      if (at >= 0) this.col.splice(at, 1);
     }
   }
 

@@ -1,4 +1,4 @@
-import type { AliasedRawBuilder, Kysely, Transaction } from 'kysely';
+import type { AliasedRawBuilder, Kysely, RawBuilder, Transaction } from 'kysely';
 import { sql } from 'kysely';
 
 import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
@@ -255,6 +255,119 @@ export async function seatStatusForHousehold(
 /** The two grid/rule field keys that read the lateral `hd_areas` aliases. */
 const ELECTORAL_FIELD_KEYS: readonly string[] = ['electoral_area', 'any_electoral_area'];
 
+// ── One grid column per boundary map ────────────────────────────────────────────────────────────
+//
+// `electoral_area` answers "which area of the campaign's own map", and `any_electoral_area` answers
+// "every area, joined into one string". Neither answers "which ward" for a campaign whose own map
+// is ridings, because the ward name is inside that joined string with no column of its own — the
+// same problem the CSV export already solved by writing one column per map (see
+// `electoralExportColumns` in modules/exports/export-tables.ts). These helpers give the grids the
+// same thing: one sortable, filterable column per boundary map the workspace holds.
+//
+// The column is headed with the map's OWN label ("Wards", "Ottawa wards 2022"), never with a word
+// this code inferred from the area names. What a map means still comes only from `role`.
+
+/**
+ * Field-name prefix for a per-map area column: `area_set_<boundary set id>`.
+ *
+ * The id rather than the label, because the field name is a stable key — the grid persists column
+ * order and visibility under it, and a saved sort names it. Renaming a map must not silently reset
+ * a person's column layout, and two maps may legitimately share a label.
+ */
+export const AREA_SET_FIELD_PREFIX = 'area_set_';
+
+/**
+ * Boundary set ids are integers. The id is spliced into a SQL alias through `sql.raw`, which does
+ * no escaping at all, so anything that is not digits is dropped rather than queried.
+ */
+const AREA_SET_ID_PATTERN = /^\d+$/;
+
+/** The grid field name for one boundary map. */
+export function areaSetField(setId: string): string {
+  return `${AREA_SET_FIELD_PREFIX}${setId}`;
+}
+
+/** One boundary map, as a grid column. */
+export interface AreaSetColumn {
+  /** `boundary_sets.id`. */
+  set_id: string;
+  /** The grid field / SQL alias, `area_set_<id>`. */
+  field: string;
+  /** `boundary_sets.label` — the map's own name, which is the column heading. */
+  label: string;
+  /** `boundary_sets.role` — what the map's areas mean. The grid shows seat areas by default. */
+  role: string;
+  /**
+   * True for the map the campaign's own seat is drawn on. That map already has a column —
+   * `electoral_area`, headed with the campaign's word for it — so the grid skips this one rather
+   * than showing the same area name twice.
+   */
+  is_seat_set: boolean;
+}
+
+/** Seat areas first, then voting subdivisions, then localities — same order as the detail page. */
+const AREA_SET_ROLE_ORDER = sql`case role when 'seat_area' then 0 when 'subdivision' then 1 else 2 end`;
+
+/**
+ * Every boundary map the workspace holds, as grid columns, in display order.
+ *
+ * One query plus the seat-set resolution. Called once per grid request, alongside the seat context
+ * the same request already resolves.
+ */
+export async function listAreaSetColumns(
+  db: Db,
+  tenantId: string,
+  campaignId?: string | null,
+): Promise<AreaSetColumn[]> {
+  const [sets, seatSetId] = await Promise.all([
+    db
+      .selectFrom('boundary_sets')
+      .select(['id', 'label', 'role'])
+      .where('tenant_id', '=', tenantId)
+      .orderBy(AREA_SET_ROLE_ORDER)
+      .orderBy('label', 'asc')
+      .orderBy('id', 'asc')
+      .execute(),
+    resolveSeatSetId(db, tenantId, campaignId ?? null),
+  ]);
+
+  return sets
+    .map((set) => ({ id: String(set.id), label: set.label, role: set.role }))
+    .filter((set) => AREA_SET_ID_PATTERN.test(set.id))
+    .map((set) => ({
+      set_id: set.id,
+      field: areaSetField(set.id),
+      label: set.label,
+      role: set.role,
+      is_seat_set: seatSetId != null && seatSetId === set.id,
+    }));
+}
+
+/**
+ * The per-map aggregates selected INSIDE the `hd_areas` lateral, alongside
+ * {@link electoralAreaSelects}. One `max() filter (...)` per map, over rows the lateral is already
+ * scanning, so the extra maps cost no extra pass.
+ */
+export function areaSetLateralSelects(columns: readonly AreaSetColumn[]): AliasedRawBuilder<string | null, string>[] {
+  return columns.map((column) =>
+    sql<string | null>`max(hd.name) filter (where hd.set_id = ${column.set_id})`.as(column.field),
+  );
+}
+
+/**
+ * References to those aggregates from the outer query — for GROUP BY, which takes the expression
+ * and not the alias. Safe as `sql.raw` because the alias is `area_set_` plus digits and nothing else
+ * ever reaches {@link listAreaSetColumns}'s output.
+ */
+export function areaSetRefs(columns: readonly AreaSetColumn[]): RawBuilder<string | null>[] {
+  return columns.map((column) => sql<string | null>`hd_areas.${sql.raw(column.field)}`);
+}
+
+/** The same columns, read back off the lateral in the outer SELECT so they land on the row. */
+export function areaSetOuterSelects(columns: readonly AreaSetColumn[]): AliasedRawBuilder<string | null, string>[] {
+  return columns.map((column) => sql<string | null>`hd_areas.${sql.raw(column.field)}`.as(column.field));
+}
+
 /**
  * Whether a grid request's filters actually read the electoral columns.
  *
@@ -269,9 +382,8 @@ export function referencesElectoralAreas(
   filterModel: Record<string, { op?: string; value?: unknown } | undefined>,
   advancedFilterModel: unknown,
 ): boolean {
-  for (const key of ELECTORAL_FIELD_KEYS) {
-    const filter = filterModel[key];
-    if (!filter) continue;
+  for (const [key, filter] of Object.entries(filterModel)) {
+    if (!filter || !isElectoralField(key)) continue;
     const op = filter.op ?? 'contains';
     // Mirrors applyColumnFilter's no-op rule: only isEmpty/isNotEmpty apply without a value.
     if (op === 'isEmpty' || op === 'isNotEmpty') return true;
@@ -280,11 +392,16 @@ export function referencesElectoralAreas(
   return advancedNodeReferencesElectoral(advancedFilterModel);
 }
 
+/** The two fixed electoral fields, plus one per boundary map. All read the `hd_areas` lateral. */
+function isElectoralField(field: string): boolean {
+  return ELECTORAL_FIELD_KEYS.includes(field) || field.startsWith(AREA_SET_FIELD_PREFIX);
+}
+
 /** Rule nodes (new shape or legacy) carry a string `field`; group nodes carry `rules`. */
 function advancedNodeReferencesElectoral(node: unknown): boolean {
   if (node == null || typeof node !== 'object') return false;
   const rec = node as { field?: unknown; rules?: unknown };
-  if (typeof rec.field === 'string') return ELECTORAL_FIELD_KEYS.includes(rec.field);
+  if (typeof rec.field === 'string') return isElectoralField(rec.field);
   if (Array.isArray(rec.rules)) return rec.rules.some((child) => advancedNodeReferencesElectoral(child));
   return false;
 }

@@ -11,6 +11,7 @@ import type {
   BoundaryFeatureListType,
   BoundaryFeatureRowType,
   BoundaryGeometryType,
+  BoundaryAreaColumnType,
   BoundaryHouseholdPinsType,
   BoundarySetRowType,
   BoundaryValidationType,
@@ -34,6 +35,7 @@ import {
   countBoundaryVertices,
 } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
+import { listAreaSetColumns } from '../households/electoral-areas';
 import { BaseController } from '../../lib/base.controller';
 import { enqueueBoundaryMatch } from '../../lib/gis/boundary-jobs';
 import { asCoordinate, countContainingFeatures, loadBoundarySets } from '../../lib/gis/boundary-match';
@@ -110,6 +112,18 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
 
   public async listSets(auth: IAuthKeyPayload): Promise<BoundarySetRowType[]> {
     return this.listSetRows(auth.tenant_id);
+  }
+
+  /**
+   * The workspace's boundary maps described as grid columns — what the people and household grids
+   * build their per-map area columns from.
+   *
+   * Separate from `listSets` because it answers a different question and carries the one thing the
+   * settings list has no reason to know: which of these maps the given campaign's own seat is drawn
+   * on, so the grid does not show that area name twice.
+   */
+  public listAreaColumns(auth: IAuthKeyPayload, campaignId: string | null): Promise<BoundaryAreaColumnType[]> {
+    return listAreaSetColumns(this.getRepo().db, auth.tenant_id, campaignId);
   }
 
   private async listSetRows(tenantId: string): Promise<BoundarySetRowType[]> {

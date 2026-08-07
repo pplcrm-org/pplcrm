@@ -1,5 +1,10 @@
 <!-- Template for persons grid -->
 <div class="flex h-full min-h-0 flex-col gap-6">
+  <!-- The grid is created once and copies its column definitions then, so it waits until the
+       electoral columns are final: their headings are the campaign's own words, and there is one
+       column per boundary map the workspace holds. It is created either way — a campaign context or
+       a boundary read that fails still resolves to a heading and an empty map list. -->
+  @if (columnsReady()) {
   <pc-datagrid
     #grid
     [showToolbar]="!inline()"
@@ -29,6 +34,7 @@
       }
     </div>
   </pc-datagrid>
+  }
 </div>
 
 <pc-modal-shell #confirmAddressEdit title="Address edit" icon="home">

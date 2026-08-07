@@ -127,6 +127,8 @@ async function placeHouseholdOnMap(
       name: args.areaName,
     })
     .execute();
+
+  return String(set.id);
 }
 
 async function cleanTenant(db: any, tenantId: string) {
@@ -385,6 +387,58 @@ describe('HouseholdsController', () => {
     });
     expect(anyFiltered.rows).toHaveLength(1);
     expect(anyFiltered.count).toBe(1);
+  });
+
+  it('gives every boundary map its own row field, filterable and sortable on its own', async () => {
+    // A door is inside a ward AND a polling division at the same time. One joined
+    // "Ward 4 · Poll 12" string can only be searched as text, so each map gets a field of its own —
+    // which is what lets the grid show a ward column beside the riding column.
+    const door = (await controller.addHousehold({ street1: '4 Two Maps Rd' }, auth)) as { id: string };
+    await controller.addHousehold({ street1: '9 Mapless Ave' }, auth);
+    const wardSetId = await placeHouseholdOnMap(db, {
+      tenantId,
+      userId,
+      householdId: door.id,
+      slug: `wards-${rand()}`,
+      label: 'City wards',
+      role: 'seat_area',
+      areaName: 'Ward 4',
+    });
+    const pollSetId = await placeHouseholdOnMap(db, {
+      tenantId,
+      userId,
+      householdId: door.id,
+      slug: `polls-${rand()}`,
+      label: 'Polling divisions',
+      role: 'subdivision',
+      areaName: 'Poll 12',
+    });
+
+    const all = await controller.getAllWithPeopleCount(auth);
+    const row = all.rows.find((r: any) => String(r['id']) === String(door.id));
+    expect(row?.[`area_set_${wardSetId}`]).toBe('Ward 4');
+    expect(row?.[`area_set_${pollSetId}`]).toBe('Poll 12');
+    // The household on no map has both fields, empty — not a missing key.
+    const mapless = all.rows.find((r: any) => String(r['id']) !== String(door.id));
+    expect(mapless?.[`area_set_${wardSetId}`] ?? null).toBeNull();
+
+    // Filtering names one map exactly, and the count query agrees with the rows it returned.
+    const filtered = await controller.getAllWithPeopleCount(auth, {
+      filterModel: { [`area_set_${pollSetId}`]: { op: 'contains', value: 'poll 12' } },
+    });
+    expect(filtered.rows).toHaveLength(1);
+    expect(String(filtered.rows[0]['id'])).toBe(String(door.id));
+    expect(filtered.count).toBe(1);
+
+    // Sorting by a per-map column is accepted; a sort naming a map that no longer exists is
+    // skipped rather than passed through as an unknown identifier that fails the whole query.
+    const sorted = await controller.getAllWithPeopleCount(auth, {
+      sortModel: [
+        { colId: `area_set_${wardSetId}`, sort: 'desc' },
+        { colId: 'area_set_999999999', sort: 'asc' },
+      ],
+    });
+    expect(sorted.rows).toHaveLength(2);
   });
 
   it('answers "in my riding" four ways, and never calls an unchecked household outside the map', async () => {

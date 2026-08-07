@@ -170,6 +170,19 @@ a council district and a precinct — so each pass overwrote the last.
 | `boundary_features`   | One row per named area of an editable set: `geometry` (GeoJSON Polygon/MultiPolygon) + `bbox` `[minLng,minLat,maxLng,maxLat]` |
 | `household_districts` | One row per household per layer — `UNIQUE (household_id, set_id)`                                                             |
 
+**Grid columns: one per map.** The people and household grids show one area
+column per boundary map the workspace holds — the campaign's own map first,
+headed with the campaign's word for its areas (`electoral_area`), then one
+column per other map, headed with that map's own `label` and carrying the field
+name `area_set_<boundary set id>`. Built by `listAreaSetColumns` /
+`areaSetLateralSelects` / `areaSetOuterSelects` / `areaSetRefs` in
+`modules/households/electoral-areas.ts`, selected by both `persons.repo.ts` and
+`households.repo.ts`, and served to the browser by the `boundaries.areaColumns`
+tRPC query (frontend: `services/area-columns.service.ts`). Seat-area maps are
+visible by default and subdivision/locality maps start hidden — decided by
+`role`, never by the map's name. The CSV export already did the same thing
+(`electoralExportColumns`), and the two must keep agreeing.
+
 The unique key is `(household_id, set_id)` and **not** `(household_id, level)`
 or `(…, kind)` on purpose: a Massachusetts household is genuinely in a ward and
 a precinct (both subdivisions of the same city), and a redistricting year needs

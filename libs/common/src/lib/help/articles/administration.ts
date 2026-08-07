@@ -585,6 +585,10 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         text: 'One American address sits inside a congressional district **and** a state senate district **and** a state house district **and** a city council district **and** a precinct, all at the same time: five different lines drawn over one house. pplCRM keeps one answer per map, so no level ever overwrites another, and a household page lists every area it belongs to rather than the last one that happened to be worked out.',
       },
       {
+        kind: 'p',
+        text: 'The [People](/people) and [Households](/households) grids follow the same rule: one column per map you hold. The campaign’s own map is the first one, headed with your word for it (**Riding**, **Ward**, **Congressional district**), and every other map you hold gets its own column beside it — so if you also hold a ward map, a **Wards** column is there, sortable and filterable on its own. Maps whose areas elect nobody, such as precincts and polling divisions, start switched off; turn them on from the column chooser. A CSV export writes the same columns.',
+      },
+      {
         kind: 'callout',
         tone: 'info',
         title: 'Old and new maps live side by side',

@@ -9,6 +9,8 @@ import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { DATA_GRID_CONFIG } from '@frontend/shared/components/datagrid/datagrid.tokens';
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
+import { AreaColumnsService } from '../../../services/area-columns.service';
 import { signal } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -20,6 +22,42 @@ class MockPersonsService {
   abort = vi.fn();
   refreshCount = signal(0);
   import = vi.fn();
+}
+
+/**
+ * A provincial campaign in a city: its own seat map is ridings, and the workspace also holds the
+ * municipal ward map. 'Riding' is this campaign's word for its own areas.
+ */
+const mockCampaignContext = {
+  ensureLoaded: vi.fn().mockResolvedValue(undefined),
+  activeCampaignId: () => 'c1',
+  activeCampaign: () => ({ id: 'c1', name: 'Office' }),
+  isArchivedContext: () => false,
+  seatLabel: () => 'Riding',
+  seatLabelPlural: () => 'Ridings',
+  subdivisionLabel: () => 'Poll',
+  subdivisionLabelPlural: () => 'Polls',
+  activeSeatAreaNames: () => ['Milton'],
+  seatTerritoryLabel: () => 'In your riding',
+};
+
+/** The two maps the workspace holds: the campaign's own riding map, and a ward map. */
+const mockAreaColumns = {
+  list: vi.fn().mockResolvedValue([
+    { set_id: '1', field: 'area_set_1', label: 'Ridings', role: 'seat_area', is_seat_set: true },
+    { set_id: '2', field: 'area_set_2', label: 'Wards', role: 'seat_area', is_seat_set: false },
+  ]),
+};
+
+/**
+ * Settle the two-step column build: the campaign context answers, then the boundary-map read does.
+ * `whenStable` drains one continuation, so a second pass is what makes the per-map columns visible.
+ */
+async function settleColumns(fixture: ComponentFixture<PersonsGrid>): Promise<void> {
+  fixture.detectChanges();
+  await fixture.whenStable();
+  await fixture.whenStable();
+  fixture.detectChanges();
 }
 
 describe('PersonsGrid', () => {
@@ -71,6 +109,8 @@ describe('PersonsGrid', () => {
         },
         { provide: AbstractAPIService, useValue: mockPersonsSvc },
         { provide: TagOptionsService, useValue: mockTagOptionsSvc },
+        { provide: CampaignContextService, useValue: mockCampaignContext },
+        { provide: AreaColumnsService, useValue: mockAreaColumns },
         // pc-grain-tabs injects Households/Companies services and calls count();
         // the count-sentence also calls countDistinctWards / countWithCompany.
         {
@@ -97,6 +137,37 @@ describe('PersonsGrid', () => {
   it('should create and initialize columns', () => {
     expect(component).toBeTruthy();
     expect(component['col']).toBeDefined();
+  });
+
+  it('names the riding a person lives in, instead of answering yes or no', async () => {
+    await settleColumns(fixture);
+    const areaCol = component['col'].find((c) => c.field === 'electoral_area');
+    // The area's own name, headed with the campaign's word for it. "Milton" says everything "Yes"
+    // says and also answers the question for the people who live somewhere else.
+    expect(areaCol?.headerName).toBe('Riding');
+    expect(areaCol?.hide).toBe(false);
+    // The yes/no column is still available, just no longer the only answer on screen.
+    const seatCol = component['col'].find((c) => c.field === 'seat_status');
+    expect(seatCol?.headerName).toBe('In your riding');
+    expect(seatCol?.hide).toBe(true);
+  });
+
+  it('gives the ward map a column of its own, and the campaign map only one', async () => {
+    await settleColumns(fixture);
+    const fields = component['col'].map((c) => c.field);
+    // The riding map IS the campaign's seat map, already shown as `electoral_area`.
+    expect(fields).not.toContain('area_set_1');
+    const wards = component['col'].find((c) => c.field === 'area_set_2');
+    expect(wards?.headerName).toBe('Wards');
+    // A ward elects a councillor, so it is shown rather than tucked into the column chooser.
+    expect(wards?.hide).toBe(false);
+  });
+
+  it('hides the area column while the workspace holds no boundary map', async () => {
+    mockAreaColumns.list.mockResolvedValueOnce([]);
+    await settleColumns(fixture);
+    const areaCol = component['col'].find((c) => c.field === 'electoral_area');
+    expect(areaCol?.hide).toBe(true);
   });
 
   it('should stop deletion when first delete confirmation is rejected', async () => {

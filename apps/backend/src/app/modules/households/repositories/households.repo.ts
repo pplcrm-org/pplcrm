@@ -11,8 +11,12 @@ import { BaseRepository } from '../../../lib/base.repo';
 import { matchPointToSets, requiredSetIdsForTenant } from '../../../lib/gis/boundary-match';
 import { enqueueGeocodeJobs } from '../../../lib/gis/geocode-queue';
 import {
+  areaSetLateralSelects,
+  areaSetOuterSelects,
+  areaSetRefs,
   electoralAreaSelects,
   getHouseholdAreas,
+  listAreaSetColumns,
   referencesElectoralAreas,
   resolveSeatContext,
   resolveSeatSetId,
@@ -69,11 +73,15 @@ const SORTABLE_HOUSEHOLD_ALIASES: readonly string[] = [
  * from a dropped column (the old `ward`/`district`/`precinct` text columns), a mistyped id or a
  * dotted reference must be SKIPPED, not passed through: an unknown identifier makes Postgres
  * reject the whole query and the grid never loads.
+ *
+ * `areaSetFields` is the set of per-boundary-map aliases this particular query selected — checked
+ * by membership for the same reason, since a map can be deleted after a sort on it was saved.
  */
-function resolveHouseholdSortColumn(colId: unknown): string | null {
+function resolveHouseholdSortColumn(colId: unknown, areaSetFields: ReadonlySet<string>): string | null {
   if (typeof colId !== 'string') return null;
   if (SORTABLE_HOUSEHOLD_COLUMNS.includes(colId)) return `households.${colId}`;
   if (SORTABLE_HOUSEHOLD_ALIASES.includes(colId)) return colId;
+  if (areaSetFields.has(colId)) return colId;
   return null;
 }
 
@@ -264,6 +272,11 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     // is what stops a household checked before the map existed from reading as "outside" it.
     const seat = await resolveSeatContext(trx ?? this.db, tenantId, options.campaignId ?? null);
     const seatSetId = seat.setId;
+    // One column per boundary map, so a ward map the campaign does not contest still gets a column
+    // of its own. A full scan reads membership only, so it skips both the read and the aggregates.
+    const areaSetColumns =
+      input.fullScan != null ? [] : await listAreaSetColumns(trx ?? this.db, tenantId, options.campaignId ?? null);
+    const areaSetFields = new Set(areaSetColumns.map((column) => column.field));
     const searchStr = this.normalizeSearch(options.searchStr);
     const tags = input.tags?.map((t) => t.trim().toLowerCase()).filter(Boolean);
     const issues = (input.issues || options.issues)?.map((i) => i.trim().toLowerCase()).filter(Boolean);
@@ -301,7 +314,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
                 .selectFrom('household_districts as hd')
                 .whereRef('hd.household_id', '=', 'households.id')
                 .whereRef('hd.tenant_id', '=', 'households.tenant_id')
-                .select(electoralAreaSelects(seatSetId))
+                .select([...electoralAreaSelects(seatSetId), ...areaSetLateralSelects(areaSetColumns)])
                 .as('hd_areas'),
             (join: JoinBuilder<Models, 'households'>) => join.onTrue(),
           ),
@@ -354,6 +367,10 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         // against `hd_areas` directly. Guarded because without the lateral the aliases don't exist.
         q = this.applyColumnFilter(q, 'hd_areas.electoral_area', filterModel['electoral_area'] ?? {});
         q = this.applyColumnFilter(q, 'hd_areas.any_electoral_area', filterModel['any_electoral_area'] ?? {});
+        // The same, once per boundary map, so a filter can name one map exactly.
+        for (const column of areaSetColumns) {
+          q = this.applyColumnFilter(q, `hd_areas.${column.field}`, filterModel[column.field] ?? {});
+        }
       }
       if (filterModel['tags']?.value && filterModel['issues']?.value) {
         // Both filters present — use OR grouping to avoid contradictory AND on tags.type
@@ -402,6 +419,10 @@ export class HouseholdRepo extends BaseRepository<'households'> {
           ? {
               electoral_area: { col: 'hd_areas.electoral_area' },
               any_electoral_area: { col: 'hd_areas.any_electoral_area' },
+              // And one field per boundary map, so a rule can name a single map exactly.
+              ...Object.fromEntries(
+                areaSetColumns.map((column) => [column.field, { col: `hd_areas.${column.field}` }]),
+              ),
             }
           : {}),
       };
@@ -450,6 +471,9 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.geocoding_status',
         'households.updated_at',
       ])
+      // One more column per boundary map, so a workspace holding both a riding map and a ward map
+      // gets a column for each instead of the two names joined into one string.
+      .select(areaSetOuterSelects(areaSetColumns))
       .select(seatStatusSelect(seatSetId, seat.seatAreaNames, seat.setStampedAt))
       .select((eb) => [
         eb
@@ -503,6 +527,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.notes',
         'hd_areas.electoral_area',
         'hd_areas.any_electoral_area',
+        ...areaSetRefs(areaSetColumns),
         'households.geocoding_status',
         'households.created_at',
         'households.updated_at',
@@ -521,7 +546,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
       // batches repeat and skip rows. Nothing reads the row order of a membership scan.
       .$if(!isFullScan && !!options.sortModel?.length, (qb) =>
         (options.sortModel ?? []).reduce((acc, sort) => {
-          const col = resolveHouseholdSortColumn(sort.colId);
+          const col = resolveHouseholdSortColumn(sort.colId, areaSetFields);
           if (col == null) return acc;
           return acc.orderBy(col as ReferenceExpression<Models, 'households'>, sort.sort);
         }, qb),

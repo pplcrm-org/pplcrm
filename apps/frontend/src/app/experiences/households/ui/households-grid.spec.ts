@@ -7,6 +7,7 @@ import { PersonsService } from '../../persons/services/persons-service';
 import { CompaniesService } from '../../companies/services/companies-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
+import { AreaColumnsService } from '../../../services/area-columns.service';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { DATA_GRID_CONFIG } from '@frontend/shared/components/datagrid/datagrid.tokens';
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
@@ -41,6 +42,30 @@ const mockCampaignContext = {
   /** Always the level's own word, plural once the seat is made of several areas. */
   seatTerritoryLabel: () => 'In your ward',
 };
+
+/**
+ * The workspace's boundary maps, as the grid asks for them. Two here: the ward map the campaign
+ * contests (already the `electoral_area` column, so it must not get a second one) and a precinct
+ * map, which is a subdivision and therefore starts hidden in the column chooser.
+ */
+const mockAreaColumns = {
+  list: vi.fn().mockResolvedValue([
+    { set_id: '1', field: 'area_set_1', label: 'Wards', role: 'seat_area', is_seat_set: true },
+    { set_id: '2', field: 'area_set_2', label: 'Polling divisions', role: 'subdivision', is_seat_set: false },
+  ]),
+};
+
+/**
+ * Settle the two-step column build: the campaign context answers, then the boundary-map read does.
+ * `whenStable` drains one continuation, so a second pass is what makes the per-map columns and
+ * `columnsReady` observable here.
+ */
+async function settleColumns(fixture: ComponentFixture<HouseholdsGrid>): Promise<void> {
+  fixture.detectChanges();
+  await fixture.whenStable();
+  await fixture.whenStable();
+  fixture.detectChanges();
+}
 
 describe('HouseholdsGrid', () => {
   let component: HouseholdsGrid;
@@ -95,6 +120,7 @@ describe('HouseholdsGrid', () => {
         { provide: AbstractAPIService, useValue: mockHouseholdsSvc },
         { provide: TagOptionsService, useValue: mockTagOptionsSvc },
         { provide: CampaignContextService, useValue: mockCampaignContext },
+        { provide: AreaColumnsService, useValue: mockAreaColumns },
       ],
     })
       .overrideComponent(HouseholdsGrid, {
@@ -128,20 +154,35 @@ describe('HouseholdsGrid', () => {
     await fixture.whenStable();
     const col = component['col'].find((c) => c.field === 'seat_status');
     expect(col?.headerName).toBe('In your ward');
-    expect(col?.hide).toBe(false);
+    // Hidden by default: the area column beside it names the ward outright, which answers the same
+    // question and also says which other ward a door outside yours is in.
+    expect(col?.hide).toBe(true);
   });
 
-  it('hides the territory column for an at-large office, which represents no single area', async () => {
-    // A mayoral campaign runs city-wide. Every ward matters to it, so singling one out is wrong.
+  it('drops the territory column for an at-large office, which represents no single area', async () => {
+    // A mayoral campaign runs city-wide. Every ward matters to it, so singling one out is wrong,
+    // and an always-empty column in the chooser is worse than no column.
     mockCampaignContext.activeSeatAreaNames = () => [];
     try {
       fixture.detectChanges();
       await fixture.whenStable();
-      const col = component['col'].find((c) => c.field === 'seat_status');
-      expect(col?.hide).toBe(true);
+      expect(component['col'].find((c) => c.field === 'seat_status')).toBeUndefined();
     } finally {
       mockCampaignContext.activeSeatAreaNames = () => ['Ward 4'];
     }
+  });
+
+  it('gives every boundary map its own column, except the one the campaign contests', async () => {
+    await settleColumns(fixture);
+    const fields = component['col'].map((c) => c.field);
+    // The ward map IS the campaign's seat map, already shown as `electoral_area` under the word
+    // "Ward" — a second column of the same area names would just repeat it.
+    expect(fields).not.toContain('area_set_1');
+    // The polling-division map is a different map, so it gets a column of its own, headed with the
+    // map's own name and hidden by default because a subdivision elects nobody.
+    const polls = component['col'].find((c) => c.field === 'area_set_2');
+    expect(polls?.headerName).toBe('Polling divisions');
+    expect(polls?.hide).toBe(true);
   });
 
   it('keeps "outside the map" distinct from "not looked yet"', () => {
@@ -155,8 +196,7 @@ describe('HouseholdsGrid', () => {
   });
 
   it('heads the electoral column with the active campaign’s own word', async () => {
-    fixture.detectChanges();
-    await fixture.whenStable();
+    await settleColumns(fixture);
     const areaCol = component['col'].find((c) => c.field === 'electoral_area');
     expect(areaCol?.headerName).toBe('Ward');
     expect(component['columnsReady']()).toBe(true);
@@ -167,8 +207,7 @@ describe('HouseholdsGrid', () => {
     // 'other' spec) — the grid holds no fallback string of its own, so even a failed load reads
     // whatever seatLabel() answers.
     mockCampaignContext.ensureLoaded.mockRejectedValueOnce(new Error('offline'));
-    fixture.detectChanges();
-    await fixture.whenStable();
+    await settleColumns(fixture);
     const areaCol = component['col'].find((c) => c.field === 'electoral_area');
     expect(areaCol?.headerName).toBe('Ward');
     expect(component['columnsReady']()).toBe(true);
@@ -251,9 +290,7 @@ describe('HouseholdsGrid', () => {
     // The grid is created only after the campaign context answers, because its column headings
     // carry the campaign's own word for an electoral area and the grid copies its column
     // definitions once. So this waits for that load before reaching for the grid.
-    fixture.detectChanges();
-    await fixture.whenStable();
-    fixture.detectChanges();
+    await settleColumns(fixture);
 
     const cityCol = component['col'].find((c) => c.field === 'city');
     expect(cityCol).toBeDefined();

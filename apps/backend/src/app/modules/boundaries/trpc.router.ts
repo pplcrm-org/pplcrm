@@ -5,6 +5,7 @@ import {
   AddBoundaryFeatureObj,
   AddDrawnBoundarySetObj,
   AddPublishedBoundarySetObj,
+  BoundaryAreaColumnsInputObj,
   BoundaryHouseholdPinsInputObj,
   UpdateBoundaryFeatureObj,
   UploadBoundarySetObj,
@@ -30,6 +31,16 @@ const controller = new BoundariesController();
 
 function listSets() {
   return authProcedure.query(({ ctx }) => controller.listSets(ctx.auth));
+}
+
+/**
+ * The workspace's boundary maps as grid columns. A read like `list`: it says which maps exist and
+ * what they are called, which is less than the household list already tells the same caller.
+ */
+function listAreaColumns() {
+  return authProcedure
+    .input(BoundaryAreaColumnsInputObj.optional())
+    .query(({ ctx, input }) => controller.listAreaColumns(ctx.auth, input?.campaignId ?? null));
 }
 
 function listFeatures() {
@@ -117,6 +128,7 @@ function validate() {
 
 export const BoundariesRouter = router({
   list: listSets(),
+  areaColumns: listAreaColumns(),
   features: listFeatures(),
   householdPins: householdPins(),
   createDrawn: createDrawn(),

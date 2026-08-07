@@ -501,6 +501,7 @@ apps/
             trpc-types.ts
             user-message.ts
             volunteer-service.ts
+          area-columns.service.ts
           breadcrumb-defaults.service.ts
           bug-report-dialog.service.ts
           campaign-context.service.ts

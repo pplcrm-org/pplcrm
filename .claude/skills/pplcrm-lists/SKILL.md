@@ -91,6 +91,13 @@ matching the campaign's jurisdiction (and region/chamber when named), else any s
 holds with seat areas first and newest first, else NULL — which is the honest answer for a
 workspace that has imported, uploaded or drawn no map.
 
+**The grids also carry one field per boundary map** (`area_set_<set id>`, see
+`pplcrm-maps-geo`), which the grid's own "+ Add filter" and the advanced-filter
+column mapping both accept. They are **not** in the rule-builder field list:
+that list is static TypeScript, and these fields exist only for the maps a given
+workspace holds. A stored smart list still expresses "everyone in Ward 4" with
+`any_electoral_area contains`.
+
 ## Campaign scoping: why a rule on a campaign-scoped fact needs help
 
 `persons.repo.getAllWithAddress` joins `campaign_person_facts` and

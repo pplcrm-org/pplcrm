@@ -12,7 +12,11 @@ import { FULL_SCAN_BATCH_SIZE, resolvePageWindow } from '../../../lib/paging';
 import { HouseholdRepo } from '../../households/repositories/households.repo';
 import {
   anyElectoralAreaSubquery,
+  areaSetLateralSelects,
+  areaSetOuterSelects,
+  areaSetRefs,
   electoralAreaSelects,
+  listAreaSetColumns,
   resolveSeatContext,
   seatStatusSelect,
   referencesElectoralAreas,
@@ -74,14 +78,19 @@ const SORTABLE_PERSON_ALIASES: readonly string[] = [
  * from a dropped column (the old `ward`/`district`/`precinct` text columns), a mistyped id or a
  * dotted reference must be SKIPPED, not passed through: an unknown identifier makes Postgres
  * reject the whole query and the grid never loads.
+ *
+ * `areaSetFields` is the set of per-boundary-map aliases this particular query selected. It is
+ * checked by membership rather than by name shape for exactly the reason above: a sort saved
+ * against a boundary map that has since been deleted names an alias the query no longer has.
  */
-function resolvePersonSortColumn(colId: unknown): string | null {
+function resolvePersonSortColumn(colId: unknown, areaSetFields: ReadonlySet<string>): string | null {
   if (typeof colId !== 'string') return null;
   if (SORTABLE_PERSON_COLUMNS.includes(colId)) return `persons.${colId}`;
   if (SORTABLE_PERSON_HOUSEHOLD_COLUMNS.includes(colId)) return `households.${colId}`;
   if (colId === 'company_name') return 'companies.name';
   if (colId === 'address') return 'households.street1';
   if (SORTABLE_PERSON_ALIASES.includes(colId)) return colId;
+  if (areaSetFields.has(colId)) return colId;
   return null;
 }
 
@@ -265,6 +274,12 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     // whether the person's household is inside that territory. See resolveSeatContext.
     const seat = await resolveSeatContext(trx ?? this.db, tenantId, options.campaignId ?? null);
     const seatSetId = seat.setId;
+    // One column per boundary map the workspace holds, so a workspace with both a riding map and a
+    // ward map gets a ward column of its own instead of both names crammed into `any_electoral_area`.
+    // A full scan reads membership and never these columns, so it skips the read and the aggregates.
+    const areaSetColumns =
+      input.fullScan != null ? [] : await listAreaSetColumns(trx ?? this.db, tenantId, options.campaignId ?? null);
+    const areaSetFields = new Set(areaSetColumns.map((column) => column.field));
     const searchStr = this.normalizeSearch(options.searchStr);
     const tags = input.tags?.map((t) => t.trim().toLowerCase()).filter(Boolean);
     const issues = (input.issues || options.issues)?.map((i) => i.trim().toLowerCase()).filter(Boolean);
@@ -300,7 +315,7 @@ export class PersonsRepo extends BaseRepository<'persons'> {
                 .selectFrom('household_districts as hd')
                 .whereRef('hd.household_id', '=', 'households.id')
                 .whereRef('hd.tenant_id', '=', 'households.tenant_id')
-                .select(electoralAreaSelects(seatSetId))
+                .select([...electoralAreaSelects(seatSetId), ...areaSetLateralSelects(areaSetColumns)])
                 .as('hd_areas'),
             (join: JoinBuilder<Models, 'households'>) => join.onTrue(),
           ),
@@ -369,6 +384,11 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         // against `hd_areas` directly. Guarded because without the lateral the aliases don't exist.
         q = this.applyColumnFilter(q, 'hd_areas.electoral_area', filterModel['electoral_area'] ?? {});
         q = this.applyColumnFilter(q, 'hd_areas.any_electoral_area', filterModel['any_electoral_area'] ?? {});
+        // The same, once per boundary map: "Ward is Ward 4" filters on the ward column alone
+        // instead of a substring match against every area name joined together.
+        for (const column of areaSetColumns) {
+          q = this.applyColumnFilter(q, `hd_areas.${column.field}`, filterModel[column.field] ?? {});
+        }
       }
       if (filterModel['tags']?.value && filterModel['issues']?.value) {
         // Both filters present — use OR grouping to avoid contradictory AND on tags.type
@@ -438,6 +458,12 @@ export class PersonsRepo extends BaseRepository<'persons'> {
           ? {
               electoral_area: { col: 'hd_areas.electoral_area' },
               any_electoral_area: { col: 'hd_areas.any_electoral_area' },
+              // And one field per boundary map, so a rule can name a single map exactly:
+              // "Wards is Ward 4" rather than "all boundaries contains Ward 4", which would also
+              // match a precinct that happens to be called Ward 4.
+              ...Object.fromEntries(
+                areaSetColumns.map((column) => [column.field, { col: `hd_areas.${column.field}` }]),
+              ),
             }
           : {}),
       };
@@ -505,6 +531,9 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         // same rules client-side against these rows (see the pplcrm-lists skill).
         'hd_areas.electoral_area',
         'hd_areas.any_electoral_area',
+        // One more column per boundary map, so the grid can show a ward column next to the riding
+        // column instead of only the two of them joined into one string.
+        ...areaSetOuterSelects(areaSetColumns),
         // Whether this person's household is in the campaign's own territory. Reads the household
         // joined above, so a person with no household answers 'unknown' rather than a wrong 'no'.
         seatStatusSelect(seatSetId, seat.seatAreaNames, seat.setStampedAt),
@@ -550,6 +579,7 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'csub.status',
         'hd_areas.electoral_area',
         'hd_areas.any_electoral_area',
+        ...areaSetRefs(areaSetColumns),
         // Grouped because the seat-status expression above reads it off the joined household row.
         'households.boundary_checked_at',
       ])
@@ -558,7 +588,7 @@ export class PersonsRepo extends BaseRepository<'persons'> {
       // batches repeat and skip rows. Nothing reads the row order of a membership scan.
       .$if(!isFullScan && !!options.sortModel?.length, (qb) =>
         (options.sortModel ?? []).reduce((acc, sort) => {
-          const col = resolvePersonSortColumn(sort.colId);
+          const col = resolvePersonSortColumn(sort.colId, areaSetFields);
           if (col == null) return acc;
           return acc.orderBy(col, sort.sort);
         }, qb),
