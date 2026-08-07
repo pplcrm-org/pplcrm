@@ -50,7 +50,9 @@ export class CampaignViewComponent {
   private readonly _requestGuard = createRequestGuard();
   protected readonly campaign = signal<Record<string, unknown> | null>(null);
 
+  // Full trail from the root down, matching /workspace/campaigns/:id segment for segment.
   protected readonly crumbs = computed<PcBreadcrumb[]>(() => [
+    { label: 'Workspace', route: '/workspace' },
     { label: 'Campaigns', route: '/workspace/campaigns' },
     { label: this.name() || 'Campaign' },
   ]);

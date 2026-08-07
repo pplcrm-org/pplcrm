@@ -6,6 +6,7 @@ import { ListsType } from '../../../../../../../libs/common/src';
 import { FormActions } from '@uxcommon/components/form-actions/form-actions';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
+import { BreadcrumbsService } from '@uxcommon/components/breadcrumbs/breadcrumbs.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { getUserErrorMessage } from '@frontend/services/api/user-message';
 
@@ -24,6 +25,7 @@ export class ListView implements OnDestroy {
   readonly id = input.required<string>();
 
   private readonly alerts = inject(AlertService);
+  private readonly breadcrumbs = inject(BreadcrumbsService);
   private readonly lists = inject(ListsService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
@@ -53,6 +55,13 @@ export class ListView implements OnDestroy {
       untracked(() => {
         if (currentId) void this.loadListDetails();
       });
+    });
+
+    // This page doesn't use pc-detail-layout, so it publishes its own trail: the strip
+    // has to name the list, not just say "Lists". Runs after NavigationEnd, so it wins
+    // over the route-driven default.
+    effect(() => {
+      this.breadcrumbs.setCrumbs([{ label: 'Lists', route: '/lists' }, { label: this.listData()?.name || 'List' }]);
     });
   }
 

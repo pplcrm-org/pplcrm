@@ -293,6 +293,12 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         title: 'Email is the identity key',
         text: 'Every form always collects an email, always required. It’s how each response is matched to (or creates) a person. That’s why the email field can’t be turned off or made optional.',
       },
+      {
+        kind: 'callout',
+        tone: 'tip',
+        title: 'Every form has its own address',
+        text: 'Selecting a form puts it in the address bar, and editing it adds `/edit`. So you can bookmark a form, send a colleague a link straight to the one you mean, refresh without losing your place, and use the browser’s Back button to step back through the forms you looked at.',
+      },
       { kind: 'h2', id: 'responses', text: 'Responses are people' },
       {
         kind: 'p',

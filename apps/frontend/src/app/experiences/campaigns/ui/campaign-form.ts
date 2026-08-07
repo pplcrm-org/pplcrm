@@ -146,12 +146,19 @@ export class CampaignFormComponent implements OnInit {
   protected readonly loading = this._loading.visible;
 
   protected readonly crumbs = computed<PcBreadcrumb[]>(() => {
+    // Full trail from the root down, matching /workspace/campaigns/:id/edit segment for segment.
+    const workspace: PcBreadcrumb = { label: 'Workspace', route: '/workspace' };
     const campaigns: PcBreadcrumb = { label: 'Campaigns', route: '/workspace/campaigns' };
     const id = this.id();
     if (id) {
-      return [campaigns, { label: this.detailName() || 'Campaign', route: ['/campaigns', id] }, { label: 'Edit' }];
+      return [
+        workspace,
+        campaigns,
+        { label: this.detailName() || 'Campaign', route: ['/workspace/campaigns', id] },
+        { label: 'Edit' },
+      ];
     }
-    return [campaigns, { label: 'New campaign' }];
+    return [workspace, campaigns, { label: 'New campaign' }];
   });
 
   protected readonly payload = signal({
@@ -317,7 +324,7 @@ export class CampaignFormComponent implements OnInit {
         this.form().reset();
         this.alerts.showSuccess('Campaign updated');
         if (typeof done === 'function') done();
-        else if (!stayPut) await this.router.navigate(['/campaigns', this.id()]);
+        else if (!stayPut) await this.router.navigate(['/workspace/campaigns', this.id()]);
       }
       return true;
     } catch (err) {

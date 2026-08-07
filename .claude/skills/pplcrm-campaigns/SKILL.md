@@ -122,10 +122,14 @@ layers a workspace's households are matched against.
   (crud + add/archive/unarchive/carryOver/getSwitcherList/setActiveCampaign) is
   `adminOrOwnerProcedure`; person-fact/subscription procedures stay `authProcedure`.
 - **UI surfaces**: management lives in Workspace settings → Campaigns
-  (`experiences/settings/campaigns/campaigns-settings.ts`, custom section id `campaigns`;
-  `/campaigns` redirects to `/workspace/campaigns`, deep pages `/campaigns/add`, `/campaigns/:id`,
-  `/campaigns/:id/edit` are roleGuard-ed). There is no avatar-menu entry and no switcher for
-  non-admins. The profile page shows the user's campaign; the Users list grows a Campaign column
+  (`experiences/settings/campaigns/campaigns-settings.ts`, custom section id `campaigns`). Every
+  campaign page nests under that section's own URL: `/workspace/campaigns/add`,
+  `/workspace/campaigns/:id`, `/workspace/campaigns/:id/edit`, declared as children of the
+  `workspace` route **before** its `:section` child and covered by that route's `roleGuard`. The
+  old top-level `/campaigns`, `/campaigns/add`, `/campaigns/:id` and `/campaigns/:id/edit` are
+  redirect-only back-compat entries in `dashboard.routes.ts` (the `:id` ones substitute the id
+  into the target), asserted in `dashboard.routes.spec.ts`. There is no avatar-menu entry and no
+  switcher for non-admins. The profile page shows the user's campaign; the Users list grows a Campaign column
   once an election exists.
 - Frontend: `CampaignContextService` (`services/campaign-context.service.ts`) holds the
   `activeCampaignId` signal (for non-admins the backend pins it to their assignment). Scoped

@@ -138,7 +138,7 @@
         <div class="mb-3 flex items-center justify-between gap-3">
           <h3 class="pc-eyebrow" i18n>The office</h3>
           @if (!isArchived()) {
-          <a [routerLink]="['/campaigns', id(), 'edit']" class="btn btn-ghost btn-xs gap-1">
+          <a [routerLink]="['/workspace/campaigns', id(), 'edit']" class="btn btn-ghost btn-xs gap-1">
             <pc-icon name="pencil-square" [size]="3"></pc-icon>
             <span i18n>Edit office</span>
           </a>
@@ -191,7 +191,7 @@
           <a routerLink="/help/campaign-jurisdictions" class="link text-primary" i18n>How this works</a>.
         </p>
         @if (!isArchived()) {
-        <a [routerLink]="['/campaigns', id(), 'edit']" class="btn btn-outline btn-primary btn-sm mt-3 gap-1">
+        <a [routerLink]="['/workspace/campaigns', id(), 'edit']" class="btn btn-outline btn-primary btn-sm mt-3 gap-1">
           <pc-icon name="map-pin" [size]="4"></pc-icon>
           <span i18n>Set the office</span>
         </a>

@@ -1,5 +1,4 @@
 import { Component, OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
-import { Router } from '@angular/router';
 import { describeListDefinition } from '@experiences/lists/services/list-definition';
 import { ListsRefreshService } from '@experiences/lists/services/lists-refresh.service';
 import { ListsService } from '@experiences/lists/services/lists-service';
@@ -68,7 +67,7 @@ function escapeHtml(value: string): string {
       <p class="text-xs leading-relaxed text-base-content/60">
         Smart lists refresh themselves. Membership updates automatically as people and households change. Static lists
         run their rules once at creation and save a fixed snapshot; membership only changes when you edit it by hand.
-        Opening a list shows it applied on the grid.
+        Opening a list shows its members, the newsletters sent to it, and its history.
       </p>
     </div>
   `,
@@ -87,7 +86,6 @@ function escapeHtml(value: string): string {
 export class ListsGridComponent implements OnInit {
   private readonly refreshSvc = inject(ListsRefreshService);
   private readonly listsSvc = inject(ListsService);
-  private readonly router = inject(Router);
   private readonly campaignCtx = inject(CampaignContextService);
   private readonly grid = viewChild<DataGrid<'lists', UpdateListType>>('grid');
 
@@ -138,10 +136,12 @@ export class ListsGridComponent implements OnInit {
 
   protected col: ColDef[] = [
     {
-      // LIST — the name is the door: opens People/Households with this list
-      // applied as a removable chip (§8). withComponentInputBinding() maps the
-      // ?listId query param onto the grid's listId input.
+      // LIST — the name is the door: opens the list's own page at /lists/:id, which
+      // shows the members grid, the campaign history and the activity log. `doorColumn`
+      // routes the click through the grid's own open path, so the URL names the list
+      // AND the detail page gets the filtered prev/next record pager.
       field: 'name',
+      doorColumn: true,
       headerName: 'List',
       cellRenderer: (p: CellParams) => {
         const name = String(p?.value ?? p?.data?.['name'] ?? 'Untitled list');
@@ -153,7 +153,6 @@ export class ListsGridComponent implements OnInit {
         }
         return link;
       },
-      onCellClicked: (p: CellParams) => this.openListOnGrid(p?.data),
     },
     {
       field: 'is_dynamic',
@@ -202,13 +201,4 @@ export class ListsGridComponent implements OnInit {
       valueFormatter: (p: CellParams) => formatDateTime(p?.value),
     },
   ];
-
-  /** Open the People/Households grid with this list applied as a chip. */
-  private openListOnGrid(data: unknown): void {
-    if (!isRecord(data)) return;
-    const id = String(data['id'] ?? '');
-    if (!id) return;
-    const route = data['object'] === 'households' ? '/households' : '/people';
-    void this.router.navigate([route], { queryParams: { listId: id } });
-  }
 }

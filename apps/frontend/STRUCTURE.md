@@ -217,6 +217,7 @@ apps/
               forms-page.html
               forms-page.ts
               public-form.ts
+            forms-url-matcher.ts
           fundraising/
             ui/
               fundraising-form.html
@@ -488,6 +489,7 @@ apps/
             bug-reports-service.ts
             connections-service.ts
             donation-receipts-service.ts
+            donations-changed.service.ts
             donations-service.ts
             events-service.ts
             http-download.ts

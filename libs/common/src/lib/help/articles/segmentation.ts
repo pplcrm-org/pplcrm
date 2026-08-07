@@ -135,7 +135,7 @@ export const SEGMENTATION_ARTICLES: HelpArticle[] = [
       {
         kind: 'list',
         items: [
-          '**List**: the name is a door. Click it to open People or Households with that list applied as a removable filter chip.',
+          '**List**: the name is a door. Click it to open the list’s own page, which shows its members, the newsletters sent to it, and its history.',
           '**Type**: a Smart or Static chip.',
           '**Of**: People or Households.',
           '**Definition**: the rule written as a plain sentence.',

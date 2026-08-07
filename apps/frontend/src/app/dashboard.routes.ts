@@ -7,6 +7,7 @@ import {
 } from './services/record-slug.resolver';
 import { unsavedChangesGuard } from './services/unsaved-changes-guard';
 import { PersonalSettingsRedirect } from './experiences/settings/personal-settings-redirect';
+import { formsUrlMatcher } from './experiences/forms/forms-url-matcher';
 
 export const dashboardRoutes: Routes = [
   { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
@@ -333,32 +334,13 @@ export const dashboardRoutes: Routes = [
     ],
   },
 
-  {
-    // Campaigns §15 — management is admin/owner-only and lives in Workspace
-    // settings; these deep routes host the detail/add/edit pages it links to.
-    path: 'campaigns',
-    canActivate: [roleGuard],
-    data: { breadcrumb: [{ label: 'Campaigns', route: '/workspace/campaigns' }] },
-    children: [
-      { path: '', redirectTo: '/workspace/campaigns', pathMatch: 'full' },
-      {
-        path: 'add',
-        loadComponent: () => import('./experiences/campaigns/ui/campaign-form').then((m) => m.CampaignFormComponent),
-        data: { mode: 'new', breadcrumb: 'New campaign' },
-        canDeactivate: [unsavedChangesGuard],
-      },
-      {
-        path: ':id',
-        loadComponent: () => import('./experiences/campaigns/ui/campaign-view').then((m) => m.CampaignViewComponent),
-      },
-      {
-        path: ':id/edit',
-        loadComponent: () => import('./experiences/campaigns/ui/campaign-form').then((m) => m.CampaignFormComponent),
-        data: { mode: 'edit' },
-        canDeactivate: [unsavedChangesGuard],
-      },
-    ],
-  },
+  // Back-compat: campaign pages used to live at the top level. They are Workspace
+  // settings pages, so they now live under /workspace/campaigns and the old URLs
+  // (bookmarks, links in older help articles) redirect there.
+  { path: 'campaigns', redirectTo: '/workspace/campaigns', pathMatch: 'full' },
+  { path: 'campaigns/add', redirectTo: '/workspace/campaigns/add' },
+  { path: 'campaigns/:id/edit', redirectTo: '/workspace/campaigns/:id/edit' },
+  { path: 'campaigns/:id', redirectTo: '/workspace/campaigns/:id' },
 
   {
     path: 'teams',
@@ -446,9 +428,17 @@ export const dashboardRoutes: Routes = [
     data: { breadcrumb: 'Approvals' },
   },
   {
+    // One matcher child rather than four sibling routes — see forms-url-matcher.ts for why.
+    // /forms, /forms/new, /forms/:id and /forms/:id/edit all land on the same page instance.
     path: 'forms',
-    loadComponent: () => import('./experiences/forms/ui/forms-page').then((m) => m.FormsPageComponent),
-    data: { shouldReuse: true, key: 'formspageroot', breadcrumb: 'Forms' },
+    data: { breadcrumb: 'Forms' },
+    children: [
+      {
+        matcher: formsUrlMatcher,
+        loadComponent: () => import('./experiences/forms/ui/forms-page').then((m) => m.FormsPageComponent),
+        data: { shouldReuse: true, key: 'formspageroot' },
+      },
+    ],
   },
   {
     path: 'donation-pages',
@@ -492,6 +482,25 @@ export const dashboardRoutes: Routes = [
     data: { breadcrumb: 'Workspace' },
     children: [
       { path: '', redirectTo: 'organization', pathMatch: 'full' },
+      // Campaigns §15 — the Campaigns settings section lists the campaigns; these
+      // deep pages are its detail/add/edit views, so they nest under its own URL.
+      // They must be declared before ':section', which would otherwise be tried first.
+      {
+        path: 'campaigns/add',
+        loadComponent: () => import('./experiences/campaigns/ui/campaign-form').then((m) => m.CampaignFormComponent),
+        data: { mode: 'new' },
+        canDeactivate: [unsavedChangesGuard],
+      },
+      {
+        path: 'campaigns/:id/edit',
+        loadComponent: () => import('./experiences/campaigns/ui/campaign-form').then((m) => m.CampaignFormComponent),
+        data: { mode: 'edit' },
+        canDeactivate: [unsavedChangesGuard],
+      },
+      {
+        path: 'campaigns/:id',
+        loadComponent: () => import('./experiences/campaigns/ui/campaign-view').then((m) => m.CampaignViewComponent),
+      },
       {
         path: ':section',
         loadComponent: () => import('./experiences/settings/settings-page').then((m) => m.SettingsPage),

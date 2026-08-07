@@ -54,7 +54,8 @@ grid + form-editor model is gone; `forms-grid.ts` and `form-editor.ts` were dele
   `/submit/:formId` were removed in the tenant-subdomain URL convergence, July 2026).
 - **Frontend** — `apps/frontend/src/app/experiences/forms/ui/`: `forms-page.ts/html` (the three-mode
   shell: browse, in-page New-form flow — a 2-step stepper of template cards then a name, no dialog —
-  and live edit), `form-render.ts` (read-only preview card, reused in the pane),
+  and live edit). **The URL, not a signal, decides which mode and which form** — see "The Forms URL
+  contract" below. `form-render.ts` (read-only preview card, reused in the pane),
   `public-form.ts` (the unauthenticated `/f/:slug` page, registered in `app.routes.ts` — NOT the
   dashboard shell). `services/forms-service.ts` carries both the legacy grid contract and the new
   lifecycle methods.
@@ -132,6 +133,38 @@ grid + form-editor model is gone; `forms-grid.ts` and `form-editor.ts` were dele
 - **Live edit has no Save.** `forms-page` debounces `forms.updateLive`; every control mutates
   immediately and the preview re-renders. The confirmation-email + embed dialogs are the exceptions
   (explicit Save / Copy).
+
+## The Forms URL contract
+
+`apps/frontend/src/app/experiences/forms/forms-url-matcher.ts` maps four URLs onto **one** route
+config (registered as the single child of the `forms` route in `dashboard.routes.ts`):
+
+| URL               | route params                | page state                       |
+| ----------------- | --------------------------- | -------------------------------- |
+| `/forms`          | —                           | browse; first form auto-selected |
+| `/forms/new`      | `formMode='new'`            | the New-form stepper             |
+| `/forms/:id`      | `formId`                    | that form, read-only preview     |
+| `/forms/:id/edit` | `formId`, `formMode='edit'` | that form, live editing          |
+
+Things that will bite you here:
+
+- **One route config, not four siblings, on purpose.** `CustomRouteReuseStrategy.shouldReuseRoute`
+  keeps a component only while `future.routeConfig === curr.routeConfig`. Split these into sibling
+  routes and every click in the left column destroys and rebuilds the page, refetching the whole
+  form list.
+- **Params are `formId`/`formMode`, not `id`/`mode`.** `withComponentInputBinding()` binds route
+  params onto same-named inputs and the page already owns an internal `mode` signal.
+- **The URL is the source of truth.** `select`/`enterEdit`/`exitEdit`/`openNewForm`/`cancelNewForm`
+  only navigate; `applyRoute()` is the single place that writes `selectedId`/`mode`, and it never
+  navigates (that would loop). Add a new mode by extending the matcher AND `applyRoute`.
+- **`reconcileUrlWithLoadedForms()` runs once, after the list loads** — the list isn't known when
+  `applyRoute` runs, so bare `/forms` → `/forms/<first>` and a dead `/forms/<gone>` → the first form
+  both happen there, always with `replaceUrl` so neither lands in back history.
+- `select()` flushes the debounced patch itself, before navigating, so a queued edit survives a
+  blocked navigation. `flushPatch` targets the captured `pendingPatchId` either way.
+
+Covered by `forms-url-matcher.spec.ts` (the matcher) and `dashboard.routes.spec.ts` (the URLs
+resolving against the real route table).
 
 ## Donation-forms convergence — decided, deferred (2026-07-08)
 

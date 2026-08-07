@@ -123,6 +123,15 @@ views via `pc-detail-header`'s effect, tab pages (Import/export) or record pages
 detail shell via `BreadcrumbsService.setCrumbs()` in an effect. Effects flush after
 NavigationEnd, so the page's richer trail always wins. **No page needs to `clear()` anymore.**
 
+**A route param can never name itself, so layer 1 is not enough for a `:param` route.**
+`data.breadcrumb` is a static string; on `/workspace/:section` it can only ever say
+"Workspace", which is why changing sections used to leave the strip behind while the URL
+moved. Any page whose URL carries a param the user chose must publish layer 2 itself, keyed
+off the same signal that renders the body — `settings-page.ts` (Workspace → section),
+`list-view.ts` (Lists → list name) and `forms-page.ts` (Forms → form → Edit) are the worked
+examples. **The trail must match the URL segment for segment**, root included: a page at
+`/workspace/campaigns/:id` publishes `Workspace › Campaigns › <name>`, not `Campaigns › <name>`.
+
 **The first crumb doubles as the visible page title** — `pc-breadcrumbs` renders it
 `text-sm font-semibold text-base-content`. List pages therefore do NOT render a visible
 in-body title: `pc-grid-header`'s `title` is an `sr-only` h1 (kept for accessibility), and

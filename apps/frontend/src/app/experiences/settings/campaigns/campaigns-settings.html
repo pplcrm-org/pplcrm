@@ -22,7 +22,7 @@
   <!-- Active contexts -->
   <div class="flex items-center justify-between">
     <h3 class="pc-eyebrow" i18n>Your campaigns</h3>
-    <a routerLink="/campaigns/add" class="btn btn-primary btn-sm gap-2 shrink-0">
+    <a routerLink="/workspace/campaigns/add" class="btn btn-primary btn-sm gap-2 shrink-0">
       <pc-icon name="square-3-stack-3d" [size]="4"></pc-icon>
       <span i18n>New campaign</span>
     </a>
@@ -42,7 +42,7 @@
   <div class="grid gap-4 sm:grid-cols-2">
     @for (campaign of current(); track campaign.id) {
     <a
-      [routerLink]="['/campaigns', campaign.id]"
+      [routerLink]="['/workspace/campaigns', campaign.id]"
       class="group flex flex-col gap-3 rounded-xl border border-base-200 bg-base-50/50 p-5 transition-all duration-200 hover:border-primary/30 hover:shadow-md"
     >
       <div class="flex items-start justify-between gap-3">
@@ -97,7 +97,7 @@
   <div class="grid gap-4 sm:grid-cols-2">
     @for (campaign of archived(); track campaign.id) {
     <a
-      [routerLink]="['/campaigns', campaign.id]"
+      [routerLink]="['/workspace/campaigns', campaign.id]"
       class="group flex flex-col gap-3 rounded-xl border border-base-200 bg-base-100/60 p-5 opacity-80 transition-all duration-200 hover:border-primary/30 hover:opacity-100"
     >
       <div class="flex items-start justify-between gap-3">

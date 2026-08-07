@@ -4,8 +4,11 @@ import {
   OnDestroy,
   OnInit,
   computed,
+  effect,
   inject,
+  input,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import type { PcIconNameType } from '@icons/icons.index';
@@ -23,6 +26,7 @@ import { Icon } from '@icons/icon';
 import { ListsService } from '@experiences/lists/services/lists-service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 
+import { BreadcrumbsService } from '@uxcommon/components/breadcrumbs/breadcrumbs.service';
 import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
 import { AuthService } from '../../../auth/auth-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
@@ -33,6 +37,7 @@ import { SettingsService } from '@experiences/settings/services/settings-service
 import { environment } from '../../../../environments/environment';
 import { donationPageUrl, publicPageUrl } from '../../../shared/public-pages';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
+import type { PcBreadcrumb } from '@uxcommon/components/breadcrumbs/breadcrumbs';
 
 interface TemplateCard {
   type: FormType;
@@ -136,6 +141,7 @@ const BUILDER_CARDS: readonly BuilderCard[] = [
 export class FormsPageComponent implements OnInit, OnDestroy {
   private readonly formsSvc = inject(FormsService);
   private readonly listsSvc = inject(ListsService);
+  private readonly breadcrumbs = inject(BreadcrumbsService);
   private readonly router = inject(Router);
   private readonly settings = inject(SettingsService);
   private readonly alerts = inject(AlertService);
@@ -226,6 +232,78 @@ export class FormsPageComponent implements OnInit, OnDestroy {
    *  time that form is edited (see `patch()`), instead of being silently dropped. */
   private readonly retryQueue = new Map<string, UpdateFormType>();
 
+  // ── URL is the source of truth ─────────────────────────────────────────
+  //
+  // /forms · /forms/new · /forms/:id · /forms/:id/edit all resolve to this one
+  // component (see forms-url-matcher.ts). These two inputs are the route's params,
+  // bound by withComponentInputBinding(); every state change below is expressed as a
+  // navigation, so the address bar, a refresh, a shared link and the back button all
+  // agree on which form is open and whether it is being edited.
+  public readonly formId = input<string>();
+  public readonly formMode = input<string>();
+
+  constructor() {
+    effect(() => {
+      const id = this.formId() ?? null;
+      const mode = this.formMode() ?? null;
+      untracked(() => this.applyRoute(id, mode));
+    });
+
+    // "Forms › <name> › Edit" — the strip mirrors the URL segment for segment.
+    effect(() => {
+      const crumbs: PcBreadcrumb[] = [{ label: 'Forms', route: '/forms' }];
+      if (this.mode() === 'create') {
+        crumbs.push({ label: 'New form' });
+      } else {
+        const form = this.selected();
+        if (form) {
+          crumbs.push(this.mode() === 'edit' ? { label: form.name, route: ['/forms', form.id] } : { label: form.name });
+        }
+        if (this.mode() === 'edit') crumbs.push({ label: 'Edit' });
+      }
+      this.breadcrumbs.setCrumbs(crumbs);
+    });
+  }
+
+  /** Fold the route's params into page state. Never navigates — that would loop. */
+  private applyRoute(id: string | null, mode: string | null): void {
+    if (mode === 'new') {
+      // Reset the stepper on ENTRY only, so a re-run of this effect (a form list
+      // refresh, say) can't wipe a half-filled step 2.
+      if (this.mode() !== 'create') {
+        this.newFormName.set('');
+        this.newFormType.set('signup');
+        this.newFormStep.set(1);
+        this.newFormError.set(null);
+        this.mode.set('create');
+      }
+      return;
+    }
+
+    if (id && id !== this.selectedId()) {
+      // Flush any queued edits for the form we're leaving before switching.
+      void this.flushPatch();
+      this.selectedId.set(id);
+      this.tab.set('form');
+      this.resetSubmissionState();
+    }
+
+    this.mode.set(mode === 'edit' ? 'edit' : 'browse');
+  }
+
+  private resetSubmissionState(): void {
+    this.submissions.set([]);
+    this.submissionsTotal.set(0);
+    this.submissionsLoaded.set(false);
+    this.submissionsCursor.set(null);
+  }
+
+  /** Where a given form lives. The one place that builds a Forms URL. */
+  private formUrl(id: string | null, mode?: 'edit'): unknown[] {
+    if (!id) return ['/forms'];
+    return mode ? ['/forms', id, mode] : ['/forms', id];
+  }
+
   public ngOnInit(): void {
     void Promise.all([this.loadForms(), this.loadOrg(), this.loadLists()]);
   }
@@ -242,15 +320,41 @@ export class FormsPageComponent implements OnInit, OnDestroy {
     try {
       const rows = await this.formsSvc.listForms();
       this.forms.set(rows);
-      const first = rows[0];
-      if (!this.selectedId() && first) {
-        this.selectedId.set(first.id);
-      }
+      await this.reconcileUrlWithLoadedForms(rows);
     } catch {
       this.alerts.showError('Could not load your forms. Please try again.');
     } finally {
       end();
     }
+  }
+
+  /**
+   * Make the address bar agree with what was actually loaded, once — the list isn't
+   * known until the fetch returns, so this can't happen in `applyRoute`.
+   *
+   * - bare `/forms` with forms to show → `/forms/<first>`, so the URL names what's on screen
+   * - `/forms/<gone>` → the first form, said out loud rather than a blank pane
+   *
+   * Always `replaceUrl`, because neither of these is a place the user asked to be and
+   * neither belongs in their back history.
+   */
+  private async reconcileUrlWithLoadedForms(rows: FormDetail[]): Promise<void> {
+    if (this.mode() === 'create') return;
+    const routeId = this.formId() ?? null;
+    const first = rows[0];
+
+    if (!routeId) {
+      if (!first) return;
+      this.selectedId.set(first.id);
+      await this.router.navigate(this.formUrl(first.id), { replaceUrl: true });
+      return;
+    }
+
+    if (rows.some((f) => f.id === routeId)) return;
+
+    this.selectedId.set(first?.id ?? null);
+    await this.router.navigate(this.formUrl(first?.id ?? null), { replaceUrl: true });
+    this.alerts.showInfo('That form no longer exists. Showing your forms instead.');
   }
 
   private async loadOrg(): Promise<void> {
@@ -279,16 +383,12 @@ export class FormsPageComponent implements OnInit, OnDestroy {
     // Every form — donation forms included — previews in the same pane. Donation forms keep their
     // Stripe-backed editor (/donation-pages/:id/edit) and /d/:slug public page; the pane shows a
     // read-only preview and hands off to that editor via `openDonationEditor()`.
-    if (this.selectedId() === id) return;
-    // Flush any pending edits for the previous form before switching — the flush
-    // targets the captured pendingPatchId, never the newly selected form.
+    if (this.selectedId() === id && this.mode() === 'browse') return;
+    // Flush before navigating, not after: the queued edit belongs to the form being
+    // left, and waiting for the navigation to land would leave it in flight if the
+    // navigation is blocked. `flushPatch` targets the captured id either way.
     void this.flushPatch();
-    this.selectedId.set(id);
-    this.tab.set('form');
-    this.submissions.set([]);
-    this.submissionsTotal.set(0);
-    this.submissionsLoaded.set(false);
-    this.submissionsCursor.set(null);
+    void this.router.navigate(this.formUrl(id));
   }
 
   /** Donation forms aren't editable inline; open the Stripe-backed fundraising editor instead. */
@@ -308,15 +408,16 @@ export class FormsPageComponent implements OnInit, OnDestroy {
   }
 
   protected enterEdit(): void {
-    if (!this.selected()) return;
-    this.mode.set('edit');
+    const form = this.selected();
+    if (!form) return;
     this.tab.set('form');
+    void this.router.navigate(this.formUrl(form.id, 'edit'));
   }
 
   protected exitEdit(): void {
     // Don't strand a queued edit behind the 400ms debounce — persist it now.
     void this.flushPatch();
-    this.mode.set('browse');
+    void this.router.navigate(this.formUrl(this.selectedId()));
   }
 
   protected toggleArchived(): void {
@@ -344,7 +445,7 @@ export class FormsPageComponent implements OnInit, OnDestroy {
       (id) => this.formsSvc.archive(id),
       (f) => `Archived “${f.name}”. The public link now shows a closed notice.`,
     );
-    this.mode.set('browse');
+    void this.router.navigate(this.formUrl(this.selectedId()));
   }
 
   protected async restore(): Promise<void> {
@@ -375,15 +476,11 @@ export class FormsPageComponent implements OnInit, OnDestroy {
   // ── New form flow (create mode) ────────────────────────────────────────
 
   protected openNewForm(): void {
-    this.newFormName.set('');
-    this.newFormType.set('signup');
-    this.newFormStep.set(1);
-    this.newFormError.set(null);
-    this.mode.set('create');
+    void this.router.navigate(['/forms', 'new']);
   }
 
   protected cancelNewForm(): void {
-    this.mode.set('browse');
+    void this.router.navigate(this.formUrl(this.selectedId()));
   }
 
   protected selectTemplate(type: FormType): void {
@@ -413,8 +510,10 @@ export class FormsPageComponent implements OnInit, OnDestroy {
       const created = await this.formsSvc.createForm({ name, type });
       this.forms.update((list) => [created, ...list]);
       this.selectedId.set(created.id);
-      this.mode.set('edit');
       this.tab.set('form');
+      // Replace, not push: Back from the new draft's editor should go where the user
+      // was before the stepper, not back into the stepper that just created it.
+      await this.router.navigate(this.formUrl(created.id, 'edit'), { replaceUrl: true });
       this.alerts.showSuccess(
         `Draft created from the ${this.chosenTemplate().title} template. Adjust its fields, then publish.`,
       );
@@ -594,8 +693,10 @@ export class FormsPageComponent implements OnInit, OnDestroy {
     try {
       await this.formsSvc.deleteDraft(form.id);
       this.forms.update((list) => list.filter((f) => f.id !== form.id));
-      this.selectedId.set(this.forms()[0]?.id ?? null);
-      this.mode.set('browse');
+      const next = this.forms()[0]?.id ?? null;
+      this.selectedId.set(next);
+      // Replace: the deleted form's URL must not stay in history as a dead link.
+      await this.router.navigate(this.formUrl(next), { replaceUrl: true });
       this.alerts.showSuccess(`Deleted “${form.name}”.`);
     } catch {
       this.alerts.showError('Could not delete the form. Please try again.');

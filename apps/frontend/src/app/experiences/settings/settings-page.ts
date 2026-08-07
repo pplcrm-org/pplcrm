@@ -5,6 +5,7 @@ import { Router } from '@angular/router';
 import { Icon } from '@icons/icon';
 import { PcIconNameType } from '@icons/icons.index';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
+import { BreadcrumbsService } from '@uxcommon/components/breadcrumbs/breadcrumbs.service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 
 import {
@@ -175,6 +176,7 @@ const CUSTOM_SECTIONS: CustomSectionConfig[] = [
 export class SettingsPage implements OnInit {
   private readonly alerts = inject(AlertService);
   private readonly auth = inject(AuthService);
+  private readonly breadcrumbs = inject(BreadcrumbsService);
   private readonly dialogs = inject(ConfirmDialogService);
   private readonly orgMode = inject(OrgModeService);
   private readonly router = inject(Router);
@@ -213,6 +215,15 @@ export class SettingsPage implements OnInit {
   protected readonly sectionStates: SectionState[];
   protected readonly sections = SETTINGS_SECTIONS;
   protected readonly selectedSectionId = signal<string>('');
+
+  /** The section's own title, for the breadcrumb — falls back to the raw id so an
+   *  unknown deep link still names something rather than showing a bare "Workspace". */
+  private readonly selectedSectionTitle = computed<string>(() => {
+    const id = this.selectedSectionId();
+    const custom = CUSTOM_SECTIONS.find((s) => s.id === id);
+    if (custom) return custom.title;
+    return SETTINGS_SECTIONS.find((s) => s.id === id)?.title ?? id;
+  });
   // The config-driven section currently shown, so the header Save/Cancel act on it.
   // Custom self-saving sections (billing, domains, email-sync, etc.) aren't in sectionStates → returns null.
   protected readonly headerSection = computed<SectionState | null>(() => {
@@ -321,8 +332,17 @@ export class SettingsPage implements OnInit {
   constructor() {
     this.sectionStates = this.sections.map((section) => this.buildSectionState(section));
 
-    // Navbar crumb ("Settings"/"Workspace") comes from the route's `data.breadcrumb`
-    // via BreadcrumbDefaultsService — no manual publish needed here anymore.
+    // The section is a route param (/workspace/:section), so the route-driven default
+    // trail can only say "Workspace" — it has no way to turn "email-sync" into
+    // "Email sync". Publish the second crumb here instead, so the strip names the
+    // section the URL is already on. This effect flushes after NavigationEnd, so it
+    // wins over the default.
+    effect(() => {
+      this.breadcrumbs.setCrumbs([
+        { label: 'Workspace', route: '/workspace' },
+        { label: this.selectedSectionTitle(), route: `/workspace/${this.selectedSectionId()}` },
+      ]);
+    });
 
     effect(() => {
       const s = this.section();
