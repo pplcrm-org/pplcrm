@@ -76,6 +76,16 @@ export class HouseholdsService extends AbstractAPIService<'households', never> {
     return Promise.resolve({ rows: [], count: 0 });
   }
 
+  /**
+   * Whether this address is in the campaign's own territory.
+   *
+   * The campaign is passed explicitly rather than left to the server to infer, because the server's
+   * request-scoped campaign is only set for non-admin users — an owner or admin would get nothing.
+   */
+  public getSeatStatus(householdId: string, campaignId: string | null) {
+    return this.api.households.seatStatus.query({ householdId, campaignId }, { signal: this.ac.signal });
+  }
+
   public getById(id: string) {
     return this.api.households.getById.query(id);
   }

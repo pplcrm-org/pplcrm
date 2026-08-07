@@ -9,7 +9,7 @@ import { LogInteraction } from '@experiences/activity/ui/log-interaction/log-int
 import { PeopleInHousehold } from './people-in-household';
 import { UserService } from '../../../services/user.service';
 import { HouseholdsService } from '../../households/services/households-service';
-import { electoralAreaSuffix } from '../../households/services/household-areas';
+import { electoralAreaSuffix, seatStatusLabelFor } from '../../households/services/household-areas';
 import { CampaignContextService } from '../../../services/campaign-context.service';
 import { PersonsService } from '../services/persons-service';
 import { VolunteerService } from '../../../services/api/volunteer-service';
@@ -165,6 +165,42 @@ export class PersonView {
     return area ? `${base} · ${area}` : base;
   });
 
+  /**
+   * Whether this person's address is in the campaign's own territory, in that campaign's own word.
+   *
+   * Read from the person record, which the backend answers from the person's household — a person
+   * has no boundaries of their own, an address does. Null when the question does not apply, so the
+   * badge disappears rather than showing an empty answer: an at-large office represents no single
+   * area, and a workspace with no map for this office has nothing to compare against.
+   */
+  protected readonly seatStatus = signal<string | null>(null);
+  protected readonly seatStatusLabel = computed<string | null>(() =>
+    seatStatusLabelFor(this.seatStatus(), this.campaignContext.seatLabel()),
+  );
+  protected readonly inSeatTerritory = computed<boolean>(() => this.seatStatus() === 'in');
+
+  /**
+   * Load the territory answer for this person's household.
+   *
+   * A person has no boundaries of their own — an address does — so this asks about their household
+   * and shows nothing when they have none. Quiet on failure: a missing badge beats an error banner
+   * over a page that otherwise works.
+   */
+  private async loadSeatStatus(): Promise<void> {
+    const householdId = this.householdId();
+    if (!householdId) {
+      this.seatStatus.set(null);
+      return;
+    }
+    try {
+      this.seatStatus.set(
+        await this.householdsSvc.getSeatStatus(String(householdId), this.campaignContext.activeCampaignId()),
+      );
+    } catch {
+      this.seatStatus.set(null);
+    }
+  }
+
   // Contact initials and full name computation
   protected readonly initials = computed(() => {
     const first = this.person()?.first_name || '';
@@ -318,6 +354,7 @@ export class PersonView {
       if (!isCurrent()) return;
       this.resetSections();
       this.person.set(personData);
+      void this.loadSeatStatus();
       this.showSlugUrl(personData);
 
       // 2. Everything the tabs need, in parallel. These used to be nine more

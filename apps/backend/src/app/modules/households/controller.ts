@@ -24,7 +24,12 @@ import { ImportsRepo } from '../imports/repositories/imports.repo';
 import { createUploadImport } from '../imports/upload-intake';
 import { TagsRepo } from '../tags/repositories/tags.repo';
 import { applyHouseholdMatchesBatch, matchPointToSets, requiredSetIdsForTenant } from '../../lib/gis/boundary-match';
-import { ensureImportedBoundarySets, readImportedAreas, writeImportedAreas } from './electoral-areas';
+import {
+  ensureImportedBoundarySets,
+  readImportedAreas,
+  seatStatusForHousehold,
+  writeImportedAreas,
+} from './electoral-areas';
 import { BaseController, MAX_INLINE_EXPORT_ROWS } from '../../lib/base.controller';
 import { BadRequestError } from '../../errors/app-errors';
 import { SettingsController } from '../settings/controller';
@@ -417,6 +422,20 @@ export class HouseholdsController extends BaseController<'households', Household
       canvasser_name: row.canvasser_name ?? null,
       outcome: row.outcome,
     };
+  }
+
+  /**
+   * Whether one address is in the campaign's own territory, for a record page.
+   *
+   * Takes the campaign explicitly, as the list screens do. It cannot be read from the request's
+   * pinned campaign: that pin is only set for non-admin users, so an owner or admin — most of the
+   * people who open a record — would silently get no answer at all.
+   *
+   * Answered by the same function behind the households list column, so a record page and the list
+   * cannot disagree about one address.
+   */
+  public seatStatus(auth: IAuthKeyPayload, input: { householdId: string; campaignId?: string | null }) {
+    return seatStatusForHousehold(this.getRepo().db, auth.tenant_id, input.householdId, input.campaignId ?? null);
   }
 
   /** `campaignId` = the campaign whose seat map the count reads (grain sentence, §5). */

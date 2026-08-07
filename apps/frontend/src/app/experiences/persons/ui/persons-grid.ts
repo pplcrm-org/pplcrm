@@ -27,6 +27,7 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
 import { createLoadingGate } from '@uxcommon/loading-gate';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
+import { CampaignContextService } from '../../../services/campaign-context.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { DATA_TYPE, PersonsService } from '../services/persons-service';
 
@@ -57,6 +58,7 @@ export class PersonsGrid implements OnInit {
   public readonly _loading = createLoadingGate();
   private readonly config = inject(DATA_GRID_CONFIG, { optional: true }) ?? DEFAULT_DATA_GRID_CONFIG;
   private readonly personsService = inject(PersonsService);
+  private readonly campaignCtx = inject(CampaignContextService);
 
   private readonly grid = viewChild<DataGrid<DATA_TYPE, UpdatePersonsType>>('grid');
   private readonly grainTabs = viewChild(GrainTabs);
@@ -148,6 +150,17 @@ export class PersonsGrid implements OnInit {
         VOTING_STATUS_LABELS[params.value as keyof typeof VOTING_STATUS_LABELS] ?? '',
     },
     { field: 'company_name', headerName: 'Company', editable: false, hide: true },
+    // Whether this person's household is in the campaign's own territory. Comes from the household,
+    // so a person with no address, or one not yet placed on the map, reads as blank rather than
+    // "no". Headed and shown by applyTerritoryLabel below.
+    {
+      field: 'seat_status',
+      headerName: 'In your seat',
+      editable: false,
+      hide: true,
+      minWidth: 150,
+      valueFormatter: (params: CellParams) => this.formatSeatStatus(params.value),
+    },
     {
       field: 'home_phone',
       headerName: 'Home phone',
@@ -286,7 +299,48 @@ export class PersonsGrid implements OnInit {
     void this.initializeComponent();
   }
 
+  /**
+   * The four answers, spelled out, matching the households grid word for word.
+   *
+   * "Outside the map" and blank must stay different: the first means the address was tested against
+   * every area and fell in none, the second that nothing has looked yet — no address, no
+   * coordinates, or no match pass since the map was added.
+   */
+  protected formatSeatStatus(value: unknown): string {
+    switch (value) {
+      case 'in':
+        return 'Yes';
+      case 'other':
+        return 'No — another area';
+      case 'outside':
+        return 'No — outside the map';
+      default:
+        return '';
+    }
+  }
+
+  /**
+   * Head the territory column with this level of government's own word, and hide it when the
+   * campaign represents no area. Called before the grid is created, because the grid copies its
+   * column definitions once at init and never re-reads them.
+   */
+  private applyTerritoryLabel(): void {
+    for (const c of this.col) {
+      if (c.field !== 'seat_status') continue;
+      c.hide = this.campaignCtx.activeSeatAreaNames().length === 0;
+      c.headerName = this.campaignCtx.seatTerritoryLabel();
+    }
+  }
+
   private async initializeComponent(): Promise<void> {
+    try {
+      await this.campaignCtx.ensureLoaded();
+    } catch (err) {
+      // The heading still resolves without a loaded context, so a failed load costs a word rather
+      // than the page. Matching the households grid, which does the same.
+      console.error('Failed to load campaign context for person column headings', err);
+    }
+    this.applyTerritoryLabel();
     try {
       await this.loadTagOptions();
       await this.loadIssueOptions();

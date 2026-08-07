@@ -13,7 +13,7 @@ import { PeopleInHousehold } from '../../persons/ui/people-in-household';
 import { UserService } from '../../../services/user.service';
 import type { Selectable } from 'kysely';
 import { HouseholdsService } from '../services/households-service';
-import { electoralAreaSuffix, readPrimaryElectoralArea } from '../services/household-areas';
+import { electoralAreaSuffix, readPrimaryElectoralArea, seatStatusLabelFor } from '../services/household-areas';
 import { Households } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
@@ -145,6 +145,28 @@ export class HouseholdView {
     electoralAreaSuffix(this.household(), this.campaignContext.seatLabel()),
   );
 
+  /**
+   * Whether this address is in the campaign's own territory, in that campaign's own word.
+   *
+   * Distinct from the area badge, which names the area. This answers the question a candidate
+   * actually asks of it. Fetched rather than read off the household record, because the answer
+   * depends on which campaign is in context and the record fetch is not campaign-aware.
+   */
+  protected readonly seatStatus = signal<string | null>(null);
+  protected readonly seatStatusLabel = computed<string | null>(() =>
+    seatStatusLabelFor(this.seatStatus(), this.campaignContext.seatLabel()),
+  );
+  protected readonly inSeatTerritory = computed<boolean>(() => this.seatStatus() === 'in');
+
+  /** Quiet on failure: a missing badge is better than an error over a page that otherwise works. */
+  private async loadSeatStatus(householdId: string): Promise<void> {
+    try {
+      this.seatStatus.set(await this.householdsSvc.getSeatStatus(householdId, this.campaignContext.activeCampaignId()));
+    } catch {
+      this.seatStatus.set(null);
+    }
+  }
+
   /** Header subtitle — "Ward 4 · 3 people · Canvassed May 2" (§6). Parts drop out honestly when absent. */
   protected readonly subtitle = computed(() => {
     const h = this.household();
@@ -185,6 +207,7 @@ export class HouseholdView {
       const householdData = (await this.householdsSvc.getById(id)) as Selectable<Households>;
       if (!isCurrent()) return; // superseded — do not land stale data
       this.household.set(householdData);
+      void this.loadSeatStatus(id);
       // Spec §1: the address bar shows the record slug, never the internal id.
       // Cosmetic swap only — route param, record-nav pager and breadcrumbs keep the numeric id.
       if (typeof householdData?.slug === 'string' && householdData.slug.length > 0) {

@@ -202,6 +202,56 @@ export function seatStatusSelect(
   end`.as('seat_status');
 }
 
+/**
+ * The same four-way answer as {@link seatStatusSelect}, for ONE household on a detail page.
+ *
+ * The list screens get this as a column inside their own query. A record page loads one household
+ * and cannot reuse that, so this answers it directly. The rules are identical on purpose — a person
+ * reading "Outside the map" on a list and something different on the record would be a defect —
+ * including the timestamp comparison that keeps a household checked before the map was added
+ * reading as unanswered rather than as outside it.
+ *
+ * Returns null when the question does not apply: no household, no map for this office, or a
+ * campaign that represents no named area because it is elected at large.
+ */
+export async function seatStatusForHousehold(
+  db: Db,
+  tenantId: string,
+  householdId: string | null,
+  campaignId: string | null,
+): Promise<SeatStatus | null> {
+  if (!householdId) return null;
+
+  const seat = await resolveSeatContext(db, tenantId, campaignId);
+  if (seat.setId == null || seat.seatAreaNames.length === 0) return null;
+
+  const [area, household] = await Promise.all([
+    db
+      .selectFrom('household_districts')
+      .select(['name'])
+      .where('tenant_id', '=', tenantId)
+      .where('household_id', '=', householdId)
+      .where('set_id', '=', seat.setId)
+      .executeTakeFirst(),
+    db
+      .selectFrom('households')
+      .select(['boundary_checked_at'])
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', householdId)
+      .executeTakeFirst(),
+  ]);
+
+  if (area?.name) {
+    const wanted = new Set(seat.seatAreaNames.map((name) => name.trim().toLowerCase()));
+    return wanted.has(area.name.trim().toLowerCase()) ? 'in' : 'other';
+  }
+
+  const checkedAt = household?.boundary_checked_at == null ? null : new Date(household.boundary_checked_at);
+  if (checkedAt == null) return 'unknown';
+  if (seat.setStampedAt != null && checkedAt < seat.setStampedAt) return 'unknown';
+  return 'outside';
+}
+
 /** The two grid/rule field keys that read the lateral `hd_areas` aliases. */
 const ELECTORAL_FIELD_KEYS: readonly string[] = ['electoral_area', 'any_electoral_area'];
 

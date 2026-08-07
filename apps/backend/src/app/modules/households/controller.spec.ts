@@ -458,6 +458,67 @@ describe('HouseholdsController', () => {
     expect(statusById.get(String(stale.id))).toBe('unknown');
   });
 
+  it('answers the territory question on the household record page exactly as the list does', async () => {
+    // The list computes this inside its own query and a record page cannot reuse that, so the two
+    // run different code. They must not disagree about one address, which is what this pins.
+    await db
+      .updateTable('campaigns')
+      .set({ jurisdiction: 'ca_provincial', office_region: 'ON', seat_type: 'district', seat_name: 'Milton' })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', campaignId)
+      .execute();
+    await db
+      .insertInto('campaign_areas')
+      .values({ tenant_id: tenantId, campaign_id: campaignId, name: 'Milton' })
+      .execute();
+
+    const addedAt = new Date('2026-05-01T00:00:00Z');
+    const ridings = await db
+      .insertInto('boundary_sets')
+      .values({
+        tenant_id: tenantId,
+        slug: `on-record-${rand()}`,
+        label: 'Ontario — provincial ridings',
+        jurisdiction: 'ca_provincial',
+        region: 'ON',
+        role: 'seat_area',
+        source: 'bundled',
+        createdby_id: userId,
+        created_at: addedAt,
+        updated_at: addedAt,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const hh = (await controller.addHousehold({ street1: '7 Record Rd' }, auth)) as { id: string };
+    await db
+      .updateTable('households')
+      .set({ boundary_checked_at: new Date('2026-06-01T00:00:00Z') })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', hh.id)
+      .execute();
+    await db
+      .insertInto('household_districts')
+      .values({ tenant_id: tenantId, household_id: hh.id, set_id: String(ridings.id), name: 'Milton' })
+      .execute();
+
+    expect(await controller.seatStatus(auth, { householdId: hh.id, campaignId })).toBe('in');
+
+    // And an address the pass examined but placed in none of the map's areas: outside it, not blank.
+    const far = (await controller.addHousehold({ street1: '8 Far Away Ave' }, auth)) as { id: string };
+    await db
+      .updateTable('households')
+      .set({ boundary_checked_at: new Date('2026-06-01T00:00:00Z') })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', far.id)
+      .execute();
+    expect(await controller.seatStatus(auth, { householdId: far.id, campaignId })).toBe('outside');
+
+    // A record page opened with no campaign in context has no territory to compare against, and
+    // says nothing rather than guessing which of the workspace's campaigns was meant.
+    expect(await controller.seatStatus(auth, { householdId: hh.id, campaignId: null })).toBeNull();
+  });
+
   it('treats a seat made of several wards as one territory — a door in either ward is in it', async () => {
     // A regional councillor is elected by two wards at once. Both are theirs, and the area column
     // still says WHICH ward, which is what a canvass plan needs.

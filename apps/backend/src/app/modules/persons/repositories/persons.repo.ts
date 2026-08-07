@@ -13,8 +13,9 @@ import { HouseholdRepo } from '../../households/repositories/households.repo';
 import {
   anyElectoralAreaSubquery,
   electoralAreaSelects,
+  resolveSeatContext,
+  seatStatusSelect,
   referencesElectoralAreas,
-  resolveSeatSetId,
 } from '../../households/electoral-areas';
 
 /** persons columns the grid may sort on — prefixed `persons.` in ORDER BY. */
@@ -260,7 +261,10 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     const campaignId = options.campaignId ?? '0';
     // Which boundary set the single-valued `electoral_area` column reads — the campaign's own seat
     // set where it has one. Resolved once per request; null when the workspace has no map yet.
-    const seatSetId = await resolveSeatSetId(trx ?? this.db, tenantId, options.campaignId ?? null);
+    // Also carries the areas the campaign represents and when its map was added, so the row can say
+    // whether the person's household is inside that territory. See resolveSeatContext.
+    const seat = await resolveSeatContext(trx ?? this.db, tenantId, options.campaignId ?? null);
+    const seatSetId = seat.setId;
     const searchStr = this.normalizeSearch(options.searchStr);
     const tags = input.tags?.map((t) => t.trim().toLowerCase()).filter(Boolean);
     const issues = (input.issues || options.issues)?.map((i) => i.trim().toLowerCase()).filter(Boolean);
@@ -501,6 +505,9 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         // same rules client-side against these rows (see the pplcrm-lists skill).
         'hd_areas.electoral_area',
         'hd_areas.any_electoral_area',
+        // Whether this person's household is in the campaign's own territory. Reads the household
+        // joined above, so a person with no household answers 'unknown' rather than a wrong 'no'.
+        seatStatusSelect(seatSetId, seat.seatAreaNames, seat.setStampedAt),
         sql<string[]>`coalesce(array_remove(array_agg(CASE WHEN tags.type = 'tag' THEN tags.name END), null), '{}')`.as(
           'tags',
         ),
@@ -543,6 +550,8 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'csub.status',
         'hd_areas.electoral_area',
         'hd_areas.any_electoral_area',
+        // Grouped because the seat-status expression above reads it off the joined household row.
+        'households.boundary_checked_at',
       ])
       // The caller's sort is skipped during a full scan: the scan's own primary-key order is what
       // makes the keyset cursor below correct, and a second ORDER BY term ahead of it would let

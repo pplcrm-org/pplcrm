@@ -113,6 +113,13 @@ export const HouseholdsRouter = router({
     .input(z.object({ campaignId: z.string().optional() }).optional())
     .query(({ input, ctx }) => households.countDistinctWards(ctx.auth, input?.campaignId)),
 
+  // Whether one address is in the campaign's territory, for the household and person record pages.
+  // `campaignId` is explicit for the same reason it is above: the request's pinned campaign is only
+  // set for non-admin users, so relying on it would answer nothing for an owner or admin.
+  seatStatus: authProcedure
+    .input(z.object({ householdId: z.string(), campaignId: z.string().nullable().optional() }))
+    .query(({ input, ctx }) => households.seatStatus(ctx.auth, input)),
+
   getUnhoused: authProcedure.query(({ ctx }) => households.getUnhoused(ctx.auth)),
 
   // Tenant-scoped slug resolution for /households/:slug URLs (spec §1).

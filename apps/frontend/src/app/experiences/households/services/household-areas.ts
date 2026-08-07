@@ -101,3 +101,33 @@ export function readHouseholdAreas(record: unknown): HouseholdArea[] {
     .filter((name) => name.length > 0)
     .map((name) => ({ setLabel: '', name }));
 }
+
+/**
+ * Whether a record's address is in the campaign's own territory, worded for a person to read.
+ *
+ * The backend answers this on both the households list and the record endpoints, so the wording
+ * lives here and both record pages use it. Returns null when the question does not apply — an
+ * at-large office, or a workspace with no map for this office — so a page can leave it out entirely
+ * rather than showing an empty label.
+ *
+ * "Outside the map" and "not answered" are separate answers on purpose. Both mean no area is known,
+ * but the first is a finished answer (the address was tested against every area and fell in none —
+ * outside the province, or outside the country) and the second is not (no address on file, no
+ * coordinates yet, or no match run since the map was added). Merging them would report a pending
+ * lookup as a decision.
+ */
+export function seatStatusLabelFor(status: string | null | undefined, seatWord: string): string | null {
+  const word = seatWord.trim().toLowerCase() || 'area';
+  switch (status) {
+    case 'in':
+      return `In your ${word}`;
+    case 'other':
+      return `Outside your ${word}`;
+    case 'outside':
+      return 'Outside the map';
+    case 'unknown':
+      return 'Not placed on the map yet';
+    default:
+      return null;
+  }
+}

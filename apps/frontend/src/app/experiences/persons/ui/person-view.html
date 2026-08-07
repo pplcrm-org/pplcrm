@@ -88,7 +88,16 @@
             [link]="!!householdId() && !isPlaceholderHousehold()"
             (linkClicked)="navigateToHousehold()"
           ></pc-detail-item>
-          @if (preferredContactLabel()) {
+          <!-- Whether this person's address is in the campaign's own territory. Comes from their
+               household, and is absent for an office elected at large, which has no single area. -->
+          @if (seatStatusLabel(); as status) {
+          <div class="flex items-center gap-2">
+            <pc-detail-item label="Territory" [value]="status" icon="map"></pc-detail-item>
+            @if (inSeatTerritory()) {
+            <span class="badge badge-sm badge-success font-semibold">Yours</span>
+            }
+          </div>
+          } @if (preferredContactLabel()) {
           <pc-detail-item
             label="Preferred Contact"
             [value]="preferredContactLabel()"
