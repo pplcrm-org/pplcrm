@@ -149,6 +149,26 @@ describe('SettingsPage', () => {
     expect(component['isSelected']('organization')).toBe(false);
   });
 
+  // /workspace (no section in the URL) is the section index. Below md the page renders it as a
+  // list screen and hides the section content; at md and up it still opens on Organization, so
+  // the desktop layout is unchanged from when the route redirected to /workspace/organization.
+  it('treats a URL with no section as the index, and one with a section as not the index', () => {
+    expect(component['isIndex']()).toBe(true);
+    // The index still resolves to Organization, which is what the desktop sidebar layout shows.
+    expect(component['selectedSectionId']()).toBe('organization');
+
+    fixture.componentRef.setInput('section', 'billing');
+    fixture.detectChanges();
+
+    expect(component['isIndex']()).toBe(false);
+  });
+
+  it('navigates back to the section index preserving query params', () => {
+    const router = TestBed.inject(Router);
+    component['backToIndex']();
+    expect(router.navigate).toHaveBeenCalledWith(['/', 'workspace'], { queryParamsHandling: 'preserve' });
+  });
+
   it('should mark form as dirty when field value changes', () => {
     const orgSection = component['sectionStates'].find((s) => s.config.id === 'organization');
     expect(orgSection).toBeTruthy();

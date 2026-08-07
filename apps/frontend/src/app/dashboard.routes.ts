@@ -481,7 +481,17 @@ export const dashboardRoutes: Routes = [
     canActivate: [roleGuard],
     data: { breadcrumb: 'Workspace' },
     children: [
-      { path: '', redirectTo: 'organization', pathMatch: 'full' },
+      // /workspace with no section is the section INDEX, not a redirect. Below md the page
+      // renders it as its own screen (a grouped list of every section) so the nav never sits
+      // on top of the section you already opened; at md and up the same URL shows the sidebar
+      // with Organization open, which is what the old redirect to /workspace/organization did.
+      {
+        path: '',
+        pathMatch: 'full',
+        loadComponent: () => import('./experiences/settings/settings-page').then((m) => m.SettingsPage),
+        canDeactivate: [unsavedChangesGuard],
+        data: { mode: 'workspace' },
+      },
       // Campaigns §15 — the Campaigns settings section lists the campaigns; these
       // deep pages are its detail/add/edit views, so they nest under its own URL.
       // They must be declared before ':section', which would otherwise be tried first.

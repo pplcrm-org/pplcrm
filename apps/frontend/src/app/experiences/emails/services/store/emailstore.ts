@@ -259,7 +259,11 @@ export class EmailsStore {
           cancelText: 'Cancel',
         });
         if (confirmed) {
-          void this.router.navigate(['/workspace'], { queryParams: { tab: 'email-sync' } });
+          // The section is a route segment, not a query param — `?tab=email-sync` was read by
+          // nothing, so "Go to Settings" landed on Organization instead of the page that
+          // connects a mailbox. Bare /workspace is now the section index, which would be an
+          // even less useful place to drop someone who just asked to connect an account.
+          void this.router.navigate(['/workspace', 'email-sync']);
         }
       } else {
         this.alerts.showError(getUserErrorMessage(e, 'Sync failed. Please try again.'));

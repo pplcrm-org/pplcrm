@@ -329,6 +329,16 @@ export class SettingsPage implements OnInit {
 
   public readonly section = input<string>();
 
+  /**
+   * True on /workspace (no section in the URL) — the section INDEX.
+   *
+   * Below md the index is a screen of its own: a grouped list of every section, with the
+   * section content hidden. At md and up it is indistinguishable from the old redirect
+   * target — the sidebar plus Organization — because `selectedSectionId` still falls back
+   * to 'organization'. Nothing about the desktop layout changes.
+   */
+  protected readonly isIndex = computed(() => !this.section());
+
   constructor() {
     this.sectionStates = this.sections.map((section) => this.buildSectionState(section));
 
@@ -338,10 +348,16 @@ export class SettingsPage implements OnInit {
     // section the URL is already on. This effect flushes after NavigationEnd, so it
     // wins over the default.
     effect(() => {
-      this.breadcrumbs.setCrumbs([
-        { label: 'Workspace', route: '/workspace' },
-        { label: this.selectedSectionTitle(), route: `/workspace/${this.selectedSectionId()}` },
-      ]);
+      // On the index there is no section to name, so the trail stops at Workspace rather
+      // than claiming the user is inside Organization when the URL does not say so.
+      this.breadcrumbs.setCrumbs(
+        this.isIndex()
+          ? [{ label: 'Workspace', route: '/workspace' }]
+          : [
+              { label: 'Workspace', route: '/workspace' },
+              { label: this.selectedSectionTitle(), route: `/workspace/${this.selectedSectionId()}` },
+            ],
+      );
     });
 
     effect(() => {
@@ -618,6 +634,12 @@ export class SettingsPage implements OnInit {
     } finally {
       this.savingSectionId.set(null);
     }
+  }
+
+  /** Back out of a section to the index (the mobile section list). Same query-param
+   *  preservation as `selectSection` — the go-live wizard's `?setup` must survive the hop. */
+  protected backToIndex() {
+    void this.router.navigate(['/', this.currentMode], { queryParamsHandling: 'preserve' });
   }
 
   protected selectSection(sectionId: string) {

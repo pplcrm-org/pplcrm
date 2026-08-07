@@ -1,14 +1,32 @@
 <div class="mx-auto w-full max-w-7xl px-4 py-6 md:px-8">
   <header class="mb-5 flex flex-wrap items-start justify-between gap-4">
-    <div class="space-y-1">
-      <p class="pc-eyebrow">Workspace</p>
-      <h1 class="text-xl font-bold tracking-tight">Workspace settings</h1>
-      <p class="text-xs text-base-content/60">Applies to everyone in this workspace. Changes take effect on save.</p>
+    <div class="min-w-0 space-y-1">
+      <!-- Below md a section is a screen of its own, so this is the only way back up to the
+           list (§1 "where was I"). At md and up the sidebar is still on screen and this would
+           be a second, redundant way to do the same thing. -->
+      @if (!isIndex()) {
+      <button
+        type="button"
+        class="-ml-1 mb-1 inline-flex cursor-pointer items-center gap-1 px-1 py-0.5 text-xs font-medium text-primary md:hidden"
+        (click)="backToIndex()"
+      >
+        <pc-icon name="chevron-left" [size]="4" />
+        Workspace settings
+      </button>
+      }
+      <!-- On a mobile section screen the section's own heading names the page, so this
+           workspace-level title block would just repeat what the back link already says. -->
+      <div class="space-y-1 md:block" [class.hidden]="!isIndex()">
+        <p class="pc-eyebrow">Workspace</p>
+        <h1 class="text-xl font-bold tracking-tight">Workspace settings</h1>
+        <p class="text-xs text-base-content/60">Applies to everyone in this workspace. Changes take effect on save.</p>
+      </div>
     </div>
 
-    <!-- Header actions act on the currently selected config-driven section (§save-in-header) -->
+    <!-- Header actions act on the currently selected config-driven section (§save-in-header).
+         Hidden on the mobile index, where no section is open to save. -->
     @if (hasLoaded() && headerSection(); as section) {
-    <div class="flex shrink-0 items-center gap-2">
+    <div class="shrink-0 items-center gap-2 md:flex" [class.hidden]="isIndex()" [class.flex]="!isIndex()">
       <button
         type="button"
         class="btn btn-outline btn-accent btn-sm"
@@ -32,19 +50,50 @@
   </header>
 
   @if (hasLoaded()) {
+  <!-- MOBILE SECTION INDEX (below md only, and only at /workspace).
+       Fifteen wrapped pills above the section content read as clutter and pushed the content
+       the user had already chosen off the first screen. Here the list is the whole screen, one
+       full-width row per section, and the group labels that the pill row had to drop are back
+       — they are the structure that makes fifteen entries scannable. Tapping a row navigates
+       to /workspace/<section>, which below md replaces this list with that section. -->
+  @if (isIndex()) {
+  <nav class="space-y-5 md:hidden" aria-label="Settings sections">
+    @for (group of navGroups; track group.label) {
+    <div class="space-y-1.5">
+      @if (group.label) {
+      <div class="pc-eyebrow px-1">{{ group.label }}</div>
+      }
+      <ul class="pc-panel divide-y divide-base-200 overflow-hidden">
+        @for (item of group.items; track item.id) {
+        <li>
+          <!-- No unsaved-changes dot here, unlike the sidebar: reaching this list means
+               leaving the section, which the unsaved-changes guard already intercepts, so a
+               dot could never be true. -->
+          <button
+            type="button"
+            class="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left text-xs font-medium transition-colors hover:bg-base-200/60"
+            (click)="selectSection(item.id)"
+          >
+            <pc-icon [name]="item.icon" [size]="5" class="shrink-0 text-primary" />
+            <span class="min-w-0 flex-1 truncate">{{ item.title }}</span>
+            <pc-icon name="chevron-right" [size]="4" class="shrink-0 text-base-content/40" />
+          </button>
+        </li>
+        }
+      </ul>
+    </div>
+    }
+  </nav>
+  }
+
   <div class="flex flex-col gap-6 md:flex-row md:items-start lg:gap-8">
-    <!-- Sidebar Navigation -->
-    <aside class="w-full md:w-56 md:sticky md:top-8 shrink-0">
-      <!-- Below md the pills wrap so every section is visible at once (§1 "where
-           am I going" — no sections hidden behind an unmarked horizontal scroll). -->
-      <nav
-        class="flex flex-row flex-wrap gap-0.5 pc-panel p-1.5 md:flex-col md:flex-nowrap"
-        aria-label="Settings sections"
-      >
-        <!-- Grouped nav merged from both section sources (navGroups in settings-page.ts).
-             Eyebrows hide below md, where the nav is a horizontal pill row. -->
+    <!-- Sidebar Navigation — md and up only. Below md the section list is the separate
+         screen above, so the sidebar never competes with the section it opened. -->
+    <aside class="hidden shrink-0 md:sticky md:top-8 md:block md:w-56">
+      <nav class="flex flex-col gap-0.5 pc-panel p-1.5" aria-label="Settings sections">
+        <!-- Grouped nav merged from both section sources (navGroups in settings-page.ts). -->
         @for (group of navGroups; track group.label) { @if (group.label) {
-        <div class="pc-eyebrow hidden md:block mx-2.5 mt-3 mb-0.5 first:mt-1">{{ group.label }}</div>
+        <div class="pc-eyebrow mx-2.5 mt-3 mb-0.5 first:mt-1">{{ group.label }}</div>
         } @for (item of group.items; track item.id) {
         <button
           [id]="'settings-nav-' + item.id"
@@ -73,12 +122,16 @@
       </nav>
     </aside>
 
-    <!-- Main Content Area -->
-    <main class="flex-1 w-full max-w-4xl">
+    <!-- Main Content Area. Hidden below md while the URL is the index (/workspace): there the
+         section list above is the screen. At md and up it always shows, so /workspace still
+         opens on Organization exactly as the old redirect did. -->
+    <main class="w-full max-w-4xl flex-1 md:block" [class.hidden]="isIndex()">
       @for (section of visibleSections; track trackSection($index, section)) { @if (isSelected(section.config.id)) {
       <section class="space-y-5 pc-panel p-5">
         <header class="border-b border-base-200 pb-3">
-          <h2 class="text-xs font-semibold tracking-tight">{{ section.config.title }}</h2>
+          <!-- One notch up below md, where this is the screen's own title (the workspace-level
+             h1 is hidden there); back to the desktop size once the page h1 is above it. -->
+          <h2 class="text-sm font-semibold tracking-tight md:text-xs">{{ section.config.title }}</h2>
           <p class="mt-0.5 text-xs text-base-content/60">{{ section.config.description }}</p>
         </header>
 
@@ -385,7 +438,8 @@
       @for (custom of renderableCustomSections; track custom.id) { @if (isSelected(custom.id)) {
       <section class="space-y-5 pc-panel p-5">
         <header class="border-b border-base-200 pb-3">
-          <h2 class="text-xs font-semibold tracking-tight">{{ custom.title }}</h2>
+          <!-- Same one-notch-up-below-md rule as the config-driven sections above. -->
+          <h2 class="text-sm font-semibold tracking-tight md:text-xs">{{ custom.title }}</h2>
           <p class="mt-0.5 text-xs text-base-content/60">{{ custom.description }}</p>
         </header>
 
