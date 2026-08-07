@@ -86,6 +86,110 @@ export async function resolveSeatSetId(db: Db, tenantId: string, campaignId?: st
   return fallback?.id != null ? String(fallback.id) : null;
 }
 
+/**
+ * Where a household sits relative to the seat the campaign is actually contesting.
+ *
+ * Most campaigns do not need to know which of Ontario's 124 ridings a door is in. They need to know
+ * whether it is in THEIRS. These are the only four answers, and they are deliberately distinct:
+ *
+ * | Value | Means |
+ * | --- | --- |
+ * | `in` | Inside the riding this campaign is running in. |
+ * | `other` | Inside the map, in a different riding. The riding's name is still on the household. |
+ * | `outside` | Checked, and inside none of the map's areas — outside Ontario, or outside Canada. |
+ * | `unknown` | Not answered yet: no coordinates, or no match pass since the map was added. |
+ *
+ * `outside` and `unknown` are the pair worth keeping apart. Both show no riding, and conflating
+ * them would tell someone their Vancouver donor is "not in Milton" before anything had looked.
+ */
+export type SeatStatus = 'in' | 'other' | 'outside' | 'unknown';
+
+/** The seat set, when it was added, and the name of the seat the campaign is contesting. */
+export interface SeatContext {
+  setId: string | null;
+  /** The seat set's `updated_at` (falling back to `created_at`). See {@link seatStatusSelect}. */
+  setStampedAt: Date | null;
+  /** `campaigns.seat_name`, trimmed. NULL for an at-large office, which contests no single area. */
+  seatName: string | null;
+}
+
+/**
+ * Everything the seat-status expression needs, resolved once per request.
+ *
+ * Split from {@link resolveSeatSetId} rather than folded into it because that function has other
+ * callers (tag ranking) that want only the id and should not pay for two more columns.
+ */
+export async function resolveSeatContext(db: Db, tenantId: string, campaignId?: string | null): Promise<SeatContext> {
+  const setId = await resolveSeatSetId(db, tenantId, campaignId);
+
+  const set =
+    setId == null
+      ? undefined
+      : await db
+          .selectFrom('boundary_sets')
+          .select(['created_at', 'updated_at'])
+          .where('tenant_id', '=', tenantId)
+          .where('id', '=', setId)
+          .executeTakeFirst();
+
+  const campaign = campaignId
+    ? await db
+        .selectFrom('campaigns')
+        .select(['seat_name', 'seat_type'])
+        .where('tenant_id', '=', tenantId)
+        .where('id', '=', campaignId)
+        .executeTakeFirst()
+    : undefined;
+
+  // An at-large office (a mayor, a governor) contests no single area, so there is no "my riding" to
+  // be in or out of. Its wards and precincts stay listed individually, which is the whole point of
+  // the distinction: a mayoral campaign cares about every ward in the city, not one of them.
+  const seatName = campaign?.seat_type === 'at_large' ? null : campaign?.seat_name?.trim() || null;
+  const stamped = set?.updated_at ?? set?.created_at ?? null;
+
+  return { setId, setStampedAt: stamped == null ? null : new Date(stamped), seatName };
+}
+
+/**
+ * The `seat_status` column: in my riding, another riding, outside the map, or not answered yet.
+ *
+ * Reads two things the lateral join cannot supply on its own — `hd_areas.electoral_area` from the
+ * lateral, and `households.boundary_checked_at` from the outer query — so this belongs in the outer
+ * SELECT next to them, not inside `electoralAreaSelects`.
+ *
+ * The `boundary_checked_at` comparison is what makes `outside` truthful. That column records when a
+ * match pass last examined the household **at all**, not per map, so a household matched last week
+ * against a ward map has a non-NULL stamp and has still never been tested against a riding map
+ * added this morning. Reporting that household as "outside Ontario" would be a confident wrong
+ * answer, so a stamp older than the map itself reads as `unknown` until the match job catches up.
+ */
+export function seatStatusSelect(
+  seatSetId: string | null,
+  seatName: string | null,
+  setStampedAt: Date | null,
+): AliasedRawBuilder<SeatStatus | null, 'seat_status'> {
+  // No map, or an office that contests no single area: the question does not apply, and NULL says
+  // so more honestly than inventing a fourth-and-a-half state.
+  if (seatSetId == null || seatName == null) {
+    return sql<SeatStatus | null>`null::text`.as('seat_status');
+  }
+
+  const checked =
+    setStampedAt == null
+      ? sql<boolean>`households.boundary_checked_at is not null`
+      : sql<boolean>`households.boundary_checked_at is not null and households.boundary_checked_at >= ${setStampedAt}`;
+
+  // Compared case-insensitively and trimmed: the seat name is typed by a person and the area name
+  // comes from the publisher's file, so "milton " and "Milton" must not read as different ridings.
+  return sql<SeatStatus>`case
+    when hd_areas.electoral_area is not null
+      and lower(btrim(hd_areas.electoral_area)) = lower(btrim(${seatName})) then 'in'
+    when hd_areas.electoral_area is not null then 'other'
+    when ${checked} then 'outside'
+    else 'unknown'
+  end`.as('seat_status');
+}
+
 /** The two grid/rule field keys that read the lateral `hd_areas` aliases. */
 const ELECTORAL_FIELD_KEYS: readonly string[] = ['electoral_area', 'any_electoral_area'];
 

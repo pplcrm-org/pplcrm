@@ -14,7 +14,9 @@ import {
   electoralAreaSelects,
   getHouseholdAreas,
   referencesElectoralAreas,
+  resolveSeatContext,
   resolveSeatSetId,
+  seatStatusSelect,
   upsertHouseholdAreas,
   type HouseholdAreaListing,
   type HouseholdAreaRow,
@@ -258,7 +260,10 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     const tenantId = input.tenant_id;
     // Which boundary set the single-valued `electoral_area` column reads. Resolved once per request
     // rather than per row; null when the workspace has no map yet, and the column is then NULL.
-    const seatSetId = await resolveSeatSetId(trx ?? this.db, tenantId, options.campaignId ?? null);
+    // The seat set, the seat the campaign contests, and when the map was added — the last of which
+    // is what stops a household checked before the map existed from reading as "outside" it.
+    const seat = await resolveSeatContext(trx ?? this.db, tenantId, options.campaignId ?? null);
+    const seatSetId = seat.setId;
     const searchStr = this.normalizeSearch(options.searchStr);
     const tags = input.tags?.map((t) => t.trim().toLowerCase()).filter(Boolean);
     const issues = (input.issues || options.issues)?.map((i) => i.trim().toLowerCase()).filter(Boolean);
@@ -445,6 +450,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.geocoding_status',
         'households.updated_at',
       ])
+      .select(seatStatusSelect(seatSetId, seat.seatName, seat.setStampedAt))
       .select((eb) => [
         eb
           .selectFrom('persons')
@@ -502,6 +508,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.updated_at',
         'households.campaign_id',
         'households.createdby_id',
+        'households.boundary_checked_at',
         'households.updatedby_id',
         'households.file_id',
         'households.address_fp_street',

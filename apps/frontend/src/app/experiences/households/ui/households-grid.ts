@@ -203,6 +203,17 @@ export class HouseholdsGrid implements OnInit {
       hide: true,
       minWidth: 220,
     },
+    // The question most campaigns actually ask. Which of Ontario's 124 ridings a door is in is the
+    // column above; this one says whether it is in THIS campaign's. Hidden unless the campaign
+    // names a seat, because for an at-large office there is no seat to be inside or outside of.
+    {
+      field: 'seat_status',
+      headerName: 'In your seat',
+      editable: false,
+      hide: true,
+      minWidth: 150,
+      valueFormatter: (params: CellParams) => this.formatSeatStatus(params.value),
+    },
     {
       field: 'updated_at',
       headerName: 'Last touch',
@@ -275,6 +286,34 @@ export class HouseholdsGrid implements OnInit {
       if (c.field === 'any_electoral_area') {
         c.headerName = `All boundaries (${seatPlural.toLowerCase()} and any other map)`;
       }
+      if (c.field === 'seat_status') {
+        const seatName = this.campaignCtx.activeSeatName();
+        // Shown only when there is a named seat to be in or out of. An at-large office has none,
+        // and a column headed "In your riding" over an empty answer is worse than no column.
+        c.hide = seatName == null;
+        c.headerName = seatName == null ? `In your ${seat.toLowerCase()}` : `In ${seatName}`;
+      }
+    }
+  }
+
+  /**
+   * The four answers, spelled out. `outside` and `unknown` must not both read as "no".
+   *
+   * "Outside the map" means the address was tested against every area and fell in none of them —
+   * outside Ontario, or outside Canada. Blank means nothing has looked yet, usually because the
+   * address has no coordinates. Telling someone their Vancouver donor is simply "No" would hide
+   * that the answer for a Milton address might still be arriving.
+   */
+  protected formatSeatStatus(value: unknown): string {
+    switch (value) {
+      case 'in':
+        return 'Yes';
+      case 'other':
+        return 'No — another area';
+      case 'outside':
+        return 'No — outside the map';
+      default:
+        return '';
     }
   }
 

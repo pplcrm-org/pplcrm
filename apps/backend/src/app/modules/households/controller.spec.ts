@@ -385,6 +385,100 @@ describe('HouseholdsController', () => {
     expect(anyFiltered.count).toBe(1);
   });
 
+  it('answers "in my riding" four ways, and never calls an unchecked household outside the map', async () => {
+    // The campaign contests one riding. Most campaigns do not care which of Ontario's 124 a door is
+    // in — only whether it is in theirs — and "outside Ontario" has to be distinguishable from
+    // "nobody has looked yet", or a Vancouver donor reads as a rejected Milton voter.
+    await db
+      .updateTable('campaigns')
+      .set({ jurisdiction: 'ca_provincial', office_region: 'ON', seat_type: 'district', seat_name: 'Milton' })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', campaignId)
+      .execute();
+
+    const mapAddedAt = new Date('2026-05-01T00:00:00Z');
+    const ridings = await db
+      .insertInto('boundary_sets')
+      .values({
+        tenant_id: tenantId,
+        slug: `on-ridings-${rand()}`,
+        label: 'Ontario — provincial ridings',
+        jurisdiction: 'ca_provincial',
+        region: 'ON',
+        role: 'seat_area',
+        source: 'bundled',
+        createdby_id: userId,
+        created_at: mapAddedAt,
+        updated_at: mapAddedAt,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    const mk = async (street: string, checkedAt: Date | null) => {
+      const hh = (await controller.addHousehold({ street1: street }, auth)) as { id: string };
+      await db
+        .updateTable('households')
+        .set({ boundary_checked_at: checkedAt })
+        .where('tenant_id', '=', tenantId)
+        .where('id', '=', hh.id)
+        .execute();
+      return hh;
+    };
+    const checked = new Date('2026-06-01T00:00:00Z');
+    const inRiding = await mk('1 Milton Way', checked);
+    const nextDoor = await mk('2 Burlington Rd', checked);
+    const faraway = await mk('3 Vancouver Blvd', checked);
+    const untouched = await mk('4 Not Yet Ln', null);
+    // Checked BEFORE the riding map was added: nothing has tested this address against it.
+    const stale = await mk('5 Stale Stamp St', new Date('2026-04-01T00:00:00Z'));
+
+    const place = (householdId: string, name: string) =>
+      db
+        .insertInto('household_districts')
+        .values({ tenant_id: tenantId, household_id: householdId, set_id: String(ridings.id), name })
+        .execute();
+    await place(inRiding.id, 'milton '); // case and padding differ; the publisher's file decides spelling
+    await place(nextDoor.id, 'Burlington');
+
+    const result = await controller.getAllWithPeopleCount(auth, { campaignId });
+    const statusById = new Map(result.rows.map((r: any) => [String(r.id), r.seat_status]));
+
+    expect(statusById.get(String(inRiding.id))).toBe('in');
+    expect(statusById.get(String(nextDoor.id))).toBe('other');
+    // Matched against every Ontario riding and inside none of them: outside Ontario.
+    expect(statusById.get(String(faraway.id))).toBe('outside');
+    expect(statusById.get(String(untouched.id))).toBe('unknown');
+    // The one that would otherwise be a confident wrong answer.
+    expect(statusById.get(String(stale.id))).toBe('unknown');
+  });
+
+  it('leaves the riding question unanswered for an at-large office, which contests no single area', async () => {
+    // A mayoral campaign wants every ward listed, not one of them marked "mine".
+    await db
+      .updateTable('campaigns')
+      .set({ jurisdiction: 'ca_municipal', seat_type: 'at_large', seat_name: null })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', campaignId)
+      .execute();
+    await db
+      .insertInto('boundary_sets')
+      .values({
+        tenant_id: tenantId,
+        slug: `wards-${rand()}`,
+        label: 'City wards',
+        jurisdiction: 'ca_municipal',
+        role: 'seat_area',
+        source: 'drawn',
+        createdby_id: userId,
+      })
+      .execute();
+    const hh = (await controller.addHousehold({ street1: '9 Mayor Ave' }, auth)) as { id: string };
+
+    const result = await controller.getAllWithPeopleCount(auth, { campaignId });
+    const row: any = result.rows.find((r: any) => String(r.id) === String(hh.id));
+    expect(row?.seat_status ?? null).toBeNull();
+  });
+
   it('counts distinct areas on the campaign’s own seat map when a campaign is given', async () => {
     const hh1 = (await controller.addHousehold({ street1: '11 Two Maps Way' }, auth)) as { id: string };
     const hh2 = (await controller.addHousehold({ street1: '22 Two Maps Way' }, auth)) as { id: string };

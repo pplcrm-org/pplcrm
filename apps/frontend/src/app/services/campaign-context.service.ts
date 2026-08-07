@@ -73,6 +73,20 @@ export class CampaignContextService extends TRPCService<unknown> {
   /** The active campaign's spec: its label, its default vocabulary and which inputs it needs. */
   public readonly activeJurisdictionSpec = computed(() => JURISDICTIONS[this.activeJurisdiction()]);
 
+  /**
+   * The name of the seat this campaign is contesting — "Milton" — or null when there is not one.
+   *
+   * Null for an at-large office (a mayor, a governor), which contests a whole city or state rather
+   * than one area of it. That is the difference that decides whether "is this door in my seat?" is
+   * even a question: a mayoral campaign wants every ward listed, not one of them singled out.
+   */
+  public readonly activeSeatName = computed<string | null>(() => {
+    const campaign = this.activeCampaign();
+    if (campaign?.seat_type === 'at_large') return null;
+    const name = campaign?.seat_name;
+    return typeof name === 'string' && name.trim().length > 0 ? name.trim() : null;
+  });
+
   private readonly seatLabelOverride = computed<string | null>(() => {
     const override = this.activeCampaign()?.seat_label_override;
     return typeof override === 'string' && override.trim().length > 0 ? override : null;

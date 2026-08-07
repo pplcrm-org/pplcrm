@@ -36,6 +36,8 @@ const mockCampaignContext = {
   seatLabelPlural: () => 'Wards',
   subdivisionLabel: () => 'Poll',
   subdivisionLabelPlural: () => 'Polls',
+  /** The seat this campaign contests, which decides whether the "in your seat" column is shown. */
+  activeSeatName: () => 'Ward 4',
 };
 
 describe('HouseholdsGrid', () => {
@@ -117,6 +119,37 @@ describe('HouseholdsGrid', () => {
     expect(fields).not.toContain('district');
     expect(fields).not.toContain('precinct');
     expect(fields).not.toContain('ward');
+  });
+
+  it('offers an "in my seat" column headed with the seat the campaign contests', async () => {
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const col = component['col'].find((c) => c.field === 'seat_status');
+    expect(col?.headerName).toBe('In Ward 4');
+    expect(col?.hide).toBe(false);
+  });
+
+  it('hides the "in my seat" column for an at-large office, which contests no single area', async () => {
+    // A mayoral campaign runs city-wide. Every ward matters to it, so singling one out is wrong.
+    mockCampaignContext.activeSeatName = () => null;
+    try {
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const col = component['col'].find((c) => c.field === 'seat_status');
+      expect(col?.hide).toBe(true);
+    } finally {
+      mockCampaignContext.activeSeatName = () => 'Ward 4';
+    }
+  });
+
+  it('keeps "outside the map" distinct from "not looked yet"', () => {
+    // Both show no area. Reporting a Vancouver address and an ungeocoded one the same way would
+    // hide that one answer is final and the other is still coming.
+    expect(component['formatSeatStatus']('in')).toBe('Yes');
+    expect(component['formatSeatStatus']('other')).toBe('No — another area');
+    expect(component['formatSeatStatus']('outside')).toBe('No — outside the map');
+    expect(component['formatSeatStatus'](null)).toBe('');
+    expect(component['formatSeatStatus']('unknown')).toBe('');
   });
 
   it('heads the electoral column with the active campaign’s own word', async () => {
