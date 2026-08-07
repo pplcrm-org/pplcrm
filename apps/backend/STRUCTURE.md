@@ -53,6 +53,7 @@ apps/
           2026-08-04-import-resume-offset.ts
           2026-08-05-a-newsletter-sender-identity.ts
           2026-08-05-background-jobs-priority.ts
+          2026-08-06-campaign-areas.ts
           schema.sql
         config/
           email-folders.config.ts
