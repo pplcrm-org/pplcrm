@@ -43,6 +43,7 @@ function makeSet(overrides: Partial<BoundarySetRowType> = {}): BoundarySetRowTyp
     code_property: null,
     feature_count: 2,
     editable: true,
+    viewable: true,
     created_at: '2026-08-01T00:00:00.000Z',
     updated_at: '2026-08-01T00:00:00.000Z',
     ...overrides,
@@ -553,6 +554,34 @@ describe('BoundariesSettingsComponent', () => {
       });
       expect(boundaries.addPublishedSet).not.toHaveBeenCalled();
       expect(dialogs.confirm).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('opening a published map', () => {
+    // A published map cannot be edited and DOES have shapes. Those were once the same flag, so the
+    // list offered no way to open a 124-area riding map and told the user there was no shape in it.
+    it('offers the map view for a published map, which has shapes but cannot be edited', async () => {
+      const set = makeSet({ id: '1', source: 'bundled', editable: false, viewable: true, feature_count: 124 });
+      boundaries.listFeatures.mockResolvedValue(featureList([makeFeature()], { total: 124 }));
+      await build([set]);
+      fixture.detectChanges();
+
+      const openMap = (fixture.nativeElement as HTMLElement).textContent ?? '';
+      expect(openMap).not.toContain('no shape to open');
+
+      await component['openMap'](set);
+      fixture.detectChanges();
+      // The map opened, and the one thing it must not offer is reshaping someone else's file.
+      expect(component['mode']()).toBe('map');
+      expect((fixture.nativeElement as HTMLElement).textContent).not.toContain('Edit map');
+    });
+
+    it('still says an imported list has no shape, because it genuinely has none', async () => {
+      const set = makeSet({ id: '2', source: 'import', editable: false, viewable: false });
+      await build([set]);
+      fixture.detectChanges();
+
+      expect((fixture.nativeElement as HTMLElement).textContent).toContain('no shape to open');
     });
   });
 

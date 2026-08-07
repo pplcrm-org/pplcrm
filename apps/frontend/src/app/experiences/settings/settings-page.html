@@ -382,7 +382,7 @@
       } }
 
       <!-- Custom self-saving sections: one shell driven by the same config array as the nav -->
-      @for (custom of visibleCustomSections; track custom.id) { @if (isSelected(custom.id)) {
+      @for (custom of renderableCustomSections; track custom.id) { @if (isSelected(custom.id)) {
       <section class="space-y-5 pc-panel p-5">
         <header class="border-b border-base-200 pb-3">
           <h2 class="text-xs font-semibold tracking-tight">{{ custom.title }}</h2>

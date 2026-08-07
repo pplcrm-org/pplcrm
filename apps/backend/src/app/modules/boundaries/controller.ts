@@ -86,6 +86,9 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
       // A layer is editable when its polygons live in rows. Bundled reference data is versioned as
       // a whole and imported names have no polygons at all, so neither can be edited area by area.
       editable: row.source === 'upload' || row.source === 'drawn',
+      // Viewable is the wider question: are there polygons at all. Everything except an imported
+      // list of names has them, including a published map that cannot be edited.
+      viewable: row.source !== 'import',
       created_at: row.created_at == null ? null : new Date(row.created_at).toISOString(),
       updated_at: row.updated_at == null ? null : new Date(row.updated_at).toISOString(),
     }));

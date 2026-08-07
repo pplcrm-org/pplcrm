@@ -328,6 +328,15 @@ export const BoundarySetObj = z.object({
   feature_count: z.number(),
   /** True when the layer's polygons live in rows a person can rename, reshape or delete. */
   editable: z.boolean(),
+  /**
+   * True when the layer HAS polygons, whoever owns them — so there is a shape to draw on a map.
+   *
+   * Deliberately separate from `editable`, which answers a different question. A published map has
+   * shapes and cannot be edited; treating one flag as the other hid the map view behind the edit
+   * permission and told the user there was "no shape to open" for a map that has 124 of them.
+   * Only an imported layer, which carries names and no geometry, is genuinely unopenable.
+   */
+  viewable: z.boolean(),
   created_at: z.string().nullable(),
   updated_at: z.string().nullable(),
 });

@@ -234,7 +234,7 @@ export class SettingsPage implements OnInit {
   protected trackSection = (_: number, section: SectionState) => section.config.id;
 
   /**
-   * The custom (self-saving) sections visible in the current mode.
+   * The custom (self-saving) sections listed in the sidebar for the current mode.
    *
    * Campaigns is where you add and archive ELECTION contexts, so it is hidden for an organization
    * that does not run elections — a church has no election to add, and offering one reads as the
@@ -245,6 +245,19 @@ export class SettingsPage implements OnInit {
   protected get visibleCustomSections(): CustomSectionConfig[] {
     if (ORG_MODE_IS_ELECTORAL[this.orgMode.mode()]) return CUSTOM_SECTIONS;
     return CUSTOM_SECTIONS.filter((section) => section.id !== 'campaigns');
+  }
+
+  /**
+   * The custom sections the CONTENT area can render — every one of them, in every mode.
+   *
+   * This is deliberately not `visibleCustomSections`. Hiding Campaigns from a church's sidebar is a
+   * nav decision, and the comment above says so; rendering the content area from the same filtered
+   * list turned it into a permission by accident, so `/workspace/campaigns` reached by deep link,
+   * by browser history, or by the redirect after saving a campaign drew a page with nothing on it.
+   * A section that a mode does not advertise is still reachable and must still render.
+   */
+  protected get renderableCustomSections(): CustomSectionConfig[] {
+    return CUSTOM_SECTIONS;
   }
 
   /** The sidebar nav: both section sources merged in the order declared by the
