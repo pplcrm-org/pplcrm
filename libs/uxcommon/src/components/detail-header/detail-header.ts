@@ -52,8 +52,12 @@ const MOBILE_ACTIONS_QUERY = '(max-width: 639.98px)';
           </div>
         </div>
 
-        <!-- justify-end below sm keeps the ⋮ trigger on the right so its menu opens on-screen -->
-        <div class="flex items-center gap-3 max-sm:justify-end">
+        <!-- justify-end below sm keeps the ⋮ trigger on the right so its menu opens on-screen.
+             shrink-0 is load-bearing: a long subtitle makes the title block's max-content wide
+             enough that justify-between shrinks BOTH children. The buttons themselves are
+             flex-shrink:0 (DaisyUI .btn), so a squeezed cluster does not get narrower buttons —
+             it gets buttons hanging out past the card's padding on both sides. -->
+        <div class="flex shrink-0 items-center gap-3 max-sm:justify-end">
           <!-- "N of M filtered" walk-the-list pager — lives in the header card (design source),
                so J/K navigation is visible next to the actions. Self-hides with no grid context. -->
           @if (positionLabel()) {

@@ -19,6 +19,10 @@ export type SignalFormRoot = () => {
   selector: 'pc-form-actions',
   imports: [Icon],
   templateUrl: './form-actions.html',
+  // The host is a flex item wherever a page puts a button bar beside other content.
+  // Without shrink-0 the host is squeezed to its min-content width while DaisyUI's
+  // .btn keeps flex-shrink:0, so the buttons spill outside their own container.
+  host: { class: 'shrink-0' },
 })
 export class FormActions {
   private readonly route = inject(ActivatedRoute);
