@@ -53,7 +53,7 @@ const MOBILE_ACTIONS_QUERY = '(max-width: 639.98px)';
         </div>
 
         <!-- justify-end below sm keeps the ⋮ trigger on the right so its menu opens on-screen -->
-        <div class="flex items-center gap-2 max-sm:justify-end">
+        <div class="flex items-center gap-3 max-sm:justify-end">
           <!-- "N of M filtered" walk-the-list pager — lives in the header card (design source),
                so J/K navigation is visible next to the actions. Self-hides with no grid context. -->
           @if (positionLabel()) {

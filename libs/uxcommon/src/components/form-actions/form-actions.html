@@ -1,7 +1,10 @@
-<div class="flex gap-2 justify-center">
+<!-- gap-3 between buttons is deliberately wider than the .btn's own 6px icon↔label gap,
+     so two separate controls never read as one blob. Do not add a `gap-*` class to the
+     buttons themselves — that would override the tighter inner gap and flatten the two. -->
+<div class="flex gap-3 justify-center">
   <button
     type="button"
-    class="btn btn-primary gap-2"
+    class="btn btn-primary"
     [class.btn-xs]="size() === 'xs'"
     [class.btn-sm]="size() === 'sm'"
     (click)="handleBtn1Clicked()"
@@ -17,7 +20,7 @@
   @if (showDelete()) {
   <button
     type="button"
-    class="btn btn-error btn-outline gap-2"
+    class="btn btn-error btn-outline"
     [class.btn-xs]="size() === 'xs'"
     [class.btn-sm]="size() === 'sm'"
     (click)="handleDeleteClicked()"
@@ -42,7 +45,7 @@
   } @if (showCancel()) {
   <button
     type="button"
-    class="btn btn-outline btn-accent gap-2"
+    class="btn btn-outline btn-accent"
     [class.btn-xs]="size() === 'xs'"
     [class.btn-sm]="size() === 'sm'"
     (click)="cancel()"
