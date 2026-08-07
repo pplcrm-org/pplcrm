@@ -37,18 +37,19 @@ So component tests provide **no** `Loader` and assert the placeholder — see
 
 Inputs:
 
-| Input         | Type               | Default         | Notes                                                                                    |
-| ------------- | ------------------ | --------------- | ---------------------------------------------------------------------------------------- |
-| `markers`     | `PcMapMarker[]`    | `[]`            | `{ position, variant?, tooltip?, label?, id?, payload? }` — `label` numbers the pin      |
-| `polygons`    | `PcMapPolygon[]`   | `[]`            | `{ path, variant?, label?, dashed?, id?, payload? }`                                     |
-| `polylines`   | `PcMapPolyline[]`  | `[]`            | `{ path, variant?, dashed?, id?, payload? }` — an open path; `dashed` defaults to `true` |
-| `center`      | `PcLatLng \| null` | `null`          | Explicit centre; disables auto-fit                                                       |
-| `zoom`        | `number`           | `14`            | Used with `center`                                                                       |
-| `fitBounds`   | `boolean`          | `true`          | Auto-fit to content when no `center`                                                     |
-| `interactive` | `boolean`          | `true`          | `false` = fully static (§6 card)                                                         |
-| `deepLink`    | `boolean`          | `false`         | Map/marker click opens the Google Maps app                                               |
-| `mapId`       | `string`           | `'DEMO_MAP_ID'` | Cloud Map ID for dark tiles                                                              |
-| `ariaLabel`   | `string`           | `'Map'`         | Placeholder/aria label                                                                   |
+| Input         | Type               | Default         | Notes                                                                                                             |
+| ------------- | ------------------ | --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `markers`     | `PcMapMarker[]`    | `[]`            | `{ position, variant?, tooltip?, label?, id?, payload? }` — `label` numbers the pin                               |
+| `polygons`    | `PcMapPolygon[]`   | `[]`            | `{ path, variant?, label?, dashed?, id?, payload? }`                                                              |
+| `polylines`   | `PcMapPolyline[]`  | `[]`            | `{ path, variant?, dashed?, id?, payload? }` — an open path; `dashed` defaults to `true`                          |
+| `clusters`    | `PcMapCluster[]`   | `[]`            | `{ position, count, variant?, id?, payload? }` — counted groups instead of pins; see **Too many markers to draw** |
+| `center`      | `PcLatLng \| null` | `null`          | Explicit centre; disables auto-fit                                                                                |
+| `zoom`        | `number`           | `14`            | Used with `center`                                                                                                |
+| `fitBounds`   | `boolean`          | `true`          | Auto-fit to content when no `center`                                                                              |
+| `interactive` | `boolean`          | `true`          | `false` = fully static (§6 card)                                                                                  |
+| `deepLink`    | `boolean`          | `false`         | Map/marker click opens the Google Maps app                                                                        |
+| `mapId`       | `string`           | `'DEMO_MAP_ID'` | Cloud Map ID for dark tiles                                                                                       |
+| `ariaLabel`   | `string`           | `'Map'`         | Placeholder/aria label                                                                                            |
 
 Drawing inputs (see **Drawing mode** below):
 
@@ -58,7 +59,50 @@ Drawing inputs (see **Drawing mode** below):
 | `selectedPolygonId` | `string \| null` | `null`  | The `PcMapPolygon.id` to highlight (heavier stroke, denser fill) |
 
 Outputs: `markerClicked: PcMapMarker`, `polygonClicked: PcMapPolygon` (each
-carries its `payload` back), plus the four drawing outputs below.
+carries its `payload` back), `clusterClicked: PcMapCluster`,
+`viewportChanged: PcMapViewport`, plus the four drawing outputs below.
+
+Methods: `focusOn(points: readonly PcLatLng[])` frames the map on the points a
+host names, once. See **Framing the map** below.
+
+## Too many markers to draw
+
+A pin is a DOM node. A real campaign holds far more doors than a browser can
+carry — an Ontario provincial candidate has 35,000+ households — so a host with
+that many must not put them in `markers`.
+
+Send counted groups in `clusters` instead: `{ position, count }`. The map draws
+each as a disc whose **area** is proportional to its count (relative to the
+largest group on screen) with the count written inside, abbreviated past a
+thousand. Clicking one takes the map two zoom steps closer, which is how a
+reader breaks a group apart and eventually gets individual pins back.
+
+The pattern that goes with it:
+
+1. Listen to `viewportChanged` and fetch only what is inside that rectangle.
+2. Have the server return individual points when few enough are in view and
+   counted groups when too many are.
+3. Turn `fitBounds` **off** on that page and frame the map yourself (below).
+
+Clusters take no part in fit-to-content, because they are a consequence of the
+current view rather than a description of the host's data.
+
+## Framing the map
+
+Two ways, and a page uses one or the other, never both:
+
+- **`fitBounds` (default `true`)** — the map re-frames itself on its content
+  every time that content changes. Right for a page whose content does not
+  depend on where the map is looking: one household, one turf, one route.
+- **`focusOn(points)` with `fitBounds` off** — the host decides when the map
+  moves and what it frames. Required for any page that listens to
+  `viewportChanged`: auto-fit would move the map, the move would be reported,
+  the report would fetch new content, and the new content would move it again.
+
+`focusOn` is remembered, so a host may call it before the SDK has finished
+loading; the frame is applied when the map appears. Called with a single point
+(or several at one spot) it centres at zoom 16 rather than fitting, which would
+otherwise zoom to a roof.
 
 ## Drawing mode
 

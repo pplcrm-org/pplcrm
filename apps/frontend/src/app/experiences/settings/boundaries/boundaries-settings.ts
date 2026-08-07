@@ -1,4 +1,4 @@
-import { Component, DestroyRef, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, DestroyRef, OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { form, required } from '@angular/forms/signals';
 import { RouterLink } from '@angular/router';
 import {
@@ -25,10 +25,12 @@ import {
 import type {
   BoundaryFeatureRowType,
   BoundaryGeometryType,
+  BoundaryHouseholdClusterType,
   BoundaryRole,
   BoundarySetRowType,
   BoundarySource,
   BoundaryValidationType,
+  BoundaryViewportType,
   JurisdictionId,
   PublishedBoundaryEntry,
   PublishedBoundaryMatch,
@@ -40,7 +42,14 @@ import { Card } from '@uxcommon/components/card/card';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 import { Input } from '@uxcommon/components/input/input';
 import { PC_MAP_DEFAULT_ZOOM, PcMap } from '@uxcommon/components/map/map';
-import type { PcLatLng, PcMapMarker, PcMapPolygon, PcMapPolygonEdit } from '@uxcommon/components/map/map-types';
+import type {
+  PcLatLng,
+  PcMapCluster,
+  PcMapMarker,
+  PcMapPolygon,
+  PcMapPolygonEdit,
+  PcMapViewport,
+} from '@uxcommon/components/map/map-types';
 import { RowActions } from '@uxcommon/components/row-actions/row-actions';
 import { Select } from '@uxcommon/components/select/select';
 import { Table } from '@uxcommon/components/table/table';
@@ -69,8 +78,14 @@ import {
 } from './boundary-geojson';
 import { BoundariesService, type BoundaryHouseholdPin } from './services/boundaries-service';
 
-/** Most household pins drawn at once. Past this the map is a solid block of dots and nothing reads. */
-const MAX_PINS_DRAWN = 2_000;
+/**
+ * How long the map has to sit still after a pan or zoom before its households are re-read.
+ *
+ * A drag reports a rest position once, but a reader repositioning themselves does several drags in
+ * a row, and each would otherwise be its own round trip. Short enough that following the map feels
+ * immediate, long enough that crossing a city costs one request rather than six.
+ */
+const VIEWPORT_SETTLE_MS = 350;
 
 /**
  * How long a reshaped area sits still before it is saved.
@@ -251,19 +266,43 @@ export class BoundariesSettingsComponent implements OnInit {
   protected readonly saving = signal(false);
   protected readonly rematching = signal(false);
 
-  /** Household pins, fetched once and reused for every map. Capped server-side. */
+  /**
+   * What is drawn under the areas right now, for the rectangle the map is showing.
+   *
+   * Two signals for two different drawings, and only one of them is ever filled: individual doors
+   * when few enough are in view, counted groups when too many are. The server decides which, and it
+   * decides from the rectangle — see `BoundariesService.listHouseholdPins`. A campaign with
+   * thirty-five thousand households gets groups when looking at the whole riding and doors as soon
+   * as it zooms into a neighbourhood.
+   */
   private readonly pins = signal<BoundaryHouseholdPin[]>([]);
-  /** Every located household in the workspace, which is more than the pin list when it was capped. */
+  private readonly clusters = signal<BoundaryHouseholdClusterType[]>([]);
+  /** Every located household in the workspace, which is far more than what is drawn. */
   private readonly locatedHouseholds = signal(0);
+  /** Located households inside the rectangle on screen. */
+  private readonly locatedInView = signal(0);
+  /** The extent of every located household — what "fit map to everything" frames. */
+  private readonly householdBounds = signal<BoundaryViewportType | null>(null);
   protected readonly pinsLoaded = signal(false);
+  /** True while a pan or zoom is being answered, so the caption can say the map is catching up. */
+  protected readonly pinsRefreshing = signal(false);
+
+  /**
+   * The rectangle the map last reported, the timer waiting for it to settle, and the sequence number
+   * that makes a slow answer for an old rectangle harmless. Without the sequence number, panning
+   * twice quickly can land the first response after the second and draw the wrong place.
+   */
+  private viewportTimer: ReturnType<typeof setTimeout> | null = null;
+  private pinRequestSeq = 0;
+
+  /** The last frame this page asked for, held for a map that did not exist yet. See `frameMapOn`. */
+  private wantedFrame: PcLatLng[] | null = null;
 
   /** Drawing mode: map clicks place vertices and saved areas grow draggable handles. */
   protected readonly drawing = signal(false);
   /** A shape traced but not yet named. It stays drawn on the map until it is saved or discarded. */
   protected readonly pendingPath = signal<PcLatLng[] | null>(null);
   protected readonly selectedFeatureId = signal<string | null>(null);
-  /** Whether the map re-frames itself on the next redraw. Turned off by the first interaction. */
-  protected readonly autoFit = signal(true);
   protected readonly savingShape = signal(false);
 
   /** Reshaped areas waiting for the hand to stop moving. Keyed by the map's own part id. */
@@ -311,11 +350,22 @@ export class BoundariesSettingsComponent implements OnInit {
   });
 
   constructor() {
+    // The map element comes and goes with map mode. Whenever it appears, apply the frame this page
+    // last asked for, so a frame requested while the data was loading is not lost to the race
+    // between "the data arrived" and "the map element exists".
+    effect(() => {
+      const map = this.map();
+      const wanted = untracked(() => this.wantedFrame);
+      if (map && wanted) map.focusOn(wanted);
+    });
+
     this.destroyRef.onDestroy(() => {
       // Leaving the page must not throw away a reshape still waiting out its idle timer: the user
       // saw "Saving shape" and made the change on screen. The save cannot be awaited during
       // destroy, so it is fired; a failure still surfaces through the app-level error toast.
       void this.flushShapeEdits();
+      // A pan waiting out its own timer, by contrast, is only a fetch for a page nobody is on.
+      this.cancelViewportRefresh();
     });
   }
 
@@ -421,22 +471,36 @@ export class BoundariesSettingsComponent implements OnInit {
   });
 
   protected readonly mapMarkers = computed<PcMapMarker[]>(() =>
-    this.pins()
-      .slice(0, MAX_PINS_DRAWN)
-      .map((pin) => ({ position: { lat: pin.lat, lng: pin.lng }, variant: 'muted' as const, tooltip: pin.label })),
+    this.pins().map((pin) => ({
+      position: { lat: pin.lat, lng: pin.lng },
+      variant: 'muted' as const,
+      tooltip: pin.label,
+    })),
+  );
+
+  /** The density groups drawn when the view holds too many doors to pin one by one. */
+  protected readonly mapClusters = computed<PcMapCluster[]>(() =>
+    this.clusters().map((cluster) => ({
+      position: { lat: cluster.lat, lng: cluster.lng },
+      count: cluster.count,
+      variant: 'muted' as const,
+    })),
   );
 
   /**
-   * How many pins are on the map, and how many located households the workspace holds.
+   * The three numbers the caption under the map needs, which are three different things and must
+   * never be printed as each other:
    *
-   * These are two different numbers and the caption has to say both. Pins are thinned twice: the
-   * server returns at most a few thousand of them, and this page draws at most {@link MAX_PINS_DRAWN}
-   * of those. The count of located households comes from the server as its own number, so it stays
-   * true however much the pin layer was thinned.
+   * - `pinsShown` — doors drawn individually right now.
+   * - `pinsInView` — located households inside the rectangle on screen, drawn or grouped.
+   * - `pinsTotal` — located households in the whole workspace.
+   *
+   * `showingClusters` is what decides which sentence gets written.
    */
-  protected readonly pinsShown = computed(() => Math.min(this.pins().length, MAX_PINS_DRAWN));
+  protected readonly pinsShown = computed(() => this.pins().length);
+  protected readonly pinsInView = computed(() => this.locatedInView());
   protected readonly pinsTotal = computed(() => this.locatedHouseholds());
-  protected readonly pinsCapped = computed(() => this.pinsShown() < this.pinsTotal());
+  protected readonly showingClusters = computed(() => this.clusters().length > 0);
 
   /**
    * Every area on the map, one shape per part.
@@ -473,12 +537,17 @@ export class BoundariesSettingsComponent implements OnInit {
   });
 
   /**
-   * The explicit view for a map with nothing on it to frame. Null as soon as any content exists
-   * (pins, saved areas, or a traced shape), which hands framing back to the map's fit-to-content
-   * behaviour; the map reads `center` only while it is non-null.
+   * The explicit view for a map with nothing on it to frame, read once when the map is built.
+   *
+   * Null as soon as any content exists, because then `focusEverything` frames it properly. The map
+   * component reads `center` only while building, so this decides where a workspace with no
+   * coordinates and no areas opens: its own country, rather than the component's latitude 0,
+   * longitude 0 fallback in the ocean.
    */
   private readonly emptyMapView = computed(() => {
-    if (this.pins().length > 0 || this.features().length > 0 || this.pendingPath()) return null;
+    if (this.pins().length > 0 || this.clusters().length > 0 || this.features().length > 0 || this.pendingPath()) {
+      return null;
+    }
     const jurisdiction = this.activeSet()?.jurisdiction ?? '';
     if (jurisdiction.startsWith('ca_')) return EMPTY_MAP_VIEW_CANADA;
     if (jurisdiction.startsWith('us_')) return EMPTY_MAP_VIEW_UNITED_STATES;
@@ -586,18 +655,93 @@ export class BoundariesSettingsComponent implements OnInit {
     }
   }
 
-  private async loadPins(): Promise<void> {
-    if (this.pinsLoaded()) return;
+  /**
+   * Re-read what belongs under the areas for one rectangle of the world — or, with no rectangle,
+   * for the whole workspace, which is how the first load works before the map has framed itself.
+   *
+   * The sequence number is the point of the bookkeeping here. Panning twice in quick succession
+   * starts two requests, and the first can answer last; without the guard the map would settle
+   * showing the households of a place the reader has already left.
+   */
+  private async loadPins(viewport: BoundaryViewportType | null): Promise<void> {
+    const seq = ++this.pinRequestSeq;
+    if (this.pinsLoaded()) this.pinsRefreshing.set(true);
     try {
-      const loaded = await this.boundaries.listHouseholdPins();
+      const loaded = await this.boundaries.listHouseholdPins(viewport);
+      if (seq !== this.pinRequestSeq) return;
       this.pins.set(loaded.pins);
+      this.clusters.set(loaded.clusters);
       this.locatedHouseholds.set(loaded.totalLocated);
+      this.locatedInView.set(loaded.inView);
+      this.householdBounds.set(loaded.bounds);
     } catch (err) {
-      // A missing pin layer does not stop anyone drawing, so this reports and carries on.
-      this.alerts.showError(getUserErrorMessage(err, 'Could not load household pins for the map.'));
+      // Missing households do not stop anyone drawing, so this reports and carries on.
+      if (seq === this.pinRequestSeq) {
+        this.alerts.showError(getUserErrorMessage(err, 'Could not load your households for the map.'));
+      }
     } finally {
-      this.pinsLoaded.set(true);
+      if (seq === this.pinRequestSeq) {
+        this.pinsLoaded.set(true);
+        this.pinsRefreshing.set(false);
+      }
     }
+  }
+
+  /**
+   * The map came to rest somewhere new: re-read the households for the rectangle now on screen,
+   * once the panning has stopped.
+   *
+   * This is deliberately one-directional. The map tells the page where it is; the page never tells
+   * the map where to go in reply, or the two would chase each other. Framing happens only where
+   * this page decides it should — opening a layer, picking an area, pressing "Fit map".
+   */
+  protected onViewportChanged(viewport: PcMapViewport): void {
+    if (this.viewportTimer) clearTimeout(this.viewportTimer);
+    this.viewportTimer = setTimeout(() => {
+      this.viewportTimer = null;
+      void this.loadPins({
+        north: viewport.north,
+        south: viewport.south,
+        east: viewport.east,
+        west: viewport.west,
+      });
+    }, VIEWPORT_SETTLE_MS);
+  }
+
+  /**
+   * Frame the map on everything this layer is about: every area it holds, the shape being traced,
+   * and the extent of the workspace's located households.
+   *
+   * The household extent comes from the server as its own number rather than from what is drawn.
+   * Framing the drawn sample would frame wherever that sample happened to land, which for a
+   * workspace past the pin cap is not the workspace.
+   */
+  private focusEverything(): void {
+    const points: PcLatLng[] = [];
+    for (const feature of this.features()) {
+      const [minLng, minLat, maxLng, maxLat] = feature.bbox;
+      points.push({ lat: minLat, lng: minLng }, { lat: maxLat, lng: maxLng });
+    }
+    const bounds = this.householdBounds();
+    if (bounds) {
+      points.push({ lat: bounds.south, lng: bounds.west }, { lat: bounds.north, lng: bounds.east });
+    }
+    const pending = this.pendingPath();
+    if (pending) points.push(...pending);
+    this.frameMapOn(points);
+  }
+
+  /**
+   * Ask the map to frame these points, now or as soon as there is a map to ask.
+   *
+   * The map element is created when the page switches to map mode, but the page asks for a frame
+   * the moment its data arrives, and those are two different moments. Holding the request means the
+   * frame is applied either way, rather than the map being left wherever it happened to open on
+   * whichever load order won the race.
+   */
+  private frameMapOn(points: PcLatLng[]): void {
+    this.wantedFrame = points;
+    this.map()?.focusOn(points);
   }
 
   private async refreshValidation(setId: string): Promise<void> {
@@ -635,7 +779,20 @@ export class BoundariesSettingsComponent implements OnInit {
     this.drawing.set(false);
     this.pendingPath.set(null);
     this.selectedFeatureId.set(null);
-    this.autoFit.set(true);
+    // A pan the reader made on the way out must not fetch households for a map that is now closed,
+    // and the frame it was showing must not be re-applied to whichever layer is opened next.
+    this.cancelViewportRefresh();
+    this.wantedFrame = null;
+  }
+
+  /** Forget a pending pan and ignore whatever is already in flight for it. */
+  private cancelViewportRefresh(): void {
+    if (this.viewportTimer) {
+      clearTimeout(this.viewportTimer);
+      this.viewportTimer = null;
+    }
+    this.pinRequestSeq += 1;
+    this.pinsRefreshing.set(false);
   }
 
   protected startDrawNew(): void {
@@ -717,9 +874,15 @@ export class BoundariesSettingsComponent implements OnInit {
     this.selectedFeatureId.set(null);
     this.pendingPath.set(null);
     this.drawing.set(false);
-    this.autoFit.set(true);
+    this.cancelViewportRefresh();
+    // Whatever the previous layer was framed on says nothing about this one.
+    this.wantedFrame = null;
     this.mode.set('map');
-    await Promise.all([this.loadFeatures(set.id), this.loadPins()]);
+    // No rectangle on this first read: the map has not framed itself yet, so the answer covers the
+    // whole workspace and comes back as density groups when there are too many doors to pin.
+    await Promise.all([this.loadFeatures(set.id), this.loadPins(null)]);
+    // Frame what was just loaded. Everything after this point moves the map only when asked to.
+    this.focusEverything();
     await this.refreshValidation(set.id);
   }
 
@@ -761,7 +924,6 @@ export class BoundariesSettingsComponent implements OnInit {
       this.alerts.showSuccess(`${created.label} is ready. Draw its first area on the map.`);
       await this.openMap(created);
       this.drawing.set(true);
-      this.autoFit.set(false);
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not create the map.'));
     } finally {
@@ -901,8 +1063,6 @@ export class BoundariesSettingsComponent implements OnInit {
   protected async toggleDrawing(): Promise<void> {
     const next = !this.drawing();
     if (!next && !(await this.confirmDiscardPendingShape())) return;
-    // Any deliberate interaction stops the map re-framing itself, so a careful zoom survives a save.
-    this.autoFit.set(false);
     this.drawing.set(next);
     if (!next) {
       // Leaving edit mode redraws saved shapes from stored geometry, so a reshape still waiting
@@ -960,7 +1120,6 @@ export class BoundariesSettingsComponent implements OnInit {
   }
 
   protected onPolygonDrawn(path: PcLatLng[]): void {
-    this.autoFit.set(false);
     this.selectedFeatureId.set(null);
     this.pendingPath.set(path);
     this.areaPayload.set({ name: '', code: '' });
@@ -1008,21 +1167,48 @@ export class BoundariesSettingsComponent implements OnInit {
 
   // ── Selecting, renaming and reshaping a saved area ────────────────────────────────────────────
 
-  protected async selectFeature(featureId: string): Promise<void> {
+  /**
+   * Pick one area: highlight it, load its name into the panel, and — when the pick came from the
+   * list rather than from the map — move the map to it.
+   *
+   * Moving the map is the whole point of picking from the list. The list is the only way to reach
+   * an area on a national map of hundreds of ridings, and highlighting a shape that is a province
+   * away from the current view told the reader nothing. Clicking a shape *on* the map does not
+   * move it: that area is already in front of them, and re-framing under their own cursor would
+   * throw away the view they had chosen.
+   */
+  protected async selectFeature(featureId: string, focus = true): Promise<void> {
     // Selecting redraws the map, which would throw away a reshape still waiting to be saved. Saving
     // it first is what makes the click do exactly what it looks like it does.
     await this.flushShapeEdits();
-    this.autoFit.set(false);
     this.selectedFeatureId.set(featureId);
     const feature = this.features().find((existing) => existing.id === featureId);
     this.areaPayload.set({ name: feature?.name ?? '', code: feature?.code ?? '' });
     this.areaForm().reset();
+    if (focus && feature) this.focusFeature(feature);
+  }
+
+  /**
+   * Move the map to one area, using the extent the server already computed for it rather than
+   * walking its outline: a published riding can hold tens of thousands of points and the two corners
+   * frame it exactly as well.
+   *
+   * Both corners of a multi-part area's extent are included, so an area drawn in several pieces (an
+   * island ward, a ward split by a river) frames all of its pieces rather than one of them.
+   */
+  private focusFeature(feature: BoundaryFeatureRowType): void {
+    const [minLng, minLat, maxLng, maxLat] = feature.bbox;
+    this.frameMapOn([
+      { lat: minLat, lng: minLng },
+      { lat: maxLat, lng: maxLng },
+    ]);
   }
 
   protected onPolygonSelected(partId: string): void {
     const parsed = readPartPolygonId(partId);
     if (!parsed) return;
-    void this.selectFeature(parsed.featureId);
+    // Picked by clicking the shape itself, so the map stays exactly where the reader put it.
+    void this.selectFeature(parsed.featureId, false);
   }
 
   protected clearSelection(): void {
@@ -1080,7 +1266,9 @@ export class BoundariesSettingsComponent implements OnInit {
   protected onPolygonDeleted(partId: string): void {
     const parsed = readPartPolygonId(partId);
     if (!parsed) return;
-    void this.selectFeature(parsed.featureId).then(() => this.deleteSelected());
+    // Right-clicked on the map, so the area is already in view; moving the map before asking
+    // "delete this?" would pull the shape out from under the question.
+    void this.selectFeature(parsed.featureId, false).then(() => this.deleteSelected());
   }
 
   /**
@@ -1150,8 +1338,9 @@ export class BoundariesSettingsComponent implements OnInit {
     }
   }
 
+  /** "Fit map to everything": frame the whole layer and the workspace's households again. */
   protected fitMap(): void {
-    this.autoFit.set(true);
+    this.focusEverything();
   }
 
   // ── Small mutations of local state ────────────────────────────────────────────────────────────

@@ -4,7 +4,9 @@ import type {
   AddDrawnBoundarySetType,
   BoundaryFeatureListType,
   BoundaryFeatureRowType,
+  BoundaryHouseholdClusterType,
   BoundarySetRowType,
+  BoundaryViewportType,
   BoundaryValidationType,
   UpdateBoundaryFeatureType,
   UploadBoundarySetType,
@@ -30,11 +32,21 @@ export interface BoundaryHouseholdPin {
   label: string;
 }
 
-/** The pins the map can draw, and how many located households the workspace actually holds. */
+/**
+ * What the map should draw for the rectangle it is showing, and the numbers that describe it.
+ *
+ * `pins` and `clusters` are alternatives, never both: the server sends individual doors when few
+ * enough are in view and counted groups when too many are. See `BoundaryHouseholdPinsObj`.
+ */
 export interface BoundaryHouseholdPins {
   pins: BoundaryHouseholdPin[];
-  /** Every household with coordinates, including the ones no pin was returned for. */
+  clusters: BoundaryHouseholdClusterType[];
+  /** Every household with coordinates in the workspace, drawn or not. */
   totalLocated: number;
+  /** Located households inside the rectangle asked for. */
+  inView: number;
+  /** The extent of every located household — what "fit the map to everything" frames. */
+  bounds: BoundaryViewportType | null;
 }
 
 /**
@@ -105,21 +117,31 @@ export class BoundariesService extends TRPCService<BoundarySetRowType> {
   }
 
   /**
-   * Households that already have coordinates, as map pins, with the true count of located ones.
+   * What the drawing map should show for one rectangle of the world.
    *
    * This is the point of drawing in the app rather than in external mapping software: the areas are
    * traced around the doors the workspace actually holds. Households without coordinates are left
    * out because there is nowhere honest to put them, not because they do not matter.
    *
-   * The server caps the pin list and orders it by id, so a large workspace sees the same sample
-   * every time rather than a different arbitrary slice on each load. `totalLocated` is what the
-   * caption must quote as the workspace's number; matching runs over all of them regardless.
+   * The answer is scoped to the rectangle because the number of doors a real campaign holds is far
+   * larger than a browser can draw — thirty-five thousand households for an Ontario provincial
+   * candidate. Inside the rectangle, few enough doors come back as individual pins and too many come
+   * back as counted groups; zooming in is what turns groups back into doors. Pass no rectangle on
+   * the first load, before the map has framed itself.
+   *
+   * Matching runs over every household regardless of what is drawn.
    */
-  public async listHouseholdPins(): Promise<BoundaryHouseholdPins> {
-    const result = await this.api.boundaries.householdPins.query(undefined, { signal: this.ac.signal });
+  public async listHouseholdPins(viewport?: BoundaryViewportType | null): Promise<BoundaryHouseholdPins> {
+    const result = await this.api.boundaries.householdPins.query(
+      { viewport: viewport ?? null },
+      { signal: this.ac.signal },
+    );
     return {
       pins: result.pins.map((row) => ({ id: row.id, lat: row.lat, lng: row.lng, label: householdLabel(row) })),
+      clusters: result.clusters,
       totalLocated: result.total_geocoded,
+      inView: result.in_view,
+      bounds: result.bounds,
     };
   }
 

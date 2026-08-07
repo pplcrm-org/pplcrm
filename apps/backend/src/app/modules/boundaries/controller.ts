@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import type { Kysely, Transaction } from 'kysely';
 
 import type { IAuthKeyPayload } from '../../../../../../libs/common/src';
@@ -13,6 +14,7 @@ import type {
   BoundaryHouseholdPinsType,
   BoundarySetRowType,
   BoundaryValidationType,
+  BoundaryViewportType,
   UpdateBoundaryFeatureType,
   UploadBoundarySetType,
 } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
@@ -24,6 +26,7 @@ import {
   BOUNDARY_MAX_PINS,
   BOUNDARY_MAX_SETS_PER_TENANT,
   BOUNDARY_MAX_VERTICES_PER_FEATURE,
+  BOUNDARY_PIN_GRID_COLUMNS,
   BOUNDARY_UPLOAD_MAX_BYTES,
   BOUNDARY_UPLOAD_MAX_LABEL,
   boundaryBBoxOf,
@@ -64,6 +67,36 @@ const VALIDATION_PAGE_SIZE = 1_000;
 
 /** Areas read per query while walking a large uploaded layer. */
 const UPLOAD_INSERT_CHUNK = 500;
+
+/**
+ * Smallest density-grid square, in degrees — roughly eleven metres.
+ *
+ * A rectangle with no width or no height (a map framed on one household, or a browser that reported
+ * a zero-size viewport while its container was still laying out) would otherwise divide by zero and
+ * put every household in one square at NaN.
+ */
+const MIN_GRID_CELL_DEGREES = 0.0001;
+
+/**
+ * The extent of every located household, read off the same aggregate row that counted them, or null
+ * when the workspace has none. This is what frames "fit the map to everything".
+ */
+function boundsFromExtent(
+  row: {
+    min_lat: unknown;
+    max_lat: unknown;
+    min_lng: unknown;
+    max_lng: unknown;
+  } | null,
+): BoundaryViewportType | null {
+  if (!row) return null;
+  const south = asCoordinate(row.min_lat);
+  const north = asCoordinate(row.max_lat);
+  const west = asCoordinate(row.min_lng);
+  const east = asCoordinate(row.max_lng);
+  if (south === null || north === null || west === null || east === null) return null;
+  return { north, south, east, west };
+}
 
 export class BoundariesController extends BaseController<'boundary_sets', BoundarySetsRepo> {
   private readonly featuresRepo = new BoundaryFeaturesRepo();
@@ -172,37 +205,107 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
   }
 
   /**
-   * The household pins the drawing map draws its areas around, plus how many located households
-   * there really are.
+   * What the drawing map should draw for the rectangle it is currently showing, and the numbers
+   * that say what that is.
    *
-   * Both numbers are returned because only one of them is the sample. The pin list stops at
-   * {@link BOUNDARY_MAX_PINS} and is ordered by id, so a workspace past the cap gets the SAME
-   * households on every load instead of an arbitrary set that changes under the person tracing over
-   * them. `total_geocoded` is the honest denominator for the caption; matching itself is unaffected,
-   * because it runs server-side over every household rather than over these pins.
+   * The size problem this solves is real and ordinary: an Ontario provincial candidate works a
+   * hundred thousand voters across thirty-five thousand or more households. Thirty-five thousand
+   * map pins is thirty-five thousand DOM nodes; the tab stops responding and nobody could read the
+   * result anyway. So the answer is scoped to the rectangle on screen and takes one of two shapes:
+   *
+   * - At most {@link BOUNDARY_MAX_PINS} located households in that rectangle → every one of them,
+   *   as its own pin.
+   * - More than that → a {@link BOUNDARY_PIN_GRID_COLUMNS}-square grid over the same rectangle with
+   *   a count and an average position per square. At most a few hundred bubbles, whatever the zoom.
+   *
+   * Zooming in shrinks the rectangle until individual doors come back, which is the whole
+   * interaction: density where you are looking wide, doors where you are looking close.
+   *
+   * `total_geocoded` (the workspace) and `in_view` (the rectangle) are both returned so a caption
+   * can never report one as the other, and `bounds` is the extent of every located household — what
+   * "fit the map to everything" frames, rather than the extent of whatever sample was drawn.
+   *
+   * Matching is unaffected by any of this. It runs server-side over every household in the
+   * workspace, not over what a browser happens to be showing.
    *
    * Households without coordinates are left out because there is nowhere honest to put them.
    */
-  public async listHouseholdPins(auth: IAuthKeyPayload): Promise<BoundaryHouseholdPinsType> {
+  public async listHouseholdPins(
+    auth: IAuthKeyPayload,
+    viewport: BoundaryViewportType | null,
+  ): Promise<BoundaryHouseholdPinsType> {
     const db = this.getRepo().db;
+    // A rectangle whose east edge is west of its west edge straddles the 180th meridian. Nothing
+    // this product covers does, so rather than return an empty map for a nonsense rectangle, treat
+    // it as no rectangle at all and answer for the whole workspace.
+    const view = viewport && viewport.east >= viewport.west && viewport.north >= viewport.south ? viewport : null;
 
-    const totalRow = await db
+    const totals = await db
       .selectFrom('households')
-      .select(({ fn }) => [fn.countAll().as('cnt')])
+      .select(({ fn }) => [
+        fn.countAll().as('cnt'),
+        fn.min('lat').as('min_lat'),
+        fn.max('lat').as('max_lat'),
+        fn.min('lng').as('min_lng'),
+        fn.max('lng').as('max_lng'),
+      ])
       .where('tenant_id', '=', auth.tenant_id)
       .where('lat', 'is not', null)
       .where('lng', 'is not', null)
       .executeTakeFirst();
 
-    const rows = await db
-      .selectFrom('households')
+    const totalGeocoded = Number(totals?.cnt ?? 0);
+    const bounds = boundsFromExtent(totals ?? null);
+
+    const inView = view === null ? totalGeocoded : await this.countLocatedIn(auth.tenant_id, view);
+    const empty = { pins: [], clusters: [], total_geocoded: totalGeocoded, in_view: inView, bounds };
+    if (inView === 0) return empty;
+
+    // Too many to draw one by one: answer with density over the rectangle that was asked for, or
+    // over the workspace's own extent when the browser has not framed itself yet.
+    if (inView > BOUNDARY_MAX_PINS) {
+      const grid = view ?? bounds;
+      if (grid === null) return empty;
+      return { ...empty, clusters: await this.householdClusters(auth.tenant_id, grid) };
+    }
+
+    return { ...empty, pins: await this.householdPinRows(auth.tenant_id, view) };
+  }
+
+  /** How many located households fall inside one rectangle. */
+  private async countLocatedIn(tenantId: string, view: BoundaryViewportType): Promise<number> {
+    const row = await this.getRepo()
+      .db.selectFrom('households')
+      .select(({ fn }) => [fn.countAll().as('cnt')])
+      .where('tenant_id', '=', tenantId)
+      .where('lat', '>=', view.south)
+      .where('lat', '<=', view.north)
+      .where('lng', '>=', view.west)
+      .where('lng', '<=', view.east)
+      .executeTakeFirst();
+    return Number(row?.cnt ?? 0);
+  }
+
+  /** Every located household in the rectangle, as pins. Only called when there are few enough. */
+  private async householdPinRows(
+    tenantId: string,
+    view: BoundaryViewportType | null,
+  ): Promise<BoundaryHouseholdPinsType['pins']> {
+    const base = this.getRepo()
+      .db.selectFrom('households')
       .select(['id', 'lat', 'lng', 'street_num', 'street1', 'city'])
-      .where('tenant_id', '=', auth.tenant_id)
+      .where('tenant_id', '=', tenantId)
       .where('lat', 'is not', null)
-      .where('lng', 'is not', null)
-      .orderBy('id', 'asc')
-      .limit(BOUNDARY_MAX_PINS)
-      .execute();
+      .where('lng', 'is not', null);
+    const query = view
+      ? base
+          .where('lat', '>=', view.south)
+          .where('lat', '<=', view.north)
+          .where('lng', '>=', view.west)
+          .where('lng', '<=', view.east)
+      : base;
+
+    const rows = await query.orderBy('id', 'asc').limit(BOUNDARY_MAX_PINS).execute();
 
     const pins: BoundaryHouseholdPinsType['pins'] = [];
     for (const row of rows) {
@@ -218,8 +321,47 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
         city: row.city ?? null,
       });
     }
+    return pins;
+  }
 
-    return { pins, total_geocoded: Number(totalRow?.cnt ?? 0) };
+  /**
+   * The density grid over one rectangle: households counted into squares, each square reported at
+   * the average position of the households in it so the bubble sits on the doors rather than on the
+   * square's centre.
+   *
+   * The grid is a fixed number of squares across whatever the rectangle's size, so the work and the
+   * response are bounded at every zoom. A rectangle with no width or no height (one household, or a
+   * map framed on a single point) would divide by zero, so it gets a floor.
+   */
+  private async householdClusters(
+    tenantId: string,
+    view: BoundaryViewportType,
+  ): Promise<BoundaryHouseholdPinsType['clusters']> {
+    const latCell = Math.max((view.north - view.south) / BOUNDARY_PIN_GRID_COLUMNS, MIN_GRID_CELL_DEGREES);
+    const lngCell = Math.max((view.east - view.west) / BOUNDARY_PIN_GRID_COLUMNS, MIN_GRID_CELL_DEGREES);
+
+    const rows = await this.getRepo()
+      .db.selectFrom('households')
+      .where('tenant_id', '=', tenantId)
+      .where('lat', '>=', view.south)
+      .where('lat', '<=', view.north)
+      .where('lng', '>=', view.west)
+      .where('lng', '<=', view.east)
+      .select(({ fn }) => [fn.countAll().as('cnt'), fn.avg('lat').as('avg_lat'), fn.avg('lng').as('avg_lng')])
+      // Grouped by the square each household falls in, but the square itself is never selected: the
+      // browser draws the bubble at the average position below, and the square number would only be
+      // bytes on the wire nothing reads.
+      .groupBy([sql`floor(${sql.ref('lat')} / ${latCell})`, sql`floor(${sql.ref('lng')} / ${lngCell})`])
+      .execute();
+
+    const clusters: BoundaryHouseholdPinsType['clusters'] = [];
+    for (const row of rows) {
+      const lat = asCoordinate(row.avg_lat);
+      const lng = asCoordinate(row.avg_lng);
+      if (lat === null || lng === null) continue;
+      clusters.push({ lat, lng, count: Number(row.cnt) });
+    }
+    return clusters;
   }
 
   // ── Creating layers ───────────────────────────────────────────────────────────────────────────

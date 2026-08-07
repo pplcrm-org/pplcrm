@@ -481,6 +481,9 @@ export type {
   BoundaryFeatureRowType,
   BoundaryFeatureListType,
   BoundaryValidationType,
+  BoundaryViewportType,
+  BoundaryHouseholdClusterType,
+  BoundaryHouseholdPinsInputType,
 } from './lib/schemas/boundaries.schema';
 export {
   BOUNDARY_ROLES,
@@ -493,6 +496,8 @@ export {
   BOUNDARY_MAX_VERTICES_PER_FEATURE,
   BOUNDARY_MAX_SETS_PER_TENANT,
   BOUNDARY_FEATURES_MAX_RESPONSE_BYTES,
+  BOUNDARY_MAX_PINS,
+  BOUNDARY_PIN_GRID_COLUMNS,
   boundaryGeometrySchema,
   boundaryBBoxOf,
   countBoundaryVertices,
@@ -505,6 +510,9 @@ export {
   BoundaryFeatureObj,
   BoundaryFeatureListObj,
   BoundaryValidationObj,
+  BoundaryViewportObj,
+  BoundaryHouseholdClusterObj,
+  BoundaryHouseholdPinsInputObj,
 } from './lib/schemas/boundaries.schema';
 
 export type {

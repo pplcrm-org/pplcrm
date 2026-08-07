@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from '../../../auth/auth-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { BoundariesSettingsComponent } from './boundaries-settings';
-import { MAX_RESHAPE_VERTICES } from './boundary-geojson';
+import { MAX_RESHAPE_VERTICES, partPolygonId } from './boundary-geojson';
 import { BoundariesService } from './services/boundaries-service';
 
 /** A three-corner traced ring, as `polygonDrawn` hands it over. */
@@ -88,6 +88,34 @@ function makeFeature(overrides: Partial<BoundaryFeatureRowType> = {}): BoundaryF
   };
 }
 
+/**
+ * What `listHouseholdPins` answers with: individual doors, or counted groups, never both.
+ *
+ * Built through a helper because the two shapes have to stay mutually exclusive and every number
+ * has to stay consistent with them — a test that hand-rolls "pins AND clusters" would be asserting
+ * against a state the server cannot produce.
+ */
+function pinResponse(
+  overrides: {
+    pins?: { id: string; lat: number; lng: number; label: string }[];
+    clusters?: { lat: number; lng: number; count: number }[];
+    totalLocated?: number;
+    inView?: number;
+    bounds?: { north: number; south: number; east: number; west: number } | null;
+  } = {},
+) {
+  const pins = overrides.pins ?? [{ id: '5', lat: 45.42, lng: -75.69, label: '1 Main St' }];
+  const clusters = overrides.clusters ?? [];
+  const drawn = clusters.reduce((sum, cluster) => sum + cluster.count, pins.length);
+  return {
+    pins,
+    clusters,
+    totalLocated: overrides.totalLocated ?? drawn,
+    inView: overrides.inView ?? drawn,
+    bounds: overrides.bounds ?? (drawn > 0 ? { north: 45.5, south: 45.4, east: -75.6, west: -75.7 } : null),
+  };
+}
+
 const VALIDATION = {
   set_id: '1',
   examined: 120,
@@ -118,6 +146,20 @@ describe('BoundariesSettingsComponent', () => {
   let alerts: { showError: ReturnType<typeof vi.fn>; showSuccess: ReturnType<typeof vi.fn> };
   let dialogs: { confirm: ReturnType<typeof vi.fn> };
 
+  /**
+   * Watch what the page asks the map to frame.
+   *
+   * `<pc-map>` renders its placeholder in tests (no Loader is provided), so `focusOn` records the
+   * request and applies nothing — which is exactly what a test of this page wants to assert: which
+   * points it decided to frame, not what Google did with them.
+   */
+  function watchMapFocus(): ReturnType<typeof vi.spyOn> {
+    fixture.detectChanges();
+    const map = component['map']();
+    if (!map) throw new Error('The map is only on screen in map mode; open a layer first.');
+    return vi.spyOn(map, 'focusOn');
+  }
+
   async function build(sets: BoundarySetRowType[]): Promise<void> {
     boundaries.listSets.mockResolvedValue(sets);
     fixture = TestBed.createComponent(BoundariesSettingsComponent);
@@ -135,9 +177,7 @@ describe('BoundariesSettingsComponent', () => {
       deleteFeature: vi.fn().mockResolvedValue(true),
       deleteSet: vi.fn().mockResolvedValue(true),
       listFeatures: vi.fn().mockResolvedValue(featureList([makeFeature()])),
-      listHouseholdPins: vi
-        .fn()
-        .mockResolvedValue({ pins: [{ id: '5', lat: 45.42, lng: -75.69, label: '1 Main St' }], totalLocated: 1 }),
+      listHouseholdPins: vi.fn().mockResolvedValue(pinResponse()),
       listSets: vi.fn().mockResolvedValue([]),
       rematch: vi.fn().mockResolvedValue({ queued: true }),
       updateFeature: vi
@@ -482,11 +522,129 @@ describe('BoundariesSettingsComponent', () => {
       expect(component['features']()).toHaveLength(0);
     });
 
-    it('stops the map re-framing itself once the user starts working', async () => {
-      expect(component['autoFit']()).toBe(true);
-      await component['toggleDrawing']();
-      expect(component['autoFit']()).toBe(false);
-      expect(component['drawing']()).toBe(true);
+    it('turns drawing on and off without moving the map', () => {
+      const focusOn = watchMapFocus();
+      expect(component['drawing']()).toBe(false);
+      return component['toggleDrawing']().then(() => {
+        expect(component['drawing']()).toBe(true);
+        expect(focusOn).not.toHaveBeenCalled();
+      });
+    });
+
+    it('moves the map to an area picked from the list, framed on that area alone', async () => {
+      const focusOn = watchMapFocus();
+      // makeFeature's extent: longitudes -75.7 to -75.6, latitudes 45.4 to 45.5.
+      await component['selectFeature']('10');
+      expect(focusOn).toHaveBeenCalledWith([
+        { lat: 45.4, lng: -75.7 },
+        { lat: 45.5, lng: -75.6 },
+      ]);
+    });
+
+    it('leaves the map alone when the same area is picked by clicking its shape', async () => {
+      const focusOn = watchMapFocus();
+      component['onPolygonSelected'](partPolygonId('10', 0));
+      await fixture.whenStable();
+      expect(component['selectedFeatureId']()).toBe('10');
+      expect(focusOn).not.toHaveBeenCalled();
+    });
+
+    it('frames the whole layer and the workspace households on "Fit map to everything"', () => {
+      const focusOn = watchMapFocus();
+      component['fitMap']();
+      // The area's two extent corners, then the two corners of the household extent the server
+      // reported — not the extent of whatever sample happened to be drawn.
+      expect(focusOn).toHaveBeenCalledWith([
+        { lat: 45.4, lng: -75.7 },
+        { lat: 45.5, lng: -75.6 },
+        { lat: 45.4, lng: -75.7 },
+        { lat: 45.5, lng: -75.6 },
+      ]);
+    });
+  });
+
+  describe('households at the scale a real campaign has', () => {
+    /** A riding-sized workspace: far more doors than a browser can draw, so the server groups them. */
+    function crowded() {
+      return pinResponse({
+        pins: [],
+        clusters: [
+          { lat: 45.41, lng: -75.69, count: 12_000 },
+          { lat: 45.45, lng: -75.62, count: 23_400 },
+        ],
+        totalLocated: 35_400,
+        inView: 35_400,
+      });
+    }
+
+    it('draws counted groups instead of pins when the view holds too many households', async () => {
+      boundaries.listHouseholdPins.mockResolvedValue(crowded());
+      const set = makeSet();
+      await build([set]);
+      await component['openMap'](set);
+      fixture.detectChanges();
+
+      expect(component['mapMarkers']()).toHaveLength(0);
+      expect(component['mapClusters']()).toEqual([
+        { position: { lat: 45.41, lng: -75.69 }, count: 12_000, variant: 'muted' },
+        { position: { lat: 45.45, lng: -75.62 }, count: 23_400, variant: 'muted' },
+      ]);
+      expect((fixture.nativeElement as HTMLElement).textContent).toContain('35,400 households are in this view');
+    });
+
+    it('re-reads the households for wherever the map came to rest', async () => {
+      vi.useFakeTimers();
+      try {
+        const set = makeSet();
+        await build([set]);
+        await component['openMap'](set);
+        boundaries.listHouseholdPins.mockClear();
+
+        component['onViewportChanged']({ north: 45.5, south: 45.3, east: -75.6, west: -75.8, zoom: 12 });
+        // Nothing goes out while the map is still being moved.
+        expect(boundaries.listHouseholdPins).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(400);
+        expect(boundaries.listHouseholdPins).toHaveBeenCalledWith({
+          north: 45.5,
+          south: 45.3,
+          east: -75.6,
+          west: -75.8,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('sends one request for a run of pans, for the place the map actually stopped', async () => {
+      vi.useFakeTimers();
+      try {
+        const set = makeSet();
+        await build([set]);
+        await component['openMap'](set);
+        boundaries.listHouseholdPins.mockClear();
+
+        component['onViewportChanged']({ north: 46, south: 45, east: -75, west: -76, zoom: 10 });
+        vi.advanceTimersByTime(100);
+        component['onViewportChanged']({ north: 44, south: 43, east: -79, west: -80, zoom: 10 });
+        vi.advanceTimersByTime(400);
+
+        expect(boundaries.listHouseholdPins).toHaveBeenCalledTimes(1);
+        expect(boundaries.listHouseholdPins).toHaveBeenCalledWith({
+          north: 44,
+          south: 43,
+          east: -79,
+          west: -80,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('asks for the whole workspace on the first read, before the map has framed itself', async () => {
+      const set = makeSet();
+      await build([set]);
+      await component['openMap'](set);
+      expect(boundaries.listHouseholdPins).toHaveBeenCalledWith(null);
     });
   });
 
@@ -612,7 +770,7 @@ describe('BoundariesSettingsComponent', () => {
   describe('the draw view of an empty workspace', () => {
     async function buildEmpty(set: BoundarySetRowType): Promise<void> {
       boundaries.listFeatures.mockResolvedValue(featureList([]));
-      boundaries.listHouseholdPins.mockResolvedValue({ pins: [], totalLocated: 0 });
+      boundaries.listHouseholdPins.mockResolvedValue(pinResponse({ pins: [], totalLocated: 0 }));
       await build([set]);
       await component['openMap'](set);
       fixture.detectChanges();

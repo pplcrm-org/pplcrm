@@ -6,6 +6,8 @@ import {
   PcMap,
   VERTEX_SNAP_TOLERANCE_PX,
   advanceDraftPath,
+  clusterDiameterPx,
+  formatClusterCount,
   polygonEditability,
   removeRingVertex,
   snapToleranceInDegrees,
@@ -96,6 +98,67 @@ describe('PcMap', () => {
       expect(emitted).toEqual([]);
       expect(fixture.componentInstance.draftVertexCount()).toBe(0);
     });
+  });
+
+  describe('density groups', () => {
+    it('captions the placeholder with the households grouped, not the number of groups', () => {
+      fixture.componentRef.setInput('clusters', [
+        { position: { lat: 45.4, lng: -75.7 }, count: 12_000 },
+        { position: { lat: 45.5, lng: -75.6 }, count: 23_400 },
+      ]);
+      fixture.detectChanges();
+      const caption = fixture.debugElement.query(By.css('[role="img"] span'));
+      expect(caption.nativeElement.textContent.trim()).toBe('35,400 grouped');
+    });
+  });
+
+  describe('focusOn', () => {
+    it('does nothing when handed no points, rather than clearing the view', () => {
+      fixture.detectChanges();
+      expect(() => fixture.componentInstance.focusOn([])).not.toThrow();
+    });
+
+    it('is safe before the SDK loads, so a host can frame the map as soon as its data arrives', () => {
+      fixture.detectChanges();
+      // Placeholder mode: there is no map to move, and the request is remembered rather than lost.
+      expect(() => fixture.componentInstance.focusOn([{ lat: 45.4, lng: -75.7 }])).not.toThrow();
+    });
+  });
+});
+
+/**
+ * How big a density bubble is drawn. Pure arithmetic, so the rule that a bubble's *area* carries
+ * the count can be pinned without a map: doubling the drawn width has to mean four times as many.
+ */
+describe('clusterDiameterPx', () => {
+  it('draws the biggest group in the view at the full size', () => {
+    expect(clusterDiameterPx(500, 500)).toBe(clusterDiameterPx(9_999, 500));
+  });
+
+  it('sizes by area, so a quarter of the count is half the extra width', () => {
+    const largest = clusterDiameterPx(400, 400);
+    const quarter = clusterDiameterPx(100, 400);
+    const smallest = clusterDiameterPx(0, 400);
+    expect(quarter - smallest).toBeCloseTo((largest - smallest) / 2, 10);
+  });
+
+  it('never collapses to nothing, however small the count or however absurd the largest', () => {
+    expect(clusterDiameterPx(0, 0)).toBeGreaterThan(0);
+    expect(clusterDiameterPx(1, 1_000_000)).toBeGreaterThan(0);
+    expect(clusterDiameterPx(-5, 100)).toBeGreaterThan(0);
+  });
+});
+
+describe('formatClusterCount', () => {
+  it('writes counts under a thousand in full', () => {
+    expect(formatClusterCount(1)).toBe('1');
+    expect(formatClusterCount(999)).toBe('999');
+  });
+
+  it('shortens thousands so the number still fits inside the bubble', () => {
+    expect(formatClusterCount(1_204)).toBe('1.2k');
+    expect(formatClusterCount(9_949)).toBe('9.9k');
+    expect(formatClusterCount(35_400)).toBe('35k');
   });
 });
 

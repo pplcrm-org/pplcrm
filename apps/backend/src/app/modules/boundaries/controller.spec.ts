@@ -5,7 +5,9 @@ import type { BoundaryGeometryType } from '../../../../../../libs/common/src/lib
 import {
   BOUNDARY_FEATURE_CODE_MAX,
   BOUNDARY_FEATURE_NAME_MAX,
+  BOUNDARY_MAX_PINS,
   BOUNDARY_MAX_SETS_PER_TENANT,
+  BOUNDARY_PIN_GRID_COLUMNS,
   boundaryBBoxOf,
 } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
 import type { PublishedBoundaryEntry } from '../../../../../../libs/common/src/lib/boundaries/catalog';
@@ -292,6 +294,120 @@ describe('BoundariesController', () => {
       await expect(
         controller.addFeature(auth, { set_id: setId, name: 'Invented ward', geometry: box(-76, 45, -75, 46) }),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    });
+  });
+
+  describe('what the drawing map is given to draw', () => {
+    it('returns every located household as its own pin when there are few of them', async () => {
+      await makeGeocodedHousehold(45.42, -75.69);
+      await makeGeocodedHousehold(45.43, -75.68);
+
+      const drawn = await controller.listHouseholdPins(auth, null);
+
+      expect(drawn.pins).toHaveLength(2);
+      expect(drawn.clusters).toEqual([]);
+      expect(drawn.total_geocoded).toBe(2);
+      expect(drawn.in_view).toBe(2);
+    });
+
+    it('leaves out households that have no coordinates, having nowhere honest to put them', async () => {
+      await makeGeocodedHousehold(45.42, -75.69);
+      await db
+        .insertInto('households')
+        .values({
+          id: rand(),
+          tenant_id: tenantId,
+          street1: 'Unlocated Rd',
+          geocoding_status: 'pending',
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+
+      const drawn = await controller.listHouseholdPins(auth, null);
+
+      expect(drawn.pins).toHaveLength(1);
+      expect(drawn.total_geocoded).toBe(1);
+    });
+
+    it('answers only for the rectangle asked for, not the whole workspace', async () => {
+      await makeGeocodedHousehold(45.42, -75.69); // Ottawa
+      await makeGeocodedHousehold(43.65, -79.38); // Toronto, far outside the rectangle below
+
+      const drawn = await controller.listHouseholdPins(auth, {
+        north: 45.5,
+        south: 45.3,
+        east: -75.6,
+        west: -75.8,
+      });
+
+      expect(drawn.pins).toHaveLength(1);
+      expect(drawn.in_view).toBe(1);
+      // The workspace count and the extent stay workspace-wide, so a caption cannot report the
+      // rectangle as the total and "fit to everything" still reaches the household it cannot see.
+      expect(drawn.total_geocoded).toBe(2);
+      expect(drawn.bounds).toEqual({ north: 45.42, south: 43.65, east: -75.69, west: -79.38 });
+    });
+
+    it('treats a rectangle straddling the 180th meridian as no rectangle rather than an empty map', async () => {
+      await makeGeocodedHousehold(45.42, -75.69);
+
+      const drawn = await controller.listHouseholdPins(auth, {
+        north: 45.5,
+        south: 45.3,
+        east: -179,
+        west: 179,
+      });
+
+      expect(drawn.pins).toHaveLength(1);
+      expect(drawn.in_view).toBe(1);
+    });
+
+    it('groups the households by area once there are more in view than a browser can draw', async () => {
+      // One more than the pin cap, spread over a grid of streets: this is the shape of the problem
+      // a real riding has, at the smallest size that triggers it.
+      const count = BOUNDARY_MAX_PINS + 1;
+      const base = Number(rand()) * 1000;
+      await db
+        .insertInto('households')
+        .values(
+          Array.from({ length: count }, (_unused, index) => ({
+            id: String(base + index),
+            tenant_id: tenantId,
+            street_num: String(index),
+            street1: 'Crowded Ave',
+            city: 'Testville',
+            // Spread across roughly a tenth of a degree in each direction, so the grid has work to do.
+            lat: 45.3 + (index % 50) * 0.002,
+            lng: -75.8 + Math.floor(index / 50) * 0.002,
+            geocoding_status: 'success',
+            createdby_id: userId,
+            updatedby_id: userId,
+          })),
+        )
+        .execute();
+
+      const drawn = await controller.listHouseholdPins(auth, null);
+
+      expect(drawn.pins).toEqual([]);
+      expect(drawn.clusters.length).toBeGreaterThan(1);
+      // Bounded by the grid, not by the number of households: this is the whole point. One more
+      // than the divisions in each direction, because a household on the top or right edge of the
+      // rectangle falls into the next square along.
+      const squares = (BOUNDARY_PIN_GRID_COLUMNS + 1) * (BOUNDARY_PIN_GRID_COLUMNS + 1);
+      expect(drawn.clusters.length).toBeLessThanOrEqual(squares);
+      // Every household is accounted for in exactly one group, so no door is silently dropped.
+      expect(drawn.clusters.reduce((sum, cluster) => sum + cluster.count, 0)).toBe(count);
+      expect(drawn.in_view).toBe(count);
+      expect(drawn.total_geocoded).toBe(count);
+    });
+
+    it('reports nothing to draw, and no extent, for a workspace with no coordinates at all', async () => {
+      const drawn = await controller.listHouseholdPins(auth, null);
+      expect(drawn.pins).toEqual([]);
+      expect(drawn.clusters).toEqual([]);
+      expect(drawn.total_geocoded).toBe(0);
+      expect(drawn.bounds).toBeNull();
     });
   });
 });

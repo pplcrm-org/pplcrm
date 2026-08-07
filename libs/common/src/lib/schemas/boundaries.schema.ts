@@ -79,10 +79,27 @@ export const BOUNDARY_FEATURES_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
  * Most household pins one request returns for the drawing map.
  *
  * A workspace can hold far more located households than a map can usefully draw or a browser can
- * hold, so the pin read is capped. The cap is why the same response also carries the true number of
- * located households: a capped sample that does not say how much it left out reads as a total.
+ * hold, so the pin read is capped. Past the cap the server does not send a truncated sample: it
+ * sends a density grid instead (see {@link BOUNDARY_PIN_GRID_COLUMNS}), and the browser gets its
+ * individual doors back by zooming in until fewer than this many are on screen.
+ *
+ * Every pin is one DOM node on the map, so this bounds the browser as much as the wire.
  */
-export const BOUNDARY_MAX_PINS = 5_000;
+export const BOUNDARY_MAX_PINS = 2_000;
+
+/**
+ * How many squares across the density grid is when there are too many households to pin.
+ *
+ * The grid is laid over the rectangle currently on screen, so the squares are always about a
+ * twentieth of the visible width however far in or out the map is zoomed. That bounds how many
+ * bubbles one response can carry at `(this + 1)²` — 441 at 20, which draws instantly. The plus one
+ * is real rather than slack: a household sitting exactly on the rectangle's top or right edge falls
+ * into the next square along, so a full-width row of squares is one wider than the divisions.
+ *
+ * This bound is why zooming out over a whole province costs the browser no more than zooming into
+ * one street.
+ */
+export const BOUNDARY_PIN_GRID_COLUMNS = 20;
 
 /** Human-readable form of {@link BOUNDARY_UPLOAD_MAX_BYTES}, for messages the user reads. */
 export const BOUNDARY_UPLOAD_MAX_LABEL = '20 MB';
@@ -390,18 +407,72 @@ export const BoundaryHouseholdPinObj = z.object({
 export type BoundaryHouseholdPinType = z.infer<typeof BoundaryHouseholdPinObj>;
 
 /**
- * The pins for the drawing map, plus the number of located households they were drawn from.
+ * A rectangle of the world, in the compass words a map uses. Latitudes and longitudes in degrees.
  *
- * Both numbers are here because only one of them is the sample. `pins` stops at
- * {@link BOUNDARY_MAX_PINS} and is ordered by id so the same households come back on every load;
- * `total_geocoded` counts every located household in the workspace. Matching is unaffected by the
- * cap — it runs server-side over all of them — but a caption that reported `pins.length` as the
- * workspace total would be false for any workspace past the cap.
+ * `east` may be numerically smaller than `west` for a view straddling the 180th meridian. Nothing
+ * this product ships crosses it, so the pin read treats such a rectangle as "no rectangle" and
+ * answers for the whole workspace instead of silently returning an empty map.
+ */
+export const BoundaryViewportObj = z.object({
+  north: z.number().min(-90).max(90),
+  south: z.number().min(-90).max(90),
+  east: z.number().min(-180).max(180),
+  west: z.number().min(-180).max(180),
+});
+export type BoundaryViewportType = z.infer<typeof BoundaryViewportObj>;
+
+/** What the browser asks for: the rectangle on screen, or nothing on the first load. */
+export const BoundaryHouseholdPinsInputObj = z.object({
+  viewport: BoundaryViewportObj.nullable().optional(),
+});
+export type BoundaryHouseholdPinsInputType = z.infer<typeof BoundaryHouseholdPinsInputObj>;
+
+/**
+ * One square of the density grid: how many located households fall in it, and the average of their
+ * coordinates so the bubble sits where the doors actually are rather than at the square's centre.
+ */
+export const BoundaryHouseholdClusterObj = z.object({
+  lat: z.number(),
+  lng: z.number(),
+  count: z.number(),
+});
+export type BoundaryHouseholdClusterType = z.infer<typeof BoundaryHouseholdClusterObj>;
+
+/**
+ * What the drawing map gets to draw, and the numbers that say what it is looking at.
+ *
+ * The answer is one of two shapes, never both, and which one comes back depends only on how many
+ * located households fall inside the rectangle that was asked for:
+ *
+ * - At most {@link BOUNDARY_MAX_PINS} in view → `pins`, every one of them, individually.
+ * - More than that → `clusters`, a {@link BOUNDARY_PIN_GRID_COLUMNS}-square grid over the same
+ *   rectangle with a count per square. Zooming in shrinks the rectangle until the pins themselves
+ *   come back.
+ *
+ * This is the answer to the size problem a real campaign has. An Ontario provincial candidate holds
+ * something like thirty-five thousand households; thirty-five thousand map pins is thirty-five
+ * thousand DOM nodes, which no browser draws smoothly and no human reads. The grid keeps the number
+ * of things drawn under five hundred at any zoom while still showing where the doors are.
+ *
+ * `total_geocoded` counts every located household in the workspace and `in_view` counts the ones
+ * inside the rectangle. Both are here so a caption can never report a sample as a total. Matching
+ * is unaffected by any of this: it runs server-side over every household, not over what is drawn.
  */
 export const BoundaryHouseholdPinsObj = z.object({
+  /** Individual doors. Empty when the view holds too many, in which case `clusters` is filled. */
   pins: z.array(BoundaryHouseholdPinObj),
-  /** Households with coordinates in the workspace, whether or not a pin was returned for them. */
+  /** Density squares. Empty when the view is sparse enough for `pins`. */
+  clusters: z.array(BoundaryHouseholdClusterObj),
+  /** Households with coordinates in the workspace, whether or not anything was drawn for them. */
   total_geocoded: z.number(),
+  /** Located households inside the rectangle asked for; equals `total_geocoded` when none was. */
+  in_view: z.number(),
+  /**
+   * The extent of every located household in the workspace, or null when there are none. This is
+   * what "fit the map to everything" frames, and it is deliberately not the extent of what was
+   * drawn: framing a capped sample would zoom to wherever the sample happened to land.
+   */
+  bounds: BoundaryViewportObj.nullable(),
 });
 export type BoundaryHouseholdPinsType = z.infer<typeof BoundaryHouseholdPinsObj>;
 

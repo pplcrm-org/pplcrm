@@ -5,6 +5,7 @@ import {
   AddBoundaryFeatureObj,
   AddDrawnBoundarySetObj,
   AddPublishedBoundarySetObj,
+  BoundaryHouseholdPinsInputObj,
   UpdateBoundaryFeatureObj,
   UploadBoundarySetObj,
 } from '../../../../../../libs/common/src/lib/schemas/boundaries.schema';
@@ -38,13 +39,17 @@ function listFeatures() {
 }
 
 /**
- * Household pins for the drawing map, capped and ordered, with the true located-household count.
+ * What the drawing map should draw for the rectangle it is showing: individual doors where there
+ * are few enough, a density grid where there are too many, plus the workspace and in-view counts.
  *
+ * The rectangle is optional because the first load happens before the browser has framed anything.
  * A read like the other two: any signed-in member may see where the workspace's doors are, and this
  * returns strictly less about each household than the households list already does.
  */
 function householdPins() {
-  return authProcedure.query(({ ctx }) => controller.listHouseholdPins(ctx.auth));
+  return authProcedure
+    .input(BoundaryHouseholdPinsInputObj.optional())
+    .query(({ ctx, input }) => controller.listHouseholdPins(ctx.auth, input?.viewport ?? null));
 }
 
 function createDrawn() {

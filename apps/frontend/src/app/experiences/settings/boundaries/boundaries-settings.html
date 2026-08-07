@@ -628,31 +628,43 @@
       </p>
       }
 
-      <!-- center/zoom are non-null only while there is nothing to frame, so an empty workspace
-           opens on its own country instead of the map component's lat 0 / lng 0 ocean fallback. -->
+      <!-- fitBounds is off on purpose. This page frames the map itself — on opening a layer, on
+           picking an area from the list, and on "Fit map to everything" — because it also listens
+           for where the map ends up. A map that re-framed on every content change would move,
+           report the move, fetch households for the new frame, and move again on the answer.
+           center/zoom are non-null only while there is nothing at all to frame, so an empty
+           workspace opens on its own country instead of the lat 0 / lng 0 ocean fallback. -->
       <pc-map
         class="block h-[30rem] w-full rounded-lg"
         ariaLabel="Boundary map"
         [markers]="mapMarkers()"
+        [clusters]="mapClusters()"
         [polygons]="mapPolygons()"
         [drawingEnabled]="drawing()"
         [selectedPolygonId]="selectedPolygonId()"
-        [fitBounds]="autoFit()"
+        [fitBounds]="false"
         [center]="emptyMapCenter()"
         [zoom]="emptyMapZoom()"
         (polygonDrawn)="onPolygonDrawn($event)"
         (polygonEdited)="onPolygonEdited($event)"
         (polygonDeleted)="onPolygonDeleted($event)"
         (polygonSelected)="onPolygonSelected($event)"
+        (viewportChanged)="onViewportChanged($event)"
       ></pc-map>
 
       <p class="text-xs text-base-content/60">
-        @if (!pinsLoaded()) { Loading your household pins. } @else if (pinsTotal() === 0) { No household has coordinates
-        yet, so there are no pins to draw around. Households get coordinates from geocoding after an address is added or
-        imported. @if (drawing()) { Zoom to your area, then click to place corners. } } @else if (pinsCapped()) {
-        Showing {{ pinsShown().toLocaleString() }} of {{ pinsTotal().toLocaleString() }} located households as pins.
-        These pins are a sample to trace over, always the same one; matching runs over every located household, not just
-        the ones drawn here. } @else { {{ pinsShown().toLocaleString() }} located households shown as pins. }
+        @if (!pinsLoaded()) { Loading your households. } @else if (pinsTotal() === 0) { No household has coordinates
+        yet, so there is nothing to draw around. Households get coordinates from geocoding after an address is added or
+        imported. @if (drawing()) { Zoom to your area, then click to place corners. } } @else if (pinsInView() === 0) {
+        None of your {{ pinsTotal().toLocaleString() }} located households are in this view. Press Fit map to everything
+        to go back to them. } @else if (showingClusters()) { {{ pinsInView().toLocaleString() }} households are in this
+        view — too many to draw one by one, so they are grouped by area with a count on each. Zoom in, or click a group,
+        to see the doors themselves. } @else if (pinsInView() < pinsTotal()) { {{ pinsShown().toLocaleString() }}
+        households shown here, out of {{ pinsTotal().toLocaleString() }} located in the workspace. Matching runs over
+        all of them, not just the ones in view. } @else { All {{ pinsShown().toLocaleString() }} of your located
+        households are shown as pins. } @if (pinsRefreshing()) {
+        <span class="loading loading-spinner loading-xs align-middle"></span>
+        }
       </p>
     </div>
 

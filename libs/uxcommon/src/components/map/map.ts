@@ -13,7 +13,16 @@ import {
 } from '@angular/core';
 import { Loader } from '@googlemaps/js-api-loader';
 import { Icon } from '../icons/icon';
-import type { PcLatLng, PcMapMarker, PcMapPolygon, PcMapPolygonEdit, PcMapPolyline, PcMapVariant } from './map-types';
+import type {
+  PcLatLng,
+  PcMapCluster,
+  PcMapMarker,
+  PcMapPolygon,
+  PcMapPolygonEdit,
+  PcMapPolyline,
+  PcMapVariant,
+  PcMapViewport,
+} from './map-types';
 
 /** The zoom used when a host passes `center` without a `zoom`. Exported so a host that passes `zoom` conditionally can fall back to the same value. */
 export const PC_MAP_DEFAULT_ZOOM = 14;
@@ -48,6 +57,20 @@ const FULL_TURN_DEGREES = 360;
 const DEGREES_TO_RADIANS = Math.PI / 180;
 /** Keeps the 1/cos(latitude) Mercator stretch finite near the poles. */
 const MIN_LATITUDE_COSINE = 0.01;
+
+/** Density bubbles: the smallest and largest a bubble is drawn, in screen pixels across. */
+const CLUSTER_MIN_PX = 26;
+const CLUSTER_MAX_PX = 62;
+/** Counts at or above this are written short — 1.2k rather than 1204 — so the bubble stays legible. */
+const CLUSTER_ABBREVIATE_FROM = 1_000;
+/** How much closer clicking a density bubble takes the map. Two steps quarters the area shown. */
+const CLUSTER_CLICK_ZOOM_STEP = 2;
+
+/**
+ * Zoom used when `focusOn` is handed a single point (or a rectangle with no size). Fitting a map to
+ * one coordinate zooms to the maximum, which shows a roof and no context.
+ */
+const FOCUS_SINGLE_POINT_ZOOM = 16;
 
 const DRAFT_VERTEX_PX = 9;
 const DRAFT_FIRST_VERTEX_PX = 14;
@@ -170,6 +193,33 @@ export function polygonEditability(drawing: boolean, poly: Pick<PcMapPolygon, 'e
 }
 
 /**
+ * How wide to draw a density bubble, in screen pixels.
+ *
+ * Area, not diameter, carries the count: a bubble for a thousand doors next to one for a hundred
+ * has to look ten times as heavy, and a reader compares blobs by how much ink they cover. Taking
+ * the square root of the share is what makes the drawn area proportional to the number.
+ *
+ * Sized against the largest bubble currently on screen rather than an absolute scale, so a view of
+ * one quiet suburb reads as well as a view of a whole city.
+ */
+export function clusterDiameterPx(count: number, largest: number): number {
+  if (!(count > 0) || !(largest > 0)) return CLUSTER_MIN_PX;
+  const share = Math.sqrt(Math.min(count, largest) / largest);
+  return CLUSTER_MIN_PX + (CLUSTER_MAX_PX - CLUSTER_MIN_PX) * share;
+}
+
+/**
+ * The count as it is written inside a bubble. Four or more digits do not fit and are not read as a
+ * number anyway, so they are shortened: 1204 becomes 1.2k, 35400 becomes 35k.
+ */
+export function formatClusterCount(count: number): string {
+  const whole = Math.max(0, Math.round(count));
+  if (whole < CLUSTER_ABBREVIATE_FROM) return String(whole);
+  const thousands = whole / CLUSTER_ABBREVIATE_FROM;
+  return `${thousands < 10 ? thousands.toFixed(1) : Math.round(thousands)}k`;
+}
+
+/**
  * Read a live Google polygon's vertex ring back out as plain pairs. The one
  * place an SDK value crosses into the component's own vocabulary; nothing that
  * leaves this component carries an SDK type.
@@ -246,6 +296,15 @@ export class PcMap {
   public readonly markers = input<PcMapMarker[]>([]);
   public readonly polygons = input<PcMapPolygon[]>([]);
   public readonly polylines = input<PcMapPolyline[]>([]);
+  /**
+   * Counted groups drawn instead of individual markers, for a host with more of them than a browser
+   * can draw. Deliberately not folded into `markers`: a bubble means "this many around here", a pin
+   * means "this one, here", and drawing one as the other would misreport what is on the map.
+   *
+   * Clusters take no part in fit-to-content. They are what a host sends *because of* the current
+   * view, so framing the map from them would chase its own tail.
+   */
+  public readonly clusters = input<PcMapCluster[]>([]);
   public readonly center = input<PcLatLng | null>(null);
   public readonly zoom = input<number>(PC_MAP_DEFAULT_ZOOM);
   public readonly fitBounds = input<boolean>(true);
@@ -260,6 +319,21 @@ export class PcMap {
 
   public readonly markerClicked = output<PcMapMarker>();
   public readonly polygonClicked = output<PcMapPolygon>();
+  /**
+   * A density bubble the user clicked. The map has already zoomed in on it by the time this fires —
+   * that is what a reader expects a group to do — so a host only needs this if it wants to say
+   * something about the group as well.
+   */
+  public readonly clusterClicked = output<PcMapCluster>();
+  /**
+   * The rectangle now on screen, after the map has come to rest. A host uses this to fetch only
+   * what is visible.
+   *
+   * Never re-frame the map from this. Framing changes the viewport, which fires this again, which
+   * frames again: use `focusOn` from what the host already knows instead, and leave `fitBounds`
+   * off on any page that listens here.
+   */
+  public readonly viewportChanged = output<PcMapViewport>();
   /** A newly traced area, as its vertex ring. The ring is not repeated at the end. */
   public readonly polygonDrawn = output<PcLatLng[]>();
   /** A saved polygon whose shape changed: a vertex moved, added or removed, or the shape dragged. */
@@ -275,9 +349,18 @@ export class PcMap {
 
   private map: google.maps.Map | null = null;
   private drawnMarkers: google.maps.marker.AdvancedMarkerElement[] = [];
+  private drawnClusters: google.maps.marker.AdvancedMarkerElement[] = [];
   private drawnPolygons: google.maps.Polygon[] = [];
   private drawnPolylines: google.maps.Polyline[] = [];
   private themeObserver: MutationObserver | null = null;
+
+  /**
+   * The last thing `focusOn` was asked to frame, kept so a focus asked for before the SDK finished
+   * loading is honoured when the map appears rather than silently dropped. A host loads its data
+   * and frames the map on the same tick; whether the map exists yet is a race it should not have to
+   * think about.
+   */
+  private pendingFocus: readonly PcLatLng[] | null = null;
 
   /** The vertices of the shape being traced right now. Empty when nothing is in progress. */
   private readonly draft = signal<PcLatLng[]>([]);
@@ -300,12 +383,13 @@ export class PcMap {
       const markers = this.markers();
       const polygons = this.polygons();
       const polylines = this.polylines();
+      const clusters = this.clusters();
       const drawing = this.drawingEnabled();
       const selectedId = this.selectedPolygonId();
       // Recompute the placeholder caption from current content.
-      this.placeholderLabel.set(this.computePlaceholderLabel(markers, polygons));
+      this.placeholderLabel.set(this.computePlaceholderLabel(markers, polygons, clusters));
       if (this.map) {
-        this.redraw(markers, polygons, polylines, drawing, selectedId);
+        this.redraw(markers, polygons, polylines, clusters, drawing, selectedId);
       }
     });
 
@@ -411,11 +495,24 @@ export class PcMap {
       });
 
       this.map.addListener('click', (event: google.maps.MapMouseEvent) => this.onMapClick(event));
+      // `idle` is the map at rest: after a drag, after a zoom, after a programmatic re-frame. It
+      // fires once per settle rather than per animation frame, so a host can fetch on it directly.
+      this.map.addListener('idle', () => this.emitViewport());
       if (this.deepLink()) hostEl.style.cursor = 'pointer';
 
       this.observeTheme();
-      this.redraw(this.markers(), this.polygons(), this.polylines(), this.drawingEnabled(), this.selectedPolygonId());
+      this.redraw(
+        this.markers(),
+        this.polygons(),
+        this.polylines(),
+        this.clusters(),
+        this.drawingEnabled(),
+        this.selectedPolygonId(),
+      );
       this.redrawDraft(this.draft());
+      // A frame asked for while the SDK was still loading applies now, after the first draw, so it
+      // wins over the fit-to-content that draw may have done.
+      if (this.pendingFocus) this.applyFocus(this.pendingFocus);
     } catch {
       // A partial/broken SDK (or an offline draw failure) degrades to the
       // honest placeholder rather than crashing the host page.
@@ -428,6 +525,7 @@ export class PcMap {
     markers: PcMapMarker[],
     polygons: PcMapPolygon[],
     polylines: PcMapPolyline[],
+    clusters: PcMapCluster[],
     drawing: boolean,
     selectedId: string | null,
   ): void {
@@ -445,10 +543,61 @@ export class PcMap {
     for (const marker of markers) {
       this.drawMarker(marker, drawing);
     }
+    // Sized against the biggest group on screen, so the scale is read from this view alone.
+    const largestCluster = clusters.reduce((most, cluster) => Math.max(most, cluster.count), 0);
+    for (const cluster of clusters) {
+      this.drawCluster(cluster, largestCluster, drawing);
+    }
 
     if (!this.center()) {
       this.fitToContent(markers, polygons, polylines);
     }
+  }
+
+  /** Tell a listening host what rectangle is now on screen. */
+  private emitViewport(): void {
+    if (!this.map) return;
+    const bounds = this.map.getBounds();
+    const zoom = this.map.getZoom();
+    if (!bounds || zoom === undefined) return;
+    const northEast = bounds.getNorthEast();
+    const southWest = bounds.getSouthWest();
+    this.viewportChanged.emit({
+      north: northEast.lat(),
+      south: southWest.lat(),
+      east: northEast.lng(),
+      west: southWest.lng(),
+      zoom,
+    });
+  }
+
+  /**
+   * Frame the map on the points a host names — one area's outline, the extent of everything it
+   * holds, a single door. This is how a host moves the map deliberately, as opposed to `fitBounds`,
+   * which re-frames on its own whenever the content changes.
+   *
+   * Remembered rather than only applied, so a call made before the SDK finished loading takes
+   * effect when the map appears. Called with nothing, it does nothing: an empty frame has no
+   * meaning and clearing the view would be worse than leaving it.
+   */
+  public focusOn(points: readonly PcLatLng[]): void {
+    if (points.length === 0) return;
+    this.pendingFocus = [...points];
+    if (this.map) this.applyFocus(this.pendingFocus);
+  }
+
+  private applyFocus(points: readonly PcLatLng[]): void {
+    const first = points[0];
+    if (!this.map || first === undefined) return;
+    const bounds = new google.maps.LatLngBounds();
+    for (const point of points) bounds.extend(point);
+    if (bounds.getNorthEast().equals(bounds.getSouthWest())) {
+      // One point, or several at the same spot: fitting would zoom to the roof.
+      this.map.setCenter(first);
+      this.map.setZoom(FOCUS_SINGLE_POINT_ZOOM);
+      return;
+    }
+    this.map.fitBounds(bounds);
   }
 
   private drawMarker(marker: PcMapMarker, drawing: boolean): void {
@@ -492,6 +641,60 @@ export class PcMap {
       if (this.deepLink()) this.openInMapsApp(marker.position);
     });
     this.drawnMarkers.push(advanced);
+  }
+
+  /**
+   * One density bubble: a translucent disc with the count written in it, clicking which takes the
+   * map closer so the group breaks apart.
+   *
+   * Inert in drawing mode for the same reason pins are — a clickable overlay swallows the click
+   * that should place a vertex — and it stays drawn, because where the doors are is exactly the
+   * context somebody tracing an area needs.
+   */
+  private drawCluster(cluster: PcMapCluster, largest: number, drawing: boolean): void {
+    if (!this.map) return;
+    const color = this.resolveColor(cluster.variant ?? 'primary');
+    const size = clusterDiameterPx(cluster.count, largest);
+    const bubble = document.createElement('div');
+    bubble.style.width = `${size}px`;
+    bubble.style.height = `${size}px`;
+    bubble.style.borderRadius = '9999px';
+    bubble.style.background = color;
+    bubble.style.opacity = '0.75';
+    bubble.style.border = '2px solid var(--color-base-100, #fff)';
+    bubble.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
+    bubble.style.display = 'flex';
+    bubble.style.alignItems = 'center';
+    bubble.style.justifyContent = 'center';
+    bubble.style.color = 'var(--color-base-100, #fff)';
+    bubble.style.fontFamily = 'inherit';
+    bubble.style.fontSize = '11px';
+    bubble.style.fontWeight = '700';
+    bubble.style.lineHeight = '1';
+    bubble.textContent = formatClusterCount(cluster.count);
+    if (!drawing) bubble.style.cursor = 'pointer';
+
+    const tooltip = `${cluster.count.toLocaleString()} here — click to zoom in`;
+    const advanced = new google.maps.marker.AdvancedMarkerElement({
+      map: this.map,
+      position: cluster.position,
+      content: bubble,
+      title: drawing ? '' : tooltip,
+      gmpClickable: !drawing,
+    });
+    advanced.addListener('gmp-click', () => {
+      this.zoomToCluster(cluster);
+      this.clusterClicked.emit(cluster);
+    });
+    this.drawnClusters.push(advanced);
+  }
+
+  /** Clicking a group takes the map closer to it, which is the only thing a group can usefully do. */
+  private zoomToCluster(cluster: PcMapCluster): void {
+    if (!this.map) return;
+    const current = this.map.getZoom() ?? this.zoom();
+    this.map.setCenter(cluster.position);
+    this.map.setZoom(current + CLUSTER_CLICK_ZOOM_STEP);
   }
 
   private drawPolygon(poly: PcMapPolygon, drawing: boolean, selectedId: string | null): void {
@@ -724,9 +927,11 @@ export class PcMap {
 
   private clearOverlays(): void {
     for (const m of this.drawnMarkers) m.map = null;
+    for (const c of this.drawnClusters) c.map = null;
     for (const p of this.drawnPolygons) p.setMap(null);
     for (const l of this.drawnPolylines) l.setMap(null);
     this.drawnMarkers = [];
+    this.drawnClusters = [];
     this.drawnPolygons = [];
     this.drawnPolylines = [];
   }
@@ -734,7 +939,14 @@ export class PcMap {
   private observeTheme(): void {
     if (this.themeObserver || typeof MutationObserver === 'undefined') return;
     this.themeObserver = new MutationObserver(() => {
-      this.redraw(this.markers(), this.polygons(), this.polylines(), this.drawingEnabled(), this.selectedPolygonId());
+      this.redraw(
+        this.markers(),
+        this.polygons(),
+        this.polylines(),
+        this.clusters(),
+        this.drawingEnabled(),
+        this.selectedPolygonId(),
+      );
       this.redrawDraft(this.draft());
     });
     this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -767,11 +979,21 @@ export class PcMap {
     return resolved || '#3b82f6';
   }
 
-  private computePlaceholderLabel(markers: PcMapMarker[], polygons: PcMapPolygon[]): string {
-    if (markers.length === 0 && polygons.length === 0) return this.ariaLabel();
+  private computePlaceholderLabel(
+    markers: PcMapMarker[],
+    polygons: PcMapPolygon[],
+    clusters: PcMapCluster[] = [],
+  ): string {
+    if (markers.length === 0 && polygons.length === 0 && clusters.length === 0) return this.ariaLabel();
     const parts: string[] = [];
     if (markers.length) parts.push(`${markers.length} ${markers.length === 1 ? 'location' : 'locations'}`);
     if (polygons.length) parts.push(`${polygons.length} ${polygons.length === 1 ? 'area' : 'areas'}`);
+    if (clusters.length) {
+      // The placeholder reports the households, not the bubbles: the grouping is a drawing device,
+      // and saying "12 groups" would name something the reader never asked for.
+      const counted = clusters.reduce((sum, cluster) => sum + cluster.count, 0);
+      parts.push(`${counted.toLocaleString()} grouped`);
+    }
     return parts.join(' · ');
   }
 }

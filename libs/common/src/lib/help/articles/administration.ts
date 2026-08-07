@@ -714,7 +714,8 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         items: [
           {
             title: 'Open Boundaries in [Workspace settings](/workspace) and choose to draw a map',
-            detail: 'The map opens centred on your workspace, with every geocoded household shown as a pin.',
+            detail:
+              'The map opens framed on your workspace, showing the households you have coordinates for — as individual pins, or as counted groups when there are too many pins to draw. See [What you see underneath at full size](#households-under-the-map).',
           },
           {
             title: 'Name the set and give it a role',
@@ -752,10 +753,32 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
         kind: 'p',
         text: 'When an address does land in an overlap, which area wins is not left to chance: areas are checked in name order, so the same address lands in the same area on every single run and your reports do not drift between refreshes. Fix the overlap when you get to it; until then, at least the answer is stable.',
       },
+      { kind: 'h2', id: 'find-an-area', text: 'Finding an area on a big map' },
+      {
+        kind: 'p',
+        text: 'Beside the map is the list of every area the map holds. Picking one from the list **moves the map to it** and frames it, so you do not have to know where it is before you can look at it — which matters on a national map of hundreds of ridings, where the area you want may be a province away from where you are looking. Clicking a shape on the map itself selects it without moving anything, because it is already in front of you. **Fit map to everything** returns to the whole map and all of your households.',
+      },
+      { kind: 'h2', id: 'households-under-the-map', text: 'What you see underneath at full size' },
+      {
+        kind: 'p',
+        text: 'The households drawn under your areas are the ones inside the part of the map you are looking at, and they are redrawn each time you pan or zoom. That is what keeps the page quick for a real list: a provincial candidate can hold 35,000 households or more, which is far more pins than any browser can draw at once.',
+      },
+      {
+        kind: 'list',
+        items: [
+          'Looking at a whole riding or city, the households are **grouped**: one shaded circle per area with a count in it, bigger where there are more doors. That is a density picture — where your doors are — rather than a list of them.',
+          'Zoom in, or click a circle, and the groups break apart. Once fewer than 2,000 households are in view they are drawn as individual pins again.',
+          'The caption under the map always says which of the two you are looking at, how many households are in view, and how many your workspace holds in total.',
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'None of this changes matching. Every household with coordinates is matched against every area, whether or not it was ever drawn on your screen.',
+      },
       { kind: 'h2', id: 'edit', text: 'Reshape, rename, delete' },
       {
         kind: 'p',
-        text: 'Click a saved area to select it. Drag any vertex to reshape it, rename it in place, or delete it after a confirmation. Every change re-runs matching for the whole set, so the two counts and every household’s areas are correct again by the time you look away. Redrawing an area you got wrong is genuinely cheap — there is no reason to leave a bad shape alone.',
+        text: 'Click a saved area to select it, or pick it from the list. Drag any vertex to reshape it, rename it in place, or delete it after a confirmation. Every change re-runs matching for the whole set, so the two counts and every household’s areas are correct again by the time you look away. Redrawing an area you got wrong is genuinely cheap — there is no reason to leave a bad shape alone.',
       },
       {
         kind: 'callout',

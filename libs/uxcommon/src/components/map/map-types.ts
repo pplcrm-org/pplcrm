@@ -46,6 +46,41 @@ export interface PcMapPolyline<T = unknown> {
   payload?: T;
 }
 
+/**
+ * One density bubble: "this many things are around here", drawn instead of that many pins.
+ *
+ * This exists because the number of doors a real campaign holds is far larger than the number of
+ * DOM nodes a map can carry. A provincial candidate's thirty-five thousand households cannot be
+ * thirty-five thousand markers, so a host that has too many to draw sends counted groups instead
+ * and lets the reader zoom in until individual pins come back.
+ *
+ * The bubble is drawn at `position` and sized by `count` relative to the largest bubble on screen,
+ * so one wide view reads as a density picture rather than a field of identical circles.
+ */
+export interface PcMapCluster<T = unknown> {
+  position: PcLatLng;
+  /** How many things this bubble stands for. Written inside it, abbreviated past a thousand. */
+  count: number;
+  variant?: PcMapVariant;
+  id?: string;
+  payload?: T;
+}
+
+/**
+ * The rectangle a map is currently showing, in the compass words a map uses, plus its zoom.
+ *
+ * Emitted by `<pc-map>`'s `viewportChanged` output so a host can fetch only what is on screen. A
+ * host that re-frames the map in response to this will loop forever; frame the map from what the
+ * host knows (see `focusOn`), never from what the map just reported.
+ */
+export interface PcMapViewport {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+  zoom: number;
+}
+
 /** One filled polygon (a turf boundary). `payload` is echoed on `polygonClicked`. */
 export interface PcMapPolygon<T = unknown> {
   path: PcLatLng[];
