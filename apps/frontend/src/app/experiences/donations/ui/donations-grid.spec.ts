@@ -7,6 +7,7 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { provideDataGridConfig } from '@frontend/shared/components/datagrid/datagrid.tokens';
 import { TagOptionsService } from '@frontend/shared/components/datagrid/services/tag-options.service';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
+import { DonationsChangedService } from '../../../services/api/donations-changed.service';
 import { DonationsGridComponent } from './donations-grid';
 import { DonationsService } from '../../../services/api/donations-service';
 
@@ -64,10 +65,13 @@ describe('DonationsGridComponent', () => {
   }
 
   beforeEach(async () => {
+    const refreshCount = signal(0);
     mockDonationsSvc = {
       listScope: 'all',
-      refreshCount: signal(0),
-      triggerRefresh: vi.fn(),
+      refreshCount,
+      // The real one bumps the signal the child grid watches — keep that, so these tests prove the
+      // grid actually re-fetches rather than that a spy was called.
+      triggerRefresh: vi.fn(() => refreshCount.update((n) => n + 1)),
       abort: vi.fn(),
       getAll: vi.fn().mockResolvedValue({ rows, count: rows.length }),
       getAllArchived: vi.fn().mockResolvedValue({ rows: [], count: 0 }),
@@ -143,14 +147,31 @@ describe('DonationsGridComponent', () => {
     Object.assign(TestBed.inject(ActivatedRoute).snapshot.data, { scope: undefined });
   });
 
-  it('reloads the summary and refreshes the grid after a donation is recorded', async () => {
+  it('reloads the summary and refreshes the grid when a gift is written anywhere', async () => {
     await flushGrid(fixture);
     mockDonationsSvc.getLedgerSummary.mockClear();
 
-    await component['onDonationRecorded']();
+    // What DonationsService raises after any successful donation write — from this page's own
+    // dialog, the sibling tab, or a person's page. Without it a tab held in the route-reuse cache
+    // showed its old rows until the browser reloaded.
+    TestBed.inject(DonationsChangedService).notify();
+    await flushGrid(fixture);
 
     expect(mockDonationsSvc.getLedgerSummary).toHaveBeenCalledTimes(1);
     expect(mockDonationsSvc.triggerRefresh).toHaveBeenCalled();
+  });
+
+  it('fetches a fresh page of rows after that tick, not just the totals', async () => {
+    await flushGrid(fixture);
+    const before = mockDonationsSvc.getAll.mock.calls.length;
+    expect(before).toBeGreaterThan(0);
+
+    const withNewGift = [...rows, { ...rows[0], id: '2', donor_name: 'New Donor' }];
+    mockDonationsSvc.getAll.mockResolvedValue({ rows: withNewGift, count: withNewGift.length });
+    TestBed.inject(DonationsChangedService).notify();
+    await flushGrid(fixture);
+
+    expect(mockDonationsSvc.getAll.mock.calls.length).toBeGreaterThan(before);
   });
 
   it('shows an error toast when the summary fails to load', async () => {

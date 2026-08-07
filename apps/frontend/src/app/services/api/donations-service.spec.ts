@@ -4,6 +4,7 @@ import { DonationsService } from './donations-service';
 describe('DonationsService', () => {
   let service: DonationsService;
   let mockApi: any;
+  let notify: any;
 
   beforeEach(() => {
     mockApi = {
@@ -14,6 +15,7 @@ describe('DonationsService', () => {
         getDonationStats: { query: vi.fn() },
         checkEligibility: { query: vi.fn() },
         createCheckout: { mutate: vi.fn() },
+        recordDonation: { mutate: vi.fn() },
         confirmDonation: { mutate: vi.fn() },
         confirmMockDonation: { mutate: vi.fn() },
         createRecurringCheckout: { mutate: vi.fn() },
@@ -28,10 +30,13 @@ describe('DonationsService', () => {
       },
     };
 
+    notify = vi.fn();
     service = Object.create(DonationsService.prototype) as DonationsService;
     (service as any).api = mockApi;
-    // Object.create skips field initializers — restore the two the grid contract relies on.
+    // Object.create skips field initializers — restore the three the service relies on: the abort
+    // controller and list scope the grid contract needs, and the changed-tick every write raises.
     (service as any).ac = new AbortController();
+    (service as any).changed = { notify };
     service.listScope = 'all';
   });
 
@@ -191,6 +196,34 @@ describe('DonationsService', () => {
     await service.deleteDonationPeriod('period-2');
 
     expect(mockApi.donations.deleteDonationPeriod.mutate).toHaveBeenCalledWith({ id: 'period-2' });
+  });
+
+  it('announces every gift it records, so grids it does not own reload too', async () => {
+    mockApi.donations.recordDonation.mutate.mockResolvedValue({ id: 'gift-1' });
+
+    const result = await service.recordDonation({
+      personId: 'p1',
+      amountCents: 5000,
+      method: 'cash',
+      address: { street: '1 Main St', apt: null, city: 'Toronto', state: 'ON', zip: 'M1M1M1', country: 'Canada' },
+    });
+
+    expect(result).toEqual({ id: 'gift-1' });
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays quiet when the write fails, so nothing reloads for a gift that was not saved', async () => {
+    mockApi.donations.recordDonation.mutate.mockRejectedValue(new Error('nope'));
+
+    await expect(
+      service.recordDonation({
+        personId: 'p1',
+        amountCents: 5000,
+        method: 'cash',
+        address: { street: '1 Main St', apt: null, city: 'Toronto', state: 'ON', zip: 'M1M1M1', country: 'Canada' },
+      }),
+    ).rejects.toThrow('nope');
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('should propagate errors from the tRPC client', async () => {

@@ -116,6 +116,25 @@ gate. `totalCountAll` comes from the response `count`; paging math derives from 
 - New filter behavior belongs in the options the backend understands (see `getAllOptionsType`
   in `libs/common`) — not in client-side row filtering.
 
+### Reloading a grid after something writes a row
+
+The grid re-fetches its current page when `AbstractAPIService.refreshCount` increments, which is
+what `svc.triggerRefresh()` does (`datagrid.ts` constructor effect). So an add/edit page calls
+`triggerRefresh()` on the entity service after saving, and the list grid picks it up — including
+while it sits detached in the route-reuse cache (`data: { shouldReuse: true }`), because the
+effect runs when the view is shown again.
+
+**Trap — a component-scoped entity service breaks that.** Most entity services are root
+singletons, so any component can reach the grid's instance. The donations grid instead provides
+its own `DonationsService` (so the All and One-time tabs do not share a mutable `listScope`),
+which means `triggerRefresh()` from anywhere else reaches a _different_ instance and the grid
+never reloads: gifts recorded on the sibling tab or on a person's page stayed invisible until
+the browser reloaded. The fix pattern, if you scope a service to a component: add a root
+"something changed" tick service (`services/api/donations-changed.service.ts`), raise it inside
+the entity service's write methods (not in the calling component — then no surface can forget),
+and have each page turn the tick into its own `triggerRefresh()` plus whatever header totals it
+also has to reload.
+
 ## Inline editing: optimistic, undoable, flashed
 
 `EditingController.commitSingleCell` is the whole story: honor `valueSetter` if present,

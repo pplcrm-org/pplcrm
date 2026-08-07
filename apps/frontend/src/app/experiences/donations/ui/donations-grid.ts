@@ -1,4 +1,4 @@
-import { Component, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -10,6 +10,7 @@ import { provideDataGridConfig } from '@frontend/shared/components/datagrid/data
 import { SECONDARY_CELL_CLASS } from '@frontend/shared/components/datagrid/grid-defaults';
 import { DONATION_METHOD_LABELS, type DonationMethod } from '../../../../../../../libs/common/src';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
+import { DonationsChangedService } from '../../../services/api/donations-changed.service';
 import { DonationsService, type DonationLedgerSummary } from '../../../services/api/donations-service';
 import { WorkspaceCurrencyService } from '../../../shared/services/currency.service';
 import { DONATION_TABS, type DonationsScope } from './donation-tabs';
@@ -48,6 +49,7 @@ function escapeHtml(value: string): string {
 })
 export class DonationsGridComponent implements OnInit {
   private readonly donationsSvc = inject(DonationsService);
+  private readonly donationsChanged = inject(DonationsChangedService);
   private readonly alertSvc = inject(AlertService);
   private readonly route = inject(ActivatedRoute);
   private readonly money = inject(WorkspaceCurrencyService);
@@ -194,6 +196,19 @@ export class DonationsGridComponent implements OnInit {
   constructor() {
     // Fix this instance's slice of the ledger before the child grid's first fetch.
     this.donationsSvc.listScope = this.scope;
+
+    // Reload whenever a gift or pledge is written anywhere in the app — this page's own Record
+    // donation dialog, the sibling All/One-time tab, or a person's page. Both tabs stay alive in
+    // the route-reuse cache, so a page that did not do the recording kept its old rows until the
+    // browser reloaded; a page that is detached right now reacts when it is shown again.
+    effect(() => {
+      if (this.donationsChanged.version() === 0) return;
+      untracked(() => {
+        void this.loadSummary();
+        // The grid listens to the service's refresh signal and re-fetches its current page.
+        this.donationsSvc.triggerRefresh();
+      });
+    });
   }
 
   ngOnInit(): void {
@@ -202,12 +217,6 @@ export class DonationsGridComponent implements OnInit {
 
   protected openRecordDonation(): void {
     this.recordDialog().open();
-  }
-
-  protected async onDonationRecorded(): Promise<void> {
-    await this.loadSummary();
-    // The grid listens to the service's refresh signal and re-fetches its current page.
-    this.donationsSvc.triggerRefresh();
   }
 
   /** Header stat tiles hold already-divided dollar amounts, not cents. */

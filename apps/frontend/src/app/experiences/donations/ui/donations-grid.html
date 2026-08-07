@@ -115,4 +115,6 @@
   ></pc-datagrid>
 </div>
 
-<pc-record-donation-dialog (saved)="onDonationRecorded()"></pc-record-donation-dialog>
+<!-- No (saved) handler: recording a gift ticks DonationsChangedService from inside the service call,
+     which reloads this page's totals and rows — and the sibling tab's, whenever it is shown next. -->
+<pc-record-donation-dialog></pc-record-donation-dialog>

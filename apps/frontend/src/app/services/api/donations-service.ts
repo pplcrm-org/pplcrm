@@ -1,7 +1,8 @@
-import { Service } from '@angular/core';
+import { Service, inject } from '@angular/core';
 import type { DonationAddressType, StripeConnectCountry } from '@common';
 import type { ExportCsvInputType, ExportCsvResponseType, getAllOptionsType } from '../../../../../../libs/common/src';
 import { AbstractAPIService } from './abstract-api.service';
+import { DonationsChangedService } from './donations-changed.service';
 import type { RouterOutputs } from './trpc-types';
 
 /** Which slice of the ledger the grid asks for — the One-time tab excludes pledge installments. */
@@ -13,6 +14,13 @@ export type DonationLedgerSummary = RouterOutputs['donations']['getLedgerSummary
 @Service()
 export class DonationsService extends AbstractAPIService<'donations', Record<string, unknown>> {
   protected override readonly endpointName = 'donations';
+
+  /**
+   * Raised after every successful write below, so a donations grid that did not initiate the write
+   * still reloads. See {@link DonationsChangedService} for why the grid's own refresh signal is not
+   * enough on its own.
+   */
+  private readonly changed = inject(DonationsChangedService);
 
   /**
    * Fixed scope this instance's getAll requests carry, sent as the `donation_scope` filter-model
@@ -112,13 +120,15 @@ export class DonationsService extends AbstractAPIService<'donations', Record<str
     return this.api.donations.createCheckout.mutate(payload);
   }
 
-  public confirmDonation(sessionId: string) {
-    return this.api.donations.confirmDonation.mutate({ sessionId });
+  public async confirmDonation(sessionId: string) {
+    const donation = await this.api.donations.confirmDonation.mutate({ sessionId });
+    this.changed.notify();
+    return donation;
   }
 
   /** Record an offline gift (Fig. 15 "Record donation" dialog) — cash, check, or bank transfer.
    * The mailing address is required: receipts must print one, so no gift is recorded without it. */
-  public recordDonation(payload: {
+  public async recordDonation(payload: {
     personId: string;
     amountCents: number;
     method: 'card' | 'check' | 'cash' | 'bank_transfer';
@@ -128,17 +138,21 @@ export class DonationsService extends AbstractAPIService<'donations', Record<str
     gift_date?: string;
     address: DonationAddressType;
   }) {
-    return this.api.donations.recordDonation.mutate(payload);
+    const donation = await this.api.donations.recordDonation.mutate(payload);
+    this.changed.notify();
+    return donation;
   }
 
-  public confirmMockDonation(payload: {
+  public async confirmMockDonation(payload: {
     personId: string;
     amountCents: number;
     sessionId: string;
     province: string;
     country: string;
   }) {
-    return this.api.donations.confirmMockDonation.mutate(payload);
+    const donation = await this.api.donations.confirmMockDonation.mutate(payload);
+    this.changed.notify();
+    return donation;
   }
 
   // ── Recurring pledges ───────────────────────────────────────────────────────
@@ -151,14 +165,16 @@ export class DonationsService extends AbstractAPIService<'donations', Record<str
     return this.api.donations.createRecurringCheckout.mutate(payload);
   }
 
-  public confirmMockPledge(payload: {
+  public async confirmMockPledge(payload: {
     personId: string;
     monthlyAmountCents: number;
     mockSubId: string;
     province: string;
     country: string;
   }) {
-    return this.api.donations.confirmMockPledge.mutate(payload);
+    const pledge = await this.api.donations.confirmMockPledge.mutate(payload);
+    this.changed.notify();
+    return pledge;
   }
 
   public listPledges() {
@@ -169,8 +185,11 @@ export class DonationsService extends AbstractAPIService<'donations', Record<str
     return this.api.donations.getPersonPledges.query(personId);
   }
 
-  public cancelPledge(pledgeId: string) {
-    return this.api.donations.cancelPledge.mutate({ pledgeId });
+  /** Cancelling a pledge changes the "Monthly Donors" tile on the ledger, so it ticks too. */
+  public async cancelPledge(pledgeId: string) {
+    const result = await this.api.donations.cancelPledge.mutate({ pledgeId });
+    this.changed.notify();
+    return result;
   }
 
   // ── Donation periods ────────────────────────────────────────────────────────
