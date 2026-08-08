@@ -45,6 +45,21 @@ useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 const db = (BaseRepository as any)._db;
 
+/**
+ * Claim priority for every row this file inserts. The advisory lock above only serializes files
+ * that also take it, and roughly thirty other spec files commit `pending` background_jobs rows
+ * without taking it (a controller spec that creates households commits a geocoding job per
+ * address, for one). Those rows are older, so `claimNextPendingJob`'s `priority DESC, id ASC`
+ * order preferred them over the row a test here had just inserted: `processNextJob()` returned
+ * true having processed someone else's job, and the assertions about this test's own row then
+ * failed in ways that looked like a worker bug — that is the CI failure this constant prevents.
+ *
+ * Above IMPORT_CONTINUATION_PRIORITY (10), the highest priority any production code enqueues, so
+ * this file's rows are always first in line. Nothing else about the claim is bypassed: the real
+ * claimer still runs, including the attempts increment the backoff assertions depend on.
+ */
+const SPEC_CLAIM_PRIORITY = 1000;
+
 const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);
 
 interface JobRow {
@@ -80,6 +95,7 @@ describe('worker retry backoff (handler throws, attempts left)', () => {
         status: 'pending',
         payload: JSON.stringify({ type: payloadType }),
         run_at: new Date(),
+        priority: SPEC_CLAIM_PRIORITY,
         attempts: 0,
         max_attempts: maxAttempts,
       })
@@ -170,6 +186,7 @@ describe('worker dead-lettering (attempts exhausted)', () => {
         status: 'pending',
         payload: JSON.stringify({ type: 'test-dead-letter' }),
         run_at: new Date(),
+        priority: SPEC_CLAIM_PRIORITY,
         attempts: 0,
         max_attempts: maxAttempts,
       })
@@ -289,6 +306,7 @@ describe('dead-lettered newsletter send releases the newsletter from sending', (
         status: 'pending',
         payload: JSON.stringify({ type: 'send-newsletter', newsletterId, tenantId }),
         run_at: new Date(),
+        priority: SPEC_CLAIM_PRIORITY,
         attempts: 0,
         max_attempts: maxAttempts,
       })
@@ -407,6 +425,7 @@ describe('worker settle write is guarded by the claim it still holds', () => {
         status: 'pending',
         payload: JSON.stringify({ type: 'test-settle-guard' }),
         run_at: new Date(),
+        priority: SPEC_CLAIM_PRIORITY,
         attempts: 0,
         max_attempts: 3,
       })

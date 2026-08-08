@@ -639,7 +639,28 @@ export class BackgroundJobWorker {
       .where('status', '=', 'processing')
       .where('locked_by', '=', workerId)
       .executeTakeFirst();
-    return Number(result?.numUpdatedRows ?? 0) > 0;
+    if (Number(result?.numUpdatedRows ?? 0) > 0) return true;
+
+    // Read back who holds the row now. Skipping the write is correct here, but "the write was
+    // skipped" on its own is not diagnosable: whether the row was deleted, requeued, or taken by
+    // another worker changes what an operator should do about it. This costs one extra query on a
+    // path that only runs when the claim was already lost.
+    const current = await this.db
+      .selectFrom('background_jobs')
+      .select(['status', 'locked_by'])
+      .where('id', '=', jobId)
+      .executeTakeFirst();
+    logger.warn(
+      {
+        jobId,
+        workerId,
+        rowExists: current != null,
+        currentStatus: current?.status ?? null,
+        currentLockedBy: current?.locked_by ?? null,
+      },
+      'Settle write skipped: this worker no longer holds the claim on the job row',
+    );
+    return false;
   }
 
   /**

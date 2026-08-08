@@ -3,7 +3,15 @@ import { HouseholdsController } from './controller';
 import { HouseholdRepo } from './repositories/households.repo';
 import { resolveSeatSetId } from './electoral-areas';
 import { BaseRepository } from '../../lib/base.repo';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import type { IAuthKeyPayload } from '@common';
+
+// Importing households commits one `pending` geocoding job per new address (the transactional
+// outbox), and the chunk-boundary tests below commit a hundred at a time. Those rows are visible
+// to `claimNextPendingJob`, which picks the oldest runnable row in the whole table, so a spec file
+// running a real worker or asserting claim order could pick them up mid-run. That is the contract
+// this lock exists for: any file that leaves a claimable row behind takes turns with the others.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 function rand() {
   return String(Math.floor(Math.random() * 100000000) + 10000000);
