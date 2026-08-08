@@ -171,6 +171,31 @@ tenantId, newsletterRow)` (`modules/newsletters/preflight.service.ts`), called i
      claim). `PreflightResult.aiStatus`: 'reviewed' | 'unavailable' (key unset/API error,
      fail-open) | 'not_required' (only the composer's local quick check). Composer UI: score
      gauge + findings card on Review & send, "Check deliverability" next to Send test email.
+     1c. **Sender gate (this newsletter's own From address)** — in `NewslettersController.sendNewsletter`,
+     directly after the content gate. Distinct from the tenant-default check in step 1: that one
+     reads `communications.default_from_email`; this one reads the `from_email` stored on THIS
+     newsletter (set in the composer, nullable). A null `from_email` is exempt — the send falls
+     back to the tenant default already checked in step 1. A non-null one is validated by the
+     shared rule in `apps/backend/src/app/lib/mail/from-address-policy.ts`
+     (`isSendableFromAddress`/`loadFromAddressPolicy`): sendable only if its domain is a
+     `communications.verified_domains` entry with `status: 'verified'`, or it equals this tenant's
+     own address on the shared platform sending domain (`isOwnSharedSendingAddress`, keyed off
+     `tenants.slug` — never just the domain, since the platform domain is shared across tenants).
+     Fails → FORBIDDEN with `unsendableFromAddressMessage` (names the domain to verify, or offers
+     switching to the pplCRM address with this one as Reply-to). The settings save path
+     (`settings/controller.ts`) enforces the identical rule on `communications.default_from_email`,
+     so an address that saves as the workspace default is guaranteed to pass this check too.
+     Single-address ("click the link we emailed you", `communications.verified_emails`) verification
+     is deliberately NOT sufficient on its own here — it proves ownership, not DMARC alignment, which
+     is a property of the domain. The composer's From picker (`newsletter-add.ts` `fromOptions`)
+     offers exactly the addresses this gate accepts, so a value that saves is a value that sends;
+     it can be legitimately empty (domain verified but no qualifying address configured yet, or
+     nothing verified at all) — the composer does not require a choice in that case and simply
+     sends from the workspace default. The newsletters LIST page (`newsletters-page.ts`) does not
+     duplicate any of this: it disabled Send on "no click-verified sender" until 2026-08-08, which
+     was wrong once a verified domain alone became sufficient — that client-side check was removed
+     rather than re-implemented, so a blocked send is now reported by this gate's FORBIDDEN error
+     (surfaced as a toast), not by a pre-disabled button.
 2. **Per batch, in the worker** — `handleSendNewsletter` (`lib/jobs/handlers/newsletter.handlers.ts`)
    re-loads the tenant every batch:
    - Paused/suspended mid-send → newsletter `status = 'paused'`, resume point saved in

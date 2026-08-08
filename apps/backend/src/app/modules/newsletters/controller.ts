@@ -43,6 +43,11 @@ import {
   resolveMergeSubstitutions,
 } from '../../lib/mail/newsletter-render';
 import { newsletterPreflight } from './preflight.service';
+import {
+  isSendableFromAddress,
+  loadFromAddressPolicy,
+  unsendableFromAddressMessage,
+} from '../../lib/mail/from-address-policy';
 
 const DEFAULT_FROM_NAME = 'pplCRM Team';
 // Fallback sender for TEST/preview sends only (sendTestEmail), which are allowed before a tenant has
@@ -515,23 +520,23 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
       plain_text_content: str(newsletter['plain_text_content']),
     });
 
-    // Sender gate: a newsletter may carry its own From address (chosen in the composer), so it gets
-    // the same rule the test-send path and the settings save path apply — an address the tenant has
-    // not proven it controls never reaches the wire. Without this, storing a From address would be a
-    // way to broadcast from an unverified domain.
+    // Sender gate: a newsletter may carry its own From address (chosen in the composer), and it is
+    // held to the same rule the settings save path applies to the workspace default From address —
+    // the shared one in lib/mail/from-address-policy.ts. The address must be on a DKIM-verified
+    // domain, or be this tenant's own address on the platform sending domain. Click-verifying a
+    // single address (communications.verified_emails) is NOT enough on its own: it proves the
+    // address is yours, but DMARC aligns on the domain, so a broadcast from an address whose domain
+    // we cannot sign is filtered or rejected and the bounces come back at the tenant. A null
+    // from_email is exempt — the send falls back to the workspace default, which
+    // assertTenantMaySendNewsletter has already checked above.
     const storedFromEmail = str(newsletter['from_email']);
     if (storedFromEmail) {
-      const verifiedRow = await db
-        .selectFrom('settings')
-        .select('value')
-        .where('tenant_id', '=', tenant_id)
-        .where('key', '=', 'communications.verified_emails')
-        .executeTakeFirst();
-      const rawVerified = verifiedRow?.value;
-      const verifiedEmails = Array.isArray(rawVerified) ? rawVerified.map((e) => String(e).toLowerCase().trim()) : [];
-      if (!verifiedEmails.includes(storedFromEmail.toLowerCase().trim())) {
+      const policy = await loadFromAddressPolicy(db, tenant_id);
+      if (!isSendableFromAddress(storedFromEmail, policy)) {
         throw new ForbiddenError(
-          `${storedFromEmail} is not a verified sending address. Verify it in Workspace settings, or choose a verified address for this newsletter.`,
+          `${storedFromEmail} cannot be the From address for this newsletter. ` +
+            `${unsendableFromAddressMessage(storedFromEmail)} You can also clear the From address on this ` +
+            `newsletter to send from your workspace default instead.`,
         );
       }
     }

@@ -89,8 +89,6 @@ export class NewslettersPage {
   protected readonly loading = createLoadingGate();
   protected readonly rows = signal<NewsletterRow[]>([]);
   protected readonly loaded = signal(false);
-  /** Verified sender addresses (Workspace → Communications) — sending needs at least one. */
-  protected readonly verifiedSenders = signal<string[]>([]);
 
   /** The compliance footer needs the org's mailing address, so sending is gated on it being set. */
   protected readonly orgAddressSet = computed(() => {
@@ -162,13 +160,18 @@ export class NewslettersPage {
   /**
    * The first unmet send condition for a draft, or null when it can go out (§2 explained-disabled:
    * the Send button never greys out silently — the tooltip names exactly what's missing).
+   *
+   * Sending-identity (a verified domain, or the workspace's own pplCRM address) is deliberately
+   * NOT checked here: a workspace can be sendable via a verified domain with no click-verified
+   * individual address, or via the pplCRM default, and cheaply re-deriving that whole rule here
+   * would duplicate apps/backend/src/app/lib/mail/from-address-policy.ts and drift from it (as the
+   * old `verifiedSenders`-only check did). The backend's assertTenantMaySendNewsletter pre-send
+   * gate is the single source of truth for that and returns an actionable error message that
+   * sendDraft() surfaces as a toast.
    */
   protected sendBlocker(row: NewsletterRow): string | null {
     if (this.isDemo()) {
       return 'Sending is locked during the demo. Choose a plan, then exit demo mode';
-    }
-    if (this.verifiedSenders().length === 0) {
-      return 'Verify a sender address under Settings → Communications before sending';
     }
     if (!this.orgAddressSet()) {
       return 'Set your organization’s mailing address under Settings → Organization — it appears in the footer of every newsletter';
@@ -236,15 +239,15 @@ export class NewslettersPage {
     } finally {
       end();
     }
-    await this.loadVerifiedSenders();
+    await this.loadSettingsSnapshot();
   }
 
-  private async loadVerifiedSenders(): Promise<void> {
+  /** Populates `settings.snapshotSignal`, which `orgAddressSet()` reads. */
+  private async loadSettingsSnapshot(): Promise<void> {
     try {
       await this.settings.load();
-      this.verifiedSenders.set(this.settings.getValue<string[]>('communications.verified_emails', []) ?? []);
     } catch {
-      // Non-fatal: with no snapshot the Send buttons stay disabled with the verify-sender tooltip.
+      // Non-fatal: with no snapshot the Send buttons stay disabled with the mailing-address tooltip.
     }
   }
 

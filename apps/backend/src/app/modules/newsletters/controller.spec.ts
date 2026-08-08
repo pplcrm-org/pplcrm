@@ -259,6 +259,58 @@ describe('NewslettersController Asynchronous Sending', () => {
     );
   });
 
+  /** Inserts a sendable draft carrying its own From address, and returns its id. */
+  const seedDraftWithFrom = async (fromEmail: string | null): Promise<string> => {
+    const id = String(Math.floor(Math.random() * 100000000) + 10000000);
+    await db
+      .insertInto('newsletters')
+      .values({
+        id,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Custom From Newsletter',
+        status: 'draft',
+        segments: JSON.stringify(['NewsletterTag']),
+        subject: 'Hello',
+        html_content: '<p>Hi</p>',
+        from_email: fromEmail,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    return id;
+  };
+
+  it('refuses a From address on a domain the workspace has not verified, even if click-verified', async () => {
+    // Clicking the link in a verification email proves the address is yours. It does not make bulk
+    // mail from it deliverable: DMARC aligns on the DOMAIN, and we cannot DKIM-sign gmail.com. The
+    // workspace default From is held to the same rule when it is saved, so the newsletter's own
+    // From address is held to it here.
+    await db
+      .insertInto('settings')
+      .values({
+        tenant_id: tenantId,
+        key: 'communications.verified_emails',
+        value: JSON.stringify(['jane@gmail.com']),
+      })
+      .execute();
+    const id = await seedDraftWithFrom('jane@gmail.com');
+
+    await expect(controller.sendNewsletter(tenantId, id, userId)).rejects.toThrow(
+      /cannot be the From address for this newsletter/,
+    );
+    const after = await db.selectFrom('newsletters').selectAll().where('id', '=', id).executeTakeFirst();
+    expect(after.status).toBe('draft');
+  });
+
+  it('accepts a From address on a verified domain that was never individually verified', async () => {
+    const id = await seedDraftWithFrom('updates@test-tenant.org');
+
+    const result = await controller.sendNewsletter(tenantId, id, userId);
+
+    expect(result.status).toBe('queuing');
+  });
+
   it('should throw BadRequestError if no recipients are resolved', async () => {
     const id = String(Math.floor(Math.random() * 100000000) + 10000000);
     await db

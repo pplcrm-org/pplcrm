@@ -202,17 +202,24 @@ describe('NewslettersPage', () => {
     expect(component['sendBlocker'](draftRow())).toContain('mailing address');
     settings.snapshotSignal.set({ 'organization.address': '1 Main St, Springfield' });
 
-    component['verifiedSenders'].set([]);
-    expect(component['sendBlocker'](draftRow())).toContain('Verify a sender address');
-
     // Demo mode outranks every other blocker — sending is locked server-side too.
     auth.user.set({ tenant_demo_mode_at: new Date() });
     expect(component['sendBlocker'](draftRow())).toContain('locked during the demo');
   });
 
+  it('does not block sending on a bare workspace with no click-verified sender addresses', async () => {
+    // A workspace can be sendable via a verified domain or the pplCRM default with zero entries in
+    // communications.verified_emails — the backend gate (assertTenantMaySendNewsletter), not this
+    // page, is the source of truth for sending identity. See newsletters-page.ts sendBlocker() doc.
+    settings.getValue.mockReturnValue([]);
+    await create();
+
+    expect(component['sendBlocker'](draftRow())).toBeNull();
+  });
+
   it('refuses to send a blocked draft even if invoked directly', async () => {
     await create();
-    component['verifiedSenders'].set([]);
+    settings.snapshotSignal.set({});
 
     await component['sendDraft'](draftRow());
     expect(dialogs.confirm).not.toHaveBeenCalled();

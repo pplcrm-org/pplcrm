@@ -266,33 +266,34 @@
 
           <div>
             <label class="mb-1 block text-xs font-medium">From address</label>
-            @if (verifiedSenders().length) {
+            @if (fromOptions().length) {
             <select
               #fromAddressInput
               class="select select-bordered select-sm w-full"
               [formField]="regularForm.fromAddress"
               (change)="onFieldInput()"
             >
-              <option value="" disabled>Choose a verified sender</option>
-              @for (sender of verifiedSenders(); track sender) {
+              <option value="" disabled>Choose a sending address</option>
+              @for (sender of fromOptions(); track sender) {
               <option [value]="sender">{{ sender }}</option>
               }
             </select>
             <button type="button" class="link link-primary mt-1 text-xs" (click)="goToVerifySender()">
-              Verify a new sender…
+              Add a sending address…
             </button>
             } @else {
             <div class="rounded-lg border border-dashed border-base-300 p-4 text-center">
               <p class="text-xs text-base-content/60">
-                No verified senders yet. A verified address stops your sends from bouncing or spoofing.
+                No address to choose from yet, so this newsletter will be sent from your workspace's default From
+                address. Bulk email can only come from a domain you have verified.
               </p>
               <button type="button" class="btn btn-xs btn-primary mt-2" (click)="goToVerifySender()">
-                Verify a sender
+                Set up a sending address
               </button>
             </div>
             } @if (isInvalid('fromAddress')) {
             <p class="mt-1 text-xs text-error">{{ fromAddressCoach }}</p>
-            } @if (verifiedSenders().length) {
+            } @if (fromOptions().length) {
             <p class="mt-1 text-xs text-base-content/50">Prefilled from Workspace settings → Communications.</p>
             }
           </div>

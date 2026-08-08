@@ -91,6 +91,8 @@ const SCHEDULE_COACH = 'Pick a send date and time, or switch to "Send now".';
 const AUDIENCE_PICKER_LIMIT = 1000;
 const COMMS_SETTINGS_LINK = '/workspace/communications';
 const VERIFY_SENDER_LINK = '/workspace/communications';
+/** The status a `communications.verified_domains` entry carries once its DKIM records check out. */
+const VERIFIED_DOMAIN_STATUS = 'verified';
 
 const EMPTY_REGULAR_PAYLOAD: RegularNewsletterPayload = {
   subject: '',
@@ -155,13 +157,66 @@ export class NewsletterAddComponent implements OnInit {
   private readonly _editLoading = createLoadingGate();
   protected readonly editLoading = this._editLoading.visible;
 
+  // --- Sending identity: which From addresses this workspace may choose ------
+  //
+  // Declared above the form because the From-address validator reads `fromOptions`.
+
+  /** Addresses the workspace has click-verified (`communications.verified_emails`). */
+  protected readonly verifiedSenders = signal<string[]>([]);
+  /** Domains the workspace has set up for sending, with their verification status. */
+  protected readonly verifiedDomains = signal<VerifiedDomainEntry[]>([]);
+  /** This workspace's own address on pplCRM's sending domain; empty when that option is off. */
+  protected readonly platformFromEmail = signal<string>('');
+  /** The workspace default From address, which the send falls back to when this wizard picks none. */
+  protected readonly defaultFromEmail = signal<string>('');
+
+  /**
+   * The addresses the From picker may offer, which is exactly the set the server will accept:
+   * an address whose domain is DKIM-verified for this workspace, or the workspace's own pplCRM
+   * sending address. A click-verified address on an unverified domain is deliberately left out —
+   * the server refuses it at send time (bulk mail has to align with a domain we can sign), so
+   * offering it here would only set up a failure later.
+   *
+   * This list can legitimately be empty (for example a workspace that has verified a domain but
+   * no individual address, or one that has verified nothing yet). When it is empty the wizard
+   * shows no picker and stores no From address, and the send uses the workspace default.
+   */
+  protected readonly fromOptions = computed<string[]>(() => {
+    const verified = new Set(
+      this.verifiedDomains()
+        .filter((d) => d.status === VERIFIED_DOMAIN_STATUS && d.domain)
+        .map((d) => String(d.domain).toLowerCase().trim()),
+    );
+    const onVerifiedDomain = (email: string): boolean => verified.has(email.toLowerCase().split('@')[1] ?? '');
+
+    const options: string[] = [];
+    const add = (email: string): void => {
+      if (email && !options.some((o) => o.toLowerCase() === email.toLowerCase())) options.push(email);
+    };
+
+    for (const sender of this.verifiedSenders()) {
+      if (onVerifiedDomain(sender)) add(sender);
+    }
+    const platform = this.platformFromEmail();
+    const workspaceDefault = this.defaultFromEmail();
+    if (workspaceDefault && (onVerifiedDomain(workspaceDefault) || workspaceDefault === platform)) {
+      add(workspaceDefault);
+    }
+    if (platform) add(platform);
+    return options;
+  });
+
   /** Raw wizard payload — the single source of truth the signal-form wraps. */
   protected readonly regularPayload = signal<RegularNewsletterPayload>({ ...EMPTY_REGULAR_PAYLOAD });
 
   protected readonly regularForm = form(this.regularPayload, (p) => {
     required(p.subject);
     required(p.fromName);
-    required(p.fromAddress);
+    // Required only while there is something to choose. A workspace that has verified a domain but
+    // no individual address has an empty picker, and demanding a value the UI never offers would
+    // make the details step impossible to pass. With no options the field stays empty, the
+    // newsletter is stored with no From address, and the send uses the workspace default.
+    required(p.fromAddress, { when: () => this.fromOptions().length > 0 });
     email(p.fromAddress);
   });
 
@@ -220,9 +275,8 @@ export class NewsletterAddComponent implements OnInit {
    */
   protected readonly mergeFieldExample = '{FirstName|there}';
 
-  // --- Verified senders / workspace prefill ---------------------------------
+  // --- Workspace prefill (the sender signals are declared above the form) ----
 
-  protected readonly verifiedSenders = signal<string[]>([]);
   protected readonly commsDefaultsApplied = signal(false);
 
   // --- Monthly send allowance (mirror of the server's send-guards math) -----
@@ -1010,7 +1064,10 @@ export class NewsletterAddComponent implements OnInit {
   private firstInvalidDetail(): 'subject' | 'fromName' | 'fromAddress' | null {
     if (this.regularForm.subject().invalid()) return 'subject';
     if (this.regularForm.fromName().invalid()) return 'fromName';
-    if (this.regularForm.fromAddress().invalid()) return 'fromAddress';
+    // Only report the From address while the picker is on screen. With no addresses to choose from
+    // the control is not rendered, so reporting a problem with it would stop the user at a step
+    // they have no way to complete.
+    if (this.fromOptions().length > 0 && this.regularForm.fromAddress().invalid()) return 'fromAddress';
     return null;
   }
 
@@ -1194,15 +1251,20 @@ export class NewsletterAddComponent implements OnInit {
       return;
     }
     this.verifiedSenders.set(this.settingsSvc.getValue<string[]>('communications.verified_emails', []) ?? []);
+    this.verifiedDomains.set(
+      this.settingsSvc.getValue<VerifiedDomainEntry[]>('communications.verified_domains', []) ?? [],
+    );
+    this.platformFromEmail.set(this.settingsSvc.getValue<string>('communications.platform_from_email', '') ?? '');
 
     const defaultName = this.settingsSvc.getValue<string>('communications.default_from_name', '');
     const defaultEmail = this.settingsSvc.getValue<string>('communications.default_from_email', '');
+    this.defaultFromEmail.set(defaultEmail);
     let applied = false;
     if (defaultName && !this.regularPayload().fromName) {
       this.regularForm.fromName().value.set(defaultName);
       applied = true;
     }
-    if (defaultEmail && this.verifiedSenders().includes(defaultEmail) && !this.regularPayload().fromAddress) {
+    if (defaultEmail && this.fromOptions().includes(defaultEmail) && !this.regularPayload().fromAddress) {
       this.regularForm.fromAddress().value.set(defaultEmail);
       applied = true;
     }
@@ -1279,6 +1341,12 @@ type TimingMode = 'now' | 'schedule';
 
 /** The two ways out of the leave guard; cancelling it (Keep editing) resolves to null instead. */
 type LeaveChoice = 'save' | 'discard';
+
+/** One entry of the workspace's `communications.verified_domains` setting. */
+interface VerifiedDomainEntry {
+  domain?: string;
+  status?: string;
+}
 
 interface RegularNewsletterPayload {
   subject: string;

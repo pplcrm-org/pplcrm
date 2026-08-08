@@ -233,6 +233,64 @@ describe('NewsletterAddComponent', () => {
     expect(component['currentStep']()).toBe(4);
   });
 
+  /**
+   * Re-runs the wizard's settings prefill with a given communications snapshot, the way a
+   * workspace's real settings would arrive.
+   */
+  async function withCommsSettings(values: Record<string, unknown>): Promise<void> {
+    mockSettingsSvc.getValue.mockImplementation((key: string, fallback: unknown) =>
+      key in values ? values[key] : fallback,
+    );
+    await component['loadCommsDefaults']();
+  }
+
+  it('passes the details step with no From address when the workspace offers none to choose', () => {
+    // A workspace that has verified a domain but no individual address has an empty From picker.
+    // Demanding a value the wizard never shows would make this step impossible to finish.
+    component['currentStep'].set(3);
+    patchPayload({ subject: 'Big News', fromName: 'Jane', fromAddress: '' });
+    fixture.detectChanges();
+
+    // The step renders the "no address to choose from" explainer instead of a picker.
+    expect(fixture.nativeElement.textContent).toContain('Set up a sending address');
+    component['handleNext']();
+
+    expect(component['fromOptions']()).toEqual([]);
+    expect(component['currentStep']()).toBe(4);
+    expect(mockAlertSvc.showError).not.toHaveBeenCalled();
+    // Stored with no From address, so the send falls back to the workspace default.
+    expect(component['buildPayload']('draft').from_email).toBeNull();
+  });
+
+  it('offers only addresses on a verified domain, plus the workspace pplCRM address', async () => {
+    await withCommsSettings({
+      'communications.verified_emails': ['jane@gmail.com', 'news@vote-jane.org'],
+      'communications.verified_domains': [
+        { domain: 'vote-jane.org', status: 'verified' },
+        { domain: 'later.example', status: 'pending' },
+      ],
+      'communications.platform_from_email': 'riverside@send.pplcrm.com',
+    });
+
+    // jane@gmail.com is click-verified but its domain is not one we can DKIM-sign, so the server
+    // refuses it at send time — the picker must not offer it.
+    expect(component['fromOptions']()).toEqual(['news@vote-jane.org', 'riverside@send.pplcrm.com']);
+  });
+
+  it('requires a From address once there is a picker to choose from', async () => {
+    await withCommsSettings({
+      'communications.verified_emails': ['news@vote-jane.org'],
+      'communications.verified_domains': [{ domain: 'vote-jane.org', status: 'verified' }],
+    });
+    component['currentStep'].set(3);
+    patchPayload({ subject: 'Big News', fromName: 'Jane', fromAddress: '' });
+
+    component['handleNext']();
+
+    expect(component['currentStep']()).toBe(3);
+    expect(mockAlertSvc.showError).toHaveBeenCalled();
+  });
+
   it('only lets you jump to steps you have reached, never one you have not', () => {
     component['handleNext'](); // template -> content
 

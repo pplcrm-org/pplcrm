@@ -183,7 +183,7 @@ export const ADMIN_ARTICLES: HelpArticle[] = [
           '**Boundaries**: the electoral maps your households are matched against — wards, ridings, districts, precincts. Import the names from a CSV, upload a published GeoJSON file, or draw the areas yourself over your own household pins. Adding or changing a map never calls a paid service. See [Boundary maps](/help/district-boundaries).',
           '**Teams & access**: default role for invitations and the MFA requirement.',
           '**Data & duplicates**: maintenance for the address matching behind duplicate detection. Recomputing address fingerprints is worth doing if your addresses were imported oddly and duplicates are being missed; it is available once a month.',
-          '**Communications**: default from-name and from-address (verified senders only), reply-to, the newsletter footer disclaimer, and double opt-in for web-form subscribers.',
+          '**Communications**: default from-name and from-address (only an address on a domain you have verified, or your workspace’s own pplCRM address), reply-to, the newsletter footer disclaimer, and double opt-in for web-form subscribers.',
           '**Email sync**: connect your email provider so incoming and outgoing email syncs into your pplCRM inbox.',
           '**Domain verification**: the DNS records (SPF, DKIM, DMARC) that let you send email from your own domain.',
           '**Service levels**: response-time targets for email and tasks, working days and hours, and the warning/critical thresholds behind the dashboard status.',
