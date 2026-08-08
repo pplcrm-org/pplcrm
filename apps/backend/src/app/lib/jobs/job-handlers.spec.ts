@@ -1,5 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { BaseRepository } from '../../lib/base.repo';
+
+// The import handlers are stubbed for the whole file: the dispatch tests below only care about
+// WHICH handler a payload reaches, and the real ones download blobs and write to several tables.
+// Nothing else in this file touches them.
+vi.mock('./handlers/import.handlers', () => ({
+  handleImportCsvJob: vi.fn(async () => undefined),
+  handleLegacyImportJob: vi.fn(async () => undefined),
+}));
+
+import { handleImportCsvJob, handleLegacyImportJob } from './handlers/import.handlers';
 import { executeJob } from './job-handlers';
 
 describe('prune_retention Job Handler (sole owner of background_jobs retention)', () => {
@@ -219,5 +229,77 @@ describe('process_drip_workflows Job Handler', () => {
     const targetTime = Date.now() + 10 * 60 * 1000;
     const diff = Math.abs(insertedRunAt.getTime() - targetTime);
     expect(diff).toBeLessThan(5000); // within 5 seconds
+  });
+});
+
+/**
+ * Dispatch of import payloads, including the one-release drain shim for jobs queued before the
+ * 2026-08-05 upload-based CSV path.
+ *
+ * Those older rows carry no `type` key at all — they were recognised by having `import_id` +
+ * `storage_key`. When that branch was deleted, such a row fell through to
+ * "Unsupported background job type: unknown", retried to exhaustion, dead-lettered, and the
+ * stale-job sweep then marked the member's data_imports row failed. The shim finishes them
+ * instead. Delete these two tests with the shim.
+ */
+describe('executeJob import dispatch', () => {
+  const db = (BaseRepository as any)._db;
+
+  const legacyPayload = {
+    import_id: '4242',
+    storage_key: 'imports/payload/1/legacy.ndjson',
+    tenant_id: '1',
+    user_id: '2',
+    source: 'persons',
+    skipped: 3,
+    tags: ['Imported-20260801'],
+    file_name: 'contacts.csv',
+    duplicate_decision: 'skip',
+  };
+
+  it('routes a typeless pre-2026-08-05 import payload to the legacy drain handler', async () => {
+    vi.mocked(handleLegacyImportJob).mockClear();
+
+    await executeJob(legacyPayload, db);
+
+    expect(handleLegacyImportJob).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleLegacyImportJob).mock.calls[0]?.[0]).toMatchObject({
+      import_id: '4242',
+      storage_key: 'imports/payload/1/legacy.ndjson',
+      source: 'persons',
+    });
+    expect(handleImportCsvJob).not.toHaveBeenCalled();
+  });
+
+  it('passes the running job row id to the CSV handler so it can spot a rival continuation', async () => {
+    vi.mocked(handleImportCsvJob).mockClear();
+
+    await executeJob(
+      {
+        type: 'import_csv',
+        import_id: '77',
+        tenant_id: '1',
+        user_id: '2',
+        source: 'persons',
+        storage_key: 'imports/source/1/a.csv',
+        mapping: { '0': 'first_name' },
+      },
+      db,
+      'job-row-99',
+    );
+
+    expect(vi.mocked(handleImportCsvJob).mock.calls[0]?.[2]).toEqual({ jobId: 'job-row-99' });
+  });
+
+  it('still dead-letters a payload whose declared type is unknown', async () => {
+    await expect(executeJob({ type: 'no-such-job-type' }, db)).rejects.toThrow(
+      'Unsupported background job type: no-such-job-type',
+    );
+  });
+
+  it('still dead-letters a typeless payload that is not the legacy import shape', async () => {
+    await expect(executeJob({ some: 'other', shape: true }, db)).rejects.toThrow(
+      'Unsupported background job type: unknown',
+    );
   });
 });

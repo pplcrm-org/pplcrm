@@ -1,7 +1,8 @@
 import * as Sentry from '@sentry/node';
-import { sql } from 'kysely';
+import { sql, type Updateable } from 'kysely';
 import { Client } from 'pg';
 
+import type { BackgroundJobs } from '../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../env';
 import { logger } from '../../logger';
 import { ImportsRepo } from '../../modules/imports/repositories/imports.repo';
@@ -254,19 +255,29 @@ export class BackgroundJobWorker {
         }),
       ]);
 
-      // Mark job as completed
-      await this.db
-        .updateTable('background_jobs')
-        .set({
-          status: 'completed',
-          locked_at: null,
-          locked_by: null,
-          updated_at: new Date(),
-        })
-        .where('id', '=', job.id)
-        .execute();
+      // Mark job as completed — only while this worker still holds the claim (see
+      // settleClaimedJob). An unconditional UPDATE here could stamp 'completed' on a row that
+      // shutdown release or stale recovery had already handed back to 'pending', leaving the job
+      // queued for a second run that its payload's own guards then have to catch.
+      const settled = await this.settleClaimedJob(job.id, workerId, {
+        status: 'completed',
+        locked_at: null,
+        locked_by: null,
+        updated_at: new Date(),
+      });
 
-      logger.info({ jobId: job.id }, 'Job completed successfully');
+      if (settled) {
+        logger.info({ jobId: job.id }, 'Job completed successfully');
+      } else {
+        // The work is done, but the row now belongs to someone else (a release/recovery requeue,
+        // or another worker that re-claimed it). Do NOT retry or rewrite it from here: whoever
+        // owns the row decides its fate, and re-running is the duplicate this guard exists to
+        // stop being invisible.
+        logger.warn(
+          { jobId: job.id, workerId },
+          'Job finished but its row was no longer claimed by this worker; leaving the current owner state alone',
+        );
+      }
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       logger.error({ err, jobId: job.id }, 'Failed to process background job');
@@ -320,18 +331,22 @@ export class BackgroundJobWorker {
         const runAt = new Date(Date.now() + retryDelayMs);
         logger.info({ jobId: job.id, runAt: runAt.toISOString(), attempt: attempts, maxAttempts }, 'Rescheduling job');
 
-        await this.db
-          .updateTable('background_jobs')
-          .set({
-            status: 'pending',
-            locked_at: null,
-            locked_by: null,
-            error: errorMsg,
-            run_at: runAt,
-            updated_at: new Date(),
-          })
-          .where('id', '=', job.id)
-          .execute();
+        // Same claim guard as the success path: if the row was already released or recovered,
+        // that owner's run_at/attempts win and this reschedule must not overwrite them.
+        const rescheduled = await this.settleClaimedJob(job.id, workerId, {
+          status: 'pending',
+          locked_at: null,
+          locked_by: null,
+          error: errorMsg,
+          run_at: runAt,
+          updated_at: new Date(),
+        });
+        if (!rescheduled) {
+          logger.warn(
+            { jobId: job.id, workerId },
+            'Job failed but its row was no longer claimed by this worker; retry left to the current owner',
+          );
+        }
       } else {
         // Short reference id so a user's bug report ("my newsletter paused itself") can be matched
         // to a log line — same generation pattern as the ms_sync/google_sync correlationId below,
@@ -342,17 +357,19 @@ export class BackgroundJobWorker {
           { jobId: job.id, queue: job.queue, correlationId, maxAttempts },
           'Job exceeded maximum attempts, marking as failed',
         );
-        await this.db
-          .updateTable('background_jobs')
-          .set({
-            status: 'failed',
-            locked_at: null,
-            locked_by: null,
-            error: `[ref:${correlationId}] ${errorMsg}`,
-            updated_at: new Date(),
-          })
-          .where('id', '=', job.id)
-          .execute();
+        const deadLettered = await this.settleClaimedJob(job.id, workerId, {
+          status: 'failed',
+          locked_at: null,
+          locked_by: null,
+          error: `[ref:${correlationId}] ${errorMsg}`,
+          updated_at: new Date(),
+        });
+        if (!deadLettered) {
+          logger.warn(
+            { jobId: job.id, workerId, correlationId },
+            'Job exhausted its attempts but its row was no longer claimed by this worker; not marked failed here',
+          );
+        }
 
         if (payload.export_id) {
           try {
@@ -599,13 +616,44 @@ export class BackgroundJobWorker {
   }
 
   /**
+   * Write a terminal (or retry) state for a job THIS worker claimed, and only while the claim
+   * still holds: `status = 'processing'` and `locked_by` still equal to this run's worker id.
+   *
+   * Without those two predicates the settle write matches on `id` alone, so it lands even after
+   * the row has been handed to someone else — shutdown release, stale recovery, or a re-claim by
+   * another worker. That is how one import could end up both marked completed and sitting in the
+   * queue for a second run against the same `processed_row_offset`.
+   *
+   * Returns true when the row was still ours and the write landed, false when it was not (the
+   * caller logs and leaves the current owner's state untouched).
+   */
+  private async settleClaimedJob(
+    jobId: string,
+    workerId: string,
+    changes: Updateable<BackgroundJobs>,
+  ): Promise<boolean> {
+    const result = await this.db
+      .updateTable('background_jobs')
+      .set(changes)
+      .where('id', '=', jobId)
+      .where('status', '=', 'processing')
+      .where('locked_by', '=', workerId)
+      .executeTakeFirst();
+    return Number(result?.numUpdatedRows ?? 0) > 0;
+  }
+
+  /**
    * Shutdown drain deadline passed with jobs still running: hand their rows back to the queue so
    * the next deploy's worker picks them up ~90s later instead of 30 minutes later via stale
    * recovery. The attempts decrement refunds the claim-time increment — a deploy kill is not a
    * real execution failure, and without the refund three deploys against the same long job would
-   * dead-letter it. Guarded on status='processing' so a job that finishes (or fails) between the
-   * deadline and the force-exit keeps its final state — the settle path's UPDATE and this one can
-   * never both win.
+   * dead-letter it.
+   *
+   * Guarded on status='processing' so a job that finishes (or fails) between the deadline and the
+   * force-exit keeps its final state. The reverse collision — this release landing first and the
+   * settle write then overwriting it — is prevented on the other side: settleClaimedJob requires
+   * status='processing' AND locked_by = the running worker's id, both of which this UPDATE clears.
+   * So exactly one of the two writes can win.
    */
   private async releaseInFlightJobs(): Promise<void> {
     const jobIds = [...this.inFlightJobIds];

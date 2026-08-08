@@ -100,15 +100,17 @@
             @if (item.mergedCount > 0) {
             <div class="text-xs text-base-content/60">{{ item.mergedCount }} merged</div>
             } @if (item.skippedCount > 0) {
-            <div class="text-xs text-base-content/60 flex items-center gap-1">
-              {{ item.skippedCount }} skipped @if (item.canDownloadSkipped) {
-              <button type="button" class="link link-primary text-xs" (click)="downloadSkipped(item)">
-                download reasons
-              </button>
-              }
-            </div>
+            <div class="text-xs text-base-content/60">{{ item.skippedCount }} skipped</div>
             } @if (item.errorCount > 0) {
             <div class="text-xs text-error">{{ item.errorCount }} errors</div>
+            }
+            <!-- Rows lost to a rolled-back chunk are counted as errors, not skips, but their
+            reasons are stored in the same place — so the link has to follow either count, not
+            just the skipped one. -->
+            @if (item.canDownloadSkipped && (item.skippedCount > 0 || item.errorCount > 0)) {
+            <button type="button" class="link link-primary text-xs" (click)="downloadSkipped(item)">
+              download reasons
+            </button>
             }
           </div>
           } @case ('failed') {

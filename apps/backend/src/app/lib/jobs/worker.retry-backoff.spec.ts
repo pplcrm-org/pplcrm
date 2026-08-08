@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BaseRepository } from '../base.repo';
 import { DB_TEST_LOCKS, useExclusiveDbLock } from '../test-utils/exclusive-db-lock';
 import { claimNextPendingJob } from './job-claim';
+import { executeJob } from './job-handlers';
 import { BackgroundJobWorker } from './worker';
 
 /**
@@ -373,5 +374,98 @@ describe('dead-lettered newsletter send releases the newsletter from sending', (
     const row = await readJob(jobId);
     expect(String(row.error)).toMatch(/^\[ref:[A-Z0-9]{8}\] /);
     expect(String(row.error)).toContain(mocks.handlerErrorMessage);
+  });
+});
+
+/**
+ * The settle write (the UPDATE that marks a finished job completed / pending-for-retry / failed)
+ * must only land while the worker still holds the claim: status is still 'processing' AND
+ * locked_by is still this worker run's id.
+ *
+ * Without those predicates the UPDATE matched on `id` alone, so it also landed after the row had
+ * been handed to someone else — by the shutdown release path, by stale-job recovery, or by
+ * another worker re-claiming it. For a chunked CSV import that produced the duplicate-rows bug:
+ * the job had already queued its continuation, so stamping 'completed' over a row that was back
+ * in the queue left two runs reading the same `data_imports.processed_row_offset`.
+ */
+describe('worker settle write is guarded by the claim it still holds', () => {
+  const queuePrefix = `settle-guard-${Math.floor(Math.random() * 1_000_000)}`;
+  const worker = new BackgroundJobWorker();
+
+  afterEach(async () => {
+    vi.mocked(executeJob).mockReset();
+    vi.mocked(executeJob).mockImplementation(() => Promise.reject(new Error(mocks.handlerErrorMessage)));
+    await db.deleteFrom('background_jobs').where('queue', 'like', `${queuePrefix}%`).execute();
+  });
+
+  const insertPendingJob = async (queue: string): Promise<string> => {
+    const row = await db
+      .insertInto('background_jobs')
+      .values({
+        tenant_id: null,
+        queue,
+        status: 'pending',
+        payload: JSON.stringify({ type: 'test-settle-guard' }),
+        run_at: new Date(),
+        attempts: 0,
+        max_attempts: 3,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    return String(row.id);
+  };
+
+  it('leaves a job released back to pending mid-flight alone instead of stamping it completed', async () => {
+    const id = await insertPendingJob(`${queuePrefix}-released`);
+    const releasedRunAt = new Date(Date.now() + 90_000);
+
+    // The handler succeeds, but while it ran the shutdown-release path handed the row back to the
+    // queue (status 'pending', lock cleared, run_at pushed out). That release must survive.
+    vi.mocked(executeJob).mockImplementationOnce(async () => {
+      await db
+        .updateTable('background_jobs')
+        .set({ status: 'pending', locked_at: null, locked_by: null, run_at: releasedRunAt })
+        .where('id', '=', id)
+        .execute();
+    });
+
+    expect(await asInternals(worker).processNextJob()).toBe(true);
+
+    const row = await readJob(id);
+    expect(String(row.status)).toBe('pending');
+    expect(row.locked_by).toBeNull();
+    expect(new Date(row.run_at).getTime()).toBe(releasedRunAt.getTime());
+  });
+
+  it('leaves a re-claimed job alone instead of rescheduling it when the handler fails', async () => {
+    const id = await insertPendingJob(`${queuePrefix}-reclaimed`);
+
+    // The handler throws, but by then another worker had re-claimed the row (stale recovery, then
+    // a fresh claim). The failing run must not overwrite that owner's lock or run_at.
+    vi.mocked(executeJob).mockImplementationOnce(async () => {
+      await db
+        .updateTable('background_jobs')
+        .set({ status: 'processing', locked_at: new Date(), locked_by: 'some-other-worker' })
+        .where('id', '=', id)
+        .execute();
+      throw new Error(mocks.handlerErrorMessage);
+    });
+
+    expect(await asInternals(worker).processNextJob()).toBe(true);
+
+    const row = await readJob(id);
+    expect(String(row.status)).toBe('processing');
+    expect(String(row.locked_by)).toBe('some-other-worker');
+  });
+
+  it('still marks an ordinary successful job completed when the claim is intact', async () => {
+    const id = await insertPendingJob(`${queuePrefix}-normal`);
+    vi.mocked(executeJob).mockImplementationOnce(() => Promise.resolve());
+
+    expect(await asInternals(worker).processNextJob()).toBe(true);
+
+    const row = await readJob(id);
+    expect(String(row.status)).toBe('completed');
+    expect(row.locked_by).toBeNull();
   });
 });

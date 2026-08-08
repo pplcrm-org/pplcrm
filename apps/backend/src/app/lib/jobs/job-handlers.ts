@@ -1,13 +1,13 @@
 import type { Kysely } from 'kysely';
 import { z } from 'zod';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
-import { jobPayloadSchema } from './job-payloads';
+import { jobPayloadSchema, legacyImportJobSchema } from './job-payloads';
 import { handleCheckAllUsageLimits, handleCheckUsageLimits, handleZapierTrigger } from './handlers/billing.handlers';
 import { handleMatchBoundaries, handleSweepUnmatchedBoundaries } from './handlers/boundaries.handlers';
 import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
 import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
-import { handleImportCsvJob } from './handlers/import.handlers';
+import { handleImportCsvJob, handleLegacyImportJob } from './handlers/import.handlers';
 import { handleTriggerListJoined } from './handlers/lists.handlers';
 import { handleTriggerContactCreated, handleTriggerTagAdded } from './handlers/triggers.handlers';
 import {
@@ -55,7 +55,11 @@ import { handleSendAutomationEmail } from './handlers/automation-mail.handlers';
 
 export { checkDueTasks } from './handlers/notifications.handlers';
 
-const typeProbeSchema = z.looseObject({ type: z.unknown() });
+// `type` is `.optional()` deliberately: with a bare `z.unknown()` Zod 4 treats the key as
+// required, so a payload carrying no `type` at all failed this probe outright. That was harmless
+// while the only consumer was the error label (both paths produce 'unknown'), but the legacy
+// import drain below has to be able to tell "no type key" apart from "probe failed".
+const typeProbeSchema = z.looseObject({ type: z.unknown().optional() });
 
 /**
  * Background job dispatcher. Parses the raw queue payload against the typed
@@ -65,11 +69,25 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
   const typed = jobPayloadSchema.safeParse(payload);
 
   if (!typed.success) {
+    const probe = typeProbeSchema.safeParse(payload);
+    const typeLabel = probe.success && probe.data.type !== undefined ? String(probe.data.type) : 'unknown';
+
+    // ONE-RELEASE DRAIN SHIM — delete with `legacyImportJobSchema` and `handleLegacyImportJob`.
+    // Imports queued before 2026-08-05 carry no `type` at all and are recognised by their shape
+    // (`import_id` + `storage_key`). Without this branch such a row throws below, retries to
+    // exhaustion, dead-letters, and the member's import is marked failed. The `type === undefined`
+    // guard keeps this from swallowing a genuinely unknown, discriminated payload.
+    if (probe.success && probe.data.type === undefined) {
+      const legacyImport = legacyImportJobSchema.safeParse(payload);
+      if (legacyImport.success) {
+        await handleLegacyImportJob(legacyImport.data, db);
+        return;
+      }
+    }
+
     // Unrecognized payload (e.g. a job type retired in a newer deploy). Throwing is the correct
     // terminal path: the worker retries with backoff up to the row's max_attempts, then
     // dead-letters it as status='failed' with this message stored on the row.
-    const probe = typeProbeSchema.safeParse(payload);
-    const typeLabel = probe.success && probe.data.type !== undefined ? String(probe.data.type) : 'unknown';
     throw new Error(`Unsupported background job type: ${typeLabel}`);
   }
 
@@ -214,7 +232,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       await handleExportCsv(job, db);
       break;
     case 'import_csv':
-      await handleImportCsvJob(job, db);
+      // The job row's own id lets the handler tell its own 'processing' row apart from a rival
+      // job for the same import before it enqueues the next segment.
+      await handleImportCsvJob(job, db, { jobId });
       break;
     default: {
       const _exhaustive: never = job;

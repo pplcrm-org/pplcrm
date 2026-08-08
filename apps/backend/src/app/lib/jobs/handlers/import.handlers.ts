@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { z } from 'zod';
 import { env } from '../../../../env';
 import {
@@ -24,7 +24,7 @@ import { sendMailOrDrop } from '../../mail/send-or-drop';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
 import type { EmailVerificationSummary } from '../../mail/email-verifier.service';
 import { IMPORT_CONTINUATION_PRIORITY } from '../job-claim';
-import type { JobPayloadOf } from '../job-payloads';
+import type { JobPayloadOf, LegacyImportJobPayload } from '../job-payloads';
 import { runImportEmailVerification } from './import-verification';
 
 const storageService = new StorageService();
@@ -242,6 +242,167 @@ ${verificationHtml(verification)}
   }
 }
 
+// ── Legacy pre-mapped-payload imports (no `type` discriminator) ───────────────
+//
+// ONE-RELEASE DRAIN SHIM — delete this whole section together with `legacyImportJobSchema`
+// (job-payloads.ts) and its route in job-handlers.ts. See the removal condition documented on
+// `legacyImportJobSchema`.
+//
+// These jobs were queued by the pre-2026-08-05 rows-in-body import mutations. Their
+// `storage_key` does NOT point at a CSV: it points at a payload blob of ALREADY-MAPPED rows,
+// written as NDJSON (one JSON object per line) or, older still, as one JSON array. That is why
+// such a job cannot simply be relabelled as an `import_csv` payload and handed to
+// `handleImportCsvJob` — that handler re-parses its blob as CSV and needs a `mapping`, which
+// these payloads do not carry. The rows go straight to the per-entity processors instead.
+
+/** True when the payload text is the oldest single-JSON-array format; NDJSON payloads start with `{`. */
+function isLegacyJsonArrayPayload(text: string): boolean {
+  return /^\s*\[/.test(text);
+}
+
+/**
+ * Lazily yield the non-blank lines of `text` by scanning indexes — never `String.split('\n')`,
+ * which would materialize every line of a large payload at once.
+ */
+function* iterateLines(text: string): Generator<string, void, undefined> {
+  let start = 0;
+  while (start < text.length) {
+    let end = text.indexOf('\n', start);
+    if (end === -1) end = text.length;
+    // Tolerate CRLF line endings even though the writer only emitted '\n'.
+    const sliceEnd = end > start && text.charCodeAt(end - 1) === 13 ? end - 1 : end;
+    const line = text.slice(start, sliceEnd);
+    if (/\S/.test(line)) yield line;
+    start = end + 1;
+  }
+}
+
+/** Parse a stored pre-mapped payload (NDJSON, or the older single JSON array) into rows. */
+function* legacyPayloadRows(text: string): Generator<StoredImportRow, void, undefined> {
+  if (isLegacyJsonArrayPayload(text)) {
+    const parsed: unknown = JSON.parse(text);
+    if (!Array.isArray(parsed)) throw new Error('Legacy import payload is not a JSON array');
+    for (const value of parsed) yield toStoredImportRow(value);
+    return;
+  }
+  for (const line of iterateLines(text)) {
+    yield toStoredImportRow(JSON.parse(line));
+  }
+}
+
+/** Skip the first `count` rows of a stored-row source — the rows earlier runs already handled. */
+function* skipStoredRows(
+  source: Iterable<StoredImportRow>,
+  count: number,
+): Generator<StoredImportRow, void, undefined> {
+  let index = 0;
+  for (const row of source) {
+    if (index++ < count) continue;
+    yield row;
+  }
+}
+
+/**
+ * Finish an import queued by the retired rows-in-body path. Same crash-resume contract as the
+ * current handler: refuse a completed import, and skip the rows earlier runs durably consumed.
+ * There is no per-run row budget and no continuation chain here — these payloads predate both,
+ * and the queue can only hold pre-2026-08-05 rows, whose sizes were capped by the old
+ * rows-in-body request limit.
+ */
+export async function handleLegacyImportJob(payload: LegacyImportJobPayload, db: Kysely<Models>): Promise<void> {
+  const runState = await readImportRunState(db, payload.tenant_id, payload.import_id);
+  if (runState.completedAlready) return;
+  const resuming = runState.resumeOffset > 0;
+
+  logger.warn(
+    { importId: payload.import_id, tenantId: payload.tenant_id },
+    'Draining a legacy import job queued before the upload-based CSV path; this shim is removed next release',
+  );
+
+  await markImportProcessing(payload.tenant_id, payload.import_id);
+
+  const buffer = await storageService.download(payload.storage_key);
+  const text = buffer.toString('utf8');
+  const allRows = legacyPayloadRows(text);
+  const rowSource: Iterable<StoredImportRow> = resuming ? skipStoredRows(allRows, runState.resumeOffset) : allRows;
+  // On resume the pre-processing skip count and reasons are already inside the persisted
+  // counters and skip_reasons, so passing them again would double-count them.
+  const skippedBase = resuming ? 0 : Number(payload.skipped || 0);
+
+  let verification: EmailVerificationSummary | null = null;
+  if (payload.source === 'companies') {
+    await new CompaniesController().processImportRows(
+      payload.import_id,
+      payload.tenant_id,
+      payload.user_id,
+      skippedBase,
+      rowSource,
+    );
+  } else if (payload.source === 'tasks') {
+    await new TasksController().processImportRows(
+      payload.import_id,
+      payload.tenant_id,
+      payload.user_id,
+      skippedBase,
+      rowSource,
+    );
+  } else if (payload.source === 'households') {
+    await new HouseholdsController().processImportRows(
+      payload.import_id,
+      payload.tenant_id,
+      payload.user_id,
+      payload.campaign_id ?? '',
+      payload.tags ?? [],
+      skippedBase,
+      rowSource,
+    );
+  } else {
+    // Persons. Collect just the email columns while the rows stream past, so the post-import
+    // verification does not need a second pass over the payload.
+    const emailRows: Array<{ email?: string; email2?: string }> = [];
+    function* collectEmails(source: Iterable<StoredImportRow>): Generator<StoredImportRow, void, undefined> {
+      for (const row of source) {
+        if (row['email'] || row['email2']) emailRows.push({ email: row['email'], email2: row['email2'] });
+        yield row;
+      }
+    }
+
+    await new PersonsService().processImportRows(
+      payload.import_id,
+      payload.tenant_id,
+      payload.user_id,
+      payload.campaign_id ?? '',
+      payload.tags ?? [],
+      skippedBase,
+      collectEmails(rowSource),
+      {
+        duplicateDecision: payload.duplicate_decision ?? 'skip',
+        listName: payload.list_name ?? undefined,
+        clientSkipReasons: resuming ? undefined : (payload.client_skip_reasons ?? undefined),
+      },
+    );
+
+    verification = await runImportEmailVerification(
+      db,
+      { tenant_id: payload.tenant_id, import_id: payload.import_id, user_id: payload.user_id },
+      emailRows,
+    );
+  }
+
+  await markImportCompleted(payload.tenant_id, payload.import_id);
+
+  // Legacy path only: drop the pre-mapped payload blob the retired mutation wrote. The
+  // upload-based CSV path never writes one, and its source CSV is deliberately NOT deleted
+  // (90-day retention owns it — see pruneExpiredImportSourceFiles in maintenance.handlers.ts).
+  try {
+    await storageService.delete(payload.storage_key);
+  } catch (storageErr) {
+    logger.error({ err: storageErr }, `Failed to clean up storage key ${payload.storage_key}`);
+  }
+
+  await sendImportSummaryEmail(db, payload, verification);
+}
+
 // ── Upload-based CSV imports (`import_csv` jobs) ──────────────────────────────
 
 /** Which shared row schema validates a mapped record, by `data_imports.source`. */
@@ -456,7 +617,38 @@ function boundImportFeed(source: AsyncIterable<StoredImportRow>, skip: number, l
  * run_at, so id order alone put the continuation ~15 minutes out per 25,000-row segment). See
  * IMPORT_CONTINUATION_PRIORITY in job-claim.ts for why this cannot starve other tenants.
  */
-async function enqueueImportContinuation(db: Kysely<Models>, payload: JobPayloadOf<'import_csv'>): Promise<void> {
+async function enqueueImportContinuation(
+  db: Kysely<Models>,
+  payload: JobPayloadOf<'import_csv'>,
+  currentJobId: string | undefined,
+): Promise<void> {
+  // Belt and braces against a second chain forming. The real protection is the compare-and-set on
+  // `processed_row_offset` in the per-entity processors — a duplicate run's chunk transaction
+  // rolls back rather than re-inserting. This check just avoids lengthening the queue with a link
+  // that has an owner already: if another `import_csv` job for this import is still pending or
+  // processing, that job will resume from the durable cursor, so the chain continues without us.
+  // Skipped when the caller does not know its own job row's id, because this job is itself
+  // 'processing' and would always match.
+  if (currentJobId != null) {
+    const rival = await db
+      .selectFrom('background_jobs')
+      .select('id')
+      .where('tenant_id', '=', payload.tenant_id)
+      .where('status', 'in', ['pending', 'processing'])
+      .where('id', '!=', currentJobId)
+      .where(sql`payload->>'type'`, '=', 'import_csv')
+      .where(sql`payload->>'import_id'`, '=', payload.import_id)
+      .limit(1)
+      .executeTakeFirst();
+    if (rival) {
+      logger.warn(
+        { importId: payload.import_id, tenantId: payload.tenant_id, rivalJobId: rival.id },
+        'Import continuation not enqueued: another job for this import is already queued or running',
+      );
+      return;
+    }
+  }
+
   await db
     .insertInto('background_jobs')
     .values({
@@ -491,7 +683,7 @@ async function enqueueImportContinuation(db: Kysely<Models>, payload: JobPayload
 export async function handleImportCsvJob(
   payload: JobPayloadOf<'import_csv'>,
   db: Kysely<Models>,
-  options?: { rowsPerRun?: number },
+  options?: { rowsPerRun?: number; jobId?: string },
 ): Promise<void> {
   const runState = await readImportRunState(db, payload.tenant_id, payload.import_id);
   if (runState.completedAlready) return;
@@ -643,7 +835,7 @@ export async function handleImportCsvJob(
   // resume cursor is already durable, so the continuation (or a crash re-run) picks up exactly
   // where this run's last committed chunk left off.
   if (feed.sourceHadMore()) {
-    await enqueueImportContinuation(db, payload);
+    await enqueueImportContinuation(db, payload, options?.jobId);
     logger.info(
       { importId: payload.import_id, tenantId: payload.tenant_id },
       'Import run budget reached; continuation job enqueued',

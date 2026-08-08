@@ -354,4 +354,76 @@ describe('People import: crash-resume and batched automation triggers', () => {
     expect(reasons[0]?.reason).toContain('Duplicate of an earlier row in this file');
     expectCountsMatchReasons(final);
   });
+
+  it('refuses a chunk whose rows another delivery of the same import already committed', async () => {
+    // The duplicate-run bug: a continuation job is committed before the worker marks the current
+    // job completed, so if that completion write never lands the original job returns to
+    // 'pending' beside its continuation. Both read the same processed_row_offset and re-insert
+    // the same rows. The per-chunk offset write is now a compare-and-set, so the run that gets
+    // there second writes nothing and its chunk transaction rolls back.
+    importId = await createImportRecord(150);
+    const rows = Array.from({ length: 150 }, (_, i) => personRow(i + 1));
+
+    // Stands in for the rival run: the moment this run finishes chunk 1 (rows 1..100) and pulls
+    // row 101, the other delivery has already committed the rest of the file.
+    async function* rivalWinsAfterFirstChunk(): AsyncGenerator<Record<string, string>, void, undefined> {
+      for (const [index, row] of rows.entries()) {
+        if (index === 100) {
+          await db
+            .updateTable('data_imports')
+            .set({ processed_row_offset: 150 })
+            .where('tenant_id', '=', tenantId)
+            .where('id', '=', importId)
+            .execute();
+        }
+        yield row;
+      }
+    }
+
+    await expect(
+      service.processImportRows(importId, tenantId, userId, campaignId, [], 0, rivalWinsAfterFirstChunk()),
+    ).rejects.toThrow(/advanced past row 100/);
+
+    // Chunk 1's 100 people are there; chunk 2's rows were rolled back, not written twice.
+    const persons = await db
+      .selectFrom('persons')
+      .select(['email'])
+      .where('tenant_id', '=', tenantId)
+      .where('file_id', '=', importId)
+      .execute();
+    expect(persons).toHaveLength(100);
+    const emails = persons.map((p: { email: string | null }) => p.email);
+    expect(new Set(emails).size).toBe(emails.length);
+    expect(emails).not.toContain('person-150@example.com');
+  });
+
+  it('keeps an earlier segment’s error text when a later, clean segment finishes the import', async () => {
+    // Each segment's final write replaces the whole error_message column but seeds error_count
+    // cumulatively from the stored row. A clean later segment therefore used to store NULL over
+    // the earlier segment's text, leaving History showing "N errors" with no explanation.
+    importId = await createImportRecord(150);
+    await db
+      .updateTable('data_imports')
+      .set({
+        processed_row_offset: 100,
+        inserted_count: 99,
+        error_count: 1,
+        skipped_count: 0,
+        error_message: 'chunk 1 could not be written: disk on fire',
+      })
+      .where('tenant_id', '=', tenantId)
+      .where('id', '=', importId)
+      .execute();
+
+    // The continuation segment: 50 clean rows, nothing goes wrong in it.
+    const rest = Array.from({ length: 50 }, (_, i) => personRow(i + 101));
+    await service.processImportRows(importId, tenantId, userId, campaignId, [], 0, rest);
+
+    const final = await importRecordState();
+    expect(String(final['error_message'])).toContain('disk on fire');
+    // The count the text explains is still the cumulative one.
+    expect(Number(final['error_count'])).toBe(1);
+    expect(Number(final['inserted_count'])).toBe(149);
+    expect(Number(final['processed_row_offset'])).toBe(150);
+  });
 });

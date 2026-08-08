@@ -4,7 +4,7 @@ import { TRPCError } from '@trpc/server';
 import { sql } from 'kysely';
 import type { Transaction } from 'kysely';
 
-import { BadRequestError } from '../../../errors/app-errors';
+import { BadRequestError, ConflictError } from '../../../errors/app-errors';
 import { fingerprintFull, fingerprintStreet } from '../../../lib/address-normalize';
 import { chunkRows, IMPORT_CHUNK_SIZE } from '../../../lib/import-rows';
 import { backfillMissingSlugs } from '../../../lib/slug';
@@ -35,6 +35,18 @@ import { logger } from '../../../logger';
 
 /** Longest text stored in `data_imports.error_message` — the History page shows it inline. */
 const ERROR_MESSAGE_MAX = 1000;
+
+/** Separator between the distinct chunk-failure messages stored in `data_imports.error_message`. */
+const ERROR_MESSAGE_JOINER = '; ';
+
+/**
+ * The chunk-failure messages an earlier segment of this import already stored. A resumed or
+ * continued run seeds its in-memory list from these, the same way it seeds skip_reasons, so a
+ * later segment that happens to be clean cannot blank out text an earlier segment recorded.
+ */
+function storedErrorMessages(stored: string | null | undefined): string[] {
+  return (stored ?? '').split(ERROR_MESSAGE_JOINER).filter((message) => message.length > 0);
+}
 
 /**
  * Person-ids (or person/tag pairs) per automation-trigger background job enqueued by the import.
@@ -737,6 +749,7 @@ export class PersonsService {
         'households_created',
         'skip_reasons',
         'tag_id',
+        'error_message',
       ])
       .where('tenant_id', '=', tenant_id)
       .where('id', '=', import_id)
@@ -767,7 +780,11 @@ export class PersonsService {
       ? storedSkipReasons(importState?.skip_reasons)
       : [...(options?.clientSkipReasons ?? [])];
 
-    const errorMessages: string[] = [];
+    // Seeded from the text earlier segments stored, exactly as skipReasons is seeded above. The
+    // final write replaces the whole error_message column, so without this a later segment that
+    // happened to be clean stored NULL and erased what an earlier segment recorded, even though
+    // error_count still counted those rows.
+    const errorMessages: string[] = resuming ? storedErrorMessages(importState?.error_message) : [];
     let cachedBlankHouseholdId: string | null = null;
     // Companies resolved so far, keyed by lower(name) — merged from each chunk's
     // transaction only after it commits, so a rolled-back create is never reused.
@@ -897,10 +914,37 @@ export class PersonsService {
       // resume offset inside the transaction; rolled-back and all-skipped chunks are recorded
       // after the fact below.
       let chunkCommitted = false;
+      // Set when the compare-and-set below finds the stored offset is no longer where this run
+      // left it, which means a second delivery of the same import is running. That is not a row
+      // error to count and carry on from — it aborts the run (see the rethrow in the catch).
+      let offsetConflict = false;
 
       if (validEntries.length > 0) {
         try {
           const outcome = await this.personsRepo.transaction().execute(async (trx) => {
+            // Claim this chunk's slice of the file before doing any work in the transaction.
+            // The cursor moves by compare-and-set: the update only lands while the stored offset
+            // is still exactly where this run read it. Two concurrent deliveries of one import
+            // (a continuation queued before the first job's completion write landed, then that
+            // job requeued) both start from the same offset; whichever reaches this statement
+            // second matches no row, throws, and the whole transaction — inserts included —
+            // rolls back. This importer's email dedupe only covers the default 'skip' duplicate
+            // decision, so this is what stops 'import_new' and 'merge' runs writing rows twice.
+            // Doing it first also takes the cursor row's lock before any insert work is wasted.
+            const advanced = await trx
+              .updateTable('data_imports')
+              .set({ processed_row_offset: rowsSeen })
+              .where('tenant_id', '=', tenant_id)
+              .where('id', '=', import_id)
+              .where('processed_row_offset', '=', chunkStartRow)
+              .executeTakeFirst();
+            if (Number(advanced?.numUpdatedRows ?? 0) === 0) {
+              offsetConflict = true;
+              throw new ConflictError(
+                `Import ${import_id} advanced past row ${chunkStartRow} in another run; this chunk was rolled back rather than imported twice`,
+              );
+            }
+
             let localBlankHouseholdId = cachedBlankHouseholdId;
             let localAutoTagId = autoTagId;
             let householdsCreatedDelta = 0;
@@ -1381,10 +1425,10 @@ export class PersonsService {
               );
             }
 
-            // 8. The chunk's counters, its skip reasons, and the resume offset — in the SAME
-            // transaction as its rows. Committed-rows-without-offset (re-import on resume) and
-            // offset-without-rows (row loss) are both impossible, and a crash loses at most the
-            // in-flight chunk's skip reasons, never a committed chunk's.
+            // 8. The chunk's counters and its skip reasons — in the SAME transaction as its rows
+            // and as the cursor move at the top of this transaction. Committed-rows-without-offset
+            // (re-import on resume) and offset-without-rows (row loss) are both impossible, and a
+            // crash loses at most the in-flight chunk's skip reasons, never a committed chunk's.
             await this.importsRepo.update(
               {
                 tenant_id,
@@ -1397,7 +1441,6 @@ export class PersonsService {
                   merged_count: results.merged + mergedPersonIds.length,
                   households_created: results.households_created + householdsCreatedDelta,
                   skip_reasons: JSON.stringify([...skipReasons, ...chunkSkipReasons]),
-                  processed_row_offset: rowsSeen,
                   updatedby_id: user_id,
                   updated_at: new Date(),
                 },
@@ -1431,6 +1474,9 @@ export class PersonsService {
           if (outcome.staticListId) staticListId = outcome.staticListId;
           chunkCommitted = true;
         } catch (err: unknown) {
+          // A duplicate concurrent run is not a data error: counting these rows as failures and
+          // carrying on would let the losing run overwrite the winner's counters. Stop the run.
+          if (offsetConflict) throw err;
           // If the chunk transaction fails, count all valid rows in the chunk as errors
           results.errors += validEntries.length;
           const message = err instanceof Error ? err.message : String(err);
@@ -1453,11 +1499,12 @@ export class PersonsService {
       // Rolled-back and all-skipped chunks are recorded here, after the fact: if the process
       // dies before this write, the chunk simply re-runs on resume — nothing was committed, so
       // nothing can be imported twice or double-counted.
+      // Same compare-and-set as the committed path, so a second concurrent delivery cannot
+      // silently step the cursor forward here either.
       if (!chunkCommitted) {
-        await this.importsRepo.update({
-          tenant_id: tenant_id,
-          id: import_id,
-          row: {
+        const advanced = await this.importsRepo.db
+          .updateTable('data_imports')
+          .set({
             tag_id: autoTagId,
             inserted_count: results.inserted,
             error_count: results.errors,
@@ -1468,8 +1515,16 @@ export class PersonsService {
             processed_row_offset: rowsSeen,
             updatedby_id: user_id,
             updated_at: new Date(),
-          },
-        });
+          })
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', import_id)
+          .where('processed_row_offset', '=', chunkStartRow)
+          .executeTakeFirst();
+        if (Number(advanced?.numUpdatedRows ?? 0) === 0) {
+          throw new ConflictError(
+            `Import ${import_id} advanced past row ${chunkStartRow} in another run; this run stopped rather than double-counting it`,
+          );
+        }
       }
     }
 

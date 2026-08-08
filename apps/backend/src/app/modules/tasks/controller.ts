@@ -25,7 +25,7 @@ import { StorageService } from '../../lib/storage.service';
 import { logger } from '../../logger';
 import { TASK_STATUSES, calculateWorkingTimeMs } from '../../../../../../libs/common/src';
 import type { ReorderTasksType } from '../../../../../../libs/common/src';
-import { NotFoundError } from '../../errors/app-errors';
+import { ConflictError, NotFoundError } from '../../errors/app-errors';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import { type SlaPolicy, settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
 
@@ -34,6 +34,18 @@ import { type SlaPolicy, settingsMapFrom, slaPolicyFrom } from '../../lib/sla-po
  * wizard's field hint and by the skip reason a value that matches none of them produces.
  */
 export const IMPORT_DUE_DATE_FORMATS = 'YYYY-MM-DD or DD/MM/YYYY';
+
+/** Separator between the distinct chunk-failure messages stored in `data_imports.error_message`. */
+const ERROR_MESSAGE_JOINER = '; ';
+
+/**
+ * The chunk-failure messages an earlier segment of this import already stored. A resumed or
+ * continued run seeds its in-memory list from these, the same way it seeds skip_reasons, so a
+ * later segment that happens to be clean cannot blank out text an earlier segment recorded.
+ */
+function storedErrorMessages(stored: string | null | undefined): string[] {
+  return (stored ?? '').split(ERROR_MESSAGE_JOINER).filter((message) => message.length > 0);
+}
 
 /** Noon, so a date-only value is the same calendar day in every timezone the app displays it in. */
 const DATE_ONLY_HOUR = 12;
@@ -430,7 +442,14 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     // continue from what the database holds.
     const importState = await this.importsRepo.db
       .selectFrom('data_imports')
-      .select(['processed_row_offset', 'inserted_count', 'error_count', 'skipped_count', 'skip_reasons'])
+      .select([
+        'processed_row_offset',
+        'inserted_count',
+        'error_count',
+        'skipped_count',
+        'skip_reasons',
+        'error_message',
+      ])
       .where('tenant_id', '=', tenant_id)
       .where('id', '=', import_id)
       .executeTakeFirst();
@@ -443,6 +462,11 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
       results.inserted = Number(importState?.inserted_count ?? 0);
       results.errors = Number(importState?.error_count ?? 0);
       results.skipped = Number(importState?.skipped_count ?? 0);
+      // Seeded from the text earlier segments stored, exactly as skip_reasons is seeded below.
+      // The final write replaces the whole error_message column, so without this a later segment
+      // that happened to be clean stored NULL and erased what an earlier segment recorded, even
+      // though error_count still counted those rows.
+      errorMessages.push(...storedErrorMessages(importState?.error_message));
     }
     // Seeded from what is already on file — the CSV job records the counting pass's validation
     // skips there before processing starts, and a resumed run must keep every reason an earlier
@@ -556,11 +580,37 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
       // Whether this chunk's transaction committed — committed chunks persist their counters
       // and resume offset inside the transaction; everything else is recorded after the fact.
       let chunkCommitted = false;
+      // Set when the compare-and-set below finds the stored offset is no longer where this run
+      // left it, which means a second delivery of the same import is running. That is not a row
+      // error to count and carry on from — it aborts the run (see the rethrow in the catch).
+      let offsetConflict = false;
       if (taskRows.length > 0) {
         try {
           await this.getRepo()
             .transaction()
             .execute(async (trx) => {
+              // Claim this chunk's slice of the file before doing any work in the transaction.
+              // The cursor moves by compare-and-set: the update only lands while the stored
+              // offset is still exactly where this run read it. Two concurrent deliveries of one
+              // import (a continuation queued before the first job's completion write landed,
+              // then that job requeued) both start from the same offset; whichever reaches this
+              // statement second matches no row, throws, and the whole transaction — inserts
+              // included — rolls back instead of writing the same tasks twice. Doing it first
+              // also takes the cursor row's lock before any insert work is wasted.
+              const advanced = await trx
+                .updateTable('data_imports')
+                .set({ processed_row_offset: rowsSeen })
+                .where('tenant_id', '=', tenant_id)
+                .where('id', '=', import_id)
+                .where('processed_row_offset', '=', chunkStartRow)
+                .executeTakeFirst();
+              if (Number(advanced?.numUpdatedRows ?? 0) === 0) {
+                offsetConflict = true;
+                throw new ConflictError(
+                  `Import ${import_id} advanced past row ${chunkStartRow} in another run; this chunk was rolled back rather than imported twice`,
+                );
+              }
+
               // Chunk inserts to a safe limit (e.g., 2000 rows * 10 cols = 20,000 params)
               const CHUNK_SIZE = 2000;
               for (let i = 0; i < taskRows.length; i += CHUNK_SIZE) {
@@ -571,8 +621,9 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
                   .returningAll() // Adheres to repository rules
                   .execute();
               }
-              // The chunk's counters and the resume offset, in the SAME transaction as its
-              // rows, so a crash can never separate committed rows from the recorded offset.
+              // The chunk's counters, in the SAME transaction as its rows and as the cursor move
+              // at the top of this transaction, so a crash can never separate committed rows
+              // from the recorded offset.
               await this.importsRepo.update(
                 {
                   tenant_id: tenant_id,
@@ -584,7 +635,6 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
                     // Carried in the same transaction as the rows, so the unreadable due dates
                     // this chunk recorded survive a crash exactly as its inserts do.
                     skip_reasons: JSON.stringify(skipReasons),
-                    processed_row_offset: rowsSeen,
                     updatedby_id: user_id,
                     updated_at: new Date(),
                   } as unknown as OperationDataType<'data_imports', 'update'>,
@@ -595,6 +645,9 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
           results.inserted += taskRows.length;
           chunkCommitted = true;
         } catch (err: unknown) {
+          // A duplicate concurrent run is not a data error: counting these rows as failures and
+          // carrying on would let the losing run overwrite the winner's counters. Stop the run.
+          if (offsetConflict) throw err;
           results.errors += taskRows.length;
           const message = err instanceof Error && err.message ? err.message : String(err);
           errorMessages.push(message);
@@ -612,12 +665,13 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
       }
 
       // Rolled-back and all-skipped chunks are recorded here, after the fact: a crash before
-      // this write just re-runs the chunk on resume — nothing was committed.
+      // this write just re-runs the chunk on resume — nothing was committed. Same compare-and-set
+      // as the committed path, so a second concurrent delivery cannot silently step the cursor
+      // forward here either.
       if (!chunkCommitted) {
-        await this.importsRepo.update({
-          tenant_id: tenant_id,
-          id: import_id,
-          row: {
+        const advanced = await this.importsRepo.db
+          .updateTable('data_imports')
+          .set({
             inserted_count: results.inserted,
             error_count: results.errors,
             skipped_count: skippedBase + results.skipped,
@@ -625,8 +679,16 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
             processed_row_offset: rowsSeen,
             updatedby_id: user_id,
             updated_at: new Date(),
-          } as unknown as OperationDataType<'data_imports', 'update'>,
-        });
+          })
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', import_id)
+          .where('processed_row_offset', '=', chunkStartRow)
+          .executeTakeFirst();
+        if (Number(advanced?.numUpdatedRows ?? 0) === 0) {
+          throw new ConflictError(
+            `Import ${import_id} advanced past row ${chunkStartRow} in another run; this run stopped rather than double-counting it`,
+          );
+        }
       }
     }
 

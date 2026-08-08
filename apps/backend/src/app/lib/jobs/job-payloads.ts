@@ -372,3 +372,39 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
 export type JobPayload = z.infer<typeof jobPayloadSchema>;
 export type JobType = JobPayload['type'];
 export type JobPayloadOf<K extends JobType> = Extract<JobPayload, { type: K }>;
+
+/**
+ * ONE-RELEASE DRAIN SHIM — delete together with `handleLegacyImportJob` in
+ * `handlers/import.handlers.ts` and its route in `job-handlers.ts`.
+ *
+ * Before 2026-08-05 the four `<entity>.import` mutations shipped their rows in the request body,
+ * wrote them to blob storage as a pre-mapped NDJSON payload, and queued a job with NO `type`
+ * discriminator — it was recognised by the presence of `import_id` + `storage_key` instead. That
+ * request path and its handler were both deleted in 3047c19a, on the assumption the queue had
+ * already drained. It had not been verified empty: any such row still in `background_jobs` now
+ * fails `jobPayloadSchema`, throws 'Unsupported background job type: unknown', retries to
+ * exhaustion, dead-letters, and the stale sweep marks the member's import failed.
+ *
+ * REMOVAL CONDITION: no `background_jobs` row older than the 2026-08-05 deploy remains in
+ * 'pending' or 'processing' with a payload that has `import_id` and `storage_key` but no `type`.
+ * Job retention prunes completed rows after 7 days and failed rows after 30, so one release with
+ * this shim in place is enough; verify with a query before deleting it.
+ */
+export const legacyImportJobSchema = z.object({
+  import_id: idSchema,
+  storage_key: z.string(),
+  tenant_id: idSchema,
+  user_id: idSchema,
+  source: z.string().nullish(),
+  skipped: z.union([z.string(), z.number()]).nullish(),
+  campaign_id: idSchema.nullish(),
+  tags: z.array(z.string()).nullish(),
+  file_name: z.string().nullish(),
+  duplicate_decision: z.enum(['merge', 'skip', 'import_new']).nullish(),
+  list_name: z.string().nullish(),
+  client_skip_reasons: z
+    .array(z.object({ row: z.number(), email: z.string().optional(), reason: z.string() }))
+    .nullish(),
+});
+
+export type LegacyImportJobPayload = z.infer<typeof legacyImportJobSchema>;

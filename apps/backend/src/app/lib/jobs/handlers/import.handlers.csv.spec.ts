@@ -30,7 +30,7 @@ import { handleImportCsvJob } from './import.handlers';
  */
 function makeScriptedDb(results: unknown[] = []): Kysely<Models> {
   const b: any = {};
-  for (const m of ['selectFrom', 'leftJoin', 'select', 'where', 'values']) b[m] = vi.fn(() => b);
+  for (const m of ['selectFrom', 'leftJoin', 'select', 'where', 'limit', 'values']) b[m] = vi.fn(() => b);
   b.insertInto = vi.fn(() => b);
   b.execute = vi.fn(async () => []);
   let call = 0;
@@ -322,6 +322,31 @@ describe('handleImportCsvJob', () => {
     const inserted = db.values.mock.calls[0][0];
     expect(JSON.parse(String(inserted.payload))).toMatchObject({ type: 'import_csv', import_id: '11' });
     // ...and the import was NOT marked completed (the continuation finishes it).
+    expect(statuses()).not.toContain('completed');
+  });
+
+  it('enqueues the continuation when it knows its own job row id and finds no rival job', async () => {
+    mockCsvBlob('First,Email\nAda,ada@example.com\nBob,bob@example.com\n');
+    // Run-state read, tenant-plan read, then the rival-job lookup finds nothing.
+    const db: any = makeScriptedDb([undefined, undefined, undefined]);
+
+    await handleImportCsvJob(csvPayload(), db, { rowsPerRun: 1, jobId: 'job-row-1' });
+
+    expect(db.insertInto).toHaveBeenCalledWith('background_jobs');
+  });
+
+  it('does not enqueue a second continuation when another job for the same import is already queued', async () => {
+    // Belt and braces against two chains running the same import: the offset compare-and-set in
+    // the per-entity processors is what actually prevents duplicate rows, but the chain should
+    // not be lengthened when an existing pending/processing job will resume it anyway.
+    mockCsvBlob('First,Email\nAda,ada@example.com\nBob,bob@example.com\n');
+    // Run-state read, tenant-plan read, then the rival-job lookup finds a sibling job row.
+    const db: any = makeScriptedDb([undefined, undefined, { id: 'rival-job-row' }]);
+
+    await handleImportCsvJob(csvPayload(), db, { rowsPerRun: 1, jobId: 'job-row-1' });
+
+    expect(db.insertInto).not.toHaveBeenCalled();
+    // Still not completed — the rival job owns finishing this import.
     expect(statuses()).not.toContain('completed');
   });
 
