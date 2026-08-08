@@ -1,4 +1,14 @@
-import { Component, type OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  type OnInit,
+  computed,
+  effect,
+  inject,
+  signal,
+  untracked,
+  viewChild,
+} from '@angular/core';
 import { DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 
@@ -56,6 +66,14 @@ type Tab = 'turfs' | 'report';
 type ReportRange = FieldReportRangeType['range'];
 type CoverageStatus = Coverage['doors'][number]['status'];
 type CoverageView = 'map' | 'boundary';
+
+/**
+ * The whole coverage picture — the doors plus the turf outlines, the area roll-up, the workspace
+ * door total and the area word. This is what the page holds. The other answer the server can send
+ * carries the doors of one rectangle alone (a pan cannot change anything else), and those are
+ * folded into the picture already held rather than replacing it.
+ */
+type CoverageFull = Extract<Coverage, { doors_only: false }>;
 
 /** Door-dot colours on the coverage map: talked → knocked-no-answer → not yet. */
 /** Names shown inline on a turf row before the rest collapse into a "+N" count. */
@@ -138,6 +156,7 @@ export class CanvassingPage implements OnInit {
   private readonly dialog = inject(ConfirmDialogService);
   private readonly router = inject(Router);
   private readonly orgMode = inject(OrgModeService);
+  private readonly destroyRef = inject(DestroyRef);
 
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
@@ -162,7 +181,7 @@ export class CanvassingPage implements OnInit {
 
   protected readonly reportRange = signal<ReportRange>('week');
   protected readonly report = signal<FieldReport | null>(null);
-  protected readonly coverage = signal<Coverage | null>(null);
+  protected readonly coverage = signal<CoverageFull | null>(null);
   protected readonly coverageView = signal<CoverageView>('map');
   /** True while a pan or zoom is being answered, so the caption can say the map is catching up. */
   protected readonly coverageRefreshing = signal(false);
@@ -217,6 +236,14 @@ export class CanvassingPage implements OnInit {
       const map = this.coverageMap();
       const wanted = untracked(() => this.wantedCoverageFrame);
       if (map && wanted) map.focusOn(wanted);
+    });
+
+    this.destroyRef.onDestroy(() => {
+      // A pan waiting out its timer is a fetch for a page nobody is on any more, and an answer
+      // still in flight has nowhere to land. Dropping the timer and moving the sequence number on
+      // discards both, along with any error toast they would otherwise have raised over whatever
+      // page the reader has moved to.
+      this.cancelCoverageRefresh();
     });
   }
 
@@ -320,12 +347,15 @@ export class CanvassingPage implements OnInit {
         this.svc.getFieldReport(range),
         this.svc.getCoverage({ ...range, viewport: null }),
       ]);
-      this.report.set(report);
+      // One guard for both halves of the answer. They were asked for together, so if this read has
+      // been overtaken — the range changed, or the page was left — neither half belongs on screen.
       if (seq !== this.coverageSeq) return;
-      this.coverage.set(coverage);
+      this.report.set(report);
+      this.applyCoverage(coverage);
       // Frame what was just loaded. After this the map moves only when the reader moves it.
       this.frameCoverageMap();
     } catch (err) {
+      if (seq !== this.coverageSeq) return;
       this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load field report.');
     } finally {
       end();
@@ -438,7 +468,7 @@ export class CanvassingPage implements OnInit {
         viewport,
       });
       if (seq !== this.coverageSeq) return;
-      this.coverage.set(coverage);
+      this.applyCoverage(coverage);
     } catch (err) {
       if (seq === this.coverageSeq) {
         this.alerts.showError(err instanceof Error && err.message ? err.message : 'Failed to load coverage.');
@@ -446,6 +476,29 @@ export class CanvassingPage implements OnInit {
     } finally {
       if (seq === this.coverageSeq) this.coverageRefreshing.set(false);
     }
+  }
+
+  /**
+   * Take one coverage answer.
+   *
+   * A request that named a rectangle comes back with the doors inside it and nothing else, because
+   * nothing else the screen shows — the turf outlines and their walked percentages, the by-area
+   * roll-up, the workspace door total, the campaign's word for an area — can have changed because
+   * the map was panned. Those doors replace the doors of the picture already held; the rest of it
+   * stands. The upshot is that the outlines and roll-up are re-read when the report is opened or
+   * the date range changes, and not on every pan.
+   */
+  private applyCoverage(res: Coverage): void {
+    if (!res.doors_only) {
+      this.coverage.set(res);
+      return;
+    }
+    const held = this.coverage();
+    // Nothing to fold the doors into. Unreachable in practice — the map that asks for a rectangle
+    // is only on screen once a whole picture has arrived — so the doors are dropped rather than
+    // shown as a picture with no outlines, no totals and no area word.
+    if (!held) return;
+    this.coverage.set({ ...held, doors: res.doors, doors_in_view: res.doors_in_view });
   }
 
   /** Stop a pending coverage re-read and ignore whatever is already in flight for it. */

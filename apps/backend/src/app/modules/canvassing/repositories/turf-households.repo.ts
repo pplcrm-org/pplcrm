@@ -2,6 +2,7 @@ import type { Transaction } from 'kysely';
 import { sql } from 'kysely';
 
 import { BaseRepository } from '../../../lib/base.repo';
+import type { MapViewportType } from '../../../../../../../libs/common/src';
 import type { Models, OperationDataType } from '../../../../../../../libs/common/src/lib/kysely.models';
 
 export interface DoorRow {
@@ -150,11 +151,18 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
    * wide across every campaign, while a household's areas are one row per boundary map: choosing
    * which of a household's maps to read would need a campaign, and there isn't one here. The turf
    * already recorded which map it was cut against, so the honest answer is on the turf.
+   *
+   * `view` is the rectangle the coverage map is showing. When it is given, only the doors inside it
+   * are read: a campaign that has cut a whole riding into turfs has tens of thousands of doors, and
+   * without this every pan of the map re-read and re-counted all of them to draw a few hundred.
+   * When it is absent every door in the workspace comes back, which is what the outlines and the
+   * by-area roll-up are built from.
    */
   public async getCoverageRows(
-    input: { tenant_id: string; from: Date; to: Date },
+    input: { tenant_id: string; from: Date; to: Date; view?: MapViewportType | null },
     trx?: Transaction<Models>,
   ): Promise<CoverageDoorRow[]> {
+    const view = input.view ?? null;
     const rows = await this.getSelect(trx)
       .innerJoin('households as h', 'h.id', 'turf_households.household_id')
       .innerJoin('turfs as t', 't.id', 'turf_households.turf_id')
@@ -169,6 +177,17 @@ export class TurfHouseholdsRepo extends BaseRepository<'turf_households'> {
       .where('turf_households.tenant_id', '=', input.tenant_id)
       .where('h.lat', 'is not', null)
       .where('h.lng', 'is not', null)
+      // The null check is repeated inside the callback because `$if` does not carry the outer one
+      // into it; the branch that returns the builder unchanged never runs.
+      .$if(view !== null, (qb) =>
+        view === null
+          ? qb
+          : qb
+              .where('h.lat', '>=', view.south)
+              .where('h.lat', '<=', view.north)
+              .where('h.lng', '>=', view.west)
+              .where('h.lng', '<=', view.east),
+      )
       .groupBy(['turf_households.household_id', 't.id', 't.name', 't.boundary_name', 'h.lat', 'h.lng'])
       .select([
         'turf_households.household_id as household_id',

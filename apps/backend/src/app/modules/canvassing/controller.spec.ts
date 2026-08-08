@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { IAuthKeyPayload } from '@common';
+import type { CoverageRequestType, IAuthKeyPayload } from '@common';
 import { COVERAGE_MAX_DOORS } from '@common';
 
 import { BaseRepository } from '../../lib/base.repo';
 import { hashToken } from '../../lib/token-hash';
-import { CanvassingController } from './controller';
+import { CanvassingController, type CoverageFull } from './controller';
 import { resolveTurfBoundary } from './lib/turf-boundary';
 
 type Db = typeof BaseRepository.dbInstance;
@@ -400,6 +400,17 @@ describe('CanvassingController', () => {
   afterEach(async () => {
     await cleanup(db, s.tenantId);
   });
+
+  /**
+   * Coverage as asked for with no rectangle — the answer that carries the turf outlines, the
+   * by-area roll-up, the workspace door total and the area word. A request that carries a
+   * rectangle deliberately carries none of those, so a test wanting them has to say so.
+   */
+  async function fullCoverage(input: CoverageRequestType): Promise<CoverageFull> {
+    const cov = await controller.getCoverage(auth, input);
+    if (cov.doors_only) throw new Error('expected the full coverage answer, not a doors-only one');
+    return cov;
+  }
 
   it('previews a cut with math that matches the engine, reporting unplaced doors', async () => {
     const preview = await controller.previewCut(auth, { list_id: s.listId, doors_per_turf: 20 });
@@ -1564,7 +1575,7 @@ describe('CanvassingController', () => {
       },
     ]);
 
-    const cov = await controller.getCoverage(auth, { range: 'campaign' });
+    const cov = await fullCoverage({ range: 'campaign' });
 
     // One dot per geocoded door only — the 3 ungeocoded households are excluded.
     expect(cov.doors.length).toBe(40);
@@ -1597,7 +1608,7 @@ describe('CanvassingController', () => {
     expect(cov.boundary_label_plural).toBe('Subdivisions');
   });
 
-  it('maps coverage for only the rectangle asked for, without changing the turf or area totals', async () => {
+  it('maps coverage for only the rectangle asked for, and re-sends nothing that describes the workspace', async () => {
     await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
 
     // The seeded doors run from latitude 41.850 to 41.857. This rectangle takes the lower part of
@@ -1607,20 +1618,28 @@ describe('CanvassingController', () => {
       viewport: { north: 41.8525, south: 41.8495, east: -87.6, west: -87.7 },
     });
 
-    expect(cov.doors_total).toBe(40);
+    expect(cov.doors_only).toBe(true);
     expect(cov.doors_in_view).toBeGreaterThan(0);
-    expect(cov.doors_in_view).toBeLessThan(cov.doors_total);
+    expect(cov.doors_in_view).toBeLessThan(40);
     expect(cov.doors.length).toBe(cov.doors_in_view);
     for (const d of cov.doors) {
       expect(d.lat).toBeGreaterThanOrEqual(41.8495);
       expect(d.lat).toBeLessThanOrEqual(41.8525);
     }
 
-    // The turf outlines and the by-area roll-up describe the whole workspace whatever the map is
-    // looking at. They are what the zoomed-out map shades, so scoping them to the rectangle would
-    // make a turf read as barely walked purely because most of it was off screen.
-    expect(cov.turfs.reduce((n, t) => n + t.doors, 0)).toBe(40);
-    expect(cov.byBoundary.reduce((n, a) => n + a.doors, 0)).toBe(40);
+    // The turf outlines, the by-area roll-up, the workspace total and the area word all describe
+    // the whole workspace, so moving the map cannot change any of them. Scoping them to the
+    // rectangle would make a turf read as barely walked purely because most of it was off screen;
+    // recomputing them unchanged would rebuild every turf's hull to send back what the caller
+    // already has. So a rectangle request carries none of them, and the caller keeps its own.
+    expect(Object.keys(cov).sort()).toEqual(['doors', 'doors_in_view', 'doors_only']);
+
+    // The request with no rectangle is the one that carries them, over the same doors.
+    const whole = await fullCoverage({ range: 'campaign' });
+    expect(whole.doors_only).toBe(false);
+    expect(whole.doors_total).toBe(40);
+    expect(whole.turfs.reduce((n, t) => n + t.doors, 0)).toBe(40);
+    expect(whole.byBoundary.reduce((n, a) => n + a.doors, 0)).toBe(40);
   });
 
   it('sends no doors at all once too many are in view, rather than a sample of them', async () => {
@@ -1664,7 +1683,7 @@ describe('CanvassingController', () => {
       )
       .execute();
 
-    const cov = await controller.getCoverage(auth, { range: 'campaign' });
+    const cov = await fullCoverage({ range: 'campaign' });
 
     expect(cov.doors_in_view).toBe(COVERAGE_MAX_DOORS + 1);
     expect(cov.doors).toEqual([]);
@@ -1756,7 +1775,7 @@ describe('CanvassingController', () => {
 
     // The coverage roll-up files those doors under 'Unbounded' — the same word the turf pages
     // use — never under 'Unassigned', which on the canvassing page means "no canvasser".
-    const cov = await controller.getCoverage(auth, { range: 'campaign' });
+    const cov = await fullCoverage({ range: 'campaign' });
     const bucket = cov.byBoundary.find((a) => a.boundary_name === 'Unbounded');
     expect(bucket?.doors).toBe(3);
     expect(cov.byBoundary.map((a) => a.boundary_name)).not.toContain('Unassigned');

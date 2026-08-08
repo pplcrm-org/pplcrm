@@ -543,12 +543,16 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   the campaign's own word ("By ward", "By polling division", from
   `boundary_label_plural`; `'Areas'` when the payload has none): `getCoverage`
   (router + `controller.getCoverage`) returns one door per geocoded turf household
-  coloured by window knock status (`conversation`/`attempted`/`not_yet`), a
-  convex-hull dashed boundary per turf, and a by-area roll-up. It renders whenever
-  turfs have geocoded doors — independently of `report.doors` — so a freshly-cut
-  universe reads as an all-grey map before the first knock. Aggregation lives in
-  `controller.getCoverage` (+ the module-level `convexHull`); the raw per-door rows
-  come from `TurfHouseholdsRepo.getCoverageRows` (`CoverageDoorRow`).
+  coloured by window knock status (`conversation`/`attempted`/`not_yet`). A request
+  carrying a map rectangle gets a doors-only payload (`{doors_only: true, doors,
+doors_in_view}`), filtered to that rectangle in SQL by
+  `TurfHouseholdsRepo.getCoverageRows`; only a request with no rectangle gets the
+  full payload — a convex-hull dashed boundary per turf, a by-area roll-up, and the
+  workspace door total. It renders whenever turfs have geocoded doors —
+  independently of `report.doors` — so a freshly-cut universe reads as an all-grey
+  map before the first knock. Aggregation lives in `controller.getCoverage` (+ the
+  module-level `convexHull`); the raw per-door rows come from
+  `TurfHouseholdsRepo.getCoverageRows` (`CoverageDoorRow`).
 - `ui/turf-detail-page.ts` — **one turf, opened** (route `/canvassing/:id`; the turf
   name and the strip map's pins link to it). Doors on a map coloured by knock status
   inside the turf's hull, the roster with per-canvasser doors/conversations, and every

@@ -343,13 +343,18 @@
           </span>
         </div>
 
+        <!-- Three things the map can be showing, and no door count is ever given two readings: the
+             doors themselves; nothing, because the view holds none; or the shaded outlines, because
+             the view holds more doors than can be drawn one by one. An empty door list means the
+             first of those when the in-view count is zero and the last when it is not. -->
         <p class="mt-1 text-xs text-base-content/60">
           @if (showingDoors()) { {{ doorsInView().toLocaleString() }} of your {{ doorsTotal().toLocaleString() }} doors
-          are in this view, each shown on its own. Click a turf outline to open that turf. } @else { {{
-          doorsInView().toLocaleString() }} doors are in this view — too many to draw one by one, so each turf is shaded
-          by how much of it has been knocked. Those percentages count every door in the turf, not just the ones on
-          screen. Zoom in to see the doors themselves, or click a turf outline to open it. } @if (coverageRefreshing())
-          {
+          are in this view, each shown on its own. Click a turf outline to open that turf. } @else if (doorsInView() ===
+          0) { None of your {{ doorsTotal().toLocaleString() }} doors are in this view. Zoom out or pan to bring your
+          turfs back on screen. } @else { {{ doorsInView().toLocaleString() }} doors are in this view — too many to draw
+          one by one, so each turf is shaded by how much of it has been knocked. Those percentages count every door in
+          the turf, not just the ones on screen. Zoom in to see the doors themselves, or click a turf outline to open
+          it. } @if (coverageRefreshing()) {
           <span class="loading loading-spinner loading-xs align-middle"></span>
           }
         </p>

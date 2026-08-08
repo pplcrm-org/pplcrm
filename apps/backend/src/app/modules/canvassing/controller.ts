@@ -250,17 +250,23 @@ export interface CoverageArea {
   not_yet: number;
 }
 
-export interface Coverage {
+/** The doors on screen, in both answers below. */
+interface CoverageDoors {
   /**
    * Individual doors, coloured by what happened at them — but only when few enough are inside the
    * rectangle asked for. Empty otherwise, and the shaded turf outlines are then what the map shows.
    * See {@link COVERAGE_MAX_DOORS}.
    */
   doors: CoverageDoor[];
-  turfs: CoverageTurf[];
-  byBoundary: CoverageArea[];
   /** Located doors inside the rectangle asked for; the same as `doors_total` when none was given. */
   doors_in_view: number;
+}
+
+/** The whole picture: the doors on screen plus everything that describes the workspace. */
+export interface CoverageFull extends CoverageDoors {
+  doors_only: false;
+  turfs: CoverageTurf[];
+  byBoundary: CoverageArea[];
   /** Every located door in a cut turf, workspace-wide, whether or not any of them were sent. */
   doors_total: number;
   /**
@@ -272,6 +278,21 @@ export interface Coverage {
   /** Plural of the same word, for the tab heading: "By polling division". */
   boundary_label_plural: string;
 }
+
+/**
+ * The answer to a pan or a zoom: the doors inside the new rectangle, and nothing else.
+ *
+ * The turf outlines, the area roll-up, the workspace door total and the area word all describe the
+ * whole workspace, so none of them can change because the map moved. Leaving them out means a pan
+ * no longer rebuilds every turf's convex hull, re-aggregates every door by area, or runs the
+ * boundary-word query, and no longer sends the caller back what it already holds. The caller keeps
+ * the ones it was given by the request that carried no rectangle.
+ */
+export interface CoverageDoorsOnly extends CoverageDoors {
+  doors_only: true;
+}
+
+export type Coverage = CoverageFull | CoverageDoorsOnly;
 
 /** One door on the turf detail page: where it is, who lives there, what happened. */
 export interface TurfDoor {
@@ -361,11 +382,6 @@ export interface CutPreviewResult extends CutPreview {
  */
 const UNBOUNDED_AREA_LABEL = 'Unbounded';
 const MIN_HULL_POINTS = 3;
-
-/** Whether one point sits inside the rectangle a map is showing. Edges count as inside. */
-function withinViewport(point: LatLng, view: MapViewportType): boolean {
-  return point.lat >= view.south && point.lat <= view.north && point.lng >= view.west && point.lng <= view.east;
-}
 
 // A turf is "in the field" if a knock landed within this window.
 const IN_FIELD_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -614,7 +630,10 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
    * true at any zoom, and zooming in shrinks the rectangle until real doors return.
    *
    * Both counts are returned so a caption can never report one as the other. Turf outlines and the
-   * area roll-up are unaffected by the rectangle — they always describe the whole workspace.
+   * area roll-up are unaffected by the rectangle — they always describe the whole workspace, which
+   * is why a request that carries a rectangle leaves them out entirely rather than recomputing
+   * them: see {@link CoverageDoorsOnly}. A request with no rectangle is the one that carries them,
+   * and it is the one the page makes when it opens the report or changes the date range.
    *
    * Doors are returned even when nothing has been knocked (a freshly-cut universe reads as an
    * all-grey map), so the caller shows this independently of whether any knocks exist.
@@ -633,6 +652,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         ? input.viewport
         : null;
 
+    if (view !== null) return this.coverageDoorsInView(auth, from, to, view);
+
     const [rows, boundary] = await Promise.all([
       this.turfHouseholds.getCoverageRows({ tenant_id: auth.tenant_id, from, to }),
       // This report spans every campaign in the workspace, so there is no one campaign to read the
@@ -644,7 +665,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       }),
     ]);
 
-    const inView: CoverageDoor[] = [];
+    const allDoors: CoverageDoor[] = [];
     const turfPoints = new Map<string, { name: string; boundary_name: string | null; pts: LatLng[] }>();
     const turfCounts = new Map<string, { doors: number; conversation: number; attempted: number; not_yet: number }>();
     // Keyed on the raw name with null as its own key, not on the display label, so a real area
@@ -654,7 +675,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     for (const r of rows) {
       const status = this.coverageStatus(r);
       const point: LatLng = { lat: r.lat, lng: r.lng };
-      if (view === null || withinViewport(point, view)) inView.push({ ...point, status });
+      allDoors.push({ ...point, status });
 
       let turf = turfPoints.get(r.turf_id);
       if (!turf) {
@@ -696,15 +717,42 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
     const byBoundary = [...areas.values()].sort((a, b) => b.doors - a.doors);
     return {
+      doors_only: false,
       // Past the cap the doors are dropped rather than truncated: a sample of a riding's doors
       // would misreport which parts of it have been walked, and that is what this screen is for.
-      doors: inView.length > COVERAGE_MAX_DOORS ? [] : inView,
-      doors_in_view: inView.length,
+      doors: allDoors.length > COVERAGE_MAX_DOORS ? [] : allDoors,
+      doors_in_view: allDoors.length,
       doors_total: rows.length,
       turfs,
       byBoundary,
       boundary_label: boundary.label,
       boundary_label_plural: boundary.label_plural,
+    };
+  }
+
+  /**
+   * The doors inside one rectangle, for a map that has just been panned or zoomed.
+   *
+   * Everything else the coverage screen shows describes the whole workspace and cannot have changed
+   * because the map moved, so none of it is recomputed or re-sent here — see
+   * {@link CoverageDoorsOnly}. That skips one convex hull per turf, the whole by-area roll-up and
+   * the boundary-word query on every pan.
+   *
+   * The rectangle goes into the query rather than being applied to its results, so panning reads
+   * the doors on screen instead of every door the workspace holds.
+   */
+  private async coverageDoorsInView(
+    auth: IAuthKeyPayload,
+    from: Date,
+    to: Date,
+    view: MapViewportType,
+  ): Promise<CoverageDoorsOnly> {
+    const rows = await this.turfHouseholds.getCoverageRows({ tenant_id: auth.tenant_id, from, to, view });
+    const inView: CoverageDoor[] = rows.map((r) => ({ lat: r.lat, lng: r.lng, status: this.coverageStatus(r) }));
+    return {
+      doors_only: true,
+      doors: inView.length > COVERAGE_MAX_DOORS ? [] : inView,
+      doors_in_view: inView.length,
     };
   }
 
