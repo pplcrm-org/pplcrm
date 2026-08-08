@@ -1,5 +1,6 @@
 import type { ComponentFixture } from '@angular/core/testing';
 import { TestBed } from '@angular/core/testing';
+import type { CellParams } from '@frontend/shared/components/datagrid/grid-defaults';
 import { HouseholdsGrid } from './households-grid';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
 import { HouseholdsService } from '../services/households-service';
@@ -202,14 +203,18 @@ describe('HouseholdsGrid', () => {
     expect(component['col'].find((c) => c.field === 'any_electoral_area')?.hide).toBe(true);
   });
 
-  it('keeps "outside the map" distinct from "not looked yet"', () => {
+  it('formats the seat-status cell through the shared short-label function, keeping "outside the map" distinct from "not looked yet"', async () => {
     // Both show no area. Reporting a Vancouver address and an ungeocoded one the same way would
-    // hide that one answer is final and the other is still coming.
-    expect(component['formatSeatStatus']('in')).toBe('Yes');
-    expect(component['formatSeatStatus']('other')).toBe('No — another area');
-    expect(component['formatSeatStatus']('outside')).toBe('No — outside the map');
-    expect(component['formatSeatStatus'](null)).toBe('');
-    expect(component['formatSeatStatus']('unknown')).toBe('');
+    // hide that one answer is final and the other is still coming. The wording itself lives in
+    // seatStatusShortLabelFor (household-areas.spec.ts) — this only checks the column is wired to it.
+    await settleColumns(fixture);
+    const col = component['col'].find((c) => c.field === 'seat_status');
+    const format = (value: string | null) => col?.valueFormatter?.({ value } as CellParams);
+    expect(format('in')).toBe('Yes');
+    expect(format('other')).toBe('No — another area');
+    expect(format('outside')).toBe('No — outside the map');
+    expect(format('unknown')).toBe('Not placed yet');
+    expect(format(null)).toBe('');
   });
 
   it('heads the electoral column with the active campaign’s own word', async () => {

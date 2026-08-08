@@ -131,3 +131,29 @@ export function seatStatusLabelFor(status: string | null | undefined, seatWord: 
       return null;
   }
 }
+
+/**
+ * The same four-way answer as {@link seatStatusLabelFor}, worded for a grid cell rather than a
+ * record page — short enough to sit in a column next to a dozen other rows.
+ *
+ * Both grids (`persons-grid.ts`, `households-grid.ts`) used to carry their own private copy of this
+ * switch, worded identically, and neither had an `'unknown'` case — a household never checked
+ * against the map rendered as a blank cell, indistinguishable from a status this code does not
+ * recognise at all. This version gives `'unknown'` its own label so the two are told apart, and
+ * falls back to `''` for anything else, which keeps a future or malformed status value rendering as
+ * a blank cell rather than throwing.
+ */
+export function seatStatusShortLabelFor(status: string | null | undefined): string {
+  switch (status) {
+    case 'in':
+      return 'Yes';
+    case 'other':
+      return 'No — another area';
+    case 'outside':
+      return 'No — outside the map';
+    case 'unknown':
+      return 'Not placed yet';
+    default:
+      return '';
+  }
+}

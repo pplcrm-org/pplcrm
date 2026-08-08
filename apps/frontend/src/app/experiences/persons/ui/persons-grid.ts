@@ -31,6 +31,7 @@ import { AbstractAPIService } from '../../../services/api/abstract-api.service';
 import { AreaColumnsService } from '../../../services/area-columns.service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
+import { seatStatusShortLabelFor } from '../../households/services/household-areas';
 import { DATA_TYPE, PersonsService } from '../services/persons-service';
 
 @Component({
@@ -194,7 +195,7 @@ export class PersonsGrid implements OnInit {
       editable: false,
       hide: true,
       minWidth: 150,
-      valueFormatter: (params: CellParams) => this.formatSeatStatus(params.value),
+      valueFormatter: (params: CellParams) => seatStatusShortLabelFor(params.value as string | null | undefined),
     },
     {
       field: 'home_phone',
@@ -341,19 +342,6 @@ export class PersonsGrid implements OnInit {
    * every area and fell in none, the second that nothing has looked yet — no address, no
    * coordinates, or no match pass since the map was added.
    */
-  protected formatSeatStatus(value: unknown): string {
-    switch (value) {
-      case 'in':
-        return 'Yes';
-      case 'other':
-        return 'No — another area';
-      case 'outside':
-        return 'No — outside the map';
-      default:
-        return '';
-    }
-  }
-
   /**
    * Head the three electoral columns in the campaign's own words, and drop the territory column for
    * an office that has no territory.

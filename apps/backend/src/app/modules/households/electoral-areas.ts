@@ -104,6 +104,34 @@ export async function resolveSeatSetId(db: Db, tenantId: string, campaignId?: st
  */
 export type SeatStatus = 'in' | 'other' | 'outside' | 'unknown';
 
+/**
+ * Normalises an area name for seat-status comparison: trimmed and case-folded, so "Milton " typed
+ * into a campaign form and "milton" read off a publisher's map count as the same riding.
+ *
+ * Shared by {@link seatStatusSelect} (which builds its `= any(...)` parameter list from this) and
+ * {@link seatStatusForHousehold} (which applies it directly in JS) so the one rule that decides "is
+ * this the same area" cannot drift between the grid and the record page.
+ */
+function normalizeSeatAreaName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/**
+ * Whether a `boundary_checked_at` stamp counts as "this household has been tested against this seat
+ * set" — non-null, and no older than the set itself.
+ *
+ * The same pair of inputs backs the SQL predicate inside {@link seatStatusSelect} (`checked`, built
+ * from the same `setStampedAt`) and this JS version used by {@link seatStatusForHousehold} — one
+ * rule, stated once here and mirrored once in SQL, rather than two independent comparisons that
+ * could disagree on which side is inclusive. A stamp older than the map means the match job ran
+ * before this map existed, so reporting `outside` would be a confident wrong answer; that household
+ * reads as `unknown` instead until the match job catches up.
+ */
+function isCheckedAgainstSet(checkedAt: Date | null, setStampedAt: Date | null): boolean {
+  if (checkedAt == null) return false;
+  return setStampedAt == null || checkedAt >= setStampedAt;
+}
+
 /** The seat set, when it was added, and every area the campaign represents. */
 export interface SeatContext {
   setId: string | null;
@@ -187,11 +215,9 @@ export function seatStatusSelect(
       ? sql<boolean>`households.boundary_checked_at is not null`
       : sql<boolean>`households.boundary_checked_at is not null and households.boundary_checked_at >= ${setStampedAt}`;
 
-  // Compared case-insensitively and trimmed: an area name is typed by a person in the campaign form
-  // and read from a publisher's file on the map, so "milton " and "Milton" must not read as two
-  // different ridings. `= any(...)` rather than a chain of ORs so a seat made of a dozen areas
-  // builds one parameter instead of a dozen.
-  const wanted = seatAreaNames.map((name) => name.trim().toLowerCase());
+  // `= any(...)` rather than a chain of ORs so a seat made of a dozen areas builds one parameter
+  // instead of a dozen. See `normalizeSeatAreaName` for why each name is trimmed and lowered first.
+  const wanted = seatAreaNames.map(normalizeSeatAreaName);
 
   return sql<SeatStatus>`case
     when hd_areas.electoral_area is not null
@@ -242,14 +268,12 @@ export async function seatStatusForHousehold(
   ]);
 
   if (area?.name) {
-    const wanted = new Set(seat.seatAreaNames.map((name) => name.trim().toLowerCase()));
-    return wanted.has(area.name.trim().toLowerCase()) ? 'in' : 'other';
+    const wanted = new Set(seat.seatAreaNames.map(normalizeSeatAreaName));
+    return wanted.has(normalizeSeatAreaName(area.name)) ? 'in' : 'other';
   }
 
   const checkedAt = household?.boundary_checked_at == null ? null : new Date(household.boundary_checked_at);
-  if (checkedAt == null) return 'unknown';
-  if (seat.setStampedAt != null && checkedAt < seat.setStampedAt) return 'unknown';
-  return 'outside';
+  return isCheckedAgainstSet(checkedAt, seat.setStampedAt) ? 'outside' : 'unknown';
 }
 
 /** The two grid/rule field keys that read the lateral `hd_areas` aliases. */

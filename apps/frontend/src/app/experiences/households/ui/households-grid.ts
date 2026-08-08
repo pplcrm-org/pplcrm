@@ -17,6 +17,7 @@ import { AreaColumnsService } from '../../../services/area-columns.service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { PersonsService } from '../../persons/services/persons-service';
+import { seatStatusShortLabelFor } from '../services/household-areas';
 import { HouseholdsService } from '../services/households-service';
 
 @Component({
@@ -223,7 +224,7 @@ export class HouseholdsGrid implements OnInit {
       editable: false,
       hide: true,
       minWidth: 150,
-      valueFormatter: (params: CellParams) => this.formatSeatStatus(params.value),
+      valueFormatter: (params: CellParams) => seatStatusShortLabelFor(params.value as string | null | undefined),
     },
     {
       field: 'updated_at',
@@ -356,19 +357,6 @@ export class HouseholdsGrid implements OnInit {
    * address has no coordinates. Telling someone their Vancouver donor is simply "No" would hide
    * that the answer for a Milton address might still be arriving.
    */
-  protected formatSeatStatus(value: unknown): string {
-    switch (value) {
-      case 'in':
-        return 'Yes';
-      case 'other':
-        return 'No — another area';
-      case 'outside':
-        return 'No — outside the map';
-      default:
-        return '';
-    }
-  }
-
   /** Deletes change the header counts — re-query the grain sentence, unhoused note, and tab totals. */
   protected onRowsDeleted(): void {
     void this.loadGrainSentence();

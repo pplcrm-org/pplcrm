@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { electoralAreaSuffix, readHouseholdAreas, readPrimaryElectoralArea } from './household-areas';
+import {
+  electoralAreaSuffix,
+  readHouseholdAreas,
+  readPrimaryElectoralArea,
+  seatStatusLabelFor,
+  seatStatusShortLabelFor,
+} from './household-areas';
 
 /**
  * A household record arrives untyped from the tRPC boundary, so every one of these readers has to
@@ -74,5 +80,33 @@ describe('readHouseholdAreas', () => {
     expect(readHouseholdAreas({ any_electoral_area: null })).toEqual([]);
     expect(readHouseholdAreas({})).toEqual([]);
     expect(readHouseholdAreas(undefined)).toEqual([]);
+  });
+});
+
+describe('seatStatusShortLabelFor', () => {
+  it('gives each of the four statuses a short, grid-sized label', () => {
+    expect(seatStatusShortLabelFor('in')).toBe('Yes');
+    expect(seatStatusShortLabelFor('other')).toBe('No — another area');
+    expect(seatStatusShortLabelFor('outside')).toBe('No — outside the map');
+    expect(seatStatusShortLabelFor('unknown')).toBe('Not placed yet');
+  });
+
+  it('tells "not checked yet" apart from a blank cell — the two private copies this replaced had no unknown case at all', () => {
+    expect(seatStatusShortLabelFor('unknown')).not.toBe('');
+  });
+
+  it('renders a missing or unrecognised status as an empty cell rather than throwing', () => {
+    expect(seatStatusShortLabelFor(null)).toBe('');
+    expect(seatStatusShortLabelFor(undefined)).toBe('');
+    expect(seatStatusShortLabelFor('some-future-status')).toBe('');
+  });
+});
+
+describe('seatStatusLabelFor and seatStatusShortLabelFor', () => {
+  it('recognise exactly the same four status values, long-form and short-form', () => {
+    for (const status of ['in', 'other', 'outside', 'unknown']) {
+      expect(seatStatusLabelFor(status, 'riding')).not.toBeNull();
+      expect(seatStatusShortLabelFor(status)).not.toBe('');
+    }
   });
 });
