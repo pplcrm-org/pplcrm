@@ -739,7 +739,7 @@ describe('HouseholdsController', () => {
     expect(await resolveSeatSetId(db, tenantId)).toBe(String(second.id));
   });
 
-  it('replaces only the layers an address edit re-matched, never an imported area name', async () => {
+  it('replaces only the layers an address edit actually loaded — not an import, not an unreadable published map', async () => {
     const created = (await controller.addHousehold({ street1: '7 Rematch Rd' }, auth)) as { id: string };
 
     const addSet = (slug: string, source: string, jurisdiction: string) =>
@@ -763,6 +763,10 @@ describe('HouseholdsController', () => {
     // A drawn map is always required. It holds no polygons here, so the re-match finds nothing
     // in it and the household's old row in it is honestly cleared.
     const requiredSet = await addSet(`required-${rand()}`, 'drawn', 'other');
+    // A published map naming a slug this release's catalog does not carry. It IS in the required
+    // list, so the old code deleted its row and never rewrote it; the loader leaves it out of the
+    // loaded list because the file could not be read, so its row must survive untouched.
+    const unloadableSet = await addSet(`not-in-catalog-${rand()}`, 'bundled', 'ca_federal');
 
     const place = (setId: unknown, name: string) =>
       db
@@ -771,6 +775,7 @@ describe('HouseholdsController', () => {
         .execute();
     await place(outsideSet.id, 'Old Riding');
     await place(requiredSet.id, 'Old Ward');
+    await place(unloadableSet.id, 'Old Published Riding');
 
     // Address edit arriving with coordinates (the autocomplete shape) triggers the inline match.
     await controller.update({
@@ -788,6 +793,9 @@ describe('HouseholdsController', () => {
     const bySet = new Map(rows.map((r: any) => [String(r.set_id), r.name]));
     // The imported layer, which the re-match never examined, kept its row…
     expect(bySet.get(String(outsideSet.id))).toBe('Old Riding');
+    // …the published layer whose file could not be read kept its row too, because "could not open
+    // that map" is not an answer that may overwrite the stored one…
+    expect(bySet.get(String(unloadableSet.id))).toBe('Old Published Riding');
     // …while the re-matched layer's stale row was replaced (by nothing — no polygon contains it).
     expect(bySet.has(String(requiredSet.id))).toBe(false);
   });
@@ -1025,5 +1033,89 @@ describe('HouseholdsController', () => {
     expect(history.inserted_count).toBe(102);
     expect(history.skipped_count).toBe(3);
     expect(history.error_count).toBe(0);
+  });
+
+  it('rolls a chunk back instead of re-importing rows a second delivery of the import already wrote', async () => {
+    // A continuation job is queued before the worker marks the current job completed. If that
+    // completion write never lands, the original job returns to 'pending' beside its
+    // continuation and both read the same processed_row_offset. The per-chunk offset write is a
+    // compare-and-set, so whichever run gets there second writes nothing and rolls back.
+    const importRow = await db
+      .insertInto('data_imports')
+      .values({
+        tenant_id: tenantId,
+        createdby_id: userId,
+        updatedby_id: userId,
+        file_name: 'raced.csv',
+        source: 'households',
+        row_count: 150,
+        status: 'processing',
+        processed_at: new Date(),
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const importId = String(importRow.id);
+
+    // The rival run commits the rest of the file the moment this run pulls row 101.
+    async function* rivalWinsAfterFirstChunk(): AsyncGenerator<Record<string, string>, void, undefined> {
+      for (let i = 0; i < 150; i++) {
+        if (i === 100) {
+          await db
+            .updateTable('data_imports')
+            .set({ processed_row_offset: 150 })
+            .where('tenant_id', '=', tenantId)
+            .where('id', '=', importId)
+            .execute();
+        }
+        yield { street_num: String(i + 1), street1: 'Birch Rd', city: 'Springfield', state: 'IL', zip: '62701' };
+      }
+    }
+
+    await expect(
+      controller.processImportRows(importId, tenantId, userId, campaignId, [], 0, rivalWinsAfterFirstChunk()),
+    ).rejects.toThrow(/advanced past row 100/);
+
+    const created = await db
+      .selectFrom('households')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .where('file_id', '=', importId)
+      .execute();
+    expect(created).toHaveLength(100);
+  });
+
+  it('keeps an earlier segment’s error text when a later, clean segment finishes the import', async () => {
+    // The final write replaces the whole error_message column but error_count is seeded
+    // cumulatively, so a clean later segment used to store NULL over the earlier segment's text
+    // and leave History showing "N errors" with nothing behind them.
+    const importRow = await db
+      .insertInto('data_imports')
+      .values({
+        tenant_id: tenantId,
+        createdby_id: userId,
+        updatedby_id: userId,
+        file_name: 'two-segments.csv',
+        source: 'households',
+        row_count: 3,
+        status: 'processing',
+        processed_at: new Date(),
+        processed_row_offset: 1,
+        inserted_count: 0,
+        error_count: 1,
+        error_message: 'segment 1 could not be written: disk on fire',
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const importId = String(importRow.id);
+
+    await controller.processImportRows(importId, tenantId, userId, campaignId, [], 0, [
+      { street_num: '900', street1: 'Willow Way', city: 'Springfield', state: 'IL', zip: '62701' },
+      { street_num: '901', street1: 'Willow Way', city: 'Springfield', state: 'IL', zip: '62701' },
+    ]);
+
+    const history = await db.selectFrom('data_imports').selectAll().where('id', '=', importId).executeTakeFirst();
+    expect(String(history.error_message)).toContain('disk on fire');
+    expect(Number(history.error_count)).toBe(1);
+    expect(Number(history.processed_row_offset)).toBe(3);
   });
 });

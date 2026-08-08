@@ -8,7 +8,7 @@ import { FULL_SCAN_BATCH_SIZE, resolvePageWindow } from '../../../lib/paging';
 import { isBlankAddress, isIncompleteAddress } from '../../../lib/address-normalize';
 import type { JoinedQueryParams, QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
-import { matchPointToSets, requiredSetIdsForTenant } from '../../../lib/gis/boundary-match';
+import { loadBoundarySets, matchPointToLoadedSets, requiredSetIdsForTenant } from '../../../lib/gis/boundary-match';
 import { enqueueGeocodeJobs } from '../../../lib/gis/geocode-queue';
 import {
   areaSetLateralSelects,
@@ -138,9 +138,19 @@ export class HouseholdRepo extends BaseRepository<'households'> {
       try {
         const setIds = await requiredSetIdsForTenant(db, tenantId);
         if (setIds.length === 0) continue;
+        // Load every layer once for the whole batch and then match each point in memory. Matching
+        // per point through `matchPointToSets` would re-query and re-parse the same layers for
+        // every row of an import, which its own doc comment warns against.
+        //
+        // The loaded list can be shorter than the required one when a published layer's file could
+        // not be read. That costs nothing here beyond the missed match — this path writes through
+        // `upsertHouseholdAreas`, which never deletes — but it is the same list the other callers
+        // scope to, so it is used here too.
+        const sets = await loadBoundarySets(db, tenantId, setIds);
+        if (sets.length === 0) continue;
         const areaRows: HouseholdAreaRow[] = [];
         for (const item of located) {
-          const matches = await matchPointToSets(db, tenantId, item.lat, item.lng, setIds);
+          const matches = matchPointToLoadedSets(item.lat, item.lng, sets);
           for (const match of matches) {
             areaRows.push({ household_id: item.id, set_id: match.set_id, name: match.name, code: match.code });
           }

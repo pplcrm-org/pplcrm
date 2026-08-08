@@ -23,7 +23,12 @@ import { MapHouseholdsTagsRepo } from './repositories/map-households-tags.repo';
 import { ImportsRepo } from '../imports/repositories/imports.repo';
 import { createUploadImport } from '../imports/upload-intake';
 import { TagsRepo } from '../tags/repositories/tags.repo';
-import { applyHouseholdMatchesBatch, matchPointToSets, requiredSetIdsForTenant } from '../../lib/gis/boundary-match';
+import {
+  applyHouseholdMatchesBatch,
+  loadBoundarySets,
+  matchPointToLoadedSets,
+  requiredSetIdsForTenant,
+} from '../../lib/gis/boundary-match';
 import {
   ensureImportedBoundarySets,
   readImportedAreas,
@@ -31,7 +36,7 @@ import {
   writeImportedAreas,
 } from './electoral-areas';
 import { BaseController, MAX_INLINE_EXPORT_ROWS } from '../../lib/base.controller';
-import { BadRequestError } from '../../errors/app-errors';
+import { BadRequestError, ConflictError } from '../../errors/app-errors';
 import { SettingsController } from '../settings/controller';
 import type { OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../logger';
@@ -41,6 +46,18 @@ import { logger } from '../../logger';
 // authoritative call — its internal `assertInlineExportWithinCap` is what actually refuses the
 // export. Same constant, so the two caps cannot drift.
 const EXPORT_SCAN_CAP = MAX_INLINE_EXPORT_ROWS;
+
+/** Separator between the distinct chunk-failure messages stored in `data_imports.error_message`. */
+const ERROR_MESSAGE_JOINER = '; ';
+
+/**
+ * The chunk-failure messages an earlier segment of this import already stored. A resumed or
+ * continued run seeds its in-memory list from these, the same way it seeds skip_reasons, so a
+ * later segment that happens to be clean cannot blank out text an earlier segment recorded.
+ */
+function storedErrorMessages(stored: string | null | undefined): string[] {
+  return (stored ?? '').split(ERROR_MESSAGE_JOINER).filter((message) => message.length > 0);
+}
 
 /** Order accumulated export rows by the grid's requested sort, in memory (the full scan below reads
  * rows ordered by primary key, not the caller's sort). Absent a sort, the scan order is kept as-is. */
@@ -262,9 +279,23 @@ export class HouseholdsController extends BaseController<'households', Household
             // outside the required list — an archived campaign's map — was never looked at, so
             // its rows are not an answer this pass may overwrite. No required layers: nothing
             // matched, so nothing to replace either.
+            //
+            // The scope is the LOADED list, not the required one. A published layer whose file
+            // could not be downloaded or failed its checksum is absent from `sets`, and "we could
+            // not open that map" is not the same answer as "that map places this household
+            // nowhere" — storing the second would erase the household's riding over a storage
+            // hiccup.
             if (setIds.length > 0) {
-              const matches = await matchPointToSets(db, input.tenant_id, lat, lng, setIds);
-              await applyHouseholdMatchesBatch(db, input.tenant_id, [{ householdId: input.id, matches }], setIds);
+              const sets = await loadBoundarySets(db, input.tenant_id, setIds);
+              if (sets.length > 0) {
+                const matches = matchPointToLoadedSets(lat, lng, sets);
+                await applyHouseholdMatchesBatch(
+                  db,
+                  input.tenant_id,
+                  [{ householdId: input.id, matches }],
+                  sets.map((set) => set.id),
+                );
+              }
             }
           } catch (err) {
             logger.error({ err }, 'Failed to match household coordinates to boundary sets during update');
@@ -694,7 +725,14 @@ export class HouseholdsController extends BaseController<'households', Household
     // many rows, so totals, skip reasons and row numbering continue from what the database holds.
     const importState = await this.importsRepo.db
       .selectFrom('data_imports')
-      .select(['processed_row_offset', 'inserted_count', 'error_count', 'skipped_count', 'skip_reasons'])
+      .select([
+        'processed_row_offset',
+        'inserted_count',
+        'error_count',
+        'skipped_count',
+        'skip_reasons',
+        'error_message',
+      ])
       .where('tenant_id', '=', tenant_id)
       .where('id', '=', import_id)
       .executeTakeFirst();
@@ -707,6 +745,11 @@ export class HouseholdsController extends BaseController<'households', Household
       results.inserted = Number(importState?.inserted_count ?? 0);
       results.errors = Number(importState?.error_count ?? 0);
       results.skipped = Number(importState?.skipped_count ?? 0);
+      // Seeded from the text earlier segments stored, exactly as skip_reasons is seeded below.
+      // The final write replaces the whole error_message column, so without this a later segment
+      // that happened to be clean stored NULL and erased what an earlier segment recorded, even
+      // though error_count still counted those rows.
+      errorMessages.push(...storedErrorMessages(importState?.error_message));
     }
     // Seeded from what is already on file — the CSV job records the counting pass's validation
     // skips there before processing starts, and a resumed run must keep every reason an earlier
@@ -836,6 +879,10 @@ export class HouseholdsController extends BaseController<'households', Household
       // Whether this chunk's transaction committed — committed chunks persist their counters and
       // resume offset inside the transaction; everything else is recorded after the fact below.
       let chunkCommitted = false;
+      // Set when the compare-and-set below finds the stored offset is no longer where this run
+      // left it, which means a second delivery of the same import is running. That is not a row
+      // error to count and carry on from — it aborts the run (see the rethrow in the catch).
+      let offsetConflict = false;
       if (entries.length > 0) {
         try {
           // Counted inside the transaction but added to the running totals only after it
@@ -843,6 +890,28 @@ export class HouseholdsController extends BaseController<'households', Household
           const committed = await this.getRepo()
             .transaction()
             .execute(async (trx) => {
+              // Claim this chunk's slice of the file before doing any work in the transaction.
+              // The cursor moves by compare-and-set: the update only lands while the stored
+              // offset is still exactly where this run read it. Two concurrent deliveries of one
+              // import (a continuation queued before the first job's completion write landed,
+              // then that job requeued) both start from the same offset; whichever reaches this
+              // statement second matches no row, throws, and the whole transaction — inserts
+              // included — rolls back instead of writing the same households twice. Doing it
+              // first also takes the cursor row's lock before any insert work is wasted.
+              const advanced = await trx
+                .updateTable('data_imports')
+                .set({ processed_row_offset: rowsSeen })
+                .where('tenant_id', '=', tenant_id)
+                .where('id', '=', import_id)
+                .where('processed_row_offset', '=', chunkStartRow)
+                .executeTakeFirst();
+              if (Number(advanced?.numUpdatedRows ?? 0) === 0) {
+                offsetConflict = true;
+                throw new ConflictError(
+                  `Import ${import_id} advanced past row ${chunkStartRow} in another run; this chunk was rolled back rather than imported twice`,
+                );
+              }
+
               let insertedInChunk = 0;
               let skippedInChunk = 0;
               // Why each duplicate address was skipped. Collected inside the transaction and
@@ -978,7 +1047,9 @@ export class HouseholdsController extends BaseController<'households', Household
 
               // The chunk's counters and the resume offset, in the SAME transaction as its rows:
               // committed-rows-without-offset (double import on resume) and offset-without-rows
-              // (row loss) are both impossible.
+              // (row loss) are both impossible. The cursor was already claimed by the
+              // compare-and-set at the top of this transaction, so this write only carries the
+              // counters and reasons.
               await this.importsRepo.update(
                 {
                   tenant_id,
@@ -989,7 +1060,6 @@ export class HouseholdsController extends BaseController<'households', Household
                     skipped_count: skippedBase + results.skipped + skippedInChunk,
                     households_created: results.inserted + insertedInChunk,
                     skip_reasons: JSON.stringify([...skipReasons, ...duplicateReasons]),
-                    processed_row_offset: rowsSeen,
                     updatedby_id: user_id,
                     updated_at: new Date(),
                   } as unknown as OperationDataType<'data_imports', 'update'>,
@@ -1004,6 +1074,9 @@ export class HouseholdsController extends BaseController<'households', Household
           skipReasons.push(...committed.duplicateReasons);
           chunkCommitted = true;
         } catch (err) {
+          // A duplicate concurrent run is not a data error: counting these rows as failures and
+          // carrying on would let the losing run overwrite the winner's counters. Stop the run.
+          if (offsetConflict) throw err;
           results.errors += entries.length;
           const message = err instanceof Error && err.message ? err.message : String(err);
           errorMessages.push(message);
@@ -1024,11 +1097,12 @@ export class HouseholdsController extends BaseController<'households', Household
       // Rolled-back and all-skipped chunks are recorded here, after the fact: if the process
       // dies before this write, the chunk simply re-runs on resume — nothing was committed, so
       // nothing can be imported twice or double-counted.
+      // Same compare-and-set as the committed path, so a second concurrent delivery cannot
+      // silently step the cursor forward here either.
       if (!chunkCommitted) {
-        await this.importsRepo.update({
-          tenant_id,
-          id: import_id,
-          row: {
+        const advanced = await this.importsRepo.db
+          .updateTable('data_imports')
+          .set({
             inserted_count: results.inserted,
             error_count: results.errors,
             skipped_count: skippedBase + results.skipped,
@@ -1037,8 +1111,16 @@ export class HouseholdsController extends BaseController<'households', Household
             processed_row_offset: rowsSeen,
             updatedby_id: user_id,
             updated_at: new Date(),
-          } as unknown as OperationDataType<'data_imports', 'update'>,
-        });
+          })
+          .where('tenant_id', '=', tenant_id)
+          .where('id', '=', import_id)
+          .where('processed_row_offset', '=', chunkStartRow)
+          .executeTakeFirst();
+        if (Number(advanced?.numUpdatedRows ?? 0) === 0) {
+          throw new ConflictError(
+            `Import ${import_id} advanced past row ${chunkStartRow} in another run; this run stopped rather than double-counting it`,
+          );
+        }
       }
     }
 
