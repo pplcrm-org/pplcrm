@@ -336,7 +336,7 @@
                     <td>
                       <pc-status-badge [type]="getShiftStatusType(shift.status)"> {{ shift.status }} </pc-status-badge>
                     </td>
-                    <td class="font-mono">{{ shift.hours_worked || '--' }}</td>
+                    <td class="font-mono">{{ shift.hours_worked != null ? shift.hours_worked : '--' }}</td>
                     <td class="">{{ shift.notes || '--' }}</td>
                   </tr>
                   }

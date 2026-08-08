@@ -33,6 +33,12 @@ function isZeroCapacity(capacity: number | null): boolean {
   return Number(capacity) === 0;
 }
 
+/** Normalizes a roster row's hours field for the wire: blank stays null, a typed 0 stays 0. */
+function normalizeHoursWorked(hours: unknown): number | null {
+  if (hours == null || String(hours).trim() === '') return null;
+  return Number(hours);
+}
+
 @Component({
   selector: 'pc-shift-form',
   imports: [
@@ -492,7 +498,7 @@ export class ShiftFormComponent implements OnInit {
     try {
       await this.volunteerSvc.updateShift(shift.id, {
         status: shift.status,
-        hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
+        hours_worked: normalizeHoursWorked(shift.hours_worked),
         notes: shift.notes || null,
       });
       this.alerts.showSuccess('Shift details saved');
@@ -520,7 +526,7 @@ export class ShiftFormComponent implements OnInit {
   }
 
   protected updateShiftHours(shift: any, hours: any) {
-    shift.hours_worked = hours ? Number(hours) : null;
+    shift.hours_worked = normalizeHoursWorked(hours);
     this.markShiftDirty(shift);
   }
 
@@ -557,7 +563,7 @@ export class ShiftFormComponent implements OnInit {
         rows.map((shift) =>
           this.volunteerSvc.updateShift(shift.id, {
             status: shift.status,
-            hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
+            hours_worked: normalizeHoursWorked(shift.hours_worked),
             notes: shift.notes || null,
           }),
         ),
@@ -577,7 +583,7 @@ export class ShiftFormComponent implements OnInit {
     try {
       await this.volunteerSvc.updateShift(shift.id, {
         status,
-        hours_worked: shift.hours_worked ? Number(shift.hours_worked) : null,
+        hours_worked: normalizeHoursWorked(shift.hours_worked),
         notes: shift.notes || null,
       });
       // The status write carries the row's hours and notes with it, so nothing is pending here.

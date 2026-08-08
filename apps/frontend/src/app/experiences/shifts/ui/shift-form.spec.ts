@@ -282,6 +282,22 @@ describe('ShiftFormComponent', () => {
       });
       expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Shift details saved');
     });
+
+    it('should save a typed zero hours as 0, not null', async () => {
+      mockShiftsSvc.getById.mockResolvedValue({ id: 'v-1', name: 'Weekend Canvass' });
+      mockVolunteerSvc.updateShift.mockResolvedValue(true);
+
+      await createComponent('v-1');
+      await fixture.whenStable();
+
+      await component['saveShiftDetails']({ id: 's1', status: 'attended', hours_worked: 0, notes: '' });
+
+      expect(mockVolunteerSvc.updateShift).toHaveBeenCalledWith('s1', {
+        status: 'attended',
+        hours_worked: 0,
+        notes: null,
+      });
+    });
   });
 
   describe('deleteEvent', () => {
