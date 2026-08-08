@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, signal, type OnDestroy } from '@angular/core';
 
 import type { CompanionDoorOutcome, CompanionHousehold, CompanionPerson } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -8,12 +8,16 @@ import { doorStatus, doorStatusLabel, hasVoted, householdStance, personStance } 
 import { CanvassStore } from './canvass-store';
 import {
   initialsOf,
+  lastVisitLabel,
   personResultLabel,
   stanceStyle,
   statusBadgeClass,
   supportLevelLabel,
   type StanceStyle,
 } from './canvass-ui';
+
+/** How often the "… ago" line is recomputed while a door is open. */
+const CLOCK_TICK_MS = 30_000;
 
 /**
  * Household detail (spec §3.4): the doorstep screen. Person cards open the
@@ -48,6 +52,15 @@ import {
             </p>
           </div>
         </header>
+
+        <!-- Somebody already came here recently. Above everything else, because it can
+             change whether this door is worth knocking at all. -->
+        @if (lastVisit(h); as note) {
+          <div class="flex items-center gap-2 rounded-lg bg-base-200 px-3 py-2 text-base-content/70">
+            <pc-icon name="clock" [size]="4"></pc-icon>
+            <p class="text-xs">{{ note }}</p>
+          </div>
+        }
 
         <!-- What this door is, in one line, before any of the actions. -->
         @if (doorStance(h); as s) {
@@ -221,12 +234,20 @@ import {
     }
   `,
 })
-export class CanvassHousehold {
+export class CanvassHousehold implements OnDestroy {
   private readonly alerts = inject(AlertService);
   protected readonly store = inject(CanvassStore);
 
   protected readonly adding = signal(false);
   protected readonly newName = signal('');
+
+  /**
+   * Ticks so "12 minutes ago" is still true after the volunteer has stood at the door for
+   * a while. The walk list's 60s refresh is unmounted on this screen, so nothing else
+   * would move the clock forward.
+   */
+  private readonly now = signal(Date.now());
+  private readonly clock = setInterval(() => this.now.set(Date.now()), CLOCK_TICK_MS);
 
   /**
    * Four door codes, in escalating finality: nobody answered, we couldn't get to the door,
@@ -286,6 +307,18 @@ export class CanvassHousehold {
 
   protected initials(name: string): string {
     return initialsOf(name);
+  }
+
+  /** "Julie L. spoke to someone here 1 day ago", or null when nobody has been recently. */
+  protected lastVisit(h: CompanionHousehold): string | null {
+    return lastVisitLabel(h.last_knock, {
+      myName: this.store.payload()?.canvasser_name ?? null,
+      now: this.now(),
+    });
+  }
+
+  public ngOnDestroy(): void {
+    clearInterval(this.clock);
   }
 
   protected mark(outcome: CompanionDoorOutcome): void {

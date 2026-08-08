@@ -908,6 +908,14 @@ describe('CanvassingController', () => {
     expect(reloadedPerson?.result).toBe('canvassed');
     expect(reloadedPerson?.survey?.support).toBe('supporter');
     expect(reloadedPerson?.survey?.issues).toEqual(['Housing']);
+
+    // …and tells the next volunteer at that door who was here and when.
+    const reloadedDoor = reload.households.find((h) => h.id === home.id);
+    expect(reloadedDoor?.last_knock?.canvasser_name).toBe('Sam Volunteer');
+    expect(reloadedDoor?.last_knock?.conversation).toBe(true);
+    expect(Date.parse(String(reloadedDoor?.last_knock?.at))).toBeLessThanOrEqual(Date.now());
+    // A door nobody has been to has nothing to say about it.
+    expect(reload.households.find((h) => h.id !== home.id)?.last_knock).toBeNull();
   });
 
   it('applies survey side-effects: yard sign intake, DNC, contact fill-if-blank, subscribe, volunteer tag', async () => {

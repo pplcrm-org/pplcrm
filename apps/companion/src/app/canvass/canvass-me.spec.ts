@@ -41,6 +41,7 @@ function turfPayload(): CompanionTurfPayload {
         yard_sign: false,
         door_outcome: null,
         hh_survey: null,
+        last_knock: null,
         people: [],
       },
     ],

@@ -53,7 +53,17 @@ export interface CanvasserWork {
   last_knock_at: Date | null;
 }
 
+/** The most recent real visit to one door, across every turf in a campaign. */
+export interface LastDoorKnock {
+  canvasser_name: string | null;
+  conversation: boolean;
+  knocked_at: Date;
+}
+
 const CONVERSATION = 'conversation';
+
+/** The append-only "outcome toggled off" marker — a reset, not a visit. */
+const CLEARED = 'cleared';
 
 export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
   constructor() {
@@ -191,6 +201,53 @@ export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
       set_dnc: Boolean(r.set_dnc),
       subscribe: Boolean(r.subscribe),
     }));
+  }
+
+  /**
+   * The most recent visit to each of these doors, campaign-wide and inside a window.
+   *
+   * Deliberately NOT scoped to one turf: the volunteer standing at the door cares that
+   * somebody came, not which turf they were holding when they came. It IS scoped to one
+   * campaign, because a door canvassed for a different race is a different conversation
+   * and saying otherwise would put another campaign's work on this screen.
+   *
+   * `cleared` rows are excluded — that marker means an outcome was undone, so counting it
+   * as a visit would tell a volunteer someone was here when the record says the opposite.
+   */
+  public async getLastKnockByHousehold(
+    input: { tenant_id: string; campaign_id: string; household_ids: string[]; since: Date },
+    trx?: Transaction<Models>,
+  ): Promise<Map<string, LastDoorKnock>> {
+    const map = new Map<string, LastDoorKnock>();
+    if (input.household_ids.length === 0) return map;
+
+    const rows = await this.getSelect(trx)
+      .innerJoin('turfs', 'turfs.id', 'turf_knocks.turf_id')
+      .where('turf_knocks.tenant_id', '=', input.tenant_id)
+      .where('turfs.tenant_id', '=', input.tenant_id)
+      .where('turfs.campaign_id', '=', input.campaign_id)
+      .where('turf_knocks.household_id', 'in', input.household_ids)
+      .where('turf_knocks.knocked_at', '>=', input.since)
+      .where('turf_knocks.outcome', '<>', CLEARED)
+      .distinctOn('turf_knocks.household_id')
+      .orderBy('turf_knocks.household_id')
+      .orderBy('turf_knocks.knocked_at', 'desc')
+      .select([
+        'turf_knocks.household_id as household_id',
+        'turf_knocks.canvasser_name as canvasser_name',
+        'turf_knocks.outcome as outcome',
+        'turf_knocks.knocked_at as knocked_at',
+      ])
+      .execute();
+
+    for (const r of rows) {
+      map.set(String(r.household_id), {
+        canvasser_name: r.canvasser_name == null ? null : String(r.canvasser_name),
+        conversation: String(r.outcome) === CONVERSATION,
+        knocked_at: new Date(String(r.knocked_at)),
+      });
+    }
+    return map;
   }
 
   /** Last outcome per household in a turf, for door-list / map colouring. */

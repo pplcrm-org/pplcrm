@@ -29,9 +29,11 @@ import type {
 import {
   COVERAGE_MAX_DOORS,
   CompanionOpResultObj,
+  RECENT_KNOCK_WINDOW_DAYS,
   SUPPORT_LEVELS,
   TASK_OPEN_STATUSES,
   VOTING_STATUSES,
+  isKnockResponse,
 } from '../../../../../../libs/common/src';
 
 import { env } from '../../../env';
@@ -63,6 +65,7 @@ import {
   TurfKnocksRepo,
   type CanvasserWork,
   type FieldReport,
+  type LastDoorKnock,
   type ResponseMix,
 } from './repositories/turf-knocks.repo';
 import { TurfSegmentClaimsRepo } from './repositories/turf-segment-claims.repo';
@@ -1112,9 +1115,19 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     // Prior ID and open sign requests are what turn a list of addresses into a walk list:
     // they say which door is worth the next ten minutes. Both are read AFTER the residents
     // because both are keyed off them.
-    const [priorFacts, yardSignDoors] = await Promise.all([
+    const [priorFacts, yardSignDoors, lastKnocks] = await Promise.all([
       this.priorFactsByPerson(tenant_id, campaignId, personIds),
       this.openYardSignHouseholds(tenant_id, campaignId, householdIds),
+      // "Somebody was already here" is the one thing a walk list cannot tell a volunteer
+      // from its own turf alone, and it is what stops a door being knocked twice in a week.
+      campaignId === ''
+        ? Promise.resolve(new Map<string, LastDoorKnock>())
+        : this.knocks.getLastKnockByHousehold({
+            tenant_id,
+            campaign_id: campaignId,
+            household_ids: householdIds,
+            since: new Date(Date.now() - RECENT_KNOCK_WINDOW_DAYS * MS_PER_DAY),
+          }),
     ]);
 
     // Index the latest knock per (household, person).
@@ -1130,6 +1143,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       const ds = doorState.get(d.household_id);
       const doorOutcome = ds != null && isCompanionDoorOutcome(ds.outcome) ? ds.outcome : null;
       const hhSurvey = ds && ds.outcome === 'conversation' ? this.toPrefill(ds) : null;
+      const lastKnock = lastKnocks.get(d.household_id);
       return {
         id: d.household_id,
         walk_order: d.walk_order ?? i + 1,
@@ -1145,6 +1159,13 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         yard_sign: yardSignDoors.has(d.household_id),
         door_outcome: doorOutcome,
         hh_survey: hhSurvey,
+        last_knock: lastKnock
+          ? {
+              canvasser_name: lastKnock.canvasser_name,
+              conversation: lastKnock.conversation,
+              at: lastKnock.knocked_at.toISOString(),
+            }
+          : null,
         people: residents.map((p): CompanionPerson => {
           const ps = personState.get(`${d.household_id}:${p.id}`);
           const prior = priorFacts.get(p.id);
@@ -2161,7 +2182,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     subscribe: boolean;
   }): CompanionSurveyPrefill {
     return {
-      support: (s.response ?? null) as CompanionSurveyPrefill['support'],
+      support: isKnockResponse(s.response) ? s.response : null,
       issues: s.issues,
       wants_volunteer: s.wants_volunteer,
       wants_yard_sign: s.wants_yard_sign,

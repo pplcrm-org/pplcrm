@@ -220,6 +220,41 @@ which would put a confident colour on the doors that most need a conversation.
 deceased residents**, so nobody reads a dead person's name off a screen at their
 family's door.
 
+### "Somebody was already here" — `last_knock` (2026-08-07)
+
+`CompanionHousehold.last_knock` is `{canvasser_name, conversation, at}` or null: the most
+recent knock at that door inside `RECENT_KNOCK_WINDOW_DAYS` (30, in the shared schema).
+Rendered by `lastVisitLabel()` (`canvass-ui.ts`) as the line at the top of the door screen —
+"Julie L. spoke to someone here 1 day ago".
+
+Three rules it is built on, each of which is a bug if reversed:
+
+- **Campaign-scoped, not turf-scoped.** `TurfKnocksRepo.getLastKnockByHousehold` joins
+  `turfs` and filters `campaign_id`, so a door two turfs overlap on reports the other
+  turf's visit — that is the whole point — while a different race's canvass never appears
+  on this screen. The controller skips the query entirely when the turf has no campaign.
+- **`cleared` rows are excluded.** That marker means an outcome was undone; counting it as
+  a visit tells a volunteer somebody was here when the record says the opposite.
+- **`conversation` is carried separately** so the sentence can say "tried this door" for a
+  no-answer. Calling a no-answer "canvassed" overstates what happened at that door.
+
+`timeAgoLabel` deliberately never says "yesterday" (26 hours ago can be today), and the
+household component runs its own 30s clock because the walk list's 60s refresh is
+unmounted on the door screen.
+
+### Vocabulary drift is a real failure mode here
+
+`turf_knocks.response` is a plain text column and the door vocabulary already changed once
+(`strong_support`/`lean_support`/`opposed` → the current `KNOCK_RESPONSES`). A stale value
+is not caught by types: `KNOCK_RESPONSE_LABELS[stale]` is `undefined`, which renders as a
+**green badge with no word in it**, and `KNOCK_RESPONSE_TO_STANCE[stale]` is undefined, so
+the thumb disappears too — colour with no meaning, which is exactly what §5 forbids. Two
+guards now exist and both should stay: `isKnockResponse()` (shared, used by the
+controller's `toPrefill`) narrows on the way out of the DB, and `personResultLabel` falls
+back to "Surveyed" rather than to an empty string. The demo seed carried the old spelling
+until 2026-08-07 — `DemoKnockDef.response` is now typed `KnockResponse` so it cannot drift
+again silently.
+
 ### Apartments: `WalkEntry`, not one row per flat
 
 `deriveWalkEntries()` groups doors into the rows the list actually renders:

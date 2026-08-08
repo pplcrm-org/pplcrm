@@ -512,6 +512,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
+        text: 'Opening a door adds one more line at the top: whether anyone has canvassed that house recently, who it was, and how long ago — “Julie L. spoke to someone here 1 day ago”, or “Julie L. tried this door 2 hours ago” when they knocked and nobody answered. It counts visits from **every turf in the same campaign**, not just the turf in hand, so a street two turfs overlap on, or a second pass a fortnight later, still shows up. A visit the volunteer logged themselves reads “You”. Anything older than 30 days is not mentioned at all, and a door nobody has been to says nothing.',
+      },
+      {
+        kind: 'p',
         text: 'Apartments fold into their building. Forty flats at 58 Huron Avenue arrive as forty households sharing one street address, so the walk list shows one row — “58 Huron Avenue N · 40 units · 3 attempted” — that opens into the unit list. Units are ordered the way a hallway runs (101, 102, then 1003, with lettered units like PH2 last), and each one behaves exactly like a door on a street. A building only counts as done when every unit in it does.',
       },
       {

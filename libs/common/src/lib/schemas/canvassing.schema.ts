@@ -199,6 +199,15 @@ export function isKnockOutcome(v: unknown): v is KnockOutcome {
   return typeof v === 'string' && (KNOCK_OUTCOMES as readonly string[]).includes(v);
 }
 
+/**
+ * `turf_knocks.response` is a plain text column and this vocabulary has changed once
+ * already, so a stored row can hold a word the union no longer names. Narrow rather than
+ * cast: an unrecognized value reads as "no stance recorded", which is the truth about it.
+ */
+export function isKnockResponse(v: unknown): v is KnockResponse {
+  return typeof v === 'string' && (KNOCK_RESPONSES as readonly string[]).includes(v);
+}
+
 // ---------------------------------------------------------------------------
 // Companion batched results (spec §3.5/§5) — POST /api/canvass/t/:token/results
 // ---------------------------------------------------------------------------
@@ -327,6 +336,33 @@ export interface CompanionOpAck extends CompanionOpResultType {
 // door RESULTS only — never emails, phones, donation history, or notes.
 // ------------------------------------------------------------------------
 
+/**
+ * How far back a door still reads as "recently canvassed" on the Companion's door screen.
+ *
+ * Long enough that a second pass over the same universe finds the first pass, short enough
+ * that "someone was here" is still a fact about this campaign rather than about last year.
+ */
+export const RECENT_KNOCK_WINDOW_DAYS = 30;
+
+/**
+ * The most recent visit to this door inside `RECENT_KNOCK_WINDOW_DAYS`, from ANY turf in the
+ * same campaign — not just the turf the volunteer is holding.
+ *
+ * Two doors of one building, two turfs over the same street, or a second pass a fortnight
+ * later all mean the same thing to the person standing there: somebody already came. The
+ * name and the time are what let them decide whether to knock anyway, so both travel; the
+ * conversation flag is here because "knocked and got no answer" and "had a conversation"
+ * are different facts and one sentence must not claim the other.
+ */
+export interface CompanionLastKnock {
+  /** Name recorded on the knock. Null when the row carried none — reads as "Someone". */
+  canvasser_name: string | null;
+  /** True when that visit was a conversation, false for any other recorded outcome. */
+  conversation: boolean;
+  /** ISO 8601 timestamp of the visit. */
+  at: string;
+}
+
 /** Pre-fill for re-editing a surveyed person/door. Deliberately excludes notes + contact info. */
 export interface CompanionSurveyPrefill {
   support: KnockResponse | null;
@@ -402,6 +438,8 @@ export interface CompanionHousehold {
   door_outcome: CompanionDoorOutcome | null;
   /** The anonymous household-level survey, when one was recorded. */
   hh_survey: CompanionSurveyPrefill | null;
+  /** The last time anyone canvassed this door, if it was inside the recent window. */
+  last_knock: CompanionLastKnock | null;
   people: CompanionPerson[];
 }
 

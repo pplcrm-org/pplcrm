@@ -1,4 +1,10 @@
-import type { SupportLevel, VotingStatus, VolunteerStatus, StaffStatus } from '../../../../../../libs/common/src';
+import type {
+  KnockResponse,
+  SupportLevel,
+  VotingStatus,
+  VolunteerStatus,
+  StaffStatus,
+} from '../../../../../../libs/common/src';
 import type { DemoAttachmentKey } from './demo-attachment-assets';
 import type { DemoAreaKey, DemoRouteStartKey, DemoVenueKey } from './demo-data-places';
 
@@ -207,8 +213,14 @@ export interface DemoKnockDef {
   /** Resident spoken to (conversation outcomes); links the knock to a contact. */
   person?: string;
   outcome: 'conversation' | 'no_answer' | 'not_home' | 'refused' | 'inaccessible';
-  /** The voter's stance — only meaningful on a conversation. */
-  response?: 'strong_support' | 'lean_support' | 'undecided' | 'opposed';
+  /**
+   * The voter's stance — only meaningful on a conversation.
+   *
+   * Typed against the live door vocabulary rather than spelled out here: this list drifted
+   * once already and the seeded knocks kept an older spelling, which the Companion and the
+   * field report both read as "no stance recorded".
+   */
+  response?: KnockResponse;
   /** Display name written to the knock (the volunteer who logged it). */
   canvasser: string;
   notes?: string;

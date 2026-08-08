@@ -1,4 +1,4 @@
-import type { CompanionPersonResult, KnockResponse, SupportLevel } from '@common';
+import type { CompanionLastKnock, CompanionPersonResult, KnockResponse, SupportLevel } from '@common';
 import { KNOCK_RESPONSE_LABELS, SUPPORT_LEVEL_LABELS } from '@common';
 import type { PcIconNameType } from '@icons/icons.index';
 
@@ -67,7 +67,65 @@ export function stanceStyle(stance: DoorStance): StanceStyle | null {
 
 /** How the CRM's prior read reads on a person card — "Strong", "Leaning against", … */
 export function supportLevelLabel(level: SupportLevel | null): string | null {
-  return level == null ? null : SUPPORT_LEVEL_LABELS[level];
+  return level == null ? null : (SUPPORT_LEVEL_LABELS[level] ?? null);
+}
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * How long ago, in the coarsest unit that is still true.
+ *
+ * Deliberately never says "yesterday": 26 hours ago can be today, and a calendar word
+ * would be a claim the elapsed time does not support. Anything in the future (a phone
+ * whose clock is behind the server's) reads as "just now" rather than as a negative.
+ */
+export function timeAgoLabel(elapsedMs: number): string {
+  if (elapsedMs < MINUTE_MS) return 'just now';
+  if (elapsedMs < HOUR_MS) {
+    const minutes = Math.floor(elapsedMs / MINUTE_MS);
+    return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+  }
+  if (elapsedMs < DAY_MS) {
+    const hours = Math.floor(elapsedMs / HOUR_MS);
+    return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+  }
+  const days = Math.floor(elapsedMs / DAY_MS);
+  return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+}
+
+/**
+ * "Julie L. spoke to someone here 1 day ago" — the line at the top of a door.
+ *
+ * The point of the sentence is the decision it supports: knock anyway, or move on. So it
+ * names who came and how long ago, and it distinguishes a conversation from a door that
+ * was merely tried — "canvassed" over a no-answer would overstate what happened. A knock
+ * this volunteer logged themselves says "You", because being told your own work back in
+ * the third person reads as somebody else having been here.
+ *
+ * Returns null when there is no recent visit; the server only sends one inside
+ * `RECENT_KNOCK_WINDOW_DAYS`, so this never has to police the window itself.
+ */
+export function lastVisitLabel(
+  last: CompanionLastKnock | null,
+  options: { myName: string | null; now: number },
+): string | null {
+  if (last == null) return null;
+  const at = Date.parse(last.at);
+  if (Number.isNaN(at)) return null;
+
+  const mine = isSameCanvasser(last.canvasser_name, options.myName);
+  const who = mine ? 'You' : last.canvasser_name?.trim() || 'Someone';
+  const verb = last.conversation ? 'spoke to someone here' : 'tried this door';
+  return `${who} ${verb} ${timeAgoLabel(Math.max(0, options.now - at))}`;
+}
+
+/** Knocks carry a display name, not a volunteer id, so this is the only match available. */
+function isSameCanvasser(knockName: string | null, myName: string | null): boolean {
+  const a = knockName?.trim().toLowerCase();
+  const b = myName?.trim().toLowerCase();
+  return !!a && !!b && a === b;
 }
 
 export { firstNameOf } from './canvass-derive';
@@ -85,11 +143,17 @@ export function consensusLabel(consensus: KnockResponse | 'mixed' | null): strin
   return consensus === 'mixed' ? 'Mixed support' : KNOCK_RESPONSE_LABELS[consensus];
 }
 
-/** Chip label for a person's recorded result. */
+/**
+ * Chip label for a person's recorded result.
+ *
+ * A stance the label table does not name falls back to "Surveyed" rather than to nothing:
+ * an empty chip is a block of colour, and colour alone does not say "supporter" to anyone
+ * standing on a porch.
+ */
 export function personResultLabel(result: CompanionPersonResult, support: KnockResponse | null): string {
   switch (result) {
     case 'canvassed':
-      return support != null ? KNOCK_RESPONSE_LABELS[support] : 'Surveyed';
+      return support != null ? (KNOCK_RESPONSE_LABELS[support] ?? 'Surveyed') : 'Surveyed';
     case 'not_home':
       return 'Not home';
     case 'moved':
