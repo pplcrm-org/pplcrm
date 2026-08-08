@@ -9,8 +9,27 @@ const db = (BaseRepository as any)._db;
 
 const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);
 
-// Every assertion here is about which row claimNextPendingJob picks out of the *whole* table, so
-// no other spec file may hold a pending job while these run.
+/**
+ * Base priority added to every row this file inserts.
+ *
+ * Every assertion here is about which row `claimNextPendingJob` picks out of the *whole* table,
+ * and about thirty other spec files commit `pending` background_jobs rows as a side effect of
+ * what they test (a signup queues a welcome email, importing an address queues a geocode job).
+ * Those rows are older, so under `priority DESC, id ASC` they would be picked ahead of the rows
+ * these tests just inserted. Lifting this file's rows into their own priority band puts them all
+ * ahead of every such row while leaving the *relative* order among them untouched: each insert
+ * adds this base to the priority the test asked for, so a test comparing priority 0 against
+ * IMPORT_CONTINUATION_PRIORITY still compares 1000 against 1010.
+ *
+ * Nothing about the claim is bypassed — the real `claimNextPendingJob` still runs, including the
+ * per-tenant in-flight fairness these tests exist to pin.
+ */
+const SPEC_PRIORITY_BASE = 1000;
+
+// The priority band above handles every spec file that merely leaves a claimable row behind. The
+// lock handles the remaining case it cannot: the other spec files that run a real claimer
+// (worker.retry-backoff.spec.ts) or a real queue sweep (worker.reliability.spec.ts) and use the
+// same band, so those few files take turns instead of claiming each other's rows.
 useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 describe('claimNextPendingJob (per-tenant in-flight fairness)', () => {
@@ -39,7 +58,7 @@ describe('claimNextPendingJob (per-tenant in-flight fairness)', () => {
         tenant_id: tenantId,
         queue: 'default',
         status,
-        priority,
+        priority: SPEC_PRIORITY_BASE + priority,
         payload: JSON.stringify({ type: 'noop' }),
         run_at: new Date(),
         max_attempts: 3,
@@ -125,7 +144,7 @@ describe('claimNextPendingJob (priority ordering)', () => {
         tenant_id: tenantId,
         queue: 'default',
         status: 'pending',
-        priority,
+        priority: SPEC_PRIORITY_BASE + priority,
         payload: JSON.stringify({ type: payloadType }),
         run_at: new Date(),
         max_attempts: 3,
@@ -189,6 +208,7 @@ describe('claimNextPendingJob (priority ordering)', () => {
           tenant_id: busy,
           queue: 'default',
           status: 'processing',
+          priority: SPEC_PRIORITY_BASE,
           payload: JSON.stringify({ type: 'noop' }),
           run_at: new Date(),
           max_attempts: 3,

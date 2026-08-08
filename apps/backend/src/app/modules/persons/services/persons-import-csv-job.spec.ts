@@ -12,7 +12,6 @@ import { handleImportCsvJob } from '../../../lib/jobs/handlers/import.handlers';
 import type { JobPayloadOf } from '../../../lib/jobs/job-payloads';
 import { TransactionalEmailService } from '../../../lib/mail/transactional-mail.service';
 import { StorageService } from '../../../lib/storage.service';
-import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../../lib/test-utils/exclusive-db-lock';
 import { ListsRepo } from '../../lists/repositories/lists.repo';
 
 /**
@@ -33,9 +32,9 @@ import { ListsRepo } from '../../lists/repositories/lists.repo';
  */
 
 // This file commits `pending` background_jobs rows (batched trigger jobs and, potentially, the
-// usage-limit check), which a concurrently-running queue spec could claim; take the queue lock
-// so the files take turns.
-useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
+// usage-limit check). No queue lock is needed for them: the three spec files that read the queue
+// globally insert their own rows in a high priority band, so `claimNextPendingJob` never prefers
+// a row this file left behind. Everything this file reads back is scoped to its own tenant_id.
 
 const db = BaseRepository.dbInstance;
 const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);

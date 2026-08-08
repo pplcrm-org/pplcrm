@@ -3,13 +3,13 @@ import type { IAuthKeyPayload } from '@common';
 import { SYSTEM_LISTS } from '@common';
 
 import { BaseRepository } from '../../lib/base.repo';
-import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import { ListsController } from './controller';
 import { ensureSystemLists } from './system-lists';
 
-// Seeding the built-ins enqueues real `refresh_list` rows, which are claimable
-// jobs to anything reading background_jobs globally — take the queue lock.
-useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
+// Seeding the built-ins enqueues real `refresh_list` rows. No queue lock is needed for them: the
+// three spec files that read background_jobs globally insert their own rows in a high priority
+// band, so `claimNextPendingJob` never prefers a row this file left behind. Everything this file
+// reads back is scoped to its own tenant_id.
 
 const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
 

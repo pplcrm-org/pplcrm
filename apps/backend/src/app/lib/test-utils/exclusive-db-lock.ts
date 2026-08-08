@@ -10,8 +10,24 @@ import { BaseRepository } from '../base.repo';
  * and stable -- two unrelated spec files sharing a key would serialize for no reason.
  */
 export const DB_TEST_LOCKS = {
-  /** The `background_jobs` table as a whole queue: any spec that asserts against global claim
-   *  order, or leaves a `pending` row visible to a claimer, must hold this. */
+  /**
+   * The `background_jobs` table as a whole queue.
+   *
+   * Only for specs that READ the queue globally: one that asserts which row `claimNextPendingJob`
+   * picks out of the whole table, or one that runs a sweep selecting rows by age. Three files
+   * qualify today (job-claim.spec.ts, worker.retry-backoff.spec.ts, worker.reliability.spec.ts).
+   *
+   * A spec that merely LEAVES a `pending` row behind does NOT need this, and should not take it —
+   * that would serialize roughly thirty files for nothing. The claim order is
+   * `priority DESC, id ASC`, so the three files above insert their own rows in a priority band
+   * (1000 and up) well above anything production enqueues, which is what keeps another file's
+   * leftover row from being picked ahead of theirs.
+   *
+   * The exception is a sweep selected by age rather than order: a priority band cannot exclude
+   * rows from an age filter. If a spec ever commits a `background_jobs` row whose `locked_at` is
+   * more than 30 minutes old, or a pending/processing `data_exports` row older than an hour, it
+   * must take this lock so worker.reliability.spec.ts's recovery sweep cannot fail its rows.
+   */
   BACKGROUND_JOB_QUEUE: 81_400_001,
   /** The `receipt_counters` table: counter-concurrency specs commit real transactions and read
    *  the counter globally, so they must not interleave with another file doing the same. */

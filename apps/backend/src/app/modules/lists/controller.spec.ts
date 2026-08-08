@@ -2,12 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ListsController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
 import { MapListsPersonsRepo } from './repositories/map-lists-persons.repo';
-import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import type { IAuthKeyPayload } from '@common';
 
-// These tests commit `pending` background_jobs rows (the refresh-list enqueue),
-// which are claimable by any spec reading the queue globally — take the lock.
-useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
+// These tests commit `pending` background_jobs rows (the refresh-list enqueue). No queue lock is
+// needed for them: the three spec files that read the queue globally insert their own rows in a
+// high priority band, so `claimNextPendingJob` never prefers a row this file left behind.
+// Everything this file reads back is scoped to its own tenant_id.
 
 async function createTestSeed(db: any) {
   const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);

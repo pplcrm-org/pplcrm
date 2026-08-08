@@ -1,7 +1,6 @@
 import { sql } from 'kysely';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BaseRepository } from '../../lib/base.repo';
-import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import { generateToken, hashToken } from '../../lib/token-hash';
 import { AuthController } from './controller';
 import { AuthRouter } from './trpc.router';
@@ -10,10 +9,10 @@ vi.mock('../../lib/hibp', () => ({
   getPwnedCount: vi.fn().mockResolvedValue(0),
 }));
 
-// Signup commits `pending` background_jobs rows (welcome email + the built-in
-// lists' first refresh), which are claimable by any spec that reads the queue
-// globally — take the queue lock so those specs take turns with this one.
-useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
+// Signup commits `pending` background_jobs rows (welcome email + the built-in lists' first
+// refresh). No queue lock is needed for them: the three spec files that read the queue globally
+// insert their own rows in a high priority band, so `claimNextPendingJob` never prefers a row
+// this file left behind. Everything this file reads back is scoped to its own tenant_id.
 
 beforeEach(() => {
   vi.restoreAllMocks();

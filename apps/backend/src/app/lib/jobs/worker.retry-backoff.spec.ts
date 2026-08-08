@@ -39,8 +39,10 @@ interface WorkerInternals {
 const asInternals = (w: BackgroundJobWorker): WorkerInternals => w as unknown as WorkerInternals;
 
 // This file commits real 'pending' rows and then lets the real claimer pick "the next runnable job
-// in the whole table". Any pending row another spec file committed would be claimed (and failed)
-// instead, so every file touching this queue takes turns behind one advisory lock.
+// in the whole table". The priority band below is what keeps it from picking a row some unrelated
+// spec file left behind. This lock covers only the case the band cannot: the two other spec files
+// that also read the queue globally (job-claim.spec.ts, worker.reliability.spec.ts) and share the
+// same band, so those three take turns rather than claiming each other's rows.
 useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 const db = (BaseRepository as any)._db;

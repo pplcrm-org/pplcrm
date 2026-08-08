@@ -3,12 +3,12 @@ import { CampaignsController } from './controller';
 import { CampaignsRepo } from './repositories/campaigns.repo';
 import { BaseRepository } from '../../lib/base.repo';
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
-import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../lib/test-utils/exclusive-db-lock';
 import type { IAuthKeyPayload } from '@common';
 
 // Campaign create/office-change commits `pending` boundary-match rows into the shared
-// background_jobs queue, which another spec file's claimer could steal mid-run.
-useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
+// background_jobs queue. No queue lock is needed for them: the three spec files that read the
+// queue globally insert their own rows in a high priority band, so `claimNextPendingJob` never
+// prefers a row this file left behind. Everything this file reads back is scoped to its tenant_id.
 
 function rand() {
   return String(Math.floor(Math.random() * 100000000) + 10000000);

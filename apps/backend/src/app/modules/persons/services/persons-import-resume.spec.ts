@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BaseRepository } from '../../../lib/base.repo';
-import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../../lib/test-utils/exclusive-db-lock';
 import { ImportsRepo } from '../../imports/repositories/imports.repo';
 import { PersonsService } from './persons.service';
 
@@ -16,9 +15,10 @@ import { PersonsService } from './persons.service';
  *      them) in bounded batches, with the same firing semantics the inline loop had.
  */
 
-// This file commits `pending` background_jobs rows (the batched trigger jobs), which a
-// concurrently-running queue spec could claim; take the queue lock so the files take turns.
-useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
+// This file commits `pending` background_jobs rows (the batched trigger jobs). No queue lock is
+// needed for them: the three spec files that read the queue globally insert their own rows in a
+// high priority band, so `claimNextPendingJob` never prefers a row this file left behind.
+// Everything this file reads back is scoped to its own tenant_id.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only access to the private db handle
 const db = (BaseRepository as any)._db;

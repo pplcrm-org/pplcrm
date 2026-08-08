@@ -21,8 +21,16 @@ interface WorkerInternals {
 }
 const asInternals = (w: BackgroundJobWorker): WorkerInternals => w as unknown as WorkerInternals;
 
-// These specs commit pending/processing rows that a concurrent claimer would happily pick up,
-// which is exactly what breaks job-claim.spec.ts's global-FIFO assertions. Take turns.
+// recoverStaleJobs is a sweep over the WHOLE table, selected by age rather than by claim order:
+// any 'processing' row whose locked_at is more than 30 minutes old, and any data_exports row left
+// pending/processing for more than an hour. A priority band cannot exclude rows from an age
+// filter, so this file takes the shared queue lock. Today no other spec file writes a row old
+// enough for the sweep to touch (they all use `new Date()` for locked_at, and the one file that
+// backdates a data_export marks it 'completed', which the sweep skips) — a spec that ever does
+// must take this same lock, or this file's sweep will fail its rows out from under it.
+//
+// The lock also serializes this file against the two spec files that run a real claimer
+// (job-claim.spec.ts, worker.retry-backoff.spec.ts).
 useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 describe('scheduleNextRun dedup', () => {
