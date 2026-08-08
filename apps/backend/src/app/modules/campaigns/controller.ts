@@ -1,4 +1,5 @@
 import { sql } from 'kysely';
+import type { Transaction } from 'kysely';
 
 import type {
   AddCampaignType,
@@ -27,7 +28,7 @@ import { UserProfiles } from '../userprofiles/repositories/userprofiles.repo';
 import { CampaignPersonFactsRepo } from './repositories/campaign-person-facts.repo';
 import { CampaignSubscriptionsRepo } from './repositories/campaign-subscriptions.repo';
 import { CampaignsRepo } from './repositories/campaigns.repo';
-import type { OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
+import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 
 /**
  * The nine columns describing which office a campaign is contesting. Listed once so the insert,
@@ -355,9 +356,12 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
       rows.push({ name, set_id: area.set_id ?? null });
     }
 
+    const setIds = [...new Set(rows.map((row) => row.set_id).filter((id): id is string => id !== null))];
+
     await this.getRepo()
       .transaction()
       .execute(async (trx) => {
+        await this.assertBoundarySetsBelongToTenant(trx, auth.tenant_id, setIds);
         await trx
           .deleteFrom('campaign_areas')
           .where('tenant_id', '=', auth.tenant_id)
@@ -377,6 +381,42 @@ export class CampaignsController extends BaseController<'campaigns', CampaignsRe
           )
           .execute();
       });
+  }
+
+  /**
+   * Refuse a save that points an area at a boundary set the workspace does not own.
+   *
+   * `set_id` arrives from the client and the column's foreign key only proves the set exists
+   * somewhere in the table — it says nothing about whose it is. Left unchecked, one workspace could
+   * attach another's map to its own campaign, and every screen that resolves an area through its
+   * set (household matching, the coverage map, turf cutting) would then read across the tenant
+   * boundary. Rejecting is the fail-closed answer: the only way a legitimate save carries a set id
+   * is by picking a suggestion, and suggestions are already tenant-filtered.
+   *
+   * Ids are digits because the column is a bigint. An id that is not is rejected here rather than
+   * handed to Postgres, which would answer with a type error instead of a plain message.
+   */
+  private async assertBoundarySetsBelongToTenant(
+    trx: Transaction<Models>,
+    tenantId: string,
+    setIds: readonly string[],
+  ): Promise<void> {
+    if (setIds.length === 0) return;
+
+    const wellFormed = setIds.filter((id) => /^\d+$/.test(id));
+    const found = wellFormed.length
+      ? await trx
+          .selectFrom('boundary_sets')
+          .select('id')
+          .where('tenant_id', '=', tenantId)
+          .where('id', 'in', wellFormed)
+          .execute()
+      : [];
+
+    const owned = new Set(found.map((row) => String(row.id)));
+    if (setIds.some((id) => !owned.has(id))) {
+      throw new BadRequestError('One of these areas came from a map this workspace does not have.');
+    }
   }
 
   public async archive(id: string, auth: IAuthKeyPayload) {

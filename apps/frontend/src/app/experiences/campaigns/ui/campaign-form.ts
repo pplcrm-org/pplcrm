@@ -241,6 +241,52 @@ export class CampaignFormComponent implements OnInit {
   protected readonly areaSuggestions = signal<SeatAreaSuggestionType[]>([]);
   protected readonly loadingAreaSuggestions = signal(false);
 
+  /**
+   * Whether the areas already stored for this campaign were actually read back.
+   *
+   * A save sends the whole list and the server replaces the stored rows with exactly what it is
+   * sent, so an empty list means "this campaign represents no areas". Until the stored list has
+   * arrived, this form does not know what the campaign represents, and sending its empty starting
+   * list would delete every area the campaign has. False therefore means "say nothing about areas
+   * in the next save" — the field is optional in the API and omitting it leaves the stored rows
+   * untouched. A brand-new campaign has nothing to read, so it starts out free to send the list.
+   */
+  private readonly areasLoaded = signal(false);
+
+  /** True when reading the stored areas failed, which the areas block says out loud. */
+  protected readonly areasLoadFailed = signal(false);
+
+  /**
+   * Everything the suggestion request actually varies by, as one comparable string.
+   *
+   * The request filters `boundary_sets` by jurisdiction, region and chamber, and is skipped
+   * entirely for a non-electoral workspace or an at-large seat. Composing exactly those into a
+   * computed means the effect below re-runs only when the answer could differ: signal-forms
+   * replaces the whole payload object on every keystroke, so an effect reading the payload directly
+   * would fire one request per typed character in any field of the form.
+   */
+  private readonly areaSuggestionKey = computed(() => {
+    const raw = this.payload();
+    const chamber = raw.chamber === 'upper' || raw.chamber === 'lower' ? raw.chamber : '';
+    return [
+      this.isElectoral() ? 'electoral' : 'not-electoral',
+      raw.jurisdiction,
+      raw.office_region.trim(),
+      chamber,
+      raw.seat_type,
+    ].join('|');
+  });
+
+  /**
+   * Which suggestion request is the current one. A slower earlier request must not overwrite a
+   * later one's answer: the office can change while a request is in flight, and the responses can
+   * come back in either order.
+   */
+  private areaSuggestionRequestId = 0;
+
+  /** The office the suggestions on screen were asked for, so an unchanged one is not asked twice. */
+  private lastAreaSuggestionKey: string | null = null;
+
   /** What has been typed into the add-an-area box, wrapped so pc-input can bind to it. */
   protected readonly areaDraft = signal({ name: '' });
   protected readonly areaDraftForm = form(this.areaDraft, () => {
@@ -321,12 +367,15 @@ export class CampaignFormComponent implements OnInit {
     });
 
     // Which map covers this office depends on the jurisdiction, the region and the chamber, so the
-    // suggestions are re-read whenever one of those three changes. Reading the signals here is what
-    // subscribes to them; the request itself is untracked so its own signal writes do not re-run it.
+    // suggestions are re-read whenever one of those changes and at no other time. The key computed
+    // holds exactly those answers, and comparing it against the last one it ran for keeps a payload
+    // rewrite that changed nothing relevant — every keystroke in any field replaces the payload
+    // object — from firing a request. The request itself is untracked so its own signal writes do
+    // not re-run this effect.
     effect(() => {
-      const raw = this.payload();
-      const key = [raw.jurisdiction, raw.office_region.trim(), raw.chamber, raw.seat_type].join('|');
-      void key;
+      const key = this.areaSuggestionKey();
+      if (key === this.lastAreaSuggestionKey) return;
+      this.lastAreaSuggestionKey = key;
       untracked(() => void this.loadAreaSuggestions());
     });
   }
@@ -366,7 +415,9 @@ export class CampaignFormComponent implements OnInit {
           kind: 'election',
           startdate: raw.startdate || null,
           enddate: raw.enddate || null,
-          ...this.officeFields(),
+          // A campaign being created has no stored areas to read, so the list on screen is the
+          // whole truth and is always safe to send.
+          ...this.officeFields(true),
         };
         const result: CampaignDetail = await this.campaignsSvc.add(payload);
         this.campaignsSvc.triggerRefresh();
@@ -385,7 +436,12 @@ export class CampaignFormComponent implements OnInit {
           enddate: raw.enddate || null,
           // A workspace that runs no elections never sees the office card, so it has no answers to
           // send. Sending the form's defaults instead would overwrite what is already stored.
-          ...(this.isElectoral() ? this.officeFields() : {}),
+          //
+          // The areas ride along only once the stored ones have been read back. Until then the
+          // list on screen is not this campaign's answer, and sending it would replace the stored
+          // areas with it. Once it has been read, the list is sent even when it is empty, because
+          // an emptied list is a real answer: the user removed every area.
+          ...(this.isElectoral() ? this.officeFields(this.areasLoaded()) : {}),
         };
         const result = await this.campaignsSvc.update(this.id()!, payload);
         this.campaignsSvc.triggerRefresh();
@@ -441,28 +497,37 @@ export class CampaignFormComponent implements OnInit {
    * the form is broken when it is not.
    */
   protected async loadAreaSuggestions(): Promise<void> {
+    // Claiming the next number here makes every request already in flight stale, so a slow answer
+    // for the old office can never land on top of the new one's.
+    const requestId = ++this.areaSuggestionRequestId;
     if (!this.isElectoral() || this.isAtLarge()) {
       this.areaSuggestions.set([]);
+      this.loadingAreaSuggestions.set(false);
       return;
     }
     this.loadingAreaSuggestions.set(true);
     try {
       const raw = this.payload();
-      this.areaSuggestions.set(
-        await this.campaignsSvc.getAreaSuggestions({
-          jurisdiction: raw.jurisdiction,
-          office_region: raw.office_region.trim() || null,
-          chamber: raw.chamber === 'upper' || raw.chamber === 'lower' ? raw.chamber : null,
-        }),
-      );
+      const suggestions = await this.campaignsSvc.getAreaSuggestions({
+        jurisdiction: raw.jurisdiction,
+        office_region: raw.office_region.trim() || null,
+        chamber: raw.chamber === 'upper' || raw.chamber === 'lower' ? raw.chamber : null,
+      });
+      if (requestId === this.areaSuggestionRequestId) this.areaSuggestions.set(suggestions);
     } catch {
-      this.areaSuggestions.set([]);
+      if (requestId === this.areaSuggestionRequestId) this.areaSuggestions.set([]);
     } finally {
-      this.loadingAreaSuggestions.set(false);
+      if (requestId === this.areaSuggestionRequestId) this.loadingAreaSuggestions.set(false);
     }
   }
 
-  private officeFields(): Pick<
+  /**
+   * @param includeAreas Whether to state the campaign's areas at all. Omitting `seat_areas` is the
+   *   API's "leave the stored areas alone"; sending it replaces them with exactly what is sent.
+   */
+  private officeFields(
+    includeAreas: boolean,
+  ): Pick<
     AddCampaignType,
     | 'jurisdiction'
     | 'office_region'
@@ -489,7 +554,11 @@ export class CampaignFormComponent implements OnInit {
       office_title: raw.office_title.trim() || null,
       // An at-large office is elected across the whole city or state, so it represents no one area
       // and sends an empty list — which clears any areas left behind by an earlier district answer.
-      seat_areas: atLarge ? [] : this.seatAreas().map((area) => ({ name: area.name, set_id: area.set_id })),
+      ...(includeAreas
+        ? {
+            seat_areas: atLarge ? [] : this.seatAreas().map((area) => ({ name: area.name, set_id: area.set_id })),
+          }
+        : {}),
     };
   }
 
@@ -551,15 +620,36 @@ export class CampaignFormComponent implements OnInit {
     });
 
     // The areas live in their own table, so they are fetched rather than read off the campaign row.
-    // Quiet on failure for the same reason the suggestions are: the rest of the form still works,
-    // and an error banner over a list that simply has not arrived yet reads as a broken page.
     const id = c['id'];
-    if (id != null) {
-      void this.campaignsSvc
-        .getAreas(String(id))
-        .then((areas) => this.seatAreas.set(areas.map((area) => ({ name: area.name, set_id: area.set_id }))))
-        .catch(() => this.seatAreas.set([]));
-    }
+    if (id != null) this.loadSeatAreas(String(id));
+  }
+
+  /**
+   * Read back the areas this campaign already represents.
+   *
+   * Failure is not quiet, because it is not cosmetic. The list is what a save replaces the stored
+   * areas with, so a form that failed to read them does not know what they are: it says so, stops
+   * offering to edit them, and stops claiming anything about them when it saves.
+   */
+  private loadSeatAreas(campaignId: string): void {
+    this.areasLoaded.set(false);
+    this.areasLoadFailed.set(false);
+    void this.campaignsSvc
+      .getAreas(campaignId)
+      .then((areas) => {
+        this.seatAreas.set(areas.map((area) => ({ name: area.name, set_id: area.set_id })));
+        this.areasLoaded.set(true);
+      })
+      .catch(() => {
+        this.areasLoadFailed.set(true);
+        this.alerts.showError('Could not read the areas this campaign represents. Saving will leave them unchanged.');
+      });
+  }
+
+  /** Try the areas read again, for the "Try again" button the failure message offers. */
+  protected retryLoadSeatAreas(): void {
+    const id = this.id();
+    if (id) this.loadSeatAreas(id);
   }
 
   private text(source: Record<string, unknown>, key: string): string {

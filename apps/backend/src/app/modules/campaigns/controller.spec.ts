@@ -192,6 +192,26 @@ describe('CampaignsController', () => {
     expect(await matchJobs()).toHaveLength(1);
   });
 
+  /**
+   * `set_id` says which boundary map an area name came from, and it arrives from the client. The
+   * column's foreign key only proves the map exists somewhere in the table, not that it belongs to
+   * the workspace saving it, so the write has to check ownership itself.
+   */
+  it('refuses an area whose map does not belong to this workspace', async () => {
+    await expect(
+      controller.updateCampaign(officeId, { seat_areas: [{ name: 'Ward 3', set_id: '999999999' }] }, auth),
+    ).rejects.toBeInstanceOf(BadRequestError);
+
+    // Nothing was written: the rejection happens before the replace.
+    expect(await controller.getCampaignAreas(auth, officeId)).toHaveLength(0);
+
+    // A hand-typed area names no map at all, which stays perfectly ordinary.
+    await controller.updateCampaign(officeId, { seat_areas: [{ name: 'Ward 3', set_id: null }] }, auth);
+    const areas = await controller.getCampaignAreas(auth, officeId);
+    expect(areas.map((a) => a.name)).toEqual(['Ward 3']);
+    expect(areas[0]?.set_id).toBeNull();
+  });
+
   it('refuses a second office context', async () => {
     await expect(
       controller.addCampaign(

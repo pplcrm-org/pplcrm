@@ -23,6 +23,8 @@ describe('CampaignFormComponent', () => {
   let fixture: ComponentFixture<CampaignFormComponent>;
   let mockCampaignsSvc: {
     getById: ReturnType<typeof vi.fn>;
+    getAreas: ReturnType<typeof vi.fn>;
+    getAreaSuggestions: ReturnType<typeof vi.fn>;
     add: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
     triggerRefresh: ReturnType<typeof vi.fn>;
@@ -35,6 +37,8 @@ describe('CampaignFormComponent', () => {
   beforeEach(() => {
     mockCampaignsSvc = {
       getById: vi.fn(),
+      getAreas: vi.fn().mockResolvedValue([]),
+      getAreaSuggestions: vi.fn().mockResolvedValue([]),
       add: vi.fn().mockResolvedValue({ id: 'new-id' }),
       update: vi.fn().mockResolvedValue({ id: 'c-1' }),
       triggerRefresh: vi.fn(),
@@ -333,6 +337,76 @@ describe('CampaignFormComponent', () => {
       const sent = mockCampaignsSvc.update.mock.calls[0][1];
       expect(sent).not.toHaveProperty('jurisdiction');
       expect(sent).not.toHaveProperty('seat_name');
+    });
+  });
+
+  /**
+   * A save replaces the campaign's stored areas with exactly the list it sends, and omitting the
+   * list is how the API is told to leave them alone. So the form may only send a list it has
+   * actually read back — otherwise a failed read turns an unrelated edit into "this campaign
+   * represents nothing", deleting every area it had.
+   */
+  describe('the areas this campaign represents', () => {
+    const provincialCampaign = {
+      id: 'c-1',
+      name: 'Calgary-Elbow',
+      jurisdiction: 'ca_provincial',
+      office_region: 'AB',
+      seat_name: 'Calgary-Elbow',
+    };
+
+    it('says nothing about the areas in an update when the stored list could not be read', async () => {
+      mockCampaignsSvc.getById.mockResolvedValue(provincialCampaign);
+      mockCampaignsSvc.getAreas.mockRejectedValue(new Error('network unreachable'));
+
+      await createComponent('c-1');
+
+      // The failure is visible, not swallowed: a toast, and the areas block says so on the page
+      // instead of showing a chooser over a list it could not read.
+      expect(component['areasLoadFailed']()).toBe(true);
+      expect(mockAlerts.showError).toHaveBeenCalled();
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).toContain('Try again');
+      expect(fixture.nativeElement.querySelector('#campaign-area-search')).toBeNull();
+
+      await component['save']();
+
+      const sent = mockCampaignsSvc.update.mock.calls[0][1];
+      expect(sent).not.toHaveProperty('seat_areas');
+      // Everything else about the office still saves normally.
+      expect(sent.jurisdiction).toBe('ca_provincial');
+      expect(sent.seat_name).toBe('Calgary-Elbow');
+    });
+
+    it('sends the emptied list when the stored areas were read and the user removed them', async () => {
+      mockCampaignsSvc.getById.mockResolvedValue(provincialCampaign);
+      mockCampaignsSvc.getAreas.mockResolvedValue([{ id: 'a-1', name: 'Ward 3', code: null, set_id: null }]);
+
+      await createComponent('c-1');
+      expect(component['seatAreas']()).toHaveLength(1);
+
+      component['removeArea']('Ward 3');
+      await component['save']();
+
+      const sent = mockCampaignsSvc.update.mock.calls[0][1];
+      expect(sent.seat_areas).toEqual([]);
+    });
+
+    it('asks for area suggestions when the office changes, and not on every keystroke', async () => {
+      await createComponent();
+      const afterFirstLoad = mockCampaignsSvc.getAreaSuggestions.mock.calls.length;
+
+      // Signal-forms replaces the whole payload object per keystroke; typing a name must not ask.
+      setOffice({ name: 'R' });
+      setOffice({ name: 'Ri' });
+      setOffice({ name: 'Riverdale 2026' });
+      await fixture.whenStable();
+      expect(mockCampaignsSvc.getAreaSuggestions.mock.calls.length).toBe(afterFirstLoad);
+
+      // Moving the office does change which map covers it, so that asks once.
+      setOffice({ jurisdiction: 'ca_provincial', office_region: 'AB' });
+      await fixture.whenStable();
+      expect(mockCampaignsSvc.getAreaSuggestions.mock.calls.length).toBeGreaterThan(afterFirstLoad);
     });
   });
 

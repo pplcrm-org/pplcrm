@@ -182,7 +182,24 @@
           </p>
         </div>
 
-        @if (seatAreas().length > 0) {
+        <!--
+          The stored areas could not be read. Editing a list we could not read would let a save
+          replace real areas with a guess, so the chooser is withheld and the reason is stated.
+        -->
+        @if (areasLoadFailed()) {
+        <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
+          <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+          <div class="grid gap-2">
+            <p class="text-xs leading-relaxed text-base-content/80" i18n>
+              We could not read the areas this campaign already represents, so they cannot be edited right now. Saving
+              the rest of this form is safe: it leaves those areas exactly as they are.
+            </p>
+            <button type="button" class="btn btn-outline btn-xs w-fit" (click)="retryLoadSeatAreas()" i18n>
+              Try again
+            </button>
+          </div>
+        </div>
+        } @else { @if (seatAreas().length > 0) {
         <ul class="flex flex-wrap gap-2">
           @for (area of seatAreas(); track area.name) {
           <li class="inline-flex items-center gap-1.5 rounded-full border border-base-300 bg-base-200 px-3 py-1">
@@ -238,7 +255,7 @@
         </div>
         } @else {
         <p class="text-xs text-base-content/60">That is as many areas as one seat can list.</p>
-        }
+        } }
       </div>
       }
 
