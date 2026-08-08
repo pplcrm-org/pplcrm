@@ -17,6 +17,11 @@ libs/
         billing/
           currency.ts
           plans.ts
+        boundaries/
+          catalog/
+            catalog.entries.ts
+            catalog.types.ts
+            index.ts
         geo/
           haversine.ts
         help/
@@ -73,6 +78,7 @@ libs/
           donations.schema.ts
           emails.schema.ts
           events.schema.ts
+          import-rows.schema.ts
           join-codes.schema.ts
           lists.schema.ts
           marketing.schema.ts
@@ -85,6 +91,8 @@ libs/
           volunteer.schema.ts
           web-forms.schema.ts
           workflows.schema.ts
+        testing/
+          csv-parser-fixtures.ts
         auth.ts
         data-residency.ts
         dns-label.ts

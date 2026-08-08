@@ -106,6 +106,7 @@ apps/
           mail/
             disposable-email-domains.ts
             email-verifier.service.ts
+            from-address-policy.ts
             logo-asset.ts
             mentions-util.ts
             newsletter-mail.service.ts
