@@ -13,6 +13,7 @@ import type {
 } from '@common';
 
 import { FilesService } from '../../../files/services/files.service';
+import { AreaColumnsService } from '../../../../services/area-columns.service';
 import { TRPCService } from '../../../../services/api/trpc-service';
 
 /**
@@ -61,6 +62,7 @@ export interface BoundaryHouseholdPins {
 @Service()
 export class BoundariesService extends TRPCService<BoundarySetRowType> {
   private readonly files = inject(FilesService);
+  private readonly areaColumns = inject(AreaColumnsService);
 
   public listSets(): Promise<BoundarySetRowType[]> {
     return this.api.boundaries.list.query(undefined, { signal: this.ac.signal });
@@ -77,21 +79,30 @@ export class BoundariesService extends TRPCService<BoundarySetRowType> {
     return this.api.boundaries.features.query({ setId }, { signal: this.ac.signal });
   }
 
-  public createDrawnSet(input: AddDrawnBoundarySetType): Promise<BoundarySetRowType> {
-    return this.api.boundaries.createDrawn.mutate(input);
+  public async createDrawnSet(input: AddDrawnBoundarySetType): Promise<BoundarySetRowType> {
+    const result = await this.api.boundaries.createDrawn.mutate(input);
+    // A new map changes what column every campaign's grid should show, not just this one.
+    this.areaColumns.invalidate();
+    return result;
   }
 
   /** Add a map from the published catalog. One slug in — everything else comes from the catalog. */
-  public addPublishedSet(catalogSlug: string): Promise<BoundarySetRowType> {
-    return this.api.boundaries.addPublished.mutate({ catalog_slug: catalogSlug });
+  public async addPublishedSet(catalogSlug: string): Promise<BoundarySetRowType> {
+    const result = await this.api.boundaries.addPublished.mutate({ catalog_slug: catalogSlug });
+    this.areaColumns.invalidate();
+    return result;
   }
 
-  public uploadSet(input: UploadBoundarySetType): Promise<BoundarySetRowType> {
-    return this.api.boundaries.upload.mutate(input);
+  public async uploadSet(input: UploadBoundarySetType): Promise<BoundarySetRowType> {
+    const result = await this.api.boundaries.upload.mutate(input);
+    this.areaColumns.invalidate();
+    return result;
   }
 
-  public deleteSet(setId: string): Promise<boolean> {
-    return this.api.boundaries.deleteSet.mutate({ setId });
+  public async deleteSet(setId: string): Promise<boolean> {
+    const result = await this.api.boundaries.deleteSet.mutate({ setId });
+    this.areaColumns.invalidate();
+    return result;
   }
 
   public addFeature(input: AddBoundaryFeatureType): Promise<BoundaryFeatureRowType> {

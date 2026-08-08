@@ -1,5 +1,6 @@
 import { inject, signal, Service } from '@angular/core';
 import { IAuthUser, signInInputType, signUpInputType } from '../../../../../libs/common/src';
+import { AreaColumnsService } from '../services/area-columns.service';
 import { TRPCService } from '../services/api/trpc-service';
 import { silentRefresh } from '../services/api/trpc-refreshlink';
 import { TRPCError } from '@trpc/server';
@@ -35,6 +36,7 @@ export type SignOutResult =
 export class AuthService extends TRPCService<'authusers'> {
   private readonly alerts = inject(AlertService);
   private readonly dialog = inject(ConfirmDialogService);
+  private readonly areaColumns = inject(AreaColumnsService);
   private user = signal<IAuthUser | null>(null);
   private signOutInFlight: Promise<SignOutResult> | null = null;
 
@@ -44,7 +46,14 @@ export class AuthService extends TRPCService<'authusers'> {
     // and navigate to /signin, but neither can reach this signal — they sit below this service in
     // the dependency graph. Hand them a way to null it, or the login guard reads a user who is no
     // longer signed in and bounces them straight back into the app.
-    registerSessionDiscard(() => this.user.set(null));
+    //
+    // The boundary-map columns memo is cleared here too: it is keyed by campaign id (or '' when
+    // none), not by tenant, so without this a sign-in that follows a session discard could build a
+    // grid from the previous tenant's map labels.
+    registerSessionDiscard(() => {
+      this.user.set(null);
+      this.areaColumns.invalidate();
+    });
   }
 
   public async getCurrentUser(opts?: { silent?: boolean }) {
@@ -214,6 +223,9 @@ export class AuthService extends TRPCService<'authusers'> {
   public discardSession(): void {
     this.user.set(null);
     this.tokenService.clearAll();
+    // Same tenant-leak risk as the 401 path above: a sign-in right after this must not see the
+    // outgoing tenant's cached boundary-map columns.
+    this.areaColumns.invalidate();
     void this.router.navigate(['/signin']);
   }
 
@@ -321,6 +333,7 @@ export class AuthService extends TRPCService<'authusers'> {
     } finally {
       this.user.set(null);
       this.tokenService.clearAll();
+      this.areaColumns.invalidate();
     }
   }
 

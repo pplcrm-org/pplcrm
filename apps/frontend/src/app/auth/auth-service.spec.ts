@@ -7,6 +7,7 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from './auth-service';
+import { AreaColumnsService } from '../services/area-columns.service';
 import { TokenService } from '../services/api/token-service';
 import { ErrorService, discardSignedInUser } from '../services/error.service';
 
@@ -62,6 +63,7 @@ describe('AuthService', () => {
   let mockRouter: { navigate: ReturnType<typeof vi.fn> };
   let mockDialog: { choose: ReturnType<typeof vi.fn> };
   let mockAlerts: { showWarn: ReturnType<typeof vi.fn>; showError: ReturnType<typeof vi.fn> };
+  let mockAreaColumns: { invalidate: ReturnType<typeof vi.fn> };
   /** Backing store for the mocked TokenService pending-sign-out flag. */
   let signOutPending: boolean;
 
@@ -108,6 +110,7 @@ describe('AuthService', () => {
     mockRouter = { navigate: vi.fn() };
     mockDialog = { choose: vi.fn() };
     mockAlerts = { showWarn: vi.fn(), showError: vi.fn() };
+    mockAreaColumns = { invalidate: vi.fn() };
 
     // Create a bare instance without invoking Angular inject()s
     service = Object.create(AuthService.prototype) as AuthService;
@@ -116,6 +119,7 @@ describe('AuthService', () => {
     (service as any).router = mockRouter;
     (service as any).dialog = mockDialog;
     (service as any).alerts = mockAlerts;
+    (service as any).areaColumns = mockAreaColumns;
     (service as any).user = signal(null);
     (service as any).signOutInFlight = null;
 
@@ -230,6 +234,9 @@ describe('AuthService', () => {
       expect(mockTokenService.clearSignOutPending).toHaveBeenCalled();
       expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin']);
       expect(mockDialog.choose).not.toHaveBeenCalled();
+      // The boundary-map columns memo is keyed by campaign, not tenant, so a sign-out has to
+      // drop it or the next sign-in in this tab can read the outgoing tenant's map labels.
+      expect(mockAreaColumns.invalidate).toHaveBeenCalled();
     });
 
     it('marks a sign-out as pending before the request leaves, so a closed tab cannot resume it', async () => {
@@ -401,9 +408,15 @@ describe('AuthService', () => {
       (realService as any).user.set(mockUser);
       expect(realService.getUser()).toEqual(mockUser);
 
+      const areaColumns = TestBed.inject(AreaColumnsService);
+      const invalidateSpy = vi.spyOn(areaColumns, 'invalidate');
+
       discardSignedInUser();
 
       expect(realService.getUser()).toBeNull();
+      // Same tenant-leak risk as an explicit sign-out: the 401 path must drop the cached
+      // boundary-map columns too, or a sign-in right after can read the outgoing tenant's.
+      expect(invalidateSpy).toHaveBeenCalled();
     });
   });
 
@@ -417,6 +430,7 @@ describe('AuthService', () => {
       expect(mockTokenService.clearAll).toHaveBeenCalled();
       expect(mockRouter.navigate).toHaveBeenCalledWith(['/signin']);
       expect(mockApi.auth.signOut.mutate).not.toHaveBeenCalled();
+      expect(mockAreaColumns.invalidate).toHaveBeenCalled();
     });
   });
 
@@ -443,6 +457,7 @@ describe('AuthService', () => {
       expect(mockApi.auth.signOut.mutate).toHaveBeenCalledTimes(1);
       expect(mockTokenService.isSignOutPending()).toBe(false);
       expect(mockTokenService.clearAll).toHaveBeenCalled();
+      expect(mockAreaColumns.invalidate).toHaveBeenCalled();
     });
 
     it('keeps the marker when the background retry still cannot reach the server', async () => {
