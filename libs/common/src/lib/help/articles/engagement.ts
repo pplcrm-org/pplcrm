@@ -540,6 +540,14 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
+        text: 'A canvasser carrying signs can also **deliver one at the door**. When a household has asked for a sign, the door screen says so and offers **I delivered the sign**; tapping it records the same “delivered” status a driver would record, and — this is the part that matters — closes that house’s stop on whichever delivery route it was sitting on, so nobody is sent to a lawn that already has its sign. If the whole route was waiting on that one house, the route completes itself. **Undo** on the same card puts the sign back on the list and reopens the stop.',
+      },
+      {
+        kind: 'p',
+        text: 'For somebody who asks for a sign and is handed one on the spot, the survey does both in one save: tick **Wants a yard sign** and the line underneath it, **I gave them one just now**. That creates the request and marks it delivered together, so there is no second step to forget and nothing to wait for a signal to sync. The line is hidden on a door whose sign has already been delivered — a sign cannot arrive twice.',
+      },
+      {
+        kind: 'p',
         text: 'A canvasser also meets things that are wrong with the record itself, and the bottom of the survey is where those go. **Deceased** stamps the date on the person record and stops all contact immediately — one more letter to someone who has died is the worst thing a campaign’s data can do, so it does not wait for review. **Error in data** asks what is wrong and opens a task for the campaign admin with the volunteer’s own words; it changes nothing about the person, because “this is wrong” is a report, not a diagnosis. Both sit at the end behind a confirmation rather than in the quick-code row at the top, so neither is one mis-tap away from the most-tapped buttons on the screen. One open review task per person — a family of four at a wrong address does not become four identical tasks.',
       },
       {
@@ -647,6 +655,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         tone: 'info',
         title: 'One source of truth',
         text: 'A request is “on a route” only while it has an active stop. There’s no separate flag to fall out of sync. Skip or remove a stop and the request is instantly back in the pool for the next batch.',
+      },
+      {
+        kind: 'p',
+        text: 'A stop can also be closed by somebody who never opened the route. Canvassers carrying signs can mark one delivered from the door in the [Canvass Companion](/help/canvassing), and that closes the stop here — so a driver who reloads their route finds that house already ticked instead of driving to a lawn that has its sign. It counts toward the route the same way, including finishing the route when it was the last stop.',
       },
       { kind: 'h2', id: 'standing', text: 'Yard sign standing on profiles' },
       {

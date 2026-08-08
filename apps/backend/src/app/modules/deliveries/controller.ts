@@ -306,6 +306,154 @@ export class DeliveriesController {
     });
   }
 
+  // ---- Called from the Canvass Companion, inside its op transaction -------
+
+  /**
+   * A canvasser handed the sign over at the door.
+   *
+   * Runs inside the caller's transaction so it either happens with the knock or not at all.
+   * Three things it must get right:
+   *
+   * - **It goes through the route stop when there is one.** A house whose sign a canvasser
+   *   already delivered must not still be a stop a driver is asked to make. Reusing
+   *   `applyStopTransition` means the route advances and auto-completes exactly as it does
+   *   when the driver taps the button themselves.
+   * - **It creates the request when there is none**, because a canvasser carrying signs can
+   *   hand one to somebody who has never asked. The tenant-wide open-per-household index is
+   *   the real guard against a duplicate; a conflict means another campaign is holding this
+   *   household's request, and the honest answer there is to do nothing rather than write
+   *   into a context this volunteer is not walking.
+   * - **It is idempotent.** An already-delivered request returns false and writes nothing,
+   *   so a retried offline op cannot double-log.
+   *
+   * Returns whether anything changed.
+   */
+  public async deliverHouseholdSign(
+    trx: Transaction<Models>,
+    auth: IAuthKeyPayload,
+    input: { household_id: string; campaign_id: string; person_id: string | null; via: string },
+  ): Promise<boolean> {
+    const requestId = await this.resolveSignRequestForDelivery(trx, auth, input);
+    if (!requestId) return false;
+
+    const stop = await trx
+      .selectFrom('delivery_route_stops')
+      .select(['id', 'route_id'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('request_id', '=', requestId)
+      .where('status', '=', 'pending')
+      .executeTakeFirst();
+
+    if (stop) {
+      await this.applyStopTransition(
+        trx,
+        auth,
+        String(stop.route_id),
+        String(stop.id),
+        'deliver',
+        null,
+        'volunteer_link',
+      );
+    } else {
+      await trx
+        .updateTable('delivery_requests')
+        .set({ status: 'delivered', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('id', '=', requestId)
+        .execute();
+    }
+    await this.logRequestStanding(trx, auth, [requestId], 'delivered', input.via);
+    return true;
+  }
+
+  /**
+   * The canvasser undid it — they hadn't handed the sign over after all.
+   *
+   * The request returns to the pool as `approved` (somebody did ask for a sign, so it is
+   * still owed), and a stop that was flipped by the delivery above is restored to pending,
+   * reopening its route if that stop had completed it. Doing less than that would leave a
+   * driver's route claiming a house was done.
+   */
+  public async undoHouseholdSignDelivery(
+    trx: Transaction<Models>,
+    auth: IAuthKeyPayload,
+    input: { household_id: string; campaign_id: string; via: string },
+  ): Promise<boolean> {
+    const request = await trx
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('household_id', '=', input.household_id)
+      .where('campaign_id', '=', input.campaign_id)
+      .where('status', '=', 'delivered')
+      .orderBy('updated_at', 'desc')
+      .executeTakeFirst();
+    if (!request) return false;
+    const requestId = String(request.id);
+
+    const stop = await trx
+      .selectFrom('delivery_route_stops')
+      .select(['id', 'route_id'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('request_id', '=', requestId)
+      .where('status', '=', 'delivered')
+      .executeTakeFirst();
+
+    if (stop) {
+      await this.undoStop(trx, auth, String(stop.route_id), String(stop.id));
+    } else {
+      await trx
+        .updateTable('delivery_requests')
+        .set({ status: 'approved', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('id', '=', requestId)
+        .execute();
+    }
+    await this.logRequestStanding(trx, auth, [requestId], 'undelivered', input.via);
+    return true;
+  }
+
+  /** The request a doorstep delivery should be written against, creating one if needed. */
+  private async resolveSignRequestForDelivery(
+    trx: Transaction<Models>,
+    auth: IAuthKeyPayload,
+    input: { household_id: string; campaign_id: string; person_id: string | null },
+  ): Promise<string | null> {
+    const existing = await trx
+      .selectFrom('delivery_requests')
+      .select(['id', 'status'])
+      .where('tenant_id', '=', auth.tenant_id)
+      .where('household_id', '=', input.household_id)
+      .where('campaign_id', '=', input.campaign_id)
+      .where('status', 'in', ['new', 'approved', 'delivered'])
+      .orderBy('updated_at', 'desc')
+      .executeTakeFirst();
+    // Already delivered — a retried op, or a second canvasser at the same door.
+    if (existing && String(existing.status) === 'delivered') return null;
+    if (existing) return String(existing.id);
+
+    const created = await trx
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: auth.tenant_id,
+        campaign_id: input.campaign_id,
+        household_id: input.household_id,
+        person_id: input.person_id,
+        web_form_id: null,
+        source: 'canvass',
+        status: 'new',
+        notes: null,
+        createdby_id: auth.user_id,
+        updatedby_id: auth.user_id,
+      })
+      // Another campaign holds this household's open request. Writing into that campaign
+      // from a turf this volunteer is not walking would be worse than recording nothing.
+      .onConflict((oc) => oc.doNothing())
+      .returning('id')
+      .executeTakeFirst();
+    return created?.id != null ? String(created.id) : null;
+  }
+
   // ---- Planning -----------------------------------------------------------
   public async previewPlan(auth: IAuthKeyPayload, input: PlanDeliveriesType) {
     const geo = await geocodeAddress(input.start_address);
@@ -1508,7 +1656,9 @@ export class DeliveriesController {
     trx: Transaction<Models> | undefined,
     auth: IAuthKeyPayload,
     requestIds: string[],
-    status: 'recorded' | SetDeliveryRequestStatusType['status'],
+    status: 'recorded' | 'undelivered' | SetDeliveryRequestStatusType['status'],
+    /** Who did it, when it wasn't staff in the CRM — e.g. "via Canvass Companion (Mai N.)". */
+    via = 'staff',
   ): Promise<void> {
     const db = trx ?? this.requestsRepo.db;
     const labels: Record<string, string> = {
@@ -1517,6 +1667,9 @@ export class DeliveriesController {
       approved: 'Yard sign request approved',
       declined: 'Yard sign request declined',
       delivered: 'Yard sign marked delivered',
+      // The request lands back on 'approved', but "approved" would describe an office
+      // decision rather than what happened, which was somebody taking a delivery back.
+      undelivered: 'Yard sign delivery undone',
     };
     const message = labels[status] ?? `Yard sign request ${status}`;
     try {
@@ -1545,7 +1698,7 @@ export class DeliveriesController {
                 message,
                 entity_label: message,
                 request_id: String(r.id),
-                via: 'staff',
+                via,
               },
             },
             trx,

@@ -68,8 +68,8 @@ import { stanceStyle, statusBadgeClass, type StanceStyle } from './canvass-ui';
                 }
               </span>
               <span class="flex shrink-0 items-center gap-1.5">
-                @if (u.yard_sign) {
-                  <pc-icon name="yard-sign" [size]="4" class="text-info" title="Wants a yard sign" />
+                @if (u.yard_sign?.status === 'requested') {
+                  <pc-icon name="yard-sign" [size]="4" class="text-info" title="Owed a yard sign" />
                 }
                 @if (voted(u)) {
                   <pc-icon name="check-circle" [size]="4" class="text-success" title="Already voted" />

@@ -34,6 +34,29 @@ in `libs/common/src/lib/kysely.models.ts`.
 - **`delivery_route_stops`** — `status: pending | delivered | skipped`, `seq` (1-based),
   `leg_minutes`, `reason`, `acted_via: volunteer_link | staff`.
 
+### A canvasser can deliver a sign too (2026-08-08)
+
+Two public methods exist for the Canvass Companion to call **inside its own op transaction**
+(`pplcrm-canvassing` → "Delivering a yard sign at the door" has the client half):
+
+- `deliverHouseholdSign(trx, auth, {household_id, campaign_id, person_id, via})` — resolves
+  or creates the household's request in that campaign, then flips it delivered **through
+  `applyStopTransition` when a pending stop exists**. That is the whole point: a house a
+  canvasser already served must stop being a stop a driver is sent to, and going through the
+  stop is what advances and auto-completes the route. Already-delivered returns false, so a
+  retried offline op writes nothing.
+- `undoHouseholdSignDelivery(trx, auth, {household_id, campaign_id, via})` — reuses
+  `undoStop`, so an undo restores the stop to pending and reopens a route the delivery had
+  completed.
+
+`logRequestStanding` takes a `via` argument (default `'staff'`) so a doorstep delivery reads
+as "via Canvass Companion (name)" in the activity log rather than claiming staff did it, and
+knows the `'undelivered'` label — the request lands back on `approved`, but calling that
+"approved" would describe an office decision instead of what happened.
+
+**No new request status was added.** "Delivered" already means the sign reached the house;
+an `installed` status was considered and deliberately rejected as unnecessary complexity.
+
 ### The one invariant: "routed" is derived, never stored (acceptance §22.6)
 
 A request is "on a route" **iff it has an active (`pending`) stop**. There is no `routed` status.

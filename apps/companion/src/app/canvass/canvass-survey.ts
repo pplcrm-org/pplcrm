@@ -133,6 +133,23 @@ type QuickCode = 'not_home' | 'moved' | 'refused';
             (change)="onToggle('yard_sign', $event)"
           />
         </label>
+        <!-- A canvasser with signs in the car asks and hands one over in the same half
+             minute. Nested under the ask because it has no meaning without it, and hidden
+             once the door already has its sign so it can never claim a second delivery. -->
+        @if (wantsYardSign() && !signAlreadyDelivered()) {
+          <label class="flex min-h-11 items-center justify-between gap-3 pl-4">
+            <span>
+              I gave them one just now
+              <span class="block text-xs text-base-content/60">Marks the sign delivered — no driver needed</span>
+            </span>
+            <input
+              type="checkbox"
+              class="toggle toggle-primary"
+              [checked]="yardSignDelivered()"
+              (change)="onToggle('yard_sign_delivered', $event)"
+            />
+          </label>
+        }
         @if (isPerson()) {
           <label class="flex min-h-11 items-center justify-between gap-3">
             <span>
@@ -277,6 +294,7 @@ export class CanvassSurvey {
   protected readonly issues = signal<string[]>([]);
   protected readonly wantsVolunteer = signal(false);
   protected readonly wantsYardSign = signal(false);
+  protected readonly yardSignDelivered = signal(false);
   protected readonly setDnc = signal(false);
   protected readonly senior = signal(false);
   protected readonly phone = signal('');
@@ -306,6 +324,16 @@ export class CanvassSurvey {
   protected readonly address = computed(() => {
     const householdId = this.householdId();
     return householdId != null ? (this.store.householdById(householdId)?.address ?? '') : '';
+  });
+  /**
+   * This door already has its sign. Hides the hand-over line rather than disabling it: a
+   * canvasser who reads "I gave them one just now" on a door that already has a sign is
+   * being invited to record a delivery that cannot happen twice.
+   */
+  protected readonly signAlreadyDelivered = computed(() => {
+    const householdId = this.householdId();
+    if (householdId == null) return false;
+    return this.store.householdById(householdId)?.yard_sign?.status === 'delivered';
   });
   protected readonly title = computed(() => this.person()?.name ?? 'This household');
   protected readonly script = computed(() => this.store.payload()?.script?.trim() ?? '');
@@ -386,7 +414,10 @@ export class CanvassSurvey {
     else this.notes.set(target.value);
   }
 
-  protected onToggle(field: 'volunteer' | 'yard_sign' | 'dnc' | 'senior' | 'subscribe', event: Event): void {
+  protected onToggle(
+    field: 'volunteer' | 'yard_sign' | 'yard_sign_delivered' | 'dnc' | 'senior' | 'subscribe',
+    event: Event,
+  ): void {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
     const checked = target.checked;
@@ -396,6 +427,12 @@ export class CanvassSurvey {
         break;
       case 'yard_sign':
         this.wantsYardSign.set(checked);
+        // Untick the ask and the hand-over goes with it — a delivery of a sign nobody
+        // wants is not a thing that can have happened.
+        if (!checked) this.yardSignDelivered.set(false);
+        break;
+      case 'yard_sign_delivered':
+        this.yardSignDelivered.set(checked);
         break;
       case 'dnc':
         this.setDnc.set(checked);
@@ -444,6 +481,7 @@ export class CanvassSurvey {
       issues: this.issues(),
       wants_volunteer: isPerson ? this.wantsVolunteer() : false,
       wants_yard_sign: this.wantsYardSign(),
+      yard_sign_delivered: this.yardSignDelivered(),
       set_dnc: this.setDnc(),
       senior: isPerson ? this.senior() : false,
       contact_phone: isPerson && this.phone().trim() ? this.phone().trim() : null,

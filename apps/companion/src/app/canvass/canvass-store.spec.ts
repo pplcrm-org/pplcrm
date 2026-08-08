@@ -32,7 +32,7 @@ function door(over: Partial<CompanionHousehold> & { id: string; walk_order: numb
     lat: null,
     lng: null,
     dnc: false,
-    yard_sign: false,
+    yard_sign: null,
     door_outcome: null,
     hh_survey: null,
     last_knock: null,
@@ -219,6 +219,7 @@ describe('CanvassStore', () => {
         issues: ['Roads'],
         wants_volunteer: true,
         wants_yard_sign: false,
+        yard_sign_delivered: false,
         set_dnc: false,
         contact_phone: null,
         contact_email: null,
@@ -235,6 +236,62 @@ describe('CanvassStore', () => {
       const [op] = postedOps(fetchMock, 0);
       expect(op.type).toBe('survey');
       expect(op.payload['notes']).toBe('Nice porch');
+    });
+
+    it('yardSign marks an owed sign delivered, overlays it, and syncs one op', async () => {
+      store.payload.set({
+        ...turfPayload(),
+        households: [
+          door({
+            id: '10',
+            walk_order: 1,
+            address: '218 Alder St',
+            yard_sign: { status: 'requested', requested_at: null },
+          }),
+        ],
+      });
+      expect(store.yardSign('10', true)).toBe(true);
+      expect(store.householdById('10')?.yard_sign?.status).toBe('delivered');
+      await flushMicrotasks();
+      const [op] = postedOps(fetchMock, 0);
+      expect(op.type).toBe('yard_sign');
+      expect(op.payload['delivered']).toBe(true);
+    });
+
+    it('yardSign records nothing on a door with no sign request, or one already delivered', () => {
+      // Door 10 in the base payload has no request at all.
+      expect(store.yardSign('10', true)).toBe(false);
+      store.payload.set({
+        ...turfPayload(),
+        households: [
+          door({
+            id: '10',
+            walk_order: 1,
+            address: '218 Alder St',
+            yard_sign: { status: 'delivered', requested_at: null },
+          }),
+        ],
+      });
+      expect(store.yardSign('10', true)).toBe(false);
+      expect(store.queue()).toHaveLength(0);
+    });
+
+    it('yardSign undo puts the sign back to owed', async () => {
+      store.payload.set({
+        ...turfPayload(),
+        households: [
+          door({
+            id: '10',
+            walk_order: 1,
+            address: '218 Alder St',
+            yard_sign: { status: 'delivered', requested_at: null },
+          }),
+        ],
+      });
+      expect(store.yardSign('10', false)).toBe(true);
+      expect(store.householdById('10')?.yard_sign?.status).toBe('requested');
+      await flushMicrotasks();
+      expect(postedOps(fetchMock, 0)[0]?.payload['delivered']).toBe(false);
     });
 
     it('labels queue entries with the person and address', () => {
@@ -270,6 +327,7 @@ describe('CanvassStore', () => {
         issues: [],
         wants_volunteer: false,
         wants_yard_sign: false,
+        yard_sign_delivered: false,
         set_dnc: false,
         contact_phone: null,
         contact_email: null,
@@ -428,6 +486,7 @@ describe('CanvassStore', () => {
         issues: [],
         wants_volunteer: false,
         wants_yard_sign: false,
+        yard_sign_delivered: false,
         set_dnc: false,
         senior: false,
         contact_phone: null,
@@ -715,6 +774,7 @@ describe('CanvassStore', () => {
         issues: [],
         wants_volunteer: false,
         wants_yard_sign: false,
+        yard_sign_delivered: false,
         set_dnc: false,
         contact_phone: null,
         contact_email: null,

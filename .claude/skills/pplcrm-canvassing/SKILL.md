@@ -202,8 +202,10 @@ rules — lives in `pplcrm-companion-access`. Read it before touching `joinStart
 `CompanionPerson` carries `support` + `voting_status` read from
 `campaign_person_facts` **in the turf's campaign** — from any source, not just
 this turf's knocks — plus `last_name`, `deceased` and `senior`.
-`CompanionHousehold` carries `apt` and `yard_sign` (an open `new`/`approved`
-`delivery_requests` row for that household, campaign-scoped).
+`CompanionHousehold` carries `apt` and `yard_sign` — a `CompanionYardSign`
+(`{status: 'requested' | 'delivered', requested_at}`) or null, campaign-scoped.
+It is **not** a boolean any more: the `delivered` state travels too, or a door
+that already has its sign reads as still owing one and gets a second.
 
 This is the one deliberate widening of payload minimization (§2): a paper walk
 list has always carried prior ID, and "already voted" is essentially never
@@ -241,6 +243,44 @@ Three rules it is built on, each of which is a bug if reversed:
 `timeAgoLabel` deliberately never says "yesterday" (26 hours ago can be today), and the
 household component runs its own 30s clock because the walk list's 60s refresh is
 unmounted on the door screen.
+
+### Delivering a yard sign at the door (2026-08-08)
+
+A canvasser carrying signs can hand one over, from two places, both writing the ordinary
+`delivery_requests.status = 'delivered'` — **no new status was added, deliberately**:
+
+- **The door card** (`canvass-household.ts`) shows only when the door has a request. Its op
+  is `{type:'yard_sign', payload:{household_id, delivered}}` — door-level, because the sign
+  goes in the lawn, not to a person. `delivered:false` is the Undo.
+- **The survey follow-up line** "I gave them one just now" (`yard_sign_delivered` on
+  `CompanionSurveyObj`), nested under "Wants a yard sign" and hidden once the door's sign is
+  already delivered. Asking and handing over happen in the same half-minute, so they are one
+  save; a two-step version would need the request to exist before the second tap.
+
+The work is done by two public methods on `DeliveriesController` that run **inside the
+canvassing op's transaction** — `deliverHouseholdSign` and `undoHouseholdSignDelivery`. Do
+not reimplement either here. What they get right, and what breaks if you bypass them:
+
+- **The delivery goes through the pending route stop** (`applyStopTransition`), so a house a
+  canvasser already served stops being a stop a driver is sent to, and the route advances
+  and auto-completes exactly as it does for the driver. Writing the request status directly
+  would leave a driver's route claiming that house is still to do.
+- **Undo restores the stop** via `undoStop`, reopening a route the delivery had completed.
+- **Creates the request when there is none** (the survey path), and returns false rather
+  than writing when the tenant-wide open-per-household index says another campaign holds
+  this household's request.
+- **No knock row is written.** Handing over a sign is not a report of a visit, and counting
+  it as one would inflate the turf's attempted-door numbers.
+
+`CanvassStore.yardSign()` returns false when there is nothing to change (no request, or
+already in that state), so a retried offline op and a second canvasser at the same door are
+both no-ops. `applyLocalOps` only moves an EXISTING `yard_sign` between its two states — it
+never invents a request the server may not have created.
+
+Companion-side attribution: `logRequestStanding` now takes a `via` argument (default
+`'staff'`), and the canvassing path passes `"via Canvass Companion (name)"`. The user id is
+still the staff account that deployed the turf link (§22.7) — `companionAuth()` builds that
+CRM-shaped caller.
 
 ### Vocabulary drift is a real failure mode here
 

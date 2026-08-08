@@ -226,6 +226,16 @@ export const CompanionSurveyObj = z
     issues: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
     wants_volunteer: z.boolean().default(false),
     wants_yard_sign: z.boolean().default(false),
+    /**
+     * "…and I gave them one just now" — only meaningful alongside `wants_yard_sign`.
+     *
+     * A canvasser walking with signs in the car asks and hands one over in the same thirty
+     * seconds. Making that two round trips (save the survey, wait for the sign request to
+     * exist, tap again) is two chances to lose it at a doorstep, so the request is created
+     * and marked delivered in one transaction. Not stored on the knock: the delivery record
+     * is the truth about the sign, and re-opening the survey reads it from there.
+     */
+    yard_sign_delivered: z.boolean().default(false),
     set_dnc: z.boolean().default(false),
     /** 65 or older — person-level only; a household has no age. */
     senior: z.boolean().default(false),
@@ -272,6 +282,18 @@ export const CompanionPersonCreateObj = z.object({
   name: z.string().trim().min(1).max(120),
 });
 
+/**
+ * The canvasser handed over the yard sign this door had asked for — or took that back.
+ *
+ * Door-level, because the sign goes in the lawn rather than to a person. It writes the same
+ * `delivered` status a delivery driver writes, and routes through the pending route stop
+ * when there is one, so a driver is never sent to a house whose sign is already there.
+ */
+export const CompanionYardSignObj = z.object({
+  household_id: idSchema,
+  delivered: z.boolean(),
+});
+
 const companionOpBase = {
   /** Client-generated UUID — the idempotency key (companion_ops ledger). */
   op_id: z.string().min(8).max(100),
@@ -285,6 +307,7 @@ export const CompanionOpObj = z.discriminatedUnion('type', [
   z.object({ ...companionOpBase, type: z.literal('door_outcome'), payload: CompanionDoorOutcomeObj }),
   z.object({ ...companionOpBase, type: z.literal('clear_outcome'), payload: CompanionClearOutcomeObj }),
   z.object({ ...companionOpBase, type: z.literal('person_create'), payload: CompanionPersonCreateObj }),
+  z.object({ ...companionOpBase, type: z.literal('yard_sign'), payload: CompanionYardSignObj }),
 ]);
 
 export const CompanionResultsObj = z.object({
@@ -363,6 +386,20 @@ export interface CompanionLastKnock {
   at: string;
 }
 
+/**
+ * Where this door's yard sign has got to, when it has a request at all.
+ *
+ * `requested` covers both of the pre-delivery statuses a request can hold (waiting for
+ * triage, and approved for routing): the difference is an office matter and changes nothing
+ * a canvasser standing on the lawn can do. `delivered` is the same status a delivery driver
+ * writes, so the two apps and the CRM cannot disagree about whether the sign arrived.
+ */
+export interface CompanionYardSign {
+  status: 'requested' | 'delivered';
+  /** ISO 8601 timestamp the request was made. Null when the row carried no created date. */
+  requested_at: string | null;
+}
+
 /** Pre-fill for re-editing a surveyed person/door. Deliberately excludes notes + contact info. */
 export interface CompanionSurveyPrefill {
   support: KnockResponse | null;
@@ -433,8 +470,14 @@ export interface CompanionHousehold {
   lng: number | null;
   /** Whole-door do-not-contact (every resident is DNC) — skip, but it still counts. */
   dnc: boolean;
-  /** Somebody at this door has an open yard-sign request. Shown as an icon on the row. */
-  yard_sign: boolean;
+  /**
+   * This door's yard sign, or null when nobody has asked for one.
+   *
+   * Carries the delivered state as well as the open one so a canvasser can hand a sign over
+   * and see it confirmed, and so a door that already has its sign says so instead of
+   * showing a request that looks outstanding.
+   */
+  yard_sign: CompanionYardSign | null;
   door_outcome: CompanionDoorOutcome | null;
   /** The anonymous household-level survey, when one was recorded. */
   hh_survey: CompanionSurveyPrefill | null;

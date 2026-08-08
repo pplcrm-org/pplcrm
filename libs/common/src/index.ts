@@ -619,6 +619,7 @@ export type {
   CompanionOpAck,
   CompanionSurveyPrefill,
   CompanionLastKnock,
+  CompanionYardSign,
   CompanionPersonResult,
   CompanionPerson,
   CompanionDoorOutcome,

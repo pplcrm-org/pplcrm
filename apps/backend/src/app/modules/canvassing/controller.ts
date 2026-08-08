@@ -15,6 +15,7 @@ import type {
   CompanionTurfChoice,
   CompanionTurfChoices,
   CompanionTurfPayload,
+  CompanionYardSign,
   CoverageRequestType,
   CutTurfsType,
   FieldReportRangeType,
@@ -49,6 +50,7 @@ import { CampaignPersonFactsRepo } from '../campaigns/repositories/campaign-pers
 import { CampaignSubscriptionsRepo } from '../campaigns/repositories/campaign-subscriptions.repo';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
 import { CompanionAccessController } from '../companion-access/controller';
+import { DeliveriesController } from '../deliveries/controller';
 import { ListsController } from '../lists/controller';
 import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import type { Transaction } from 'kysely';
@@ -390,6 +392,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   private readonly factsRepo = new CampaignPersonFactsRepo();
   private readonly subscriptionsRepo = new CampaignSubscriptionsRepo();
   private readonly companionAccess = new CompanionAccessController();
+  private readonly deliveries = new DeliveriesController();
 
   constructor() {
     super(new TurfsRepo());
@@ -397,6 +400,18 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
   private turfsRepo(): TurfsRepo {
     return this.getRepo();
+  }
+
+  /**
+   * A CRM-shaped caller for the Deliveries module, standing in for a companion device.
+   *
+   * The Companion has no signed-in user, so every write it makes is attributed to the staff
+   * account that deployed the turf link (§22.7) — the same actor the knock rows carry. The
+   * volunteer's own name travels separately in the activity metadata, so nothing here
+   * invents a user who does not exist.
+   */
+  private companionAuth(tenant_id: string, actor: string): IAuthKeyPayload {
+    return { session_id: '', tenant_id, user_id: actor };
   }
 
   // ------------------------------------------------------------- reads ------
@@ -1115,9 +1130,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     // Prior ID and open sign requests are what turn a list of addresses into a walk list:
     // they say which door is worth the next ten minutes. Both are read AFTER the residents
     // because both are keyed off them.
-    const [priorFacts, yardSignDoors, lastKnocks] = await Promise.all([
+    const [priorFacts, yardSigns, lastKnocks] = await Promise.all([
       this.priorFactsByPerson(tenant_id, campaignId, personIds),
-      this.openYardSignHouseholds(tenant_id, campaignId, householdIds),
+      this.yardSignsByHousehold(tenant_id, campaignId, householdIds),
       // "Somebody was already here" is the one thing a walk list cannot tell a volunteer
       // from its own turf alone, and it is what stops a door being knocked twice in a week.
       campaignId === ''
@@ -1156,7 +1171,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         lat: d.lat,
         lng: d.lng,
         dnc: residents.length > 0 && residents.every((p) => p.dnc),
-        yard_sign: yardSignDoors.has(d.household_id),
+        yard_sign: yardSigns.get(d.household_id) ?? null,
         door_outcome: doorOutcome,
         hh_survey: hhSurvey,
         last_knock: lastKnock
@@ -1626,7 +1641,14 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           contact_email: p.contact_email ?? null,
           subscribe: p.subscribe,
         });
-        await this.applySurveySideEffects(trx, { tenant_id, turf_id, household_id: householdId, actor, survey: p });
+        await this.applySurveySideEffects(trx, {
+          tenant_id,
+          turf_id,
+          household_id: householdId,
+          actor,
+          via,
+          survey: p,
+        });
         await logActivity('household', householdId, { outcome: 'conversation', response: p.support ?? null });
         if (personId) await logActivity('person', personId, { outcome: 'conversation', response: p.support ?? null });
         return { op_id: op.op_id, status: 'applied' };
@@ -1654,6 +1676,29 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       case 'clear_outcome': {
         await insertKnock({ person_id: null, outcome: 'cleared' });
         await logActivity('household', householdId, { outcome: 'cleared' });
+        return { op_id: op.op_id, status: 'applied' };
+      }
+      case 'yard_sign': {
+        // No knock row: handing over a sign is not a report of a visit, and counting it as
+        // one would inflate the turf's door numbers with something that isn't a door tried.
+        const campaignId = await this.resolveKnockCampaignId(tenant_id, turf_id);
+        if (!campaignId) throw new BadRequestError('This turf has no campaign to record a sign against.');
+        const auth = this.companionAuth(tenant_id, actor);
+        const changed = op.payload.delivered
+          ? await this.deliveries.deliverHouseholdSign(trx, auth, {
+              household_id: householdId,
+              campaign_id: campaignId,
+              person_id: null,
+              via,
+            })
+          : await this.deliveries.undoHouseholdSignDelivery(trx, auth, {
+              household_id: householdId,
+              campaign_id: campaignId,
+              via,
+            });
+        // Nothing changed means it was already in that state — a retried op, or a second
+        // canvasser at the same door. Still 'applied': the world matches what was asked.
+        if (changed) await logActivity('household', householdId, { yard_sign_delivered: op.payload.delivered });
         return { op_id: op.op_id, status: 'applied' };
       }
       case 'person_create': {
@@ -1793,6 +1838,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       turf_id: string;
       household_id: string;
       actor: string;
+      /** "via Canvass Companion (name)" — carried so a delivery logged here says who made it. */
+      via: string;
       survey: CompanionSurveyType;
     },
   ): Promise<void> {
@@ -1849,6 +1896,18 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           // this whole companion-op transaction. (No cast needed — 'canvass' is in the source union.)
           .onConflict((oc) => oc.doNothing())
           .execute();
+      }
+
+      // "…and I gave them one just now". Asking and handing the sign over happen in the same
+      // half-minute at a door, so they are one save — the alternative is a canvasser waiting
+      // on a sync before a second tap they will forget to make.
+      if (survey.yard_sign_delivered) {
+        await this.deliveries.deliverHouseholdSign(trx, this.companionAuth(tenant_id, actor), {
+          household_id,
+          campaign_id: campaignId,
+          person_id: personId,
+          via: input.via,
+        });
       }
     }
 
@@ -2156,21 +2215,31 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
    * that differently from one still owed. Campaign-scoped for the same reason as the facts
    * above: a request raised for the office is not a promise the election campaign made.
    */
-  private async openYardSignHouseholds(
+  private async yardSignsByHousehold(
     tenant_id: string,
     campaign_id: string,
     household_ids: string[],
-  ): Promise<Set<string>> {
-    if (!campaign_id || household_ids.length === 0) return new Set<string>();
+  ): Promise<Map<string, CompanionYardSign>> {
+    const signs = new Map<string, CompanionYardSign>();
+    if (!campaign_id || household_ids.length === 0) return signs;
     const rows = await this.knocks.db
       .selectFrom('delivery_requests')
-      .select(['household_id'])
+      .select(['household_id', 'status', 'created_at'])
       .where('tenant_id', '=', tenant_id)
       .where('campaign_id', '=', campaign_id)
       .where('household_id', 'in', household_ids)
-      .where('status', 'in', ['new', 'approved'])
+      // 'delivered' travels too: a door that already has its sign has to say so, or a
+      // canvasser reads an open request off the screen and hands out a second one.
+      .where('status', 'in', ['new', 'approved', 'delivered'])
+      .orderBy('updated_at', 'asc')
       .execute();
-    return new Set(rows.map((r) => String(r.household_id)));
+    for (const r of rows) {
+      signs.set(String(r.household_id), {
+        status: String(r.status) === 'delivered' ? 'delivered' : 'requested',
+        requested_at: r.created_at ? new Date(String(r.created_at)).toISOString() : null,
+      });
+    }
+    return signs;
   }
 
   private toPrefill(s: {

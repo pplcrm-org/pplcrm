@@ -481,6 +481,7 @@ export function opPersonId(op: CompanionOpType): string | null {
     case 'door_outcome':
     case 'clear_outcome':
     case 'person_create':
+    case 'yard_sign':
       return null;
     default: {
       const _exhaustive: never = op;
@@ -550,6 +551,17 @@ export function applyLocalOps(
         }
         break;
       }
+      case 'yard_sign':
+        // Only ever moves an existing request between its two doorstep states. A door with
+        // no request stays null: the request the server creates in that case comes back on
+        // the next refresh, and inventing one here would show a request that may not exist.
+        if (h.yard_sign) {
+          h.yard_sign = {
+            ...h.yard_sign,
+            status: op.payload.delivered ? 'delivered' : 'requested',
+          };
+        }
+        break;
       case 'door_outcome':
         h.door_outcome = op.payload.outcome;
         break;

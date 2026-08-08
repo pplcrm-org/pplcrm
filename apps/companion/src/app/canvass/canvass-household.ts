@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal, type OnDestroy } from '@angular/core';
 
-import type { CompanionDoorOutcome, CompanionHousehold, CompanionPerson } from '@common';
+import type { CompanionDoorOutcome, CompanionHousehold, CompanionPerson, CompanionYardSign } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
 
@@ -13,6 +13,7 @@ import {
   stanceStyle,
   statusBadgeClass,
   supportLevelLabel,
+  timeAgoLabel,
   type StanceStyle,
 } from './canvass-ui';
 
@@ -70,13 +71,28 @@ const CLOCK_TICK_MS = 30_000;
           </div>
         }
 
-        <div class="flex flex-wrap gap-2">
-          @if (h.yard_sign) {
-            <span class="badge badge-info badge-outline gap-1">
-              <pc-icon name="yard-sign" [size]="4"></pc-icon>
-              Yard sign requested
-            </span>
+        <!-- The yard sign, and the one thing a canvasser carrying signs can do about it. -->
+        @if (h.yard_sign; as sign) {
+          @if (sign.status === 'delivered') {
+            <div class="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-3">
+              <pc-icon name="yard-sign" [size]="5" class="text-success"></pc-icon>
+              <p class="flex-1 text-sm font-medium text-success">Sign delivered</p>
+              <button type="button" class="btn btn-ghost btn-xs" [disabled]="h.dnc" (click)="undoSign(h)">Undo</button>
+            </div>
+          } @else {
+            <div class="flex flex-col gap-2 rounded-lg border border-info/30 bg-info/10 p-3">
+              <div class="flex items-center gap-2">
+                <pc-icon name="yard-sign" [size]="5" class="text-info"></pc-icon>
+                <p class="text-sm font-medium text-info">{{ signRequestedLabel(sign) }}</p>
+              </div>
+              <button type="button" class="btn btn-info btn-sm min-h-11" [disabled]="h.dnc" (click)="deliverSign(h)">
+                I delivered the sign
+              </button>
+            </div>
           }
+        }
+
+        <div class="flex flex-wrap gap-2">
           @if (voted(h)) {
             <span class="badge badge-success badge-outline gap-1">
               <pc-icon name="check-circle" [size]="4"></pc-icon>
@@ -307,6 +323,21 @@ export class CanvassHousehold implements OnDestroy {
 
   protected initials(name: string): string {
     return initialsOf(name);
+  }
+
+  /** "Yard sign requested 4 days ago" — the wait is the reason to hand one over now. */
+  protected signRequestedLabel(sign: CompanionYardSign): string {
+    const at = sign.requested_at == null ? Number.NaN : Date.parse(sign.requested_at);
+    if (Number.isNaN(at)) return 'Yard sign requested';
+    return `Yard sign requested ${timeAgoLabel(Math.max(0, this.now() - at))}`;
+  }
+
+  protected deliverSign(h: CompanionHousehold): void {
+    if (this.store.yardSign(h.id, true)) this.alerts.showSuccess('Sign marked delivered');
+  }
+
+  protected undoSign(h: CompanionHousehold): void {
+    if (this.store.yardSign(h.id, false)) this.alerts.showSuccess('Delivery undone. The sign is owed again');
   }
 
   /** "Julie L. spoke to someone here 1 day ago", or null when nobody has been recently. */

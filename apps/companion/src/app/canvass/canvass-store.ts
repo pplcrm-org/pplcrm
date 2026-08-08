@@ -103,6 +103,8 @@ export interface SurveyDraft {
   issues: string[];
   wants_volunteer: boolean;
   wants_yard_sign: boolean;
+  /** "…and I gave them one just now" — only sent alongside wants_yard_sign. */
+  yard_sign_delivered: boolean;
   set_dnc: boolean;
   senior: boolean;
   contact_phone: string | null;
@@ -575,6 +577,9 @@ export class CanvassStore {
         issues: draft.issues,
         wants_volunteer: draft.wants_volunteer,
         wants_yard_sign: draft.wants_yard_sign,
+        // Meaningless without the request it delivers, and sending it alone would ask the
+        // server to deliver a sign nobody has asked for.
+        yard_sign_delivered: draft.wants_yard_sign && draft.yard_sign_delivered,
         set_dnc: draft.set_dnc,
         senior: draft.senior,
         contact_phone: draft.contact_phone,
@@ -609,6 +614,26 @@ export class CanvassStore {
       },
     };
     this.record(op, `${this.personLabel(householdId, personId)} · ${this.addressOf(householdId)}`);
+  }
+
+  /**
+   * The canvasser handed over (or took back) this door's yard sign.
+   *
+   * Door-level, because the sign goes in the lawn rather than to a person. Returns false
+   * when there is nothing to act on, so the caller can stay silent instead of claiming a
+   * delivery it did not record.
+   */
+  public yardSign(householdId: string, delivered: boolean): boolean {
+    const sign = this.householdById(householdId)?.yard_sign ?? null;
+    if (sign == null) return false;
+    if ((sign.status === 'delivered') === delivered) return false;
+    const op: CompanionOpType = {
+      ...this.baseOp(),
+      type: 'yard_sign',
+      payload: { household_id: householdId, delivered },
+    };
+    this.record(op, `${delivered ? 'Sign delivered' : 'Sign delivery undone'} · ${this.addressOf(householdId)}`);
+    return true;
   }
 
   /**

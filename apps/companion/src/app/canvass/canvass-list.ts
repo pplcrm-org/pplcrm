@@ -156,8 +156,11 @@ type ListFilter = 'all' | 'remaining' | 'visited';
               <span class="flex shrink-0 items-center gap-1.5">
                 <!-- Marks before the status chip: they change what you ASK at the door,
                      which matters before you know whether anyone answered it. -->
-                @if (entry.household.yard_sign) {
-                  <pc-icon name="yard-sign" [size]="4" class="text-info" title="Wants a yard sign" />
+                <!-- Only an OWED sign is a mark on the row. A door whose sign is already
+                     delivered has nothing left for the walker to do about it, and a mark
+                     there would send them looking for a job that is finished. -->
+                @if (entry.household.yard_sign?.status === 'requested') {
+                  <pc-icon name="yard-sign" [size]="4" class="text-info" title="Owed a yard sign" />
                 }
                 @if (voted(entry.household)) {
                   <pc-icon name="check-circle" [size]="4" class="text-success" title="Already voted" />

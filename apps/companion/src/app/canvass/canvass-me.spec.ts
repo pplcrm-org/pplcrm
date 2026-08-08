@@ -38,7 +38,7 @@ function turfPayload(): CompanionTurfPayload {
         lat: null,
         lng: null,
         dnc: false,
-        yard_sign: false,
+        yard_sign: null,
         door_outcome: null,
         hh_survey: null,
         last_knock: null,

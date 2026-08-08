@@ -355,6 +355,9 @@ async function cleanup(db: Db, tenantId: string): Promise<void> {
   await db.deleteFrom('companion_ops').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('companion_sessions').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('companion_volunteers').where('tenant_id', '=', tenantId).execute();
+  // Stops reference both a route and a request, so they go before either of them.
+  await db.deleteFrom('delivery_route_stops').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('delivery_routes').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('delivery_requests').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('campaign_person_facts').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('campaign_subscriptions').where('tenant_id', '=', tenantId).execute();
@@ -1093,13 +1096,123 @@ describe('CanvassingController', () => {
     expect(home.apt).toBe('302');
     // Bare digits get "Unit" in front so 302 cannot read as part of the street number.
     expect(home.address).toContain('Unit 302');
-    expect(home.yard_sign).toBe(true);
+    expect(home.yard_sign?.status).toBe('requested');
     const person = home.people.find((p) => p.id === alice);
     expect(person?.support).toBe('leaning');
     expect(person?.voting_status).toBe('voted_advance');
     expect(person?.last_name).toBe('Door');
     // Still payload-minimized: prior ID widened the payload, contact details did not.
     expect(JSON.stringify(companion)).not.toMatch(/@example\.com/);
+  });
+
+  it('a canvasser delivering the sign closes the driver’s stop, and undo puts both back', async () => {
+    const householdId = s.householdIds[0]!;
+    const request = await db
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        household_id: householdId,
+        source: 'manual',
+        status: 'approved',
+        createdby_id: s.userId,
+        updatedby_id: s.userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    // A driver is already routed to this house — the case the whole feature exists to stop.
+    const route = await db
+      .insertInto('delivery_routes')
+      .values({
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        name: 'Saturday run',
+        status: 'assigned',
+        start_address: '1 Campaign HQ, Ottawa',
+        start_lat: 45.42,
+        start_lng: -75.69,
+        createdby_id: s.userId,
+        updatedby_id: s.userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const stop = await db
+      .insertInto('delivery_route_stops')
+      .values({
+        tenant_id: s.tenantId,
+        route_id: String(route.id),
+        request_id: String(request.id),
+        seq: 1,
+        status: 'pending',
+        createdby_id: s.userId,
+        updatedby_id: s.userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+    const turf = (await controller.getTurfs(auth)).find((t) => t.door_count > 0);
+    if (!turf) throw new Error('expected a turf');
+    const { token } = await controller.assignTurf(auth, {
+      turf_id: turf.id,
+      team_id: null,
+      volunteer_person_id: s.volunteerPersonId,
+    });
+    const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+    const before = await controller.getCompanionTurf(token, session);
+    expect(before.households.find((h) => h.id === householdId)?.yard_sign?.status).toBe('requested');
+
+    const { acks } = await controller.postCompanionResults(token, session, [
+      {
+        op_id: 'op-sign-1',
+        recorded_at: null,
+        type: 'yard_sign',
+        payload: { household_id: householdId, delivered: true },
+      },
+    ]);
+    expect(acks[0]?.status).toBe('applied');
+
+    const readRequest = async () =>
+      db
+        .selectFrom('delivery_requests')
+        .select(['status'])
+        .where('tenant_id', '=', s.tenantId)
+        .where('id', '=', String(request.id))
+        .executeTakeFirst();
+    const readStop = async () =>
+      db
+        .selectFrom('delivery_route_stops')
+        .select(['status', 'acted_via'])
+        .where('tenant_id', '=', s.tenantId)
+        .where('id', '=', String(stop.id))
+        .executeTakeFirst();
+
+    expect((await readRequest())?.status).toBe('delivered');
+    // The driver's stop is closed, so nobody is sent to a house that already has its sign.
+    expect((await readStop())?.status).toBe('delivered');
+    // Every stop is terminal, so the route completed itself exactly as it does for a driver.
+    const routeRow = await db
+      .selectFrom('delivery_routes')
+      .select(['status'])
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', String(route.id))
+      .executeTakeFirst();
+    expect(routeRow?.status).toBe('completed');
+    // And the door says so on the next load, instead of still asking for a sign.
+    const after = await controller.getCompanionTurf(token, session);
+    expect(after.households.find((h) => h.id === householdId)?.yard_sign?.status).toBe('delivered');
+
+    // Undo returns the sign to owed and reopens the stop AND its route.
+    await controller.postCompanionResults(token, session, [
+      {
+        op_id: 'op-sign-2',
+        recorded_at: null,
+        type: 'yard_sign',
+        payload: { household_id: householdId, delivered: false },
+      },
+    ]);
+    expect((await readRequest())?.status).toBe('approved');
+    expect((await readStop())?.status).toBe('pending');
   });
 
   it('records deceased, a data-error task, and the senior band from the door', async () => {
