@@ -122,7 +122,7 @@ export const SidebarItems: ISidebarItem[] = [
         name: `Tasks`,
         route: '/tasks',
         icon: 'task',
-        shortcut: 'k',
+        shortcut: 't',
         // badgeCount is populated at runtime by Sidebar from `tasks.countSlaBreaches`
         // (spec §4) — see sidebar.ts. Static data here is intentionally left unset.
       },
@@ -149,7 +149,7 @@ export const SidebarItems: ISidebarItem[] = [
         name: `Households`,
         route: '/households',
         icon: 'house-modern',
-        shortcut: 'u',
+        shortcut: 'h',
         hidden: true,
       },
       {
@@ -189,7 +189,7 @@ export const SidebarItems: ISidebarItem[] = [
         moduleId: 'donations',
         route: '/donations',
         icon: 'currency-dollar',
-        shortcut: 'o',
+        shortcut: 'd',
       },
       {
         name: `Automations`,
@@ -222,7 +222,7 @@ export const SidebarItems: ISidebarItem[] = [
         moduleId: 'deliveries',
         route: '/deliveries',
         icon: 'house-modern',
-        // `e` (dEliveries): `d` belongs to Duplicates, and the church-mode wording
+        // `e` (dEliveries): `d` belongs to Donations, and the church-mode wording
         // ("Drop-offs") also starts with a taken letter.
         shortcut: 'e',
         // badgeCount = live approved-and-ready request count (spec §14), populated at runtime by
@@ -232,7 +232,6 @@ export const SidebarItems: ISidebarItem[] = [
         name: 'Teams',
         route: '/teams',
         icon: 'user-group',
-        shortcut: 't',
       },
       {
         // "Approvals", not "Volunteer access": under a VOLUNTEERS heading the qualifier
@@ -278,7 +277,6 @@ export const SidebarItems: ISidebarItem[] = [
         name: `Duplicates`,
         route: '/duplicates',
         icon: 'document-duplicate',
-        shortcut: 'd',
         // Badge = merge-queue size (spec §9.3), via the tenant-scoped `duplicates.countQueue`
         // query. Count is fetched and applied in Sidebar (sidebar.ts) — see `badgeCount`.
       },
