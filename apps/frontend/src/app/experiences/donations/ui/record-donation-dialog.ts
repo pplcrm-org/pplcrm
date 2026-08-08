@@ -43,6 +43,20 @@ function todayIso(): string {
 }
 
 /**
+ * A country written either way — the ISO code ("CA") or the printed name ("Canada") — to the ISO
+ * code, when it is one this app knows. Household records and older gifts carry the name, while the
+ * residency rules the server enforces are written in codes, so a gift submitted as "Canada" used to
+ * be refused for a workspace that allows "CA". An unrecognized spelling is returned untouched so a
+ * country outside the list is still recorded as typed.
+ */
+function toCountryCode(raw: string): string {
+  const value = raw.trim();
+  if (!value) return '';
+  const upper = value.toUpperCase();
+  return STRIPE_CONNECT_COUNTRIES.find((c) => c.code === upper || c.name.toUpperCase() === upper)?.code ?? value;
+}
+
+/**
  * Fig. 15 "Record donation" dialog — records an offline gift (cash, check, bank transfer, or a
  * card payment taken outside Stripe checkout) against a donor. Distinct from the "Collect
  * donation" flow on the person page, which redirects to Stripe Checkout for a real card charge.
@@ -121,15 +135,27 @@ export class RecordDonationDialog {
   protected readonly city = signal('');
   protected readonly province = signal('');
   protected readonly postal = signal('');
+  /** Holds the ISO country code the gift is submitted with, not the printed country name. */
   protected readonly country = signal('');
   protected readonly touchedAddress = signal(false);
 
   /**
-   * The workspace's own country, resolved once from the residency context and reused on every
-   * later open. It replaces a hardcoded "Canada" that was wrong for every other workspace, and it
-   * only fills the field while that field is still blank — the donor's own address always wins.
-   * Left blank when the workspace has no country recorded, so staff type it rather than be handed
-   * a country the receipt would then print.
+   * What the country picker offers: the known countries by name, plus — when a donor's household
+   * carries a country this app does not list — that value as its own option, so prefilling from
+   * the household never silently blanks the field.
+   */
+  protected readonly countryOptions = computed<ReadonlyArray<{ code: string; name: string }>>(() => {
+    const current = this.country().trim();
+    if (!current || STRIPE_CONNECT_COUNTRIES.some((c) => c.code === current)) return STRIPE_CONNECT_COUNTRIES;
+    return [{ code: current, name: current }, ...STRIPE_CONNECT_COUNTRIES];
+  });
+
+  /**
+   * The workspace's own country as an ISO code, resolved once from the residency context and
+   * reused on every later open. It replaces a hardcoded "Canada" that was wrong for every other
+   * workspace, and it only fills the field while that field is still blank — the donor's own
+   * address always wins. Left blank when the workspace has no country recorded, so staff choose
+   * one rather than be handed a country the receipt would then print.
    */
   private readonly workspaceCountry = signal('');
 
@@ -170,14 +196,14 @@ export class RecordDonationDialog {
       try {
         const ctx = await this.donationsSvc.getResidencyContext();
         const code = (ctx.country ?? '').trim().toUpperCase();
-        this.workspaceCountry.set(STRIPE_CONNECT_COUNTRIES.find((c) => c.code === code)?.name ?? '');
+        this.workspaceCountry.set(STRIPE_CONNECT_COUNTRIES.some((c) => c.code === code) ? code : '');
       } catch {
         // Leave it blank — an unreachable setting is no reason to guess a country onto a receipt.
         return;
       }
     }
-    const name = this.workspaceCountry();
-    if (name && !this.country().trim()) this.country.set(name);
+    const code = this.workspaceCountry();
+    if (code && !this.country().trim()) this.country.set(code);
   }
 
   public close(): void {
@@ -239,7 +265,8 @@ export class RecordDonationDialog {
     if (p.city) this.city.set(p.city);
     if (p.state) this.province.set(p.state);
     if (p.zip) this.postal.set(p.zip);
-    if (p.country) this.country.set(p.country);
+    // Households store the printed country name; the picker and the gift both speak ISO codes.
+    if (p.country) this.country.set(toCountryCode(p.country));
   }
 
   protected clearDonor(): void {
@@ -279,7 +306,8 @@ export class RecordDonationDialog {
           city: this.city().trim(),
           state: this.province().trim(),
           zip: this.postal().trim(),
-          country: this.country().trim(),
+          // The ISO code, which is the spelling the workspace's residency rules are written in.
+          country: toCountryCode(this.country()),
         },
       });
       this.alertSvc.showSuccess(`Saved. ${this.money.formatUnits(amt)} from ${this.donorName(donor)} recorded`);
@@ -291,6 +319,12 @@ export class RecordDonationDialog {
       this.submitting.set(false);
       end();
     }
+  }
+
+  /** Applies a country choice from the picker. Choosing counts as touching the address block. */
+  protected setCountry(value: string): void {
+    this.country.set(value);
+    this.touchedAddress.set(true);
   }
 
   /** Applies a method choice from the select, narrowing the raw DOM string to DonationMethod. */

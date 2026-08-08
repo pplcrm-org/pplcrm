@@ -10,6 +10,7 @@ import { DonationsService } from '../../../services/api/donations-service';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { DONATION_TABS } from './donation-tabs';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+import { countryDisplayName } from '@common';
 import { WorkspaceCurrencyService } from '../../../shared/services/currency.service';
 
 @Component({
@@ -99,6 +100,13 @@ export class PledgesGridComponent implements OnInit {
   protected toStr(val: any): string {
     return String(val);
   }
+
+  /**
+   * The pledge's billing-address country was stored as a printed name ('Canada') on older pledges
+   * and as an ISO code ('CA') since the "Record donation" dialog switched formats. Renders a
+   * recognized code as its printed name; anything else (a legacy name, free text) prints unchanged.
+   */
+  protected readonly countryLabel = countryDisplayName;
 
   protected statusBadgeClass(status: string): string {
     const map: Record<string, string> = {

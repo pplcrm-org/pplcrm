@@ -55,7 +55,7 @@
             <span class="pc-eyebrow block mb-1">Address at gift time</span>
             {{ d.street }}@if (d.apt) {, {{ d.apt }}}<br />
             {{ d.city }}, {{ d.state }} {{ d.zip }}<br />
-            {{ d.country }}
+            {{ countryLabel(d.country) }}
           </div>
           }
         </div>

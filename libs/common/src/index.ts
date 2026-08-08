@@ -462,7 +462,7 @@ export type {
   RecordDonationType,
   StripeConnectCountry,
 } from './lib/schemas/donations.schema';
-export { STRIPE_CONNECT_COUNTRIES } from './lib/schemas/donations.schema';
+export { STRIPE_CONNECT_COUNTRIES, countryDisplayName } from './lib/schemas/donations.schema';
 export type {
   ReceiptKind,
   ReceiptStatus,

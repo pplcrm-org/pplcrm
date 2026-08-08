@@ -1,6 +1,7 @@
 import {
   RECEIPT_ISSUER_FIELD_LABELS,
   RECEIPT_REGIMES,
+  countryDisplayName,
   toWorkspaceCurrency,
   type ReceiptIssuerField,
   type ReceiptRegimeId,
@@ -317,7 +318,10 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     return [
       [receipt.donor_address_line1, receipt.donor_address_line2].filter(Boolean).join(', '),
       [receipt.donor_city, receipt.donor_province, receipt.donor_postal_code].filter(Boolean).join(', '),
-      receipt.donor_country ?? '',
+      // Stored country may be a printed name, free text, or (for rows saved since the "Record
+      // donation" dialog switched to ISO codes) a code like 'CA' — render the printed name when
+      // recognized; anything else prints exactly as stored.
+      countryDisplayName(receipt.donor_country),
     ].filter((line) => line.trim().length > 0);
   }
 

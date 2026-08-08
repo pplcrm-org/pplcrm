@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { BaseRepository } from '../../lib/base.repo';
-import { DonationsController } from './controller';
+import { torontoDateString } from '../../lib/pdf/pdf-common';
+import { DonationsController, parseGiftDate } from './controller';
+
+/** "YYYY-MM-DD" shifted by whole calendar days, without dragging in a timezone library. */
+function shiftDays(isoDate: string, days: number): string {
+  const shifted = new Date(`${isoDate}T00:00:00Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
 
 async function cleanTenant(db: any, tenantId: string, _personId: string) {
   await db
@@ -219,6 +227,74 @@ describe('DonationsController Unit & Integration', () => {
       // Matching state: ON
       const check2 = await controller.checkEligibility(tenantId, personId, 10000, { country: 'CA', state: 'ON' });
       expect(check2.eligible).toBe(true);
+    });
+
+    /** Turn on the residency restriction with the given country and region lists. */
+    async function setResidency(countries: string, regions: string): Promise<void> {
+      await db
+        .insertInto('settings')
+        .values([
+          {
+            tenant_id: tenantId,
+            key: 'donations.restrict_residency',
+            value: JSON.stringify(true) as any,
+            createdby_id: userId,
+            updatedby_id: userId,
+          },
+          {
+            tenant_id: tenantId,
+            key: 'donations.allowed_countries',
+            value: JSON.stringify(countries) as any,
+            createdby_id: userId,
+            updatedby_id: userId,
+          },
+          {
+            tenant_id: tenantId,
+            key: 'donations.allowed_regions',
+            value: JSON.stringify(regions) as any,
+            createdby_id: userId,
+            updatedby_id: userId,
+          },
+        ])
+        .execute();
+    }
+
+    // A configured region list is a closed list. Two countries are allowed but only Ontario is
+    // listed as a region, so a New York donor is refused: their country contributes no region to
+    // the list, and this gate fails closed rather than waving them through.
+    it('refuses a donor from an allowed country that has no region on the allowed list', async () => {
+      await setResidency('CA,US', 'ON');
+
+      const check = await controller.checkEligibility(tenantId, personId, 10000, { country: 'US', state: 'NY' });
+      expect(check.eligible).toBe(false);
+      expect(check.reason).toContain('allowed provinces/states: ON');
+    });
+
+    it('accepts a donor who lives in the one allowed region', async () => {
+      await setResidency('CA,US', 'ON');
+
+      const check = await controller.checkEligibility(tenantId, personId, 10000, { country: 'CA', state: 'ON' });
+      expect(check.eligible).toBe(true);
+    });
+
+    it('refuses a donor with no province or state once regions are configured', async () => {
+      await setResidency('CA,US', 'ON');
+
+      const check = await controller.checkEligibility(tenantId, personId, 10000, { country: 'CA', state: '' });
+      expect(check.eligible).toBe(false);
+      expect(check.reason).toContain('allowed provinces/states: ON');
+    });
+
+    // The Record-donation dialog and older household records spell the country out; the settings
+    // page writes ISO codes. The check folds the name to its code before comparing.
+    it('accepts a country written as a name against a country list written in codes', async () => {
+      await setResidency('CA', '');
+
+      const check = await controller.checkEligibility(tenantId, personId, 10000, {
+        country: 'Canada',
+        state: 'ON',
+      });
+      expect(check.eligible).toBe(true);
     });
   });
 
@@ -451,5 +527,31 @@ describe('DonationsController Unit & Integration', () => {
       expect(restored).toBe(true); // idempotent no-op
       expect((await statusOf(id)).status).toBe('refunded');
     });
+  });
+});
+
+/**
+ * The gift date a recorded gift is stored under. No database is involved, so this suite stands
+ * outside the seeded one above.
+ */
+describe('Gift date ceiling', () => {
+  const torontoToday = torontoDateString(new Date());
+
+  it('accepts today in Toronto', () => {
+    expect(parseGiftDate(torontoToday)).toBeInstanceOf(Date);
+  });
+
+  it('accepts a date one day past Toronto, which is what the dialog prefills for a recorder east of it', () => {
+    // A recorder in London between midnight and about 5am, or in Sydney all morning, is already on
+    // tomorrow's calendar day by Toronto's reckoning. Their own dialog prefilled that date.
+    expect(parseGiftDate(shiftDays(torontoToday, 1))).toBeInstanceOf(Date);
+  });
+
+  it('refuses a date two days past Toronto, which no timezone can produce', () => {
+    expect(() => parseGiftDate(shiftDays(torontoToday, 2))).toThrow(/future/);
+  });
+
+  it('refuses a date that is not a real date', () => {
+    expect(() => parseGiftDate('not-a-date')).toThrow(/not a real date/);
   });
 });

@@ -1,5 +1,12 @@
 import { TRPCError } from '@trpc/server';
-import { CA_PROVINCES, US_STATES, toStripeCurrency, toWorkspaceCurrency, type DonationAddressType } from '@common';
+import {
+  CA_PROVINCES,
+  STRIPE_CONNECT_COUNTRIES,
+  US_STATES,
+  toStripeCurrency,
+  toWorkspaceCurrency,
+  type DonationAddressType,
+} from '@common';
 import { env } from '../../../env';
 import { BadRequestError, PreconditionFailedError } from '../../errors/app-errors';
 import { getStripe, isMockMode } from '../../lib/stripe-platform-client';
@@ -65,17 +72,35 @@ export function mapStripeBillingAddress(
  * Midday UTC, not midnight: receipts format the timestamp in America/Toronto, and midnight UTC
  * formats as the previous day there — the printed-date bug from REVIEW4 T1-1. Midday UTC lands on
  * the intended day in every timezone the app formats in. Past dates are unrestricted (staff enter
- * cheques months late); a future date is refused.
+ * cheques months late); a date beyond {@link latestAcceptableGiftDate} is refused.
  */
-function parseGiftDate(giftDate: string): Date {
+export function parseGiftDate(giftDate: string, now: Date = new Date()): Date {
   const parsed = new Date(`${giftDate}T12:00:00Z`);
   if (Number.isNaN(parsed.getTime())) {
     throw new BadRequestError('That gift date is not a real date. Use YYYY-MM-DD.');
   }
-  if (giftDate > torontoDateString(new Date())) {
+  if (giftDate > latestAcceptableGiftDate(now)) {
     throw new BadRequestError('A gift cannot be dated in the future. Use today’s date or earlier.');
   }
   return parsed;
+}
+
+/**
+ * The latest gift date the server accepts: the day after today in America/Toronto.
+ *
+ * The dialog pre-fills the gift date with the recorder's own calendar day, which can be one day
+ * ahead of Toronto's (London between midnight and about 5am, mornings in Sydney). Refusing that
+ * pre-filled value made the dialog reject its own default. No inhabited timezone runs more than a
+ * day ahead of Toronto, so one day of slack covers every recorder while still refusing a date
+ * genuinely in the future.
+ *
+ * Computed by adding a day to the Toronto calendar date rather than adding 24 hours to the
+ * instant: on the November clock change a 24-hour jump lands back on the same Toronto day.
+ */
+function latestAcceptableGiftDate(now: Date): string {
+  const next = new Date(`${torontoDateString(now)}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return next.toISOString().slice(0, 10);
 }
 
 /**
@@ -84,8 +109,8 @@ function parseGiftDate(giftDate: string): Date {
  *
  * The settings page writes bare two-letter codes for Canada (CA_PROVINCES) and the United States
  * (US_STATES) — the two lists share no code — and ISO 3166-2 "CC-XX" codes for the other countries
- * it offers regions for (DE-BY, FR-IDF, IN-MH). A code whose country cannot be identified
- * constrains nobody rather than refusing everybody.
+ * it offers regions for (DE-BY, FR-IDF, IN-MH). A code whose country cannot be identified is still
+ * matched against the donor's state; only the country half of the comparison is skipped.
  */
 function regionCodeCountry(code: string): string | null {
   const dash = code.indexOf('-');
@@ -93,6 +118,21 @@ function regionCodeCountry(code: string): string | null {
   if (CA_PROVINCES.some((p) => p.code === code)) return 'CA';
   if (US_STATES.some((s) => s.code === code)) return 'US';
   return null;
+}
+
+/**
+ * A donor's country field → the ISO two-letter code the residency settings are written in.
+ *
+ * Payment providers send the code ("CA"), but a staff-typed or household-copied address can carry
+ * the printed name ("Canada"). Comparing a name against a list of codes refused every such donor,
+ * so a recognized country name is folded to its code; anything else is passed through unchanged
+ * (upper-cased), which leaves an unknown spelling to fail the country list as before.
+ */
+function normalizeCountryCode(raw: string): string {
+  const value = raw.trim().toUpperCase();
+  if (!value) return '';
+  const named = STRIPE_CONNECT_COUNTRIES.find((c) => c.name.toUpperCase() === value);
+  return named ? named.code : value;
 }
 
 /**
@@ -410,14 +450,14 @@ export class DonationsController extends BaseController<'donations', DonationsRe
     const allowedRegions = String((await this.getSettingVal(tenantId, 'donations.allowed_regions')) || '').trim();
 
     if (restrictResidency) {
-      const country = (address.country || '').trim().toUpperCase();
+      const country = normalizeCountryCode(address.country || '');
       const state = (address.state || '').trim().toUpperCase();
 
       // Restriction on with no countries selected enforces nothing — every donor passes. This is
       // deliberately left permissive (refusing everyone would take a workspace's donations offline
       // from an empty settings field); the settings page is the place to warn about it.
       if (allowedCountries) {
-        const countriesList = allowedCountries.split(',').map((c) => c.trim().toUpperCase());
+        const countriesList = allowedCountries.split(',').map((c) => normalizeCountryCode(c));
         if (!country || !countriesList.includes(country)) {
           return {
             eligible: false,
@@ -426,19 +466,30 @@ export class DonationsController extends BaseController<'donations', DonationsRe
         }
       }
 
-      // Region codes only constrain donors of the country that code belongs to. Allowing
-      // Canada + Ontario alongside the United Kingdom must not refuse UK donors for not living in
-      // Ontario; a donor from an allowed country with no region codes configured passes on
-      // country alone.
-      const regionsForCountry = allowedRegions
+      // A configured region list is a closed list: the donor must match one of its codes, and a
+      // donor whose country contributes no code to the list is refused rather than waved through.
+      // This gate is fail-closed by policy — an admin who wants a whole country to give adds no
+      // region for it, and the country list alone then decides.
+      //
+      // The match is still code-aware: a code names both a country and a subdivision, so "NY" only
+      // admits a donor whose country is the United States (regionCodeCountry), and the stored
+      // "DE-BY" spelling matches a provider's bare "BY" (regionCodeMatchesState).
+      const regionsList = allowedRegions
         .split(',')
         .map((r) => r.trim().toUpperCase())
-        .filter((r) => r.length > 0 && regionCodeCountry(r) === country);
-      if (regionsForCountry.length > 0 && !regionsForCountry.some((r) => regionCodeMatchesState(r, state))) {
-        return {
-          eligible: false,
-          reason: `Donor must reside in one of the allowed provinces/states: ${regionsForCountry.join(', ')}.`,
-        };
+        .filter((r) => r.length > 0);
+      if (regionsList.length > 0) {
+        const matched = regionsList.some((r) => {
+          const codeCountry = regionCodeCountry(r);
+          if (codeCountry && country && codeCountry !== country) return false;
+          return regionCodeMatchesState(r, state);
+        });
+        if (!matched) {
+          return {
+            eligible: false,
+            reason: `Donor must reside in one of the allowed provinces/states: ${regionsList.join(', ')}.`,
+          };
+        }
       }
     }
 

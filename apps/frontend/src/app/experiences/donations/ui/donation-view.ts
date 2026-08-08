@@ -12,6 +12,7 @@ import {
   DONATION_METHOD_LABELS,
   OFFICIAL_RECEIPT_KINDS,
   RECEIPT_KIND_LABELS,
+  countryDisplayName,
   type DonationMethod,
   type ReceiptKind,
 } from '@common';
@@ -73,6 +74,14 @@ export class DonationViewComponent {
     const d = this.donation();
     return d ? `${d.person_first_name ?? ''} ${d.person_last_name ?? ''}`.trim() : '';
   });
+
+  /**
+   * The address-at-gift-time country was stored as a printed name ('Canada') on older gifts and as
+   * an ISO code ('CA') on gifts recorded since the "Record donation" dialog switched formats. This
+   * renders a recognized code as its printed name; anything else (a legacy name, free text) prints
+   * unchanged.
+   */
+  protected readonly countryLabel = countryDisplayName;
 
   /**
    * The acknowledgement — the plain thank-you every gift gets, sent automatically. Kept apart from

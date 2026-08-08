@@ -81,7 +81,7 @@
       <td class="text-base-content/70">{{ formatDate(pledge.next_billing_date) }}</td>
       <td class="text-base-content/60">
         @if (pledge.state || pledge.country) { {{ pledge.state }}{{ pledge.state && pledge.country ? ', ' : '' }}{{
-        pledge.country }} } @else { — }
+        countryLabel(pledge.country) }} } @else { — }
       </td>
       <td class="text-right">
         @if (pledge.status === 'active' || pledge.status === 'past_due') {

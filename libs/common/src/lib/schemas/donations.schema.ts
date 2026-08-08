@@ -86,3 +86,19 @@ export const STRIPE_CONNECT_COUNTRY_CODES = STRIPE_CONNECT_COUNTRIES.map((c) => 
 ];
 export const stripeConnectCountrySchema = z.enum(STRIPE_CONNECT_COUNTRY_CODES);
 export type StripeConnectCountry = z.infer<typeof stripeConnectCountrySchema>;
+
+const COUNTRY_NAME_BY_CODE: Record<string, string> = Object.fromEntries(
+  STRIPE_CONNECT_COUNTRIES.map((c) => [c.code, c.name]),
+);
+
+/**
+ * Renders a stored donor country for display. Donation address country was historically saved as
+ * a printed name ('Canada') or free text; the "Record donation" dialog now saves an ISO-2 code
+ * ('CA') instead. This maps a recognized code to its printed name for display only — it never
+ * changes what is stored, and any value it does not recognize (a legacy name, free text, an
+ * unrecognized code) passes through unchanged so old rows keep rendering exactly as before.
+ */
+export function countryDisplayName(value: string | null | undefined): string {
+  if (!value) return '';
+  return COUNTRY_NAME_BY_CODE[value.toUpperCase()] ?? value;
+}

@@ -69,7 +69,7 @@ describe('RecordDonationDialog', () => {
     component['city'].set('Ottawa');
     component['province'].set('ON');
     component['postal'].set('K1A 0A1');
-    component['country'].set('Canada');
+    component['country'].set('CA');
   };
 
   it('should not submit without the donor mailing address', async () => {
@@ -99,11 +99,35 @@ describe('RecordDonationDialog', () => {
       amountCents: 5000,
       method: 'cash',
       gift_date: todayIso(),
-      address: { street: '12 Maple Ave', apt: null, city: 'Ottawa', state: 'ON', zip: 'K1A 0A1', country: 'Canada' },
+      // The country goes out as the ISO code, which is the spelling the server's residency rules
+      // compare against — a gift submitted as "Canada" was refused by a workspace allowing "CA".
+      address: { street: '12 Maple Ave', apt: null, city: 'Ottawa', state: 'ON', zip: 'K1A 0A1', country: 'CA' },
     });
     // No receipt claim in the toast: whether a receipt is issued depends on workspace settings.
     // The amount is formatted in the workspace currency — here the CAD default, so "CA$".
     expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Saved. CA$50.00 from Jane Doe recorded');
+  });
+
+  it('turns a household country name into its ISO code when prefilling from the donor', () => {
+    component['selectDonor']({ ...donor, country: 'Canada' });
+    expect(component['country']()).toBe('CA');
+  });
+
+  it('submits a country the app does not list exactly as it was recorded', async () => {
+    component['selectDonor']({ ...donor, country: 'Kenya' });
+    component['amount'].set(50);
+    component['street'].set('12 Maple Ave');
+    component['city'].set('Nairobi');
+    component['province'].set('Nairobi');
+    component['postal'].set('00100');
+
+    await component['submit']();
+
+    expect(mockDonationsSvc.recordDonation).toHaveBeenCalledWith(
+      expect.objectContaining({ address: expect.objectContaining({ country: 'Kenya' }) }),
+    );
+    // …and the picker keeps offering it, so opening the dialog does not blank the field.
+    expect(component['countryOptions']()[0]).toEqual({ code: 'Kenya', name: 'Kenya' });
   });
 
   it('should show an error alert when the save fails', async () => {

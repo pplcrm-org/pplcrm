@@ -185,16 +185,21 @@
           (input)="postal.set($any($event.target).value)"
           (blur)="touchedAddress.set(true)"
         />
-        <input
+        <!-- Country is picked, not typed: the gift is submitted with the ISO code the workspace's
+             residency rules are written in, while the list shows the country's name. -->
+        <select
           id="rd-country"
-          type="text"
-          class="input input-bordered w-full text-sm"
-          [class.input-error]="addressInvalid() && !country().trim()"
-          placeholder="Country"
-          [value]="country()"
-          (input)="country.set($any($event.target).value)"
+          class="select select-bordered w-full text-sm"
+          [class.select-error]="addressInvalid() && !country().trim()"
+          aria-label="Country"
+          (change)="setCountry($any($event.target).value)"
           (blur)="touchedAddress.set(true)"
-        />
+        >
+          <option value="" [selected]="!country()">Country</option>
+          @for (c of countryOptions(); track c.code) {
+          <option [value]="c.code" [selected]="c.code === country()">{{ c.name }}</option>
+          }
+        </select>
       </div>
       @if (addressInvalid()) {
       <p class="text-xs text-error mt-1 flex items-center gap-1">
