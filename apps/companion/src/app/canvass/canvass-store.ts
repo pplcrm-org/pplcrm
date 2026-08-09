@@ -17,13 +17,15 @@ import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { CompanionSessionService } from '../gate/companion-api';
 import {
   applyLocalOps,
-  buildingKeyOf,
   deriveSegments,
   deriveWalkEntries,
+  entryRemaining,
+  isAttempted,
   isTempPersonId,
   meStats,
   nextDoor,
   opPersonId,
+  orderEntriesForWalk,
   segmentKeyOf,
   unitsOf,
   type CanvassSegment,
@@ -220,6 +222,13 @@ export class CanvassStore {
    * different scopes, and so switching tabs doesn't silently widen it back out.
    */
   public readonly segmentKey = signal<string | null>(null);
+  /**
+   * Which colouring the map tab shows: 'walk' (visit status, the default — the
+   * walker's question is "where next", not "how are we polling") or 'results'
+   * (the stance colours the walk-list rows use). Lives here so it survives tab
+   * switches; resets with the turf, like the street scope.
+   */
+  public readonly mapMode = signal<'walk' | 'results'>('walk');
   /** When the server payload was last pulled. Drives "Updated just now". */
   public readonly lastRefreshedAt = signal<Date | null>(null);
   /** A refresh is in flight — distinct from the initial load, which blanks the screen. */
@@ -282,29 +291,43 @@ export class CanvassStore {
   });
   /**
    * The rows the walk list actually renders: single doors, and apartment buildings folded
-   * back into the address their units share. Scoped like everything else on this screen.
+   * back into the address their units share. Scoped like everything else on this screen,
+   * and in the suggested walking order — up one side of the street, back down the other.
    */
-  public readonly walkEntries = computed<WalkEntry[]>(() => deriveWalkEntries(this.scopedHouseholds()));
+  public readonly walkEntries = computed<WalkEntry[]>(() =>
+    orderEntriesForWalk(deriveWalkEntries(this.scopedHouseholds())),
+  );
+  /**
+   * Each row's position in the walking order, 1-based. The list's number circles and the
+   * map's pin labels both read this, so a door is never "3" in one place and "7" in the
+   * other. Stable for the shift: finishing a door does not renumber the rest.
+   */
+  public readonly walkSeqByKey = computed<Map<string, number>>(
+    () => new Map(this.walkEntries().map((entry, i) => [entry.key, i + 1])),
+  );
   /** Turf-wide stats — these include every canvasser's work, not just this device's. */
   public readonly stats = computed(() => meStats(this.households()));
   /** Doors this volunteer logged on this device this shift. */
   public readonly myDoorCount = computed(() => this.myDoorIds().size);
   /** Everything recorded on this phone that is not in pplCRM yet — queued or held. */
   public readonly unsyncedCount = computed(() => this.queue().length + this.blocked().length);
-  /** Scoped, so narrowing to a street moves the ring to the next door ON that street. */
-  public readonly nextDoorId = computed(() => nextDoor(this.scopedHouseholds())?.id ?? null);
+  /**
+   * The first row in the walking order that still has work behind it. Scoped, so
+   * narrowing to a street moves the ring to the next door ON that street.
+   */
+  private readonly nextEntry = computed<WalkEntry | null>(() => this.walkEntries().find(entryRemaining) ?? null);
+  /** The next open door: the first remaining stop in the walking order. */
+  public readonly nextDoorId = computed<string | null>(() => {
+    const entry = this.nextEntry();
+    if (!entry) return null;
+    if (entry.kind === 'door') return entry.household.id;
+    return entry.units.find((u) => !isAttempted(u))?.id ?? null;
+  });
   /**
    * The walk-list row holding the next open door — a building when that door is a unit
    * inside one, so the ring lands on the row the volunteer can actually see and tap.
    */
-  public readonly nextEntryKey = computed<string | null>(() => {
-    const next = nextDoor(this.scopedHouseholds());
-    if (!next) return null;
-    const building = buildingKeyOf(next);
-    if (building == null) return next.id;
-    // A one-unit "building" renders as a plain door, so its key is the household's.
-    return this.walkEntries().some((e) => e.key === building) ? building : next.id;
-  });
+  public readonly nextEntryKey = computed<string | null>(() => this.nextEntry()?.key ?? null);
   /**
    * Undo is offered for door outcomes (inverse op) or while the op is still
    * queued AND not in the in-flight batch — mid-flight the server may already
@@ -479,6 +502,7 @@ export class CanvassStore {
       this.lastRefreshedAt.set(new Date());
       // A street scope belongs to the turf it was chosen on, never to the next one.
       this.segmentKey.set(null);
+      this.mapMode.set('walk');
       this.restoreMyDoors();
       this.applyDefaultScope();
       this.view.set({ kind: 'list' });
@@ -848,6 +872,7 @@ export class CanvassStore {
     this.workOffline.set(false);
     this.syncStatus.set('idle');
     this.segmentKey.set(null);
+    this.mapMode.set('walk');
     this.view.set({ kind: 'landing' });
     // Last, so a slow or failed revoke never leaves turf data on screen after the
     // volunteer has been told the shift ended.

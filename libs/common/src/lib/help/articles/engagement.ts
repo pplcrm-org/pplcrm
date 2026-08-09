@@ -387,6 +387,9 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       'ward',
       'precinct',
       'coverage',
+      'print',
+      'paper',
+      'walk sheet',
     ],
     related: ['teams', 'lists', 'district-boundaries', 'drawing-boundaries', 'events-shifts'],
     blocks: [
@@ -443,7 +446,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'open-turf', text: 'Open a turf' },
       {
         kind: 'p',
-        text: 'Click a turf’s name — in the list, or its pin on the map — to open it. The turf page is where you see what is actually happening on the ground: a map of its doors (green where a volunteer had a conversation, amber where they knocked and nobody answered, grey where nobody has been yet) inside the turf’s dashed boundary, everyone walking it with the doors and conversations credited to each of them, and then every door in walk order with who lives there, what the last visit recorded, which canvasser recorded it, and when. Filter the door list to talked, knocked-no-answer, or not-yet to see what is left. Addresses link to the household and names to the person, so a doorstep note is one click from the record it belongs to. Managing canvassers, the join QR, refreshing from the list, and retiring the turf are all here too, alongside the turf’s activity log.',
+        text: 'Click a turf’s name — in the list, or its pin on the map — to open it. The turf page is where you see what is actually happening on the ground: a map of its doors (green where a volunteer had a conversation, amber where they knocked and nobody answered, grey where nobody has been yet) inside the turf’s dashed boundary, everyone walking it with the doors and conversations credited to each of them, and then every door in walk order with who lives there, what the last visit recorded, which canvasser recorded it, and when. The door list and map now follow the same suggested walking order, with numbered pins marking the route up one side of the street and back down the other. Filter the door list to talked, knocked-no-answer, or not-yet to see what is left. Addresses link to the household and names to the person, so a doorstep note is one click from the record it belongs to. Managing canvassers, the join QR, refreshing from the list, and retiring the turf are all here too, alongside the turf’s activity log.',
       },
       {
         kind: 'p',
@@ -474,6 +477,15 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         tone: 'info',
         title: 'Greyed out? The turf has no list behind it',
         text: 'Only a turf that was cut from a list can be re-read from one, because that is where the doors came from. A turf built by hand has nothing to compare against, so the action is offered but disabled and says why.',
+      },
+      { kind: 'h2', id: 'print-walk-map', text: 'Print a paper walk map' },
+      {
+        kind: 'p',
+        text: '**Print walk map**, in a turf’s ⋯ menu on the list or on the turf page, opens a printable walk sheet for that turf. The page has a header with the turf’s facts, a schematic map with a numbered dot for each door and a dashed line through the suggested route (door positions are approximate and roads aren’t drawn), and the full door list in walking order with blank Result and Notes columns for recording in pencil. A QR code on the sheet lets a volunteer with a phone scan it and join the same turf in the app.',
+      },
+      {
+        kind: 'p',
+        text: 'Printing partway through a campaign shows which doors are already done, so a paper round picks up where the app left off instead of retreading finished ground.',
       },
       { kind: 'h2', id: 'join-qr', text: 'Sign volunteers up on the spot with a QR code' },
       {
@@ -508,7 +520,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'Rows carry what a canvasser needs before they knock. A coloured left edge and a thumb say where the door stands — green thumbs-up for a supporter, red thumbs-down for someone against, an amber question mark for undecided, and an amber group icon when the people at one door disagree. That reading comes from whatever the CRM already knows, from any source, so a turf is useful on its first morning rather than only after your own team has knocked it. A yard-sign icon means somebody there is already owed a sign, and a green check means somebody there has already voted. Doors nobody has ever ID’d carry no mark at all — an icon on every row would say nothing while competing with the ones that do. The map colours its pins from exactly the same reading, so a green row can never be a grey pin.',
+        text: 'Rows carry what a canvasser needs before they knock. A coloured left edge and a thumb say where the door stands — green thumbs-up for a supporter, red thumbs-down for someone against, an amber question mark for undecided, and an amber group icon when the people at one door disagree. That reading comes from whatever the CRM already knows, from any source, so a turf is useful on its first morning rather than only after your own team has knocked it. A yard-sign icon means somebody there is already owed a sign, and a green check means somebody there has already voted. Doors nobody has ever ID’d carry no mark at all — an icon on every row would say nothing while competing with the ones that do.',
+      },
+      {
+        kind: 'p',
+        text: 'The **Map** tab opens a walking view of the street. Yellow pins are doors still to walk, green is done, blue is knocked with nobody home, and red is do not contact; one pin is highlighted as the next door. Yellow pins carry a number, following a suggested order that walks up one side of the street by house number and back down the other, and a dashed line runs through the remaining doors, shrinking as each one is finished. **Find me on the map** shows the volunteer’s own position as a blue dot; it asks for location only when tapped, never on its own, and **Center on me** re-frames the map on that position afterward. A **Results** toggle switches the pins to the same support-reading colors the walk list rows use: green for a supporter, red for someone against, amber for undecided. Once every door on the street is done, the map says so and offers **Pick the next street**.',
       },
       {
         kind: 'p',

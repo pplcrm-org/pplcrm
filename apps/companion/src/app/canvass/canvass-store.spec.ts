@@ -1121,4 +1121,52 @@ describe('CanvassStore', () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
   });
+
+  describe('walking order', () => {
+    /** One street where house-number order and stored cut order disagree. */
+    function parityPayload(): CompanionTurfPayload {
+      return {
+        ...turfPayload(),
+        households: [
+          door({ id: '10', walk_order: 1, address: '218 Alder St', street: 'Alder St', street_num: '218' }),
+          door({ id: '11', walk_order: 2, address: '217 Alder St', street: 'Alder St', street_num: '217' }),
+          door({ id: '12', walk_order: 3, address: '220 Alder St', street: 'Alder St', street_num: '220' }),
+        ],
+      };
+    }
+
+    it('orders walk entries up one side and back down the other, not by cut order', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(parityPayload())));
+      await store.load(TOKEN);
+      // 218 is the cutter's first door (even side): 218, 220 out, 217 back.
+      expect(store.walkEntries().map((e) => e.key)).toEqual(['10', '12', '11']);
+      expect(store.walkSeqByKey().get('12')).toBe(2);
+    });
+
+    it('the next door is the first remaining stop in walking order, not the lowest cut order', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(parityPayload())));
+      await store.load(TOKEN);
+      store.doorOutcome('10', 'no_answer');
+      // Cut order would say 217 (walk_order 2); the walking order says 220 next.
+      expect(store.nextDoorId()).toBe('12');
+      expect(store.nextEntryKey()).toBe('12');
+    });
+  });
+
+  describe('map mode', () => {
+    it('defaults to walk and resets when the shift ends', async () => {
+      await store.load(TOKEN);
+      expect(store.mapMode()).toBe('walk');
+      store.mapMode.set('results');
+      await store.endShift();
+      expect(store.mapMode()).toBe('walk');
+    });
+
+    it('resets to walk when switching turfs', async () => {
+      await store.load(TOKEN);
+      store.mapMode.set('results');
+      await store.switchTurf('9');
+      expect(store.mapMode()).toBe('walk');
+    });
+  });
 });

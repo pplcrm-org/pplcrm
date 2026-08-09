@@ -46,6 +46,14 @@ describe('PcMap', () => {
     expect(() => fixture.destroy()).not.toThrow();
   });
 
+  it('accepts a userLocation with no SDK and keeps the placeholder', () => {
+    fixture.componentRef.setInput('userLocation', { lat: 43.7, lng: -79.25 });
+    fixture.detectChanges();
+    expect(fixture.debugElement.query(By.css('[role="img"]'))).toBeTruthy();
+    fixture.componentRef.setInput('userLocation', null);
+    expect(() => fixture.detectChanges()).not.toThrow();
+  });
+
   it('uses the ariaLabel on the placeholder when there is no content', () => {
     fixture.componentRef.setInput('ariaLabel', 'Household location');
     fixture.detectChanges();

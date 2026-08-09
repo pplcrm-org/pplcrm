@@ -299,6 +299,10 @@ export interface TurfDoor {
   household_id: string;
   walk_order: number;
   address: string;
+  /** The address parts behind `address`: the walking order groups by street and sorts by number. */
+  street: string | null;
+  street_num: string | null;
+  apt: string | null;
   lat: number | null;
   lng: number | null;
   status: CoverageStatus;
@@ -493,6 +497,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         household_id: d.household_id,
         walk_order: d.walk_order ?? i + 1,
         address: this.formatAddress(d),
+        street: d.street1,
+        street_num: d.street_num,
+        apt: d.apt,
         lat: d.lat,
         lng: d.lng,
         status: a == null ? 'not_yet' : a.conversations > 0 ? 'conversation' : 'attempted',

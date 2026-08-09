@@ -53,10 +53,11 @@ Inputs:
 
 Drawing inputs (see **Drawing mode** below):
 
-| Input               | Type             | Default | Notes                                                            |
-| ------------------- | ---------------- | ------- | ---------------------------------------------------------------- |
-| `drawingEnabled`    | `boolean`        | `false` | On: map clicks place vertices and saved polygons become editable |
-| `selectedPolygonId` | `string \| null` | `null`  | The `PcMapPolygon.id` to highlight (heavier stroke, denser fill) |
+| Input               | Type               | Default | Notes                                                                                        |
+| ------------------- | ------------------ | ------- | -------------------------------------------------------------------------------------------- |
+| `drawingEnabled`    | `boolean`          | `false` | On: map clicks place vertices and saved polygons become editable                             |
+| `selectedPolygonId` | `string \| null`   | `null`  | The `PcMapPolygon.id` to highlight (heavier stroke, denser fill)                             |
+| `userLocation`      | `PcLatLng \| null` | `null`  | The device's own position, drawn as a haloed info-coloured dot; never part of fit-to-content |
 
 Outputs: `markerClicked: PcMapMarker`, `polygonClicked: PcMapPolygon` (each
 carries its `payload` back), `clusterClicked: PcMapCluster`,

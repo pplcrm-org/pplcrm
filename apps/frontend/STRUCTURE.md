@@ -88,6 +88,8 @@ apps/
               cut-turfs-dialog.ts
               turf-detail-page.html
               turf-detail-page.ts
+              turf-print-page.html
+              turf-print-page.ts
               turf-vocabulary.ts
           companies/
             services/

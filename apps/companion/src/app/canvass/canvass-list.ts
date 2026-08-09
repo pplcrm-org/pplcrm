@@ -8,6 +8,7 @@ import {
   conversations,
   doorStatus,
   doorStatusLabel,
+  entryRemaining,
   hasVoted,
   householdStance,
   isAttempted,
@@ -145,7 +146,7 @@ type ListFilter = 'all' | 'remaining' | 'visited';
                 [class.border-base-300]="entry.key !== store.nextEntryKey()"
                 [class.text-base-content]="entry.key !== store.nextEntryKey()"
               >
-                {{ entry.household.walk_order }}
+                {{ store.walkSeqByKey().get(entry.key) }}
               </span>
               <span class="min-w-0 flex-1">
                 <span class="block truncate font-medium">{{ entry.household.address }}</span>
@@ -213,9 +214,9 @@ export class CanvassList {
     const filter = this.filter();
     switch (filter) {
       case 'remaining':
-        return entries.filter((e) => !this.entryAttempted(e));
+        return entries.filter(entryRemaining);
       case 'visited':
-        return entries.filter((e) => this.entryAttempted(e));
+        return entries.filter((e) => !entryRemaining(e));
       case 'all':
         return entries;
       default: {
@@ -253,8 +254,8 @@ export class CanvassList {
 
   protected countFor(filter: ListFilter): number {
     const entries = this.store.walkEntries();
-    if (filter === 'remaining') return entries.filter((e) => !this.entryAttempted(e)).length;
-    if (filter === 'visited') return entries.filter((e) => this.entryAttempted(e)).length;
+    if (filter === 'remaining') return entries.filter(entryRemaining).length;
+    if (filter === 'visited') return entries.filter((e) => !entryRemaining(e)).length;
     return entries.length;
   }
 
@@ -341,10 +342,5 @@ export class CanvassList {
 
   protected voted(h: CompanionHousehold): boolean {
     return hasVoted(h);
-  }
-
-  /** A building counts as attempted only when every unit in it does. */
-  private entryAttempted(entry: WalkEntry): boolean {
-    return entry.kind === 'building' ? entry.attempted === entry.units.length : isAttempted(entry.household);
   }
 }

@@ -45,7 +45,8 @@
   --color-info: #38bdf8;
   --color-success: #2dd4bf;
   --color-success-content: #053a34;
-  --color-warning: #e3d6a7;
+  /* Amber dark enough to read as a lone map pin outdoors; keeps ≥4.5:1 with its content. */
+  --color-warning: #ddb54a;
   --color-warning-content: #342c0b;
   --color-error: #eb4d4b;
   --color-error-content: #ffffff;

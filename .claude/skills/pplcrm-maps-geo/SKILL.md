@@ -16,10 +16,16 @@ binding contract in `docs/spec/pc-map-usage.md`. Do **not** hand-roll a
 `new google.maps.Map(...)` in a component — use `<pc-map>`.
 
 - Inputs: `markers`, `polygons`, `polylines`, `center`, `zoom`, `fitBounds`,
-  `interactive`, `deepLink`, `mapId`, `ariaLabel`. Value types (`PcMapMarker`,
-  `PcMapPolygon`, `PcMapPolyline`, `PcLatLng`, `PcMapVariant`) come from
-  `@uxcommon/components/map/map-types` and carry **no** Google SDK types, so you
-  can build inputs in a plain `computed()`.
+  `interactive`, `deepLink`, `mapId`, `ariaLabel`, `userLocation`. Value types
+  (`PcMapMarker`, `PcMapPolygon`, `PcMapPolyline`, `PcLatLng`, `PcMapVariant`)
+  come from `@uxcommon/components/map/map-types` and carry **no** Google SDK
+  types, so you can build inputs in a plain `computed()`.
+- `userLocation` (`PcLatLng | null`) draws the device's own position as a haloed
+  info-coloured dot. It is deliberately not a marker: it never joins
+  fit-to-content (the map frames the work, not the walker) and a moving fix
+  redraws only the dot. Feed it from the companion's `GeoPosition` service,
+  which asks for location **only on an explicit tap** — never wire it to an
+  automatic request.
 - A marker's optional `label` (1–2 chars) draws inside the pin — that's how a
   delivery route numbers its stops. `polylines` are **open paths** and default to
   `dashed: true`: a route line shows the visit order we computed, not a road path

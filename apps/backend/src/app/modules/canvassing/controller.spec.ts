@@ -1947,6 +1947,15 @@ describe('CanvassingController', () => {
     expect(detail.doors.map((d) => d.walk_order)).toEqual(
       [...detail.doors.map((d) => d.walk_order)].sort((a, b) => a - b),
     );
+    // The address parts travel alongside the flattened address string, because the walking
+    // order groups by street and sorts by house number and cannot re-parse "218 Alder St".
+    const withStreet = detail.doors.find((d) => d.street != null && d.street_num != null);
+    expect(withStreet).toBeDefined();
+    expect(withStreet?.street).toBe('Main St');
+    expect(withStreet?.address).toContain(String(withStreet?.street_num));
+    expect(withStreet?.address).toContain('Main St');
+    expect(detail.doors.every((d) => 'apt' in d)).toBe(true);
+
     const talkedDoor = detail.doors.find((d) => d.household_id === talked);
     expect(talkedDoor?.status).toBe('conversation');
     expect(talkedDoor?.last_outcome).toBe('conversation');

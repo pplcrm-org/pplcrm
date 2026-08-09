@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CompanionHousehold, CompanionOpType, CompanionPerson, CompanionSurveyPrefill } from '@common';
+import { streetKeyOf } from '@common';
 
 import {
   applyLocalOps,
@@ -10,6 +11,7 @@ import {
   deriveWalkEntries,
   doorStatus,
   doorStatusLabel,
+  entryRemaining,
   hasVoted,
   householdStance,
   isAttempted,
@@ -17,6 +19,7 @@ import {
   meStats,
   nextDoor,
   opPersonId,
+  orderEntriesForWalk,
   personStance,
   residentSummary,
   segmentKeyOf,
@@ -603,5 +606,75 @@ describe('deriveWalkEntries', () => {
       '1003',
       'PH2',
     ]);
+  });
+});
+
+describe('entryRemaining', () => {
+  it('a door remains until it is attempted', () => {
+    const open = deriveWalkEntries([household({ id: 'a' })])[0];
+    const done = deriveWalkEntries([household({ id: 'b', door_outcome: 'no_answer' })])[0];
+    if (!open || !done) throw new Error('expected entries');
+    expect(entryRemaining(open)).toBe(true);
+    expect(entryRemaining(done)).toBe(false);
+  });
+
+  it('a building remains until every unit is attempted', () => {
+    const units = [
+      household({ id: 'a', apt: '101', door_outcome: 'no_answer' }),
+      household({ id: 'b', apt: '102', walk_order: 2 }),
+    ];
+    const partial = deriveWalkEntries(units)[0];
+    if (partial?.kind !== 'building') throw new Error('expected a building');
+    expect(entryRemaining(partial)).toBe(true);
+
+    const complete = deriveWalkEntries(units.map((u) => ({ ...u, door_outcome: 'no_answer' as const })))[0];
+    if (!complete) throw new Error('expected an entry');
+    expect(entryRemaining(complete)).toBe(false);
+  });
+});
+
+describe('orderEntriesForWalk', () => {
+  it('walks up one house-number side and back down the other', () => {
+    const entries = deriveWalkEntries([
+      household({ id: 'a', street_num: '1', walk_order: 1 }),
+      household({ id: 'b', street_num: '2', walk_order: 2 }),
+      household({ id: 'c', street_num: '3', walk_order: 3 }),
+      household({ id: 'd', street_num: '4', walk_order: 4 }),
+      household({ id: 'e', street_num: '5', walk_order: 5 }),
+    ]);
+    // Walk order 1 is number 1 (odd): odds ascend, then evens return descending.
+    expect(orderEntriesForWalk(entries).map((e) => e.key)).toEqual(['a', 'c', 'e', 'd', 'b']);
+  });
+
+  it('places a folded building by its shared house number', () => {
+    const entries = deriveWalkEntries([
+      household({ id: 'a', street_num: '1', walk_order: 1 }),
+      household({ id: 'b', street_num: '3', walk_order: 2 }),
+      household({ id: 'c', street_num: '5', walk_order: 3 }),
+      household({ id: 'u1', street_num: '4', apt: '101', walk_order: 4 }),
+      household({ id: 'u2', street_num: '4', apt: '102', walk_order: 5 }),
+      household({ id: 'd', street_num: '2', walk_order: 6 }),
+    ]);
+    const keys = orderEntriesForWalk(entries).map((e) => e.key);
+    // Odds up (1, 3, 5), evens back down: the building at 4, then the door at 2.
+    expect(keys).toEqual(['a', 'b', 'c', '4|alder st', 'd']);
+  });
+
+  it('keeps streets in the order the cutter first reaches them', () => {
+    const entries = deriveWalkEntries([
+      household({ id: 'a', street: 'Second St', street_num: '2', walk_order: 3 }),
+      household({ id: 'b', street: 'First St', street_num: '1', walk_order: 1 }),
+      household({ id: 'c', street: 'Second St', street_num: '4', walk_order: 4 }),
+      household({ id: 'd', street: 'First St', street_num: '3', walk_order: 2 }),
+    ]);
+    expect(orderEntriesForWalk(entries).map((e) => e.key)).toEqual(['b', 'd', 'a', 'c']);
+  });
+});
+
+describe('segmentKeyOf and the shared street key', () => {
+  it('agrees with streetKeyOf, so scoping and walking order can never split on spelling', () => {
+    const h = household({ street: '  Alder   ST ' });
+    expect(segmentKeyOf(h)).toBe(streetKeyOf(h.street));
+    expect(segmentKeyOf(household({ street: null }))).toBe(UNKNOWN_SEGMENT_KEY);
   });
 });

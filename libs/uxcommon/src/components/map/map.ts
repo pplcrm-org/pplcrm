@@ -32,6 +32,9 @@ const SELECTED_FILL_OPACITY = 0.32;
 const MUTED_OPACITY = 0.55;
 const PIN_PX = 14;
 const LABELLED_PIN_PX = 22;
+const USER_DOT_PX = 16;
+const USER_DOT_HALO_PX = 5;
+const USER_DOT_HALO_OPACITY = 0.25;
 
 const DASHED_STROKE_WEIGHT = 1.5;
 const DASHED_STROKE_OPACITY = 0.6;
@@ -316,6 +319,12 @@ export class PcMap {
   public readonly drawingEnabled = input<boolean>(false);
   /** The id of the polygon currently selected; it draws with a heavier stroke and a stronger fill. */
   public readonly selectedPolygonId = input<string | null>(null);
+  /**
+   * The device's own position, drawn as a haloed dot in the `info` colour. Not a marker input:
+   * it takes no part in fit-to-content (the map frames the work, not the walker) and a moving
+   * fix redraws only the dot, never the pins.
+   */
+  public readonly userLocation = input<PcLatLng | null>(null);
 
   public readonly markerClicked = output<PcMapMarker>();
   public readonly polygonClicked = output<PcMapPolygon>();
@@ -352,6 +361,7 @@ export class PcMap {
   private drawnClusters: google.maps.marker.AdvancedMarkerElement[] = [];
   private drawnPolygons: google.maps.Polygon[] = [];
   private drawnPolylines: google.maps.Polyline[] = [];
+  private userDot: google.maps.marker.AdvancedMarkerElement | null = null;
   private themeObserver: MutationObserver | null = null;
 
   /**
@@ -409,6 +419,13 @@ export class PcMap {
       if (this.map) this.redrawDraft(draft);
     });
 
+    // The device dot redraws on its own for the same reason: a location fix
+    // arriving every few seconds must not rebuild every pin on the map.
+    effect(() => {
+      const location = this.userLocation();
+      if (this.map) this.redrawUserDot(location);
+    });
+
     // Once the host element materialises (after `ready` flips), build the map.
     effect(() => {
       const host = this.mapHost();
@@ -435,6 +452,7 @@ export class PcMap {
     for (const shape of this.drawnPolygons) google.maps.event.clearInstanceListeners(shape);
     this.clearOverlays();
     this.clearDraft();
+    this.redrawUserDot(null);
     google.maps.event.clearInstanceListeners(this.map);
     this.map = null;
   }
@@ -510,6 +528,7 @@ export class PcMap {
         this.selectedPolygonId(),
       );
       this.redrawDraft(this.draft());
+      this.redrawUserDot(this.userLocation());
       // A frame asked for while the SDK was still loading applies now, after the first draw, so it
       // wins over the fit-to-content that draw may have done.
       if (this.pendingFocus) this.applyFocus(this.pendingFocus);
@@ -865,6 +884,33 @@ export class PcMap {
     this.draftVertices = [];
   }
 
+  /** The device's own position: a haloed dot, inert to clicks, outside `clearOverlays`. */
+  private redrawUserDot(location: PcLatLng | null): void {
+    if (this.userDot) {
+      this.userDot.map = null;
+      this.userDot = null;
+    }
+    if (!this.map || !location) return;
+    const color = this.resolveColor('info');
+    const halo = color.startsWith('rgb(')
+      ? color.replace('rgb(', 'rgba(').replace(')', `, ${USER_DOT_HALO_OPACITY})`)
+      : color;
+    const dot = document.createElement('div');
+    dot.style.width = `${USER_DOT_PX}px`;
+    dot.style.height = `${USER_DOT_PX}px`;
+    dot.style.borderRadius = '9999px';
+    dot.style.background = color;
+    dot.style.border = '3px solid var(--color-base-100, #fff)';
+    dot.style.boxShadow = `0 0 0 ${USER_DOT_HALO_PX}px ${halo}, 0 1px 3px rgba(0,0,0,0.4)`;
+    this.userDot = new google.maps.marker.AdvancedMarkerElement({
+      map: this.map,
+      position: location,
+      content: dot,
+      title: 'You are here',
+      gmpClickable: false,
+    });
+  }
+
   /**
    * An open path (a route's visit order). Dashed by default: the stroke is a
    * dotted symbol run, not a solid line, because the order is ours but the roads
@@ -948,6 +994,7 @@ export class PcMap {
         this.selectedPolygonId(),
       );
       this.redrawDraft(this.draft());
+      this.redrawUserDot(this.userLocation());
     });
     this.themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   }

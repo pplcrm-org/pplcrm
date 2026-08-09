@@ -203,6 +203,7 @@
             <td class="text-right">
               <pc-row-actions [label]="'Actions for ' + t.name">
                 <li><a [routerLink]="['/canvassing', t.id]">Open turf</a></li>
+                <li><a [routerLink]="['/canvassing', t.id, 'print']">Print walk map</a></li>
                 <li>
                   <button type="button" (click)="assign(t)">
                     {{ t.has_link ? 'Manage canvassers' : 'Add canvassers' }}

@@ -75,20 +75,24 @@ type CoverageView = 'map' | 'boundary';
  */
 type CoverageFull = Extract<Coverage, { doors_only: false }>;
 
-/** Door-dot colours on the coverage map: talked → knocked-no-answer → not yet. */
 /** Names shown inline on a turf row before the rest collapse into a "+N" count. */
 const MAX_CANVASSER_CHIPS = 2;
 
+/**
+ * Door-dot colours on the coverage map, the same three the turf page uses so one door
+ * never changes colour between two screens: still to walk carries the attention colour,
+ * knocked with no answer is information, talked is done.
+ */
 const COVERAGE_VARIANT: Record<CoverageStatus, PcMapVariant> = {
   conversation: 'success',
-  attempted: 'warning',
-  not_yet: 'muted',
+  attempted: 'info',
+  not_yet: 'warning',
 };
 
 const COVERAGE_LEGEND: { status: CoverageStatus; label: string; dot: string }[] = [
-  { status: 'conversation', label: 'Conversation', dot: 'bg-success' },
-  { status: 'attempted', label: 'Knocked, no answer', dot: 'bg-warning' },
-  { status: 'not_yet', label: 'Not yet knocked', dot: 'bg-base-300' },
+  { status: 'not_yet', label: 'To walk', dot: 'bg-warning' },
+  { status: 'attempted', label: 'Knocked, no answer', dot: 'bg-info' },
+  { status: 'conversation', label: 'Talked', dot: 'bg-success' },
 ];
 
 /**

@@ -48,8 +48,7 @@ const CLOCK_TICK_MS = 30_000;
               <span [class]="chipClass(h)">{{ chipLabel(h) }}</span>
             </div>
             <p class="text-xs text-base-content/70">
-              Walk order {{ h.walk_order }} · {{ h.people.length }} {{ h.people.length === 1 ? 'person' : 'people' }} on
-              file
+              {{ h.people.length }} {{ h.people.length === 1 ? 'person' : 'people' }} on file
             </p>
           </div>
         </header>

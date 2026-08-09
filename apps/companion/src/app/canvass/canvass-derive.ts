@@ -8,7 +8,7 @@ import type {
   KnockResponse,
   LatLng,
 } from '@common';
-import { KNOCK_RESPONSE_TO_STANCE, SUPPORT_LEVEL_TO_STANCE, VOTED_STATUSES } from '@common';
+import { KNOCK_RESPONSE_TO_STANCE, SUPPORT_LEVEL_TO_STANCE, VOTED_STATUSES, orderForWalk, streetKeyOf } from '@common';
 
 /**
  * Pure derivations over the Companion turf payload (spec §3 "derived, never
@@ -159,10 +159,13 @@ export function deriveSegments(households: readonly CompanionHousehold[]): Canva
     .sort((a, b) => a.minWalkOrder - b.minWalkOrder);
 }
 
-/** The segment a door belongs to. Exported so filtering and grouping can never disagree. */
+/**
+ * The segment a door belongs to. Exported so filtering and grouping can never disagree.
+ * Delegates to the shared `streetKeyOf` so the walking order (also derived from it, in
+ * libs/common) and the street scope can never split on spelling.
+ */
 export function segmentKeyOf(h: CompanionHousehold): string {
-  const street = h.street?.trim().toLowerCase().replace(/\s+/g, ' ');
-  return street ? street : UNKNOWN_SEGMENT_KEY;
+  return streetKeyOf(h.street) || UNKNOWN_SEGMENT_KEY;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +258,34 @@ export function deriveWalkEntries(households: readonly CompanionHousehold[]): Wa
 /** The units of one building, in the order a canvasser walks them. */
 export function unitsOf(households: readonly CompanionHousehold[], buildingKey: string): CompanionHousehold[] {
   return households.filter((h) => buildingKeyOf(h) === buildingKey).sort(compareUnits);
+}
+
+/**
+ * Whether a walk-list row still has work behind it. A building remains until
+ * every unit is attempted. Exported so the list's Remaining filter, the map's
+ * colours and the next-door ring all read the same answer.
+ */
+export function entryRemaining(entry: WalkEntry): boolean {
+  return entry.kind === 'building' ? entry.attempted < entry.units.length : !isAttempted(entry.household);
+}
+
+/** The household whose street parts place an entry in the walking order. */
+function entryHousehold(entry: WalkEntry): CompanionHousehold | null {
+  return entry.kind === 'door' ? entry.household : (entry.units[0] ?? null);
+}
+
+/**
+ * Walk-list rows in the suggested walking order: streets as the cutter reaches
+ * them, and within a street up one house-number side and back down the other.
+ * A thin adapter over the shared `orderForWalk` (libs/common), which the CRM
+ * turf page and the printable walk sheet also use — one order, three surfaces.
+ */
+export function orderEntriesForWalk(entries: readonly WalkEntry[]): WalkEntry[] {
+  const orderable = entries.map((entry) => {
+    const h = entryHousehold(entry);
+    return { entry, street: h?.street ?? null, street_num: h?.street_num ?? null, walk_order: entry.walkOrder };
+  });
+  return orderForWalk(orderable).map((o) => o.entry);
 }
 
 /** "302" before "1104" before "PH2" — numeric where it can be, alphabetical where it can't. */

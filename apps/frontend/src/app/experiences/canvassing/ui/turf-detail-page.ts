@@ -7,7 +7,7 @@ import { BreadcrumbsService } from '@uxcommon/components/breadcrumbs/breadcrumbs
 import { ConfirmDialogService } from '@uxcommon/components/confirm-dialog.service';
 import { Icon } from '@icons/icon';
 import { PcMap } from '@uxcommon/components/map/map';
-import type { PcMapMarker, PcMapPolygon, PcMapVariant } from '@uxcommon/components/map/map-types';
+import type { PcMapMarker, PcMapPolygon, PcMapPolyline, PcMapVariant } from '@uxcommon/components/map/map-types';
 import { RowActions } from '@uxcommon/components/row-actions/row-actions';
 import { StatusBadge, type PcStatusType } from '@uxcommon/components/status-badge/status-badge';
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -16,7 +16,10 @@ import { RecordActivities } from '@experiences/activity/ui/record-activities/rec
 import {
   KNOCK_OUTCOME_LABELS,
   KNOCK_RESPONSE_LABELS,
+  groupForWalk,
   isKnockOutcome,
+  orderForWalk,
+  simplifyPath,
   type KnockResponse,
 } from '../../../../../../../libs/common/src';
 import { CanvassingService, type TurfDetail, type TurfDoor } from '../services/canvassing-service';
@@ -40,31 +43,40 @@ type TurfStatus = TurfDetail['status'];
 type DoorStatus = TurfDoor['status'];
 type DoorFilter = 'all' | DoorStatus;
 
-/** Door dots read the same here as on the field report's coverage map. */
+/**
+ * Door dots read the same here as on the field report's coverage map.
+ *
+ * The doors still to walk are the ones the reader is looking for, so they carry the
+ * attention colour (warning) rather than a grey that reads as "nothing here"; a door
+ * already knocked with no answer is information, not a job, so it drops to info.
+ */
 const DOOR_VARIANT: Record<DoorStatus, PcMapVariant> = {
   conversation: 'success',
-  attempted: 'warning',
-  not_yet: 'muted',
+  attempted: 'info',
+  not_yet: 'warning',
 };
 
 const DOOR_TONE: Record<DoorStatus, PcStatusType> = {
   conversation: 'success',
-  attempted: 'warning',
-  not_yet: 'ghost',
+  attempted: 'info',
+  not_yet: 'warning',
 };
 
 const DOOR_LABEL: Record<DoorStatus, string> = {
   conversation: 'Talked',
-  attempted: 'Knocked',
-  not_yet: 'Not yet',
+  attempted: 'Knocked, no answer',
+  not_yet: 'To walk',
 };
 
 const DOOR_FILTERS: { key: DoorFilter; label: string }[] = [
   { key: 'all', label: 'All doors' },
   { key: 'conversation', label: 'Talked' },
   { key: 'attempted', label: 'Knocked, no answer' },
-  { key: 'not_yet', label: 'Not yet knocked' },
+  { key: 'not_yet', label: 'To walk' },
 ];
+
+/** A numbered pin fits two characters, so past 99 the number stays in the table only. */
+const MAX_PIN_LABEL = 99;
 
 /**
  * One turf, opened (§13.1): where it is, who is walking it, and what happened at
@@ -149,11 +161,24 @@ export class TurfDetailPage {
     return Math.round((d.conversations / d.attempted) * 100);
   });
 
+  /**
+   * The suggested walking order, shared with the Companion and the printed sheet so no
+   * two surfaces can disagree about which door is "3". Stored `walk_order` decides which
+   * street comes first; within a street the doors walk up one side and back down the other.
+   */
+  protected readonly walkDoors = computed<TurfDoor[]>(() => orderForWalk(this.detail()?.doors ?? []));
+
+  /** Household id → its place in the walking order, so pin, table row and sheet agree. */
+  protected readonly walkSeq = computed<Map<string, number>>(() => {
+    const seq = new Map<string, number>();
+    this.walkDoors().forEach((d, i) => seq.set(d.household_id, i + 1));
+    return seq;
+  });
+
   protected readonly doors = computed<TurfDoor[]>(() => {
-    const d = this.detail();
-    if (!d) return [];
+    const all = this.walkDoors();
     const filter = this.doorFilter();
-    return filter === 'all' ? d.doors : d.doors.filter((x) => x.status === filter);
+    return filter === 'all' ? all : all.filter((x) => x.status === filter);
   });
 
   protected readonly doorCounts = computed<Record<DoorFilter, number>>(() => {
@@ -166,16 +191,48 @@ export class TurfDetailPage {
     };
   });
 
-  protected readonly markers = computed<PcMapMarker[]>(() =>
-    (this.detail()?.doors ?? [])
+  /**
+   * A pin per geocoded door. Doors still to walk carry their walking number so the map
+   * and the table can be read together; a walked door has no number to give, and past
+   * door 99 the number no longer fits inside a pin.
+   */
+  protected readonly markers = computed<PcMapMarker[]>(() => {
+    const seq = this.walkSeq();
+    return (this.detail()?.doors ?? [])
       .filter((d) => d.lat != null && d.lng != null)
-      .map((d) => ({
-        position: { lat: Number(d.lat), lng: Number(d.lng) },
-        variant: DOOR_VARIANT[d.status],
-        tooltip: `${d.address} — ${DOOR_LABEL[d.status]}`,
-        id: d.household_id,
-      })),
-  );
+      .map((d) => {
+        const n = seq.get(d.household_id);
+        const label = d.status === 'not_yet' && n != null && n <= MAX_PIN_LABEL ? String(n) : undefined;
+        return {
+          position: { lat: Number(d.lat), lng: Number(d.lng) },
+          variant: DOOR_VARIANT[d.status],
+          tooltip:
+            n == null ? `${d.address} — ${DOOR_LABEL[d.status]}` : `${n} · ${d.address} — ${DOOR_LABEL[d.status]}`,
+          ...(label === undefined ? {} : { label }),
+          id: d.household_id,
+        };
+      });
+  });
+
+  /**
+   * One dashed line per street, through the doors still to walk on it.
+   *
+   * Streets are drawn separately on purpose: the line between two streets would be a
+   * road we did not route, and a straight hop across a block is a claim we cannot make.
+   * The path is simplified first, so a long straight street is two points rather than forty.
+   */
+  protected readonly polylines = computed<PcMapPolyline[]>(() => {
+    const toWalk = (this.detail()?.doors ?? []).filter((d) => d.status === 'not_yet');
+    const lines: PcMapPolyline[] = [];
+    for (const group of groupForWalk(toWalk)) {
+      const points = group.doors
+        .filter((d) => d.lat != null && d.lng != null)
+        .map((d) => ({ lat: Number(d.lat), lng: Number(d.lng) }));
+      const path = simplifyPath(points);
+      if (path.length >= 2) lines.push({ path, variant: 'primary', dashed: true, id: group.key });
+    }
+    return lines;
+  });
 
   protected readonly polygons = computed<PcMapPolygon[]>(() => {
     const d = this.detail();

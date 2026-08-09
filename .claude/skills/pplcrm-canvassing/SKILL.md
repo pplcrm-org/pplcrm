@@ -344,6 +344,37 @@ turf total is printed under the list. Streets sort nearest-first once `GeoPositi
 fix and by walk order otherwise, with the heading naming which order is in force;
 "Find the street I'm on" is the only path allowed to move the scope for the volunteer.
 
+### The walking order (2026-08-09) — one order, three surfaces
+
+`orderForWalk` / `groupForWalk` / `simplifyPath` in
+`libs/common/src/lib/geo/walk-order.ts` compute the **suggested walking order**:
+streets in the order the cutter first reaches them (min stored `walk_order`),
+and within a street up one house-number parity side ascending, back down the
+other descending (the paper-walk-map loop; non-numeric numbers append in stored
+order). Consumed by the Companion (`orderEntriesForWalk` adapter in
+`canvass-derive.ts` — `walkEntries` is IN this order, and `nextDoorId`/
+`nextEntryKey` mean "first remaining stop in walking order", **no longer** min
+`walk_order`), by the CRM turf detail page, and by the printable walk sheet
+(`turf-print-page.ts`, route `/canvassing/:id/print`). Rules that hold:
+
+- Stored `walk_order` stays the cutter's order and still decides street
+  sequence and `applyDefaultScope`; the walking order is derived, never stored.
+- `walkSeqByKey` numbers rows 1..N; the list circles and map pin labels both
+  read it, so a door is never "3" in one place and "7" in another. Pin labels
+  drop past 99 rows (pins fit two characters).
+- The Companion map has two colourings via `CanvassStore.mapMode` ('walk'
+  default, resets with the turf): **Walk** = visit status (warning "To walk",
+  info "Knocked, nobody home", success "Done", error DNC, primary next door) +
+  a dashed `simplifyPath` line through the remaining doors of the scoped
+  street (single-street scopes only); **Results** = the stance colours.
+- The dashed line is ONE polyline whose vertices are simplified to real turns —
+  never one element per door, and never drawn across streets.
+- `<pc-map>` grew a `userLocation` input (see `pplcrm-maps-geo`); the Companion
+  feeds it from `GeoPosition` behind an explicit "Find me on the map" tap.
+- The one deliberate colour drift: the walk list's "No answer" chip is
+  info-toned (blue) to match the walk map; `inaccessible`/`moved` chips stay
+  warning while the walk map shows them as done.
+
 **Live refresh**: `CanvassStore.refresh()` re-pulls the turf every 60s while the walk list
 is open and replaces ONLY the server payload — `localOps` replay on top, so nothing queued
 or optimistic is lost and re-applying an op the server already has is a no-op. It is

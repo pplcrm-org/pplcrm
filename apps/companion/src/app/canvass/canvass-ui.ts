@@ -15,6 +15,8 @@ export function statusBadgeClass(status: DoorStatus): string {
     case 'outcome:refused':
       return 'badge badge-error';
     case 'outcome:no_answer':
+      // Blue, matching the walk map: knocked, nobody home — worth another try.
+      return 'badge badge-info';
     case 'outcome:inaccessible':
     case 'outcome:moved':
       return 'badge badge-warning';

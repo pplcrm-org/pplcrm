@@ -327,6 +327,12 @@ export const dashboardRoutes: Routes = [
         path: '',
         loadComponent: () => import('./experiences/canvassing/ui/canvassing-page').then((m) => m.CanvassingPage),
       },
+      // Must precede ':id' — otherwise the wildcard param route would swallow it.
+      {
+        path: ':id/print',
+        loadComponent: () => import('./experiences/canvassing/ui/turf-print-page').then((m) => m.TurfPrintPage),
+        data: { breadcrumb: 'Print walk map' },
+      },
       {
         path: ':id',
         loadComponent: () => import('./experiences/canvassing/ui/turf-detail-page').then((m) => m.TurfDetailPage),
