@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BaseRepository } from '../../lib/base.repo';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../test-utils/exclusive-db-lock';
 
 // The import handlers are stubbed for the whole file: the dispatch tests below only care about
 // WHICH handler a payload reaches, and the real ones download blobs and write to several tables.
@@ -11,6 +12,14 @@ vi.mock('./handlers/import.handlers', () => ({
 
 import { handleImportCsvJob, handleLegacyImportJob } from './handlers/import.handlers';
 import { executeJob } from './job-handlers';
+
+// prune_retention is a DELETE over the WHOLE background_jobs table selected by age (completed past
+// 7 days, failed past 30), which is the sweep-by-age case the lock exists for. Both directions of
+// the hazard are real: the sweep can delete a row another file committed, and — the one that
+// actually bit — the DELETE blocks on any row a concurrently running claimer holds in an open
+// transaction, so the test sat waiting and was killed at the 5s timeout (CI run 31288548511).
+// A priority band cannot help here: an age filter does not look at priority.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 describe('prune_retention Job Handler (sole owner of background_jobs retention)', () => {
   const db = (BaseRepository as any)._db;

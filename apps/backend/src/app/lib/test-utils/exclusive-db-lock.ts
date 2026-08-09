@@ -13,9 +13,10 @@ export const DB_TEST_LOCKS = {
   /**
    * The `background_jobs` table as a whole queue.
    *
-   * Only for specs that READ the queue globally: one that asserts which row `claimNextPendingJob`
-   * picks out of the whole table, or one that runs a sweep selecting rows by age. Three files
-   * qualify today (job-claim.spec.ts, worker.retry-backoff.spec.ts, worker.reliability.spec.ts).
+   * Only for specs that touch the queue globally: one that asserts which row `claimNextPendingJob`
+   * picks out of the whole table, or one that runs a sweep selecting rows by age. Four files
+   * qualify today: job-claim.spec.ts, worker.retry-backoff.spec.ts, worker.reliability.spec.ts,
+   * and job-handlers.spec.ts, whose prune_retention sweep DELETEs by age across the whole table.
    *
    * A spec that merely LEAVES a `pending` row behind does NOT need this, and should not take it —
    * that would serialize roughly thirty files for nothing. The claim order is
@@ -27,6 +28,10 @@ export const DB_TEST_LOCKS = {
    * rows from an age filter. If a spec ever commits a `background_jobs` row whose `locked_at` is
    * more than 30 minutes old, or a pending/processing `data_exports` row older than an hour, it
    * must take this lock so worker.reliability.spec.ts's recovery sweep cannot fail its rows.
+   *
+   * A whole-table sweep is also on the receiving end of the hazard, not just the causing end: its
+   * statement blocks on any row a concurrent claimer holds in an open transaction. That is how
+   * job-handlers.spec.ts's prune_retention test hit the 5s timeout before it took this lock.
    */
   BACKGROUND_JOB_QUEUE: 81_400_001,
   /** The `receipt_counters` table: counter-concurrency specs commit real transactions and read

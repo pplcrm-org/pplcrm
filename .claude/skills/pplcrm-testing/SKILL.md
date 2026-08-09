@@ -51,13 +51,20 @@ it('adds a row', async () => {
 });
 ```
 
-**When rollback can't help: `useExclusiveDbLock(key)`** (`exclusive-db-lock.ts`) — for code that reads a table _globally_, where the contention is between files, not tests. `claimNextPendingJob` picks the lowest-id runnable row in the whole `background_jobs` table, so a `pending` row another spec file committed mid-run is a real claimable job: it breaks the FIFO assertion _and_ gets stolen from the file that inserted it. Every file touching that resource takes the same advisory-lock key and they take turns; the rest of the suite stays parallel. Call it once at file top level, outside any `describe`:
+**When rollback can't help: `useExclusiveDbLock(key)`** (`exclusive-db-lock.ts`) — for code that reads or sweeps a table _globally_, where the contention is between files, not tests. `claimNextPendingJob` picks the lowest-id runnable row in the whole `background_jobs` table, so a `pending` row another spec file committed mid-run is a real claimable job: it breaks the FIFO assertion _and_ gets stolen from the file that inserted it. A whole-table statement selected by age is the other qualifying case, and it fails in both directions — it can delete another file's rows, and it blocks on rows a concurrent claimer holds open, which shows up as a test timeout rather than a wrong value. Every file touching that resource takes the same advisory-lock key and they take turns; the rest of the suite stays parallel. Call it once at file top level, outside any `describe`:
 
 ```ts
 useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 ```
 
-Keys live in `DB_TEST_LOCKS` — add one per shared resource, never reuse an unrelated file's. The lock is held by a transaction (`startTransaction()` pins one pooled connection) and taken with `pg_advisory_xact_lock`, so it releases on rollback _and_ on a mid-run crash — a wedged file can't block the next run. Current holders: `lib/jobs/job-claim.spec.ts` and `lib/jobs/worker.reliability.spec.ts`.
+Keys live in `DB_TEST_LOCKS` — add one per shared resource, never reuse an unrelated file's. The lock is held by a transaction (`startTransaction()` pins one pooled connection) and taken with `pg_advisory_xact_lock`, so it releases on rollback _and_ on a mid-run crash — a wedged file can't block the next run.
+
+`DB_TEST_LOCKS` in `exclusive-db-lock.ts` is the source of truth for which files hold what; `grep -rn useExclusiveDbLock apps/backend/src` gives the live list. As of 2026-08-09:
+
+| Key                    | Holders                                                                                                                                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BACKGROUND_JOB_QUEUE` | `lib/jobs/job-claim.spec.ts`, `lib/jobs/worker.retry-backoff.spec.ts`, `lib/jobs/worker.reliability.spec.ts`, `lib/jobs/job-handlers.spec.ts`                                                                          |
+| `RECEIPT_COUNTERS`     | `lib/jobs/handlers/receipts.handlers.spec.ts`, `modules/donations/receipts/cancel-reissue-refusals.spec.ts`, `modules/donations/receipts/controller.spec.ts`, `modules/donations/repositories/receipt-counter.spec.ts` |
 
 ## Mocking conventions (copy these — they're real)
 
