@@ -191,7 +191,7 @@ export class TasksController extends BaseController<'tasks', TasksRepo> {
     const taskSlaMs = taskSlaHours * 60 * 60 * 1000;
     const now = new Date();
 
-    const openTasks = await this.getRepo().getOpenForSla(auth.tenant_id);
+    const openTasks = await this.getRepo().getOpenForSla(auth.tenant_id, new Date(now.getTime() - taskSlaMs));
     return openTasks.reduce((count, task) => {
       const workingMs = calculateWorkingTimeMs(
         new Date(task.created_at),

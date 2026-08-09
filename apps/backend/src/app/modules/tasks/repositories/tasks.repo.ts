@@ -42,12 +42,20 @@ export class TasksRepo extends BaseRepository<'tasks'> {
     return Number(total || 0);
   }
 
-  /** Open tasks (todo/in_progress/waiting) with just enough columns to compute SLA breach. */
-  public async getOpenForSla(tenant_id: string): Promise<OpenTaskForSla[]> {
+  /**
+   * Open tasks (todo/in_progress/waiting) with just enough columns to compute SLA breach.
+   *
+   * `createdBefore` is the calendar-age pre-filter: a task can only be past its working-hours SLA
+   * if it is at least that old in calendar time (working-hours age never exceeds calendar age), so
+   * the caller passes `now - SLA` and the working-hours arithmetic runs only on the survivors
+   * instead of every open task.
+   */
+  public async getOpenForSla(tenant_id: string, createdBefore: Date): Promise<OpenTaskForSla[]> {
     const rows = await this.getSelect()
       .select(['id', 'created_at', 'assigned_to'])
       .where('tenant_id', '=', tenant_id)
       .where('status', 'in', [...TASK_OPEN_STATUSES])
+      .where('created_at', '<=', createdBefore)
       .execute();
     return rows.map((r) => ({
       id: String(r.id),

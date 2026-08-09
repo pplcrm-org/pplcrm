@@ -358,9 +358,9 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
         kind: 'list',
         items: [
           '**Next-action cards**: the three cards below the briefing surface your most urgent queues (task-SLA breaches, conversations waiting for an owner, and a draft newsletter ready to send). A card turns quiet when there is nothing to do there.',
-          '**Stat tiles**: a row of headline numbers (open emails, unassigned, average first response and time to close, contact growth). Use **Reload stats** to refresh them.',
+          '**Stat tiles**: a row of headline numbers. Open and unassigned counts are always live. The averages (first response, time to close) cover a time window you pick — the last 7, 30, 60, or 90 days, 30 by default — and are recalculated nightly; the “as of” line shows when, and its **Refresh** link recalculates them on demand. A brand-new workspace shows “being calculated” for a moment instead of zeros.',
           '**New contacts** and **Coming up**: a 30-day growth chart beside your upcoming events. Empty states link you to the next step when there is nothing scheduled yet.',
-          '**Representative performance**: a quiet table of each teammate’s open/closed counts, resolution rate, and SLA breaches.',
+          '**Representative performance**: a quiet table of each teammate’s numbers. Open counts and SLA breaches are live; closed counts, averages, and resolution rate follow the time window you picked above.',
         ],
       },
       { kind: 'h2', id: 'sla', text: 'How SLA status works' },

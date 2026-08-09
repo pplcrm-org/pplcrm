@@ -19,6 +19,10 @@ const dashboardPageInput = z.object({
 export const DashboardRouter = router({
   getStats: authProcedure.query(({ ctx }) => dashboard.getStats(ctx.auth)),
 
+  // Queue a statistics-snapshot refresh (coalesced server-side; the nightly sweep covers everyone
+  // who never clicks it). A mutation because it enqueues a background job.
+  refreshStats: authProcedure.mutation(({ ctx }) => dashboard.refreshStats(ctx.auth)),
+
   getBreachedEmails: authProcedure
     .input(dashboardPageInput)
     .query(({ input, ctx }) => dashboard.getBreachedEmails(ctx.auth, input)),

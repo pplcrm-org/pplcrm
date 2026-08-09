@@ -29,6 +29,9 @@ export const CRON_JOBS = {
   prune_retention: DAY_MS,
   recompute_address_fingerprints: DAY_MS,
   recompute_all_duplicates: DAY_MS,
+  // One dashboard-statistics snapshot per tenant per day; the dashboard's Refresh button covers
+  // "I need it fresher than nightly" without any view-triggered recompute.
+  refresh_dashboard_stats: DAY_MS,
   refresh_companies_google: DAY_MS,
   // Re-matches households that hold no boundary row yet — ones geocoded before a map existed, or
   // imported with coordinates and no district columns. Pure processor work with no external call,

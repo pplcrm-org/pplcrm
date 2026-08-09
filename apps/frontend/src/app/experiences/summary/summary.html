@@ -156,8 +156,8 @@
   />
   }
 
-  <!-- Quiet stat tiles: neutral values, primary icons; color only when it means something (§5) -->
-  <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
+  <!-- Quiet stat tiles: LIVE numbers only, neutral values, primary icons (§5) -->
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
     <div class="rounded-lg border border-line bg-base-100 p-4">
       <div class="flex items-start justify-between">
         <div class="pc-eyebrow">Open emails</div>
@@ -182,34 +182,6 @@
       <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-warning">{{ unassignedOpenCount() }}</div>
       }
       <div class="mt-1 text-[11px] text-base-content/45">Awaiting assignment</div>
-    </div>
-
-    <div class="rounded-lg border border-line bg-base-100 p-4">
-      <div class="flex items-start justify-between">
-        <div class="pc-eyebrow">Avg first response</div>
-        <pc-icon name="clock" [size]="4" class="shrink-0 text-primary"></pc-icon>
-      </div>
-      @if (isInitialLoading()) {
-      <div class="skeleton mt-2 h-6 w-14 rounded"></div>
-      } @else {
-      <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-base-content">
-        {{ avgFirstResponse() }}
-      </div>
-      }
-      <div class="mt-1 text-[11px] text-base-content/45">Time to reply or comment</div>
-    </div>
-
-    <div class="rounded-lg border border-line bg-base-100 p-4">
-      <div class="flex items-start justify-between">
-        <div class="pc-eyebrow">Avg time to close</div>
-        <pc-icon name="check-circle" [size]="4" class="shrink-0 text-primary"></pc-icon>
-      </div>
-      @if (isInitialLoading()) {
-      <div class="skeleton mt-2 h-6 w-14 rounded"></div>
-      } @else {
-      <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-base-content">{{ avgTimeToClose() }}</div>
-      }
-      <div class="mt-1 text-[11px] text-base-content/45">Arrival to closed status</div>
     </div>
 
     <div class="rounded-lg border border-line bg-base-100 p-4">
@@ -362,20 +334,90 @@
         </pc-empty-state>
       </div>
       }
-
-      <div class="mt-4 border-t border-line pt-3 text-xs text-base-content/50">
-        Email resolution (all time): <span class="tabular-nums">{{ resolutionRate() }}%</span> · details in the table
-        below
-      </div>
     </div>
   </div>
 
-  <!-- Representative performance — quiet table, hairline rows, tinted pills, no zebra -->
+  <!-- Statistics: retrospective tiles + per-user table, both keyed to the selected window
+       (REVIEW6 T1-3) — computed nightly by a background job, stale-tolerant, refreshable on demand -->
   <div class="rounded-xl border border-line bg-base-100 p-6">
-    <div class="mb-4 flex items-center justify-between">
-      <h2 class="text-[15px] font-semibold text-base-content">Representative performance</h2>
-      <span class="text-xs text-base-content/50">Real-time</span>
+    <div class="mb-1 flex flex-wrap items-center justify-between gap-3">
+      <h2 class="text-[15px] font-semibold text-base-content">Statistics · {{ windowLabel() }}</h2>
+      <pc-tab-bar
+        [tabs]="windowOptions"
+        [activeTab]="windowKey()"
+        (activeTabChange)="setWindow($event)"
+        label="Statistics time window"
+      ></pc-tab-bar>
     </div>
+
+    <div
+      class="mb-5 flex items-center gap-2 text-xs"
+      [class.text-warning]="isStale()"
+      [class.text-base-content/50]="!isStale()"
+    >
+      @if (snapshotRefreshPending()) {
+      <span class="loading loading-spinner loading-xs"></span>
+      <span>Refreshing…</span>
+      } @else if (hasSnapshot()) {
+      <span>Statistics as of {{ asOfLabel() }}</span>
+      <span aria-hidden="true">·</span>
+      <button
+        type="button"
+        class="cursor-pointer font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+        (click)="refreshStats()"
+      >
+        Refresh
+      </button>
+      } @else {
+      <span>Statistics haven’t been calculated yet</span>
+      <span aria-hidden="true">·</span>
+      <button
+        type="button"
+        class="cursor-pointer font-medium text-primary underline underline-offset-2 hover:text-primary/80"
+        (click)="refreshStats()"
+      >
+        Refresh
+      </button>
+      }
+    </div>
+
+    @if (hasSnapshot()) {
+    <div class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div class="rounded-lg border border-line bg-base-100 p-4">
+        <div class="flex items-start justify-between">
+          <div class="pc-eyebrow">Avg first response</div>
+          <pc-icon name="clock" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        </div>
+        <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-base-content">
+          {{ avgFirstResponse() }}
+        </div>
+        <div class="mt-1 text-[11px] text-base-content/45">Time to reply or comment</div>
+      </div>
+
+      <div class="rounded-lg border border-line bg-base-100 p-4">
+        <div class="flex items-start justify-between">
+          <div class="pc-eyebrow">Avg time to close</div>
+          <pc-icon name="check-circle" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        </div>
+        <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-base-content">
+          {{ avgTimeToClose() }}
+        </div>
+        <div class="mt-1 text-[11px] text-base-content/45">Arrival to closed status</div>
+      </div>
+
+      <div class="rounded-lg border border-line bg-base-100 p-4">
+        <div class="flex items-start justify-between">
+          <div class="pc-eyebrow">Resolution rate</div>
+          <pc-icon name="chart-pie" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        </div>
+        <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-base-content">
+          {{ resolutionRate() }}%
+        </div>
+        <div class="mt-1 text-[11px] text-base-content/45">Closed vs. currently open</div>
+      </div>
+    </div>
+
+    <h3 class="mb-3 text-xs font-semibold uppercase tracking-wide text-base-content/50">Representative performance</h3>
 
     <div class="overflow-x-auto">
       <table class="table pc-table w-full">
@@ -431,5 +473,13 @@
         </tbody>
       </table>
     </div>
+    } @else {
+    <pc-empty-state
+      icon="clock"
+      [bordered]="false"
+      title="Statistics are being calculated"
+      hint="They’ll appear shortly."
+    />
+    }
   </div>
 </div>

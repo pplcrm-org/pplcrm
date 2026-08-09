@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { DashboardController } from './controller';
+import { computeDashboardSnapshot } from './dashboard-stats.service';
 import { BaseRepository } from '../../lib/base.repo';
 
 describe('DashboardController Closed Emails Attribution', () => {
@@ -106,6 +107,10 @@ describe('DashboardController Closed Emails Attribution', () => {
   });
 
   afterEach(async () => {
+    // getStats' first-view bootstrap enqueues a refresh job and the snapshot writer may land a
+    // row — both must not leak into other specs (the shared test DB runs worker specs too).
+    await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('dashboard_stats_snapshots').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('emails').where('tenant_id', '=', tenantId).execute();
     await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
@@ -113,23 +118,47 @@ describe('DashboardController Closed Emails Attribution', () => {
     await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
   });
 
-  it('should attribute closed emails to the actual closer user (Dana) instead of the assignee (Priya)', async () => {
+  it('attributes closed emails to the actual closer (Dana), not the assignee (Priya), in every snapshot window', async () => {
+    // Closed-email attribution moved off the request path into the snapshot computation
+    // (REVIEW6 T1-3); the semantic under test is unchanged.
+    const snapshot = await computeDashboardSnapshot(db, tenantId);
+
+    for (const key of ['d7', 'd30', 'd60', 'd90'] as const) {
+      const window = snapshot.windows[key];
+      expect(window.closedCount).toBe(1);
+      const closer = window.perUser.find((u) => String(u.user_id) === user1Id);
+      const assignee = window.perUser.find((u) => String(u.user_id) === user2Id);
+      expect(closer?.closedCount).toBe(1);
+      // Priya neither closed nor responded to anything, so she has no per-user row at all.
+      expect(assignee).toBeUndefined();
+    }
+  });
+
+  it('getStats serves live open counts, reports no snapshot yet, and queues the one-time bootstrap refresh', async () => {
     const auth = { tenant_id: tenantId, user_id: user1Id, name: 'Dana' } as any;
     const stats = await controller.getStats(auth);
 
-    // Verify emailsClosed list has Dana (user1Id) credited, and not Priya
-    const closerClosed = stats.emailsClosed.find((u: any) => String(u.user_id) === user1Id);
-    const assigneeClosed = stats.emailsClosed.find((u: any) => String(u.user_id) === user2Id);
+    // The only seeded email is closed: nothing open, nothing unassigned.
+    expect(stats.totalOpenCount).toBe(0);
+    expect(stats.unassignedCount).toBe(0);
+    expect(stats.emailsAssigned).toEqual([]);
 
-    expect(closerClosed).toBeDefined();
-    expect(closerClosed?.count).toBe(1);
-    expect(assigneeClosed).toBeUndefined();
+    // No snapshot exists yet — the read reports that honestly and queues the coalesced bootstrap.
+    expect(stats.snapshot.windows).toBeNull();
+    expect(stats.snapshot.computedAt).toBeNull();
+    expect(stats.snapshot.refreshPending).toBe(true);
 
-    // Verify userStats array has the correct counts
-    const closerStats = stats.userStats.find((u: any) => String(u.user_id) === user1Id);
-    const assigneeStats = stats.userStats.find((u: any) => String(u.user_id) === user2Id);
+    const job = await db
+      .selectFrom('background_jobs')
+      .select('id')
+      .where('tenant_id', '=', tenantId)
+      .where('status', '=', 'pending')
+      .executeTakeFirst();
+    expect(job).toBeDefined();
 
-    expect(closerStats?.closedCount).toBe(1);
-    expect(assigneeStats?.closedCount).toBe(0);
+    // A second read must coalesce, not stack a second job.
+    await controller.getStats(auth);
+    const jobs = await db.selectFrom('background_jobs').select('id').where('tenant_id', '=', tenantId).execute();
+    expect(jobs.length).toBe(1);
   });
 });

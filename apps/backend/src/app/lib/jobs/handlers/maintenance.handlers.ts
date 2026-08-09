@@ -62,6 +62,14 @@ const COMPLETED_JOBS_RETENTION_DAYS = 7;
 const FAILED_JOBS_RETENTION_DAYS = 30;
 const WEBHOOK_EVENTS_RETENTION_DAYS = 90;
 const EXPIRED_SESSION_GRACE_DAYS = 30;
+
+/**
+ * Daily dashboard-statistics snapshots (dashboard_stats_snapshots). Only the newest row is ever
+ * shown; the older rows exist for week-over-week and year-over-year trends, which is why the
+ * window is 13 months rather than the 90 days the statistics themselves cover. Internal
+ * aggregates, no user content, so no privacy-policy claim constrains this number.
+ */
+const DASHBOARD_SNAPSHOT_RETENTION_DAYS = 400;
 /**
  * How long a finished export stays downloadable.
  *
@@ -392,6 +400,19 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
     return res.numAffectedRows ?? 0n;
   });
 
+  // Dashboard snapshot history past the trend window. The newest row per tenant is always inside
+  // the window by construction (the nightly sweep rewrites it), so this only ever removes history.
+  const prunedDashboardSnapshots = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM dashboard_stats_snapshots
+      WHERE ctid IN (
+        SELECT ctid FROM dashboard_stats_snapshots
+        WHERE snapshot_date < now() - make_interval(days => ${DASHBOARD_SNAPSHOT_RETENTION_DAYS})
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
   // Expired export files. Deleting the row alone would leave the CSV in blob storage forever, so
   // this one sweeps the blob too — see pruneExpiredExports.
   const prunedExports = await pruneExpiredExports(db);
@@ -410,6 +431,7 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
       prunedFailedJobs: prunedFailedJobs.toString(),
       prunedWebhooks: prunedWebhooks.toString(),
       prunedSessions: prunedSessions.toString(),
+      prunedDashboardSnapshots: prunedDashboardSnapshots.toString(),
       prunedExports: prunedExports.rows,
       exportBlobDeleteFailures: prunedExports.blobFailures,
       prunedImportSourceFiles: prunedImportSources.rows,

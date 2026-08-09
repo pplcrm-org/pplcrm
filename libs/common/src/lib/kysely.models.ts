@@ -130,6 +130,20 @@ export interface Models {
   household_districts: HouseholdDistricts;
   campaign_areas: CampaignAreas;
   geocode_cache: GeocodeCache;
+  dashboard_stats_snapshots: DashboardStatsSnapshots;
+}
+
+/**
+ * One dashboard-statistics snapshot per tenant per day. The newest row is what the dashboard
+ * shows; older rows are daily history for trends (pruned past 400 days). `payload` is the
+ * versioned `DashboardStatsSnapshotObj` shape from schemas/dashboard.schema.ts — parse it, never
+ * cast it.
+ */
+export interface DashboardStatsSnapshots {
+  tenant_id: string;
+  snapshot_date: ColumnType<Date, Date | string, Date | string>;
+  computed_at: Generated<Timestamp>;
+  payload: Json;
 }
 
 export type AuthUsersType = Omit<AuthUsers, 'id'> & { id: string };

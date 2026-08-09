@@ -456,6 +456,21 @@ export {
 
 export type { InteractionType, LogInteractionType } from './lib/schemas/activity.schema';
 
+export {
+  DASHBOARD_STATS_WINDOW_DAYS,
+  DASHBOARD_STATS_WINDOW_KEYS,
+  DashboardStatsSnapshotObj,
+  DashboardWindowStatsObj,
+  DashboardWindowUserStatsObj,
+} from './lib/schemas/dashboard.schema';
+export type {
+  DashboardStatsSnapshotType,
+  DashboardStatsWindowDays,
+  DashboardStatsWindowKey,
+  DashboardWindowStatsType,
+  DashboardWindowUserStatsType,
+} from './lib/schemas/dashboard.schema';
+
 export type {
   DonationAddressType,
   DonationMethod,
@@ -835,6 +850,15 @@ export { classifyHelpRoute } from './lib/help/help-links';
 export { blockToMarkdown, articleToMarkdown } from './lib/help/help-markdown';
 
 export { haversineKm, type LatLng } from './lib/geo/haversine';
+export {
+  groupForWalk,
+  orderForWalk,
+  simplifyPath,
+  streetKeyOf,
+  streetNumberValue,
+  type WalkOrderable,
+  type WalkStreetGroup,
+} from './lib/geo/walk-order';
 
 export {
   ELECTORAL_IMPORT_ROW_FIELDS,

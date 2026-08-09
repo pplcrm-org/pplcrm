@@ -55,6 +55,7 @@ apps/
           2026-08-05-background-jobs-priority.ts
           2026-08-06-campaign-areas.ts
           2026-08-07-households-located-index.ts
+          2026-08-09-dashboard-stats-snapshots.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -80,6 +81,7 @@ apps/
               automation-mail.handlers.ts
               billing.handlers.ts
               boundaries.handlers.ts
+              dashboard-stats.handlers.ts
               deletions.handlers.ts
               demo.handlers.ts
               export.handlers.ts
@@ -263,6 +265,7 @@ apps/
             verification-code-hash.ts
           dashboard/
             controller.ts
+            dashboard-stats.service.ts
             trpc.router.ts
           deliveries/
             repositories/

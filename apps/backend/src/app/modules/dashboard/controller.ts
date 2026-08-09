@@ -1,312 +1,290 @@
-import { BaseRepository } from '../../lib/base.repo';
-import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
 import { sql } from 'kysely';
-import { calculateWorkingTimeMs, TASK_OPEN_STATUSES } from '../../../../../../libs/common/src';
-import { SettingsRepo } from '../settings/repositories/settings.repo';
-import { settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
 
+import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth';
+import { calculateWorkingTimeMs, TASK_OPEN_STATUSES } from '../../../../../../libs/common/src';
+import { BaseRepository } from '../../lib/base.repo';
+import { checkRateLimit } from '../../lib/rate-limiter';
+import { settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
+import { SettingsRepo } from '../settings/repositories/settings.repo';
+import {
+  dashboardRefreshPending,
+  enqueueDashboardStatsRefresh,
+  readLatestDashboardSnapshot,
+} from './dashboard-stats.service';
+
+/** Inbox / Sent folder ids, as everywhere else in the emails module. */
+const INBOX_FOLDER_ID = '11';
+const SENT_FOLDER_ID = '3';
+
+/** Manual snapshot refreshes per tenant per window — the button is coalesced anyway; this stops a held-down key. */
+const REFRESH_RATE_LIMIT = 3;
+const REFRESH_RATE_WINDOW_MS = 5 * 60 * 1000;
+
+const MS_PER_HOUR = 1000 * 60 * 60;
+
+interface BreachedEmailCandidate {
+  id: string;
+  from_email: string | null;
+  subject: string | null;
+  created_at: Date;
+  assigned_to: string | null;
+  first_comment_at: Date | null;
+  first_outbound_at: Date | null;
+}
+
+interface BreachedEmail {
+  id: string;
+  from_email: string | null;
+  subject: string | null;
+  created_at: Date | string;
+  assigned_to: string | null;
+  assignee_name: string | null;
+  working_time_hours: number;
+}
+
+interface BreachedTask {
+  id: string;
+  name: string;
+  created_at: Date | string;
+  assigned_to: string | null;
+  assignee_name: string | null;
+  working_time_hours: number;
+}
+
+/**
+ * Dashboard reads, split live/snapshot (REVIEW6 T1-3).
+ *
+ * LIVE (computed here, every call, always bounded): open-inbox counts per assignee, the oldest
+ * unassigned email, and the two SLA-breach lists. "Bounded" is structural, not hopeful — the open
+ * queries read only `status='open'` rows, and every breach candidate set carries a calendar-age
+ * pre-filter in SQL (`created_at <= now() - SLA`), which can never miss a breach because
+ * working-hours age is always ≤ calendar age. The working-hours arithmetic then runs only on the
+ * survivors.
+ *
+ * SNAPSHOT (read here, computed by the `refresh_dashboard_stats*` background jobs): windowed
+ * closed counts and the first-response / time-to-close averages — see dashboard-stats.service.ts.
+ * The only write this controller ever queues from a read path is the one-time "no snapshot exists
+ * yet" bootstrap, which is coalesced.
+ *
+ * The old implementation read every inbox email, task, close-activity row, and sent-email
+ * recipient the tenant ever had, on every page view. Nothing here may reintroduce an unbounded
+ * read; the specs pin the SQL shapes.
+ */
 export class DashboardController {
   private get db() {
     return BaseRepository.dbInstance;
   }
 
-  public async getStats(auth: IAuthKeyPayload) {
-    const tenant_id = auth.tenant_id;
+  private async loadSla(tenant_id: string) {
+    const settingsRows = await new SettingsRepo().getAllForTenant(tenant_id);
+    return slaPolicyFrom(settingsMapFrom(settingsRows));
+  }
 
-    // Fetch SLA settings
-    const settingsRepo = new SettingsRepo();
-    const settingsRows = await settingsRepo.getAllForTenant(tenant_id);
-    const sla = slaPolicyFrom(settingsMapFrom(settingsRows));
-    const { taskSlaHours, emailSlaHours, workingDays, workingHoursStart, workingHoursEnd, timeZone } = sla;
+  /**
+   * Open inbox emails older (calendar) than the SLA, each with its first-response probes resolved
+   * in the same query. The two laterals are index probes (idx_email_recipients_to_address /
+   * email_comments PK path), not scans.
+   */
+  private async breachedEmailCandidates(tenant_id: string, emailSlaMs: number): Promise<BreachedEmailCandidate[]> {
+    const cutoff = new Date(Date.now() - emailSlaMs);
+    const res = await sql<BreachedEmailCandidate>`
+      SELECT
+        e.id::text AS id,
+        e.from_email,
+        e.subject,
+        e.created_at,
+        e.assigned_to::text AS assigned_to,
+        cm.first_comment_at,
+        snt.first_outbound_at
+      FROM emails e
+      LEFT JOIN LATERAL (
+        SELECT min(c.created_at) AS first_comment_at
+        FROM email_comments c
+        WHERE c.tenant_id = ${tenant_id} AND c.email_id = e.id
+      ) cm ON true
+      LEFT JOIN LATERAL (
+        SELECT min(e2.created_at) AS first_outbound_at
+        FROM email_recipients r
+        JOIN emails e2 ON e2.id = r.email_id AND e2.tenant_id = ${tenant_id}
+        WHERE r.tenant_id = ${tenant_id}
+          AND r.kind = 'to'
+          AND lower(r.email) = lower(btrim(e.from_email))
+          AND e2.folder_id = ${SENT_FOLDER_ID}
+          AND e2.created_at > e.created_at
+      ) snt ON true
+      WHERE e.tenant_id = ${tenant_id}
+        AND e.folder_id = ${INBOX_FOLDER_ID}
+        AND e.status = 'open'
+        AND e.created_at <= ${cutoff}
+    `.execute(this.db);
+    return res.rows;
+  }
 
-    const taskSlaMs = taskSlaHours * 60 * 60 * 1000;
-    const emailSlaMs = emailSlaHours * 60 * 60 * 1000;
+  /** Same rule as always: breached = past the working-hours SLA with no first response of any kind. */
+  private breachedEmailsFrom(
+    candidates: BreachedEmailCandidate[],
+    sla: Awaited<ReturnType<DashboardController['loadSla']>>,
+    userMap: Map<string, string>,
+  ): BreachedEmail[] {
+    const emailSlaMs = sla.emailSlaHours * MS_PER_HOUR;
+    const now = new Date();
+    const breached: BreachedEmail[] = [];
+    for (const email of candidates) {
+      const createdAt = new Date(email.created_at);
+      const responseTimes = [email.first_comment_at, email.first_outbound_at]
+        .filter((t): t is Date => t != null)
+        .map((t) => new Date(t).getTime())
+        .filter((t) => t > createdAt.getTime());
+      if (responseTimes.length > 0) continue;
 
-    // 1. Fetch all users in the tenant
+      const workingTimeMs = calculateWorkingTimeMs(
+        createdAt,
+        now,
+        sla.workingDays,
+        sla.workingHoursStart,
+        sla.workingHoursEnd,
+        sla.timeZone,
+      );
+      if (workingTimeMs <= emailSlaMs) continue;
+
+      breached.push({
+        id: email.id,
+        from_email: email.from_email,
+        subject: email.subject || null,
+        created_at: email.created_at,
+        assigned_to: email.assigned_to,
+        assignee_name: email.assigned_to ? userMap.get(email.assigned_to) || null : null,
+        working_time_hours: Math.round(workingTimeMs / MS_PER_HOUR),
+      });
+    }
+    breached.sort((a, b) => b.working_time_hours - a.working_time_hours);
+    return breached;
+  }
+
+  /** Open tasks past the working-hours SLA; candidates pre-filtered by calendar age in SQL. */
+  private async breachedTasksList(
+    tenant_id: string,
+    sla: Awaited<ReturnType<DashboardController['loadSla']>>,
+    userMap: Map<string, string>,
+  ): Promise<BreachedTask[]> {
+    const taskSlaMs = sla.taskSlaHours * MS_PER_HOUR;
+    const cutoff = new Date(Date.now() - taskSlaMs);
+    const openTasks = await this.db
+      .selectFrom('tasks')
+      .select(['id', 'name', 'created_at', 'assigned_to'])
+      .where('tenant_id', '=', tenant_id)
+      .where('status', 'in', [...TASK_OPEN_STATUSES])
+      .where('created_at', '<=', cutoff)
+      .execute();
+
+    const now = new Date();
+    const breached: BreachedTask[] = [];
+    for (const task of openTasks) {
+      const workingTimeMs = calculateWorkingTimeMs(
+        new Date(task.created_at),
+        now,
+        sla.workingDays,
+        sla.workingHoursStart,
+        sla.workingHoursEnd,
+        sla.timeZone,
+      );
+      if (workingTimeMs <= taskSlaMs) continue;
+      breached.push({
+        id: String(task.id),
+        name: task.name,
+        created_at: task.created_at,
+        assigned_to: task.assigned_to,
+        assignee_name: task.assigned_to ? userMap.get(task.assigned_to) || null : null,
+        working_time_hours: Math.round(workingTimeMs / MS_PER_HOUR),
+      });
+    }
+    breached.sort((a, b) => b.working_time_hours - a.working_time_hours);
+    return breached;
+  }
+
+  private async loadUserMap(tenant_id: string) {
     const users = await this.db
       .selectFrom('authusers')
       .select(['id', 'first_name', 'last_name'])
       .where('tenant_id', '=', tenant_id)
       .execute();
-
-    // 2. Fetch all inbox emails for this tenant (folder_id '11' is Inbox)
-    const inboxEmails = await this.db
-      .selectFrom('emails')
-      .select(['id', 'from_email', 'subject', 'created_at', 'updated_at', 'status', 'assigned_to'])
-      .where('tenant_id', '=', tenant_id)
-      .where('folder_id', '=', '11')
-      .execute();
-
-    // 2.3 Fetch all tasks for this tenant
-    const tasks = await this.db
-      .selectFrom('tasks')
-      .select(['id', 'name', 'status', 'created_at', 'completed_at', 'assigned_to'])
-      .where('tenant_id', '=', tenant_id)
-      .execute();
-
-    // 2.5 Fetch all close activities for emails in this tenant to determine who closed them
-    const closeActivities = await this.db
-      .selectFrom('user_activity')
-      .select(['entity_id', 'user_id'])
-      .where('tenant_id', '=', tenant_id)
-      .where('activity', '=', 'close')
-      .where('entity', 'in', ['email', 'emails'])
-      .orderBy('created_at', 'asc')
-      .execute();
-
-    const closerMap = new Map<string, string>();
-    for (const act of closeActivities) {
-      if (act.entity_id) {
-        closerMap.set(String(act.entity_id), String(act.user_id));
-      }
-    }
-
-    // 3. Fetch earliest comment times grouped by email_id
-    const earliestComments = await this.db
-      .selectFrom('email_comments')
-      .select(['email_id', sql<string>`min(created_at)`.as('earliest_comment_at')])
-      .where('tenant_id', '=', tenant_id)
-      .groupBy('email_id')
-      .execute();
-    const commentMap = new Map<string, number>(
-      earliestComments
-        .filter((c) => c.email_id && c.earliest_comment_at)
-        .map((c) => [c.email_id, new Date(c.earliest_comment_at).getTime()]),
-    );
-
-    // 4. Fetch sent-email recipients for the tenant to match outbound replies in memory (folder_id '3' is Sent).
-    // email_recipients is the source of truth; emails.to_email is a display-only cache (D-10).
-    const sentRecipients = await this.db
-      .selectFrom('email_recipients')
-      .innerJoin('emails', 'emails.id', 'email_recipients.email_id')
-      .select(['email_recipients.email as email', 'emails.created_at as created_at'])
-      .where('email_recipients.tenant_id', '=', tenant_id)
-      .where('emails.tenant_id', '=', tenant_id)
-      .where('email_recipients.kind', '=', 'to')
-      .where('emails.folder_id', '=', '3')
-      .orderBy('emails.created_at', 'asc')
-      .execute();
-
-    const sentMap = new Map<string, number[]>();
-    for (const sent of sentRecipients) {
-      const e = String(sent.email).toLowerCase().trim();
-      if (!e) continue;
-      let list = sentMap.get(e);
-      if (!list) {
-        list = [];
-        sentMap.set(e, list);
-      }
-      list.push(new Date(sent.created_at).getTime());
-    }
-
-    // Initialize user stats map
-    const userStatsMap: Record<
-      string,
-      {
-        user_id: string;
-        first_name: string;
-        last_name: string;
-        openCount: number;
-        closedCount: number;
-        totalResponseTimeMs: number;
-        responseCount: number;
-        totalTimeToCloseMs: number;
-        timeToCloseCount: number;
-        slaBreaches: number;
-        emailSlaBreaches: number;
-        taskSlaBreaches: number;
-      }
-    > = {};
-
+    const userMap = new Map<string, string>();
     for (const u of users) {
-      userStatsMap[u.id] = {
-        user_id: u.id,
-        first_name: u.first_name || '',
-        last_name: u.last_name || '',
-        openCount: 0,
-        closedCount: 0,
-        totalResponseTimeMs: 0,
-        responseCount: 0,
-        totalTimeToCloseMs: 0,
-        timeToCloseCount: 0,
-        slaBreaches: 0,
-        emailSlaBreaches: 0,
-        taskSlaBreaches: 0,
-      };
+      userMap.set(String(u.id), `${u.first_name || ''} ${u.last_name || ''}`.trim());
     }
+    return { users, userMap };
+  }
 
-    let globalTotalResponseTimeMs = 0;
-    let globalResponseCount = 0;
-    let globalTotalTimeToCloseMs = 0;
-    let globalTimeToCloseCount = 0;
+  public async getStats(auth: IAuthKeyPayload) {
+    const tenant_id = auth.tenant_id;
+    const sla = await this.loadSla(tenant_id);
+    const { taskSlaHours, emailSlaHours } = sla;
+    const emailSlaMs = emailSlaHours * MS_PER_HOUR;
+
+    const { users, userMap } = await this.loadUserMap(tenant_id);
+
+    // The live working set: open inbox emails only. Closed mail is snapshot territory.
+    const openEmails = await this.db
+      .selectFrom('emails')
+      .select(['id', 'created_at', 'assigned_to'])
+      .where('tenant_id', '=', tenant_id)
+      .where('folder_id', '=', INBOX_FOLDER_ID)
+      .where('status', '=', 'open')
+      .execute();
+
+    const openCountByUser = new Map<string, number>();
     let unassignedCount = 0;
-    let unassignedSlaBreaches = 0;
+    let oldestUnassignedCreatedAt: Date | null = null;
+    for (const email of openEmails) {
+      if (email.assigned_to == null) {
+        unassignedCount++;
+        const created = new Date(email.created_at);
+        if (!oldestUnassignedCreatedAt || created < oldestUnassignedCreatedAt) {
+          oldestUnassignedCreatedAt = created;
+        }
+      } else {
+        const key = String(email.assigned_to);
+        openCountByUser.set(key, (openCountByUser.get(key) ?? 0) + 1);
+      }
+    }
+    const totalOpenCount = openEmails.length;
+
+    // 5.1 Oldest unassigned open inbox email → the "waiting for an owner" next-action card
+    // (age since arrival + how long until the first-response SLA is due, in working time).
+    let oldestUnassignedAgeHours: number | null = null;
+    let firstResponseDueHours: number | null = null;
+    if (oldestUnassignedCreatedAt) {
+      oldestUnassignedAgeHours = (Date.now() - oldestUnassignedCreatedAt.getTime()) / MS_PER_HOUR;
+      const workedMs = calculateWorkingTimeMs(
+        oldestUnassignedCreatedAt,
+        new Date(),
+        sla.workingDays,
+        sla.workingHoursStart,
+        sla.workingHoursEnd,
+        sla.timeZone,
+      );
+      firstResponseDueHours = Math.max(0, (emailSlaMs - workedMs) / MS_PER_HOUR);
+    }
+
+    // Live SLA breaches, both kinds, calendar-pre-filtered in SQL.
+    const emailCandidates = await this.breachedEmailCandidates(tenant_id, emailSlaMs);
+    const breachedEmails = this.breachedEmailsFrom(emailCandidates, sla, userMap);
+    const breachedTasks = await this.breachedTasksList(tenant_id, sla, userMap);
+
+    const emailBreachByUser = new Map<string, number>();
     let unassignedEmailSlaBreaches = 0;
+    for (const b of breachedEmails) {
+      if (b.assigned_to == null) unassignedEmailSlaBreaches++;
+      else emailBreachByUser.set(b.assigned_to, (emailBreachByUser.get(b.assigned_to) ?? 0) + 1);
+    }
+    const taskBreachByUser = new Map<string, number>();
     let unassignedTaskSlaBreaches = 0;
-
-    const breachedEmailsList: Array<{
-      id: string;
-      from_email: string | null;
-      subject: string | null;
-      created_at: Date | string;
-      assigned_to: string | null;
-      assignee_name: string | null;
-      working_time_hours: number;
-    }> = [];
-
-    const breachedTasksList: Array<{
-      id: string;
-      name: string;
-      created_at: Date | string;
-      assigned_to: string | null;
-      assignee_name: string | null;
-      working_time_hours: number;
-    }> = [];
-
-    const nowMs = Date.now();
-
-    for (const email of inboxEmails) {
-      const assignedUser = (email.assigned_to && userStatsMap[email.assigned_to]) || null;
-
-      // Determine who closed the email (with fallback to assignee)
-      const closerId =
-        email.status === 'closed'
-          ? closerMap.get(String(email.id)) || (email.assigned_to != null ? String(email.assigned_to) : null)
-          : null;
-      const closerUser = closerId && userStatsMap[closerId] ? userStatsMap[closerId] : null;
-
-      // Track open/closed counts
-      if (email.status === 'open') {
-        if (assignedUser) {
-          assignedUser.openCount++;
-        } else {
-          unassignedCount++;
-        }
-      } else if (email.status === 'closed') {
-        if (closerUser) {
-          closerUser.closedCount++;
-        }
-      }
-
-      // Time to close calculation
-      if (email.status === 'closed') {
-        const closeDiff = new Date(email.updated_at).getTime() - new Date(email.created_at).getTime();
-        if (closeDiff > 0) {
-          globalTotalTimeToCloseMs += closeDiff;
-          globalTimeToCloseCount++;
-          if (closerUser) {
-            closerUser.totalTimeToCloseMs += closeDiff;
-            closerUser.timeToCloseCount++;
-          }
-        }
-      }
-
-      // First response calculation
-      const commentTime = commentMap.get(email.id) || null;
-      let outboundTime: number | null = null;
-      if (email.from_email) {
-        const fromEmailClean = email.from_email.toLowerCase().trim();
-        const sentTimes = sentMap.get(fromEmailClean);
-        if (sentTimes) {
-          const emailCreatedTime = new Date(email.created_at).getTime();
-          const firstSentAfter = sentTimes.find((t) => t > emailCreatedTime);
-          if (firstSentAfter) {
-            outboundTime = firstSentAfter;
-          }
-        }
-      }
-
-      let firstResponseTime: number | null = null;
-      if (commentTime && outboundTime) {
-        firstResponseTime = Math.min(commentTime, outboundTime);
-      } else if (commentTime) {
-        firstResponseTime = commentTime;
-      } else if (outboundTime) {
-        firstResponseTime = outboundTime;
-      }
-
-      if (firstResponseTime) {
-        const respDiff = firstResponseTime - new Date(email.created_at).getTime();
-        if (respDiff > 0) {
-          globalTotalResponseTimeMs += respDiff;
-          globalResponseCount++;
-          if (assignedUser) {
-            assignedUser.totalResponseTimeMs += respDiff;
-            assignedUser.responseCount++;
-          }
-        }
-      }
-
-      // SLA Breach calculation: Open inbox email older than target in working hours
-      if (email.status === 'open') {
-        const workingTimeMs = calculateWorkingTimeMs(
-          new Date(email.created_at),
-          new Date(nowMs),
-          workingDays,
-          workingHoursStart,
-          workingHoursEnd,
-          timeZone,
-        );
-        if (workingTimeMs > emailSlaMs && !firstResponseTime) {
-          if (assignedUser) {
-            assignedUser.emailSlaBreaches++;
-            assignedUser.slaBreaches++; // for backward compatibility
-          } else {
-            unassignedEmailSlaBreaches++;
-            unassignedSlaBreaches++; // for backward compatibility
-          }
-          const assigneeName = assignedUser ? `${assignedUser.first_name} ${assignedUser.last_name}`.trim() : null;
-          breachedEmailsList.push({
-            id: String(email.id),
-            from_email: email.from_email,
-            subject: email.subject || null,
-            created_at: email.created_at,
-            assigned_to: email.assigned_to,
-            assignee_name: assigneeName,
-            working_time_hours: Math.round(workingTimeMs / (1000 * 60 * 60)),
-          });
-        }
-      }
+    for (const b of breachedTasks) {
+      if (b.assigned_to == null) unassignedTaskSlaBreaches++;
+      else taskBreachByUser.set(b.assigned_to, (taskBreachByUser.get(b.assigned_to) ?? 0) + 1);
     }
 
-    // Calculate Task SLA Breaches
-    for (const task of tasks) {
-      const isOpenTask = task.status && (TASK_OPEN_STATUSES as readonly string[]).includes(task.status);
-      if (isOpenTask) {
-        const workingTimeMs = calculateWorkingTimeMs(
-          new Date(task.created_at),
-          new Date(nowMs),
-          workingDays,
-          workingHoursStart,
-          workingHoursEnd,
-          timeZone,
-        );
-        if (workingTimeMs > taskSlaMs) {
-          const assignedUser = (task.assigned_to && userStatsMap[task.assigned_to]) || null;
-          if (assignedUser) {
-            assignedUser.taskSlaBreaches++;
-          } else {
-            unassignedTaskSlaBreaches++;
-          }
-          const assigneeName = assignedUser ? `${assignedUser.first_name} ${assignedUser.last_name}`.trim() : null;
-          breachedTasksList.push({
-            id: String(task.id),
-            name: task.name,
-            created_at: task.created_at,
-            assigned_to: task.assigned_to,
-            assignee_name: assigneeName,
-            working_time_hours: Math.round(workingTimeMs / (1000 * 60 * 60)),
-          });
-        }
-      }
-    }
-
-    const avgFirstResponseHours =
-      globalResponseCount > 0 ? globalTotalResponseTimeMs / globalResponseCount / (1000 * 60 * 60) : 0;
-    const avgTimeToCloseHours =
-      globalTimeToCloseCount > 0 ? globalTotalTimeToCloseMs / globalTimeToCloseCount / (1000 * 60 * 60) : 0;
-
-    // 5. Contacts Growth (Last 30 days)
+    // 5. Contacts Growth (Last 30 days) — already bounded, unchanged.
     const growthRows = await this.db
       .selectFrom('persons')
       .select([sql<string>`date_trunc('day', created_at)`.as('day'), sql<number>`count(id)`.as('count')])
@@ -315,37 +293,10 @@ export class DashboardController {
       .groupBy(sql`date_trunc('day', created_at)`)
       .orderBy(sql`date_trunc('day', created_at)`, 'asc')
       .execute();
-
     const contactsGrowth = growthRows.map((r) => ({
       date: r.day ? (new Date(r.day).toISOString().split('T')[0] ?? '') : '',
       count: Number(r.count || 0),
     }));
-
-    // 5.1 Oldest unassigned open inbox email → drives the "waiting for an owner" next-action card
-    // (age since arrival + how long until the first-response SLA is due, in working time).
-    let oldestUnassignedCreatedAt: Date | null = null;
-    for (const email of inboxEmails) {
-      if (email.status === 'open' && email.assigned_to == null) {
-        const created = new Date(email.created_at);
-        if (!oldestUnassignedCreatedAt || created < oldestUnassignedCreatedAt) {
-          oldestUnassignedCreatedAt = created;
-        }
-      }
-    }
-    let oldestUnassignedAgeHours: number | null = null;
-    let firstResponseDueHours: number | null = null;
-    if (oldestUnassignedCreatedAt) {
-      oldestUnassignedAgeHours = (nowMs - oldestUnassignedCreatedAt.getTime()) / (1000 * 60 * 60);
-      const workedMs = calculateWorkingTimeMs(
-        oldestUnassignedCreatedAt,
-        new Date(nowMs),
-        workingDays,
-        workingHoursStart,
-        workingHoursEnd,
-        timeZone,
-      );
-      firstResponseDueHours = Math.max(0, (emailSlaMs - workedMs) / (1000 * 60 * 60));
-    }
 
     // 5.2 Latest unsent (draft) newsletter → "ready to send" next-action card + briefing clause.
     const draftRow = await this.db
@@ -365,7 +316,7 @@ export class DashboardController {
       .selectFrom('volunteer_events')
       .select(['id', 'name', 'start_time', 'capacity', 'location_address'])
       .where('tenant_id', '=', tenant_id)
-      .where('start_time', '>=', new Date(nowMs))
+      .where('start_time', '>=', new Date())
       .orderBy('start_time', 'asc')
       .limit(3)
       .execute();
@@ -377,68 +328,55 @@ export class DashboardController {
       location_address: e.location_address ?? null,
     }));
 
-    // Build backward-compatible emailsAssigned
-    const emailsAssigned = Object.values(userStatsMap)
-      .filter((u) => u.openCount > 0)
-      .map((u) => ({
-        user_id: u.user_id,
-        first_name: u.first_name,
-        last_name: u.last_name,
-        count: u.openCount,
-      }));
+    // The snapshot half. A workspace that has never had one computed gets a coalesced bootstrap
+    // enqueue — the ONE deliberate exception to "reads never trigger a refresh".
+    const snapshot = await readLatestDashboardSnapshot(this.db, tenant_id);
+    let refreshPending = await dashboardRefreshPending(this.db, tenant_id);
+    if (!snapshot && !refreshPending) {
+      await enqueueDashboardStatsRefresh(this.db, tenant_id);
+      refreshPending = true;
+    }
 
-    // Build backward-compatible emailsClosed
-    const emailsClosed = Object.values(userStatsMap)
-      .filter((u) => u.closedCount > 0)
-      .map((u) => ({
-        user_id: u.user_id,
-        first_name: u.first_name,
-        last_name: u.last_name,
-        count: u.closedCount,
-      }));
-
-    // Map user stats for representative stats table
-    const userStats = Object.values(userStatsMap).map((u) => {
-      const totalHandled = u.openCount + u.closedCount;
-      const resolutionRate = totalHandled > 0 ? Math.round((u.closedCount / totalHandled) * 100) : 0;
-      const avgFirstResponse = u.responseCount > 0 ? u.totalResponseTimeMs / u.responseCount / (1000 * 60 * 60) : 0;
-      const avgTimeToClose = u.timeToCloseCount > 0 ? u.totalTimeToCloseMs / u.timeToCloseCount / (1000 * 60 * 60) : 0;
-
+    // Per-user LIVE numbers. Windowed closed counts and averages ride in snapshot.windows and are
+    // joined to these rows by user_id in the frontend.
+    const userLive = users.map((u) => {
+      const id = String(u.id);
+      const emailBreaches = emailBreachByUser.get(id) ?? 0;
+      const taskBreaches = taskBreachByUser.get(id) ?? 0;
       return {
-        user_id: u.user_id,
-        first_name: u.first_name,
-        last_name: u.last_name,
-        openCount: u.openCount,
-        closedCount: u.closedCount,
-        resolutionRate,
-        avgFirstResponseHours: avgFirstResponse,
-        avgTimeToCloseHours: avgTimeToClose,
-        slaBreaches: u.slaBreaches,
-        emailSlaBreaches: u.emailSlaBreaches,
-        taskSlaBreaches: u.taskSlaBreaches,
+        user_id: id,
+        first_name: u.first_name || '',
+        last_name: u.last_name || '',
+        openCount: openCountByUser.get(id) ?? 0,
+        emailSlaBreaches: emailBreaches,
+        taskSlaBreaches: taskBreaches,
+        slaBreaches: emailBreaches + taskBreaches,
       };
     });
 
-    const totalOpenCount = unassignedCount + Object.values(userStatsMap).reduce((acc, cur) => acc + cur.openCount, 0);
+    // Kept for the assignment donut: per-user open counts under the historical field names.
+    const emailsAssigned = userLive
+      .filter((u) => u.openCount > 0)
+      .map((u) => ({ user_id: u.user_id, first_name: u.first_name, last_name: u.last_name, count: u.openCount }));
 
     return {
-      avgFirstResponseHours,
-      avgTimeToCloseHours,
-      emailsAssigned,
-      emailsClosed,
-      contactsGrowth,
       unassignedCount,
       totalOpenCount,
-      userStats,
+      emailsAssigned,
+      userLive,
+      contactsGrowth,
       oldestUnassignedAgeHours,
       firstResponseDueHours,
       draftNewsletter,
       upcomingEvents,
-      unassignedSlaBreaches,
+      unassignedSlaBreaches: unassignedEmailSlaBreaches + unassignedTaskSlaBreaches,
       unassignedEmailSlaBreaches,
       unassignedTaskSlaBreaches,
-      breachedEmailsList: [],
-      breachedTasksList: [],
+      snapshot: {
+        computedAt: snapshot ? snapshot.computedAt.toISOString() : null,
+        refreshPending,
+        windows: snapshot ? snapshot.stats.windows : null,
+      },
       taskSlaHours,
       emailSlaHours,
       emailSlaWarningThreshold: sla.emailWarningThreshold,
@@ -448,146 +386,26 @@ export class DashboardController {
     };
   }
 
+  /** Queue a snapshot refresh for this workspace (coalesced; rate-limited per tenant). */
+  public async refreshStats(auth: IAuthKeyPayload) {
+    checkRateLimit(`dashboardStatsRefresh:${auth.tenant_id}`, REFRESH_RATE_LIMIT, REFRESH_RATE_WINDOW_MS);
+    const status = await enqueueDashboardStatsRefresh(this.db, auth.tenant_id);
+    return { status };
+  }
+
   public async getBreachedEmails(auth: IAuthKeyPayload, input: { page: number; limit: number }) {
     const tenant_id = auth.tenant_id;
     const { page, limit } = input;
     const offset = (page - 1) * limit;
 
-    // Fetch SLA settings
-    const settingsRepo = new SettingsRepo();
-    const settingsRows = await settingsRepo.getAllForTenant(tenant_id);
-    const { emailSlaHours, workingDays, workingHoursStart, workingHoursEnd, timeZone } = slaPolicyFrom(
-      settingsMapFrom(settingsRows),
-    );
+    const sla = await this.loadSla(tenant_id);
+    const { userMap } = await this.loadUserMap(tenant_id);
+    const candidates = await this.breachedEmailCandidates(tenant_id, sla.emailSlaHours * MS_PER_HOUR);
+    const breached = this.breachedEmailsFrom(candidates, sla, userMap);
 
-    const emailSlaMs = emailSlaHours * 60 * 60 * 1000;
-
-    // Fetch all users in the tenant
-    const users = await this.db
-      .selectFrom('authusers')
-      .select(['id', 'first_name', 'last_name'])
-      .where('tenant_id', '=', tenant_id)
-      .execute();
-
-    const userMap = new Map<string, string>();
-    for (const u of users) {
-      userMap.set(u.id, `${u.first_name || ''} ${u.last_name || ''}`.trim());
-    }
-
-    // Fetch all open inbox emails (folder_id '11' is Inbox, status 'open')
-    const openInboxEmails = await this.db
-      .selectFrom('emails')
-      .select(['id', 'from_email', 'subject', 'created_at', 'updated_at', 'status', 'assigned_to'])
-      .where('tenant_id', '=', tenant_id)
-      .where('folder_id', '=', '11')
-      .where('status', '=', 'open')
-      .execute();
-
-    // Fetch earliest comment times grouped by email_id
-    const earliestComments = await this.db
-      .selectFrom('email_comments')
-      .select(['email_id', sql<string>`min(created_at)`.as('earliest_comment_at')])
-      .where('tenant_id', '=', tenant_id)
-      .groupBy('email_id')
-      .execute();
-    const commentMap = new Map<string, number>(
-      earliestComments
-        .filter((c) => c.email_id && c.earliest_comment_at)
-        .map((c) => [c.email_id, new Date(c.earliest_comment_at).getTime()]),
-    );
-
-    // Fetch sent-email recipients for the tenant to match outbound replies in memory (folder_id '3' is Sent).
-    // email_recipients is the source of truth; emails.to_email is a display-only cache (D-10).
-    const sentRecipients = await this.db
-      .selectFrom('email_recipients')
-      .innerJoin('emails', 'emails.id', 'email_recipients.email_id')
-      .select(['email_recipients.email as email', 'emails.created_at as created_at'])
-      .where('email_recipients.tenant_id', '=', tenant_id)
-      .where('emails.tenant_id', '=', tenant_id)
-      .where('email_recipients.kind', '=', 'to')
-      .where('emails.folder_id', '=', '3')
-      .orderBy('emails.created_at', 'asc')
-      .execute();
-
-    const sentMap = new Map<string, number[]>();
-    for (const sent of sentRecipients) {
-      const e = String(sent.email).toLowerCase().trim();
-      if (!e) continue;
-      let list = sentMap.get(e);
-      if (!list) {
-        list = [];
-        sentMap.set(e, list);
-      }
-      list.push(new Date(sent.created_at).getTime());
-    }
-
-    const breachedEmailsList: Array<{
-      id: string;
-      from_email: string | null;
-      subject: string | null;
-      created_at: Date | string;
-      assigned_to: string | null;
-      assignee_name: string | null;
-      working_time_hours: number;
-    }> = [];
-
-    const nowMs = Date.now();
-
-    for (const email of openInboxEmails) {
-      // First response calculation
-      const commentTime = commentMap.get(email.id) || null;
-      let outboundTime: number | null = null;
-      if (email.from_email) {
-        const fromEmailClean = email.from_email.toLowerCase().trim();
-        const sentTimes = sentMap.get(fromEmailClean);
-        if (sentTimes) {
-          const emailCreatedTime = new Date(email.created_at).getTime();
-          const firstSentAfter = sentTimes.find((t) => t > emailCreatedTime);
-          if (firstSentAfter) {
-            outboundTime = firstSentAfter;
-          }
-        }
-      }
-
-      let firstResponseTime: number | null = null;
-      if (commentTime && outboundTime) {
-        firstResponseTime = Math.min(commentTime, outboundTime);
-      } else if (commentTime) {
-        firstResponseTime = commentTime;
-      } else if (outboundTime) {
-        firstResponseTime = outboundTime;
-      }
-
-      const workingTimeMs = calculateWorkingTimeMs(
-        new Date(email.created_at),
-        new Date(nowMs),
-        workingDays,
-        workingHoursStart,
-        workingHoursEnd,
-        timeZone,
-      );
-
-      if (workingTimeMs > emailSlaMs && !firstResponseTime) {
-        const assigneeName = email.assigned_to ? userMap.get(email.assigned_to) || null : null;
-        breachedEmailsList.push({
-          id: String(email.id),
-          from_email: email.from_email,
-          subject: email.subject || null,
-          created_at: email.created_at,
-          assigned_to: email.assigned_to,
-          assignee_name: assigneeName,
-          working_time_hours: Math.round(workingTimeMs / (1000 * 60 * 60)),
-        });
-      }
-    }
-
-    breachedEmailsList.sort((a, b) => b.working_time_hours - a.working_time_hours);
-
-    const totalCount = breachedEmailsList.length;
-    const items = breachedEmailsList.slice(offset, offset + limit);
-
+    const totalCount = breached.length;
     return {
-      items,
+      items: breached.slice(offset, offset + limit),
       totalCount,
       hasMore: offset + limit < totalCount,
     };
@@ -598,75 +416,13 @@ export class DashboardController {
     const { page, limit } = input;
     const offset = (page - 1) * limit;
 
-    // Fetch SLA settings
-    const settingsRepo = new SettingsRepo();
-    const settingsRows = await settingsRepo.getAllForTenant(tenant_id);
-    const { taskSlaHours, workingDays, workingHoursStart, workingHoursEnd, timeZone } = slaPolicyFrom(
-      settingsMapFrom(settingsRows),
-    );
+    const sla = await this.loadSla(tenant_id);
+    const { userMap } = await this.loadUserMap(tenant_id);
+    const breached = await this.breachedTasksList(tenant_id, sla, userMap);
 
-    const taskSlaMs = taskSlaHours * 60 * 60 * 1000;
-
-    // Fetch all users in the tenant
-    const users = await this.db
-      .selectFrom('authusers')
-      .select(['id', 'first_name', 'last_name'])
-      .where('tenant_id', '=', tenant_id)
-      .execute();
-
-    const userMap = new Map<string, string>();
-    for (const u of users) {
-      userMap.set(u.id, `${u.first_name || ''} ${u.last_name || ''}`.trim());
-    }
-
-    // Fetch open tasks for this tenant
-    const openTasks = await this.db
-      .selectFrom('tasks')
-      .select(['id', 'name', 'status', 'created_at', 'completed_at', 'assigned_to'])
-      .where('tenant_id', '=', tenant_id)
-      .where('status', 'in', [...TASK_OPEN_STATUSES])
-      .execute();
-
-    const breachedTasksList: Array<{
-      id: string;
-      name: string;
-      created_at: Date | string;
-      assigned_to: string | null;
-      assignee_name: string | null;
-      working_time_hours: number;
-    }> = [];
-
-    const nowMs = Date.now();
-
-    for (const task of openTasks) {
-      const workingTimeMs = calculateWorkingTimeMs(
-        new Date(task.created_at),
-        new Date(nowMs),
-        workingDays,
-        workingHoursStart,
-        workingHoursEnd,
-        timeZone,
-      );
-      if (workingTimeMs > taskSlaMs) {
-        const assigneeName = task.assigned_to ? userMap.get(task.assigned_to) || null : null;
-        breachedTasksList.push({
-          id: String(task.id),
-          name: task.name,
-          created_at: task.created_at,
-          assigned_to: task.assigned_to,
-          assignee_name: assigneeName,
-          working_time_hours: Math.round(workingTimeMs / (1000 * 60 * 60)),
-        });
-      }
-    }
-
-    breachedTasksList.sort((a, b) => b.working_time_hours - a.working_time_hours);
-
-    const totalCount = breachedTasksList.length;
-    const items = breachedTasksList.slice(offset, offset + limit);
-
+    const totalCount = breached.length;
     return {
-      items,
+      items: breached.slice(offset, offset + limit),
       totalCount,
       hasMore: offset + limit < totalCount,
     };

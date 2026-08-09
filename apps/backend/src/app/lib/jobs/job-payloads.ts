@@ -127,6 +127,18 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('cleanup_activities') }),
   z.object({ type: z.literal('prune_retention') }),
   z.object({ type: z.literal('recompute_all_duplicates') }),
+  /**
+   * Nightly sweep writing every tenant's dashboard-statistics snapshot (dashboard_stats_snapshots).
+   * Parameterless cron — seeded at boot like the other CRON_JOBS entries.
+   */
+  z.object({ type: z.literal('refresh_dashboard_stats') }),
+  /**
+   * One tenant's snapshot on demand: the dashboard's Refresh button, and the first view of a
+   * workspace that has no snapshot yet. A SEPARATE type from the cron sweep on purpose — cron
+   * chain continuation (scheduleNextRun) coalesces on `payload->>'type'`, so a pending manual
+   * refresh sharing the sweep's type would silently stop the nightly chain.
+   */
+  z.object({ type: z.literal('refresh_dashboard_stats_tenant'), tenant_id: idSchema }),
   z.object({
     type: z.literal('recompute_address_fingerprints'),
     tenant_id: idSchema.nullish(),

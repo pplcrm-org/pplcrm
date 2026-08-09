@@ -4,6 +4,7 @@ import type { Models } from '../../../../../../libs/common/src/lib/kysely.models
 import { jobPayloadSchema, legacyImportJobSchema } from './job-payloads';
 import { handleCheckAllUsageLimits, handleCheckUsageLimits, handleZapierTrigger } from './handlers/billing.handlers';
 import { handleMatchBoundaries, handleSweepUnmatchedBoundaries } from './handlers/boundaries.handlers';
+import { handleRefreshDashboardStats, handleRefreshDashboardStatsTenant } from './handlers/dashboard-stats.handlers';
 import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
 import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
@@ -131,6 +132,12 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'recompute_all_duplicates':
       await handleRecomputeAllDuplicates(db);
+      break;
+    case 'refresh_dashboard_stats':
+      await handleRefreshDashboardStats(db);
+      break;
+    case 'refresh_dashboard_stats_tenant':
+      await handleRefreshDashboardStatsTenant(job, db);
       break;
     case 'recompute_address_fingerprints':
       await handleRecomputeAddressFingerprints(job, db);

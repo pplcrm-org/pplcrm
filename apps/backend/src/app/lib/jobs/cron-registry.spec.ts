@@ -22,6 +22,7 @@ const EXPECTED_CRON_TYPES = [
   'recompute_address_fingerprints',
   'recompute_all_duplicates',
   'refresh_companies_google',
+  'refresh_dashboard_stats',
   'sweep_unmatched_boundaries',
 ] as const;
 

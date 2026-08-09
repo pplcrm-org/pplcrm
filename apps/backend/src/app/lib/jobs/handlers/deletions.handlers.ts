@@ -46,6 +46,7 @@ export const TENANT_SCOPED_TABLES = [
   'companion_ops',
   'companion_sessions',
   'companion_volunteers',
+  'dashboard_stats_snapshots',
   'data_exports',
   'data_imports',
   'delivery_requests',
