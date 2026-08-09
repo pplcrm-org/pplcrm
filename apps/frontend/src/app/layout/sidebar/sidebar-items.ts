@@ -149,7 +149,8 @@ export const SidebarItems: ISidebarItem[] = [
         name: `Households`,
         route: '/households',
         icon: 'house-modern',
-        shortcut: 'h',
+        // `u` (hoUseholds): `h` is Dashboard (home).
+        shortcut: 'u',
         hidden: true,
       },
       {
@@ -232,6 +233,9 @@ export const SidebarItems: ISidebarItem[] = [
         name: 'Teams',
         route: '/teams',
         icon: 'user-group',
+        // `k`: every letter in "Teams" is taken (`t` is Tasks, `e` Deliveries, `a`
+        // Automations, `m` Users, `s` Tags & issues), so this one is arbitrary.
+        shortcut: 'k',
       },
       {
         // "Approvals", not "Volunteer access": under a VOLUNTEERS heading the qualifier
@@ -277,6 +281,8 @@ export const SidebarItems: ISidebarItem[] = [
         name: `Duplicates`,
         route: '/duplicates',
         icon: 'document-duplicate',
+        // `q` (merge Queue, which is what the badge below counts): `d` is Donations.
+        shortcut: 'q',
         // Badge = merge-queue size (spec §9.3), via the tenant-scoped `duplicates.countQueue`
         // query. Count is fetched and applied in Sidebar (sidebar.ts) — see `badgeCount`.
       },
