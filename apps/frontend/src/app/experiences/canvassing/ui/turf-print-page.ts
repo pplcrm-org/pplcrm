@@ -135,6 +135,15 @@ function isDoNotContact(door: TurfDoor): boolean {
           border: 1px solid #000;
           height: 9mm;
         }
+        /* The shared table shell is screen chrome. On paper it is a scroll container,
+           and a scroll container cannot break across pages — strip it so the table
+           paginates with its header repeating. */
+        .pc-walk-shell {
+          border: none;
+          border-radius: 0;
+          background: transparent;
+          overflow: visible;
+        }
         /* A map split across two pages is two useless halves. */
         .pc-walk-map {
           break-inside: avoid;

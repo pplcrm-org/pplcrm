@@ -89,41 +89,44 @@
   </p>
   }
 
-  <!-- The walk list. Deliberately not inside a card or panel: the print rules give those
-       break-inside:avoid, which a two-hundred-row table cannot honour. A bare table
-       paginates, and the header row repeats on every page. -->
-  <table class="pc-walk-table w-full border-collapse text-sm">
-    <thead>
-      <tr class="text-left text-xs uppercase">
-        <th class="w-10">#</th>
-        <th class="w-56">Address</th>
-        <th class="w-56">Residents</th>
-        <th class="w-32">Status now</th>
-        <th class="w-32">Result</th>
-        <th>Notes</th>
-      </tr>
-    </thead>
-    <tbody>
-      @for (g of groups(); track g.key) {
-      <tr>
-        <td colspan="6" class="bg-base-200 font-bold">{{ groupName(g) }}</td>
-      </tr>
-      @for (door of g.doors; track door.household_id) {
-      <tr>
-        <td class="tabular-nums">{{ seqOf(door) }}</td>
-        <td>{{ door.address }}</td>
-        <td>{{ residentsOf(door) }}</td>
-        <td>{{ doorWord[door.status] }}</td>
-        <td></td>
-        <td></td>
-      </tr>
-      } } @empty {
-      <tr>
-        <td colspan="6" class="py-6 text-center text-sm">This turf has no doors yet.</td>
-      </tr>
-      }
-    </tbody>
-  </table>
+  <!-- The walk list, on the shared table contract (.pc-table gives the micro-caps header,
+       body size and density — see pplcrm-table). The shell is our own div rather than
+       <pc-table> so print can strip it: a bordered scroll container cannot paginate, and
+       this table must break across pages with its header repeating on every one. -->
+  <div class="pc-table-shell pc-walk-shell">
+    <table class="table pc-table pc-walk-table">
+      <thead>
+        <tr>
+          <th class="w-10">#</th>
+          <th class="w-56">Address</th>
+          <th class="w-56">Residents</th>
+          <th class="w-32">Status now</th>
+          <th class="w-32">Result</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (g of groups(); track g.key) {
+        <tr>
+          <td colspan="6" class="bg-base-200 font-bold">{{ groupName(g) }}</td>
+        </tr>
+        @for (door of g.doors; track door.household_id) {
+        <tr>
+          <td class="tabular-nums">{{ seqOf(door) }}</td>
+          <td>{{ door.address }}</td>
+          <td>{{ residentsOf(door) }}</td>
+          <td>{{ doorWord[door.status] }}</td>
+          <td></td>
+          <td></td>
+        </tr>
+        } } @empty {
+        <tr>
+          <td colspan="6" class="py-6 text-center text-sm">This turf has no doors yet.</td>
+        </tr>
+        }
+      </tbody>
+    </table>
+  </div>
 
   @if (qr(); as code) {
   <section class="flex items-start gap-4">
