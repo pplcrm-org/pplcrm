@@ -481,7 +481,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'print-walk-map', text: 'Print a paper walk map' },
       {
         kind: 'p',
-        text: '**Print walk map**, in a turf’s ⋯ menu on the list or on the turf page, opens a printable walk sheet for that turf. The page has a header with the turf’s facts, a schematic map with a numbered dot for each door and a dashed line through the suggested route (door positions are approximate and roads aren’t drawn), and the full door list in walking order with blank Result and Notes columns for recording in pencil. A QR code on the sheet lets a volunteer with a phone scan it and join the same turf in the app.',
+        text: '**Print walk map**, in a turf’s ⋯ menu on the list or on the turf page, opens a printable walk sheet for that turf. The page has a header with the turf’s facts, a street map with a numbered dot for each door and a dashed line through the suggested route (door positions are approximate; without a Google Maps key the sheet falls back to a plain schematic with street names), and the full door list in walking order with blank Result and Notes columns for recording in pencil. A QR code on the sheet lets a volunteer with a phone scan it and join the same turf in the app.',
       },
       {
         kind: 'p',

@@ -21,63 +21,84 @@
     </div>
   </section>
 
-  <!-- Schematic map. Drawn here rather than fetched, so a sheet prints with no network. -->
+  <!-- The walk map: a grayscale Google street image (an <img>, so browsers print it by
+       default) with the route overlay drawn on top in the image's own projection. With
+       no key, or a failed image, the overlay stands alone as a schematic. -->
   @if (printMap(); as m) {
   <section class="pc-walk-map pc-panel flex flex-col gap-2 p-5">
-    <svg
-      class="h-auto w-full"
-      [attr.viewBox]="'0 0 ' + mapWidth + ' ' + m.height"
-      role="img"
-      [attr.aria-label]="d.name + ' schematic walk map'"
-    >
-      @for (p of m.paths; track p.id) {
-      <path [attr.d]="p.d" fill="none" stroke="#444" stroke-width="1.5" stroke-dasharray="4 4"></path>
-      } @for (s of m.streets; track s.id) {
-      <text [attr.x]="s.x" [attr.y]="s.y" font-size="10" fill="#666" text-anchor="middle">{{ s.text }}</text>
-      } @for (dot of m.dots; track dot.id) {
-      <circle
-        [attr.cx]="dot.x"
-        [attr.cy]="dot.y"
-        [attr.r]="dotRadius"
-        [attr.fill]="dot.fill"
-        [attr.stroke]="dot.stroke"
-        stroke-width="1.5"
-      ></circle>
-      @if (dot.crossed) {
-      <!-- Nobody at this door may be contacted, so it is crossed out rather than numbered. -->
-      <line
-        [attr.x1]="dot.x - crossArm"
-        [attr.y1]="dot.y - crossArm"
-        [attr.x2]="dot.x + crossArm"
-        [attr.y2]="dot.y + crossArm"
-        stroke="#000"
-        stroke-width="1.5"
-      ></line>
-      <line
-        [attr.x1]="dot.x + crossArm"
-        [attr.y1]="dot.y - crossArm"
-        [attr.x2]="dot.x - crossArm"
-        [attr.y2]="dot.y + crossArm"
-        stroke="#000"
-        stroke-width="1.5"
-      ></line>
-      } @else {
-      <text
-        [attr.x]="dot.x"
-        [attr.y]="dot.y"
-        font-size="8"
-        [attr.fill]="dot.labelFill"
-        text-anchor="middle"
-        dominant-baseline="central"
-      >
-        {{ dot.label }}
-      </text>
-      } } @for (t of m.tags; track t.id) {
-      <text [attr.x]="t.x" [attr.y]="t.y" font-size="11" font-weight="bold" fill="#000">{{ t.text }}</text>
+    <div class="relative">
+      @if (m.imageUrl && !basemapFailed()) {
+      <img class="absolute inset-0 h-full w-full rounded" [src]="m.imageUrl" alt="" (error)="basemapFailed.set(true)" />
       }
-    </svg>
+      <svg
+        class="relative h-auto w-full"
+        [attr.viewBox]="'0 0 ' + mapWidth + ' ' + mapHeight"
+        role="img"
+        [attr.aria-label]="d.name + ' walk map'"
+      >
+        @for (p of m.paths; track p.id) {
+        <path [attr.d]="p.d" fill="none" stroke="#222" stroke-width="2" stroke-dasharray="4 4"></path>
+        } @if (!m.imageUrl || basemapFailed()) { @for (s of m.streets; track s.id) {
+        <text [attr.x]="s.x" [attr.y]="s.y" font-size="10" fill="#666" text-anchor="middle">{{ s.text }}</text>
+        } } @for (dot of m.dots; track dot.id) {
+        <circle
+          [attr.cx]="dot.x"
+          [attr.cy]="dot.y"
+          [attr.r]="dotRadius"
+          [attr.fill]="dot.fill"
+          [attr.stroke]="dot.stroke"
+          stroke-width="1.5"
+        ></circle>
+        @if (dot.crossed) {
+        <!-- Nobody at this door may be contacted, so it is crossed out rather than numbered. -->
+        <line
+          [attr.x1]="dot.x - crossArm"
+          [attr.y1]="dot.y - crossArm"
+          [attr.x2]="dot.x + crossArm"
+          [attr.y2]="dot.y + crossArm"
+          stroke="#000"
+          stroke-width="1.5"
+        ></line>
+        <line
+          [attr.x1]="dot.x + crossArm"
+          [attr.y1]="dot.y - crossArm"
+          [attr.x2]="dot.x - crossArm"
+          [attr.y2]="dot.y + crossArm"
+          stroke="#000"
+          stroke-width="1.5"
+        ></line>
+        } @else {
+        <text
+          [attr.x]="dot.x"
+          [attr.y]="dot.y"
+          font-size="8"
+          [attr.fill]="dot.labelFill"
+          text-anchor="middle"
+          dominant-baseline="central"
+        >
+          {{ dot.label }}
+        </text>
+        } } @for (t of m.tags; track t.id) {
+        <text
+          [attr.x]="t.x"
+          [attr.y]="t.y"
+          font-size="11"
+          font-weight="bold"
+          fill="#000"
+          stroke="#fff"
+          stroke-width="3"
+          paint-order="stroke"
+        >
+          {{ t.text }}
+        </text>
+        }
+      </svg>
+    </div>
+    @if (m.imageUrl && !basemapFailed()) {
+    <p class="text-xs text-base-content/60">Map imagery © Google. Door positions are approximate.</p>
+    } @else {
     <p class="text-xs text-base-content/60">Schematic map. Door positions are approximate and roads are not drawn.</p>
-    @if (ungeocoded() > 0) {
+    } @if (ungeocoded() > 0) {
     <p class="text-xs text-base-content/60">
       {{ ungeocoded() }} doors have no map position yet; they appear only in the list.
     </p>

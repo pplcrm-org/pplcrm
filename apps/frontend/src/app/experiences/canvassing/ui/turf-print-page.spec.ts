@@ -213,7 +213,9 @@ describe('TurfPrintPage', () => {
       const circles = (fixture.nativeElement as HTMLElement).querySelectorAll('svg circle');
       expect(circles.length).toBe(GEOCODED);
       expect(text()).toContain('1 doors have no map position yet; they appear only in the list.');
-      expect(text()).toContain('Schematic map. Door positions are approximate and roads are not drawn.');
+      // The caption's shared sentence; whether the Google basemap renders depends on
+      // whether the test environment carries a maps key, so only the constant is asserted.
+      expect(text()).toContain('Door positions are approximate');
     });
 
     it('draws one dashed route through the doors still to walk, on a canvas sized to the turf', async () => {
@@ -222,9 +224,8 @@ describe('TurfPrintPage', () => {
       const paths = svg?.querySelectorAll('path') ?? [];
       expect(paths.length).toBe(1);
       expect(paths[0]?.getAttribute('stroke-dasharray')).toBe('4 4');
-      const height = Number((svg?.getAttribute('viewBox') ?? '').split(' ')[3]);
-      expect(height).toBeGreaterThanOrEqual(240);
-      expect(height).toBeLessThanOrEqual(520);
+      const viewBox = svg?.getAttribute('viewBox') ?? '';
+      expect(viewBox).toBe('0 0 640 440');
     });
 
     it('a finished turf still draws the route, through every placed door', async () => {

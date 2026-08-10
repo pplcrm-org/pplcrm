@@ -355,7 +355,11 @@ order). Consumed by the Companion (`orderEntriesForWalk` adapter in
 `canvass-derive.ts` — `walkEntries` is IN this order, and `nextDoorId`/
 `nextEntryKey` mean "first remaining stop in walking order", **no longer** min
 `walk_order`), by the CRM turf detail page, and by the printable walk sheet
-(`turf-print-page.ts`, route `/canvassing/:id/print`). Rules that hold:
+(`turf-print-page.ts`, route `/canvassing/:id/print` — a grayscale Google
+**Static Maps** image under an SVG overlay, aligned by projecting with the
+image's own Web Mercator at its integer zoom; no key or a failed image falls
+back to the schematic overlay alone. The browser Maps key must have the
+"Maps Static API" enabled or every sheet falls back). Rules that hold:
 
 - Stored `walk_order` stays the cutter's order and still decides street
   sequence and `applyDefaultScope`; the walking order is derived, never stored.

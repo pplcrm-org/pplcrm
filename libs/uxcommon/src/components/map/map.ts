@@ -509,6 +509,11 @@ export class PcMap {
         scrollwheel: false, // §13.3 — keep the page scrolling
         streetViewControl: false,
         mapTypeControl: false,
+        // Maps JS ≥3.59 collapses zoom into a "camera control" cluster by default.
+        // Volunteers and organizers expect the classic + and − buttons, so ask for
+        // them explicitly and keep the newer cluster off.
+        zoomControl: this.interactive(),
+        cameraControl: false,
         keyboardShortcuts: this.interactive(),
       });
 
@@ -631,6 +636,9 @@ export class PcMap {
     pin.style.background = color;
     pin.style.border = '2px solid var(--color-base-100, #fff)';
     pin.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
+    // Advanced markers anchor content at its bottom-centre (built for teardrop pins).
+    // A round dot must sit ON its coordinate, not float half a dot above the roof.
+    pin.style.transform = 'translateY(50%)';
     if (label) {
       // A numbered pin reads the visit order straight off the map.
       pin.textContent = label;
@@ -691,6 +699,8 @@ export class PcMap {
     bubble.style.fontWeight = '700';
     bubble.style.lineHeight = '1';
     bubble.textContent = formatClusterCount(cluster.count);
+    // Same bottom-centre anchor correction as pins: a bubble centres on its area.
+    bubble.style.transform = 'translateY(50%)';
     if (!drawing) bubble.style.cursor = 'pointer';
 
     const tooltip = `${cluster.count.toLocaleString()} here — click to zoom in`;
@@ -860,6 +870,8 @@ export class PcMap {
     dot.style.background = isFirst ? color : 'var(--color-base-100, #fff)';
     dot.style.border = `2px solid ${color}`;
     dot.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
+    // Bottom-centre anchor correction — the handle marks the exact clicked vertex.
+    dot.style.transform = 'translateY(50%)';
     if (isFirst) dot.title = DRAFT_FIRST_VERTEX_TOOLTIP;
 
     const handle = new google.maps.marker.AdvancedMarkerElement({
@@ -902,6 +914,8 @@ export class PcMap {
     dot.style.background = color;
     dot.style.border = '3px solid var(--color-base-100, #fff)';
     dot.style.boxShadow = `0 0 0 ${USER_DOT_HALO_PX}px ${halo}, 0 1px 3px rgba(0,0,0,0.4)`;
+    // Bottom-centre anchor correction — the device stands ON its coordinate.
+    dot.style.transform = 'translateY(50%)';
     this.userDot = new google.maps.marker.AdvancedMarkerElement({
       map: this.map,
       position: location,

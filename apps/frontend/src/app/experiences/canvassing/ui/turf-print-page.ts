@@ -15,6 +15,7 @@ import {
   type LatLng,
   type WalkStreetGroup,
 } from '../../../../../../../libs/common/src';
+import { environment } from '../../../../environments/environment';
 import { CanvassingService, type TurfDetail, type TurfDoor } from '../services/canvassing-service';
 import { JoinCodesService } from '../../volunteer-access/services/join-codes-service';
 import { OrgModeService } from '../../../services/org-mode.service';
@@ -29,14 +30,18 @@ const DOOR_WORD: Record<DoorStatus, string> = {
 };
 
 /**
- * The schematic map's drawing box. Width is fixed; height follows the doors' own
- * proportions between the two bounds, so a flat east-west turf is not printed as a
- * page of empty white under a thin row of dots.
+ * The map's drawing box, sized to the Static Maps free-tier ceiling (640×640 CSS px)
+ * so the basemap image and the SVG overlay are always the same rectangle.
  */
-const MAP_WIDTH = 760;
-const MAP_MAX_HEIGHT = 520;
-const MAP_MIN_HEIGHT = 240;
+const MAP_WIDTH = 640;
+const MAP_HEIGHT = 440;
 const MAP_PADDING = 30;
+/** Doubles the image's pixel density (not its coordinate space) so paper stays sharp. */
+const STATIC_MAP_SCALE = 2;
+/** A one-door turf frames a block, not a rooftop. */
+const STATIC_MAP_MAX_ZOOM = 17;
+const STATIC_MAP_MIN_ZOOM = 3;
+const WORLD_TILE_PX = 256;
 const DOT_RADIUS = 7;
 /** Half-width of the X drawn over a door nobody may contact. */
 const CROSS_ARM = 4.5;
@@ -84,8 +89,17 @@ interface PrintMap {
   paths: PrintPath[];
   streets: PrintLabel[];
   tags: PrintTag[];
-  /** The drawing box height this turf's shape earned; the width is always MAP_WIDTH. */
-  height: number;
+  /** The Google street image under the overlay, or null when the workspace has no key. */
+  imageUrl: string | null;
+}
+
+/** Web Mercator world fractions — the projection the Static Maps image itself uses. */
+function mercatorX(lng: number): number {
+  return (lng + 180) / 360;
+}
+
+function mercatorY(lat: number): number {
+  return 0.5 - Math.asinh(Math.tan(lat * DEGREES_TO_RADIANS)) / (2 * Math.PI);
 }
 
 /** A door with coordinates, narrowed once so nothing downstream re-checks for null. */
@@ -169,7 +183,10 @@ export class TurfPrintPage {
   protected readonly qr = signal<JoinCodeQr | null>(null);
   protected readonly printedAt = new Date();
   protected readonly mapWidth = MAP_WIDTH;
+  protected readonly mapHeight = MAP_HEIGHT;
   protected readonly dotRadius = DOT_RADIUS;
+  /** Flips when the Google image 403s or times out; the overlay then stands alone. */
+  protected readonly basemapFailed = signal(false);
   protected readonly crossArm = CROSS_ARM;
   protected readonly doorWord = DOOR_WORD;
 
@@ -234,51 +251,56 @@ export class TurfPrintPage {
   });
 
   /**
-   * The schematic map: door dots, ONE dashed line through the doors still to walk in
-   * walking order, street names, and the start and end of the walk.
+   * The walk map: a Google street image with door dots, ONE dashed line through the
+   * doors still to walk in walking order, and the start and end of the walk drawn on
+   * top of it. Without a key (or when the image fails to load) the same overlay
+   * renders alone as a schematic, with street names standing in for the basemap.
    *
    * The line deliberately runs across streets — on paper it is the entire guidance,
    * exactly what the hand-drawn arrows on a classic walk sheet do — and it is
-   * simplified to real turns, never one segment per door. The projection is
-   * equirectangular around the middle latitude of the turf, which is accurate enough
-   * over a few city blocks and needs no map tiles. Roads are not drawn at all, which
-   * is why the caption under it says so.
+   * simplified to real turns, never one segment per door. The overlay projects with
+   * the image's own Web Mercator at the image's own integer zoom, so a dot lands on
+   * the house it belongs to.
    */
   protected readonly printMap = computed<PrintMap | null>(() => {
     const all = placed(this.walkDoors());
     if (all.length === 0) return null;
 
-    const lats = all.map((p) => p.point.lat);
-    const lngs = all.map((p) => p.point.lng);
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLng = Math.min(...lngs);
-    const maxLng = Math.max(...lngs);
-    const midLat = lats.reduce((sum, v) => sum + v, 0) / lats.length;
-    const lngScale = Math.cos(midLat * DEGREES_TO_RADIANS);
+    const xs = all.map((p) => mercatorX(p.point.lng));
+    const ys = all.map((p) => mercatorY(p.point.lat));
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
 
-    const rawWidth = (maxLng - minLng) * lngScale;
-    const rawHeight = maxLat - minLat;
-    const innerWidth = MAP_WIDTH - MAP_PADDING * 2;
-    const aspect = rawWidth > 0 && rawHeight > 0 ? rawHeight / rawWidth : 1;
-    const height = Math.min(
-      MAP_MAX_HEIGHT,
-      Math.max(MAP_MIN_HEIGHT, Math.round(innerWidth * aspect) + MAP_PADDING * 2),
-    );
-    const innerHeight = height - MAP_PADDING * 2;
-    // A turf on one street has zero height, and a single door has zero of both. Fall back
-    // to a scale of 1 so the centring maths below simply puts it in the middle.
-    const fits: number[] = [];
-    if (rawWidth > 0) fits.push(innerWidth / rawWidth);
-    if (rawHeight > 0) fits.push(innerHeight / rawHeight);
-    const scale = fits.length > 0 ? Math.min(...fits) : 1;
-    const offsetX = MAP_PADDING + (innerWidth - rawWidth * scale) / 2;
-    const offsetY = MAP_PADDING + (innerHeight - rawHeight * scale) / 2;
+    // The largest integer zoom (Static Maps accepts no other kind) that fits every
+    // door inside the padded box. A single door has zero span and stays at the cap.
+    let zoom = STATIC_MAP_MAX_ZOOM;
+    while (zoom > STATIC_MAP_MIN_ZOOM) {
+      const world = WORLD_TILE_PX * 2 ** zoom;
+      const fitsX = (maxX - minX) * world <= MAP_WIDTH - MAP_PADDING * 2;
+      const fitsY = (maxY - minY) * world <= MAP_HEIGHT - MAP_PADDING * 2;
+      if (fitsX && fitsY) break;
+      zoom--;
+    }
+    const world = WORLD_TILE_PX * 2 ** zoom;
 
     const project = (point: LatLng): { x: number; y: number } => ({
-      x: round(offsetX + (point.lng - minLng) * lngScale * scale),
-      y: round(offsetY + (maxLat - point.lat) * scale),
+      x: round(MAP_WIDTH / 2 + (mercatorX(point.lng) - centerX) * world),
+      y: round(MAP_HEIGHT / 2 + (mercatorY(point.lat) - centerY) * world),
     });
+
+    const centerLng = centerX * 360 - 180;
+    const centerLat = Math.atan(Math.sinh(2 * Math.PI * (0.5 - centerY))) / DEGREES_TO_RADIANS;
+    const key = environment.googleMapsApiKey;
+    // Grayscale, POI labels off: the basemap is context, the black route is the message.
+    const imageUrl = key
+      ? `https://maps.googleapis.com/maps/api/staticmap?center=${centerLat.toFixed(6)},${centerLng.toFixed(6)}` +
+        `&zoom=${zoom}&size=${MAP_WIDTH}x${MAP_HEIGHT}&scale=${STATIC_MAP_SCALE}&maptype=roadmap` +
+        `&style=saturation:-100&style=feature:poi%7Celement:labels%7Cvisibility:off&key=${key}`
+      : null;
 
     const seq = this.walkSeq();
     const dots: PrintDot[] = all.map(({ door, point }) => {
@@ -311,7 +333,7 @@ export class TurfPrintPage {
           id: door.household_id,
           ...at,
           fill: '#999999',
-          stroke: '#999999',
+          stroke: '#000000',
           label: number,
           labelFill: '#ffffff',
           crossed: false,
@@ -366,7 +388,7 @@ export class TurfPrintPage {
       tags.push({ id: 'end', x: at.x + DOT_RADIUS + 3, y: at.y - DOT_RADIUS, text: 'End' });
     }
 
-    return { dots, paths, streets, tags, height };
+    return { dots, paths, streets, tags, imageUrl };
   });
 
   protected groupName(group: WalkStreetGroup<TurfDoor>): string {
@@ -389,6 +411,7 @@ export class TurfPrintPage {
 
   private async load(): Promise<void> {
     const end = this._loading.begin();
+    this.basemapFailed.set(false);
     try {
       const detail = await this.svc.getTurfDetail(this.id());
       this.detail.set(detail);
