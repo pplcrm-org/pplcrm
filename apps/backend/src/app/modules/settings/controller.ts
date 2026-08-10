@@ -1030,9 +1030,10 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     // the domain, not just the address). Removing the domain out from under a stored choice
     // would otherwise surface as a send-guard failure at the next newsletter instead of here.
     const entries: { key: string; value: unknown }[] = [{ key: 'communications.verified_domains', value: updatedList }];
-    const [fromRow, replyToRow] = await Promise.all([
+    const [fromRow, replyToRow, verifiedEmailsRow] = await Promise.all([
       this.getRepo().getByKey({ tenant_id: auth.tenant_id, key: 'communications.default_from_email' }),
       this.getRepo().getByKey({ tenant_id: auth.tenant_id, key: 'communications.reply_to' }),
+      this.getRepo().getByKey({ tenant_id: auth.tenant_id, key: 'communications.verified_emails' }),
     ]);
     const addressOnRemovedDomain = (value: unknown): boolean =>
       typeof value === 'string' && value.toLowerCase().trim().split('@')[1] === domainVal;
@@ -1042,6 +1043,15 @@ export class SettingsController extends BaseController<'settings', SettingsRepo>
     }
     if (addressOnRemovedDomain(replyToRow?.value)) {
       entries.push({ key: 'communications.reply_to', value: '' });
+    }
+    // Click-verified addresses on the removed domain go too. Leaving them made the pickers and the
+    // send worker's re-check treat the address as still usable after its domain — the thing DMARC
+    // actually aligns on — was deleted, including mid-send (REVIEW6 T2-9).
+    if (Array.isArray(verifiedEmailsRow?.value)) {
+      const remaining = verifiedEmailsRow.value.filter((entry) => !addressOnRemovedDomain(entry));
+      if (remaining.length !== verifiedEmailsRow.value.length) {
+        entries.push({ key: 'communications.verified_emails', value: remaining });
+      }
     }
 
     await this.getRepo().upsertMany({

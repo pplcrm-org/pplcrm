@@ -685,20 +685,28 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
       .orderBy('step_number', 'asc')
       .execute();
 
-    const runs = await db
+    // The page needs only the 30-day count per workflow, so count in SQL rather than loading
+    // every run row from the window just to add them up in JS (REVIEW6 T1-2).
+    const runCounts = await db
       .selectFrom('workflow_runs')
-      .select(['workflow_id', 'status', 'step_number', 'step_kind', 'error', 'created_at'])
+      .select((eb) => ['workflow_id', eb.fn.countAll<string>().as('runs')])
       .where('tenant_id', '=', tenantId)
       .where('workflow_id', 'in', workflowIds)
       .where('created_at', '>=', thirtyDaysAgo)
-      .orderBy('created_at', 'desc')
+      .groupBy('workflow_id')
       .execute();
 
+    // DISTINCT ON returns the newest run per workflow in one index-driven pass
+    // (idx_workflow_runs_tenant_workflow_created). The previous shape read every run row the
+    // workspace ever produced — with no LIMIT and no date bound — and kept the first per
+    // workflow in JS, which grew without bound (REVIEW6 T1-2).
     const lastRuns = await db
       .selectFrom('workflow_runs')
+      .distinctOn('workflow_id')
       .select(['workflow_id', 'status', 'step_number', 'step_kind', 'error', 'created_at'])
       .where('tenant_id', '=', tenantId)
       .where('workflow_id', 'in', workflowIds)
+      .orderBy('workflow_id')
       .orderBy('created_at', 'desc')
       .execute();
 
@@ -718,16 +726,14 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
     }
 
     const runs30dByWorkflow = new Map<string, number>();
-    for (const r of runs) {
-      const key = String(r.workflow_id);
-      runs30dByWorkflow.set(key, (runs30dByWorkflow.get(key) ?? 0) + 1);
+    for (const r of runCounts) {
+      runs30dByWorkflow.set(String(r.workflow_id), Number(r.runs));
     }
 
     const lastRunByWorkflow = new Map<string, (typeof lastRuns)[number]>();
     for (const r of lastRuns) {
-      const key = String(r.workflow_id);
-      // rows are date-desc; first seen per workflow is the most recent.
-      if (!lastRunByWorkflow.has(key)) lastRunByWorkflow.set(key, r);
+      // DISTINCT ON already reduced this to one newest row per workflow.
+      lastRunByWorkflow.set(String(r.workflow_id), r);
     }
 
     const rows: WorkflowListRow[] = workflows.map((w) => {
@@ -753,7 +759,7 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
     const summary = {
       total: rows.length,
       active: rows.filter((r) => r.status === 'active').length,
-      runs30d: runs.length,
+      runs30d: rows.reduce((sum, r) => sum + r.runs_30d, 0),
     };
 
     return { rows, summary };

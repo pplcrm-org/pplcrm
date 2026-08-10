@@ -41,11 +41,15 @@ export class DonationPledgesRepo extends BaseRepository<'donation_pledges'> {
   }
 
   public async getForPerson(tenantId: string, personId: string): Promise<Selectable<Models['donation_pledges']>[]> {
+    // Campaigns §15 — same pin as getAllForTenant: the donor's person page must not show a
+    // campaign-pinned Editor or Viewer another campaign's pledges.
+    const campaignId = this.campaignPin();
     return this.db
       .selectFrom('donation_pledges')
       .selectAll()
       .where('tenant_id', '=', tenantId)
       .where('person_id', '=', personId)
+      .$if(campaignId != null, (b) => b.where('campaign_id', '=', String(campaignId)))
       .orderBy('created_at', 'desc')
       .execute();
   }

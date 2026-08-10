@@ -37,7 +37,7 @@ import {
 import { BadRequestError, NotFoundError } from '../../errors/app-errors';
 import { listAreaSetColumns } from '../households/electoral-areas';
 import { BaseController } from '../../lib/base.controller';
-import { enqueueBoundaryMatch } from '../../lib/gis/boundary-jobs';
+import { BOUNDARY_FEATURE_EDIT_SETTLE_MS, enqueueBoundaryMatch } from '../../lib/gis/boundary-jobs';
 import { asCoordinate, countContainingFeatures, loadBoundarySets } from '../../lib/gis/boundary-match';
 import { invalidateBoundarySetCache } from '../../lib/gis/boundary-store';
 import { logger } from '../../logger';
@@ -590,7 +590,8 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
       if (!inserted) throw new NotFoundError('Failed to save the area');
 
       await this.getRepo().touch(auth.tenant_id, setId, existing + 1, trx);
-      await enqueueBoundaryMatch(trx, auth.tenant_id, setId, 'all');
+      // Settle delay: area saves arrive in bursts while a map is being drawn; see the constant.
+      await enqueueBoundaryMatch(trx, auth.tenant_id, setId, 'all', BOUNDARY_FEATURE_EDIT_SETTLE_MS);
       return inserted;
     });
 
@@ -654,7 +655,8 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
 
       const count = await this.featuresRepo.countForSet(auth.tenant_id, setId, trx);
       await repo.touch(auth.tenant_id, setId, count, trx);
-      await enqueueBoundaryMatch(trx, auth.tenant_id, setId, 'all');
+      // Settle delay: area saves arrive in bursts while a map is being drawn; see the constant.
+      await enqueueBoundaryMatch(trx, auth.tenant_id, setId, 'all', BOUNDARY_FEATURE_EDIT_SETTLE_MS);
     });
 
     invalidateBoundarySetCache(setId);
@@ -674,7 +676,8 @@ export class BoundariesController extends BaseController<'boundary_sets', Bounda
       await repo.touch(auth.tenant_id, setId, count, trx);
       // Households that were inside the deleted area now belong to no area of this layer, so the
       // whole layer is re-matched rather than left reporting an area that no longer exists.
-      await enqueueBoundaryMatch(trx, auth.tenant_id, setId, 'all');
+      // Settle delay: deletes arrive in bursts during a redraw session too; see the constant.
+      await enqueueBoundaryMatch(trx, auth.tenant_id, setId, 'all', BOUNDARY_FEATURE_EDIT_SETTLE_MS);
     });
 
     invalidateBoundarySetCache(setId);

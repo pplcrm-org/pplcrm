@@ -797,29 +797,28 @@ export class NewslettersController extends BaseController<'newsletters', Newslet
         'communications.default_from_name',
         'communications.default_from_email',
         'communications.reply_to',
-        'communications.verified_emails',
       ])
       .execute();
 
     const settingsMap: Record<string, string> = {};
-    let verifiedEmails: string[] = [];
     for (const row of settingsRows) {
-      if (row.key === 'communications.verified_emails') {
-        if (Array.isArray(row.value)) {
-          verifiedEmails = row.value.map((e) => String(e).toLowerCase().trim());
-        }
-      } else if (typeof row.value === 'string') {
+      if (typeof row.value === 'string') {
         settingsMap[row.key] = row.value;
       }
     }
 
-    // Same rule the settings save path applies (settings/controller.ts): a From address the tenant
-    // has not proven it controls never reaches the wire. Without this, the caller picks the header.
+    // Same rule the settings save path and the real send apply (lib/mail/from-address-policy.ts):
+    // a DKIM-verified domain, or this tenant's own address on the platform sending domain. The
+    // click-verified list was checked here before, which disagreed with the real send in both
+    // directions — it accepted click-verified addresses the broadcast gate refuses, and refused
+    // the platform sending address the broadcast gate accepts — so a test send no longer previewed
+    // the send it exists to confirm (REVIEW6 T2-9).
     if (input.fromEmail) {
       const requestedFrom = input.fromEmail.toLowerCase().trim();
-      if (!verifiedEmails.includes(requestedFrom)) {
+      const policy = await loadFromAddressPolicy(db, tenant_id);
+      if (!isSendableFromAddress(requestedFrom, policy)) {
         throw new ForbiddenError(
-          `${input.fromEmail} is not a verified sending address. Verify it in Workspace settings before sending from it.`,
+          `${input.fromEmail} cannot be the From address. ${unsendableFromAddressMessage(requestedFrom)}`,
         );
       }
     }

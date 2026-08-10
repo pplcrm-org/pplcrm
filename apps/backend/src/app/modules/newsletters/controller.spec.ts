@@ -1191,10 +1191,27 @@ describe('NewslettersController sendTestEmail sender/recipient hardening', () =>
     expect(sendSpy).not.toHaveBeenCalled();
   });
 
-  it('refuses a From address the tenant has not verified', async () => {
+  it('refuses a From address on a domain the tenant has not verified', async () => {
+    // Same rule as the real send (from-address-policy.ts): the refusal names the domain to verify.
     await expect(
       controller.sendTestEmail(auth() as any, draft({ fromEmail: 'security@some-bank.example' })),
-    ).rejects.toThrow(/not a verified sending address/i);
+    ).rejects.toThrow(/domain you have verified/i);
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a click-verified address whose domain is not verified — test and real send agree', async () => {
+    // Click verification proves ownership, not DMARC alignment; the broadcast gate refuses such an
+    // address, so the test send must refuse it too rather than preview a send that cannot happen.
+    // (Update, not insert: beforeEach already seeded this tenant's verified_emails row.)
+    await db
+      .updateTable('settings')
+      .set({ value: JSON.stringify(['owner@click-only.example']) })
+      .where('tenant_id', '=', tenantId)
+      .where('key', '=', 'communications.verified_emails')
+      .execute();
+    await expect(
+      controller.sendTestEmail(auth() as any, draft({ fromEmail: 'owner@click-only.example' })),
+    ).rejects.toThrow(/domain you have verified/i);
     expect(sendSpy).not.toHaveBeenCalled();
   });
 

@@ -193,7 +193,11 @@ class BoundaryLruCache<T> {
  * or drawn layer genuinely belongs to one workspace and no two are the same bytes.
  */
 const BOUNDARY_CACHE_MAX_SETS = 64;
-const BOUNDARY_CACHE_MAX_BYTES = 160 * 1024 * 1024;
+// 48 MB + 48 MB (published, below) in a container whose whole Node heap is capped at 768 MB (see
+// apps/backend/Dockerfile). The previous pair summed to 256 MB, which left cache + baseline app +
+// one large request as a plausible out-of-memory kill on the 1 GiB container. An evicted layer is
+// re-parsed on next use — slower, never wrong — so the budgets err small until the container grows.
+const BOUNDARY_CACHE_MAX_BYTES = 48 * 1024 * 1024;
 const editableSetCache = new BoundaryLruCache<LoadedBoundarySet>(BOUNDARY_CACHE_MAX_SETS, BOUNDARY_CACHE_MAX_BYTES);
 
 /**
@@ -212,11 +216,11 @@ const editableSetCache = new BoundaryLruCache<LoadedBoundarySet>(BOUNDARY_CACHE_
  * edition is a new slug — so this entry needs no invalidation, and a file whose bytes stopped
  * matching their checksum is refused before it ever reaches the cache.
  *
- * The two budgets sum to the 256 MB this cache has always been allowed. Published layers get the
- * smaller share because a share goes much further when one entry serves every workspace.
+ * The two budgets are deliberately equal halves of a small total — see the note on
+ * BOUNDARY_CACHE_MAX_BYTES for why the total shrank from 256 MB.
  */
 const PUBLISHED_CACHE_MAX_SETS = 32;
-const PUBLISHED_CACHE_MAX_BYTES = 96 * 1024 * 1024;
+const PUBLISHED_CACHE_MAX_BYTES = 48 * 1024 * 1024;
 const publishedFeatureCache = new BoundaryLruCache<readonly LoadedBoundaryFeature[]>(
   PUBLISHED_CACHE_MAX_SETS,
   PUBLISHED_CACHE_MAX_BYTES,
@@ -273,6 +277,22 @@ function readGeometry(value: unknown, describe: string): BoundaryGeometryType | 
   return parsed.data;
 }
 
+/**
+ * The geometry check for checksum-verified published files.
+ *
+ * These bytes already passed the SHA-256 the catalog records, which vouches that they are exactly
+ * what the preparation script produced — so running the per-vertex Zod schema over a national map
+ * (hundreds of thousands of positions) re-verifies the script's output on the shared event loop,
+ * for seconds, on every cache miss. This checks only what the matcher and the bbox pass index into:
+ * a recognised type and an array where the rings belong. Editable sets keep full validation
+ * (readGeometry) because their rows come from user uploads.
+ */
+function isChecksummedGeometry(value: unknown): value is BoundaryGeometryType {
+  if (typeof value !== 'object' || value === null) return false;
+  const geometry = value as { type?: unknown; coordinates?: unknown };
+  return (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon') && Array.isArray(geometry.coordinates);
+}
+
 function readBBox(value: unknown, geometry: BoundaryGeometryType): BoundaryBBoxType {
   if (Array.isArray(value) && value.length === 4 && value.every((n) => typeof n === 'number')) {
     const [minLng, minLat, maxLng, maxLat] = value;
@@ -292,7 +312,7 @@ function versionOf(row: { updated_at: Date | string | null; feature_count: numbe
 }
 
 /** Backend one: the polygons of an editable layer, stored as rows a person can rename and reshape. */
-async function loadFeaturesFromRows(db: Db, tenantId: string, setId: string): Promise<LoadedBoundaryFeature[]> {
+async function loadFeaturesFromRows(db: Db, tenantId: string, setId: string): Promise<LoadedBoundaryFeature[] | null> {
   const rows = await db
     .selectFrom('boundary_features')
     .select(['id', 'name', 'code', 'geometry', 'bbox'])
@@ -305,6 +325,16 @@ async function loadFeaturesFromRows(db: Db, tenantId: string, setId: string): Pr
     const geometry = readGeometry(row.geometry, `boundary_features.id=${row.id}`);
     if (!geometry) continue;
     features.push({ name: row.name, code: row.code, bbox: readBBox(row.bbox, geometry), geometry });
+  }
+  // Rows exist but none carried a usable geometry: that is "this set could not be consulted", not
+  // "this set has no areas" — returning [] here would let a re-match delete every household's rows
+  // for the set. Same contract as the published-file loader.
+  if (rows.length > 0 && features.length === 0) {
+    logger.error(
+      { setId, rows: rows.length },
+      'A boundary set has feature rows but none carried a usable geometry — treating the set as unconsultable',
+    );
+    return null;
   }
   return features;
 }
@@ -359,20 +389,29 @@ async function readPublishedFile(entry: PublishedBoundaryEntry): Promise<Buffer 
   return bytes;
 }
 
-/** Turn a published file's bytes into named areas. Returns an empty list on any unreadable input. */
-function parsePublishedFeatures(entry: PublishedBoundaryEntry, bytes: Buffer): LoadedBoundaryFeature[] {
+/**
+ * Turn a published file's bytes into named areas.
+ *
+ * Returns null — never an empty list — when the bytes cannot be read as a FeatureCollection or when
+ * the collection has entries but none of them yielded a usable geometry. An empty list is a real,
+ * cacheable answer ("this map has no areas") that a re-match is allowed to store by deleting every
+ * household's rows for the map. A checksum only vouches that these are the bytes the preparation
+ * script produced — not that the script produced something readable — so a corrupt-but-checksum-valid
+ * file must land on the "could not be consulted" side of that contract.
+ */
+function parsePublishedFeatures(entry: PublishedBoundaryEntry, bytes: Buffer): LoadedBoundaryFeature[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(bytes.toString('utf8'));
   } catch (err) {
     logger.error({ err, slug: entry.slug }, 'Published boundary file is not valid JSON');
-    return [];
+    return null;
   }
 
   const collection = parsed as { features?: unknown };
   if (!Array.isArray(collection.features)) {
     logger.error({ slug: entry.slug }, 'Published boundary file is not a GeoJSON FeatureCollection');
-    return [];
+    return null;
   }
 
   const nameKey = entry.nameProperty;
@@ -381,8 +420,11 @@ function parsePublishedFeatures(entry: PublishedBoundaryEntry, bytes: Buffer): L
   for (const [index, item] of collection.features.entries()) {
     if (typeof item !== 'object' || item === null) continue;
     const feature = item as { properties?: unknown; geometry?: unknown };
-    const geometry = readGeometry(feature.geometry, `${entry.slug}[${index}]`);
-    if (!geometry) continue;
+    if (!isChecksummedGeometry(feature.geometry)) {
+      logger.warn({ describe: `${entry.slug}[${index}]` }, 'Boundary feature has unreadable geometry and was skipped');
+      continue;
+    }
+    const geometry = feature.geometry;
     const properties = (
       typeof feature.properties === 'object' && feature.properties !== null ? feature.properties : {}
     ) as Record<string, unknown>;
@@ -394,6 +436,13 @@ function parsePublishedFeatures(entry: PublishedBoundaryEntry, bytes: Buffer): L
       bbox: boundaryBBoxOf(geometry),
       geometry,
     });
+  }
+  if (collection.features.length > 0 && features.length === 0) {
+    logger.error(
+      { slug: entry.slug, entries: collection.features.length },
+      'Published boundary file has features but none carried a usable geometry — treating the map as unconsultable',
+    );
+    return null;
   }
   return features;
 }
@@ -431,9 +480,14 @@ async function loadPublishedFeatures(slug: string): Promise<readonly LoadedBound
   if (bytes === null) return null;
 
   const features = parsePublishedFeatures(entry, bytes);
+  // Null is deliberately not cached: a transient bad copy in storage must not pin "unconsultable"
+  // until the process restarts — the next read retries the download.
+  if (features === null) return null;
   features.sort(compareFeatures);
   const frozen: readonly LoadedBoundaryFeature[] = Object.freeze(features);
-  publishedFeatureCache.put(slug, entry.sha256, frozen, estimateHeapBytes(frozen));
+  // Sized from the file's own byte length — re-serializing the parsed features just to measure
+  // them cost a second full JSON.stringify of a national map on the event loop per cache miss.
+  publishedFeatureCache.put(slug, entry.sha256, frozen, bytes.length * JSON_BYTES_TO_HEAP_FACTOR);
   return frozen;
 }
 
@@ -487,6 +541,7 @@ export async function loadBoundarySets(db: Db, tenantId: string, setIds: string[
     }
 
     const features = await loadFeaturesFromRows(db, tenantId, setId);
+    if (features === null) continue;
     features.sort(compareFeatures);
     const set: LoadedBoundarySet = {
       id: setId,

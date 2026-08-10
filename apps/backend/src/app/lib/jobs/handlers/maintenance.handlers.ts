@@ -102,6 +102,31 @@ const DETACHED_EMAIL_RETENTION_DAYS = 90;
  * `pplcrm-website-claims` skill.
  */
 const IMPORT_SOURCE_FILE_RETENTION_DAYS = 90;
+/**
+ * Automation run history (workflow_runs). The /automations page counts 30 days and shows the most
+ * recent run; the abuse tripwires read a shorter rolling window; nothing user-facing reads older
+ * rows. Two readers reach outside any window and shape the sweep:
+ *  - The drip stepper's "did they open the previous email" condition and the opened/clicked exit
+ *    conditions read this enrollment's earlier rows, and a wait step has no upper bound — so rows
+ *    whose enrollment is still 'active' are never deleted, whatever their age.
+ *  - The one-goodbye-email spent check reads the person's whole history. After this window a
+ *    person could receive a second goodbye email — but only by re-subscribing and unsubscribing
+ *    again, in which case a fresh goodbye is correct. Internal log, no published claim.
+ */
+const WORKFLOW_RUN_RETENTION_DAYS = 90;
+/**
+ * In-app bell notifications. The bell reads the newest 20 rows and nothing else reads the table,
+ * so anything older is unreachable through the product. Internal, no published claim.
+ */
+const NOTIFICATION_RETENTION_DAYS = 90;
+/**
+ * The companion offline-sync idempotency ledger (companion_ops), roughly one row per door knock.
+ * A row only matters while some session could replay its operation, and companion sessions live a
+ * fixed 30 days from creation with no renewal — so 60 days is a 2× margin over the longest
+ * possible replay window. If SESSION_TTL_DAYS in companion-access/controller.ts ever rises past
+ * this number, raise this with it. Internal, no published claim.
+ */
+const COMPANION_OPS_RETENTION_DAYS = 60;
 // Chunk size for the keyset-paginated address-fingerprint recompute below.
 const ADDRESS_FINGERPRINT_PAGE_SIZE = 1000;
 
@@ -413,6 +438,48 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
     return res.numAffectedRows ?? 0n;
   });
 
+  // Automation run history past the window — except rows whose enrollment is still active, which
+  // the drip stepper's send/exit conditions may yet read (see WORKFLOW_RUN_RETENTION_DAYS). The
+  // NOT EXISTS also passes rows with a NULL enrollment_id: they belong to no sequence, so no
+  // stepper will ever read them again.
+  const prunedWorkflowRuns = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM workflow_runs
+      WHERE ctid IN (
+        SELECT r.ctid FROM workflow_runs r
+        WHERE r.created_at < now() - make_interval(days => ${WORKFLOW_RUN_RETENTION_DAYS})
+          AND NOT EXISTS (
+            SELECT 1 FROM workflow_enrollments e
+            WHERE e.id = r.enrollment_id AND e.status = 'active')
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
+  // Bell notifications past the window — the bell shows the newest 20, so these are unreachable.
+  const prunedNotifications = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM notifications
+      WHERE ctid IN (
+        SELECT ctid FROM notifications
+        WHERE created_at < now() - make_interval(days => ${NOTIFICATION_RETENTION_DAYS})
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
+  // Companion idempotency ledger rows old enough that no session could still replay them.
+  const prunedCompanionOps = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM companion_ops
+      WHERE ctid IN (
+        SELECT ctid FROM companion_ops
+        WHERE created_at < now() - make_interval(days => ${COMPANION_OPS_RETENTION_DAYS})
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
   // Expired export files. Deleting the row alone would leave the CSV in blob storage forever, so
   // this one sweeps the blob too — see pruneExpiredExports.
   const prunedExports = await pruneExpiredExports(db);
@@ -432,6 +499,9 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
       prunedWebhooks: prunedWebhooks.toString(),
       prunedSessions: prunedSessions.toString(),
       prunedDashboardSnapshots: prunedDashboardSnapshots.toString(),
+      prunedWorkflowRuns: prunedWorkflowRuns.toString(),
+      prunedNotifications: prunedNotifications.toString(),
+      prunedCompanionOps: prunedCompanionOps.toString(),
       prunedExports: prunedExports.rows,
       exportBlobDeleteFailures: prunedExports.blobFailures,
       prunedImportSourceFiles: prunedImportSources.rows,
@@ -562,6 +632,7 @@ async function fetchHouseholdFingerprintPage(db: Kysely<Models>, tenantId: strin
 
 async function recomputeTenantAddressFingerprints(tenantId: string, db: Kysely<Models>): Promise<void> {
   let cursorId: string | null = null;
+  let totalChanged = 0;
 
   for (;;) {
     const households = await fetchHouseholdFingerprintPage(db, tenantId, cursorId);
@@ -603,6 +674,7 @@ async function recomputeTenantAddressFingerprints(tenantId: string, db: Kysely<M
         FROM (VALUES ${values}) AS v(id, fp_street, fp_full)
         WHERE h.id = v.id AND h.tenant_id = ${tenantId}
       `.execute(db);
+      totalChanged += changed.length;
     }
 
     const lastRow = households[households.length - 1];
@@ -613,6 +685,14 @@ async function recomputeTenantAddressFingerprints(tenantId: string, db: Kysely<M
     if (households.length < ADDRESS_FINGERPRINT_PAGE_SIZE) break;
   }
 
-  const maintenanceSvc = new DuplicateMaintenanceService();
-  await maintenanceSvc.recomputeAllDuplicates(tenantId);
+  // Only rebuild the duplicates table when this pass actually changed a fingerprint. The rebuild
+  // starts with a full per-tenant DELETE, so an unconditional call here rewrote every tenant's
+  // whole potential_duplicates table nightly even when nothing changed — pure dead-tuple churn.
+  // The sibling recompute_all_duplicates cron has its own updated_at change gate and still covers
+  // person/company edits; this tail call exists only so household-address changes take effect in
+  // the same pass that fingerprinted them.
+  if (totalChanged > 0) {
+    const maintenanceSvc = new DuplicateMaintenanceService();
+    await maintenanceSvc.recomputeAllDuplicates(tenantId);
+  }
 }

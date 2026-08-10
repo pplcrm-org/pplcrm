@@ -236,6 +236,11 @@ export function assertProductionSecrets(parsed: z.infer<typeof envSchema>): void
   if (!parsed.STRIPE_SECRET_KEY?.trim() || parsed.STRIPE_SECRET_KEY.includes('MockKey')) {
     problems.push('STRIPE_SECRET_KEY must be set to a real key — an unset key silently enables billing mock mode.');
   }
+  if (!parsed.STRIPE_WEBHOOK_SECRET?.trim()) {
+    problems.push(
+      'STRIPE_WEBHOOK_SECRET must be set — without it the billing webhook handler returns early with a 200, so Stripe records success and never retries: plan activations, cancellations, and payment failures are silently discarded.',
+    );
+  }
   if (!parsed.STRIPE_CONNECT_WEBHOOK_SECRET?.trim()) {
     problems.push(
       'STRIPE_CONNECT_WEBHOOK_SECRET must be set — without it every donation webhook is rejected, so donations are never recorded while donors are still charged.',

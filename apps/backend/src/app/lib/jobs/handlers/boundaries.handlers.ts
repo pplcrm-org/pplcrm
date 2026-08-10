@@ -197,7 +197,12 @@ export async function handleMatchBoundaries(
     // Stamp every household this pass examined, matched or not, in one batch. The stamp — not the
     // presence of a district row — is what the 'unmatched' scope reads, so a household outside
     // every polygon is checked once per map change instead of once per night forever.
-    await db
+    //
+    // Rows already stamped at or after the newest set change are skipped: they were already
+    // checked against the current maps (a prior overlapping pass got there first), and the stamp
+    // is the only column this UPDATE touches, so rewriting the whole household row again would be
+    // pure dead-tuple churn (REVIEW6 T2-5).
+    let stampQuery = db
       .updateTable('households')
       .set({ boundary_checked_at: new Date() })
       .where('tenant_id', '=', tenantId)
@@ -205,8 +210,14 @@ export async function handleMatchBoundaries(
         'id',
         'in',
         households.map((household) => household.id),
-      )
-      .execute();
+      );
+    if (newestSetChange !== null) {
+      const cutoff = newestSetChange;
+      stampQuery = stampQuery.where((eb) =>
+        eb.or([eb('boundary_checked_at', 'is', null), eb('boundary_checked_at', '<', cutoff)]),
+      );
+    }
+    await stampQuery.execute();
   }
 
   const matchedRows = households.length;

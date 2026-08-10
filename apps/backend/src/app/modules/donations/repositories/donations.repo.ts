@@ -174,10 +174,16 @@ export class DonationsRepo extends BaseRepository<'donations'> {
     tenantId: string,
     personId: string,
   ): Promise<(Selectable<Models['donations']> & DonationReceiptState)[]> {
+    // Campaigns §15 — same pin as the ledger: a campaign-pinned Editor or Viewer opening a donor's
+    // person page sees only their own campaign's gifts. Null for admins/owners and background
+    // callers. (The cumulative-total queries above stay deliberately cross-campaign — contribution
+    // limits are per-donor, not per-campaign.)
+    const campaignId = this.campaignPin();
     const rows = await this.getSelect()
       .selectAll()
       .where('tenant_id', '=', tenantId)
       .where('person_id', '=', personId)
+      .$if(campaignId != null, (b) => b.where('campaign_id', '=', String(campaignId)))
       .orderBy('created_at', 'desc')
       .execute();
     return this.withReceiptState(tenantId, rows);

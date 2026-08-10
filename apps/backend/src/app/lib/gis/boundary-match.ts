@@ -1,4 +1,5 @@
 import type { Kysely } from 'kysely';
+import { sql } from 'kysely';
 
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import type { LoadedBoundarySet } from './boundary-store';
@@ -145,21 +146,12 @@ export async function applyHouseholdMatchesBatch(
   const scopedSetIds = replacedSetIds ? [...new Set(replacedSetIds.map(String))] : null;
   if (scopedSetIds !== null && scopedSetIds.length === 0) return;
 
+  // Diff, not blanket replace (REVIEW6 T2-5): the old shape deleted and re-inserted every row in
+  // scope on every pass, so an afternoon of map drawing at workspace scale rewrote the whole
+  // `household_districts` table — the table every grid and smart list reads — many times over in
+  // dead tuples. Now the delete removes only pairs this pass no longer produces, and the upsert's
+  // WHERE clause turns a re-insert of an unchanged answer into a no-op instead of a row rewrite.
   await db.transaction().execute(async (trx) => {
-    await trx
-      .deleteFrom('household_districts')
-      .where('tenant_id', '=', tenantId)
-      .where('household_id', 'in', householdIds)
-      .where('set_id', 'in', (eb) =>
-        eb
-          .selectFrom('boundary_sets')
-          .select('id')
-          .where('tenant_id', '=', tenantId)
-          .where('source', '<>', 'import')
-          .$if(scopedSetIds !== null, (qb) => qb.where('id', 'in', scopedSetIds ?? [])),
-      )
-      .execute();
-
     const rows = entries.flatMap((entry) =>
       entry.matches.map((match) => ({
         tenant_id: tenantId,
@@ -170,19 +162,46 @@ export async function applyHouseholdMatchesBatch(
         matched_at: new Date(),
       })),
     );
+
+    let vanished = trx
+      .deleteFrom('household_districts')
+      .where('tenant_id', '=', tenantId)
+      .where('household_id', 'in', householdIds)
+      .where('set_id', 'in', (eb) =>
+        eb
+          .selectFrom('boundary_sets')
+          .select('id')
+          .where('tenant_id', '=', tenantId)
+          .where('source', '<>', 'import')
+          .$if(scopedSetIds !== null, (qb) => qb.where('id', 'in', scopedSetIds ?? [])),
+      );
+    if (rows.length > 0) {
+      const keptPairs = sql.join(rows.map((row) => sql`(${row.household_id}::bigint, ${row.set_id}::bigint)`));
+      vanished = vanished.where(sql<boolean>`(household_id, set_id) NOT IN (${keptPairs})`);
+    }
+    await vanished.execute();
+
     if (rows.length === 0) return;
 
-    // The delete above already cleared these, so the conflict clause only covers a concurrent CSV
-    // import writing the same (household, set) pair between the delete and the insert.
+    // The conflict branch is now the common case — a surviving row conflicts on every pass — and
+    // its WHERE makes an unchanged row a no-op. `matched_at` therefore records when the ANSWER
+    // last changed, not when the row was last examined; nothing reads it for freshness (the sweep's
+    // freshness marker is households.boundary_checked_at).
     await trx
       .insertInto('household_districts')
       .values(rows)
       .onConflict((oc) =>
-        oc.columns(['household_id', 'set_id']).doUpdateSet({
-          name: (eb) => eb.ref('excluded.name'),
-          code: (eb) => eb.ref('excluded.code'),
-          matched_at: (eb) => eb.ref('excluded.matched_at'),
-        }),
+        oc
+          .columns(['household_id', 'set_id'])
+          .doUpdateSet({
+            name: (eb) => eb.ref('excluded.name'),
+            code: (eb) => eb.ref('excluded.code'),
+            matched_at: (eb) => eb.ref('excluded.matched_at'),
+          })
+          .where(
+            sql<boolean>`household_districts.name IS DISTINCT FROM excluded.name
+              OR household_districts.code IS DISTINCT FROM excluded.code`,
+          ),
       )
       .execute();
   });

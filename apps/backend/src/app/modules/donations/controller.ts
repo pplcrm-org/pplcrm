@@ -13,6 +13,7 @@ import { getStripe, isMockMode } from '../../lib/stripe-platform-client';
 import { torontoDateString } from '../../lib/pdf/pdf-common';
 import { assertStripeConnectReady, getCachedConnectState, getConnectedAccountId } from './stripe-connect';
 import { BaseController } from '../../lib/base.controller';
+import { pinnedCampaignId } from '../../lib/tenant-context';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
 import { DonationsRepo } from './repositories/donations.repo';
 import { DonationPeriodsRepo } from './repositories/periods.repo';
@@ -188,6 +189,10 @@ export class DonationsController extends BaseController<'donations', DonationsRe
 
   /** One gift with its receipt state and campaign label — the donation detail page. */
   public async getDonationDetail(tenantId: string, donationId: string) {
+    // Campaigns §15 — by-id reads carry no campaign key, so the middleware guard never fires;
+    // without this pin a campaign-pinned Editor could open any campaign's gift by knowing its id.
+    // A pinned caller asking for another campaign's gift gets the same NOT_FOUND as a bad id.
+    const pinned = pinnedCampaignId();
     const row = await this.getRepo()
       .db.selectFrom('donations')
       .leftJoin('persons', 'persons.id', 'donations.person_id')
@@ -201,6 +206,7 @@ export class DonationsController extends BaseController<'donations', DonationsRe
       ])
       .where('donations.tenant_id', '=', tenantId)
       .where('donations.id', '=', donationId)
+      .$if(pinned != null, (b) => b.where('donations.campaign_id', '=', String(pinned)))
       .executeTakeFirst();
     if (!row) {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Donation not found' });

@@ -17,6 +17,7 @@ import { CRON_JOBS } from '../cron-registry';
 import type { JobPayloadOf } from '../job-payloads';
 import { DAY_MS, scheduleNextRun } from '../reschedule';
 import { TransactionalEmailService } from '../../mail/transactional-mail.service';
+import { isSendableFromAddress, loadFromAddressPolicy } from '../../mail/from-address-policy';
 import { FilesRepo } from '../../../modules/files/repositories/files.repo';
 import { StorageService } from '../../storage.service';
 import { getPlanDef } from '@common';
@@ -237,14 +238,18 @@ export async function handleSendNewsletter(
   // The composer's own choice of sender identity wins; NULL on the row means "workspace default".
   const chosenFromName = typeof newsletter.from_name === 'string' ? newsletter.from_name.trim() : '';
   const chosenFromEmail = typeof newsletter.from_email === 'string' ? newsletter.from_email.toLowerCase().trim() : '';
-  // A stored address is only used while it is still one of the workspace's verified senders. If it
-  // was un-verified (or the domain removed) after the newsletter was composed, fall back to the
-  // workspace default rather than sending from an address the tenant cannot prove it controls.
-  const chosenFromEmailIsVerified = chosenFromEmail !== '' && verifiedEmails.includes(chosenFromEmail);
+  // A stored address is only used while it still passes the shared From-address policy (a
+  // DKIM-verified domain, or this tenant's own address on the platform sending domain) — the same
+  // rule the composer's save and the send claim apply. Re-checked here because the domain can be
+  // deleted between claim and delivery. The click-verified list (verifiedEmails) is deliberately
+  // NOT the test: the platform sending address can never be in that list, so a list check silently
+  // swapped exactly those tenants' sends to the workspace default (REVIEW6 T2-9).
+  const chosenFromEmailIsVerified =
+    chosenFromEmail !== '' && isSendableFromAddress(chosenFromEmail, await loadFromAddressPolicy(db, tenantId));
   if (chosenFromEmail && !chosenFromEmailIsVerified) {
     logger.warn(
       { tenantId, newsletterId },
-      'Stored newsletter From address is no longer a verified sender — using the workspace default',
+      'Stored newsletter From address is no longer a sendable sender identity — using the workspace default',
     );
   }
   const fromName = chosenFromName || settingsMap['communications.default_from_name'] || 'pplCRM Team';

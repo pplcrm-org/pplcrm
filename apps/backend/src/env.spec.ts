@@ -18,6 +18,7 @@ const VALID_PRODUCTION_ENV = {
   SHARED_SECRET: 's'.repeat(32),
   OAUTH_TOKEN_ENC_KEY: 'k'.repeat(32),
   STRIPE_SECRET_KEY: 'sk_live_realkey',
+  STRIPE_WEBHOOK_SECRET: 'whsec_billing',
   STRIPE_CONNECT_WEBHOOK_SECRET: 'whsec_connect',
   SENDGRID_WEBHOOK_VERIFICATION_KEY: 'sendgrid_verification_key',
   POSTMARK_WEBHOOK_TOKEN: 'postmark_token',
@@ -46,6 +47,7 @@ describe('assertProductionSecrets', () => {
     expect(() =>
       assertProductionSecrets(
         parseWith({
+          STRIPE_WEBHOOK_SECRET: undefined,
           STRIPE_CONNECT_WEBHOOK_SECRET: undefined,
           SENDGRID_WEBHOOK_VERIFICATION_KEY: undefined,
           POSTMARK_WEBHOOK_TOKEN: undefined,
@@ -61,6 +63,9 @@ describe('assertProductionSecrets', () => {
 
   describe('webhook secrets must be set and non-blank in production', () => {
     const cases: { field: string; consequence: RegExp }[] = [
+      // The billing secret's failure mode is the quietest of the four: the handler returns early
+      // with a 200, so Stripe records success and never retries (REVIEW4 T1-11 / REVIEW6 T1-1).
+      { field: 'STRIPE_WEBHOOK_SECRET', consequence: /silently discarded/ },
       { field: 'STRIPE_CONNECT_WEBHOOK_SECRET', consequence: /donation webhook is rejected/ },
       { field: 'SENDGRID_WEBHOOK_VERIFICATION_KEY', consequence: /bounce\/spam-complaint events are never recorded/ },
       { field: 'POSTMARK_WEBHOOK_TOKEN', consequence: /Postmark delivery\/bounce event is rejected/ },

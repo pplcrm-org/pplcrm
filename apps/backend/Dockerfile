@@ -71,4 +71,9 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "--enable-source-maps", "dist/apps/backend/main.js"]
+# --max-old-space-size caps the V8 heap below the container's 1 GiB so allocation pressure surfaces
+# as garbage-collection work (and, at worst, a JS heap-out-of-memory crash with a stack) instead of
+# the container killer ending the process — which takes every in-flight background job with it,
+# since the API and the job worker share this one process. 768 MB leaves room for the ~100 MB of
+# non-V8 memory (buffers, sockets, code) a Node process carries.
+CMD ["node", "--enable-source-maps", "--max-old-space-size=768", "dist/apps/backend/main.js"]

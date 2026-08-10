@@ -30,6 +30,16 @@ export const BOUNDARY_MATCH_BATCH_SIZE = 500;
 /** How long a deferred match job waits when another one is already running for the same tenant. */
 export const BOUNDARY_MATCH_DEFER_MS = 60_000;
 
+/**
+ * How long a feature edit waits before its re-match pass may start. Coalescing only suppresses a
+ * fresh enqueue while an equivalent job is still PENDING, so with an immediate run_at a drawing
+ * session — twenty area saves over ten minutes — ran a full-workspace pass per save the moment the
+ * worker kept up. Holding the first save's job for a minute lets the rest of the session coalesce
+ * into it. Set-level operations (adding a published map, uploading a file) stay immediate: they
+ * happen once, and a minute of delay there is pure wait.
+ */
+export const BOUNDARY_FEATURE_EDIT_SETTLE_MS = 60_000;
+
 /** Which households a match pass walks. */
 export type BoundaryMatchScope = 'all' | 'unmatched';
 
@@ -73,6 +83,7 @@ export async function enqueueBoundaryMatch(
   tenantId: string,
   setId: string | null,
   scope: BoundaryMatchScope = 'all',
+  delayMs = 0,
 ): Promise<void> {
   const existing = await db
     .selectFrom('background_jobs')
@@ -88,7 +99,12 @@ export async function enqueueBoundaryMatch(
 
   await db
     .insertInto('background_jobs')
-    .values(matchJobRow({ tenant_id: tenantId, set_id: setId, scope, cursor: null }, new Date()))
+    .values(
+      matchJobRow(
+        { tenant_id: tenantId, set_id: setId, scope, cursor: null },
+        new Date(Date.now() + Math.max(0, delayMs)),
+      ),
+    )
     .execute();
 }
 

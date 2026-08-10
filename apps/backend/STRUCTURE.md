@@ -56,6 +56,7 @@ apps/
           2026-08-06-campaign-areas.ts
           2026-08-07-households-located-index.ts
           2026-08-09-dashboard-stats-snapshots.ts
+          2026-08-09-x-retention-and-ri-indexes.ts
           schema.sql
         config/
           email-folders.config.ts
