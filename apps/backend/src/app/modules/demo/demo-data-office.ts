@@ -71,7 +71,7 @@ export const OFFICE_TASKS: DemoTaskDef[] = [
     assignToOwner: true,
   },
   {
-    name: 'Chase the sidewalk repair order for 468 Byron Avenue',
+    name: 'Chase the sidewalk repair order for 153 James Street',
     details:
       'Heather MacDonald reported the heaved slab three weeks ago. Public works gave us a work order number — ask for a scheduled week.',
     status: 'in_progress',
@@ -116,7 +116,7 @@ export const OFFICE_TASKS: DemoTaskDef[] = [
     dueInDays: 7,
   },
   {
-    name: 'Print 250 notices for the Westboro sidewalk consultation',
+    name: 'Print 250 notices for the James Street sidewalk consultation',
     details: 'Marcus Webb at Hintonburg Print Co. prints at cost — send him the artwork and confirm pickup Thursday.',
     status: 'in_progress',
     priority: 'medium',
@@ -261,13 +261,13 @@ const OFFICE_NEWSLETTER_COPY: Record<
   'nl-june': {
     name: 'June ward update',
     subject: 'June update: sidewalk consultation and your transit survey results',
-    preview_text: 'Where to have your say on the Westboro sidewalks — plus what 200 of you said about transit.',
+    preview_text: 'Where to have your say on the James Street sidewalks — plus what 200 of you said about transit.',
     html_content:
       '<h1>June ward update</h1>' +
-      '<p>The Westboro sidewalk consultation opens this Saturday at the Hintonburg Community Centre — drop in any time between 10:00 and noon.</p>' +
+      '<p>The James Street sidewalk consultation opens this Saturday at the Hintonburg Community Centre — drop in any time between 10:00 and noon.</p>' +
       '<p>Transit survey results are in: reliability beat frequency two to one. Full breakdown next issue.</p>',
     plain_text_content:
-      'June ward update — Westboro sidewalk consultation Saturday, 10:00–noon at the Hintonburg CC. Transit survey: reliability beat frequency two to one.',
+      'June ward update — James Street sidewalk consultation Saturday, 10:00–noon at the Hintonburg CC. Transit survey: reliability beat frequency two to one.',
   },
 };
 
@@ -284,14 +284,14 @@ export const OFFICE_EMAILS: DemoEmailDef[] = [
   {
     folder: 'inbox',
     person: 'heather-macdonald',
-    subject: 'Sidewalk on Byron is still a tripping hazard',
+    subject: 'Sidewalk on James Street is still a tripping hazard',
     preview_text: 'The slab outside 468 has lifted again and my neighbour went down on it last week…',
     status: 'open',
     daysAgo: 2,
     is_favourite: true,
     attachments: ['sidewalk-hazard'],
     body_html:
-      '<p>Hello,</p><p>The slab outside 468 Byron Avenue has lifted again and my neighbour went down on it last week. Photo attached — you can see how far it has moved since the spring.</p><p>Is there a repair scheduled?</p><p>Heather</p>',
+      '<p>Hello,</p><p>The slab outside 153 James Street has lifted again and my neighbour went down on it last week. Photo attached — you can see how far it has moved since the spring.</p><p>Is there a repair scheduled?</p><p>Heather</p>',
   },
   {
     folder: 'inbox',
@@ -363,7 +363,7 @@ export const OFFICE_EMAILS: DemoEmailDef[] = [
   {
     folder: 'sent',
     person: 'heather-macdonald',
-    subject: 'Re: Sidewalk on Byron is still a tripping hazard',
+    subject: 'Re: Sidewalk on James Street is still a tripping hazard',
     preview_text: 'Thanks Heather — the work order is filed as SW-4471 and public works has it for this season…',
     status: 'closed',
     daysAgo: 1,
@@ -377,13 +377,12 @@ export const OFFICE_EMAILS: DemoEmailDef[] = [
 // about signs are rewritten, keyed by household (each appears in exactly one turf).
 
 const OFFICE_TURF_NOTES: Record<string, string> = {
-  'turf-core': 'First turf out the door this season — every door attempted.',
-  'turf-west': 'Being knocked right now — Saturday afternoon shift.',
+  'turf-cooper-maclaren': 'First turf out the door this season — every door attempted.',
+  'turf-frank-bay': 'Being knocked right now — Saturday afternoon shift.',
 };
 
 const OFFICE_KNOCK_NOTES: Record<string, string> = {
   'hh-cooper': 'Asked about the dead tree out front — case opened for him.',
-  'hh-byron': 'Raised the lifted sidewalk slab again — work order chased.',
 };
 
 export const OFFICE_TURFS: DemoTurfDef[] = DEMO_TURFS.map((turf) => ({
@@ -549,7 +548,7 @@ export const OFFICE_DELIVERY_REQUESTS: DemoDeliveryRequestDef[] = [
 export const OFFICE_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
   {
     key: 'route-westboro',
-    name: 'Westboro notice drop',
+    name: 'Centretown notice drop',
     status: 'completed',
     volunteerPerson: 'jake-morrison',
     start: 'west',
@@ -562,7 +561,7 @@ export const OFFICE_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
   },
   {
     key: 'route-glebe',
-    name: 'South end notice drop',
+    name: 'Sandy Hill notice drop',
     status: 'in_progress',
     volunteerPerson: 'julie-lavoie',
     start: 'south',

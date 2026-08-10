@@ -28,7 +28,14 @@ import {
 import { DEMO_DATASETS } from './demo-datasets';
 import type { DemoDataset } from './demo-data-types';
 import type { PlacePack } from './demo-data-places';
-import { DEMO_AREA_KEYS, DEMO_ROUTE_START_KEYS, DEMO_VENUE_KEYS, PLACE_PACKS, areaGeometry } from './demo-data-places';
+import {
+  DEMO_AREA_KEYS,
+  DEMO_ROUTE_START_KEYS,
+  DEMO_VENUE_KEYS,
+  PLACE_PACKS,
+  areaGeometry,
+  housesOn,
+} from './demo-data-places';
 
 /**
  * The invariant this file exists for.
@@ -216,6 +223,11 @@ describe('demo datasets', () => {
           const areaOf = new Map(pack.sites.map((s) => [s.key, s.area]));
           for (const turf of dataset.turfs) {
             expect(turf.households.length, `${mode} turf ${turf.key} has no doors`).toBeGreaterThan(0);
+            // The turf's door list IS its streets: the seeder names the turf from `streets`, so a
+            // door from an unlisted street would walk under the wrong name.
+            expect(turf.households, `${mode} turf ${turf.key} doors are not exactly its streets' houses`).toEqual(
+              housesOn(...turf.streets),
+            );
             for (const key of turf.households) {
               expect(areaOf.get(key), `${mode} turf ${turf.key} door ${key} is not in area "${turf.area}"`).toBe(
                 turf.area,

@@ -16,7 +16,7 @@ import type {
   DemoReceiptDef,
   DemoStatementRunDef,
 } from './demo-data-types';
-import { CANADA_PLACE_PACK, allSites } from './demo-data-places';
+import { CANADA_PLACE_PACK, storyHouseholds } from './demo-data-places';
 
 /**
  * The demo workspace for CHURCH mode: Riverside Community Church, a fictional Ottawa
@@ -88,7 +88,7 @@ const COMPANIES: DemoCompanyDef[] = [
   },
 ];
 
-const HOUSEHOLDS = allSites({
+const HOUSEHOLDS = storyHouseholds({
   'hh-cooper': { notes: 'Hosts the Tuesday evening study — park on the street, not the drive.' },
   'hh-gladstone': { notes: 'Buzzer broken — call up from the lobby.' },
   'hh-huron': { notes: 'New to the city in January. Two children in Sunday school.' },

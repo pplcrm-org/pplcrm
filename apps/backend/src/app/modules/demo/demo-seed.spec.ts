@@ -638,9 +638,7 @@ describe('demo seeding and exit-demo', () => {
         .where('tenant_id', '=', f.tenant_id)
         .execute();
       expect(new Set(areas.map((a) => String(a.household_id)))).toEqual(new Set(households.map((h) => String(h.id))));
-      expect(new Set(areas.map((a) => a.name))).toEqual(
-        new Set(['Somerset', 'Kitchissippi', 'Capital', 'Rideau-Vanier', 'Alta Vista']),
-      );
+      expect(new Set(areas.map((a) => a.name))).toEqual(new Set(['Somerset', 'Rideau-Vanier']));
     });
 
     it('seeds Chicago streets and Chicago wards for a United States workspace', async () => {
@@ -667,9 +665,7 @@ describe('demo seeding and exit-demo', () => {
         .where('tenant_id', '=', f.tenant_id)
         .execute();
       expect(new Set(areas.map((a) => String(a.household_id)))).toEqual(new Set(households.map((h) => String(h.id))));
-      expect(new Set(areas.map((a) => a.name))).toEqual(
-        new Set(['Ward 49', 'Ward 43', 'Ward 1', 'Ward 47', 'Ward 25']),
-      );
+      expect(new Set(areas.map((a) => a.name))).toEqual(new Set(['Ward 49', 'Ward 47']));
       // Phone numbers move with the pack, or a Chicago workspace opens on a page of Ottawa numbers.
       const phones = households.map((h) => h.home_phone).filter((p): p is string => p != null);
       expect(phones.length).toBeGreaterThan(0);

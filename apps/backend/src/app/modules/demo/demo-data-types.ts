@@ -6,7 +6,7 @@ import type {
   StaffStatus,
 } from '../../../../../../libs/common/src';
 import type { DemoAttachmentKey } from './demo-attachment-assets';
-import type { DemoAreaKey, DemoRouteStartKey, DemoVenueKey } from './demo-data-places';
+import type { DemoAreaKey, DemoRouteStartKey, DemoStreetKey, DemoVenueKey } from './demo-data-places';
 
 /**
  * Shapes for the hand-curated demo datasets, one per organization mode.
@@ -231,12 +231,16 @@ export interface DemoKnockDef {
 export interface DemoTurfDef {
   key: string;
   /**
-   * The pack area this turf covers. Every household listed below must sit in it, because the
-   * cutting engine never lets one turf span two boundaries. The turf's NAME comes from the pack's
-   * area too, so a Chicago workspace reads "Wicker Park (Ward 1)" where an Ottawa one reads
-   * "The Glebe (Capital)".
+   * The pack area (cluster) this turf covers. Every household listed below must sit in it, because
+   * the cutting engine never lets one turf span two boundaries.
    */
   area: DemoAreaKey;
+  /**
+   * The whole streets this turf walks — its door list is `housesOn(...streets)`. The turf's NAME
+   * is built from the pack's own street names, so a Chicago workspace reads "Morse & Lunt
+   * (Ward 49)" where an Ottawa one reads "Cooper & MacLaren (Somerset)".
+   */
+  streets: DemoStreetKey[];
   /** Stored lifecycle: 'active' = handed out/knocked, 'draft' = cut, not yet assigned. */
   status: 'draft' | 'active';
   /** Whether a tokenised Companion assignment exists (active turfs only). */

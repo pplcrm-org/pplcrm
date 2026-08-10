@@ -39,7 +39,8 @@ import type {
   DemoVolunteerEventDef,
   DemoDonationDef,
 } from './demo-data-types';
-import { allSites } from './demo-data-places';
+import { allSites, housesOn } from './demo-data-places';
+import { FILLER_FIRST_RESIDENT, FILLER_PERSONS, generatedKnocks } from './demo-data-residents';
 
 export const DEMO_COMPANIES: DemoCompanyDef[] = [
   {
@@ -154,7 +155,7 @@ export const DEMO_HOUSEHOLDS: DemoHouseholdDef[] = allSites({
   'hh-kilborn-import': { notes: 'Came in on the March CSV import.' },
 });
 
-export const DEMO_PERSONS: DemoPersonDef[] = [
+const STORY_PERSONS: DemoPersonDef[] = [
   // ── hh-cooper: the Tremblays ────────────────────────────────────────────
   {
     key: 'marc-tremblay',
@@ -471,7 +472,7 @@ export const DEMO_PERSONS: DemoPersonDef[] = [
     email: 'harpreet.singh@example.com',
     mobile: '613-555-0112',
     createdDaysAgo: 15,
-    notes: 'Coaches the Sunnyside youth soccer league — knows everyone on the street.',
+    notes: 'Coaches the Centretown youth soccer league — knows everyone on the street.',
     tags: ['community leader'],
     supportLevel: 'strong',
     subscribed: true,
@@ -886,7 +887,7 @@ export const DEMO_PERSONS: DemoPersonDef[] = [
     mobile: '613-555-0232',
     createdDaysAgo: 11,
     tags: ['faith community'],
-    notes: 'March CSV import — same address as the Rahman household, typed as "Kilborn Ave.".',
+    notes: 'March CSV import — same address as the Rahman household, typed as "Russell Ave.".',
   },
   {
     key: 'bruce-whitfield-import',
@@ -898,6 +899,26 @@ export const DEMO_PERSONS: DemoPersonDef[] = [
     notes: 'March CSV import — this row is missing the do-not-contact flag the older record carries.',
   },
 ];
+
+/**
+ * Everyone in the campaign's rolodex: the hand-written story people above plus the generated
+ * residents of every other house on the fourteen demo streets (see demo-data-residents.ts).
+ * The office dataset shares this list — the two electoral modes share a rolodex by design.
+ */
+export const DEMO_PERSONS: DemoPersonDef[] = [...STORY_PERSONS, ...FILLER_PERSONS];
+
+/**
+ * Household → the person a conversation knock at that door records. Generated residents cover the
+ * generated houses; the story households contribute their first listed member, so a generated
+ * canvassing pass over a street with a story house on it still names a real person.
+ */
+const FIRST_RESIDENT_BY_HOUSE: ReadonlyMap<string, string> = (() => {
+  const map = new Map(FILLER_FIRST_RESIDENT);
+  for (const person of STORY_PERSONS) {
+    if (person.household && !map.has(person.household)) map.set(person.household, person.key);
+  }
+  return map;
+})();
 
 export const DEMO_TASKS: DemoTaskDef[] = [
   {
@@ -911,7 +932,7 @@ export const DEMO_TASKS: DemoTaskDef[] = [
     assignToOwner: true,
   },
   {
-    name: 'Replace the damaged sign at 468 Byron Avenue',
+    name: 'Replace the damaged sign at 153 James Street',
     details:
       'Heather MacDonald reported the sign blew over in the weekend storm. Grab a replacement from the office on the way.',
     status: 'todo',
@@ -921,7 +942,7 @@ export const DEMO_TASKS: DemoTaskDef[] = [
     assignToOwner: true,
   },
   {
-    name: 'Order 250 door hangers for the Westboro canvass',
+    name: 'Order 250 door hangers for the Centretown canvass',
     details:
       'Marcus Webb at Hintonburg Print Co. prints at cost — send him the artwork and confirm pickup before Saturday.',
     status: 'in_progress',
@@ -1513,26 +1534,34 @@ export const DEMO_EMAILS: DemoEmailDef[] = [
 ];
 
 // ── Canvassing (§13) ────────────────────────────────────────────────────────
-// Pre-cut turfs over the demo households so the /canvassing page opens with a
-// real field operation instead of an empty state. Turfs never cross a boundary
-// (the cutting engine's only barrier), so each turf's households all share one
-// area of the seeded boundary set, and the turf's name comes from that area —
-// 'The Glebe (Capital)' in Ottawa, 'Wicker Park (Ward 1)' in Chicago. Progress ("In field now", "Complete") is DERIVED from the knocks at
-// read time — we store only the lifecycle status + the knock rows, never
-// counters. Timings are relative to seed time (`knockedHoursAgo`) so the
-// derived state is the same however long after signup the user looks:
+// Pre-cut turfs over the demo streets so the /canvassing page opens with a real field operation
+// instead of an empty state. A turf is WHOLE STREETS: its door list is every house on them
+// (`housesOn`), and its name is built by the seeder from the pack's own street names — an Ottawa
+// workspace reads "Cooper & MacLaren (Somerset)", a Chicago one "Morse & Lunt (Ward 49)". Turfs
+// never cross a boundary (the cutting engine's only barrier), so each turf's streets all share
+// one cluster of the seeded boundary set.
+//
+// Knocks are a few hand-written story moments plus a deterministic generated pass per turf
+// (`generatedKnocks`), so a "fully canvassed" turf really does have a knock on every one of its
+// ~40 doors. Progress ("In field now", "Complete") is DERIVED from the knocks at read time — we
+// store only the lifecycle status + the knock rows, never counters. Timings are relative to seed
+// time (`knockedHoursAgo`) so the derived state is the same however long after signup the user
+// looks:
 //   • active + every door knocked, last knock long ago → "Complete"
 //   • active + a knock within the last 6h            → "In field now"
 //   • active + some/no knocks, nothing recent        → "Assigned"
 //   • draft (not handed out)                         → "Draft"
 
+const TURF_CANVASSERS = ['Priya S.', 'Jake M.', 'Mai N.', 'Julie L.'] as const;
+
 export const DEMO_TURFS: DemoTurfDef[] = [
   {
-    key: 'turf-core',
+    key: 'turf-cooper-maclaren',
     area: 'core',
+    streets: ['st-cooper', 'st-maclaren'],
     status: 'active',
     assigned: true,
-    households: ['hh-cooper', 'hh-maclaren', 'hh-frank', 'hh-arlington', 'hh-gladstone', 'hh-bay'],
+    households: housesOn('st-cooper', 'st-maclaren'),
     notes: 'First turf out the door this cycle — fully canvassed.',
     knocks: [
       {
@@ -1552,28 +1581,34 @@ export const DEMO_TURFS: DemoTurfDef[] = [
         canvasser: 'Jake M.',
         knockedHoursAgo: 49,
       },
+      ...generatedKnocks(
+        {
+          streets: ['st-cooper', 'st-maclaren'],
+          coverage: 1,
+          hours: [54, 46],
+          canvassers: TURF_CANVASSERS,
+          skip: ['hh-cooper', 'hh-maclaren'],
+        },
+        FIRST_RESIDENT_BY_HOUSE,
+      ),
+    ],
+  },
+  {
+    key: 'turf-frank-bay',
+    area: 'core',
+    streets: ['st-frank', 'st-bay'],
+    status: 'active',
+    assigned: true,
+    households: housesOn('st-frank', 'st-bay'),
+    notes: 'Being knocked right now — Saturday afternoon shift.',
+    knocks: [
       {
         household: 'hh-frank',
         person: 'kevin-obrien',
         outcome: 'conversation',
         response: 'supporter',
         canvasser: 'Priya S.',
-        knockedHoursAgo: 49,
-      },
-      {
-        household: 'hh-arlington',
-        person: 'devon-clarke',
-        outcome: 'conversation',
-        response: 'supporter',
-        canvasser: 'Jake M.',
-        knockedHoursAgo: 48,
-      },
-      {
-        household: 'hh-gladstone',
-        outcome: 'no_answer',
-        canvasser: 'Priya S.',
-        notes: 'Buzzer broken — try back in the evening.',
-        knockedHoursAgo: 48,
+        knockedHoursAgo: 2,
       },
       {
         household: 'hh-bay',
@@ -1581,67 +1616,74 @@ export const DEMO_TURFS: DemoTurfDef[] = [
         outcome: 'refused',
         canvasser: 'Jake M.',
         notes: 'Not interested — asked us not to return.',
-        knockedHoursAgo: 47,
-      },
-    ],
-  },
-  {
-    key: 'turf-west',
-    area: 'west',
-    status: 'active',
-    assigned: true,
-    households: ['hh-byron', 'hh-kirkwood', 'hh-java', 'hh-armstrong', 'hh-huron'],
-    notes: 'Being knocked right now — Saturday afternoon shift.',
-    knocks: [
-      {
-        household: 'hh-byron',
-        person: 'heather-macdonald',
-        outcome: 'conversation',
-        response: 'supporter',
-        canvasser: 'Mai N.',
-        notes: 'Sign blew over in the storm — flagged for a replacement.',
-        knockedHoursAgo: 3,
-      },
-      {
-        household: 'hh-java',
-        person: 'mai-nguyen',
-        outcome: 'conversation',
-        response: 'supporter',
-        canvasser: 'Julie L.',
-        knockedHoursAgo: 2,
-      },
-      {
-        household: 'hh-huron',
-        person: 'anna-kowalski',
-        outcome: 'conversation',
-        response: 'supporter',
-        canvasser: 'Mai N.',
         knockedHoursAgo: 1,
       },
-      {
-        household: 'hh-armstrong',
-        outcome: 'not_home',
-        canvasser: 'Julie L.',
-        knockedHoursAgo: 2,
-      },
+      ...generatedKnocks(
+        {
+          streets: ['st-frank', 'st-bay'],
+          coverage: 0.45,
+          hours: [4, 1],
+          canvassers: TURF_CANVASSERS,
+          skip: ['hh-frank', 'hh-bay'],
+        },
+        FIRST_RESIDENT_BY_HOUSE,
+      ),
     ],
   },
   {
-    key: 'turf-south',
-    area: 'south',
+    key: 'turf-gladstone-arlington',
+    area: 'core',
+    streets: ['st-gladstone', 'st-arlington'],
     status: 'active',
     assigned: true,
-    households: ['hh-fifth', 'hh-holmwood', 'hh-sunnyside', 'hh-powell', 'hh-aylmer'],
-    notes: 'Assigned to the crew — not started yet.',
+    households: housesOn('st-gladstone', 'st-arlington'),
+    notes: 'A first pass went out yesterday — about half the doors reached.',
+    knocks: [
+      {
+        household: 'hh-gladstone',
+        outcome: 'no_answer',
+        canvasser: 'Mai N.',
+        notes: 'Buzzer broken — try back in the evening.',
+        knockedHoursAgo: 26,
+      },
+      {
+        household: 'hh-arlington',
+        person: 'devon-clarke',
+        outcome: 'conversation',
+        response: 'supporter',
+        canvasser: 'Julie L.',
+        knockedHoursAgo: 25,
+      },
+      ...generatedKnocks(
+        {
+          streets: ['st-gladstone', 'st-arlington'],
+          coverage: 0.5,
+          hours: [30, 22],
+          canvassers: TURF_CANVASSERS,
+          skip: ['hh-gladstone', 'hh-arlington'],
+        },
+        FIRST_RESIDENT_BY_HOUSE,
+      ),
+    ],
+  },
+  {
+    key: 'turf-james-percy',
+    area: 'core',
+    streets: ['st-james', 'st-percy'],
+    status: 'draft',
+    assigned: false,
+    households: housesOn('st-james', 'st-percy'),
+    notes: 'Cut and ready to hand out next weekend.',
     knocks: [],
   },
   {
-    key: 'turf-east',
+    key: 'turf-sweetland-blackburn',
     area: 'east',
+    streets: ['st-sweetland', 'st-blackburn'],
     status: 'active',
     assigned: true,
-    households: ['hh-sweetland', 'hh-marlborough', 'hh-blackburn', 'hh-charlotte'],
-    notes: 'A first pass went out yesterday — two doors left.',
+    households: housesOn('st-sweetland', 'st-blackburn'),
+    notes: 'A first pass went out yesterday — finishing the far ends next shift.',
     knocks: [
       {
         household: 'hh-sweetland',
@@ -1660,15 +1702,36 @@ export const DEMO_TURFS: DemoTurfDef[] = [
         notes: 'Leaning the other way — do not follow up.',
         knockedHoursAgo: 25,
       },
+      ...generatedKnocks(
+        {
+          streets: ['st-sweetland', 'st-blackburn'],
+          coverage: 0.35,
+          hours: [28, 23],
+          canvassers: TURF_CANVASSERS,
+          skip: ['hh-sweetland', 'hh-blackburn'],
+        },
+        FIRST_RESIDENT_BY_HOUSE,
+      ),
     ],
   },
   {
-    key: 'turf-southeast',
-    area: 'southeast',
+    key: 'turf-charlotte-marlborough',
+    area: 'east',
+    streets: ['st-charlotte', 'st-marlborough'],
+    status: 'active',
+    assigned: true,
+    households: housesOn('st-charlotte', 'st-marlborough'),
+    notes: 'Assigned to the Saturday crew — not started yet.',
+    knocks: [],
+  },
+  {
+    key: 'turf-russell-goulburn',
+    area: 'east',
+    streets: ['st-russell', 'st-goulburn'],
     status: 'draft',
     assigned: false,
-    households: ['hh-kilborn', 'hh-pleasantpark', 'hh-halifax', 'hh-featherston'],
-    notes: 'Cut and ready to hand out next weekend.',
+    households: housesOn('st-russell', 'st-goulburn'),
+    notes: 'Cut and ready — the far side of Sandy Hill.',
     knocks: [],
   },
 ];
@@ -1829,7 +1892,7 @@ export const DEMO_DELIVERY_REQUESTS: DemoDeliveryRequestDef[] = [
 export const DEMO_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
   {
     key: 'route-westboro',
-    name: 'Westboro run',
+    name: 'Centretown north run',
     status: 'completed',
     volunteerPerson: 'jake-morrison',
     start: 'west',
@@ -1842,7 +1905,7 @@ export const DEMO_DELIVERY_ROUTES: DemoDeliveryRouteDef[] = [
   },
   {
     key: 'route-glebe',
-    name: 'Glebe & Old Ottawa South run',
+    name: 'Centretown south run',
     status: 'in_progress',
     volunteerPerson: 'julie-lavoie',
     start: 'south',

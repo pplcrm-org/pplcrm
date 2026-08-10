@@ -5,35 +5,54 @@ import type { DemoHouseholdDef } from './demo-data-types';
 /**
  * Where the demo workspace is, one address book per country.
  *
+ * ## The shape of the neighbourhood: two dense clusters, every house on the street
+ *
+ * The demo used to scatter 25 households across five city wards, which made the canvassing pages
+ * read as a handful of lonely pins. It now models FOURTEEN residential street segments in TWO
+ * tight clusters, with EVERY house on each segment present — a couple of hundred doors packed the
+ * way a real field operation sees them, so turfs, walk order and the field report all look like
+ * the thing they are demonstrating.
+ *
+ * The two clusters sit in two different seat areas on purpose (turf cutting never lets a turf
+ * span a boundary, and two clusters make that visible). In the Canadian pack they are:
+ *
+ * - Centretown — Somerset ward (14), which also lies in the federal riding of Ottawa Centre.
+ * - Sandy Hill — Rideau-Vanier ward (12), which also lies in the riding of Ottawa—Vanier.
+ *
+ * So the clusters are in two different wards AND two different ridings, whichever level of
+ * boundary a user later uploads.
+ *
  * ## Why the coordinates are real and hardcoded
  *
  * Real streets with real coordinates and real seat-area names, so map pins, the "Located" geocode
- * chip and boundary-bounded turf cutting all work at signup with ZERO paid address lookups. That is
- * why the addresses are SHARED across the datasets rather than invented per organization mode: new
- * coordinates cannot be made up, they have to be looked up, and a wrong pair puts a household in
- * the river.
+ * chip and boundary-bounded turf cutting all work at signup with ZERO paid address lookups.
+ * Individual houses are interpolated along each street segment between anchor coordinates that
+ * were looked up once (the same technique the Chicago pack has always used: place an address
+ * between two known crossings). Odd and even house numbers are nudged to opposite sides of the
+ * street line, so a street reads as two facing rows of doors on the map. A wrong anchor would put
+ * a household in the river, which is why anchors are never invented, only carried forward.
  *
  * ## Why there is more than one pack
  *
  * A campaign in Ohio that signs up and is shown Ottawa ward names has been told, on its first
  * screen, that this product is not for it. So the address book is a PACK, one per country, and
- * signup's answer to "which country" chooses which one is seeded. Every pack exports the SAME site
- * keys, so a dataset's story ("the family that hosts the Tuesday study lives at hh-cooper") is
- * written once and works in either country.
+ * signup's answer to "which country" chooses which one is seeded. Every pack carries the SAME
+ * streets (by key) with the SAME number of houses, so a dataset's story ("the family that hosts
+ * the Tuesday study lives at hh-cooper") is written once and works in either country.
  *
  * A site therefore carries no tags, notes or story — those belong to the dataset using it. A
  * campaign sees a lawn-sign location here; a congregation sees a family that hosts the study.
  *
  * ## Site keys are opaque
  *
- * The keys are named after the Canadian pack's streets ('hh-cooper' for Cooper Street) because that
- * pack came first and every dataset already references them by those names. They are identifiers,
- * not addresses: in the United States pack `hh-cooper` is a house on Morse Avenue in Chicago.
- * Renaming them would touch several thousand lines of story for no gain.
+ * Generated houses are keyed `<street>-h<NN>` ('st-cooper-h07') and the 25 story households keep
+ * their historical keys ('hh-cooper'), because every dataset already references them by those
+ * names. They are identifiers, not addresses: in the United States pack `hh-cooper` is a house on
+ * Morse Avenue in Chicago. Renaming them would touch several thousand lines of story for no gain.
  */
 
-/** The five slots every pack fills, so a dataset can talk about an area without naming a city. */
-export const DEMO_AREA_KEYS = ['core', 'west', 'south', 'east', 'southeast'] as const;
+/** The two clusters. Every street, house and pre-cut turf lives in exactly one of them. */
+export const DEMO_AREA_KEYS = ['core', 'east'] as const;
 export type DemoAreaKey = (typeof DEMO_AREA_KEYS)[number];
 
 /** Addresses a dataset points at that are not households: an event hall, a campaign office. */
@@ -43,6 +62,115 @@ export type DemoVenueKey = (typeof DEMO_VENUE_KEYS)[number];
 /** Where a delivery route starts. Separate from a venue because a route needs real coordinates. */
 export const DEMO_ROUTE_START_KEYS = ['west', 'south'] as const;
 export type DemoRouteStartKey = (typeof DEMO_ROUTE_START_KEYS)[number];
+
+// ── The streets ─────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The country-agnostic street list: an opaque key, which cluster it is in, and how many houses it
+ * carries. Both packs must realize every entry with the same house count — that is what keeps the
+ * generated site keys identical across countries, and the pack-parity test in
+ * `demo-datasets.spec.ts` holds it.
+ */
+export const DEMO_STREET_SPECS = [
+  // ── Cluster one: 'core' ──
+  { key: 'st-cooper', area: 'core', houses: 20 },
+  { key: 'st-maclaren', area: 'core', houses: 20 },
+  { key: 'st-frank', area: 'core', houses: 16 },
+  { key: 'st-arlington', area: 'core', houses: 18 },
+  { key: 'st-gladstone', area: 'core', houses: 20 },
+  { key: 'st-bay', area: 'core', houses: 16 },
+  { key: 'st-james', area: 'core', houses: 18 },
+  { key: 'st-percy', area: 'core', houses: 16 },
+  // ── Cluster two: 'east' ──
+  { key: 'st-sweetland', area: 'east', houses: 18 },
+  { key: 'st-blackburn', area: 'east', houses: 16 },
+  { key: 'st-charlotte', area: 'east', houses: 18 },
+  { key: 'st-marlborough', area: 'east', houses: 16 },
+  { key: 'st-russell', area: 'east', houses: 20 },
+  { key: 'st-goulburn', area: 'east', houses: 16 },
+] as const satisfies readonly { key: string; area: DemoAreaKey; houses: number }[];
+
+export type DemoStreetKey = (typeof DEMO_STREET_SPECS)[number]['key'];
+export const DEMO_STREET_KEYS: readonly DemoStreetKey[] = DEMO_STREET_SPECS.map((s) => s.key);
+
+/**
+ * Which generated house each legacy story key names, by street and house index.
+ *
+ * The 25 story keys predate the dense streets: every dataset references households like
+ * 'hh-cooper' by name, so those keys must keep existing. Each one is now an alias for one house
+ * of one street; the builder below emits the story key in place of the generated key at that
+ * position. `phoneLocal` is the site's landline without an area code — the pack prepends its own,
+ * so a Chicago workspace never opens on a page of 613 numbers.
+ */
+const STORY_SITES: Readonly<Record<string, { street: DemoStreetKey; index: number; phoneLocal?: string }>> = {
+  'hh-cooper': { street: 'st-cooper', index: 14, phoneLocal: '555-0221' },
+  'hh-fifth': { street: 'st-cooper', index: 5 },
+  'hh-maclaren': { street: 'st-maclaren', index: 14 },
+  'hh-holmwood': { street: 'st-maclaren', index: 6, phoneLocal: '555-0268' },
+  'hh-frank': { street: 'st-frank', index: 10 },
+  'hh-aylmer': { street: 'st-frank', index: 3 },
+  'hh-arlington': { street: 'st-arlington', index: 12 },
+  'hh-powell': { street: 'st-arlington', index: 5 },
+  'hh-gladstone': { street: 'st-gladstone', index: 12 },
+  'hh-sunnyside': { street: 'st-gladstone', index: 4 },
+  'hh-bay': { street: 'st-bay', index: 8, phoneLocal: '555-0244' },
+  'hh-huron': { street: 'st-bay', index: 2 },
+  'hh-byron': { street: 'st-james', index: 3 },
+  'hh-kirkwood': { street: 'st-james', index: 12 },
+  'hh-java': { street: 'st-percy', index: 5 },
+  'hh-armstrong': { street: 'st-percy', index: 11 },
+  'hh-sweetland': { street: 'st-sweetland', index: 14 },
+  'hh-featherston': { street: 'st-sweetland', index: 4 },
+  'hh-blackburn': { street: 'st-blackburn', index: 10 },
+  'hh-charlotte': { street: 'st-charlotte', index: 10 },
+  'hh-marlborough': { street: 'st-marlborough', index: 10 },
+  'hh-kilborn': { street: 'st-russell', index: 8 },
+  'hh-pleasantpark': { street: 'st-russell', index: 15 },
+  'hh-halifax': { street: 'st-goulburn', index: 6 },
+};
+
+/**
+ * The March-CSV duplicate twin: the same house as `hh-kilborn`, re-entered with an abbreviated
+ * street spelling so the address fingerprints match and the duplicates sweep groups the pair.
+ * Appended by the site builder as a 25th story household rather than generated from a street,
+ * because it deliberately is NOT another door — turfs and street helpers exclude it.
+ */
+const IMPORT_TWIN_KEY = 'hh-kilborn-import';
+const IMPORT_TWIN_OF = 'hh-kilborn';
+
+const storyKeyByPosition = new Map<string, string>(
+  Object.entries(STORY_SITES).map(([key, slot]) => [`${slot.street}#${slot.index}`, key]),
+);
+
+/** One house of one street, before a pack gives it a country: the shared, key-stable skeleton. */
+export interface DemoHouse {
+  key: string;
+  street: DemoStreetKey;
+  area: DemoAreaKey;
+  /** Position along the street, 0-based. The pack's numbering turns it into a house number. */
+  index: number;
+  /** True when this house is one of the 25 legacy story households. */
+  story: boolean;
+}
+
+/** Every house of every street, in seeding order. Does NOT include the import twin. */
+export const DEMO_HOUSES: readonly DemoHouse[] = DEMO_STREET_SPECS.flatMap((spec) =>
+  Array.from({ length: spec.houses }, (_, index): DemoHouse => {
+    const storyKey = storyKeyByPosition.get(`${spec.key}#${index}`);
+    return {
+      key: storyKey ?? `${spec.key}-h${String(index + 1).padStart(2, '0')}`,
+      street: spec.key,
+      area: spec.area,
+      index,
+      story: storyKey != null,
+    };
+  }),
+);
+
+/** The door list of one or more streets: every house key, in walking order. No import twin. */
+export function housesOn(...streets: DemoStreetKey[]): string[] {
+  return DEMO_HOUSES.filter((h) => streets.includes(h.street)).map((h) => h.key);
+}
 
 export interface HouseholdSite {
   key: string;
@@ -61,18 +189,34 @@ export interface HouseholdSite {
  *
  * `ring` is a GeoJSON linear ring — [longitude, latitude] pairs, first point repeated as the last.
  * The rings are deliberately simple rectangles, and they are NOT the city's official boundaries.
- * They are sample data in a sample workspace, drawn to enclose the demo households of one area and
- * nothing else, which is all turf cutting and the map need. The set they are seeded into says so in
- * its label and its vintage, so nobody can mistake them for the real lines.
+ * They are sample data in a sample workspace, drawn to enclose the demo households of one cluster
+ * and nothing else, which is all turf cutting and the map need. The set they are seeded into says
+ * so in its label and its vintage, so nobody can mistake them for the real lines.
  */
 export interface DemoPlaceArea {
   /** The real name of the area — 'Somerset', 'Ward 49'. */
   name: string;
   /** The area's own identifier where it has one, else null. */
   code: string | null;
-  /** What the demo's pre-cut turf over this area is called. */
-  turfName: string;
   ring: readonly (readonly [number, number])[];
+}
+
+/**
+ * One street segment as a pack realizes it: a real name, a postal code, and the coordinates of
+ * its first and last house. Every house in between is interpolated on the line — `start` is house
+ * index 0 (number `firstNum`) and `end` is the last house (`firstNum + (houses-1) * numStep`).
+ * Both endpoints are [longitude, latitude], matching the GeoJSON order used everywhere else here.
+ */
+export interface PackStreet {
+  name: string;
+  /** The bare name turf names are built from: 'Cooper', 'Morse'. */
+  shortName: string;
+  zip: string;
+  firstNum: number;
+  /** House-number increment between neighbours: 1 in Ottawa, 7 in Chicago's block grid. */
+  numStep: number;
+  start: readonly [number, number];
+  end: readonly [number, number];
 }
 
 export interface DemoVenue {
@@ -121,6 +265,7 @@ export interface PlacePack {
   state: string;
   /** The area code every demo phone number in this pack uses, with the fictional 555 exchange. */
   phoneAreaCode: string;
+  streets: Readonly<Record<DemoStreetKey, PackStreet>>;
   sites: readonly HouseholdSite[];
   areas: Readonly<Record<DemoAreaKey, DemoPlaceArea>>;
   venues: Readonly<Record<DemoVenueKey, DemoVenue>>;
@@ -149,249 +294,206 @@ function box(minLng: number, minLat: number, maxLng: number, maxLat: number): re
   ];
 }
 
+/** 'Russell Avenue' → 'Russell Ave.' — the spelling the March-CSV duplicate twin came in with. */
+function abbreviateStreetType(name: string): string {
+  return name
+    .replace(/Avenue$/, 'Ave.')
+    .replace(/Street$/, 'St.')
+    .replace(/Boulevard$/, 'Blvd.');
+}
+
+/** How far odd and even houses sit from the street line, in degrees (~9 m). */
+const SIDE_OFFSET_DEG = 0.00008;
+
+/**
+ * Every house of every street for one pack, in the shared `DEMO_HOUSES` order, with the import
+ * twin appended. Interpolates each house along its street segment and nudges odd and even numbers
+ * to opposite sides of the line, so the map draws two facing rows of doors instead of a string of
+ * pins in the middle of the road.
+ */
+function buildSites(
+  streets: Readonly<Record<DemoStreetKey, PackStreet>>,
+  phoneAreaCode: string,
+): readonly HouseholdSite[] {
+  const specByKey = new Map(DEMO_STREET_SPECS.map((s) => [s.key, s]));
+  const sites = DEMO_HOUSES.map((house): HouseholdSite => {
+    const street = streets[house.street];
+    const spec = specByKey.get(house.street);
+    if (!spec) throw new Error(`Demo street "${house.street}" has no spec`);
+    const t = house.index / (spec.houses - 1);
+    const num = street.firstNum + house.index * street.numStep;
+    const dLng = street.end[0] - street.start[0];
+    const dLat = street.end[1] - street.start[1];
+    const len = Math.hypot(dLng, dLat) || 1;
+    // Unit perpendicular to the street line; odd numbers on one side, even on the other.
+    const side = num % 2 === 0 ? 1 : -1;
+    const lng = street.start[0] + t * dLng + side * SIDE_OFFSET_DEG * (-dLat / len);
+    const lat = street.start[1] + t * dLat + side * SIDE_OFFSET_DEG * (dLng / len);
+    const phoneLocal = STORY_SITES[house.key]?.phoneLocal;
+    return {
+      key: house.key,
+      street_num: String(num),
+      street1: street.name,
+      zip: street.zip,
+      lat: Number(lat.toFixed(6)),
+      lng: Number(lng.toFixed(6)),
+      area: house.area,
+      ...(phoneLocal ? { home_phone: `${phoneAreaCode}-${phoneLocal}` } : {}),
+    };
+  });
+
+  const twinOf = sites.find((s) => s.key === IMPORT_TWIN_OF);
+  if (!twinOf) throw new Error(`Import twin base "${IMPORT_TWIN_OF}" is not among the story sites`);
+  return [
+    ...sites,
+    {
+      ...twinOf,
+      key: IMPORT_TWIN_KEY,
+      street1: abbreviateStreetType(twinOf.street1),
+      // The twin never carries the landline — a CSV import would not have brought one.
+      home_phone: undefined,
+    },
+  ];
+}
+
 // ── Canada: Ottawa, Ontario ─────────────────────────────────────────────────────────────────────
-// Five City of Ottawa wards. The addresses and coordinates are the ones this file has always
-// carried; only their grouping into area slots is new.
+//
+// Cluster one is Centretown (Somerset ward — federal riding Ottawa Centre): eight residential
+// segments between Elgin and Bronson. Cluster two is Sandy Hill (Rideau-Vanier ward — riding
+// Ottawa—Vanier): six segments between King Edward and the river. Segment endpoints are
+// interpolated around the anchor coordinates this file has always carried (174 Cooper,
+// 288 MacLaren, 92 Frank, 41 Arlington, 356 Gladstone, 145 Bay, 61 Sweetland, 45 Blackburn,
+// 219 Charlotte, 128 Marlborough) — those pins were looked up once and are carried forward, never
+// re-invented.
 
-const OTTAWA_SITES: readonly HouseholdSite[] = [
-  // ── Somerset ward ──
-  {
-    key: 'hh-cooper',
-    street_num: '174',
-    street1: 'Cooper Street',
+const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
+  'st-cooper': {
+    name: 'Cooper Street',
+    shortName: 'Cooper',
     zip: 'K2P 0E8',
-    lat: 45.4136,
-    lng: -75.691,
-    area: 'core',
-    home_phone: '613-555-0221',
+    firstNum: 160,
+    numStep: 1,
+    start: [-75.6893, 45.41355],
+    end: [-75.6918, 45.41375],
   },
-  {
-    key: 'hh-maclaren',
-    street_num: '288',
-    street1: 'MacLaren Street',
+  'st-maclaren': {
+    name: 'MacLaren Street',
+    shortName: 'MacLaren',
     zip: 'K2P 0M6',
-    lat: 45.4152,
-    lng: -75.696,
-    area: 'core',
+    firstNum: 274,
+    numStep: 1,
+    start: [-75.6943, 45.4151],
+    end: [-75.6968, 45.4153],
   },
-  {
-    key: 'hh-frank',
-    street_num: '92',
-    street1: 'Frank Street',
+  'st-frank': {
+    name: 'Frank Street',
+    shortName: 'Frank',
     zip: 'K2P 0X2',
-    lat: 45.4126,
-    lng: -75.6875,
-    area: 'core',
+    firstNum: 82,
+    numStep: 1,
+    start: [-75.6863, 45.4125],
+    end: [-75.6883, 45.41266],
   },
-  {
-    key: 'hh-arlington',
-    street_num: '41',
-    street1: 'Arlington Avenue',
+  'st-arlington': {
+    name: 'Arlington Avenue',
+    shortName: 'Arlington',
     zip: 'K2P 1C1',
-    lat: 45.4079,
-    lng: -75.6944,
-    area: 'core',
+    firstNum: 29,
+    numStep: 1,
+    start: [-75.6929, 45.40782],
+    end: [-75.6951, 45.408],
   },
-  {
-    key: 'hh-gladstone',
-    street_num: '356',
-    street1: 'Gladstone Avenue',
+  'st-gladstone': {
+    name: 'Gladstone Avenue',
+    shortName: 'Gladstone',
     zip: 'K2P 0Y9',
-    lat: 45.4107,
-    lng: -75.6987,
-    area: 'core',
+    firstNum: 344,
+    numStep: 1,
+    start: [-75.6972, 45.4106],
+    end: [-75.6997, 45.4108],
   },
-  {
-    key: 'hh-bay',
-    street_num: '145',
-    street1: 'Bay Street',
+  'st-bay': {
+    name: 'Bay Street',
+    shortName: 'Bay',
     zip: 'K1R 7T2',
-    lat: 45.4155,
-    lng: -75.705,
-    area: 'core',
-    home_phone: '613-555-0244',
+    firstNum: 137,
+    numStep: 1,
+    start: [-75.705, 45.4162],
+    end: [-75.7052, 45.4148],
   },
-
-  // ── Kitchissippi ward ──
-  {
-    key: 'hh-byron',
-    street_num: '468',
-    street1: 'Byron Avenue',
-    zip: 'K2A 3G4',
-    lat: 45.3925,
-    lng: -75.7565,
-    area: 'west',
+  'st-james': {
+    name: 'James Street',
+    shortName: 'James',
+    zip: 'K1R 5M6',
+    firstNum: 150,
+    numStep: 1,
+    start: [-75.6952, 45.40965],
+    end: [-75.6974, 45.40983],
   },
-  {
-    key: 'hh-kirkwood',
-    street_num: '175',
-    street1: 'Kirkwood Avenue',
-    zip: 'K1Z 8K3',
-    lat: 45.394,
-    lng: -75.7495,
-    area: 'west',
+  'st-percy': {
+    name: 'Percy Street',
+    shortName: 'Percy',
+    zip: 'K1R 7V3',
+    firstNum: 508,
+    numStep: 1,
+    start: [-75.6966, 45.4104],
+    end: [-75.6968, 45.4086],
   },
-  {
-    key: 'hh-java',
-    street_num: '33',
-    street1: 'Java Street',
-    zip: 'K1Y 3L2',
-    lat: 45.4028,
-    lng: -75.7291,
-    area: 'west',
-  },
-  {
-    key: 'hh-armstrong',
-    street_num: '245',
-    street1: 'Armstrong Street',
-    zip: 'K1Y 2W3',
-    lat: 45.4046,
-    lng: -75.7247,
-    area: 'west',
-  },
-  {
-    key: 'hh-huron',
-    street_num: '58',
-    street1: 'Huron Avenue N',
-    zip: 'K1Y 0W8',
-    lat: 45.4013,
-    lng: -75.7346,
-    area: 'west',
-  },
-
-  // ── Capital ward ──
-  {
-    key: 'hh-fifth',
-    street_num: '87',
-    street1: 'Fifth Avenue',
-    zip: 'K1S 2M8',
-    lat: 45.4009,
-    lng: -75.6926,
-    area: 'south',
-  },
-  {
-    key: 'hh-holmwood',
-    street_num: '224',
-    street1: 'Holmwood Avenue',
-    zip: 'K1S 2P4',
-    lat: 45.399,
-    lng: -75.6858,
-    area: 'south',
-    home_phone: '613-555-0268',
-  },
-  {
-    key: 'hh-sunnyside',
-    street_num: '145',
-    street1: 'Sunnyside Avenue',
-    zip: 'K1S 0R2',
-    lat: 45.3949,
-    lng: -75.6812,
-    area: 'south',
-  },
-  {
-    key: 'hh-powell',
-    street_num: '36',
-    street1: 'Powell Avenue',
-    zip: 'K1S 2A2',
-    lat: 45.4046,
-    lng: -75.6949,
-    area: 'south',
-  },
-  {
-    key: 'hh-aylmer',
-    street_num: '112',
-    street1: 'Aylmer Avenue',
-    zip: 'K1S 2X6',
-    lat: 45.3952,
-    lng: -75.6867,
-    area: 'south',
-  },
-
-  // ── Rideau-Vanier ward ──
-  {
-    key: 'hh-sweetland',
-    street_num: '61',
-    street1: 'Sweetland Avenue',
+  'st-sweetland': {
+    name: 'Sweetland Avenue',
+    shortName: 'Sweetland',
     zip: 'K1N 7T7',
-    lat: 45.4266,
-    lng: -75.6797,
-    area: 'east',
+    firstNum: 47,
+    numStep: 1,
+    start: [-75.6797, 45.428],
+    end: [-75.6799, 45.4263],
   },
-  {
-    key: 'hh-marlborough',
-    street_num: '128',
-    street1: 'Marlborough Avenue',
-    zip: 'K1N 8G3',
-    lat: 45.4229,
-    lng: -75.6752,
-    area: 'east',
-  },
-  {
-    key: 'hh-blackburn',
-    street_num: '45',
-    street1: 'Blackburn Avenue',
+  'st-blackburn': {
+    name: 'Blackburn Avenue',
+    shortName: 'Blackburn',
     zip: 'K1N 8A4',
-    lat: 45.4245,
-    lng: -75.6791,
-    area: 'east',
+    firstNum: 35,
+    numStep: 1,
+    start: [-75.6791, 45.4254],
+    end: [-75.6793, 45.4239],
   },
-  {
-    key: 'hh-charlotte',
-    street_num: '219',
-    street1: 'Charlotte Street',
+  'st-charlotte': {
+    name: 'Charlotte Street',
+    shortName: 'Charlotte',
     zip: 'K1N 8L2',
-    lat: 45.4287,
-    lng: -75.6832,
-    area: 'east',
+    firstNum: 209,
+    numStep: 1,
+    start: [-75.6832, 45.4297],
+    end: [-75.6834, 45.428],
   },
-
-  // ── Alta Vista ward ──
-  {
-    key: 'hh-kilborn',
-    street_num: '1128',
-    street1: 'Kilborn Avenue',
-    zip: 'K1H 6L1',
-    lat: 45.3867,
-    lng: -75.6544,
-    area: 'southeast',
+  'st-marlborough': {
+    name: 'Marlborough Avenue',
+    shortName: 'Marlborough',
+    zip: 'K1N 8G3',
+    firstNum: 118,
+    numStep: 1,
+    start: [-75.6752, 45.4239],
+    end: [-75.6754, 45.4224],
   },
-  {
-    key: 'hh-pleasantpark',
-    street_num: '645',
-    street1: 'Pleasant Park Road',
-    zip: 'K1H 5M2',
-    lat: 45.3901,
-    lng: -75.6608,
-    area: 'southeast',
+  'st-russell': {
+    name: 'Russell Avenue',
+    shortName: 'Russell',
+    zip: 'K1N 7X1',
+    firstNum: 150,
+    numStep: 1,
+    start: [-75.6771, 45.4247],
+    end: [-75.6773, 45.4228],
   },
-  {
-    key: 'hh-halifax',
-    street_num: '88',
-    street1: 'Halifax Drive',
-    zip: 'K1G 0T6',
-    lat: 45.3945,
-    lng: -75.6377,
-    area: 'southeast',
+  'st-goulburn': {
+    name: 'Goulburn Avenue',
+    shortName: 'Goulburn',
+    zip: 'K1N 8C7',
+    firstNum: 96,
+    numStep: 1,
+    start: [-75.676, 45.4243],
+    end: [-75.6762, 45.4228],
   },
-  {
-    key: 'hh-featherston',
-    street_num: '1520',
-    street1: 'Featherston Drive',
-    zip: 'K1H 6P2',
-    lat: 45.3846,
-    lng: -75.6414,
-    area: 'southeast',
-  },
-  {
-    key: 'hh-kilborn-import',
-    street_num: '1128',
-    street1: 'Kilborn Ave.',
-    zip: 'K1H 6L1',
-    lat: 45.3867,
-    lng: -75.6544,
-    area: 'southeast',
-  },
-];
+};
 
 export const CANADA_PLACE_PACK: PlacePack = {
   country: 'CA',
@@ -399,40 +501,20 @@ export const CANADA_PLACE_PACK: PlacePack = {
   city: 'Ottawa',
   state: 'ON',
   phoneAreaCode: '613',
-  sites: OTTAWA_SITES,
+  streets: OTTAWA_STREETS,
+  sites: buildSites(OTTAWA_STREETS, '613'),
   areas: {
     core: {
       name: 'Somerset',
       code: '14',
-      turfName: 'Centretown core (Somerset)',
-      // North edge 45.419 is Rideau-Vanier's south edge: the two rectangles share a line, never
-      // an area. (At 45.42 they overlapped in a sliver the product's own boundary validation
-      // would flag.) The northernmost core household, hh-bay, sits at 45.4155 — well inside.
-      ring: box(-75.71, 45.406, -75.683, 45.419),
-    },
-    west: {
-      name: 'Kitchissippi',
-      code: '15',
-      turfName: 'Westboro east (Kitchissippi)',
-      ring: box(-75.765, 45.386, -75.718, 45.411),
-    },
-    south: {
-      name: 'Capital',
-      code: '17',
-      turfName: 'The Glebe (Capital)',
-      ring: box(-75.7, 45.391, -75.676, 45.406),
+      // North edge 45.421 is Rideau-Vanier's south edge: the two rectangles share a line, never
+      // an area — overlapping features would trip the product's own boundary validation.
+      ring: box(-75.712, 45.404, -75.683, 45.421),
     },
     east: {
       name: 'Rideau-Vanier',
       code: '12',
-      turfName: 'Sandy Hill (Rideau-Vanier)',
-      ring: box(-75.69, 45.419, -75.67, 45.433),
-    },
-    southeast: {
-      name: 'Alta Vista',
-      code: '18',
-      turfName: 'Alta Vista',
-      ring: box(-75.668, 45.38, -75.632, 45.399),
+      ring: box(-75.69, 45.421, -75.669, 45.434),
     },
   },
   venues: {
@@ -473,254 +555,145 @@ export const CANADA_PLACE_PACK: PlacePack = {
 //    — transfers with no distortion at all.
 // 2. Chicago's street grid is a published linear coordinate system: every address states its
 //    distance north or south of Madison Street and east or west of State Street, so an address can
-//    be placed between two known major-street crossings instead of being guessed at. Every
-//    coordinate below is interpolated between crossings whose positions are well established
-//    (Madison, North Avenue, Fullerton, Devon, Howard; State, Halsted, Ashland, Damen, Western),
-//    which lands each pin on its own block.
+//    be placed between two known major-street crossings instead of being guessed at. Every segment
+//    below is interpolated around the anchor coordinates this file has always carried, which lands
+//    each pin on its own block. House numbers advance by 7 per door — Chicago allots ~100 address
+//    units per 200 m block, so neighbouring lots are several units apart, and an odd step keeps
+//    the numbers alternating between the two sides of the street.
 //
-// The five wards are ones whose territory is a single well-known neighbourhood, and every address
-// sits in the middle of that neighbourhood rather than near a ward line, so the ward each household
-// is filed under does not depend on where exactly a jagged boundary runs.
+// Cluster one is Rogers Park (Ward 49), cluster two is Ravenswood / Lincoln Square (Ward 47) —
+// each a single well-known neighbourhood, every address in the middle of it rather than near a
+// ward line, so the ward each household is filed under does not depend on where exactly a jagged
+// boundary runs.
 
-const CHICAGO_SITES: readonly HouseholdSite[] = [
-  // ── Ward 49 — Rogers Park ──
-  {
-    key: 'hh-cooper',
-    street_num: '1424',
-    street1: 'W Morse Avenue',
+const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
+  'st-cooper': {
+    name: 'W Morse Avenue',
+    shortName: 'Morse',
     zip: '60626',
-    lat: 42.0079,
-    lng: -87.6668,
-    area: 'core',
-    home_phone: '773-555-0221',
+    firstNum: 1354,
+    numStep: 7,
+    start: [-87.6651, 42.00788],
+    end: [-87.66833, 42.00792],
   },
-  {
-    key: 'hh-maclaren',
-    street_num: '1338',
-    street1: 'W Lunt Avenue',
+  'st-maclaren': {
+    name: 'W Lunt Avenue',
+    shortName: 'Lunt',
     zip: '60626',
-    lat: 42.0096,
-    lng: -87.6647,
-    area: 'core',
+    firstNum: 1240,
+    numStep: 7,
+    start: [-87.66232, 42.00958],
+    end: [-87.66555, 42.00962],
   },
-  {
-    key: 'hh-frank',
-    street_num: '1522',
-    street1: 'W Estes Avenue',
+  'st-frank': {
+    name: 'W Estes Avenue',
+    shortName: 'Estes',
     zip: '60626',
-    lat: 42.0113,
-    lng: -87.6698,
-    area: 'core',
+    firstNum: 1452,
+    numStep: 7,
+    start: [-87.6681, 42.01128],
+    end: [-87.67065, 42.01132],
   },
-  {
-    key: 'hh-arlington',
-    street_num: '1245',
-    street1: 'W Pratt Boulevard',
+  'st-arlington': {
+    name: 'W Pratt Boulevard',
+    shortName: 'Pratt',
     zip: '60626',
-    lat: 42.0062,
-    lng: -87.6621,
-    area: 'core',
+    firstNum: 1161,
+    numStep: 7,
+    start: [-87.66006, 42.00618],
+    end: [-87.66295, 42.00622],
   },
-  {
-    key: 'hh-gladstone',
-    street_num: '1640',
-    street1: 'W Greenleaf Avenue',
+  'st-gladstone': {
+    name: 'W Greenleaf Avenue',
+    shortName: 'Greenleaf',
     zip: '60626',
-    lat: 42.0101,
-    lng: -87.6731,
-    area: 'core',
+    firstNum: 1556,
+    numStep: 7,
+    start: [-87.67106, 42.01008],
+    end: [-87.67429, 42.01012],
   },
-  {
-    key: 'hh-bay',
-    street_num: '1130',
-    street1: 'W Touhy Avenue',
+  'st-bay': {
+    name: 'W Touhy Avenue',
+    shortName: 'Touhy',
     zip: '60626',
-    lat: 42.013,
-    lng: -87.659,
-    area: 'core',
-    home_phone: '773-555-0244',
+    firstNum: 1074,
+    numStep: 7,
+    start: [-87.65764, 42.01298],
+    end: [-87.66019, 42.01302],
   },
-
-  // ── Ward 43 — Lincoln Park ──
-  {
-    key: 'hh-byron',
-    street_num: '2130',
-    street1: 'N Sheffield Avenue',
-    zip: '60614',
-    lat: 41.9202,
-    lng: -87.6522,
-    area: 'west',
+  'st-james': {
+    name: 'W Farwell Avenue',
+    shortName: 'Farwell',
+    zip: '60626',
+    firstNum: 1300,
+    numStep: 7,
+    start: [-87.6637, 42.00438],
+    end: [-87.6666, 42.00442],
   },
-  {
-    key: 'hh-kirkwood',
-    street_num: '1042',
-    street1: 'W Webster Avenue',
-    zip: '60614',
-    lat: 41.9215,
-    lng: -87.6532,
-    area: 'west',
+  'st-percy': {
+    name: 'N Greenview Avenue',
+    shortName: 'Greenview',
+    zip: '60626',
+    firstNum: 6808,
+    numStep: 7,
+    start: [-87.667, 42.00634],
+    end: [-87.6672, 42.00818],
   },
-  {
-    key: 'hh-java',
-    street_num: '2244',
-    street1: 'N Orchard Street',
-    zip: '60614',
-    lat: 41.9223,
-    lng: -87.6449,
-    area: 'west',
-  },
-  {
-    key: 'hh-armstrong',
-    street_num: '840',
-    street1: 'W Belden Avenue',
-    zip: '60614',
-    lat: 41.9235,
-    lng: -87.6483,
-    area: 'west',
-  },
-  {
-    key: 'hh-huron',
-    street_num: '2318',
-    street1: 'N Racine Avenue',
-    zip: '60614',
-    lat: 41.9238,
-    lng: -87.6571,
-    area: 'west',
-  },
-
-  // ── Ward 1 — Wicker Park and Bucktown ──
-  {
-    key: 'hh-fifth',
-    street_num: '1832',
-    street1: 'W Le Moyne Street',
-    zip: '60622',
-    lat: 41.9086,
-    lng: -87.6725,
-    area: 'south',
-  },
-  {
-    key: 'hh-holmwood',
-    street_num: '1657',
-    street1: 'N Hermitage Avenue',
-    zip: '60622',
-    lat: 41.9114,
-    lng: -87.6701,
-    area: 'south',
-    home_phone: '773-555-0268',
-  },
-  {
-    key: 'hh-sunnyside',
-    street_num: '2016',
-    street1: 'W Evergreen Avenue',
-    zip: '60622',
-    lat: 41.9056,
-    lng: -87.677,
-    area: 'south',
-  },
-  {
-    key: 'hh-powell',
-    street_num: '1745',
-    street1: 'N Wolcott Avenue',
-    zip: '60622',
-    lat: 41.913,
-    lng: -87.6742,
-    area: 'south',
-  },
-  {
-    key: 'hh-aylmer',
-    street_num: '2140',
-    street1: 'W Cortland Street',
-    zip: '60647',
-    lat: 41.9158,
-    lng: -87.68,
-    area: 'south',
-  },
-
-  // ── Ward 47 — Lincoln Square and Ravenswood ──
-  {
-    key: 'hh-sweetland',
-    street_num: '2136',
-    street1: 'W Sunnyside Avenue',
+  'st-sweetland': {
+    name: 'N Hoyne Avenue',
+    shortName: 'Hoyne',
     zip: '60625',
-    lat: 41.9632,
-    lng: -87.6799,
-    area: 'east',
+    firstNum: 4614,
+    numStep: 7,
+    start: [-87.679, 41.96533],
+    end: [-87.6792, 41.96748],
   },
-  {
-    key: 'hh-marlborough',
-    street_num: '4712',
-    street1: 'N Hoyne Avenue',
+  'st-blackburn': {
+    name: 'N Seeley Avenue',
+    shortName: 'Seeley',
     zip: '60625',
-    lat: 41.9671,
-    lng: -87.679,
-    area: 'east',
+    firstNum: 4514,
+    numStep: 7,
+    start: [-87.6812, 41.96347],
+    end: [-87.6814, 41.96537],
   },
-  {
-    key: 'hh-blackburn',
-    street_num: '2244',
-    street1: 'W Leland Avenue',
-    zip: '60625',
-    lat: 41.9669,
-    lng: -87.6825,
-    area: 'east',
-  },
-  {
-    key: 'hh-charlotte',
-    street_num: '4532',
-    street1: 'N Paulina Street',
+  'st-charlotte': {
+    name: 'N Paulina Street',
+    shortName: 'Paulina',
     zip: '60640',
-    lat: 41.9638,
-    lng: -87.6693,
-    area: 'east',
+    firstNum: 4462,
+    numStep: 7,
+    start: [-87.6693, 41.96253],
+    end: [-87.6695, 41.96469],
   },
-
-  // ── Ward 25 — Pilsen ──
-  {
-    key: 'hh-kilborn',
-    street_num: '1734',
-    street1: 'W 18th Street',
-    zip: '60608',
-    lat: 41.8583,
-    lng: -87.6701,
-    area: 'southeast',
+  'st-marlborough': {
+    name: 'W Leland Avenue',
+    shortName: 'Leland',
+    zip: '60625',
+    firstNum: 2174,
+    numStep: 7,
+    start: [-87.6808, 41.96688],
+    end: [-87.68335, 41.96692],
   },
-  {
-    key: 'hh-pleasantpark',
-    street_num: '1416',
-    street1: 'W 21st Street',
-    zip: '60608',
-    lat: 41.8538,
-    lng: -87.6623,
-    area: 'southeast',
+  'st-russell': {
+    name: 'W Sunnyside Avenue',
+    shortName: 'Sunnyside',
+    zip: '60625',
+    firstNum: 2080,
+    numStep: 7,
+    start: [-87.67854, 41.96318],
+    end: [-87.68177, 41.96322],
   },
-  {
-    key: 'hh-halifax',
-    street_num: '1920',
-    street1: 'W Cullerton Street',
-    zip: '60608',
-    lat: 41.8553,
-    lng: -87.6746,
-    area: 'southeast',
+  'st-goulburn': {
+    name: 'W Eastwood Avenue',
+    shortName: 'Eastwood',
+    zip: '60625',
+    firstNum: 2100,
+    numStep: 7,
+    start: [-87.679, 41.96558],
+    end: [-87.68155, 41.96562],
   },
-  {
-    key: 'hh-featherston',
-    street_num: '1112',
-    street1: 'W 19th Street',
-    zip: '60608',
-    lat: 41.8568,
-    lng: -87.6549,
-    area: 'southeast',
-  },
-  {
-    key: 'hh-kilborn-import',
-    street_num: '1734',
-    street1: 'W 18th St.',
-    zip: '60608',
-    lat: 41.8583,
-    lng: -87.6701,
-    area: 'southeast',
-  },
-];
+};
 
 export const UNITED_STATES_PLACE_PACK: PlacePack = {
   country: 'US',
@@ -728,37 +701,18 @@ export const UNITED_STATES_PLACE_PACK: PlacePack = {
   city: 'Chicago',
   state: 'IL',
   phoneAreaCode: '773',
-  sites: CHICAGO_SITES,
+  streets: CHICAGO_STREETS,
+  sites: buildSites(CHICAGO_STREETS, '773'),
   areas: {
     core: {
       name: 'Ward 49',
       code: '49',
-      turfName: 'Rogers Park east (Ward 49)',
-      ring: box(-87.68, 42.001, -87.653, 42.018),
-    },
-    west: {
-      name: 'Ward 43',
-      code: '43',
-      turfName: 'Lincoln Park west (Ward 43)',
-      ring: box(-87.662, 41.918, -87.64, 41.93),
-    },
-    south: {
-      name: 'Ward 1',
-      code: '1',
-      turfName: 'Wicker Park (Ward 1)',
-      ring: box(-87.686, 41.9, -87.665, 41.917),
+      ring: box(-87.685, 42.0, -87.653, 42.02),
     },
     east: {
       name: 'Ward 47',
       code: '47',
-      turfName: 'Ravenswood (Ward 47)',
-      ring: box(-87.69, 41.958, -87.664, 41.972),
-    },
-    southeast: {
-      name: 'Ward 25',
-      code: '25',
-      turfName: 'Pilsen (Ward 25)',
-      ring: box(-87.682, 41.848, -87.648, 41.864),
+      ring: box(-87.69, 41.954, -87.664, 41.974),
     },
   },
   venues: {
@@ -825,6 +779,39 @@ export const SITE_KEYS: readonly string[] = DEFAULT_PLACE_PACK.sites.map((s) => 
 
 const DEFAULT_SITE_KEYS = new Set(SITE_KEYS);
 
+/**
+ * The 25 legacy story household keys, in their historical order — the households the hand-written
+ * datasets tell stories about. The non-electoral datasets seed ONLY these (a food bank does not
+ * need every door on fourteen streets); the electoral datasets seed every house.
+ */
+export const STORY_HOUSEHOLD_KEYS: readonly string[] = [
+  'hh-cooper',
+  'hh-maclaren',
+  'hh-frank',
+  'hh-arlington',
+  'hh-gladstone',
+  'hh-bay',
+  'hh-byron',
+  'hh-kirkwood',
+  'hh-java',
+  'hh-armstrong',
+  'hh-huron',
+  'hh-fifth',
+  'hh-holmwood',
+  'hh-sunnyside',
+  'hh-powell',
+  'hh-aylmer',
+  'hh-sweetland',
+  'hh-marlborough',
+  'hh-blackburn',
+  'hh-charlotte',
+  'hh-kilborn',
+  'hh-pleasantpark',
+  'hh-halifax',
+  'hh-featherston',
+  IMPORT_TWIN_KEY,
+];
+
 /** One pack's sites by key, for the seeder to bind a story to a place. */
 export function sitesByKey(pack: PlacePack): Map<string, HouseholdSite> {
   return new Map(pack.sites.map((s) => [s.key, s]));
@@ -851,7 +838,12 @@ export function at(key: string, story: Omit<DemoHouseholdDef, 'key'> = {}): Demo
   return { key, ...story };
 }
 
-/** Every shared site, with an optional per-key story overlay. */
+/** Every house on every street — the electoral datasets' address book — with story overlays. */
 export function allSites(stories: Record<string, Omit<DemoHouseholdDef, 'key'>> = {}): DemoHouseholdDef[] {
   return SITE_KEYS.map((key) => ({ key, ...(stories[key] ?? {}) }));
+}
+
+/** Only the 25 story households — the address book for datasets that do not canvass streets. */
+export function storyHouseholds(stories: Record<string, Omit<DemoHouseholdDef, 'key'>> = {}): DemoHouseholdDef[] {
+  return STORY_HOUSEHOLD_KEYS.map((key) => ({ key, ...(stories[key] ?? {}) }));
 }

@@ -797,12 +797,15 @@ export async function seedDemoData(params: SeedParams, trx: Transaction<Models>)
     const coords = turf.households.map((k) => householdGeoByKey.get(k)).filter((c): c is LatLng => c != null);
     const centroid_lat = coords.length > 0 ? coords.reduce((s, c) => s + c.lat, 0) / coords.length : null;
     const centroid_lng = coords.length > 0 ? coords.reduce((s, c) => s + c.lng, 0) / coords.length : null;
+    // A turf is whole streets, so its name is those streets in the seeded pack's own words —
+    // "Cooper & MacLaren (Somerset)" in Ottawa is "Morse & Lunt (Ward 49)" in Chicago.
+    const turfName = `${turf.streets.map((s) => pack.streets[s].shortName).join(' & ')} (${pack.areas[turf.area].name})`;
     const turfRow = await trx
       .insertInto('turfs')
       .values({
         ...audit,
         campaign_id,
-        name: pack.areas[turf.area].turfName,
+        name: turfName,
         status: turf.status,
         list_id: null,
         target_doors: turf.households.length,

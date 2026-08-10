@@ -284,6 +284,7 @@ apps/
             demo-data-nonprofit.ts
             demo-data-office.ts
             demo-data-places.ts
+            demo-data-residents.ts
             demo-data-types.ts
             demo-datasets.ts
             demo-guard.ts

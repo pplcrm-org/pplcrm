@@ -16,7 +16,7 @@ import type {
   DemoDonationDef,
   DemoPledgeDef,
 } from './demo-data-types';
-import { CANADA_PLACE_PACK, allSites } from './demo-data-places';
+import { CANADA_PLACE_PACK, storyHouseholds } from './demo-data-places';
 
 /**
  * The demo workspace for NON-PROFIT mode: the Rideau Community Table, a fictional Ottawa charity
@@ -92,7 +92,7 @@ const COMPANIES: DemoCompanyDef[] = [
   },
 ];
 
-const HOUSEHOLDS = allSites({
+const HOUSEHOLDS = storyHouseholds({
   'hh-gladstone': { notes: 'Buzzer broken — call from the lobby.' },
   'hh-kilborn-import': { notes: 'Came in on the March intake spreadsheet.' },
   'hh-powell': { notes: 'Hamper drop-off goes to the side door.' },
