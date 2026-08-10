@@ -64,15 +64,16 @@ there is no live env var to flip).
 These live in GitHub, not in the Container App. Set them with
 `gh secret set <NAME> -R pplcrm-org/pplcrm`.
 
-| Secret                                                                      | Used by            | Purpose                                                                    |
-| --------------------------------------------------------------------------- | ------------------ | -------------------------------------------------------------------------- |
-| `AZURE_CREDENTIALS`                                                         | both deploy flows  | Service-principal JSON for `azure/login`                                   |
-| `VITE_GOOGLE_MAPS_API_KEY`                                                  | `deploy.yml`       | Browser maps key baked into the frontend bundle                            |
-| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`                             | `deploy.yml`       | Pages + Worker deploys                                                     |
-| `PROD_DB_HOST/NAME/MIGRATION_USER/MIGRATION_PASSWORD`                       | `deploy.yml`       | The `migrate` job that applies pending migrations before the backend rolls |
-| **`OPS_ALERT_SMS_NUMBER`** — **not created yet; see the action item below** | `deploy-infra.yml` | On-call mobile number for the Azure Monitor SMS alert receiver             |
+| Secret                                                | Used by            | Purpose                                                                    |
+| ----------------------------------------------------- | ------------------ | -------------------------------------------------------------------------- |
+| `AZURE_CREDENTIALS`                                   | both deploy flows  | Service-principal JSON for `azure/login`                                   |
+| `VITE_GOOGLE_MAPS_API_KEY`                            | `deploy.yml`       | Browser maps key baked into the frontend bundle                            |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`       | `deploy.yml`       | Pages + Worker deploys                                                     |
+| `PROD_DB_HOST/NAME/MIGRATION_USER/MIGRATION_PASSWORD` | `deploy.yml`       | The `migrate` job that applies pending migrations before the backend rolls |
+| `OPS_ALERT_SMS_NUMBER` — **created 2026-08-02** ✓     | `deploy-infra.yml` | On-call mobile number for the Azure Monitor SMS alert receiver             |
 
-- [ ] **ACTION REQUIRED — create `OPS_ALERT_SMS_NUMBER` before the next infrastructure deploy.**
+- [x] **Create `OPS_ALERT_SMS_NUMBER` before the next infrastructure deploy — done 2026-08-02**
+      (verified via `gh secret list`; the 2026-08-02 "Deploy infra (monitoring)" run succeeded).
       The on-call mobile number used to be committed in
       `infra/azure/canadacentral-monitoring.bicepparam`. It was removed from the working tree because
       it is personal contact data (it is still recoverable from git history — see the note at the end
@@ -278,6 +279,12 @@ Re-verified against the live Container App: all expected env vars present (incl.
       retention, Canada Central, geo-redundant backup disabled — matches the site's "retained for 7 days
       in Canada" claim exactly. Blob soft-delete is **off** (site makes no blob-backup claim; deleted
       blobs vanish immediately, which is consistent with — stronger than — the deletion promise).
+- [ ] **Turn the edge availability probes back on**: set `param enableEdgeProbes = true` in
+      `infra/azure/canadacentral-monitoring.bicepparam` and merge — CI deploys it. Pre-launch the
+      probes for `app.pplcrm.com` and `go.pplcrm.com` are off (2026-08-10) because standard web
+      tests bill per execution and those two surfaces are static Cloudflare deployments; at launch,
+      paying ~CAD 7/mo each to catch a broken Pages deploy or an expired custom-domain cert is
+      worth it. The api and worker probes are already on and stay on.
 - [ ] Consider putting `api.pplcrm.com` behind the Cloudflare proxy (currently DNS-only/grey for the managed
       cert). Optional.
 

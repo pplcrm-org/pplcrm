@@ -22,9 +22,17 @@ workflow passes it as `-p opsAlertSmsNumber=` and **fails the job if it is unset
 digits** — deploying without it would quietly create an action group with no SMS receiver.
 Provisioned:
 
-- **Availability tests** (App Insights standard webtests, every 5 min from 5 regions, expect 200):
-  `api.pplcrm.com/healthz`, `app.pplcrm.com`, `go.pplcrm.com`, optional `formsProbeUrl` tenant
-  host, and — only with `enableWorkerProbe = true` — `api.pplcrm.com/healthz/worker`.
+- **Availability tests** (App Insights standard webtests from 3 regions, expect 200). These bill
+  **per execution** (~CAD 0.0008 — they were the entire "Management and Governance" invoice line at
+  ~CAD 141/mo before the 2026-08-10 trim; ~CAD 28/mo after), so frequency/locations/test-count are
+  cost knobs, not free settings. Current shape: `api.pplcrm.com/healthz` every 5 min (the security
+  page's "every few minutes" promise rides on this one — don't slow it without updating
+  `security-content.ts`); `api.pplcrm.com/healthz/worker` every 15 min with a PT30M alert window
+  (only with `enableWorkerProbe = true`; the heartbeat stale threshold is 20 min, so faster probing
+  buys nothing); `app.pplcrm.com` + `go.pplcrm.com` every 15 min but **off pre-launch** behind
+  `enableEdgeProbes = false` (static Cloudflare surfaces; GO-LIVE-CHECKLIST §10 flips it);
+  optional `formsProbeUrl` tenant host, every 15 min. A slow (900s) test's alert window must stay
+  ≥ PT30M or the "2+ locations failing" criterion can never see two results in the window.
 - **Action group `pplcrm-ops-ag`**: Azure mobile-app push + email to `opsAlertEmail`
   (set in `canadacentral-monitoring.bicepparam`), plus SMS to `opsAlertSmsNumber` when supplied.
   SMS is the channel that actually wakes someone: app push is unreliable for this subscription's
