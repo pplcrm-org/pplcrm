@@ -215,6 +215,27 @@ describe('TurfPrintPage', () => {
       expect(text()).toContain('1 doors have no map position yet; they appear only in the list.');
       expect(text()).toContain('Schematic map. Door positions are approximate and roads are not drawn.');
     });
+
+    it('draws one dashed route through the doors still to walk, on a canvas sized to the turf', async () => {
+      await open();
+      const svg = (fixture.nativeElement as HTMLElement).querySelector('svg');
+      const paths = svg?.querySelectorAll('path') ?? [];
+      expect(paths.length).toBe(1);
+      expect(paths[0]?.getAttribute('stroke-dasharray')).toBe('4 4');
+      const height = Number((svg?.getAttribute('viewBox') ?? '').split(' ')[3]);
+      expect(height).toBeGreaterThanOrEqual(240);
+      expect(height).toBeLessThanOrEqual(520);
+    });
+
+    it('a finished turf still draws the route, through every placed door', async () => {
+      svc.getTurfDetail.mockResolvedValue(
+        detail({ doors: DOORS.map((d) => ({ ...d, status: 'conversation' as const })) }),
+      );
+      await open();
+      // Scoped to the map's own svg — the join-code QR below it is an svg with a path too.
+      const svg = (fixture.nativeElement as HTMLElement).querySelector('svg');
+      expect(svg?.querySelectorAll('path').length).toBe(1);
+    });
   });
 
   describe('the join code', () => {
@@ -222,6 +243,12 @@ describe('TurfPrintPage', () => {
       await open();
       expect(text()).toContain('Have a phone? Scan to canvass in the app.');
       expect(text()).toContain('ABC123');
+    });
+
+    it('asks for the code quietly, so a plan gate can never toast over the sheet', async () => {
+      await open();
+      expect(joinCodes.getForCampaign).toHaveBeenCalledWith({ silent: true });
+      expect(joinCodes.qr).toHaveBeenCalledWith('code-1', { silent: true });
     });
 
     it('still prints the sheet when the code service fails', async () => {

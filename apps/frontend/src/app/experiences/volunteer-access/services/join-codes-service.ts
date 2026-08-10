@@ -12,6 +12,19 @@ import { CampaignContextService } from '../../../services/campaign-context.servi
 import { TRPCService } from '../../../services/api/trpc-service';
 
 /**
+ * `silent` suppresses the shared tRPC link's error toast for callers where a
+ * failure is an acceptable answer (the print sheet's best-effort QR) — the
+ * promise still rejects, so the caller decides what silence means.
+ */
+export interface JoinCodeCallOpts {
+  silent?: boolean;
+}
+
+function trpcOpts(opts?: JoinCodeCallOpts): { context: { skipErrorHandler: boolean } } | undefined {
+  return opts?.silent ? { context: { skipErrorHandler: true } } : undefined;
+}
+
+/**
  * QR join codes — the staff half of the volunteer front door.
  *
  * Codes belong to a campaign context the same way forms and lists do, so the active
@@ -21,25 +34,29 @@ import { TRPCService } from '../../../services/api/trpc-service';
 export class JoinCodesService extends TRPCService<'campaign_join_codes'> {
   private readonly campaignContext = inject(CampaignContextService);
 
-  public getForCampaign(): Promise<JoinCodeRow[]> {
-    return this.api.joinCodes.getForCampaign.query({
-      campaign_id: this.campaignContext.activeCampaignId(),
-    }) as Promise<JoinCodeRow[]>;
+  public getForCampaign(opts?: JoinCodeCallOpts): Promise<JoinCodeRow[]> {
+    return this.api.joinCodes.getForCampaign.query(
+      { campaign_id: this.campaignContext.activeCampaignId() },
+      trpcOpts(opts),
+    ) as Promise<JoinCodeRow[]>;
   }
 
-  public create(input: Omit<AddJoinCodeType, 'campaign_id'>): Promise<JoinCodeRow> {
-    return this.api.joinCodes.create.mutate({
-      ...input,
-      campaign_id: this.campaignContext.activeCampaignId(),
-    }) as Promise<JoinCodeRow>;
+  public create(input: Omit<AddJoinCodeType, 'campaign_id'>, opts?: JoinCodeCallOpts): Promise<JoinCodeRow> {
+    return this.api.joinCodes.create.mutate(
+      {
+        ...input,
+        campaign_id: this.campaignContext.activeCampaignId(),
+      },
+      trpcOpts(opts),
+    ) as Promise<JoinCodeRow>;
   }
 
   public update(id: string, data: UpdateJoinCodeType): Promise<JoinCodeRow> {
     return this.api.joinCodes.update.mutate({ id, data }) as Promise<JoinCodeRow>;
   }
 
-  public qr(id: string): Promise<JoinCodeQr> {
-    return this.api.joinCodes.qr.query({ id }) as Promise<JoinCodeQr>;
+  public qr(id: string, opts?: JoinCodeCallOpts): Promise<JoinCodeQr> {
+    return this.api.joinCodes.qr.query({ id }, trpcOpts(opts)) as Promise<JoinCodeQr>;
   }
 
   /**

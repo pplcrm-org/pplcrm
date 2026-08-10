@@ -28,9 +28,14 @@ const DOOR_WORD: Record<DoorStatus, string> = {
   not_yet: 'To walk',
 };
 
-/** The schematic map's drawing box. Fixed, so the sheet lays out the same every time. */
+/**
+ * The schematic map's drawing box. Width is fixed; height follows the doors' own
+ * proportions between the two bounds, so a flat east-west turf is not printed as a
+ * page of empty white under a thin row of dots.
+ */
 const MAP_WIDTH = 760;
-const MAP_HEIGHT = 520;
+const MAP_MAX_HEIGHT = 520;
+const MAP_MIN_HEIGHT = 240;
 const MAP_PADDING = 30;
 const DOT_RADIUS = 7;
 /** Half-width of the X drawn over a door nobody may contact. */
@@ -79,6 +84,8 @@ interface PrintMap {
   paths: PrintPath[];
   streets: PrintLabel[];
   tags: PrintTag[];
+  /** The drawing box height this turf's shape earned; the width is always MAP_WIDTH. */
+  height: number;
 }
 
 /** A door with coordinates, narrowed once so nothing downstream re-checks for null. */
@@ -153,7 +160,6 @@ export class TurfPrintPage {
   protected readonly qr = signal<JoinCodeQr | null>(null);
   protected readonly printedAt = new Date();
   protected readonly mapWidth = MAP_WIDTH;
-  protected readonly mapHeight = MAP_HEIGHT;
   protected readonly dotRadius = DOT_RADIUS;
   protected readonly crossArm = CROSS_ARM;
   protected readonly doorWord = DOOR_WORD;
@@ -219,12 +225,15 @@ export class TurfPrintPage {
   });
 
   /**
-   * The schematic map: door dots, one dashed line per street, street names, and the
-   * start and end of the walk.
+   * The schematic map: door dots, ONE dashed line through the doors still to walk in
+   * walking order, street names, and the start and end of the walk.
    *
-   * The projection is equirectangular around the middle latitude of the turf, which is
-   * accurate enough over a few city blocks and needs no map tiles. Roads are not drawn
-   * at all, which is why the caption under it says so.
+   * The line deliberately runs across streets — on paper it is the entire guidance,
+   * exactly what the hand-drawn arrows on a classic walk sheet do — and it is
+   * simplified to real turns, never one segment per door. The projection is
+   * equirectangular around the middle latitude of the turf, which is accurate enough
+   * over a few city blocks and needs no map tiles. Roads are not drawn at all, which
+   * is why the caption under it says so.
    */
   protected readonly printMap = computed<PrintMap | null>(() => {
     const all = placed(this.walkDoors());
@@ -242,7 +251,12 @@ export class TurfPrintPage {
     const rawWidth = (maxLng - minLng) * lngScale;
     const rawHeight = maxLat - minLat;
     const innerWidth = MAP_WIDTH - MAP_PADDING * 2;
-    const innerHeight = MAP_HEIGHT - MAP_PADDING * 2;
+    const aspect = rawWidth > 0 && rawHeight > 0 ? rawHeight / rawWidth : 1;
+    const height = Math.min(
+      MAP_MAX_HEIGHT,
+      Math.max(MAP_MIN_HEIGHT, Math.round(innerWidth * aspect) + MAP_PADDING * 2),
+    );
+    const innerHeight = height - MAP_PADDING * 2;
     // A turf on one street has zero height, and a single door has zero of both. Fall back
     // to a scale of 1 so the centring maths below simply puts it in the middle.
     const fits: number[] = [];
@@ -305,18 +319,10 @@ export class TurfPrintPage {
       };
     });
 
-    const paths: PrintPath[] = [];
     const streets: PrintLabel[] = [];
     for (const group of this.groups()) {
       const onStreet = placed(group.doors);
       if (onStreet.length === 0) continue;
-      const simplified = simplifyPath(onStreet.map((p) => p.point)).map(project);
-      if (simplified.length >= 2) {
-        paths.push({
-          id: group.key,
-          d: simplified.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x} ${p.y}`).join(' '),
-        });
-      }
       const points = onStreet.map((p) => project(p.point));
       streets.push({
         id: group.key,
@@ -327,6 +333,18 @@ export class TurfPrintPage {
     }
 
     const toWalk = placed(this.walkDoors().filter((d) => d.status === 'not_yet'));
+    const paths: PrintPath[] = [];
+    // A turf with nothing left still prints the walking shape — through every door —
+    // so a finished (or demo) turf reads as a walked route, not a scatter of dots.
+    const routeSource = toWalk.length >= 2 ? toWalk : all;
+    const route = simplifyPath(routeSource.map((p) => p.point)).map(project);
+    if (route.length >= 2) {
+      paths.push({
+        id: 'walk-route',
+        d: route.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x} ${p.y}`).join(' '),
+      });
+    }
+
     const tags: PrintTag[] = [];
     const first = toWalk[0];
     const last = toWalk[toWalk.length - 1];
@@ -339,7 +357,7 @@ export class TurfPrintPage {
       tags.push({ id: 'end', x: at.x + DOT_RADIUS + 3, y: at.y - DOT_RADIUS, text: 'End' });
     }
 
-    return { dots, paths, streets, tags };
+    return { dots, paths, streets, tags, height };
   });
 
   protected groupName(group: WalkStreetGroup<TurfDoor>): string {
@@ -380,11 +398,13 @@ export class TurfPrintPage {
    */
   private async loadQr(detail: TurfDetail): Promise<void> {
     try {
-      const rows = await this.joinCodes.getForCampaign();
+      // `silent` keeps the shared tRPC error handler from toasting: a workspace whose
+      // plan has no companion access must still print a clean sheet, minus the code.
+      const rows = await this.joinCodes.getForCampaign({ silent: true });
       const code =
         rows.find((r) => r.status === 'active' && (r.turf_id ?? null) === detail.id) ??
-        (await this.joinCodes.create({ turf_id: detail.id, label: detail.name }));
-      this.qr.set(await this.joinCodes.qr(code.id));
+        (await this.joinCodes.create({ turf_id: detail.id, label: detail.name }, { silent: true }));
+      this.qr.set(await this.joinCodes.qr(code.id, { silent: true }));
     } catch {
       this.qr.set(null);
     }
