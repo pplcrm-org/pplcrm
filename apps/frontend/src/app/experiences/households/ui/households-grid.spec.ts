@@ -196,6 +196,17 @@ describe('HouseholdsGrid', () => {
     expect(component['col'].find((c) => c.field === 'electoral_area')?.hide).toBe(true);
   });
 
+  it('removes the seat column when the only map is the seat map — it could only repeat District', async () => {
+    mockAreaColumns.list.mockResolvedValueOnce([
+      { set_id: '1', field: 'area_set_1', label: 'Wards', role: 'seat_area', is_seat_set: true },
+    ]);
+    await settleColumns(fixture);
+    // Every demo workspace opens in this state (one sample map), and the two columns would show
+    // the same value in every row — one under "Ward", one under "District".
+    expect(component['col'].find((c) => c.field === 'electoral_area')).toBeUndefined();
+    expect(component['col'].find((c) => c.field === 'any_electoral_area')?.hide).toBe(false);
+  });
+
   it('hides the District column while the workspace holds no boundary map', async () => {
     mockAreaColumns.list.mockResolvedValueOnce([]);
     await settleColumns(fixture);

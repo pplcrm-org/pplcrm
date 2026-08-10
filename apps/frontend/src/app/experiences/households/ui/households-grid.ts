@@ -303,6 +303,14 @@ export class HouseholdsGrid implements OnInit {
     const anyCol = this.col.find((c) => c.field === 'any_electoral_area');
     if (anyCol) anyCol.hide = areaColumns.length === 0;
 
+    // A workspace whose ONLY map is the campaign's own seat map: the seat column would repeat the
+    // District column cell for cell, so it is removed rather than offered in the chooser as a
+    // second identical column under a different word.
+    if (areaColumns.length === 1 && areaColumns[0]?.is_seat_set) {
+      const at = this.col.findIndex((c) => c.field === 'electoral_area');
+      if (at >= 0) this.col.splice(at, 1);
+    }
+
     // The campaign's own map is the `electoral_area` column, under the campaign's word for it.
     const extras: ColDef[] = areaColumns
       .filter((column) => !column.is_seat_set)
