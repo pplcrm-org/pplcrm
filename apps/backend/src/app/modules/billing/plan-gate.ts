@@ -1,7 +1,7 @@
 import type { Kysely, Transaction } from 'kysely';
 import { TRPCError } from '@trpc/server';
 
-import { GATED_FEATURES, PLANS_BY_KEY, planAllowsFeature, type GatedFeature } from '@common';
+import { GATED_FEATURES, PLANS_BY_KEY, effectivePlanKey, planAllowsFeature, type GatedFeature } from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { ForbiddenError } from '../../errors/app-errors';
 import { BaseRepository } from '../../lib/base.repo';
@@ -13,13 +13,21 @@ import { middleware } from '../../../trpc';
  * gate is the contract: tenants below a feature's minimum plan cannot mutate through the
  * feature's module. Reads intentionally stay open so a downgraded tenant can still see (and
  * export) data it created while entitled — disclosure over suppression.
+ *
+ * Demo mode: a workspace whose seeded demo data is still in place gates as the top self-serve
+ * tier (`effectivePlanKey` — 2026-08-10 operator decision), so the test drive covers every
+ * feature. That never opens an outward path: sending newsletters, inviting teammates, mailbox
+ * connect and Stripe Connect are refused by the demo guard (modules/demo/demo-guard.ts),
+ * audience-facing transactional mail by the transactional send guard, and drip-automation
+ * processing by the drip worker's own demo check.
  */
 export function planGateMessage(feature: GatedFeature): string {
   const { label, minPlan } = GATED_FEATURES[feature];
   return `${label} requires the ${PLANS_BY_KEY[minPlan].name} plan or higher. Upgrade on the Billing page to unlock it.`;
 }
 
-/** Throws FORBIDDEN when the tenant's plan does not include the gated feature. */
+/** Throws FORBIDDEN when the tenant's plan does not include the gated feature (demo mode gates
+ * as `DEMO_MODE_EFFECTIVE_PLAN`, so demo workspaces pass for every feature). */
 export async function assertPlanFeature(
   db: Kysely<Models> | Transaction<Models>,
   tenant_id: string,
@@ -27,10 +35,10 @@ export async function assertPlanFeature(
 ): Promise<void> {
   const tenant = await db
     .selectFrom('tenants')
-    .select('subscription_plan')
+    .select(['subscription_plan', 'demo_mode_at'])
     .where('id', '=', tenant_id)
     .executeTakeFirst();
-  if (!planAllowsFeature(tenant?.subscription_plan, feature)) {
+  if (!planAllowsFeature(effectivePlanKey(tenant?.subscription_plan, tenant?.demo_mode_at), feature)) {
     throw new ForbiddenError(planGateMessage(feature));
   }
 }
@@ -51,12 +59,14 @@ export function planFeatureGate(feature: GatedFeature) {
 }
 
 /**
- * The shared-inbox gate deviates from `planFeatureGate` in both directions, by decision
+ * The shared-inbox gate deviates from `planFeatureGate` in one direction, by decision
  * (2026-08-01): it blocks READS as well as mutations — a downgraded workspace loses inbox
- * access on day 0 (its synced mail is then purged 30 days later; see billing/inbox-purge) —
- * and it exempts demo mode, because the seeded demo inbox is part of the free test drive and
- * contains no synced customer mail. Reads-stay-open still applies to every other gated
- * feature; do not copy this shape without the same operator decision behind it.
+ * access on day 0 (its synced mail is then purged 30 days later; see billing/inbox-purge).
+ * Its original second deviation — exempting demo mode, because the seeded demo inbox is part
+ * of the free test drive and contains no synced customer mail — became the general rule for
+ * every gate on 2026-08-10 and now arrives via `effectivePlanKey`. Reads-stay-open still
+ * applies to every other gated feature; do not copy this shape without the same operator
+ * decision behind it.
  */
 export async function assertInboxAccess(db: Kysely<Models> | Transaction<Models>, tenant_id: string): Promise<void> {
   const tenant = await db
@@ -64,7 +74,7 @@ export async function assertInboxAccess(db: Kysely<Models> | Transaction<Models>
     .select(['subscription_plan', 'demo_mode_at'])
     .where('id', '=', tenant_id)
     .executeTakeFirst();
-  if (tenant?.demo_mode_at == null && !planAllowsFeature(tenant?.subscription_plan, 'inbox')) {
+  if (!planAllowsFeature(effectivePlanKey(tenant?.subscription_plan, tenant?.demo_mode_at), 'inbox')) {
     throw new ForbiddenError(planGateMessage('inbox'));
   }
 }

@@ -1,7 +1,7 @@
 import type { Kysely, Transaction } from 'kysely';
 import { sql } from 'kysely';
 
-import { planAllowsGeocoding } from '@common';
+import { effectivePlanKey, planAllowsGeocoding } from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../env';
 import { isMockOrTestGeocode } from './geocode-address';
@@ -69,7 +69,7 @@ export async function enqueueGeocodeJobs(
     .where('id', '=', tenantId)
     .executeTakeFirst();
 
-  const allowed = planAllowsGeocoding(tenant?.subscription_plan ?? null) || tenant?.demo_mode_at != null;
+  const allowed = planAllowsGeocoding(effectivePlanKey(tenant?.subscription_plan, tenant?.demo_mode_at));
   if (!allowed) {
     await db
       .updateTable('households')

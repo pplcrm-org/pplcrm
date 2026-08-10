@@ -194,10 +194,14 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
         text: 'The demo contacts use reserved example.com addresses that cannot receive real email, so nothing you do here can reach a real person. Edit, delete, merge, tag, and explore freely.',
       },
       {
+        kind: 'p',
+        text: 'While the demo data is in place, **every feature is open regardless of plan** — the workspace is treated as if it were on the Movement plan so you can try forms, donations, automations, lists, volunteer management, canvassing, deliveries, companion access, the API, and the shared inbox before deciding what to pay for. When you remove the demo data, the workspace goes back to the features of the plan you actually chose.',
+      },
+      {
         kind: 'callout',
         tone: 'warning',
         title: 'What stays locked during the demo',
-        text: 'Two different things are gated, and it is worth knowing which is which. **Until you choose a plan** — Free counts, and it takes one click on the [Billing](/workspace/billing) page — you cannot verify a sender email, a sending domain, or your mobile number. **Until you remove the demo data** you cannot send newsletters, invite teammates on the [Users](/users) page, connect a mailbox, or connect a Stripe account for donations. So verification is something you do *during* the demo, in the order the [go-live setup](/go-live) walks you through, not after it. Everything else works throughout, including workspace settings; update your organization details, service levels, and defaults at any time and they carry over when you exit the demo.',
+        text: 'Two different things are gated, and it is worth knowing which is which. **Until you choose a plan** — Free counts, and it takes one click on the [Billing](/workspace/billing) page — you cannot verify a sender email, a sending domain, or your mobile number. **Until you remove the demo data** nothing outbound to your audience can happen: you cannot send newsletters, and automated emails, form confirmations, and donation-receipt emails are held back rather than sent (receipts still generate as PDFs you can download). You also cannot invite teammates on the [Users](/users) page, connect a mailbox, or connect a Stripe account for donations. So verification is something you do *during* the demo, in the order the [go-live setup](/go-live) walks you through, not after it. Everything else works throughout, including workspace settings; update your organization details, service levels, and defaults at any time and they carry over when you exit the demo.',
       },
       { kind: 'h2', id: 'exit', text: 'Exiting demo mode' },
       {

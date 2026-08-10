@@ -169,6 +169,23 @@ describe('handleProcessDripWorkflows plan gate', () => {
     await handleProcessDripWorkflows(db as any);
     expect(state.transactionCalls).toBe(1);
   });
+
+  // Demo workspaces may BUILD automations (the tRPC gate resolves demo as the top tier) but
+  // processing stays deferred even on a paid plan: a run ends in outbound email, and the seeded
+  // demo contacts are reserved example.com addresses that can only bounce.
+  it('defers enrollments of a demo-mode tenant even when the stored plan includes automations', async () => {
+    const { db, updates, state } = makeFakeDb({
+      workflow_enrollments: [DUE_ENROLLMENT],
+      tenants: { subscription_plan: 'movement', demo_mode_at: new Date('2026-08-01T00:00:00Z') },
+    });
+    await handleProcessDripWorkflows(db as any);
+
+    expect(state.transactionCalls).toBe(0);
+    const deferrals = updates.filter((u) => u.table === 'workflow_enrollments');
+    expect(deferrals).toHaveLength(1);
+    expect((deferrals[0].values['next_run_at'] as Date).getTime()).toBeGreaterThan(Date.now());
+    expect(deferrals[0].values['status']).toBeUndefined();
+  });
 });
 
 describe('executeActionStep send_email sending gates', () => {

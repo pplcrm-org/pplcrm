@@ -1,6 +1,6 @@
 import type { Kysely, Selectable, Transaction } from 'kysely';
 
-import { INBOX_PURGE_DELAY_DAYS, planAllowsFeature } from '@common';
+import { INBOX_PURGE_DELAY_DAYS, effectivePlanKey, planAllowsFeature } from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../logger';
 
@@ -39,9 +39,9 @@ export async function syncInboxPurgeSchedule(
     .executeTakeFirst();
   if (!tenant) return;
 
-  const hasInbox = planAllowsFeature(tenant.subscription_plan, 'inbox');
+  const hasInbox = planAllowsFeature(effectivePlanKey(tenant.subscription_plan, tenant.demo_mode_at), 'inbox');
 
-  if (hasInbox || tenant.demo_mode_at != null) {
+  if (hasInbox) {
     if (tenant.inbox_purge_scheduled_at != null) {
       await db.updateTable('tenants').set({ inbox_purge_scheduled_at: null }).where('id', '=', tenantId).execute();
       logger.info(`[inbox-purge] cleared scheduled inbox purge for tenant ${tenantId} (plan includes the inbox)`);

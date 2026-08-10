@@ -24,6 +24,7 @@ libs/
             index.ts
         geo/
           haversine.ts
+          walk-order.ts
         help/
           articles/
             administration.ts
@@ -73,6 +74,7 @@ libs/
           connections.schema.ts
           content-check.schema.ts
           core.schema.ts
+          dashboard.schema.ts
           deliveries.schema.ts
           donation-receipts.schema.ts
           donations.schema.ts

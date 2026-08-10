@@ -64,10 +64,11 @@ type Db = Kysely<Models> | Transaction<Models>;
 
 /**
  * Why a send was blocked. The distinction matters to callers deciding between dropping and
- * retrying: 'rate_capped' clears by itself as the rolling hour moves, while 'suspended' and
- * 'sending_paused' are standing states that a retry cannot resolve.
+ * retrying: 'rate_capped' clears by itself as the rolling hour moves, while 'suspended',
+ * 'sending_paused' and 'demo_mode' are standing states that a retry cannot resolve
+ * ('demo_mode' clears only when the user removes the seeded demo data).
  */
-export type TransactionalSendBlockReason = 'suspended' | 'sending_paused' | 'rate_capped';
+export type TransactionalSendBlockReason = 'suspended' | 'sending_paused' | 'rate_capped' | 'demo_mode';
 
 export class TransactionalSendBlockedError extends Error {
   public readonly reason: TransactionalSendBlockReason;
@@ -99,7 +100,7 @@ export async function assertTenantMaySendTransactional(
 
   const tenant = await client
     .selectFrom('tenants')
-    .select(['suspended_at', 'sending_paused_at'])
+    .select(['suspended_at', 'sending_paused_at', 'demo_mode_at'])
     .where('id', '=', tenantId)
     .executeTakeFirst();
 
@@ -115,6 +116,18 @@ export async function assertTenantMaySendTransactional(
     throw new TransactionalSendBlockedError(
       `Tenant ${tenantId} has sending paused — transactional mail withheld.`,
       'sending_paused',
+    );
+  }
+  // Demo workspaces gate as the top tier for FEATURES (billing/plan-gate.ts), which reaches
+  // audience-facing mail paths a free workspace never could — form confirmations, donation
+  // documents, volunteer-event mail. None of it may go out during the demo: the seeded
+  // contacts are reserved example.com addresses that can only bounce, and "nothing you do in
+  // the demo reaches a real person" is the promise the Help Center makes. Staff and account
+  // mail keep flowing — those recipients are the workspace's own real logins.
+  if (audience === 'contact' && tenant?.demo_mode_at) {
+    throw new TransactionalSendBlockedError(
+      `Tenant ${tenantId} is in demo mode — audience-facing transactional mail withheld until the demo data is removed.`,
+      'demo_mode',
     );
   }
 

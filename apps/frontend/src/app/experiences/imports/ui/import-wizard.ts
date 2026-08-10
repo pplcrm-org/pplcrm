@@ -8,6 +8,7 @@ import {
   PLANS_BY_KEY,
   PersonsImportMappingObj,
   TasksImportMappingObj,
+  effectivePlanKey,
   emailSchema,
   importRowLimitFor,
   planAllowsGeocoding,
@@ -270,14 +271,17 @@ export class ImportWizard {
    * Whether the completion screen mentions address locating (Task J disclosure). Shown only
    * when this import actually mapped an address column (people/households create households
    * from addresses) AND the workspace's plan includes address locating (Movement+, mirroring
-   * GEOCODING_MIN_PLAN via the shared planAllowsGeocoding). Below-Movement workspaces get no
-   * note at all — their imports skip geocoding by design, and we don't advertise the absence.
-   * Deliberately number-free: no user-facing copy states the daily lookup budget's size.
+   * GEOCODING_MIN_PLAN via the shared planAllowsGeocoding; demo workspaces gate as the top
+   * tier via effectivePlanKey, matching the backend's geocode queue). Below-Movement
+   * workspaces get no note at all — their imports skip geocoding by design, and we don't
+   * advertise the absence. Deliberately number-free: no user-facing copy states the daily
+   * lookup budget's size.
    */
   protected readonly showGeocodePacingNote = computed(() => {
     const entity = this.entity();
     if (entity !== 'people' && entity !== 'households') return false;
-    if (!planAllowsGeocoding(this.user()?.tenant_plan)) return false;
+    const user = this.user();
+    if (!planAllowsGeocoding(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at))) return false;
     return this.mapping().some((field) => ImportWizard.ADDRESS_FIELDS.has(field));
   });
 

@@ -8,10 +8,12 @@ import {
   ANNUAL_MONTHS_FREE,
   ANNUAL_PRICE_MULTIPLIER,
   bracketIndexForSubscribers,
+  effectivePlanKey,
   emailCapForQuantity,
   getPlanDef,
   maxQuantity,
   planAllowsFeature,
+  DEMO_MODE_EFFECTIVE_PLAN,
   planDisplayName,
   priceForQuantity,
   priceLabelAt,
@@ -210,6 +212,32 @@ describe('planAllowsFeature', () => {
       expect(planAllowsFeature(minPlan, feature)).toBe(true);
       expect(planAllowsFeature('free', feature)).toBe(false); // nothing gated is free-tier
     }
+  });
+});
+
+describe('effectivePlanKey', () => {
+  it('resolves a demo workspace to the demo gating tier regardless of the stored plan', () => {
+    expect(effectivePlanKey('free', new Date())).toBe(DEMO_MODE_EFFECTIVE_PLAN);
+    expect(effectivePlanKey(null, new Date())).toBe(DEMO_MODE_EFFECTIVE_PLAN);
+    expect(effectivePlanKey('grassroots', '2026-08-10T00:00:00Z')).toBe(DEMO_MODE_EFFECTIVE_PLAN);
+  });
+
+  it('the demo gating tier unlocks every gated feature — that is the point of the override', () => {
+    for (const feature of Object.keys(GATED_FEATURES) as GatedFeature[]) {
+      expect(planAllowsFeature(DEMO_MODE_EFFECTIVE_PLAN, feature)).toBe(true);
+    }
+  });
+
+  it('falls back to the stored plan outside demo mode, failing closed on unknown values', () => {
+    expect(effectivePlanKey('movement', null)).toBe('movement');
+    expect(effectivePlanKey('grassroots', undefined)).toBe('grassroots');
+    expect(effectivePlanKey('mystery-tier', null)).toBe('free');
+    expect(effectivePlanKey(null, null)).toBe('free');
+  });
+
+  it('resolves legacy aliases the same way getPlanDef does', () => {
+    expect(effectivePlanKey('starter', null)).toBe('free');
+    expect(effectivePlanKey('representative', null)).toBe('movement');
   });
 });
 

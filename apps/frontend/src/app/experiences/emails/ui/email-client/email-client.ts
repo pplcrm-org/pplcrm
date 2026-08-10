@@ -12,7 +12,7 @@ import { EmailFolderList } from '../email-folder-list/email-folder-list';
 import { EmailList } from '../email-list/email-list';
 import { EmailPersonRail } from '../email-person-rail/email-person-rail';
 import { ALL_FOLDERS } from '../../../../../../../../libs/common/src/lib/emails';
-import { planAllowsFeature } from '@common';
+import { effectivePlanKey, planAllowsFeature } from '@common';
 import type { EmailFolderType, EmailType } from '../../../../../../../../libs/common/src/lib/models';
 import { AuthService } from '@frontend/auth/auth-service';
 import { RouterLink } from '@angular/router';
@@ -52,15 +52,16 @@ export class EmailClient {
   protected mobileView = this.stateStore.mobilePanelView;
 
   /**
-   * The shared inbox is Grassroots+ (demo workspaces exempt — the seeded demo inbox is part of
-   * the test drive). Mirrors the server's `inboxAccessGate`, which blocks the emails endpoints
-   * outright on Free: rendering the client would only produce a wall of "requires Grassroots"
-   * toasts, so the page swaps to an upgrade panel instead. The `g i` chord and the dimmed
-   * sidebar entry keep the module discoverable.
+   * The shared inbox is Grassroots+ (demo workspaces gate as the top tier via
+   * `effectivePlanKey` — the seeded demo inbox is part of the test drive). Mirrors the
+   * server's `inboxAccessGate`, which blocks the emails endpoints outright on Free: rendering
+   * the client would only produce a wall of "requires Grassroots" toasts, so the page swaps to
+   * an upgrade panel instead. The `g i` chord and the dimmed sidebar entry keep the module
+   * discoverable.
    */
   protected readonly inboxPlanLocked = computed(() => {
     const user = this.authService.getUserSignal()();
-    return !user?.tenant_demo_mode_at && !planAllowsFeature(user?.tenant_plan, 'inbox');
+    return !planAllowsFeature(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at), 'inbox');
   });
 
   protected folderPanelClass = computed(() =>

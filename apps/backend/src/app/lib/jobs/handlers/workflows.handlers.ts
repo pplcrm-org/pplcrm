@@ -55,6 +55,13 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
   // below the 'automations' feature's minimum plan must not keep running the automations it
   // built while entitled. Ungated enrollments behave exactly like a paused workflow — nothing
   // sends, nothing advances, nothing is deleted — and resume cleanly on re-upgrade.
+  //
+  // Demo mode is deliberately checked on top of the STORED plan, the opposite of the tRPC
+  // gate (which resolves demo as `DEMO_MODE_EFFECTIVE_PLAN` so the builder is fully usable):
+  // processing an enrollment ends in outbound email, the seeded demo contacts are reserved
+  // example.com addresses that can only bounce, and a paying workspace mid-demo is one
+  // wizard step away from having those contacts removed. So demo workspaces defer here —
+  // exactly like a plan miss — and their enrollments start running once the demo data is gone.
   const automationsAllowedByTenant = new Map<string, boolean>();
 
   for (const enrollment of pendingEnrollments) {
@@ -64,15 +71,16 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
       if (automationsAllowed === undefined) {
         const tenantRow = await db
           .selectFrom('tenants')
-          .select('subscription_plan')
+          .select(['subscription_plan', 'demo_mode_at'])
           .where('id', '=', tenantId)
           .executeTakeFirst();
-        automationsAllowed = planAllowsFeature(tenantRow?.subscription_plan, 'automations');
+        automationsAllowed =
+          planAllowsFeature(tenantRow?.subscription_plan, 'automations') && tenantRow?.demo_mode_at == null;
         automationsAllowedByTenant.set(tenantId, automationsAllowed);
         if (!automationsAllowed) {
           logger.info(
-            { tenantId, plan: tenantRow?.subscription_plan ?? null },
-            '[plan-gate] Tenant plan does not include automations — drip enrollments deferred, not run',
+            { tenantId, plan: tenantRow?.subscription_plan ?? null, demoMode: tenantRow?.demo_mode_at != null },
+            '[plan-gate] Tenant plan does not include automations (or workspace is in demo mode) — drip enrollments deferred, not run',
           );
         }
       }

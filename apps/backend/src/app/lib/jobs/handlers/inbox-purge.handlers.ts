@@ -1,6 +1,6 @@
 import type { Kysely } from 'kysely';
 
-import { planAllowsFeature } from '@common';
+import { effectivePlanKey, planAllowsFeature } from '@common';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { logger } from '../../../logger';
 import { getFreshInboxPurgeStatus, inboxPurgeStillDue } from '../../../modules/billing/inbox-purge';
@@ -44,7 +44,7 @@ export async function handlePurgeDowngradedInboxes(db: Kysely<Models>): Promise<
         const status = await getFreshInboxPurgeStatus(db, tenantId);
         if (!status) continue; // tenant no longer exists
 
-        if (planAllowsFeature(status.subscription_plan, 'inbox') || status.demo_mode_at != null) {
+        if (planAllowsFeature(effectivePlanKey(status.subscription_plan, status.demo_mode_at), 'inbox')) {
           await db.updateTable('tenants').set({ inbox_purge_scheduled_at: null }).where('id', '=', tenantId).execute();
           logger.info(`[inbox-purge] skipped tenant ${tenantId}: plan regained the inbox before the deadline`);
           continue;

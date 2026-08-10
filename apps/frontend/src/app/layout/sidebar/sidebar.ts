@@ -3,7 +3,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { NgTemplateOutlet } from '@angular/common';
 import { NavigationCancel, NavigationEnd, NavigationError, NavigationStart, Router, RouterLink } from '@angular/router';
 import { filter, map } from 'rxjs';
-import { isPrivilegedRole, planAllowsFeature } from '@common';
+import { effectivePlanKey, isPrivilegedRole, planAllowsFeature } from '@common';
 import { Icon } from '@icons/icon';
 import { Swap } from '@uxcommon/components/swap/swap';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -164,13 +164,14 @@ export class Sidebar {
   }
 
   /**
-   * Plan-gate the shared inbox (Grassroots+; demo workspaces exempt — their seeded inbox is
-   * part of the test drive). Same dimmed rendering as an off module so there is one visual
-   * idiom for "present but not available", but the explanation points at Billing.
+   * Plan-gate the shared inbox (Grassroots+; demo workspaces gate as the top tier via
+   * `effectivePlanKey` — their seeded inbox is part of the test drive). Same dimmed rendering
+   * as an off module so there is one visual idiom for "present but not available", but the
+   * explanation points at Billing.
    */
   private applyPlanGates(items: ISidebarItem[]): ISidebarItem[] {
     const user = this.auth.getUser();
-    const inboxLocked = !user?.tenant_demo_mode_at && !planAllowsFeature(user?.tenant_plan, 'inbox');
+    const inboxLocked = !planAllowsFeature(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at), 'inbox');
     if (!inboxLocked) return items;
     const scope = (item: ISidebarItem): ISidebarItem =>
       item.route === '/inbox' ? { ...item, dimmed: true, planLocked: true } : item;

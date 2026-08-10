@@ -528,6 +528,33 @@ export function planAllowsFeature(planName: string | null | undefined, feature: 
 }
 
 /**
+ * The tier a workspace GATES as while its seeded demo data is in place (2026-08-10 operator
+ * decision): the demo exists so a new signup can try every part of the product, so feature
+ * gating treats a demo workspace as the top self-serve tier. Billing state
+ * (`tenants.subscription_plan`) is untouched and takes over again the moment the demo data is
+ * removed. This is safe only because everything outward-facing is blocked during the demo by
+ * separate, unconditional checks: sending newsletters, inviting teammates, mailbox connect and
+ * Stripe Connect (backend demo-guard), audience-facing transactional mail (transactional send
+ * guard), and drip-automation processing (the drip worker defers demo workspaces).
+ */
+export const DEMO_MODE_EFFECTIVE_PLAN: PlanKey = 'movement';
+
+/**
+ * The plan key to use for FEATURE GATING: `DEMO_MODE_EFFECTIVE_PLAN` while the workspace is in
+ * demo mode (`tenants.demo_mode_at` set), otherwise the stored plan (unknown/absent fails
+ * closed to free). Use it wherever a feature is allowed or refused (`planAllowsFeature`,
+ * `planAllowsGeocoding`); never for billing display or usage caps — the import row limit and
+ * the subscriber/send caps deliberately stay on the stored plan.
+ */
+export function effectivePlanKey(
+  planName: string | null | undefined,
+  demoModeAt: Date | string | null | undefined,
+): PlanKey {
+  if (demoModeAt != null) return DEMO_MODE_EFFECTIVE_PLAN;
+  return (getPlanDef(planName) ?? PLANS_BY_KEY.free).key;
+}
+
+/**
  * Minimum plan for real (paid) household geocoding. Kept OUT of `GATED_FEATURES`/`FEATURE_MATRIX`
  * deliberately: this is a backend cost control, not a marketed tRPC-module feature — the heavy
  * geocoding consumers (canvassing turf-cutting, delivery routing) are already Movement-gated via

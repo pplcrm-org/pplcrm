@@ -774,6 +774,8 @@ export {
   GATED_FEATURES,
   INBOX_PURGE_DELAY_DAYS,
   planAllowsFeature,
+  DEMO_MODE_EFFECTIVE_PLAN,
+  effectivePlanKey,
   GEOCODING_MIN_PLAN,
   planAllowsGeocoding,
   importRowLimitFor,

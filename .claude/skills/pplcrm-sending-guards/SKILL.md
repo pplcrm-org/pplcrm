@@ -26,7 +26,9 @@ message by audience and gates accordingly:
   a suspended tenant's owner still has to be able to sign in and read notices.
 - `staff` — internal notices to the tenant's own users. Gated on suspension, capped 500/h.
 - `contact` — audience-facing mail (event confirmations, form autoresponders, volunteer mail).
-  Gated on suspension AND `sending_paused_at`, capped 200/h.
+  Gated on suspension AND `sending_paused_at` AND demo mode (`demo_mode_at` set, reason
+  `demo_mode`, added 2026-08-10 — demo workspaces gate as Movement for features, and the seeded
+  example.com contacts must never be mailed), capped 200/h.
 
 The default is `contact` — the most restricted — so a new call site that forgets to classify
 itself fails safe. A module that sends exclusively one kind declares it once:
@@ -343,9 +345,27 @@ const authProcedure = baseAuthProcedure.use(planFeatureGate('forms'));
 web-forms, donations, workflows, lists, canvassing, deliveries, companion-access, teams,
 volunteer-events. Unknown/missing plan values fail closed to `free`.
 
+**Demo mode gates as Movement (2026-08-10 operator decision):** every plan check that decides
+FEATURE access resolves through `effectivePlanKey(subscription_plan, demo_mode_at)` from
+`plans.ts` — a workspace whose seeded demo data is still in place gates as
+`DEMO_MODE_EFFECTIVE_PLAN` (`movement`), so the whole product is demoable before a plan is
+chosen; the stored plan takes over the moment the demo data is removed. Wired through
+`assertPlanFeature` (and therefore `planFeatureGate`, key issuance, `submitFormPublic`),
+`assertInboxAccess`, `lookupTenantByApiKey`, the geocode queue, and the frontend mirrors
+(sidebar/email-client inbox locks, settings `isTierLocked`, imports geocoding note). What it
+deliberately does NOT touch: the drip worker (checks the STORED plan **and** defers demo
+workspaces outright — automations can be built in demo but never run: the seeded contacts are
+example.com addresses that can only bounce), the transactional send guard (blocks `contact`
+audience mail in demo, reason `demo_mode` — form confirmations/receipt emails/volunteer mail
+are dropped by the job worker; `staff`/`account` mail still delivers), usage caps
+(`importRowLimitFor`, subscriber/send caps stay on the stored plan), and everything
+`assertNotDemoMode` blocks (see the demo-gate section below). Newsletter sending never gets
+this far in demo — `sendNewsletter`/`sendTestEmail`/`resendToNonOpeners` all call
+`assertNotDemoMode` first.
+
 **The `inbox` gate is deliberately different (2026-08-01):** it blocks READS as well as mutations
 (`inboxAccessGate`/`assertInboxAccess` in plan-gate.ts — a downgraded workspace loses inbox access
-on day 0), exempts demo mode (the seeded demo inbox is part of the free test drive), and is
+on day 0; its original demo exemption became the general `effectivePlanKey` rule above), and is
 enforced in four places: the emails tRPC router (whole-router rebind), the emails REST routes
 (send + attachment downloads), the google-sync/ms-sync routers (`getAuthUrl`/`syncNow`/`resetSync`
 via `assertPlanFeature`; `disconnect` + `getConnectionStatus` stay open), and the sync
@@ -410,6 +430,10 @@ what happened before 2026-07-26.
 | -------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `assertNotDemoMode`  | is the seeded demo data still in place? | sending newsletters, inviting teammates, mailbox sync (Google/MS), Stripe Connect                         |
 | `assertPlanSelected` | has the tenant settled on a plan?       | phone verification, sender-email verification, domain add/verify/delete (all in `settings/controller.ts`) |
+
+Since 2026-08-10 demo mode also UNLOCKS the plan-tier feature gates (`effectivePlanKey`, see the
+plan-gates section above) — demo mode locks the outward-facing surface while opening every
+feature tier, so "in demo" means MORE features and LESS sending, never the reverse.
 
 "Settled" = `hasSettledPlan(tenants.subscription_status)` from `plans.ts` — `active` or
 `trialing`, which **includes Free**, since `billing.selectFree` writes `active`/`free`. A brand-new

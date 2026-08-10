@@ -90,4 +90,25 @@ describe('assertTenantMaySendTransactional', () => {
   it('never gates platform mail that carries no tenant', async () => {
     await expect(assertTenantMaySendTransactional(null, 'contact')).resolves.toBeUndefined();
   });
+
+  // Demo workspaces gate as the top tier for FEATURES (plan-gate.ts), which reaches
+  // audience-facing mail paths a free workspace never could. The seeded demo contacts are
+  // reserved example.com addresses, so contact mail is withheld until the demo data is removed.
+  it('withholds contact mail while the workspace is in demo mode', async () => {
+    await setTenant({ demo_mode_at: new Date() });
+    await expect(assertTenantMaySendTransactional(tenantId, 'contact')).rejects.toThrow(/demo/i);
+    try {
+      await assertTenantMaySendTransactional(tenantId, 'contact');
+      expect.unreachable('the demo-mode block should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TransactionalSendBlockedError);
+      expect((err as TransactionalSendBlockedError).reason).toBe('demo_mode');
+    }
+  });
+
+  it('still delivers staff and account mail during the demo', async () => {
+    await setTenant({ demo_mode_at: new Date() });
+    await expect(assertTenantMaySendTransactional(tenantId, 'staff')).resolves.toBeUndefined();
+    await expect(assertTenantMaySendTransactional(tenantId, 'account')).resolves.toBeUndefined();
+  });
 });

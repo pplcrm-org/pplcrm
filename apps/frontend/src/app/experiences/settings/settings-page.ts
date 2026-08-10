@@ -12,6 +12,7 @@ import {
   IAuthUserDetail,
   ORG_MODE_IS_ELECTORAL,
   SettingsEntryType,
+  effectivePlanKey,
   planAllowsFeature,
 } from '../../../../../../libs/common/src';
 import { AuthService } from '../../auth/auth-service';
@@ -312,10 +313,12 @@ export class SettingsPage implements OnInit {
 
   /** Sections gated on a plan TIER (distinct from `isPlanLocked`'s "no plan settled yet"):
    *  the shared inbox — and so mailbox sync — is Grassroots+, donations is Grassroots+, and
-   *  deliveries route defaults are Movement+. Demo mode wins in the template, so a demo
-   *  workspace sees the demo banner, not this one. */
+   *  deliveries route defaults are Movement+. Demo workspaces gate as the top tier
+   *  (`effectivePlanKey`, mirroring the server), so no tier banner shows during the demo;
+   *  email-sync and donations still show the demo banner, which wins in the template. */
   protected isTierLocked(sectionId: string): boolean {
-    const plan = this.userSignal()?.tenant_plan;
+    const user = this.userSignal();
+    const plan = effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at);
     if (sectionId === 'email-sync') return !planAllowsFeature(plan, 'inbox');
     if (sectionId === 'donations') return !planAllowsFeature(plan, 'donations');
     if (sectionId === 'deliveries') return !planAllowsFeature(plan, 'deliveries');

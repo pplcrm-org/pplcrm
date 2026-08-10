@@ -12,9 +12,11 @@ import { DemoService } from './services/demo.service';
 /**
  * Demo-mode callout on the dashboard: explains what was seeded and hosts the
  * one place to exit demo mode. Demo mode is the pre-plan test drive — the
- * backend refuses to exit until the tenant has an active subscription, and it
- * blocks outward-facing configuration (senders, domains, mailbox sync,
- * newsletter sending, teammate invites) while the flag is set. Exiting deletes only the rows the
+ * workspace gates as the top plan tier while the flag is set (effectivePlanKey,
+ * 2026-08-10) so every feature can be tried, while the backend refuses to exit
+ * until the tenant has an active subscription and blocks everything
+ * outward-facing (senders, domains, mailbox sync, newsletter sending,
+ * audience-facing transactional mail, drip processing, teammate invites). Exiting deletes only the rows the
  * seeder tracked in its manifest; the starter forms, the built-in tags and issues, the two
  * undeletable system lists (All Subscribers / All Volunteers), and anything the user created are
  * kept. It then refreshes the session so the shell banner disappears immediately.
@@ -37,11 +39,11 @@ import { DemoService } from './services/demo.service';
             report. Everything here is safe to open, edit, and delete.
           </p>
           <p class="text-sm text-base-content/60">
-            Sending email, inviting teammates, sender setup (verifying sender emails and domains, connecting a mailbox),
-            and donation setup (connecting Stripe) stay locked during the demo; everything else, including workspace
-            settings, works normally. When you’re ready, choose a plan, then exit demo mode. Your starter forms, the
-            built-in tags and issues, your All Subscribers and All Volunteers lists, and anything you created yourself
-            will be kept.
+            While the demo data is in place, every feature is open regardless of plan — try forms, donations,
+            automations, canvassing, deliveries, and the rest before deciding what to pay for. What stays locked is
+            anything outbound: sending email, inviting teammates, mailbox and Stripe connections. When you’re ready,
+            choose a plan, then exit demo mode. Your starter forms, the built-in tags and issues, your All Subscribers
+            and All Volunteers lists, and anything you created yourself will be kept.
           </p>
 
           <div class="card-actions items-center gap-3">

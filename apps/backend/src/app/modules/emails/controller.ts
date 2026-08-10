@@ -260,6 +260,10 @@ export class EmailsController extends BaseController<'emails', EmailRepo> {
             if (assignee?.email && notificationEnabled(assignee.profile_preferences, 'email_assigned')) {
               await this.mailService.sendMail({
                 to: assignee.email,
+                // The assignee is one of this workspace's own users — staff mail by definition,
+                // overriding the service's contact default. Classified explicitly so it is not
+                // withheld in demo mode and does not draw down the contact hourly cap.
+                audience: 'staff',
                 subject: `New email assigned: ${subject}`,
                 notificationSettingsLink: true,
                 text: `Hi ${assignee.first_name},\n\nAn inbox conversation has been assigned to you: "${subject}".\n\nView it: ${env.appUrl}/inbox?email=${id}`,

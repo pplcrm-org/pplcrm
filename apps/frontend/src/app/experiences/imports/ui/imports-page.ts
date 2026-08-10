@@ -2,7 +2,7 @@ import { Component, DestroyRef, computed, effect, inject, signal } from '@angula
 import { Router } from '@angular/router';
 import { Icon } from '@icons/icon';
 
-import { planAllowsGeocoding } from '@common';
+import { effectivePlanKey, planAllowsGeocoding } from '@common';
 import type { DataExportRecordType, ImportListItem } from '../../../../../../../libs/common/src';
 
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -106,12 +106,14 @@ export class ImportsPage {
    * path (toast → History) and never render that screen. One quiet line for the whole page, not
    * a per-row badge: it appears while any recently completed people/households import created
    * households (i.e. involved addresses), and only for workspaces whose plan includes address
-   * locating (Movement+, mirroring GEOCODING_MIN_PLAN via the shared planAllowsGeocoding).
-   * Below-Movement workspaces get no note: their imports skip geocoding by design, and we don't
-   * advertise the absence. Deliberately number-free, like the wizard's note.
+   * locating (Movement+, mirroring GEOCODING_MIN_PLAN via the shared planAllowsGeocoding;
+   * demo workspaces gate as the top tier via effectivePlanKey, matching the backend's geocode
+   * queue). Below-Movement workspaces get no note: their imports skip geocoding by design, and
+   * we don't advertise the absence. Deliberately number-free, like the wizard's note.
    */
   protected readonly showGeocodePacingNote = computed(() => {
-    if (!planAllowsGeocoding(this.user()?.tenant_plan)) return false;
+    const user = this.user();
+    if (!planAllowsGeocoding(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at))) return false;
     const cutoff = Date.now() - GEOCODE_NOTE_WINDOW_MS;
     return this.items().some(
       (item) =>

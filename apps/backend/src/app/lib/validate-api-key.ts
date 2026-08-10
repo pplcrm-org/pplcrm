@@ -1,7 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import type { FastifyRequest } from 'fastify';
 
-import { planAllowsFeature } from '@common';
+import { effectivePlanKey, planAllowsFeature } from '@common';
 
 import { hashApiKey } from './api-key';
 import { BaseRepository } from './base.repo';
@@ -41,14 +41,16 @@ export async function lookupTenantByApiKey(providedKey: string): Promise<string 
   return tenantId;
 }
 
-/** Whether the owning tenant's plan still includes API access (GATED_FEATURES.api). */
+/** Whether the owning tenant's plan still includes API access (GATED_FEATURES.api). Demo
+ * workspaces gate as `DEMO_MODE_EFFECTIVE_PLAN`, so keys minted during the demo resolve — the
+ * keyed surfaces only accept data in; nothing outbound rides on a key. */
 async function tenantPlanAllowsApi(tenantId: string): Promise<boolean> {
   const tenant = await BaseRepository.dbInstance
     .selectFrom('tenants')
-    .select('subscription_plan')
+    .select(['subscription_plan', 'demo_mode_at'])
     .where('id', '=', tenantId)
     .executeTakeFirst();
-  return planAllowsFeature(tenant?.subscription_plan, 'api');
+  return planAllowsFeature(effectivePlanKey(tenant?.subscription_plan, tenant?.demo_mode_at), 'api');
 }
 
 /**
