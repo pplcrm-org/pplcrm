@@ -358,8 +358,16 @@ order). Consumed by the Companion (`orderEntriesForWalk` adapter in
 (`turf-print-page.ts`, route `/canvassing/:id/print` — a grayscale Google
 **Static Maps** image under an SVG overlay, aligned by projecting with the
 image's own Web Mercator at its integer zoom; no key or a failed image falls
-back to the schematic overlay alone. The browser Maps key must have the
-"Maps Static API" enabled or every sheet falls back). Rules that hold:
+back to the schematic overlay alone. TWO Google Cloud settings gate the image,
+and both must be true for the SAME project or every sheet silently falls back:
+the Maps Static API enabled on the project (APIs & Services → Library), AND
+listed in the browser key's own "API restrictions" (APIs & Services →
+Credentials → the key). A 403 naming "API restrictions settings of your API
+key" means the second one. Diagnose without a browser: curl the page's exact
+`maps.googleapis.com/maps/api/staticmap?...` URL with
+`-H "Referer: https://app.pplcrm.com/..."` — Google's 403 body states the
+reason, and the prod key is extractable from `main-*.js` on app.pplcrm.com).
+Rules that hold:
 
 - Stored `walk_order` stays the cutter's order and still decides street
   sequence and `applyDefaultScope`; the walking order is derived, never stored.
