@@ -2,7 +2,7 @@ import { Component } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
 import { SiteLogo } from './site-logo';
-import { AUDIENCE_NAV, SIGNUP_URL } from './site-nav';
+import { AUDIENCE_NAV, FEATURE_NAV, SIGNUP_URL } from './site-nav';
 
 interface FooterLink {
   readonly label: string;
@@ -85,7 +85,8 @@ export class SiteFooter {
       links: [
         { label: 'Pricing', path: '/pricing' },
         { label: 'Compare', path: '/compare' },
-        { label: 'Ridings & districts', path: '/districts' },
+        // Derived, not a second literal — same reason as the Industries column below.
+        ...FEATURE_NAV.map((item) => ({ label: item.label, path: item.path })),
         { label: 'Switch to pplCRM', path: '/switch' },
         { label: 'FAQ', path: '/faq' },
         { label: 'Start free', href: SIGNUP_URL },

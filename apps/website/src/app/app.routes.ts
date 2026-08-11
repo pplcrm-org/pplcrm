@@ -85,6 +85,28 @@ export const appRoutes: Route[] = [
     loadComponent: () => import('./compare/compare-page').then((m) => m.ComparePage),
   },
   {
+    path: 'canvassing',
+    title: 'Canvassing: turf cutting, walk sheets and the companion app — pplCRM',
+    data: {
+      description:
+        'Cut any list into walkable turfs that never cross your riding’s boundary lines, print each ' +
+        'one as a walk sheet with a QR code, and put the same doors on volunteers’ phones — no app ' +
+        'install, no volunteer accounts. Every knock syncs back live.',
+    },
+    loadComponent: () => import('./canvassing/canvassing-page').then((m) => m.CanvassingPage),
+  },
+  {
+    path: 'deliveries',
+    title: 'Yard signs and delivery routes — pplCRM',
+    data: {
+      description:
+        'One queue for yard-sign requests, planned into hour-sized driving routes you preview before ' +
+        'saving. Each driver gets a one-stop-at-a-time page carrying a first name and an address — ' +
+        'nothing else — and a failed stop routes itself back into the pool.',
+    },
+    loadComponent: () => import('./deliveries/deliveries-page').then((m) => m.DeliveriesPage),
+  },
+  {
     path: 'districts',
     title: 'Ridings, wards and districts — pplCRM',
     data: {

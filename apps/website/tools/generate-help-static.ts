@@ -48,6 +48,8 @@ const MARKETING_PATHS: readonly string[] = [
   'for/nonprofits',
   'for/churches',
   'compare',
+  'canvassing',
+  'deliveries',
   'districts',
   'switch',
   'switch/breeze',
@@ -144,6 +146,9 @@ function sitemapHints(path: string): { changefreq: string; priority: string } {
   if (
     path === 'faq' ||
     path === 'compare' ||
+    path === 'canvassing' ||
+    path === 'deliveries' ||
+    path === 'districts' ||
     path.startsWith('for/') ||
     path === 'switch' ||
     path.startsWith('switch/')

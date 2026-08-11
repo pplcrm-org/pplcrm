@@ -1,0 +1,319 @@
+<pc-site-header variant="solid" />
+
+<!-- ===================== 1. THE PROBLEM ===================== -->
+<section class="border-b border-line bg-base-200 px-5 py-16 sm:px-8">
+  <div class="mx-auto max-w-[780px] text-center">
+    <div class="eyebrow">Yard signs &amp; deliveries</div>
+    <h1 class="mt-3 text-balance text-[clamp(2rem,6vw,2.625rem)] font-bold tracking-[-0.02em]">
+      Forty signs in a trunk. Addresses in a text thread.
+    </h1>
+    <p class="mx-auto mt-3.5 max-w-[600px] text-[16px] leading-relaxed text-base-content/60">
+      Every campaign has lived it: the requests live in three inboxes, the driver gets a screenshot of a list, and two
+      weeks later somebody asks why the Chens on Alder Street never got their sign.
+    </p>
+    <p class="mx-auto mt-3.5 max-w-[600px] text-[16px] leading-relaxed text-base-content/70">
+      pplCRM keeps one queue of requests, plans them into hour-sized driving routes, and hands each driver a page that
+      knows exactly one thing: the next stop.
+    </p>
+  </div>
+</section>
+
+<!-- ===================== 2. THE REQUEST PIPELINE ===================== -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[640px] text-center">
+      <div class="eyebrow">From doorstep to lawn</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        A request has one home and four states.
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        One request per household per campaign — asked for at the door, approved at a desk, delivered from a car. No
+        step happens in a spreadsheet.
+      </p>
+    </div>
+    <div class="mt-9 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      @for (stage of stages; track stage.n) {
+      <div class="rounded-xl border border-line bg-base-50 p-6">
+        <div class="text-[13px] font-bold tabular-nums text-primary">{{ stage.n }}</div>
+        <div class="mt-2.5 text-[15px] font-semibold">{{ stage.title }}</div>
+        <p class="mt-1.5 text-[13.5px] leading-relaxed text-base-content/60">{{ stage.body }}</p>
+      </div>
+      }
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 3. ROUTE PLANNING ===================== -->
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[640px] text-center">
+      <div class="eyebrow">Route planning</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        “Can you take one route tonight?”
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        The planner turns the approved pile into routes a volunteer can actually say yes to: about an hour each, from a
+        start address you choose, previewed in full before anything is saved.
+      </p>
+    </div>
+
+    <div class="mx-auto mt-9 max-w-[880px]">
+      <pc-browser-frame url="app.pplcrm.com/deliveries/routes">
+        <div class="grid gap-4 p-5 sm:grid-cols-[1fr_210px]">
+          <!-- Numbered stops joined by a dotted visit-order line. Dotted on purpose. -->
+          <svg
+            viewBox="0 0 320 220"
+            class="block w-full rounded-[10px] border border-line"
+            role="img"
+            aria-label="A route map: a start pin and six numbered stops joined by a dotted visit-order line."
+          >
+            <rect width="320" height="220" fill="var(--color-base-200)" />
+            <g stroke="var(--color-base-300)" stroke-width="1.5">
+              <path d="M0 66 H320 M0 128 H320 M0 178 H320" />
+              <path d="M74 0 V220 M154 0 V220 M232 0 V220" />
+            </g>
+
+            <polyline
+              [attr.points]="routeLine"
+              fill="none"
+              stroke="var(--color-primary)"
+              stroke-width="2"
+              stroke-dasharray="2 5"
+              stroke-linecap="round"
+            />
+
+            <!-- Start pin. -->
+            <g class="text-secondary">
+              <circle [attr.cx]="routeStart.x" [attr.cy]="routeStart.y" r="8" fill="currentColor" />
+              <text
+                [attr.x]="routeStart.x"
+                [attr.y]="routeStart.y + 3.5"
+                font-size="9"
+                font-weight="700"
+                text-anchor="middle"
+                fill="var(--color-base-100)"
+              >
+                S
+              </text>
+              <text
+                [attr.x]="routeStart.x - 14"
+                [attr.y]="routeStart.y + 22"
+                font-size="9"
+                font-weight="600"
+                fill="currentColor"
+              >
+                HQ
+              </text>
+            </g>
+
+            <!-- Stops: filled = delivered, hollow = still to come. -->
+            <g class="text-primary">
+              @for (stop of routeStops; track stop.n) {
+              <circle
+                [attr.cx]="stop.x"
+                [attr.cy]="stop.y"
+                r="8"
+                [attr.fill]="stop.delivered ? 'currentColor' : 'var(--color-base-100)'"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+              <text
+                [attr.x]="stop.x"
+                [attr.y]="stop.y + 3.5"
+                font-size="9"
+                font-weight="700"
+                text-anchor="middle"
+                [attr.fill]="stop.delivered ? 'var(--color-base-100)' : 'currentColor'"
+              >
+                {{ stop.n }}
+              </text>
+              }
+            </g>
+          </svg>
+
+          <!-- The proposed plan: routes, and the leftovers with their reasons. -->
+          <div class="flex flex-col gap-2.5">
+            <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/45">Proposed plan</div>
+            @for (route of panelRoutes; track route.name) {
+            <div
+              class="rounded-[10px] border border-line px-3 py-2.5"
+              [class]="route.muted ? 'bg-base-100' : 'bg-base-50'"
+            >
+              <div class="text-[12.5px] font-semibold" [class.text-base-content/55]="route.muted">{{ route.name }}</div>
+              <div class="mt-0.5 text-[10.5px] tabular-nums text-base-content/50">{{ route.detail }}</div>
+            </div>
+            }
+            <div
+              class="mt-1 rounded-[10px] bg-primary px-3 py-2.5 text-center text-[12px] font-semibold text-primary-content"
+            >
+              Create 2 routes
+            </div>
+            <div class="text-center text-[10px] text-base-content/45">Nothing is saved until you do</div>
+          </div>
+        </div>
+      </pc-browser-frame>
+    </div>
+
+    <div class="mx-auto mt-8 grid max-w-[880px] gap-3.5 sm:grid-cols-3">
+      @for (card of planningCards; track card.title) {
+      <div class="rounded-xl border border-line bg-base-100 p-5">
+        <span class="grid h-10 w-10 place-items-center rounded-[10px] bg-primary/12 text-primary">
+          <pc-site-icon [name]="card.icon" [size]="20" />
+        </span>
+        <div class="mt-3.5 text-[14.5px] font-semibold">{{ card.title }}</div>
+        <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">{{ card.body }}</p>
+      </div>
+      }
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 4. THE DRIVER'S PAGE ===================== -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap flex flex-wrap items-center justify-center gap-10 lg:gap-14">
+    <div class="min-w-0 flex-1 basis-[360px]">
+      <div class="eyebrow">The driver’s page</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">One stop at a time, honestly.</h2>
+      <div class="mt-6 flex flex-col">
+        @for (item of volunteerPoints; track item.title; let last = $last) {
+        <div class="flex gap-4 py-4" [class.border-b]="!last" [class.border-line]="!last">
+          <span class="mt-0.5 flex-none text-secondary">
+            <pc-site-icon [name]="item.icon" [size]="22" />
+          </span>
+          <div>
+            <div class="text-[15px] font-semibold">{{ item.title }}</div>
+            <p class="mt-1 text-[13.5px] leading-relaxed text-base-content/60">{{ item.body }}</p>
+          </div>
+        </div>
+        }
+      </div>
+    </div>
+
+    <!-- Phone mockup: the current stop and its three honest buttons. -->
+    <div class="w-[264px] flex-none rounded-[42px] bg-navy p-2.5 shadow-[0_24px_70px_rgba(15,23,42,.28)]">
+      <div class="relative flex h-[500px] flex-col overflow-hidden rounded-[34px] bg-base-200">
+        <span class="absolute left-1/2 top-2.5 h-5 w-20 -translate-x-1/2 rounded-full bg-navy"></span>
+        <div class="bg-base-100 px-5 pb-3 pt-8">
+          <div class="text-[9px] font-semibold uppercase tracking-[0.08em] text-primary">{{ driver.context }}</div>
+          <div class="mt-1.5 flex justify-between text-[10px] tabular-nums text-base-content/55">
+            <span>{{ driver.progress }}</span><span>{{ driver.delivered }}</span>
+          </div>
+        </div>
+        <div class="flex flex-1 flex-col gap-2 px-3 py-3">
+          <div class="rounded-[12px] border border-line bg-base-100 px-4 py-4">
+            <div class="text-[9.5px] font-semibold uppercase tracking-[0.08em] text-base-content/45">Next stop</div>
+            <div class="mt-1 text-[17px] font-bold tracking-[-0.01em]">{{ driver.current.addr }}</div>
+            <div class="mt-0.5 text-[11px] text-base-content/55">{{ driver.current.who }}</div>
+            <div class="mt-3 flex flex-col gap-1.5">
+              <span
+                class="rounded-[8px] bg-primary px-3 py-2 text-center text-[11px] font-semibold text-primary-content"
+                >Delivered</span
+              >
+              <span
+                class="rounded-[8px] border border-line bg-base-100 px-3 py-2 text-center text-[11px] font-semibold text-base-content/70"
+                >Couldn’t deliver</span
+              >
+              <span
+                class="rounded-[8px] border border-line bg-base-100 px-3 py-2 text-center text-[11px] font-semibold text-base-content/70"
+                >Skip for now</span
+              >
+            </div>
+          </div>
+          @for (stop of driver.next; track stop.addr) {
+          <div
+            class="flex items-center justify-between gap-2 rounded-[10px] border border-line bg-base-100 px-3 py-2.5"
+          >
+            <div class="min-w-0">
+              <div class="truncate text-[12px] font-semibold">{{ stop.addr }}</div>
+              <div class="truncate text-[9.5px] text-base-content/50">{{ stop.who }}</div>
+            </div>
+            <span
+              class="flex-none rounded-full bg-base-300/60 px-2 py-0.5 text-[9px] font-semibold text-base-content/60"
+              >Up next</span
+            >
+          </div>
+          }
+          <div class="mt-auto text-center text-[10px] font-semibold text-primary">Open in Google Maps ↗</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 5. NOTHING DRIFTS ===================== -->
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[640px] text-center">
+      <div class="eyebrow">Nothing drifts</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        The field and the office stop disagreeing.
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        Because “routed” and “delivered” are read off the actual stops — never kept as separate checkboxes — the
+        canvassing crew, the drivers and the office are always looking at the same truth.
+      </p>
+    </div>
+    <div class="mx-auto mt-9 grid max-w-[880px] gap-3.5 sm:grid-cols-2">
+      @for (card of standingCards; track card.title) {
+      <div class="flex gap-4 rounded-xl border border-line bg-base-100 p-5">
+        <span class="grid h-10 w-10 flex-none place-items-center rounded-[10px] bg-primary/12 text-primary">
+          <pc-site-icon [name]="card.icon" [size]="20" />
+        </span>
+        <div>
+          <div class="text-[15px] font-semibold">{{ card.title }}</div>
+          <p class="mt-1 text-[13.5px] leading-snug text-base-content/60">{{ card.body }}</p>
+        </div>
+      </div>
+      }
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 6. HONEST LIMITS ===================== -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[620px] text-center">
+      <div class="eyebrow">What we do not claim</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        The limits, from us, before you ask.
+      </h2>
+    </div>
+    <div class="mx-auto mt-9 grid max-w-[880px] gap-3.5 sm:grid-cols-3">
+      @for (limit of limits; track limit.title) {
+      <div class="rounded-xl border border-line bg-base-50 p-5">
+        <span class="grid h-10 w-10 place-items-center rounded-[10px] bg-primary/12 text-primary">
+          <pc-site-icon [name]="limit.icon" [size]="20" />
+        </span>
+        <div class="mt-3.5 text-[14.5px] font-semibold">{{ limit.title }}</div>
+        <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">{{ limit.body }}</p>
+      </div>
+      }
+    </div>
+    <div class="mt-6 flex flex-wrap items-center justify-center gap-x-8 gap-y-2 text-center">
+      <a routerLink="/canvassing" class="text-[13.5px] font-semibold text-primary hover:text-secondary"
+        >Where sign requests come from →</a
+      >
+      <a routerLink="/districts" class="text-[13.5px] font-semibold text-primary hover:text-secondary"
+        >Ridings, wards and districts →</a
+      >
+    </div>
+  </div>
+</section>
+
+<!-- ========================= CLOSING CTA ========================= -->
+<section class="bg-navy px-5 py-14 text-center sm:px-8 sm:py-16">
+  <h2 class="text-[clamp(1.5rem,4vw,1.75rem)] font-bold tracking-[-0.01em] text-white">
+    Plan a route over sample data tonight.
+  </h2>
+  <p class="mx-auto mt-3.5 max-w-[560px] text-[15px] leading-relaxed text-white/75">
+    Your free workspace opens with sample households and sign requests already waiting. Approve a few, preview the
+    routes, and see the driver’s page on your own phone. No card, no time limit.
+  </p>
+  <div class="mt-6">
+    <a [href]="signupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">
+      Start free with sample data
+    </a>
+  </div>
+</section>
+
+<pc-site-footer />

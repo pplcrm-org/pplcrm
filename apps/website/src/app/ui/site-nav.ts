@@ -40,9 +40,21 @@ export function audiencePath(id: OrgMode): string {
 }
 
 /**
+ * The deep feature pages, in one array so the header's "Features" dropdown, the mobile menu
+ * group and the footer's Product column cannot drift apart — the same discipline
+ * `AUDIENCE_NAV` uses for the audience links.
+ */
+export const FEATURE_NAV: readonly NavLink[] = [
+  { label: 'Canvassing & turfs', path: '/canvassing' },
+  { label: 'Yard signs & deliveries', path: '/deliveries' },
+  { label: 'Ridings & districts', path: '/districts' },
+];
+
+/**
  * Everything else in the primary nav. The audience links moved into a "Who it's for" dropdown —
  * at `lg` the row already carried five links plus the currency switcher and both auth buttons,
- * and a fourth audience did not fit.
+ * and a fourth audience did not fit. The feature pages live in a second dropdown
+ * (`FeatureMenu`) for the same reason.
  */
 export const PRIMARY_NAV: readonly NavLink[] = [
   { label: 'Compare', path: '/compare' },

@@ -3,7 +3,8 @@ import { RouterLink } from '@angular/router';
 
 import { AudienceMenu } from './audience-menu';
 import { AuthHint } from './auth-hint';
-import { AUDIENCE_NAV, DASHBOARD_URL, LOGIN_URL, PRIMARY_NAV, SIGNUP_URL } from './site-nav';
+import { FeatureMenu } from './feature-menu';
+import { AUDIENCE_NAV, DASHBOARD_URL, FEATURE_NAV, LOGIN_URL, PRIMARY_NAV, SIGNUP_URL } from './site-nav';
 import { SiteLogo } from './site-logo';
 
 type HeaderVariant = 'over-hero' | 'solid';
@@ -18,7 +19,7 @@ type HeaderVariant = 'over-hero' | 'solid';
  */
 @Component({
   selector: 'pc-site-header',
-  imports: [RouterLink, SiteLogo, AudienceMenu],
+  imports: [RouterLink, SiteLogo, AudienceMenu, FeatureMenu],
   template: `
     <header [class]="barClass()">
       <div class="site-wrap flex items-center justify-between gap-4 px-5 py-3.5 sm:px-8">
@@ -28,6 +29,7 @@ type HeaderVariant = 'over-hero' | 'solid';
 
         <!-- Desktop nav -->
         <nav class="hidden items-center gap-5 text-[13.5px] font-medium lg:flex xl:gap-6">
+          <pc-feature-menu />
           <pc-audience-menu />
           @for (link of nav; track link.path) {
             <a [routerLink]="link.path" class="text-base-content hover:text-primary">{{ link.label }}</a>
@@ -63,8 +65,15 @@ type HeaderVariant = 'over-hero' | 'solid';
       <!-- Mobile menu -->
       @if (open()) {
         <nav class="border-t border-line bg-base-100 px-5 py-3 text-sm font-medium text-base-content lg:hidden">
-          <!-- No accordion: vertical space is free on mobile, so the audiences are simply
-               grouped under a label rather than hidden behind another tap. -->
+          <!-- No accordion: vertical space is free on mobile, so the groups are simply
+               labelled rather than hidden behind another tap. -->
+          <p class="pt-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">Features</p>
+          @for (item of featurePages; track item.path) {
+            <a [routerLink]="item.path" class="block py-2.5 pl-3 hover:text-primary" (click)="open.set(false)">{{
+              item.label
+            }}</a>
+          }
+          <div class="my-2 border-t border-line"></div>
           <p class="pt-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">Who it's for</p>
           @for (item of audiences; track item.id) {
             <a [routerLink]="item.path" class="block py-2.5 pl-3 hover:text-primary" (click)="open.set(false)">{{
@@ -97,6 +106,7 @@ export class SiteHeader {
 
   protected readonly nav = PRIMARY_NAV;
   protected readonly audiences = AUDIENCE_NAV;
+  protected readonly featurePages = FEATURE_NAV;
   protected readonly loginUrl = LOGIN_URL;
   protected readonly signupUrl = SIGNUP_URL;
   protected readonly dashboardUrl = DASHBOARD_URL;

@@ -1,0 +1,500 @@
+<pc-site-header variant="solid" />
+
+<!-- ===================== 1. THE PROBLEM ===================== -->
+<section class="border-b border-line bg-base-200 px-5 py-16 sm:px-8">
+  <div class="mx-auto max-w-[780px] text-center">
+    <div class="eyebrow">Canvassing &amp; turfs</div>
+    <h1 class="mt-3 text-balance text-[clamp(2rem,6vw,2.625rem)] font-bold tracking-[-0.02em]">
+      A highlighter on a paper map is not a field plan.
+    </h1>
+    <p class="mx-auto mt-3.5 max-w-[600px] text-[16px] leading-relaxed text-base-content/60">
+      Somebody spends an evening colouring streets, somebody else retypes clipboard notes at midnight, and a volunteer
+      still gets sent across a boundary into doors that cannot vote for you.
+    </p>
+    <p class="mx-auto mt-3.5 max-w-[600px] text-[16px] leading-relaxed text-base-content/70">
+      pplCRM cuts your list into walkable turfs that stop at your race’s own lines, prints each one as a walk sheet, and
+      puts the same doors on every volunteer’s phone. Every knock comes back live.
+    </p>
+  </div>
+</section>
+
+<!-- ===================== 2. TURF CUTTING ===================== -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[640px] text-center">
+      <div class="eyebrow">Turf cutting</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        Pick a list. Pick a turf size. Done.
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        Point the cutter at any list — likely supporters, one poll, the whole riding — and choose how many doors one
+        volunteer should walk. It previews the turfs before anything is saved, with a walk-time estimate per turf.
+      </p>
+    </div>
+
+    <div class="mx-auto mt-9 max-w-[880px]">
+      <pc-browser-frame url="app.pplcrm.com/canvassing">
+        <div class="grid gap-4 p-5 sm:grid-cols-[1fr_210px]">
+          <!-- Two turfs, one boundary line between them: the argument in one picture. -->
+          <svg
+            viewBox="0 0 320 220"
+            class="block w-full rounded-[10px] border border-line"
+            role="img"
+            aria-label="A map with two turfs cut on either side of an electoral boundary line. No turf crosses the line."
+          >
+            <rect width="320" height="220" fill="var(--color-base-200)" />
+            <g stroke="var(--color-base-300)" stroke-width="1.5">
+              <path d="M0 66 H320 M0 128 H320 M0 178 H320" />
+              <path d="M74 0 V220 M232 0 V220" />
+            </g>
+
+            <!-- The boundary the cutter treats as a wall. -->
+            <polyline
+              [attr.points]="boundaryLine"
+              fill="none"
+              stroke="var(--color-base-content)"
+              stroke-opacity="0.45"
+              stroke-width="2.5"
+            />
+            <text x="112" y="208" font-size="9" font-weight="600" fill="var(--color-base-content)" fill-opacity="0.45">
+              PD 412
+            </text>
+            <text x="178" y="208" font-size="9" font-weight="600" fill="var(--color-base-content)" fill-opacity="0.45">
+              PD 415
+            </text>
+
+            <!-- Turf 3, mid-knock. -->
+            <g class="text-primary">
+              <polygon
+                [attr.points]="turfA.hull"
+                fill="currentColor"
+                fill-opacity="0.10"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-dasharray="6 4"
+                stroke-linejoin="round"
+              />
+              @for (door of turfA.doors; track door.x + '-' + door.y) { @if (door.knocked) {
+              <circle [attr.cx]="door.x" [attr.cy]="door.y" r="3" fill="currentColor" />
+              } @else {
+              <circle
+                [attr.cx]="door.x"
+                [attr.cy]="door.y"
+                r="3"
+                fill="var(--color-base-100)"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+              } }
+              <text x="30" y="46" font-size="11" font-weight="600" fill="currentColor">{{ turfA.name }}</text>
+            </g>
+
+            <!-- Turf 4, barely started. -->
+            <g class="text-secondary">
+              <polygon
+                [attr.points]="turfB.hull"
+                fill="currentColor"
+                fill-opacity="0.10"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-dasharray="6 4"
+                stroke-linejoin="round"
+              />
+              @for (door of turfB.doors; track door.x + '-' + door.y) { @if (door.knocked) {
+              <circle [attr.cx]="door.x" [attr.cy]="door.y" r="3" fill="currentColor" />
+              } @else {
+              <circle
+                [attr.cx]="door.x"
+                [attr.cy]="door.y"
+                r="3"
+                fill="var(--color-base-100)"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+              } }
+              <text x="186" y="52" font-size="11" font-weight="600" fill="currentColor">{{ turfB.name }}</text>
+            </g>
+          </svg>
+
+          <!-- The cutter's controls: universe, size, preview. -->
+          <div class="flex flex-col gap-2.5">
+            <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/45">Cut turfs</div>
+            <div class="rounded-[10px] border border-line bg-base-50 px-3 py-2.5">
+              <div class="text-[10.5px] text-base-content/50">From list</div>
+              <div class="mt-0.5 text-[12.5px] font-semibold">Likely supporters</div>
+              <div class="text-[10.5px] tabular-nums text-base-content/50">2,141 doors</div>
+            </div>
+            <div class="rounded-[10px] border border-line bg-base-50 px-3 py-2.5">
+              <div class="text-[10.5px] text-base-content/50">Doors per turf</div>
+              <div class="mt-1.5 flex flex-wrap gap-1">
+                @for (preset of presets; track preset.doors) {
+                <span
+                  class="rounded-md px-2 py-1 text-[11px] font-semibold tabular-nums"
+                  [class]="
+                      preset.recommended
+                        ? 'bg-primary text-primary-content'
+                        : 'border border-line bg-base-100 text-base-content/60'
+                    "
+                  >{{ preset.doors }}</span
+                >
+                }
+              </div>
+              <div class="mt-1 text-[10px] text-base-content/45">40 recommended</div>
+            </div>
+            <div class="rounded-[10px] border border-line bg-base-100 px-3 py-2.5">
+              <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/45">Preview</div>
+              <div class="mt-1 text-[11px] leading-relaxed tabular-nums text-base-content/65">
+                54 turfs · 38–42 doors each<br />3 doors unplaced — listed below
+              </div>
+            </div>
+          </div>
+        </div>
+      </pc-browser-frame>
+    </div>
+
+    <div class="mx-auto mt-8 grid max-w-[880px] gap-3.5 sm:grid-cols-3">
+      @for (card of cuttingCards; track card.title) {
+      <div class="rounded-xl border border-line bg-base-50 p-5">
+        <span class="grid h-10 w-10 place-items-center rounded-[10px] bg-primary/12 text-primary">
+          <pc-site-icon [name]="card.icon" [size]="20" />
+        </span>
+        <div class="mt-3.5 text-[14.5px] font-semibold">{{ card.title }}</div>
+        <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">{{ card.body }}</p>
+      </div>
+      }
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 3. THE LIVE TURF PAGE ===================== -->
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[640px] text-center">
+      <div class="eyebrow">The live turf page</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        Status nobody has to remember to update.
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        A turf’s badge is computed from the knocks actually recorded — never a dropdown somebody forgot to change on
+        election morning. The field report rolls the same truth up by turf, by canvasser, and by your race’s own areas:
+        “By polling division” for a riding, “By precinct” for a district.
+      </p>
+    </div>
+
+    <div class="mx-auto mt-9 grid max-w-[880px] gap-3.5 sm:grid-cols-2">
+      @for (status of statuses; track status.label) {
+      <div class="rounded-xl border border-line bg-base-100 p-5">
+        <span class="inline-block rounded-full bg-primary/12 px-2.5 py-1 text-[11px] font-semibold text-primary"
+          >{{ status.label }}</span
+        >
+        <p class="mt-2.5 text-[13px] leading-relaxed text-base-content/60">{{ status.body }}</p>
+      </div>
+      }
+    </div>
+
+    <div class="mx-auto mt-4 grid max-w-[880px] gap-3.5 sm:grid-cols-2">
+      <div class="rounded-xl border border-line bg-base-100 p-5">
+        <div class="text-[14.5px] font-semibold">A roster, not a name</div>
+        <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">
+          A turf holds a whole crew. Each canvasser gets their own personal link — sent automatically by email and text
+          to the contacts on their record — and the turf page shows doors and conversations per canvasser. Removing one
+          person kills only their link.
+        </p>
+      </div>
+      <div class="rounded-xl border border-line bg-base-100 p-5">
+        <div class="text-[14.5px] font-semibold">Refresh the doors, keep the knocks</div>
+        <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">
+          Cut from a smart list, a turf can re-read it mid-campaign: new movers appear, people who left the list drop
+          off, and every knock already recorded stays exactly where it was.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 4. THE WALK SHEET ===================== -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[640px] text-center">
+      <div class="eyebrow">The printable walk sheet</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        Paper is a feature, not a fallback.
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        Some of your best canvassers will never install anything, and phones die at 4&nbsp;p.m. Every turf prints as a
+        walk sheet: a map with numbered doors, the door list in walking order with blank result columns, and a QR code
+        that scans straight into the same turf on a phone.
+      </p>
+    </div>
+
+    <div class="mx-auto mt-9 grid max-w-[940px] items-start gap-4 lg:grid-cols-[1fr_320px]">
+      <!-- The sheet itself: header, map strip, list, QR. Deliberately paper-plain. -->
+      <div
+        class="rounded-xl border border-line bg-base-100 p-6 shadow-[0_2px_6px_rgba(15,23,42,.06),0_24px_60px_-18px_rgba(15,23,42,.28)]"
+      >
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <div class="text-[15px] font-bold tracking-[-0.01em]">Turf 3 — Alder Street pocket</div>
+            <div class="mt-0.5 text-[12px] text-base-content/50">42 doors · PD 412 · printed mid-campaign</div>
+          </div>
+          <!-- QR mock: scans into this turf in the companion. -->
+          <svg
+            viewBox="0 0 28 28"
+            class="h-14 w-14 flex-none"
+            role="img"
+            aria-label="QR code that opens this turf in the companion app"
+          >
+            <rect width="28" height="28" fill="var(--color-base-100)" />
+            <g fill="var(--color-base-content)">
+              <path d="M2 2h8v8H2zM4 4v4h4V4zM18 2h8v8h-8zM20 4v4h4V4zM2 18h8v8H2zM4 20v4h4v-4z" />
+              <path
+                d="M12 2h2v2h-2zM14 6h2v2h-2zM12 10h4v2h-4zM18 12h2v4h-2zM22 14h4v2h-4zM12 14h4v4h-2v-2h-2zM14 20h4v2h-2v2h-2zM20 20h2v2h-2zM24 18h2v2h-2zM24 22h2v4h-4v-2h2zM12 24h2v2h-2z"
+              />
+            </g>
+          </svg>
+        </div>
+
+        <!-- Grayscale map strip with the numbered dots and the dashed route. -->
+        <svg
+          viewBox="0 0 340 96"
+          class="mt-4 block w-full rounded-[8px] border border-line"
+          role="img"
+          aria-label="A grayscale map with numbered door markers joined by a dashed walking route."
+        >
+          <rect width="340" height="96" fill="var(--color-base-200)" />
+          <g stroke="var(--color-base-300)" stroke-width="1.5">
+            <path d="M0 32 H340 M0 66 H340 M96 0 V96 M212 0 V96" />
+          </g>
+          <polyline
+            points="34,50 96,44 158,52 224,46 290,52"
+            fill="none"
+            stroke="var(--color-base-content)"
+            stroke-opacity="0.4"
+            stroke-width="1.5"
+            stroke-dasharray="5 4"
+          />
+          <g font-size="8.5" font-weight="700" text-anchor="middle">
+            @for (row of sheetRows; track row.n) {
+            <g>
+              <circle
+                [attr.cx]="34 + (row.n - 1) * 64"
+                [attr.cy]="row.n % 2 === 1 ? 50 : 45"
+                r="7"
+                [attr.fill]="row.done ? 'var(--color-base-content)' : 'var(--color-base-100)'"
+                [attr.fill-opacity]="row.done ? 0.55 : 1"
+                stroke="var(--color-base-content)"
+                stroke-opacity="0.55"
+                stroke-width="1.5"
+              />
+              <text
+                [attr.x]="34 + (row.n - 1) * 64"
+                [attr.y]="(row.n % 2 === 1 ? 50 : 45) + 3"
+                [attr.fill]="row.done ? 'var(--color-base-100)' : 'var(--color-base-content)'"
+                fill-opacity="0.85"
+              >
+                {{ row.n }}
+              </text>
+            </g>
+            }
+          </g>
+        </svg>
+
+        <!-- The list, in the same order as the pins. -->
+        <table class="mt-4 w-full border-collapse text-left">
+          <thead>
+            <tr class="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/45">
+              <th class="border-b border-line px-2 py-2 font-semibold">#</th>
+              <th class="border-b border-line px-2 py-2 font-semibold">Address</th>
+              <th class="border-b border-line px-2 py-2 font-semibold">Residents</th>
+              <th class="border-b border-line px-2 py-2 font-semibold">Result</th>
+              <th class="border-b border-line px-2 py-2 font-semibold">Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of sheetRows; track row.n) {
+            <tr>
+              <td class="border-b border-line px-2 py-2.5 text-[12px] font-bold tabular-nums">{{ row.n }}</td>
+              <td class="border-b border-line px-2 py-2.5 text-[12.5px] font-semibold">{{ row.addr }}</td>
+              <td class="border-b border-line px-2 py-2.5 text-[12px] text-base-content/60">{{ row.who }}</td>
+              @if (row.done) {
+              <td class="border-b border-line px-2 py-2.5 text-[11px] font-semibold text-base-content/45">
+                ✓ {{ row.done }}
+              </td>
+              } @else {
+              <td class="border-b border-line px-2 py-2.5">
+                <span class="block h-4 w-full max-w-[72px] border-b border-base-300"></span>
+              </td>
+              }
+              <td class="border-b border-line px-2 py-2.5">
+                @if (!row.done) {
+                <span class="block h-4 w-full border-b border-base-300"></span>
+                }
+              </td>
+            </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <div class="flex flex-col gap-3.5">
+        <div class="rounded-xl border border-line bg-base-50 p-5">
+          <div class="text-[14.5px] font-semibold">Print it mid-campaign</div>
+          <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">
+            Doors already knocked print with their result, so a paper round never retreads finished ground. The map, the
+            phone and the sheet share one walking order — pin 3 on the map is row 3 on the paper.
+          </p>
+        </div>
+        <div class="rounded-xl border border-line bg-base-50 p-5">
+          <div class="text-[14.5px] font-semibold">The QR code closes the loop</div>
+          <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">
+            A volunteer handed a sheet at the launch can scan its QR code and carry the same turf on their phone — or
+            stay on paper all day and have someone type the sheet in later. Both are first-class.
+          </p>
+        </div>
+        <div class="rounded-xl border border-line bg-base-50 p-5">
+          <div class="text-[14.5px] font-semibold">It degrades, it doesn’t fail</div>
+          <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">
+            The sheet’s map is a grayscale street map with the route drawn over it. No Google Maps key configured? It
+            falls back to a schematic with street names and keeps printing.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 5. THE CANVASS COMPANION ===================== -->
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap flex flex-wrap items-center justify-center gap-10 lg:gap-14">
+    <div class="min-w-0 flex-1 basis-[360px]">
+      <div class="eyebrow">The canvass companion</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        Your volunteers’ phones, without the app store.
+      </h2>
+      <div class="mt-6 flex flex-col">
+        @for (item of companionPoints; track item.title; let last = $last) {
+        <div class="flex gap-4 py-4" [class.border-b]="!last" [class.border-line]="!last">
+          <span class="mt-0.5 flex-none text-secondary">
+            <pc-site-icon [name]="item.icon" [size]="22" />
+          </span>
+          <div>
+            <div class="text-[15px] font-semibold">{{ item.title }}</div>
+            <p class="mt-1 text-[13.5px] leading-relaxed text-base-content/60">{{ item.body }}</p>
+          </div>
+        </div>
+        }
+      </div>
+    </div>
+
+    <!-- Phone mockup — same markup as the home page's companion band. -->
+    <div class="w-[264px] flex-none rounded-[42px] bg-navy p-2.5 shadow-[0_24px_70px_rgba(15,23,42,.28)]">
+      <div class="relative flex h-[500px] flex-col overflow-hidden rounded-[34px] bg-base-200">
+        <span class="absolute left-1/2 top-2.5 h-5 w-20 -translate-x-1/2 rounded-full bg-navy"></span>
+        <div class="bg-base-100 px-5 pb-2.5 pt-8">
+          <div class="text-[9px] font-semibold uppercase tracking-[0.08em] text-primary">{{ field.context }}</div>
+          <div class="mt-0.5 text-[19px] font-bold tracking-[-0.01em]">{{ field.place }}</div>
+          <div class="mt-0.5 text-[10.5px] text-base-content/50">{{ field.meta }}</div>
+          <div class="mt-2.5 h-1.5 overflow-hidden rounded-full bg-base-300">
+            <div class="h-full bg-primary" [class]="field.progressClass"></div>
+          </div>
+          <div class="mt-1.5 flex justify-between text-[10px] tabular-nums text-base-content/55">
+            <span>{{ field.progressNote }}</span><span>{{ field.conversations }}</span>
+          </div>
+        </div>
+        <div class="flex flex-1 flex-col gap-1.5 overflow-hidden px-3 py-3">
+          @for (door of field.doors; track door.addr) {
+          <div
+            class="flex items-center justify-between gap-2 rounded-[10px] border border-line bg-base-100 px-3 py-2.5"
+          >
+            <div class="min-w-0">
+              <div class="truncate text-[12px] font-semibold">{{ door.addr }}</div>
+              <div class="truncate text-[9.5px] text-base-content/50">{{ door.who }}</div>
+            </div>
+            <span class="flex-none rounded-full px-2 py-0.5 text-[9px] font-semibold" [class]="door.chipClass"
+              >{{ door.chip }}</span
+            >
+          </div>
+          }
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 6. WHO GETS IN ===================== -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[640px] text-center">
+      <div class="eyebrow">Who gets in</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        No accounts for volunteers. Real security anyway.
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        “Just share the spreadsheet link” is how a voter list ends up public. The companion works from personal links,
+        but a link alone is never enough.
+      </p>
+    </div>
+    <div class="mx-auto mt-9 grid max-w-[880px] gap-3.5 sm:grid-cols-2">
+      @for (card of trustCards; track card.title) {
+      <div class="flex gap-4 rounded-xl border border-line bg-base-50 p-5">
+        <span class="grid h-10 w-10 flex-none place-items-center rounded-[10px] bg-primary/12 text-primary">
+          <pc-site-icon [name]="card.icon" [size]="20" />
+        </span>
+        <div>
+          <div class="text-[15px] font-semibold">{{ card.title }}</div>
+          <p class="mt-1 text-[13.5px] leading-snug text-base-content/60">{{ card.body }}</p>
+        </div>
+      </div>
+      }
+    </div>
+  </div>
+</section>
+
+<!-- ===================== 7. HONEST LIMITS ===================== -->
+<section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="site-wrap">
+    <div class="mx-auto max-w-[620px] text-center">
+      <div class="eyebrow">What we do not claim</div>
+      <h2 class="mt-2.5 text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        The limits, from us, before you ask.
+      </h2>
+    </div>
+    <div class="mx-auto mt-9 grid max-w-[880px] gap-3.5 sm:grid-cols-3">
+      @for (limit of limits; track limit.title) {
+      <div class="rounded-xl border border-line bg-base-100 p-5">
+        <span class="grid h-10 w-10 place-items-center rounded-[10px] bg-primary/12 text-primary">
+          <pc-site-icon [name]="limit.icon" [size]="20" />
+        </span>
+        <div class="mt-3.5 text-[14.5px] font-semibold">{{ limit.title }}</div>
+        <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/60">{{ limit.body }}</p>
+      </div>
+      }
+    </div>
+    <div class="mt-6 flex flex-wrap items-center justify-center gap-x-8 gap-y-2 text-center">
+      <a routerLink="/districts" class="text-[13.5px] font-semibold text-primary hover:text-secondary"
+        >Where the boundary maps come from →</a
+      >
+      <a routerLink="/deliveries" class="text-[13.5px] font-semibold text-primary hover:text-secondary"
+        >Where the yard-sign answer goes →</a
+      >
+    </div>
+  </div>
+</section>
+
+<!-- ========================= CLOSING CTA ========================= -->
+<section class="bg-navy px-5 py-14 text-center sm:px-8 sm:py-16">
+  <h2 class="text-[clamp(1.5rem,4vw,1.75rem)] font-bold tracking-[-0.01em] text-white">
+    Cut a turf before lunch. On us.
+  </h2>
+  <p class="mx-auto mt-3.5 max-w-[560px] text-[15px] leading-relaxed text-white/75">
+    Your free workspace opens with sample people, households and turfs already cut. Open one, knock a few demo doors
+    from your phone, print the walk sheet. No card, no time limit.
+  </p>
+  <div class="mt-6">
+    <a [href]="signupUrl" class="btn btn-primary rounded-field px-6 text-[14.5px] font-semibold">
+      Start free with sample data
+    </a>
+  </div>
+</section>
+
+<pc-site-footer />

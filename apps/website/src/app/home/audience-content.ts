@@ -119,8 +119,12 @@ export const RESIDENTS = [
   'Marcus Lee',
 ] as const;
 
-/** Door rows differ only by the first two chips — the outcome vocabulary of each vertical. */
-function doorsWith(first: string, second: string): readonly Door[] {
+/**
+ * Door rows differ only by the first two chips — the outcome vocabulary of each vertical.
+ * Exported because the /canvassing page's phone mock shows the same five doors; a second
+ * hand-built list would let the two mocks drift apart.
+ */
+export function doorsWith(first: string, second: string): readonly Door[] {
   return [
     { addr: ADDRESSES[0], who: RESIDENTS[0], chip: first, chipClass: CHIP_SUPPORTIVE },
     { addr: ADDRESSES[1], who: RESIDENTS[1], chip: second, chipClass: CHIP_FOLLOW_UP },
@@ -210,7 +214,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'map-pin',
         title: 'Doors & the field',
-        body: 'Cut your riding, ward or congressional district into walkable routes; staff and volunteers see them on their phones. Every conversation syncs back live.',
+        body: 'Cut your riding, ward or congressional district into walkable routes that stop at the boundary line. Staff and volunteers see them on their phones — or on a printed walk sheet. Every conversation syncs back live.',
       },
       {
         // An office does not fundraise — in Canada the riding association does, in the United
@@ -320,7 +324,7 @@ export const AUDIENCE_CONTENT: Record<Audience, AudienceCopy> = {
       {
         icon: 'map-pin',
         title: 'Doors & the field',
-        body: 'Cut turfs in the office; the crew sees them on their phones. Every knock syncs back live.',
+        body: 'Cut turfs that never cross your riding’s boundary lines. The crew sees them on their phones — or on a printed walk sheet — and every knock syncs back live.',
       },
       {
         icon: 'currency-dollar',
