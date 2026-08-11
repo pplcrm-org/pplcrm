@@ -1,6 +1,7 @@
 import { Component } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
+import { COMPARE_CHARTS, VERDICT_LABELS, type CompareCategoryChart, type Verdict } from './compare-content';
 import { SiteFooter } from '../ui/site-footer';
 import { SiteHeader } from '../ui/site-header';
 import { SIGNUP_URL } from '../ui/site-nav';
@@ -17,6 +18,14 @@ interface PlatformPoint {
   readonly body: string;
 }
 
+/** Chip classes per verdict — the same palette the site's other status chips use. */
+const VERDICT_CLASSES: Readonly<Record<Verdict, string>> = {
+  'built-in': 'bg-success/20 text-success-content',
+  partial: 'bg-warning/40 text-warning-content',
+  'not-offered': 'bg-base-300/60 text-base-content/60',
+  'different-focus': 'bg-info/15 text-[#0e4e6e]',
+};
+
 @Component({
   selector: 'pc-compare-page',
   imports: [SiteHeader, SiteFooter, RouterLink],
@@ -25,6 +34,26 @@ interface PlatformPoint {
 export class ComparePage {
   protected readonly signupUrl = SIGNUP_URL;
   protected readonly mailto = 'mailto:hello@pplcrm.com';
+
+  /** The three named-competitor charts. All cell data and sourcing rules live in compare-content.ts. */
+  protected readonly charts = COMPARE_CHARTS;
+
+  protected verdictLabel(verdict: Verdict): string {
+    return VERDICT_LABELS[verdict];
+  }
+
+  /**
+   * Cells pair with competitors by index. `?? ''` rather than `!` because
+   * `noUncheckedIndexedAccess` is on; a malformed chart would render a blank
+   * header rather than crash the prerender.
+   */
+  protected competitorName(chart: CompareCategoryChart, index: number): string {
+    return chart.competitors[index]?.name ?? '';
+  }
+
+  protected verdictClass(verdict: Verdict): string {
+    return VERDICT_CLASSES[verdict];
+  }
 
   protected readonly rows: readonly CompareRow[] = [
     {
@@ -72,7 +101,7 @@ export class ComparePage {
     },
   ];
 
-  /** For visitors evaluating the big organizing platforms; principles, not a feature grid. */
+  /** For visitors evaluating the big organizing platforms; principles that outlast any chart. */
   protected readonly platformPoints: readonly PlatformPoint[] = [
     {
       title: 'Growth is never taxed',

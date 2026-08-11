@@ -9,7 +9,8 @@
     </h1>
     <p class="mx-auto mt-3.5 max-w-[560px] text-[16px] leading-relaxed text-base-content/60">
       Most teams like yours run on a spreadsheet, an email tool and somebody’s inbox. That stack is free, familiar and
-      genuinely fine at first. Here is where it starts to cost you, job by job.
+      genuinely fine at first. Here is where it starts to cost you, job by job — and further down, how pplCRM compares
+      to the named tools you might be weighing.
     </p>
   </div>
 </section>
@@ -37,16 +38,99 @@
   </div>
 </section>
 
-<!-- The big platforms -->
+<!-- The named tools, category by category -->
 <section class="border-b border-line bg-base-200 px-5 py-14 sm:px-8 sm:py-16">
+  <div class="mx-auto max-w-[880px]">
+    <div class="mx-auto max-w-[660px] text-center">
+      <div class="eyebrow">The named tools</div>
+      <h2 class="text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
+        Comparing us to a tool you already know?
+      </h2>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        They are capable tools, and feature lists change. So these charts follow three rules to stay honest: the pplCRM
+        column states only what ships today, every claim that another product lacks something links to that product’s
+        own public documentation, and each chart shows the date we last checked. Where a competitor does something well,
+        the chart says so.
+      </p>
+      <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
+        Spotted something out of date?
+        <a [href]="mailto" class="font-semibold text-primary hover:text-secondary">Tell us and we will fix it.</a>
+      </p>
+    </div>
+
+    @for (chart of charts; track chart.id) {
+    <div class="mt-12">
+      <h3 class="text-[clamp(1.25rem,3vw,1.5rem)] font-bold tracking-[-0.01em]">{{ chart.heading }}</h3>
+      <p class="mt-2 max-w-[720px] text-[14px] leading-relaxed text-base-content/60">{{ chart.intro }}</p>
+
+      <div class="mt-5 flex flex-col gap-3.5">
+        @for (row of chart.rows; track row.job) {
+        <div class="rounded-xl border border-line bg-base-100 p-5">
+          <div class="text-[15px] font-semibold">{{ row.job }}</div>
+          <div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div class="rounded-[10px] bg-primary/8 p-3.5">
+              <div class="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-primary">pplCRM</div>
+              <p class="mt-1.5 text-[13px] leading-relaxed text-base-content/70">{{ row.pplcrm }}</p>
+            </div>
+            @for (cell of row.cells; track $index) {
+            <div class="rounded-[10px] bg-base-200/70 p-3.5">
+              <div class="flex items-center justify-between gap-2">
+                <div class="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-base-content/45">
+                  {{ competitorName(chart, $index) }}
+                </div>
+                <span
+                  class="flex-none rounded-full px-2 py-0.5 text-[9.5px] font-semibold"
+                  [class]="verdictClass(cell.verdict)"
+                  >{{ verdictLabel(cell.verdict) }}</span
+                >
+              </div>
+              <p class="mt-1.5 text-[12.5px] leading-relaxed text-base-content/60">
+                {{ cell.note }} @if (cell.source) {
+                <a
+                  [href]="cell.source"
+                  target="_blank"
+                  rel="noopener"
+                  class="whitespace-nowrap font-semibold text-primary/80 hover:text-secondary"
+                  >their docs ↗</a
+                >
+                }
+              </p>
+            </div>
+            }
+          </div>
+        </div>
+        }
+      </div>
+
+      <div class="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5">
+        <p class="text-[12px] text-base-content/45">
+          Checked against each product’s public documentation on {{ chart.checkedOn }}.
+        </p>
+        <div class="flex flex-wrap gap-x-5 gap-y-1">
+          @for (competitor of chart.competitors; track competitor.slug) { @if (competitor.switchGuide) {
+          <a
+            [routerLink]="'/switch/' + competitor.switchGuide"
+            class="text-[12.5px] font-semibold text-primary hover:text-secondary"
+            >Switching from {{ competitor.name }}? →</a
+          >
+          } }
+        </div>
+      </div>
+    </div>
+    }
+  </div>
+</section>
+
+<!-- What outlasts any chart -->
+<section class="border-b border-line bg-base-100 px-5 py-14 sm:px-8 sm:py-16">
   <div class="mx-auto max-w-[760px]">
     <div class="mx-auto max-w-[620px] text-center">
       <h2 class="text-[clamp(1.625rem,4vw,2rem)] font-bold tracking-[-0.01em]">
-        Weighing one of the big organizing platforms?
+        Three things no chart cell can capture.
       </h2>
       <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
-        They are capable tools, and feature checklists age badly, so we won’t pretend to score them. Three things are
-        structurally different here, whichever one you have in mind.
+        Whichever tool you are weighing, these three are structural — they will still be true after everyone’s next
+        release.
       </p>
       <p class="mt-3 text-[15px] leading-relaxed text-base-content/60">
         Already on one? The
@@ -63,7 +147,7 @@
     </div>
     <div class="mt-9 grid gap-4 sm:grid-cols-3">
       @for (point of platformPoints; track point.title) {
-      <div class="rounded-xl border border-line bg-base-100 p-6">
+      <div class="rounded-xl border border-line bg-base-50 p-6">
         <div class="text-[15px] font-semibold">{{ point.title }}</div>
         <p class="mt-1.5 text-[13.5px] leading-relaxed text-base-content/60">{{ point.body }}</p>
       </div>
