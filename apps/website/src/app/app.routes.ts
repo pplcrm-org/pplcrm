@@ -172,6 +172,88 @@ export const appRoutes: Route[] = [
     loadComponent: () => import('./switch/switch-guide-page').then((m) => m.SwitchGuidePage),
   },
   {
+    path: 'use-cases',
+    title: 'Use cases — pplCRM',
+    data: {
+      description:
+        'Six walkthroughs of real seasons of work: federal, provincial and municipal campaigns, ' +
+        'constituency offices, advocacy campaigns and non-profits — what pplCRM does at each ' +
+        'stage, and the limits stated plainly.',
+    },
+    loadComponent: () => import('./use-cases/use-cases-page').then((m) => m.UseCasesPage),
+  },
+  {
+    path: 'use-cases/federal-campaign',
+    title: 'Run a federal riding campaign — pplCRM',
+    data: {
+      useCase: 'federal-campaign',
+      description:
+        'The Elections Canada federal riding map is built in. Cut turfs that stop at ' +
+        'polling-division lines, print walk sheets, route yard signs, and receipt contributions ' +
+        'under the federal political regime.',
+    },
+    loadComponent: () => import('./use-cases/use-case-page').then((m) => m.UseCasePage),
+  },
+  {
+    path: 'use-cases/provincial-campaign',
+    title: 'Run a provincial campaign — pplCRM',
+    data: {
+      useCase: 'provincial-campaign',
+      description:
+        'Ontario and Alberta provincial maps are included; every other province arrives by CSV ' +
+        'import, GeoJSON upload or hand drawing. The vocabulary follows the province: riding, ' +
+        'constituency or circonscription.',
+    },
+    loadComponent: () => import('./use-cases/use-case-page').then((m) => m.UseCasePage),
+  },
+  {
+    path: 'use-cases/municipal-campaign',
+    title: 'Run a municipal campaign — pplCRM',
+    data: {
+      useCase: 'municipal-campaign',
+      description:
+        'No city ward map ships — draw your wards over your own geocoded doors or import the ' +
+        'ward column your list already has, then cut turfs that stop at ward lines and put the ' +
+        'signs on lawns.',
+    },
+    loadComponent: () => import('./use-cases/use-case-page').then((m) => m.UseCasePage),
+  },
+  {
+    path: 'use-cases/constituency-office',
+    title: 'Run a constituency office — pplCRM',
+    data: {
+      useCase: 'constituency-office',
+      description:
+        'Casework in a shared inbox with owners and due dates, the riding on every household, ' +
+        'and a year-round list an election campaign runs beside in its own context.',
+    },
+    loadComponent: () => import('./use-cases/use-case-page').then((m) => m.UseCasePage),
+  },
+  {
+    path: 'use-cases/advocacy',
+    title: 'Organize an advocacy campaign — pplCRM',
+    data: {
+      useCase: 'advocacy',
+      description:
+        'QR join codes that turn strangers into approved volunteers, signup forms, smart lists ' +
+        'that know which riding every supporter lives in, and newsletters gated by a ' +
+        'deliverability score.',
+    },
+    loadComponent: () => import('./use-cases/use-case-page').then((m) => m.UseCasePage),
+  },
+  {
+    path: 'use-cases/nonprofit',
+    title: 'Grow a non-profit on one list — pplCRM',
+    data: {
+      useCase: 'nonprofit',
+      description:
+        'Donations through your own Stripe account, CRA official receipts with gap-free ' +
+        'numbering, volunteer shifts with online signup, and delivery routes for hampers and ' +
+        'drives.',
+    },
+    loadComponent: () => import('./use-cases/use-case-page').then((m) => m.UseCasePage),
+  },
+  {
     path: 'pricing',
     title: 'Pricing — pplCRM',
     data: {

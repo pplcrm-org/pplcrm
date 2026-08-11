@@ -56,6 +56,13 @@ const MARKETING_PATHS: readonly string[] = [
   'switch/planning-center',
   'switch/nationbuilder',
   'switch/mailchimp',
+  'use-cases',
+  'use-cases/federal-campaign',
+  'use-cases/provincial-campaign',
+  'use-cases/municipal-campaign',
+  'use-cases/constituency-office',
+  'use-cases/advocacy',
+  'use-cases/nonprofit',
   'pricing',
   'about',
   'careers',
@@ -151,7 +158,9 @@ function sitemapHints(path: string): { changefreq: string; priority: string } {
     path === 'districts' ||
     path.startsWith('for/') ||
     path === 'switch' ||
-    path.startsWith('switch/')
+    path.startsWith('switch/') ||
+    path === 'use-cases' ||
+    path.startsWith('use-cases/')
   ) {
     return { changefreq: 'monthly', priority: '0.8' };
   }

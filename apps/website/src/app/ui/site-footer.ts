@@ -102,6 +102,7 @@ export class SiteFooter {
       heading: 'Resources',
       links: [
         { label: 'Help center', path: '/docs' },
+        { label: 'Use cases', path: '/use-cases' },
         { label: 'Support', href: `mailto:${CONTACT_EMAIL}` },
         { label: 'Data ownership', path: '/data-ownership' },
       ],
