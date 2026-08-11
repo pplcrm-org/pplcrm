@@ -358,13 +358,17 @@ function buildSites(
 
 // ── Canada: Ottawa, Ontario ─────────────────────────────────────────────────────────────────────
 //
-// Cluster one is Centretown (Somerset ward — federal riding Ottawa Centre): eight residential
-// segments between Elgin and Bronson. Cluster two is Sandy Hill (Rideau-Vanier ward — riding
-// Ottawa—Vanier): six segments between King Edward and the river. Segment endpoints are
-// interpolated around the anchor coordinates this file has always carried (174 Cooper,
-// 288 MacLaren, 92 Frank, 41 Arlington, 356 Gladstone, 145 Bay, 61 Sweetland, 45 Blackburn,
-// 219 Charlotte, 128 Marlborough) — those pins were looked up once and are carried forward, never
-// re-invented.
+// Cluster one is Centretown (Somerset ward — federal riding Ottawa Centre). Cluster two is Sandy
+// Hill (Rideau-Vanier ward — riding Ottawa—Vanier). Segment endpoints are derived from
+// OpenStreetMap address points (surveyed buildings carrying these exact house numbers), looked up
+// 2026-08-10: for each street, two real buildings bracketing the demo's number range define the
+// line, and the first/last house positions are interpolated on it in number space. Where OSM
+// coverage bracketed the range too tightly to spread the houses (a block face of large buildings),
+// the segment is stretched symmetrically to at least ~3 m per house so pins don't heap. A user who
+// checks a pin against the live map must find it on the right block of the right street.
+// The earlier endpoints (before this lookup) placed several streets hundreds of metres off —
+// Arlington and James sat on top of the Queensway — which is exactly the "household in the river"
+// failure this comment block warns about. Anchors are looked up, never invented.
 
 const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
   'st-cooper': {
@@ -373,8 +377,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K2P 0E8',
     firstNum: 160,
     numStep: 1,
-    start: [-75.6893, 45.41355],
-    end: [-75.6918, 45.41375],
+    start: [-75.689365, 45.418944],
+    end: [-75.690044, 45.418623],
   },
   'st-maclaren': {
     name: 'MacLaren Street',
@@ -382,8 +386,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K2P 0M6',
     firstNum: 274,
     numStep: 1,
-    start: [-75.6943, 45.4151],
-    end: [-75.6968, 45.4153],
+    start: [-75.692881, 45.416218],
+    end: [-75.69348, 45.415827],
   },
   'st-frank': {
     name: 'Frank Street',
@@ -391,8 +395,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K2P 0X2',
     firstNum: 82,
     numStep: 1,
-    start: [-75.6863, 45.4125],
-    end: [-75.6883, 45.41266],
+    start: [-75.684496, 45.416649],
+    end: [-75.685078, 45.416439],
   },
   'st-arlington': {
     name: 'Arlington Avenue',
@@ -400,8 +404,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K2P 1C1',
     firstNum: 29,
     numStep: 1,
-    start: [-75.6929, 45.40782],
-    end: [-75.6951, 45.408],
+    start: [-75.693542, 45.409903],
+    end: [-75.69415, 45.409611],
   },
   'st-gladstone': {
     name: 'Gladstone Avenue',
@@ -409,8 +413,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K2P 0Y9',
     firstNum: 344,
     numStep: 1,
-    start: [-75.6972, 45.4106],
-    end: [-75.6997, 45.4108],
+    start: [-75.692622, 45.412337],
+    end: [-75.693234, 45.411685],
   },
   'st-bay': {
     name: 'Bay Street',
@@ -418,8 +422,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1R 7T2',
     firstNum: 137,
     numStep: 1,
-    start: [-75.705, 45.4162],
-    end: [-75.7052, 45.4148],
+    start: [-75.706326, 45.418316],
+    end: [-75.705811, 45.417989],
   },
   'st-james': {
     name: 'James Street',
@@ -427,8 +431,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1R 5M6',
     firstNum: 150,
     numStep: 1,
-    start: [-75.6952, 45.40965],
-    end: [-75.6974, 45.40983],
+    start: [-75.699496, 45.411214],
+    end: [-75.700433, 45.411205],
   },
   'st-percy': {
     name: 'Percy Street',
@@ -436,8 +440,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1R 7V3',
     firstNum: 508,
     numStep: 1,
-    start: [-75.6966, 45.4104],
-    end: [-75.6968, 45.4086],
+    start: [-75.6948, 45.40165],
+    end: [-75.694193, 45.400897],
   },
   'st-sweetland': {
     name: 'Sweetland Avenue',
@@ -445,8 +449,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1N 7T7',
     firstNum: 47,
     numStep: 1,
-    start: [-75.6797, 45.428],
-    end: [-75.6799, 45.4263],
+    start: [-75.678934, 45.425482],
+    end: [-75.678545, 45.425037],
   },
   'st-blackburn': {
     name: 'Blackburn Avenue',
@@ -454,8 +458,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1N 8A4',
     firstNum: 35,
     numStep: 1,
-    start: [-75.6791, 45.4254],
-    end: [-75.6793, 45.4239],
+    start: [-75.676413, 45.426478],
+    end: [-75.675809, 45.425862],
   },
   'st-charlotte': {
     name: 'Charlotte Street',
@@ -463,8 +467,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1N 8L2',
     firstNum: 209,
     numStep: 1,
-    start: [-75.6832, 45.4297],
-    end: [-75.6834, 45.428],
+    start: [-75.675325, 45.431941],
+    end: [-75.674845, 45.431416],
   },
   'st-marlborough': {
     name: 'Marlborough Avenue',
@@ -472,8 +476,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1N 8G3',
     firstNum: 118,
     numStep: 1,
-    start: [-75.6752, 45.4239],
-    end: [-75.6754, 45.4224],
+    start: [-75.672516, 45.425294],
+    end: [-75.671881, 45.424621],
   },
   'st-russell': {
     name: 'Russell Avenue',
@@ -481,8 +485,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1N 7X1',
     firstNum: 150,
     numStep: 1,
-    start: [-75.6771, 45.4247],
-    end: [-75.6773, 45.4228],
+    start: [-75.676354, 45.423268],
+    end: [-75.675884, 45.422798],
   },
   'st-goulburn': {
     name: 'Goulburn Avenue',
@@ -490,8 +494,8 @@ const OTTAWA_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: 'K1N 8C7',
     firstNum: 96,
     numStep: 1,
-    start: [-75.676, 45.4243],
-    end: [-75.6762, 45.4228],
+    start: [-75.674225, 45.426012],
+    end: [-75.673896, 45.425615],
   },
 };
 
@@ -508,8 +512,9 @@ export const CANADA_PLACE_PACK: PlacePack = {
       name: 'Somerset',
       code: '14',
       // North edge 45.421 is Rideau-Vanier's south edge: the two rectangles share a line, never
-      // an area — overlapping features would trip the product's own boundary validation.
-      ring: box(-75.712, 45.404, -75.683, 45.421),
+      // an area — overlapping features would trip the product's own boundary validation. The south
+      // edge reaches 45.399 because Percy Street's real 500-block sits below the Queensway.
+      ring: box(-75.712, 45.399, -75.683, 45.421),
     },
     east: {
       name: 'Rideau-Vanier',
@@ -554,12 +559,13 @@ export const CANADA_PLACE_PACK: PlacePack = {
 //    models, so the demo story — a ward council member, ward-bounded turfs, a ward coverage report
 //    — transfers with no distortion at all.
 // 2. Chicago's street grid is a published linear coordinate system: every address states its
-//    distance north or south of Madison Street and east or west of State Street, so an address can
-//    be placed between two known major-street crossings instead of being guessed at. Every segment
-//    below is interpolated around the anchor coordinates this file has always carried, which lands
-//    each pin on its own block. House numbers advance by 7 per door — Chicago allots ~100 address
-//    units per 200 m block, so neighbouring lots are several units apart, and an odd step keeps
-//    the numbers alternating between the two sides of the street.
+//    distance north or south of Madison Street and east or west of State Street. Segment endpoints
+//    are fitted to OpenStreetMap address points (surveyed buildings on these streets, looked up
+//    2026-08-10) rather than computed from the grid alone — the fitted lines agree with the grid
+//    to a few tens of metres, which the pure arithmetic the file previously carried did not always
+//    manage. House numbers advance by 7 per door — Chicago allots ~100 address units per 200 m
+//    block, so neighbouring lots are several units apart, and an odd step keeps the numbers
+//    alternating between the two sides of the street.
 //
 // Cluster one is Rogers Park (Ward 49), cluster two is Ravenswood / Lincoln Square (Ward 47) —
 // each a single well-known neighbourhood, every address in the middle of it rather than near a
@@ -573,8 +579,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60626',
     firstNum: 1354,
     numStep: 7,
-    start: [-87.6651, 42.00788],
-    end: [-87.66833, 42.00792],
+    start: [-87.66557, 42.008118],
+    end: [-87.668129, 42.007771],
   },
   'st-maclaren': {
     name: 'W Lunt Avenue',
@@ -582,8 +588,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60626',
     firstNum: 1240,
     numStep: 7,
-    start: [-87.66232, 42.00958],
-    end: [-87.66555, 42.00962],
+    start: [-87.663454, 42.009363],
+    end: [-87.665922, 42.008979],
   },
   'st-frank': {
     name: 'W Estes Avenue',
@@ -591,8 +597,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60626',
     firstNum: 1452,
     numStep: 7,
-    start: [-87.6681, 42.01128],
-    end: [-87.67065, 42.01132],
+    start: [-87.667576, 42.011567],
+    end: [-87.669752, 42.011569],
   },
   'st-arlington': {
     name: 'W Pratt Boulevard',
@@ -600,8 +606,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60626',
     firstNum: 1161,
     numStep: 7,
-    start: [-87.66006, 42.00618],
-    end: [-87.66295, 42.00622],
+    start: [-87.660412, 42.005348],
+    end: [-87.663477, 42.005397],
   },
   'st-gladstone': {
     name: 'W Greenleaf Avenue',
@@ -609,8 +615,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60626',
     firstNum: 1556,
     numStep: 7,
-    start: [-87.67106, 42.01008],
-    end: [-87.67429, 42.01012],
+    start: [-87.669586, 42.010234],
+    end: [-87.672459, 42.009997],
   },
   'st-bay': {
     name: 'W Touhy Avenue',
@@ -618,8 +624,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60626',
     firstNum: 1074,
     numStep: 7,
-    start: [-87.65764, 42.01298],
-    end: [-87.66019, 42.01302],
+    start: [-87.65849, 42.012113],
+    end: [-87.661025, 42.01222],
   },
   'st-james': {
     name: 'W Farwell Avenue',
@@ -627,8 +633,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60626',
     firstNum: 1300,
     numStep: 7,
-    start: [-87.6637, 42.00438],
-    end: [-87.6666, 42.00442],
+    start: [-87.664296, 42.006808],
+    end: [-87.66683, 42.006982],
   },
   'st-percy': {
     name: 'N Greenview Avenue',
@@ -636,8 +642,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60626',
     firstNum: 6808,
     numStep: 7,
-    start: [-87.667, 42.00634],
-    end: [-87.6672, 42.00818],
+    start: [-87.667812, 42.005877],
+    end: [-87.667839, 42.007556],
   },
   'st-sweetland': {
     name: 'N Hoyne Avenue',
@@ -645,8 +651,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60625',
     firstNum: 4614,
     numStep: 7,
-    start: [-87.679, 41.96533],
-    end: [-87.6792, 41.96748],
+    start: [-87.68148, 41.965683],
+    end: [-87.681537, 41.967873],
   },
   'st-blackburn': {
     name: 'N Seeley Avenue',
@@ -654,8 +660,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60625',
     firstNum: 4514,
     numStep: 7,
-    start: [-87.6812, 41.96347],
-    end: [-87.6814, 41.96537],
+    start: [-87.680628, 41.963902],
+    end: [-87.680748, 41.965838],
   },
   'st-charlotte': {
     name: 'N Paulina Street',
@@ -663,8 +669,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60640',
     firstNum: 4462,
     numStep: 7,
-    start: [-87.6693, 41.96253],
-    end: [-87.6695, 41.96469],
+    start: [-87.670846, 41.963095],
+    end: [-87.671208, 41.965296],
   },
   'st-marlborough': {
     name: 'W Leland Avenue',
@@ -672,8 +678,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60625',
     firstNum: 2174,
     numStep: 7,
-    start: [-87.6808, 41.96688],
-    end: [-87.68335, 41.96692],
+    start: [-87.683467, 41.966857],
+    end: [-87.686885, 41.966815],
   },
   'st-russell': {
     name: 'W Sunnyside Avenue',
@@ -681,8 +687,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60625',
     firstNum: 2080,
     numStep: 7,
-    start: [-87.67854, 41.96318],
-    end: [-87.68177, 41.96322],
+    start: [-87.680091, 41.963357],
+    end: [-87.684895, 41.963134],
   },
   'st-goulburn': {
     name: 'W Eastwood Avenue',
@@ -690,8 +696,8 @@ const CHICAGO_STREETS: Readonly<Record<DemoStreetKey, PackStreet>> = {
     zip: '60625',
     firstNum: 2100,
     numStep: 7,
-    start: [-87.679, 41.96558],
-    end: [-87.68155, 41.96562],
+    start: [-87.681004, 41.965996],
+    end: [-87.684429, 41.965915],
   },
 };
 
