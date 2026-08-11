@@ -153,6 +153,10 @@ export class FaqPage {
           a: 'Door lists are. The canvassing companion is offline-first — knocks queue on the phone and sync back to the field report when you’re in signal again. Delivery routes currently need a connection.',
         },
         {
+          q: 'Can volunteers work on paper?',
+          a: 'Yes — paper is a first-class option, not a fallback. Every turf prints as a walk sheet: a map with numbered doors, the door list in walking order with blank result and notes columns, and a QR code that opens the same turf on a phone. Print mid-campaign and already-knocked doors show their result, so a paper round never retreads finished ground.',
+        },
+        {
           q: 'Do field volunteers need their own seats?',
           a: 'No. Volunteers join by invite to use the companion apps and don’t take up a staff seat. Companion volunteers are part of the Movement plan, and they’re unlimited.',
         },

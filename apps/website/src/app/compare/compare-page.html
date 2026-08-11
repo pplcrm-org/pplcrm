@@ -84,7 +84,13 @@
                   >{{ verdictLabel(cell.verdict) }}</span
                 >
               </div>
-              <p class="mt-1.5 text-[12.5px] leading-relaxed text-base-content/60">
+              <!-- Below `sm` the note collapses behind the row's Show-details button; `sm:block`
+                   wins over the conditional `hidden` from that breakpoint up, so desktop always
+                   shows every note and the button never renders there. -->
+              <p
+                class="mt-1.5 text-[12.5px] leading-relaxed text-base-content/60 sm:block"
+                [class.hidden]="!isExpanded(chart.id, row.job)"
+              >
                 {{ cell.note }} @if (cell.source) {
                 <a
                   [href]="cell.source"
@@ -98,6 +104,14 @@
             </div>
             }
           </div>
+          <button
+            type="button"
+            class="mt-3 w-full cursor-pointer rounded-[10px] border border-line bg-base-50 py-2 text-center text-[12.5px] font-semibold text-primary sm:hidden"
+            [attr.aria-expanded]="isExpanded(chart.id, row.job)"
+            (click)="toggleRow(chart.id, row.job)"
+          >
+            {{ isExpanded(chart.id, row.job) ? 'Hide the details' : 'Show the details' }}
+          </button>
         </div>
         }
       </div>

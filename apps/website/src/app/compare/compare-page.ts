@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 
 import { COMPARE_CHARTS, VERDICT_LABELS, type CompareCategoryChart, type Verdict } from './compare-content';
@@ -37,6 +37,31 @@ export class ComparePage {
 
   /** The three named-competitor charts. All cell data and sourcing rules live in compare-content.ts. */
   protected readonly charts = COMPARE_CHARTS;
+
+  /**
+   * Chart rows whose competitor notes are open on a phone. Below `sm` a row shows each
+   * competitor as one compact line (name + verdict chip) until tapped open — with all 16
+   * rows' notes visible the phone page ran to roughly 16,000px. From `sm` up the notes are
+   * always visible and the toggle button is not rendered, so this state does nothing there.
+   */
+  private readonly expandedRows = signal<ReadonlySet<string>>(new Set());
+
+  protected isExpanded(chartId: string, job: string): boolean {
+    return this.expandedRows().has(`${chartId}:${job}`);
+  }
+
+  protected toggleRow(chartId: string, job: string): void {
+    const key = `${chartId}:${job}`;
+    this.expandedRows.update((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
 
   protected verdictLabel(verdict: Verdict): string {
     return VERDICT_LABELS[verdict];
