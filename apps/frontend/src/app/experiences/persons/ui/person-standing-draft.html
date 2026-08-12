@@ -3,8 +3,7 @@
 
   @if (activeCampaign(); as campaign) {
   <p class="mb-3 text-[11px] text-base-content/50">
-    <ng-container i18n>In</ng-container>
-    <span class="font-medium text-base-content/70">{{ campaign.name }}</span>
+    <ng-container i18n>In</ng-container>&nbsp;<span class="font-medium text-base-content/70">{{ campaign.name }}</span>
     @if (readonlyContext()) {
     <span class="badge badge-ghost badge-xs ml-1 align-middle" i18n>Archived · read-only</span>
     }

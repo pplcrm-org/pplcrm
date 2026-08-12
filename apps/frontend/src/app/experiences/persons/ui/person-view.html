@@ -44,10 +44,9 @@
     (logged)="onInteractionLogged()"
   ></pc-log-interaction>
   } @if (person()) {
-  <!-- Main Content Grid -->
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- Left Column: Contact rail -->
-    <div class="lg:col-span-1 flex flex-col gap-6">
+  <!-- Summary band: three fact cards in a row, then the full-width tabs workspace below -->
+  <div class="flex flex-col gap-6">
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
       <!-- Contact card -->
       <pc-card>
         <h3 class="mb-3 block pc-eyebrow">Contact</h3>
@@ -105,9 +104,11 @@
           ></pc-detail-item>
           }
         </div>
+      </pc-card>
 
-        <!-- Tags & Issues of Interest -->
-        <div class="mt-2 flex w-full flex-col gap-3 border-t border-base-200 pt-4">
+      <!-- Tags, issues, notes & record metadata -->
+      <pc-card>
+        <div class="flex w-full flex-col gap-3">
           <div>
             <span class="mb-1.5 block pc-eyebrow">Tags</span>
             @if (tags().length > 0) {
@@ -140,6 +141,13 @@
           </div>
         </div>
 
+        @if (person().notes) {
+        <div class="mt-2 border-t border-base-200 pt-4">
+          <h3 class="mb-2 block pc-eyebrow">Internal notes</h3>
+          <p class="whitespace-pre-line text-xs leading-relaxed text-base-content/80">{{ person().notes }}</p>
+        </div>
+        }
+
         <!-- System Metadata -->
         <pc-system-metadata
           [createdAt]="person().created_at"
@@ -159,18 +167,10 @@
         [senior]="person().senior ?? null"
         [householdId]="isPlaceholderHousehold() ? null : householdId()"
       ></pc-person-campaign-facts>
-
-      <!-- Internal Notes (own card) -->
-      @if (person().notes) {
-      <pc-card>
-        <h3 class="mb-2 block pc-eyebrow">Internal notes</h3>
-        <p class="whitespace-pre-line text-xs leading-relaxed text-base-content/80">{{ person().notes }}</p>
-      </pc-card>
-      }
     </div>
 
-    <!-- Right Column: the standard pill tabs + content card (§1 "numbers before clicks") -->
-    <div class="lg:col-span-2 flex flex-col gap-6">
+    <!-- Full-width tabs workspace (§1 "numbers before clicks") -->
+    <div class="flex flex-col gap-6">
       <pc-tabs [tabs]="personTabs()" [(activeTab)]="activeTab">
         <pc-tab-panel id="activity" [activeTab]="activeTab()">
           <div class="flex flex-col flex-1 min-h-0 gap-4 pr-1">

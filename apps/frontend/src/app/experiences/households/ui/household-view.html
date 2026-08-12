@@ -45,10 +45,9 @@
     </a>
   </div>
   } @else {
-  <!-- Main Content Grid -->
-  <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-    <!-- Left Column: Map, Details, Door notes -->
-    <div class="flex flex-col gap-6 lg:col-span-1">
+  <!-- Summary band: four compact fact cards in a row, then the full-width tabs workspace below -->
+  <div class="flex flex-col gap-6">
+    <div class="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
       <!-- Map card — static Google map; clicking opens the maps app. Ward + address chips overlay it. (§6) -->
       <pc-card>
         <div class="relative h-56 w-full overflow-hidden rounded-lg">
@@ -159,8 +158,8 @@
       </pc-card>
     </div>
 
-    <!-- Right Column: the standard pill tabs + content card (§1 "numbers before clicks") -->
-    <div class="flex flex-col gap-6 lg:col-span-2">
+    <!-- Full-width tabs workspace (§1 "numbers before clicks") -->
+    <div class="flex flex-col gap-6">
       <pc-tabs [tabs]="householdTabs()" [(activeTab)]="activeTab">
         <pc-tab-panel id="activity" [activeTab]="activeTab()">
           <div class="flex flex-col flex-1 min-h-0 gap-4 pr-1">

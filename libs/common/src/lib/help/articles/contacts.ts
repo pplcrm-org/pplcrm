@@ -68,11 +68,11 @@ export const CONTACTS_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The contact card on the left carries the essentials: email, phone, address (which links to the household), preferred contact channel, tags, and issues of interest. The record’s notes sit just below it.',
+        text: 'A row of cards across the top carries the record’s facts. The **Contact** card holds the essentials: email, phone, address (which links to the household), and preferred contact channel. Beside it, a second card collects tags, issues of interest, and the record’s notes.',
       },
       {
         kind: 'p',
-        text: 'Below it, the **Campaign standing** card holds what varies per campaign: this person’s **support level** (Strong through Against; “Unknown” just means never asked), their **voting status** during an election, their **yard sign** (whether their household requested one and whether it has been delivered; see [Deliveries](/help/deliveries)), their **email consent** for the context you are working in, and the global **do-not-contact** override. The card always shows the campaign you are working in — your assigned campaign, or, for admins, the context selected under **Workspace → Campaigns**.',
+        text: 'The third card in the row, **Campaign standing**, holds what varies per campaign: this person’s **support level** (Strong through Against; “Unknown” just means never asked), their **voting status** during an election, their **yard sign** (whether their household requested one and whether it has been delivered; see [Deliveries](/help/deliveries)), their **email consent** for the context you are working in, and the global **do-not-contact** override. The card always shows the campaign you are working in — your assigned campaign, or, for admins, the context selected under **Workspace → Campaigns**.',
       },
       {
         kind: 'p',
@@ -163,7 +163,7 @@ export const CONTACTS_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The household page shows a map card. Clicking it opens the location in your maps app, with the address and its area labelled on top. A status chip always tells you where geocoding stands: **Located** (the pin is set), **Locating…** (still working in the background), **Address problem** (the address could not be found; open Edit and fix it), or **Not geocoded** (geocoding is a Movement feature and your plan is below it — the address is saved and fine, it just wasn’t placed on the map). Geocoded households power canvassing turfs and delivery coverage, so a clean address pays off downstream. What each state costs and when a **Locating…** household resolves is spelled out in [Geocoding, boundary matching, and what each costs](/help/geocoding-and-costs). Below the details you’ll also find a **Yard sign** card showing this home’s sign request in the campaign you are working in. Set it right there if a sign went up outside the app (see [Deliveries](/help/deliveries)).',
+        text: 'The household page shows a map card. Clicking it opens the location in your maps app, with the address and its area labelled on top. A status chip always tells you where geocoding stands: **Located** (the pin is set), **Locating…** (still working in the background), **Address problem** (the address could not be found; open Edit and fix it), or **Not geocoded** (geocoding is a Movement feature and your plan is below it — the address is saved and fine, it just wasn’t placed on the map). Geocoded households power canvassing turfs and delivery coverage, so a clean address pays off downstream. What each state costs and when a **Locating…** household resolves is spelled out in [Geocoding, boundary matching, and what each costs](/help/geocoding-and-costs). Alongside it in the same row of cards sit the household’s details, a **Yard sign** card showing this home’s sign request in the campaign you are working in, and the door notes. Set it right there if a sign went up outside the app (see [Deliveries](/help/deliveries)).',
       },
       { kind: 'h2', id: 'dedupe', text: 'Keep households clean' },
       {
