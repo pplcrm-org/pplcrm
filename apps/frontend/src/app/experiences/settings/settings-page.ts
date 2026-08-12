@@ -33,6 +33,8 @@ import { GoogleSyncSettings } from './google-sync/google-sync-settings';
 import { MsSyncSettings } from './ms-sync/ms-sync-settings';
 import { SettingsService, TenantSettingsSnapshot } from './services/settings-service';
 import {
+  CUSTOM_SECTIONS,
+  CustomSectionConfig,
   SETTINGS_SECTIONS,
   SettingsFieldConfig,
   SettingsNavGroup,
@@ -53,16 +55,6 @@ interface SectionState {
   payload: WritableSignal<Record<string, any>>;
 }
 
-/** Self-saving sections rendered outside the config-driven form flow. One entry
- *  drives both the sidebar nav button and the content shell, so the two can
- *  never drift apart again. */
-interface CustomSectionConfig {
-  description: string;
-  icon: PcIconNameType;
-  id: string;
-  title: string;
-}
-
 /** One sidebar nav entry, merged from either section source. `section` is set
  *  only for form-driven sections and drives the unsaved-changes dot. */
 interface NavItem {
@@ -76,80 +68,6 @@ interface NavGroup {
   items: NavItem[];
   label: string | null;
 }
-
-const CUSTOM_SECTIONS: CustomSectionConfig[] = [
-  {
-    id: 'modules',
-    icon: 'adjustments-horizontal',
-    title: 'Modules',
-    description:
-      'What kind of organization this is, and which optional modules appear in your sidebar. Turning one off never deletes anything.',
-  },
-  {
-    id: 'campaigns',
-    icon: 'square-3-stack-3d',
-    title: 'Campaigns',
-    description:
-      'Separate working contexts (your permanent office plus election campaigns) that share one contact list. Admins manage them and assign users to them.',
-  },
-  {
-    id: 'boundaries',
-    icon: 'map',
-    title: 'Boundaries',
-    description:
-      'The maps your households are matched against: wards, ridings, districts, precincts, or your own organizing areas. Import the names you already have, upload a published GeoJSON file, or draw the areas yourself.',
-  },
-  {
-    id: 'email-sync',
-    icon: 'envelope',
-    title: 'Email sync',
-    description:
-      'Connect your email provider to automatically sync incoming and outgoing emails into your pplcrm inbox.',
-  },
-  {
-    id: 'domains',
-    icon: 'globe-americas',
-    title: 'Domain verification',
-    description: 'Configure DNS verification records (SPF, DKIM, DMARC) so you can send emails from your own domain.',
-  },
-  {
-    id: 'donations',
-    icon: 'currency-dollar',
-    title: 'Donations',
-    description:
-      'Configure donation limit, residency restrictions, progressive tax credit tiers, and connect your Stripe account.',
-  },
-  {
-    id: 'deliveries',
-    icon: 'house-modern',
-    title: 'Deliveries',
-    description: 'Planning defaults the Plan routes page starts from — stop time, driving speed, drivers, return trip.',
-  },
-  {
-    id: 'storage',
-    icon: 'archive-box',
-    title: 'Storage',
-    description: 'Plan quota, usage, and the files taking up the most space.',
-  },
-  {
-    id: 'billing',
-    icon: 'credit-card',
-    title: 'Billing',
-    description: 'Manage your subscription plans, view invoice details, and update payment methods.',
-  },
-  {
-    id: 'account',
-    icon: 'user-circle',
-    title: 'Account',
-    description: 'Manage your organization account: pause billing or permanently delete all data.',
-  },
-  {
-    id: 'api-keys',
-    icon: 'lock-closed',
-    title: 'API keys',
-    description: 'One key for server-side integrations: submit forms, RSVPs, and signups, or connect Zapier.',
-  },
-];
 
 @Component({
   selector: 'pc-settings-page',

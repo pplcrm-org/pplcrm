@@ -5,6 +5,7 @@ import { Navbar } from './navbar';
 import { AuthService } from 'apps/frontend/src/app/auth/auth-service';
 import { FullScreenService } from '../../services/fullscreen.service';
 import { SearchService } from '../../services/api/search-service';
+import { CommandPaletteService } from '../../services/command-palette.service';
 import { SidebarService } from 'apps/frontend/src/app/layout/sidebar/sidebar-service';
 import { ThemeService } from 'apps/frontend/src/app/layout/theme/theme-service';
 import { NotificationsService } from '../../services/api/notifications-service';
@@ -20,6 +21,7 @@ describe('Navbar Component', () => {
   let mockAuthSvc: any;
   let mockFullScreenSvc: any;
   let mockSearchSvc: any;
+  let mockPaletteSvc: any;
   let mockSidebarSvc: any;
   let mockThemeSvc: any;
   let mockNotificationsSvc: any;
@@ -47,7 +49,13 @@ describe('Navbar Component', () => {
       clearSearch: vi.fn(),
       doSearchImmediate: vi.fn(),
       doSearch: vi.fn(),
+      // A grid is "present" in these specs, so ⌘K keeps its filter-the-page behavior.
+      hasGridConsumer: vi.fn().mockReturnValue(true),
+      registerGridConsumer: vi.fn(),
+      unregisterGridConsumer: vi.fn(),
     };
+
+    mockPaletteSvc = { open: vi.fn() };
 
     mockSidebarSvc = {
       isMobileOpen: vi.fn().mockReturnValue(false),
@@ -81,6 +89,7 @@ describe('Navbar Component', () => {
         { provide: AuthService, useValue: mockAuthSvc },
         { provide: FullScreenService, useValue: mockFullScreenSvc },
         { provide: SearchService, useValue: mockSearchSvc },
+        { provide: CommandPaletteService, useValue: mockPaletteSvc },
         { provide: SidebarService, useValue: mockSidebarSvc },
         { provide: ThemeService, useValue: mockThemeSvc },
         { provide: NotificationsService, useValue: mockNotificationsSvc },
@@ -142,6 +151,13 @@ describe('Navbar Component', () => {
   it('should hide search bar', () => {
     component['showSearchBar']();
     component['hideSearchBar']();
+    expect(component['searchBarVisible']()).toBe(false);
+  });
+
+  it('opens the command palette instead of the search bar when no grid is listening', () => {
+    mockSearchSvc.hasGridConsumer.mockReturnValue(false);
+    component['showSearchBar']();
+    expect(mockPaletteSvc.open).toHaveBeenCalled();
     expect(component['searchBarVisible']()).toBe(false);
   });
 

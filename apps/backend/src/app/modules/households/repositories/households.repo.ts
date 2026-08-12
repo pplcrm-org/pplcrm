@@ -355,8 +355,9 @@ export class HouseholdRepo extends BaseRepository<'households'> {
           return qb.where(
             sql<boolean>`(
               households.city ILIKE ${text} OR
-              households.street1 ILIKE ${text} OR
+              (COALESCE(households.street_num, '') || ' ' || COALESCE(households.street1, '')) ILIKE ${text} OR
               households.street2 ILIKE ${text} OR
+              households.zip ILIKE ${text} OR
               households.notes ILIKE ${text} OR
               tags.name ILIKE ${text}
             )`,

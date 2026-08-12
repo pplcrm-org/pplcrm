@@ -361,7 +361,7 @@ export class PersonsRepo extends BaseRepository<'persons'> {
             persons.email ILIKE ${text} OR
             persons.mobile ILIKE ${text} OR
             households.city ILIKE ${text} OR
-            households.street1 ILIKE ${text} OR
+            (COALESCE(households.street_num, '') || ' ' || COALESCE(households.street1, '')) ILIKE ${text} OR
             companies.name ILIKE ${text} OR
             tags.name ILIKE ${text}
           )`,

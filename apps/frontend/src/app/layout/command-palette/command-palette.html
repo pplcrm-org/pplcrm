@@ -19,7 +19,7 @@
         #paletteInput
         type="text"
         class="grow bg-transparent text-base outline-none placeholder:text-base-content/40"
-        placeholder="Search actions and people…"
+        placeholder="Search pages, people, addresses and help…"
         i18n-placeholder="@@palette.placeholder"
         [value]="query()"
         (input)="onInput($any($event.target).value)"
@@ -54,7 +54,7 @@
         </button>
       </li>
       } @empty {
-      <li class="px-4 py-8 text-center text-sm text-base-content/50" i18n="@@palette.empty">No matching actions.</li>
+      <li class="px-4 py-8 text-center text-sm text-base-content/50" i18n="@@palette.empty">No matches.</li>
       }
     </ul>
 

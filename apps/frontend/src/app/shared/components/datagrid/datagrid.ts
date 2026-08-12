@@ -1116,6 +1116,8 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
     if (!this.store) {
       return;
     }
+    // The navbar's ⌘K falls back to the command palette once no grid is listening.
+    this.searchSvc.unregisterGridConsumer();
     // Abort any inflight requests and release refs
     this.gridSvc.abort();
     this.tsTable = undefined;
@@ -1126,6 +1128,9 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
     if (!this.store) {
       return;
     }
+
+    // Tell the navbar a grid is consuming the search term on this page (⌘K = filter).
+    this.searchSvc.registerGridConsumer();
 
     void (async () => {
       this.undoMgr.initialize(this);

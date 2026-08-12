@@ -313,13 +313,14 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
     id: 'search',
     category: 'getting-started',
     title: 'Search with ⌘K',
-    summary: 'The top-bar search filters the page you are on as you type. Here is how to get the most from it.',
-    keywords: ['search', 'find', 'command k', 'cmd k', 'ctrl k', 'quick find', 'filter text'],
+    summary:
+      'On a page with a grid, ⌘K filters it as you type. Everywhere else it opens the search palette, which finds pages, people, addresses, workspace settings and help articles.',
+    keywords: ['search', 'find', 'command k', 'cmd k', 'ctrl k', 'quick find', 'filter text', 'palette', 'address'],
     related: ['filters', 'shortcuts', 'grid-basics'],
     blocks: [
       {
         kind: 'p',
-        text: 'Press `⌘K` (or `Ctrl K` on Windows and Linux), or click the magnifying glass in the top bar, and start typing. Search applies to the view you are on: in a grid like [People](/people), rows narrow live as you type.',
+        text: 'Press `⌘K` (or `Ctrl K` on Windows and Linux), or click the magnifying glass in the top bar, and start typing. On a page with a grid — like [People](/people) — the box filters that grid, and rows narrow live as you type. On a page with no grid (the dashboard, the inbox, a record page), the same shortcut opens the search palette instead, so `⌘K` is never a dead end.',
       },
       {
         kind: 'list',
@@ -337,7 +338,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'There is also a command palette on `⌘⇧K` for jumping around by keyboard, and `g`-then-a-letter chords for the sidebar sections. The full map is in [Keyboard shortcuts](/help/shortcuts).',
+        text: 'The search palette is always available on `⌘⇧K`. It finds every page the sidebar offers (in your organization’s own words), people by name, email or phone, households by address (“214 Alder” works), workspace settings sections by name for administrators, and help articles. There are also `g`-then-a-letter chords for the sidebar sections. The full map is in [Keyboard shortcuts](/help/shortcuts).',
       },
       {
         kind: 'p',

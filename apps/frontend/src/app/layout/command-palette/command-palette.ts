@@ -3,8 +3,11 @@ import { Component, computed, effect, inject, signal, viewChild } from '@angular
 import { Router } from '@angular/router';
 import { Icon } from '@icons/icon';
 
+import { searchHelp } from '@common';
+
 import type { CommandAction } from '../../services/command-palette.service';
 import { CommandPaletteService } from '../../services/command-palette.service';
+import { HouseholdsService } from '../../experiences/households/services/households-service';
 import { PersonsService } from '../../experiences/persons/services/persons-service';
 import { SearchService } from '../../services/api/search-service';
 
@@ -14,7 +17,19 @@ interface PersonHit {
   email: string | null;
 }
 
-type ResultKind = 'Action' | 'Person' | 'Search';
+interface HouseholdHit {
+  id: string;
+  address: string;
+  city: string | null;
+}
+
+interface HelpHit {
+  id: string;
+  title: string;
+  summary: string;
+}
+
+type ResultKind = 'Action' | 'Person' | 'Household' | 'Help' | 'Search';
 
 interface PaletteResult {
   kind: ResultKind;
@@ -25,6 +40,8 @@ interface PaletteResult {
 }
 
 const PEOPLE_LIMIT = 4;
+const HOUSEHOLDS_LIMIT = 4;
+const HELP_LIMIT = 3;
 const PEOPLE_DEBOUNCE_MS = 180;
 
 /**
@@ -43,6 +60,7 @@ const PEOPLE_DEBOUNCE_MS = 180;
 export class CommandPalette {
   private readonly palette = inject(CommandPaletteService);
   private readonly persons = inject(PersonsService);
+  private readonly households = inject(HouseholdsService);
   private readonly router = inject(Router);
   private readonly searchSvc = inject(SearchService);
 
@@ -50,6 +68,7 @@ export class CommandPalette {
   protected readonly query = signal('');
   protected readonly activeIndex = signal(0);
   private readonly people = signal<PersonHit[]>([]);
+  private readonly householdHits = signal<HouseholdHit[]>([]);
 
   private readonly inputRef = viewChild<ElementRef<HTMLInputElement>>('paletteInput');
   private fetchTimer?: ReturnType<typeof setTimeout>;
@@ -60,6 +79,15 @@ export class CommandPalette {
     const actions = this.palette.actions();
     const matched = q ? actions.filter((a) => `${a.label} ${a.keywords ?? ''}`.toLowerCase().includes(q)) : actions;
     return matched.map((a) => ({ kind: 'Action', label: a.label, icon: a.icon, run: () => this.runAndClose(a.run) }));
+  });
+
+  /** Help matches are synchronous — the articles ship with the app. */
+  private readonly helpHits = computed<HelpHit[]>(() => {
+    const q = this.query().trim();
+    if (!q) return [];
+    return searchHelp(q)
+      .slice(0, HELP_LIMIT)
+      .map((r) => ({ id: r.article.id, title: r.article.title, summary: r.article.summary }));
   });
 
   protected readonly results = computed<PaletteResult[]>(() => {
@@ -73,6 +101,24 @@ export class CommandPalette {
           sublabel: p.email,
           icon: 'user-circle',
           run: () => this.runAndClose(() => void this.router.navigateByUrl(`/people/${p.id}`)),
+        });
+      }
+      for (const h of this.householdHits()) {
+        rows.push({
+          kind: 'Household',
+          label: h.address,
+          sublabel: h.city,
+          icon: 'house-modern',
+          run: () => this.runAndClose(() => void this.router.navigateByUrl(`/households/${h.id}`)),
+        });
+      }
+      for (const a of this.helpHits()) {
+        rows.push({
+          kind: 'Help',
+          label: a.title,
+          sublabel: a.summary,
+          icon: 'question-mark-circle',
+          run: () => this.runAndClose(() => void this.router.navigateByUrl(`/help/${a.id}`)),
         });
       }
       rows.push({
@@ -93,6 +139,7 @@ export class CommandPalette {
       } else {
         this.query.set('');
         this.people.set([]);
+        this.householdHits.set([]);
         this.activeIndex.set(0);
       }
     });
@@ -106,10 +153,14 @@ export class CommandPalette {
       }
       if (!open || !q) {
         this.people.set([]);
+        this.householdHits.set([]);
         return;
       }
       const token = ++this.fetchToken;
-      this.fetchTimer = setTimeout(() => void this.fetchPeople(q, token), PEOPLE_DEBOUNCE_MS);
+      this.fetchTimer = setTimeout(() => {
+        void this.fetchPeople(q, token);
+        void this.fetchHouseholds(q, token);
+      }, PEOPLE_DEBOUNCE_MS);
     });
   }
 
@@ -180,6 +231,26 @@ export class CommandPalette {
       this.people.set(rows);
     } catch {
       if (token === this.fetchToken) this.people.set([]);
+    }
+  }
+
+  private async fetchHouseholds(q: string, token: number): Promise<void> {
+    try {
+      const res = await this.households.getAll({
+        searchStr: q,
+        limit: HOUSEHOLDS_LIMIT,
+        columns: ['id', 'street_num', 'street1', 'city'],
+      });
+      if (token !== this.fetchToken) return; // a newer query superseded this one
+      const raw = (res?.rows ?? []) as ReadonlyArray<Record<string, unknown>>;
+      const rows = raw.slice(0, HOUSEHOLDS_LIMIT).map((r) => ({
+        id: String(r['id']),
+        address: [r['street_num'], r['street1']].filter(Boolean).join(' ').trim() || 'No address',
+        city: typeof r['city'] === 'string' && r['city'] ? r['city'] : null,
+      }));
+      this.householdHits.set(rows);
+    } catch {
+      if (token === this.fetchToken) this.householdHits.set([]);
     }
   }
 

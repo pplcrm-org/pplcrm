@@ -10,6 +10,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { ORG_MODE_LABELS, isPrivilegedRole } from '@common';
 
 import { injectHelpDoor } from '../../shared/help-doors';
+import { CommandPaletteService } from '../../services/command-palette.service';
 import { OrgModeService } from '../../services/org-mode.service';
 import { FavouriteToggle } from '../favourite-toggle/favourite-toggle';
 import { TourService } from '../tour/tour.service';
@@ -64,6 +65,7 @@ export class Navbar implements OnDestroy {
 
   private readonly userService = inject(UserService);
   private readonly fullscreen = inject(FullScreenService);
+  private readonly palette = inject(CommandPaletteService);
   private readonly searchSvc = inject(SearchService);
   private readonly sideBarSvc = inject(SidebarService);
   private readonly notificationsSvc = inject(NotificationsService);
@@ -368,7 +370,16 @@ export class Navbar implements OnDestroy {
     this.searchSvc.doSearch(this.searchStr());
   }
 
+  /**
+   * The inline box only filters the DataGrid on the current page. On a page with
+   * no grid it used to open a dead input, so both paths into it (⌘K and the
+   * magnifying-glass button) fall through to the command palette there instead.
+   */
   protected showSearchBar(): void {
+    if (!this.searchSvc.hasGridConsumer()) {
+      this.palette.open();
+      return;
+    }
     this.searchBarVisible.set(true);
   }
 

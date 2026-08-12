@@ -62,8 +62,8 @@ export class KeyboardShortcutsService {
     {
       title: 'General',
       rows: [
-        { keys: ['⌘', 'K'], label: 'Search' },
-        { keys: ['⌘', '⇧', 'K'], label: 'Command palette' },
+        { keys: ['⌘', 'K'], label: 'Filter this page (opens search everywhere else)' },
+        { keys: ['⌘', '⇧', 'K'], label: 'Search pages, people, addresses and help' },
         { keys: ['g', '…'], label: 'Go to… (then a section key below)' },
         { keys: ['?'], label: 'Show this shortcuts list' },
         { keys: ['Esc'], label: 'Close dialog / overlay' },
