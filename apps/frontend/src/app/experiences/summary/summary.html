@@ -156,9 +156,77 @@
   />
   }
 
-  <!-- Quiet stat tiles: LIVE numbers only, neutral values, primary icons (§5) -->
+  <!-- Field operations: live knock/turf/sign/volunteer counts, each row a link.
+       Rendered only when this workspace's modules and plan allow field ops. -->
+  @if (showFieldOps()) {
+  <div class="rounded-lg border border-line bg-base-100 p-4">
+    <div class="flex items-start justify-between">
+      <div class="pc-eyebrow">Field operations</div>
+      <pc-icon name="map-pin" [size]="4" class="shrink-0 text-primary"></pc-icon>
+    </div>
+    <div class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      @if (showCanvassingRows()) {
+      <a
+        routerLink="/canvassing"
+        class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
+      >
+        <pc-icon name="hand-thumb-up" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        <span class="min-w-0">
+          <span class="block text-[17px] font-bold leading-tight tabular-nums">
+            {{ fieldStats()?.doorsKnocked7d ?? '—' }}
+          </span>
+          <span class="block truncate text-[11px] text-base-content/45">
+            Doors knocked · 7 days ({{ fieldStats()?.conversations7d ?? 0 }} conversations)
+          </span>
+        </span>
+      </a>
+      <a
+        routerLink="/canvassing"
+        class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
+      >
+        <pc-icon name="map" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        <span class="min-w-0">
+          <span class="block text-[17px] font-bold leading-tight tabular-nums">
+            {{ fieldStats()?.turfsKnockingNow ?? '—' }}
+          </span>
+          <span class="block truncate text-[11px] text-base-content/45">Turfs knocking right now</span>
+        </span>
+      </a>
+      } @if (showDeliveriesRow()) {
+      <a
+        routerLink="/deliveries"
+        class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
+      >
+        <pc-icon name="yard-sign" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        <span class="min-w-0">
+          <span class="block text-[17px] font-bold leading-tight tabular-nums">{{ signsReady() ?? '—' }}</span>
+          <span class="block truncate text-[11px] text-base-content/45">Sign requests ready to route</span>
+        </span>
+      </a>
+      }
+      <a
+        routerLink="/volunteer-access"
+        class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
+      >
+        <pc-icon name="identification" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        <span class="min-w-0">
+          <span
+            class="block text-[17px] font-bold leading-tight tabular-nums"
+            [class.text-warning]="(volunteersWaiting() ?? 0) > 0"
+          >
+            {{ volunteersWaiting() ?? '—' }}
+          </span>
+          <span class="block truncate text-[11px] text-base-content/45">Volunteers waiting for approval</span>
+        </span>
+      </a>
+    </div>
+  </div>
+  }
+
+  <!-- Quiet stat tiles: LIVE numbers only, neutral values, primary icons (§5).
+       Each tile links to the page that explains its number. -->
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-    <div class="rounded-lg border border-line bg-base-100 p-4">
+    <a routerLink="/inbox" class="rounded-lg border border-line bg-base-100 p-4 hover:border-primary/40">
       <div class="flex items-start justify-between">
         <div class="pc-eyebrow">Open emails</div>
         <pc-icon name="envelope" [size]="4" class="shrink-0 text-primary"></pc-icon>
@@ -169,9 +237,9 @@
       <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-base-content">{{ totalOpenCount() }}</div>
       }
       <div class="mt-1 text-[11px] text-base-content/45">All open inbox conversations</div>
-    </div>
+    </a>
 
-    <div class="rounded-lg border border-line bg-base-100 p-4">
+    <a routerLink="/inbox" class="rounded-lg border border-line bg-base-100 p-4 hover:border-primary/40">
       <div class="flex items-start justify-between">
         <div class="pc-eyebrow">Unassigned open</div>
         <pc-icon name="exclamation-circle" [size]="4" class="shrink-0 text-primary"></pc-icon>
@@ -182,9 +250,9 @@
       <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-warning">{{ unassignedOpenCount() }}</div>
       }
       <div class="mt-1 text-[11px] text-base-content/45">Awaiting assignment</div>
-    </div>
+    </a>
 
-    <div class="rounded-lg border border-line bg-base-100 p-4">
+    <a routerLink="/people" class="rounded-lg border border-line bg-base-100 p-4 hover:border-primary/40">
       <div class="flex items-start justify-between">
         <div class="pc-eyebrow">Contacts growth</div>
         <pc-icon name="user-plus" [size]="4" class="shrink-0 text-primary"></pc-icon>
@@ -197,7 +265,7 @@
       </div>
       }
       <div class="mt-1 text-[11px] text-base-content/45">New in the last 30 days</div>
-    </div>
+    </a>
   </div>
 
   <!-- Growth chart (2fr) + Coming up (1fr) -->

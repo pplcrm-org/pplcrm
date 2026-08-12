@@ -5,6 +5,7 @@ import { calculateWorkingTimeMs, TASK_OPEN_STATUSES } from '../../../../../../li
 import { BaseRepository } from '../../lib/base.repo';
 import { checkRateLimit } from '../../lib/rate-limiter';
 import { settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
+import { IN_FIELD_WINDOW_MS } from '../canvassing/controller';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import {
   dashboardRefreshPending,
@@ -328,6 +329,29 @@ export class DashboardController {
       location_address: e.location_address ?? null,
     }));
 
+    // 5.4 Field operations: three cheap tenant-scoped counts over turf_knocks. The card
+    // only renders for workspaces whose plan and modules allow field ops (decided in the
+    // frontend with the sidebar's own gating), but the counts are computed unconditionally —
+    // a workspace with no knocks pays for an index scan over zero rows.
+    const inFieldHours = IN_FIELD_WINDOW_MS / MS_PER_HOUR;
+    const knockRow = await this.db
+      .selectFrom('turf_knocks')
+      .select([
+        sql<number>`count(DISTINCT household_id)`.as('doors'),
+        sql<number>`count(*) FILTER (WHERE outcome = 'conversation')`.as('conversations'),
+        sql<number>`count(DISTINCT turf_id) FILTER (WHERE knocked_at >= now() - interval '1 hour' * ${inFieldHours})`.as(
+          'in_field',
+        ),
+      ])
+      .where('tenant_id', '=', tenant_id)
+      .where('knocked_at', '>=', sql<Date>`now() - interval '7 days'`)
+      .executeTakeFirst();
+    const field = {
+      doorsKnocked7d: Number(knockRow?.doors ?? 0),
+      conversations7d: Number(knockRow?.conversations ?? 0),
+      turfsKnockingNow: Number(knockRow?.in_field ?? 0),
+    };
+
     // The snapshot half. A workspace that has never had one computed gets a coalesced bootstrap
     // enqueue — the ONE deliberate exception to "reads never trigger a refresh".
     const snapshot = await readLatestDashboardSnapshot(this.db, tenant_id);
@@ -354,16 +378,11 @@ export class DashboardController {
       };
     });
 
-    // Kept for the assignment donut: per-user open counts under the historical field names.
-    const emailsAssigned = userLive
-      .filter((u) => u.openCount > 0)
-      .map((u) => ({ user_id: u.user_id, first_name: u.first_name, last_name: u.last_name, count: u.openCount }));
-
     return {
       unassignedCount,
       totalOpenCount,
-      emailsAssigned,
       userLive,
+      field,
       contactsGrowth,
       oldestUnassignedAgeHours,
       firstResponseDueHours,

@@ -12,7 +12,16 @@ import { DemoModeCard } from './demo-mode-card';
 import { AuthService } from '../../auth/auth-service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 import { getUserErrorMessage } from '../../services/api/user-message';
-import { DASHBOARD_STATS_WINDOW_KEYS, DashboardStatsWindowKey, DashboardWindowStatsType } from '@common';
+import { OrgModeService } from '../../services/org-mode.service';
+import { DeliveriesRequestsService } from '../deliveries/services/deliveries-requests-service';
+import { VolunteerAccessService } from '../volunteer-access/services/volunteer-access-service';
+import {
+  DASHBOARD_STATS_WINDOW_KEYS,
+  DashboardStatsWindowKey,
+  DashboardWindowStatsType,
+  effectivePlanKey,
+  planAllowsFeature,
+} from '@common';
 
 interface UpcomingEvent {
   id: string;
@@ -76,6 +85,26 @@ export class Summary implements OnInit {
   private readonly alertSvc = inject(AlertService);
   private readonly auth = inject(AuthService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly orgMode = inject(OrgModeService);
+  private readonly deliveriesSvc = inject(DeliveriesRequestsService);
+  private readonly volunteerAccessSvc = inject(VolunteerAccessService);
+
+  /**
+   * Field-operations card. Knock counts ride `dashboard.getStats`; the two
+   * readiness counts reuse the same endpoints the sidebar badges call. The card
+   * follows the sidebar's own gating: the module must be on for this org mode and
+   * the plan must allow field ops (demo workspaces gate as the top tier).
+   */
+  protected readonly fieldStats = signal<DashboardStats['field'] | null>(null);
+  protected readonly signsReady = signal<number | null>(null);
+  protected readonly volunteersWaiting = this.volunteerAccessSvc.pendingApprovals;
+  protected readonly showCanvassingRows = computed(() => this.orgMode.moduleVisibilities().get('canvassing') === 'on');
+  protected readonly showDeliveriesRow = computed(() => this.orgMode.moduleVisibilities().get('deliveries') === 'on');
+  protected readonly showFieldOps = computed(() => {
+    const user = this.auth.getUserSignal()();
+    const allowed = planAllowsFeature(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at), 'canvassing');
+    return allowed && (this.showCanvassingRows() || this.showDeliveriesRow());
+  });
 
   constructor() {
     effect(() => {
@@ -260,6 +289,22 @@ export class Summary implements OnInit {
 
   public ngOnInit() {
     void this.loadStats();
+    void this.loadFieldExtras();
+  }
+
+  /** The two counts the sidebar badges also use. Quiet on failure — a missing row beats a fake zero. */
+  private async loadFieldExtras(): Promise<void> {
+    if (!this.showFieldOps()) return;
+    try {
+      this.signsReady.set(await this.deliveriesSvc.getReadyCount());
+    } catch {
+      /* the row shows an em dash */
+    }
+    try {
+      await this.volunteerAccessSvc.refreshPendingCount();
+    } catch {
+      /* ditto */
+    }
   }
 
   protected async loadStats(announce = false) {
@@ -308,6 +353,7 @@ export class Summary implements OnInit {
     this.unassignedOpenCount.set(stats.unassignedCount || 0);
     this.totalOpenCount.set(stats.totalOpenCount || 0);
     this.userLive.set(stats.userLive ?? []);
+    this.fieldStats.set(stats.field ?? null);
 
     const totalNewContacts = (stats.contactsGrowth || []).reduce(
       (acc: number, cur: { count?: number }) => acc + Number(cur.count || 0),

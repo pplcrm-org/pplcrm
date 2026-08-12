@@ -25,7 +25,7 @@ function statsFixture(overrides: Record<string, unknown> = {}) {
   return {
     unassignedCount: 0,
     totalOpenCount: 0,
-    emailsAssigned: [],
+    field: { doorsKnocked7d: 0, conversations7d: 0, turfsKnockingNow: 0 },
     userLive: [],
     contactsGrowth: [],
     oldestUnassignedAgeHours: null,

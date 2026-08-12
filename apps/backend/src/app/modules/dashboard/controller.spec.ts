@@ -141,7 +141,8 @@ describe('DashboardController Closed Emails Attribution', () => {
     // The only seeded email is closed: nothing open, nothing unassigned.
     expect(stats.totalOpenCount).toBe(0);
     expect(stats.unassignedCount).toBe(0);
-    expect(stats.emailsAssigned).toEqual([]);
+    // The field-operations counts ride the same response; an empty workspace reads all zeros.
+    expect(stats.field).toEqual({ doorsKnocked7d: 0, conversations7d: 0, turfsKnockingNow: 0 });
 
     // No snapshot exists yet — the read reports that honestly and queues the coalesced bootstrap.
     expect(stats.snapshot.windows).toBeNull();

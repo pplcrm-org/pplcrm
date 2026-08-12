@@ -390,8 +390,10 @@ export interface CutPreviewResult extends CutPreview {
 const UNBOUNDED_AREA_LABEL = 'Unbounded';
 const MIN_HULL_POINTS = 3;
 
-// A turf is "in the field" if a knock landed within this window.
-const IN_FIELD_WINDOW_MS = 6 * 60 * 60 * 1000;
+// A turf is "in the field" if a knock landed within this window. Exported because the
+// dashboard's field-operations card counts "knocking now" turfs with the same window —
+// two definitions of "now" would eventually disagree.
+export const IN_FIELD_WINDOW_MS = 6 * 60 * 60 * 1000;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**

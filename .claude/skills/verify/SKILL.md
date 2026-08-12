@@ -32,7 +32,8 @@ await page.addInitScript(() => {
 ## Auth: throwaway tenant
 
 1. **Sign up** at `/signup`: placeholders "Your first name", "Organization name (or self)",
-   "Enter your email", one password field; the submit button is **"JOIN"** (not "Sign up").
+   "Enter your email", one password field; the submit button is **"Continue →"** (2026-08-12 —
+   it was "JOIN" earlier; match with `getByRole('button', { name: /Continue/ })`).
    **Trap — HIBP**: the live backend rejects any password seen in a breach corpus, so
    `StrongPassword123!`-style test passwords fail with "appeared in a known data breach".
    Use a unique per-run password (e.g. `Vf-${Date.now()}-Xq7!pplcrm`) and derive it from the
