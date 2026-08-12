@@ -185,8 +185,13 @@
             >
             } @else {
             <span class="font-medium">{{ stop.first_name || 'Neighbour' }}</span>
-            }
+            } @if (stop.household_id) {
+            <a class="text-base-content/50 hover:text-primary" [routerLink]="['/households', stop.household_id]">
+              · {{ stop.address }}</a
+            >
+            } @else {
             <span class="text-base-content/50"> · {{ stop.address }}</span>
+            }
           </p>
           <p class="text-xs tabular-nums text-base-content/40">+{{ stop.leg_minutes }} min</p>
         </div>

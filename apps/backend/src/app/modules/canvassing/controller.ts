@@ -326,6 +326,7 @@ export interface TurfRosterEntry {
   assignment_id: string | null;
   person_id: string | null;
   name: string;
+  team_id: string | null;
   team_name: string | null;
   assigned_at: string | null;
   expires_at: string | null;
@@ -342,6 +343,8 @@ export interface TurfDetail {
   list_id: string | null;
   list_name: string | null;
   campaign_name: string;
+  /** The campaign the turf belongs to, so the page can link to it. */
+  campaign_id: string | null;
   /** The area this turf covers, or null when it has no area of its own. */
   boundary_name: string | null;
   /**
@@ -533,6 +536,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       list_id: row.list_id,
       list_name: row.list_name,
       campaign_name: campaign.name,
+      campaign_id: row.campaign_id,
       boundary_name: row.boundary_name,
       boundary_set_id: row.boundary_set_id,
       boundary_label: boundaryContext.label,
@@ -564,6 +568,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         assignment_id: c.assignment_id,
         person_id: c.person_id,
         name: c.name,
+        team_id: c.team_id,
         team_name: c.team_name,
         assigned_at: c.assigned_at,
         expires_at: c.expires_at,
@@ -579,6 +584,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         assignment_id: null,
         person_id: null,
         name: w.name,
+        team_id: null,
         team_name: null,
         assigned_at: null,
         expires_at: null,

@@ -331,7 +331,11 @@
                 <tbody>
                   @for (shift of volunteerHistory(); track shift.id) {
                   <tr class="hover:bg-base-200/50">
-                    <td class="font-semibold">{{ shift.event_name }}</td>
+                    <td class="font-semibold">
+                      <a class="hover:text-primary" [routerLink]="['/events/shifts', shift.id]"
+                        >{{ shift.event_name }}</a
+                      >
+                    </td>
                     <td>{{ shift.start_time | date:'medium' }}</td>
                     <td>
                       <pc-status-badge [type]="getShiftStatusType(shift.status)"> {{ shift.status }} </pc-status-badge>
@@ -416,7 +420,9 @@
                   @for (donation of visibleDonations(); track donation.id) {
                   <tr class="hover:bg-base-200/20 border-b border-base-200">
                     <td class="font-medium text-base-content/75 tabular-nums">
-                      {{ donation.created_at | date:'mediumDate' }}
+                      <a class="hover:text-primary" [routerLink]="['/donations', donation.id]" title="Open this gift">
+                        {{ donation.created_at | date:'mediumDate' }}
+                      </a>
                     </td>
                     <td class="font-bold text-base-content tabular-nums">${{ (donation.amount / 100).toFixed(2) }}</td>
                     <td class="text-base-content/65">{{ donationMethod(donation) }}</td>

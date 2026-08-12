@@ -48,14 +48,18 @@
         <div class="flex flex-col items-center gap-3">
           <pc-icon name="identification" [size]="8" class="text-base-content/30"></pc-icon>
           <p class="text-sm text-base-content/60">
-            No volunteers yet. Assign a canvassing turf or a delivery route and send the link.
+            No volunteers yet. Assign a
+            <a class="text-primary hover:underline" routerLink="/canvassing">canvassing turf</a> or a
+            <a class="text-primary hover:underline" routerLink="/deliveries">delivery route</a> and send the link.
           </p>
         </div>
       </td>
     </tr>
     } @else { @for (row of rows(); track row.id) {
     <tr [class.animate-saved-flash]="flashedId() === row.id" [class.opacity-60]="row.status === 'revoked'">
-      <td class="font-medium">{{ displayName(row) }}</td>
+      <td class="font-medium">
+        <a class="hover:text-primary" [routerLink]="['/people', row.person_id]">{{ displayName(row) }}</a>
+      </td>
       <td class="max-w-[240px] truncate text-base-content/70">{{ contactLine(row) }}</td>
       <td>
         <pc-status-badge [type]="statusType(row.status)">{{ statusLabel(row.status) }}</pc-status-badge>

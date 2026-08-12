@@ -66,7 +66,13 @@
       <div class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
         <div>
           <p class="pc-eyebrow">Campaign</p>
+          @if (d.campaign_id) {
+          <a class="text-primary" [routerLink]="['/workspace/campaigns', d.campaign_id]"
+            >{{ d.campaign_name || 'Campaign' }}</a
+          >
+          } @else {
           <p class="text-base-content/80">{{ d.campaign_name || '—' }}</p>
+          }
         </div>
         <!-- The eyebrow is the campaign's own word for the area, resolved on the server. A turf
              with no area of its own is a normal state with two distinct causes, told apart by
@@ -205,7 +211,11 @@
               <div class="text-xs text-base-content/50">Added {{ c.assigned_at | date: 'MMM d' }}</div>
               }
             </td>
-            <td class="text-base-content/70">{{ c.team_name || '—' }}</td>
+            <td class="text-base-content/70">
+              @if (c.team_id) {
+              <a class="hover:text-primary" [routerLink]="['/teams', c.team_id]">{{ c.team_name || 'Team' }}</a>
+              } @else { {{ c.team_name || '—' }} }
+            </td>
             <td class="text-right tabular-nums">{{ c.doors }}</td>
             <td class="text-right tabular-nums">{{ c.conversations }}</td>
             <td class="whitespace-nowrap text-xs text-base-content/60">

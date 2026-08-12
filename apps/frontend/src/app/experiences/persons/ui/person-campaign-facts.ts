@@ -1,5 +1,6 @@
 import { DatePipe } from '@angular/common';
 import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Card as PcCard } from '@uxcommon/components/card/card';
@@ -41,7 +42,7 @@ import { getUserErrorMessage } from '@frontend/services/api/user-message';
  */
 @Component({
   selector: 'pc-person-campaign-facts',
-  imports: [DatePipe, Icon, PcCard, YardSignStanding],
+  imports: [DatePipe, Icon, PcCard, RouterLink, YardSignStanding],
   templateUrl: './person-campaign-facts.html',
 })
 export class PersonCampaignFacts {

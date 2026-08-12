@@ -78,7 +78,7 @@
           icon="map-pin"
           [bordered]="false"
           title="No delivery requests in this view yet"
-          hint="Requests appear here as neighbours ask for a sign. Once some are approved and located, you can plan routes."
+          hint="Requests appear here as neighbours ask for a sign — a canvasser tapping “wants a yard sign” in the Canvass Companion creates one, and so does a web form or a teammate adding one by hand. Once some are approved and located, you can plan routes."
         />
         }
       </td>
@@ -106,7 +106,11 @@
         <span class="text-base-content/60">{{ row.person_name || '—' }}</span>
         }
       </td>
-      <td class="max-w-[240px] truncate">{{ row.address || '—' }}</td>
+      <td class="max-w-[240px] truncate">
+        @if (row.household_id) {
+        <a class="hover:text-primary" [routerLink]="['/households', row.household_id]">{{ row.address || '—' }}</a>
+        } @else { {{ row.address || '—' }} }
+      </td>
       <td><pc-status-badge [type]="statusTone(row.status)">{{ row.status }}</pc-status-badge></td>
       <td>
         <div class="flex items-center gap-2">

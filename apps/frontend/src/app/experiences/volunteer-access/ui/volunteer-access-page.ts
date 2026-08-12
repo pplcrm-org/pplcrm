@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal, viewChild } from '@angular/core';
+import { RouterLink } from '@angular/router';
 
 import { Icon } from '@icons/icon';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -37,7 +38,7 @@ const STATUS_TYPES: Record<CompanionVolunteerStatus, PcStatusType> = {
 @Component({
   selector: 'pc-volunteer-access-page',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [Icon, StatusBadge, Table, GridHeaderComponent, JoinCodePanel],
+  imports: [Icon, StatusBadge, Table, GridHeaderComponent, JoinCodePanel, RouterLink],
   templateUrl: './volunteer-access-page.html',
 })
 export class VolunteerAccessPage implements OnInit {
