@@ -59,17 +59,12 @@
           (input)="onSearchInput($event)"
           (keydown.enter)="onSearchEnter()"
         />
-        <kbd class="kbd kbd-sm hidden sm:inline-flex border-line">⌘K</kbd>
+        <kbd class="kbd kbd-sm hidden sm:inline-flex border-line">{{ searchCombo }}</kbd>
       </label>
     </div>
 
-    <!-- Search icon (⌘K search · ⌘⇧K command palette) -->
-    <span
-      class="tooltip tooltip-bottom"
-      [class.hidden]="searchBarVisible()"
-      data-tip="Search ⌘K · Command palette ⌘⇧K"
-      i18n-data-tip="@@navbar.search.tooltip"
-    >
+    <!-- Search icon (⌘K / Ctrl+K search · ⌘⇧K / Ctrl+Shift+K command palette) -->
+    <span class="tooltip tooltip-bottom" [class.hidden]="searchBarVisible()" [attr.data-tip]="searchTooltip">
       <pc-icon
         class="hover:text-primary text-base-content/60 cursor-pointer"
         (click)="showSearchBar()"

@@ -236,7 +236,7 @@
             <textarea
               #taskComposer
               [value]="newComment()"
-              placeholder="Write a comment... (use @ to mention colleagues, Cmd+Enter to submit)"
+              placeholder="Write a comment... (use @ to mention colleagues, {{ submitComboHint }} to submit)"
               class="textarea textarea-bordered w-full text-sm min-h-[80px]"
               (input)="onComposerInput($event)"
               (keydown)="onComposerKeydown($event)"

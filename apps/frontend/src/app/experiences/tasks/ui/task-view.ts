@@ -37,6 +37,7 @@ import { UserService } from '../../../services/user.service';
 import { UserAvatarComponent } from '@uxcommon/components/user-avatar/user-avatar';
 import { getUserErrorMessage } from '@frontend/services/api/user-message';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
+import { MOD_KEY_WORD } from '../../../shared/platform-keys';
 
 @Component({
   selector: 'pc-task-view',
@@ -72,6 +73,9 @@ export class TaskView {
   private readonly alertSvc = inject(AlertService);
   private readonly teams = inject(TeamsService);
   private readonly userService = inject(UserService);
+
+  /** Comment-box hint, worded for the platform the browser reports (the handler takes either). */
+  protected readonly submitComboHint = `${MOD_KEY_WORD}+Enter`;
 
   protected readonly task = signal<any | null>(null);
   protected readonly comments = signal<any[]>([]);

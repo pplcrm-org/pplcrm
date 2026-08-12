@@ -10,6 +10,7 @@ import { CommandPaletteService } from '../../services/command-palette.service';
 import { HouseholdsService } from '../../experiences/households/services/households-service';
 import { PersonsService } from '../../experiences/persons/services/persons-service';
 import { SearchService } from '../../services/api/search-service';
+import { MOD_KEY_LABEL, SHIFT_KEY_LABEL } from '../../shared/platform-keys';
 
 interface PersonHit {
   id: string;
@@ -65,6 +66,11 @@ export class CommandPalette {
   private readonly searchSvc = inject(SearchService);
 
   protected readonly isOpen = this.palette.isOpen;
+
+  /** Footer key caps, worded for the platform the browser reports. */
+  protected readonly modKey = MOD_KEY_LABEL;
+  protected readonly shiftKey = SHIFT_KEY_LABEL;
+
   protected readonly query = signal('');
   protected readonly activeIndex = signal(0);
   private readonly people = signal<PersonHit[]>([]);

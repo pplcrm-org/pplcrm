@@ -10,6 +10,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { ORG_MODE_LABELS, isPrivilegedRole } from '@common';
 
 import { injectHelpDoor } from '../../shared/help-doors';
+import { modCombo, modShiftCombo } from '../../shared/platform-keys';
 import { CommandPaletteService } from '../../services/command-palette.service';
 import { OrgModeService } from '../../services/org-mode.service';
 import { FavouriteToggle } from '../favourite-toggle/favourite-toggle';
@@ -58,6 +59,15 @@ export class Navbar implements OnDestroy {
    * door onto nothing (§2).
    */
   protected readonly pageHelpArticle = injectHelpDoor();
+
+  /**
+   * Key caps for the search shortcuts, worded for the platform the browser reports.
+   * The tooltip is bound rather than a translatable static attribute because the caps
+   * are only known at runtime.
+   */
+  protected readonly searchCombo = modCombo('K');
+  protected readonly paletteCombo = modShiftCombo('K');
+  protected readonly searchTooltip = `Search ${this.searchCombo} · Command palette ${this.paletteCombo}`;
 
   /** Re-entry point for the tour. Offered only while the demo data it walks through is still
    * present — every stop lands on a seeded record, so the tour is meaningless once they are gone. */

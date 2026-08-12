@@ -312,9 +312,9 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
   {
     id: 'search',
     category: 'getting-started',
-    title: 'Search with ⌘K',
+    title: 'Search with ⌘K or Ctrl K',
     summary:
-      'On a page with a grid, ⌘K filters it as you type. Everywhere else it opens the search palette, which finds pages, people, addresses, workspace settings and help articles.',
+      'On a page with a grid, ⌘K (Ctrl K on Windows and Linux) filters it as you type. Everywhere else it opens the search palette, which finds pages, people, addresses, workspace settings and help articles.',
     keywords: ['search', 'find', 'command k', 'cmd k', 'ctrl k', 'quick find', 'filter text', 'palette', 'address'],
     related: ['filters', 'shortcuts', 'grid-basics'],
     blocks: [
@@ -338,7 +338,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The search palette is always available on `⌘⇧K`. It finds every page the sidebar offers (in your organization’s own words), people by name, email or phone, households by address (“214 Alder” works), workspace settings sections by name for administrators, and help articles. There are also `g`-then-a-letter chords for the sidebar sections. The full map is in [Keyboard shortcuts](/help/shortcuts).',
+        text: 'The search palette is always available on `⌘⇧K` (`Ctrl Shift K` on Windows and Linux). It finds every page the sidebar offers (in your organization’s own words), people by name, email or phone, households by address (“214 Alder” works), workspace settings sections by name for administrators, and help articles. There are also `g`-then-a-letter chords for the sidebar sections. The full map is in [Keyboard shortcuts](/help/shortcuts).',
       },
       {
         kind: 'p',
@@ -426,7 +426,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
         kind: 'keys',
         rows: [
           { keys: ['⌘', 'K'], action: 'Focus the search bar (Ctrl K on Windows and Linux)' },
-          { keys: ['⌘', '⇧', 'K'], action: 'Open the command palette' },
+          { keys: ['⌘', '⇧', 'K'], action: 'Open the command palette (Ctrl Shift K on Windows and Linux)' },
           { keys: ['g'], action: 'Start a “go to” chord, then follow with a section key below' },
           { keys: ['?'], action: 'Show the shortcuts overlay' },
           { keys: ['Esc'], action: 'Close the open dialog or overlay' },

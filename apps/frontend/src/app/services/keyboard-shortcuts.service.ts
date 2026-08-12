@@ -2,6 +2,7 @@ import { Injectable, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
 import { SidebarItems, sidebarLabel, type ISidebarItem } from '../layout/sidebar/sidebar-items';
+import { MOD_KEY_LABEL, SHIFT_KEY_LABEL } from '../shared/platform-keys';
 import { OrgModeService } from './org-mode.service';
 
 /** A single documented shortcut, rendered as a row in the help overlay. */
@@ -62,8 +63,8 @@ export class KeyboardShortcutsService {
     {
       title: 'General',
       rows: [
-        { keys: ['⌘', 'K'], label: 'Filter this page (opens search everywhere else)' },
-        { keys: ['⌘', '⇧', 'K'], label: 'Search pages, people, addresses and help' },
+        { keys: [MOD_KEY_LABEL, 'K'], label: 'Filter this page (opens search everywhere else)' },
+        { keys: [MOD_KEY_LABEL, SHIFT_KEY_LABEL, 'K'], label: 'Search pages, people, addresses and help' },
         { keys: ['g', '…'], label: 'Go to… (then a section key below)' },
         { keys: ['?'], label: 'Show this shortcuts list' },
         { keys: ['Esc'], label: 'Close dialog / overlay' },

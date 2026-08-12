@@ -587,6 +587,7 @@ apps/
             currency.service.ts
             date-format.service.ts
           help-doors.ts
+          platform-keys.ts
           public-page-meta.ts
           public-pages.ts
         app.config.ts

@@ -112,7 +112,7 @@ export const TOUR_STOPS: readonly TourStop[] = [
     anchor: null,
     title: 'Finding everything else',
     body:
-      'Press ⌘K (Ctrl+K on Windows) to jump anywhere: forms, donations, tasks, imports, deliveries, ' +
+      'Press ⌘K (Ctrl+K on Windows and Linux) to jump anywhere: forms, donations, tasks, imports, deliveries, ' +
       'automations. When you are ready to make this workspace yours, "Set up my workspace" on this page ' +
       'walks you through it.',
     planChip: null,
