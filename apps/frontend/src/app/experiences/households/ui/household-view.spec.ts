@@ -171,6 +171,17 @@ describe('HouseholdView', () => {
       outcome: 'home',
     });
     expect(component['subtitle']()).toContain('Canvassed');
+    // The endpoint's outcome and canvasser fields render too — they used to be discarded.
+    expect(component['subtitle']()).toContain('home, by Dana');
+
+    // "conversation" reads as "spoke" in the subtitle.
+    component['lastCanvass'].set({
+      knocked_at: new Date('2026-05-02T12:00:00Z'),
+      canvasser_name: null,
+      outcome: 'conversation',
+    });
+    expect(component['subtitle']()).toContain('spoke');
+    expect(component['subtitle']()).not.toContain('by ');
   });
 
   it('should format addressString from individual fields when formatted_address is empty', async () => {

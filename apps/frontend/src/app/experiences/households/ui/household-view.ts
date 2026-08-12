@@ -178,10 +178,21 @@ export class HouseholdView {
     parts.push(`${n} ${n === 1 ? 'person' : 'people'}`);
     const canvass = this.lastCanvass();
     if (canvass) {
-      parts.push(`Canvassed ${this.formatCanvassDate(canvass.knocked_at)}`);
+      // The endpoint already returns outcome and canvasser; showing only the date threw them away.
+      let line = `Canvassed ${this.formatCanvassDate(canvass.knocked_at)}`;
+      const outcome = this.knockOutcomeLabel(canvass.outcome);
+      if (outcome) line += ` — ${outcome}`;
+      if (canvass.canvasser_name) line += `, by ${canvass.canvasser_name}`;
+      parts.push(line);
     }
     return parts.join(' · ');
   });
+
+  /** "conversation" reads as "spoke" in a subtitle; other outcomes just drop the underscore. */
+  private knockOutcomeLabel(outcome: string | null | undefined): string | null {
+    if (!outcome) return null;
+    return outcome === 'conversation' ? 'spoke' : outcome.replace(/_/g, ' ');
+  }
 
   constructor() {
     effect(() => {

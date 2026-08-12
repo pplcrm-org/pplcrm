@@ -12,6 +12,7 @@ import { Table } from '@uxcommon/components/table/table';
 import { Icon } from '@icons/icon';
 
 import { DeliveriesNav } from './deliveries-nav';
+import { requestSourceLabelSentence } from './request-source-label';
 
 import { DeliveriesRequestsService, type DeliveryRequestRow } from '../services/deliveries-requests-service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
@@ -50,6 +51,7 @@ export class DeliveriesRequests implements OnInit {
   protected readonly loaded = signal(false);
 
   protected readonly selectedCount = computed(() => this.selected().size);
+  protected readonly sourceLabel = requestSourceLabelSentence;
   protected readonly newInView = computed(() => this.rows().filter((r) => r.status === 'new').length);
 
   private readonly tabs: Array<{ key: Tab; label: string }> = [

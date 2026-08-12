@@ -6,6 +6,7 @@ import { DELIVERY_REQUEST_STATUSES, DELIVERY_REQUEST_STATUS_LABELS } from '../..
 import type { DeliveryRequestStatus } from '../../../../../../../libs/common/src';
 
 import { getUserErrorMessage } from '@frontend/services/api/user-message';
+import { requestSourceLabel } from './request-source-label';
 import { CampaignContextService } from '../../../services/campaign-context.service';
 import { RouterOutputs } from '../../../services/api/trpc-types';
 import { DeliveriesRequestsService } from '../services/deliveries-requests-service';
@@ -69,13 +70,8 @@ export class YardSignStanding {
     return parts.join(' · ');
   });
 
-  /** Human label for a request's origin. Typed `string` so a widened source union
-   *  (web_form | manual | canvass) needs no change here. */
-  private sourceLabel(source: string): string {
-    if (source === 'web_form') return 'web form';
-    if (source === 'canvass') return 'canvass';
-    return 'manual';
-  }
+  /** Shared with the requests grid so the two surfaces cannot disagree on a source's name. */
+  private readonly sourceLabel = requestSourceLabel;
 
   constructor() {
     effect(() => {

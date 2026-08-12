@@ -118,7 +118,7 @@
           }
         </div>
       </td>
-      <td class="text-base-content/70">{{ row.source === 'web_form' ? 'Web form' : 'Manual' }}</td>
+      <td class="text-base-content/70">{{ sourceLabel(row.source) }}</td>
       <td>
         @if (row.route_id) {
         <a class="link link-hover text-primary" [routerLink]="['/deliveries/routes', row.route_id]">

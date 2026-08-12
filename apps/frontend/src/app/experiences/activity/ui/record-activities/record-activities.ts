@@ -252,6 +252,18 @@ export class RecordActivities {
         if (meta['action'] === 'status_update') {
           return `updated the status of this ${ent}`;
         }
+        // A knock synced from the Canvass Companion (canvassing/controller.ts logActivity):
+        // metadata carries source/outcome/response. Without this branch it printed the
+        // meaningless "updated this person record".
+        if (meta['source'] === 'companion' && meta['outcome']) {
+          const outcome = String(meta['outcome']);
+          const response = meta['response'] ? ` — marked ${String(meta['response']).replace(/_/g, ' ')}` : '';
+          const where = ent === 'household' ? ' at this door' : '';
+          if (outcome === 'conversation') {
+            return `had a doorstep conversation${where}${response} (Canvass Companion)`;
+          }
+          return `knocked${where} — ${outcome.replace(/_/g, ' ')} (Canvass Companion)`;
+        }
 
         // Household address check
         if (entLower === 'households' || entLower === 'household') {
