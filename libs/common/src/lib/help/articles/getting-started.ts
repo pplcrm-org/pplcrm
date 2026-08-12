@@ -175,7 +175,7 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
           '**Yard-sign deliveries**: sign requests waiting to be triaged, approved requests ready to route, and two driving routes (one finished, one in progress) so the requests, planner, and routes pages are all populated.',
           '**Three demo teammates** on the [Users](/users) page, with tasks and inbox emails assigned to them. They cannot sign in; their accounts exist so assignment and triage look real.',
           '**Tasks** in every state: overdue, due this week, waiting, and done.',
-          '**A working inbox**: a handful of emails from demo contacts, some open, some closed, some assigned.',
+          '**A working inbox** of around twenty messages from sample contacts, in every state a real one has: some nobody has picked up yet, some assigned to you, some assigned to a teammate, some already answered and waiting on a reply, and some closed. A few carry attachments you can actually open.',
           '**Three newsletters**, including a sent one with a full engagement report: opens over time, top links, bounces, and unsubscribes.',
           '**Sample form responses** on two of the starter forms, so the Forms page shows what collected submissions look like.',
           '**A donations ledger**: recorded one-time gifts across this month and last, plus a few active monthly pledges, so the [Donations](/donations) page shows real totals and trends. The two fundraising forms live on that page too, not on the Forms page.',

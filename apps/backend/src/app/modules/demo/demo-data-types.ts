@@ -182,6 +182,26 @@ export interface DemoIssueAssignmentDef {
   people: string[];
 }
 
+/**
+ * One seeded message in the shared inbox.
+ *
+ * Every dataset's `emails` list is built to vary along two axes at once, because a triage screen
+ * where everything is in the same state teaches nothing:
+ *
+ *   WHO OWNS IT — `assignTo` unset (nobody has triaged it yet), `'owner'` (the person who just
+ *   signed up), or one of that mode's demo teammates. Both "assigned to me" and "assigned to
+ *   someone else" must be present, or the assignment filter and the per-person counts look
+ *   identical whichever way they are set.
+ *
+ *   HOW FAR ALONG IT IS — arrived and untouched; assigned but not answered; answered and now
+ *   waiting on them (an open `sent` message, sometimes paired with the inbound it replies to);
+ *   or `closed`, the finished thread.
+ *
+ * `daysAgo` is spread from today to about a month back. That spread is also what exercises the
+ * SLA pill the list draws from `date_sent` (see `email-sla.ts` in the frontend): something from
+ * today reads "first response due in Nh", and each dataset leaves one deliberately unassigned
+ * message at eight or nine days, which reads as overdue.
+ */
 export interface DemoEmailDef {
   folder: 'inbox' | 'sent';
   /** Person key the email is from (inbox) or to (sent) — ties the thread to a CRM contact. */

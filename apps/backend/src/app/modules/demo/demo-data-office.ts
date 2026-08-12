@@ -277,8 +277,9 @@ export const OFFICE_NEWSLETTERS: DemoNewsletterDef[] = DEMO_NEWSLETTERS.map((new
 }));
 
 // ── Inbox ───────────────────────────────────────────────────────────────────
-// Casework threads: something is broken, someone owns it, and one is already answered. The
-// assignment mix (owner / two staff / unassigned) is what makes the triage UI worth looking at.
+// Casework: something is broken, someone owns it, and it is somewhere between arriving and being
+// closed. The ownership and completeness mix every dataset holds to is described once on
+// `DemoEmailDef` (demo-data-types.ts) — read that before adding or moving a message here.
 
 export const OFFICE_EMAILS: DemoEmailDef[] = [
   {
@@ -369,6 +370,183 @@ export const OFFICE_EMAILS: DemoEmailDef[] = [
     daysAgo: 1,
     body_html:
       '<p>Thanks Heather,</p><p>The work order is filed as SW-4471 and public works has it for this season. I have asked for a scheduled week and will let you know the moment I have one.</p>',
+  },
+
+  // Nobody has picked these up yet. The older one is well past a working day on purpose, so the
+  // list shows what an overdue first response looks like next to one that only just landed.
+  {
+    folder: 'inbox',
+    person: 'dmitri-petrov',
+    subject: 'Garbage missed on our side of the street — second week',
+    preview_text: 'The even numbers were collected and we were not. Same last Tuesday…',
+    status: 'open',
+    daysAgo: 0,
+    body_html:
+      '<p>The even numbers were collected and we were not. Same last Tuesday.</p>' +
+      '<p>Four households on this stretch are now holding two weeks of it. Who do I call, or can you?</p><p>Dmitri Petrov</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'ted-wilson',
+    subject: 'Windrow across the driveway again',
+    preview_text: 'The plough came through at six and we were shut in until a neighbour dug us out…',
+    status: 'open',
+    daysAgo: 8,
+    body_html:
+      '<p>The plough came through at six and we were shut in until a neighbour dug us out. That is three times this winter.</p>' +
+      '<p>I am 78 and Norma is older. Is there a list for this, and if there is, how do we get on it?</p><p>Ted Wilson</p>',
+  },
+
+  // Assigned, being worked, no answer sent yet.
+  {
+    folder: 'inbox',
+    person: 'liam-byrne',
+    subject: 'Charlotte Street lighting — still dark at the corner',
+    preview_text: 'The audit was in March. Nothing has changed on the ground since…',
+    status: 'open',
+    assignTo: 'u-carlos',
+    daysAgo: 2,
+    body_html:
+      '<p>The audit was in March and nothing has changed on the ground since. The corner by the alley is the one that matters — people cut through it after the bus.</p>' +
+      '<p>Is there a result from the audit I can read?</p><p>Liam</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'julie-lavoie',
+    subject: 'Sweetland notice drop — I can take two streets',
+    preview_text: 'Give me Sweetland and Blackburn and I will have them out before the weekend…',
+    status: 'open',
+    assignTo: 'owner',
+    daysAgo: 2,
+    body_html:
+      '<p>Give me Sweetland and Blackburn and I will have them out before the weekend.</p>' +
+      '<p>Do not give me Range Road — half of it is student rentals and the notices end up on the porch floor.</p><p>Julie</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'marcus-webb',
+    subject: 'Proof for the 250 consultation notices',
+    preview_text: 'Proof attached. The date is the one thing I cannot check for you — please read it twice…',
+    status: 'open',
+    assignTo: 'u-emma',
+    daysAgo: 2,
+    attachments: ['consultation-notice-proof'],
+    body_html:
+      '<p>Hi,</p><p>Proof attached. The date is the one thing I cannot check for you — please read it twice.</p>' +
+      '<p>Approve today and they are ready for Thursday pickup.</p><p>Marcus<br>Hintonburg Print Co.</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'anna-kowalski',
+    subject: 'Bus shelter glass out for a month',
+    preview_text: 'Gladstone and Bay. It went in early May and nobody has been…',
+    status: 'open',
+    assignTo: 'u-natalie',
+    daysAgo: 6,
+    body_html:
+      '<p>Gladstone and Bay. The glass went in early May and nobody has been out since.</p>' +
+      '<p>People stand in the rain beside a shelter, which is a strange thing to watch every morning.</p><p>Anna Kowalski</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'kevin-obrien',
+    subject: 'Frank Street — the signatures, properly this time',
+    preview_text: 'You asked for names and addresses rather than a list of first names…',
+    status: 'open',
+    assignTo: 'u-carlos',
+    daysAgo: 5,
+    attachments: ['frank-street-petition'],
+    body_html:
+      '<p>You asked for names and addresses rather than a list of first names, so here it is properly.</p>' +
+      '<p>Eleven households. Two more would sign if the committee date moves later in the month.</p><p>Kevin</p>',
+  },
+
+  // Answered, waiting on them.
+  {
+    folder: 'sent',
+    person: 'liam-byrne',
+    subject: 'Re: Charlotte Street lighting — still dark at the corner',
+    preview_text: 'The audit is back and I am reading it — one thing to check with hydro before I send it on…',
+    status: 'open',
+    assignTo: 'u-carlos',
+    daysAgo: 1,
+    body_html:
+      '<p>Liam,</p><p>The audit is back and I am reading it now. There is one line about the alley corner I want to check with hydro before I send you the summary, because I think they have measured the wrong pole.</p>' +
+      '<p>You will have it this week either way.</p>',
+  },
+  {
+    folder: 'sent',
+    person: 'fatima-elsayed',
+    subject: 'Re: Newsletter swap with the community association?',
+    preview_text: 'Yes — 250 words and a photo, and we will run yours in the June ward update…',
+    status: 'open',
+    assignTo: 'u-emma',
+    daysAgo: 1,
+    body_html:
+      '<p>Fatima,</p><p>Yes. Two hundred and fifty words and a photo from us, and we will run the same from you in the June ward update.</p>' +
+      '<p>What is your cut-off date? Ours is the 18th and we have never once met it.</p>',
+  },
+
+  // Closed cases.
+  {
+    folder: 'sent',
+    person: 'grace-okafor',
+    subject: 'Re: Riverkeepers — shoreline cleanup partnership',
+    preview_text: 'Booked for the next window. Send the forms and we will have them back the same week…',
+    status: 'closed',
+    assignTo: 'owner',
+    daysAgo: 14,
+    body_html:
+      '<p>Grace,</p><p>Booked for the next window. Send the forms over and we will have them back the same week rather than the day before, for once.</p>' +
+      '<p>Thank you for walking us through it.</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'harpreet-singh',
+    subject: 'Pitch lights — they came on Tuesday',
+    preview_text: 'Whatever you said to whoever you said it to, it worked. Two hundred kids…',
+    status: 'closed',
+    assignTo: 'u-carlos',
+    daysAgo: 13,
+    body_html:
+      '<p>Whatever you said to whoever you said it to, it worked. The lights came on Tuesday.</p>' +
+      '<p>Two hundred kids get their evenings back. Come to a game and let them thank you themselves.</p><p>Harpreet</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'vincenzo-rossi',
+    subject: 'Loading zone in front of the shop',
+    preview_text: 'Signed, painted and being respected, mostly. Closing this off from my end…',
+    status: 'closed',
+    assignTo: 'u-carlos',
+    daysAgo: 24,
+    body_html:
+      '<p>Signed, painted, and being respected, mostly. Closing this off from my end.</p>' +
+      '<p>Eight months is a long time for thirty feet of paint, but it is done.</p><p>Vincenzo</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'michelle-thibault',
+    subject: 'The old casework log',
+    preview_text: 'I found the binder from the last term in my basement. You may want it…',
+    status: 'closed',
+    assignTo: 'owner',
+    daysAgo: 19,
+    body_html:
+      '<p>I found the binder from the last term in my basement. Every file that came through the office for four years, with what actually resolved them.</p>' +
+      '<p>You may want it. I am not scanning it.</p><p>Michelle</p>',
+  },
+  {
+    folder: 'sent',
+    person: 'omar-khalil',
+    subject: 'Welcome to the ward',
+    preview_text: 'You are new on the street, so here is how to reach the office and what we can help with…',
+    status: 'closed',
+    assignTo: 'u-natalie',
+    daysAgo: 10,
+    body_html:
+      '<p>Hello Omar,</p><p>You are new on the street, so: this address reaches the office directly, the phone is answered between nine and four, and there is a drop-in clinic in the last week of most months.</p>' +
+      '<p>Roads, parks, garbage, permits, noise, and anything you cannot work out who to call about — start with us.</p>',
   },
 ];
 

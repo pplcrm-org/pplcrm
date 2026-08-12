@@ -363,6 +363,29 @@ describe('demo datasets', () => {
       });
 
       /**
+       * Task and email assignees are the one reference the seeder resolves with `?? null`: a key
+       * that matches no teammate lands the row UNASSIGNED instead of failing. That is the right
+       * behaviour at runtime and a silent hole at authoring time — a mistyped assignee looks
+       * exactly like a message nobody has triaged yet, which is a state the inbox deliberately
+       * also contains. Nothing else would catch it.
+       */
+      it('assigns work only to teammates this mode actually seeds', () => {
+        const users = new Set(dataset.users.map((u) => u.key));
+        const assignees: [string, string][] = [
+          ...dataset.tasks.flatMap((t): [string, string][] =>
+            t.assignToUser ? [[`task "${t.name}"`, t.assignToUser]] : [],
+          ),
+          // 'owner' is the person who signed up, not a seeded teammate.
+          ...dataset.emails.flatMap((e): [string, string][] =>
+            e.assignTo && e.assignTo !== 'owner' ? [[`email "${e.subject}"`, e.assignTo]] : [],
+          ),
+        ];
+        for (const [where, key] of assignees) {
+          expect(users.has(key), `${where} is assigned to unknown teammate "${key}"`).toBe(true);
+        }
+      });
+
+      /**
        * Receipts are the one part of a dataset that points at gifts BY ARRAY INDEX, so inserting
        * a donation in the middle of the list silently re-points every receipt after it at the
        * wrong donor. The seeder skips an out-of-range index without complaining, which makes a

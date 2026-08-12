@@ -899,6 +899,9 @@ const ISSUE_ASSIGNMENTS: DemoIssueAssignmentDef[] = [
   { issue: 'climate action', people: ['olivia-brant', 'simon-adeyemi'] },
 ];
 
+// Charity mail: referrals, donors, volunteers and suppliers. The ownership and completeness mix
+// every dataset holds to is described once on `DemoEmailDef` (demo-data-types.ts) — read that
+// before adding or moving a message here.
 const EMAILS: DemoEmailDef[] = [
   {
     folder: 'inbox',
@@ -982,6 +985,180 @@ const EMAILS: DemoEmailDef[] = [
       '<p>Priya,</p><p>The match came through this morning. That is the winter drive fully funded before it starts, ' +
       'which has never once happened.</p><p>Send me the list of staff who gave and we will write to each of them.</p>' +
       '<p>Bea</p>',
+  },
+
+  // Not yet triaged. The van note is intentionally more than a week old — it is the one nobody
+  // owns, and the list shows it as an overdue first response.
+  {
+    folder: 'inbox',
+    person: 'claudia-reyes',
+    subject: 'Signed up online — what do you actually need?',
+    preview_text: 'I put my name in on the website and then heard nothing, which is fine —',
+    status: 'open',
+    daysAgo: 0,
+    body_html:
+      '<p>Hello,</p><p>I put my name in on the website a while ago and then heard nothing, which is fine — I know how it goes.</p>' +
+      '<p>I have Saturdays and I can lift. What do you actually need, and where do I turn up?</p><p>Claudia</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'ben-osei',
+    subject: 'Van safety is due — I need a day without it',
+    preview_text: 'The certificate runs out at the end of the month and the garage wants it for a full day —',
+    status: 'open',
+    daysAgo: 9,
+    body_html:
+      '<p>The certificate runs out at the end of the month and the garage wants the van for a full day.</p>' +
+      '<p>Tell me which day hurts least. Not a Tuesday and not a Thursday, and that is most of the problem.</p><p>Ben</p>',
+  },
+
+  // Assigned, being worked, not answered yet.
+  {
+    folder: 'inbox',
+    person: 'gail-mcintyre',
+    subject: 'Saturday sort — sheet, and two no-shows',
+    preview_text: 'Sign-in sheet attached. Two of the school group did not turn up again —',
+    status: 'open',
+    assignTo: 'u-volunteers',
+    daysAgo: 1,
+    attachments: ['volunteer-signin'],
+    body_html:
+      '<p>Sign-in sheet attached, hours totalled.</p>' +
+      '<p>Two of the school group did not turn up again. I am not chasing teenagers, but if their hours forms come to you at the end of term, you should know what is on the sheet and what is not.</p>' +
+      '<p>Gail</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'ruth-abbott',
+    subject: 'Board pack for the 14th — move one item',
+    preview_text: 'Put the hamper waitlist first, before the finance report —',
+    status: 'open',
+    assignTo: 'owner',
+    daysAgo: 2,
+    is_favourite: true,
+    body_html:
+      '<p>Put the hamper waitlist first, before the finance report. If it goes after, we will discuss it for six minutes with our coats on.</p>' +
+      '<p>It is the only item on that agenda about people rather than money.</p><p>Ruth</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'wei-zhang',
+    subject: 'Clinic on the 14th — six booked, room for two',
+    preview_text: 'Six confirmed, two slots left, and one of the six needs an interpreter —',
+    status: 'open',
+    assignTo: 'u-programs',
+    daysAgo: 3,
+    body_html:
+      '<p>Six confirmed and two slots still open. One of the six needs Arabic — is Sara able to be there, or should I bring someone?</p>' +
+      '<p>If the last two slots go unfilled, I would rather give the time to the Yusuf paperwork than sit idle.</p>' +
+      '<p>Wei</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'dorothy-price',
+    subject: 'Thursday delivery — I will be out until three',
+    preview_text: 'Appointment at the health centre and the bus back is not reliable —',
+    status: 'open',
+    assignTo: 'u-volunteers',
+    daysAgo: 4,
+    body_html:
+      '<p>Appointment at the health centre on Thursday and the bus back is not reliable.</p>' +
+      '<p>Anything after three is fine. Please do not leave it in the porch — last time the box was wet through by the evening.</p>' +
+      '<p>Dorothy</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'eleanor-vance',
+    subject: 'Two printed reports this year, please',
+    preview_text: 'One for me and one for my neighbour, who has started asking about you —',
+    status: 'open',
+    assignTo: 'u-giving',
+    daysAgo: 5,
+    body_html:
+      '<p>One for me and one for my neighbour, who has started asking what it is I give to every month.</p>' +
+      '<p>I know the printing costs you. I would rather you posted me one than sent me four emails about it.</p>' +
+      '<p>Eleanor Vance</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'simon-adeyemi',
+    subject: 'Annual report proof — sign off by Friday',
+    preview_text: 'Proof attached. Page six is the one to read properly —',
+    status: 'open',
+    assignTo: 'u-giving',
+    daysAgo: 7,
+    attachments: ['annual-report-proof'],
+    body_html:
+      '<p>Proof attached. Page six is the one to read properly — that is where the donor names are, and a wrong name there is worse than a late report.</p>' +
+      '<p>Friday and it is on the press next week. The invoice will be late, as usual.</p><p>Simon</p>',
+  },
+
+  // Answered, waiting on them.
+  {
+    folder: 'sent',
+    person: 'margaret-shore',
+    subject: 'Re: This year’s gift',
+    preview_text: 'I will call Thursday morning rather than write — the winter drive does need it…',
+    status: 'open',
+    assignTo: 'owner',
+    daysAgo: 2,
+    body_html:
+      '<p>Margaret,</p><p>I will call Thursday morning rather than write, as you asked.</p>' +
+      '<p>The short answer to your question is yes, the winter drive will need it — we are starting the season with a longer waitlist than we finished the last one with.</p>' +
+      '<p>Bea</p>',
+  },
+  {
+    folder: 'sent',
+    person: 'nathan-cole',
+    subject: 'Saturday sort — what to bring',
+    preview_text: 'Closed shoes and something you do not mind getting dusty — that is the whole list…',
+    status: 'open',
+    assignTo: 'u-volunteers',
+    daysAgo: 6,
+    body_html:
+      '<p>Nathan,</p><p>Closed shoes and something you do not mind getting dusty. That is the whole list.</p>' +
+      '<p>Nine to one, and Gail will sign your hours at the end. Tell us the week before if you cannot make it — the sort is planned around who is coming.</p>' +
+      '<p>Curtis</p>',
+  },
+
+  // Finished.
+  {
+    folder: 'inbox',
+    person: 'joyce-nakamura',
+    subject: 'Thank you for January',
+    preview_text: 'The Thursday call is worth as much as the box, and you can tell whoever needs telling —',
+    status: 'closed',
+    assignTo: 'u-programs',
+    daysAgo: 15,
+    body_html:
+      '<p>The Thursday call is worth as much as the box. You can tell whoever needs telling that, next time someone asks what the money buys.</p>' +
+      '<p>Joyce</p>',
+  },
+  {
+    folder: 'sent',
+    person: 'jess-lam',
+    subject: 'Re: driving the Thursday route',
+    preview_text: 'Yes please — Ben will hand over the keys and the list on Wednesday evening…',
+    status: 'closed',
+    assignTo: 'u-volunteers',
+    daysAgo: 12,
+    body_html:
+      '<p>Jess,</p><p>Yes please. Ben will leave the keys and the printed list with the Wednesday packing crew.</p>' +
+      '<p>Two of the stops want a knock and a word rather than a doorstep drop — they are marked on the list, and they are the reason the route takes as long as it does.</p>' +
+      '<p>Curtis</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'helen-carr',
+    subject: 'The letter ran on Saturday',
+    preview_text: 'They cut the last paragraph, which was the only one that asked for anything —',
+    status: 'closed',
+    assignTo: 'owner',
+    daysAgo: 20,
+    body_html:
+      '<p>They ran it on Saturday and cut the last paragraph, which was the only one that asked for anything.</p>' +
+      '<p>Still, it ran. If you want a second one before the winter drive, I will write it and leave the ask in the middle where they cannot find it.</p>' +
+      '<p>Helen</p>',
   },
 ];
 

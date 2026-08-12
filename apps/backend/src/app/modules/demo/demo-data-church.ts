@@ -1084,6 +1084,9 @@ const ISSUE_ASSIGNMENTS: DemoIssueAssignmentDef[] = [
   { issue: 'community outreach', people: ['colin-mercer', 'ade-balogun', 'elena-ramos'] },
 ];
 
+// Pastoral mail: illness, newcomers, rotas and the benevolence fund. The ownership and
+// completeness mix every dataset holds to is described once on `DemoEmailDef`
+// (demo-data-types.ts) — read that before adding or moving a message here.
 const EMAILS: DemoEmailDef[] = [
   {
     folder: 'inbox',
@@ -1166,6 +1169,180 @@ const EMAILS: DemoEmailDef[] = [
       'So — how are you finding it?</p>' +
       '<p>If a season off would help, we will make it work. Patricia can cover more than she lets on.</p>' +
       '<p>Rachel</p>',
+  },
+
+  // Waiting on someone to pick them up. The newcomer's question is deliberately eight days old:
+  // it is the one that should never have sat, and the list shows it as overdue.
+  {
+    folder: 'inbox',
+    person: 'monique-arsenault',
+    subject: 'What time is the service?',
+    preview_text: 'I found you on the website and I have not been to a church in years —',
+    status: 'open',
+    daysAgo: 0,
+    body_html:
+      '<p>Hello,</p><p>I found you on the website. I have not been to a church in years and I do not know how any of it works now.</p>' +
+      '<p>What time is the service, and is it the sort of place where someone would notice if I came in late and left early?</p>' +
+      '<p>Monique</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'amara-nwosu',
+    subject: 'Anything for a fourteen-year-old?',
+    preview_text: 'Chidi came with us three weeks ago and asked about the Friday thing —',
+    status: 'open',
+    daysAgo: 8,
+    body_html:
+      '<p>Chidi came with us three weeks ago and has asked about the Friday programme twice since, which for him is enthusiasm.</p>' +
+      '<p>Is he old enough, and does he need to bring anything? He will not ask himself.</p><p>Amara</p>',
+  },
+
+  // In someone's hands, not yet answered.
+  {
+    folder: 'inbox',
+    person: 'colin-mercer',
+    subject: 'Bread for Sunday — and a problem with Saturdays',
+    preview_text: 'There will be plenty this week. The problem is I cannot keep dropping it at eight —',
+    status: 'open',
+    assignTo: 'u-admin',
+    daysAgo: 1,
+    body_html:
+      '<p>There will be plenty this week — the wholesale order came in wrong again, in our favour.</p>' +
+      '<p>The problem is I cannot keep dropping it at eight on Sunday morning. Is there a key, or someone who is there anyway?</p>' +
+      '<p>Colin</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'june-benning',
+    subject: 'Martha’s meals — two gaps next week',
+    preview_text: 'Wednesday and Sunday are open and I have run out of people to ask twice —',
+    status: 'open',
+    assignTo: 'u-care',
+    daysAgo: 2,
+    attachments: ['meal-train-rota'],
+    body_html:
+      '<p>Wednesday and Sunday are open and I have run out of people I can ask twice. Rota attached.</p>' +
+      '<p>She will say she does not need it. She does — it is the company more than the food, and she eats better when someone sits down.</p>' +
+      '<p>June</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'margaret-liu',
+    subject: 'The count does not match the deposit slip',
+    preview_text: 'Forty dollars out, second week running, and I would rather it were me —',
+    status: 'open',
+    assignTo: 'u-admin',
+    daysAgo: 3,
+    body_html:
+      '<p>Forty dollars out, second week running. I would rather it turned out to be me than anything else, so I have kept both sheets.</p>' +
+      '<p>Can we count with two people from now on, and can I show you the sheets before Tuesday?</p><p>Margaret</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'david-okafor',
+    subject: 'Friday youth — we are over the room',
+    preview_text: 'Twenty-six last week in a room that holds eighteen comfortably —',
+    status: 'open',
+    assignTo: 'u-pastor',
+    daysAgo: 3,
+    body_html:
+      '<p>Twenty-six last week in a room that seats eighteen comfortably. Nobody has complained, which is the only reason I have not raised it before.</p>' +
+      '<p>Either we move to the hall or we split into two evenings. I would rather split, but that needs another adult.</p>' +
+      '<p>David</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'joseph-kimani',
+    subject: 'Hope Street rota for next quarter',
+    preview_text: 'Three weeks covered, one lead still open — attached as it stands —',
+    status: 'open',
+    assignTo: 'u-admin',
+    daysAgo: 5,
+    attachments: ['cooking-rota'],
+    body_html:
+      '<p>Three of the four weeks are covered. The third week has no second cook, attached as it stands.</p>' +
+      '<p>The shelter needs the names a fortnight ahead for their own paperwork, so this is the real deadline rather than mine.</p>' +
+      '<p>Joseph</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'gilles-tremblay',
+    subject: 'Communion for Eunice this month',
+    preview_text: 'She has stopped asking, which is not the same as not minding —',
+    status: 'open',
+    assignTo: 'u-care',
+    daysAgo: 6,
+    body_html:
+      '<p>She has stopped asking, which is not the same as not minding.</p>' +
+      '<p>Afternoons are better than mornings now. Any day but Thursday — that is the hairdresser and she will not miss it.</p>' +
+      '<p>Gilles</p>',
+  },
+
+  // Answered, waiting on them.
+  {
+    folder: 'sent',
+    person: 'karen-whelan',
+    subject: 'Re: Sunday school — still two short',
+    preview_text: 'Not the newsletter — I will ask three people by name this week —',
+    status: 'open',
+    assignTo: 'owner',
+    daysAgo: 3,
+    body_html:
+      '<p>Karen,</p><p>You are right that a notice will not do it, so I am not going to put it in the newsletter.</p>' +
+      '<p>I will ask three people by name this week: Lise, Anthony, and Funke. If two say yes we are done. If none do, we talk about what September looks like with what we have.</p>' +
+      '<p>Rachel</p>',
+  },
+  {
+    folder: 'sent',
+    person: 'edwin-park',
+    subject: 'Before the directory goes to print',
+    preview_text: 'You are still in it, and I did not want to take you out without asking —',
+    status: 'open',
+    assignTo: 'u-admin',
+    daysAgo: 11,
+    body_html:
+      '<p>Edwin,</p><p>The directory is going to print and you are still in it. I did not want to take you out without asking, and I did not want to leave you in without telling you.</p>' +
+      '<p>Either is fine. A one-line reply settles it.</p><p>Gordon</p>',
+  },
+
+  // Finished.
+  {
+    folder: 'inbox',
+    person: 'martha-sinclair',
+    subject: 'Thank you for February',
+    preview_text: 'I did not have to cook for three weeks and I did not have to be brave —',
+    status: 'closed',
+    assignTo: 'u-care',
+    daysAgo: 16,
+    body_html:
+      '<p>I did not have to cook for three weeks and, more than that, I did not have to be brave in front of anyone.</p>' +
+      '<p>Tell June the shepherd’s pie was the best of them, but do not tell the others I said so.</p><p>Martha</p>',
+  },
+  {
+    folder: 'sent',
+    person: 'patricia-nowak',
+    subject: 'The next two Sundays',
+    preview_text: 'Grace is away and you are the only one who can read her handwriting —',
+    status: 'closed',
+    assignTo: 'u-pastor',
+    daysAgo: 22,
+    body_html:
+      '<p>Patricia,</p><p>Grace is away for two Sundays and you are the only one who can read her handwriting on the sheets.</p>' +
+      '<p>Same as last time — nothing new, nothing difficult, and the second one is a baptism so keep it simple.</p>' +
+      '<p>Rachel</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'ade-balogun',
+    subject: 'Still deciding, still coming',
+    preview_text: 'Someone asked me on Sunday whether I was going to join, and I said what I always say —',
+    status: 'closed',
+    assignTo: 'u-pastor',
+    daysAgo: 28,
+    body_html:
+      '<p>Someone asked me on Sunday whether I was going to join, and I said what I always say, which is that I am still deciding.</p>' +
+      '<p>I want to be clear that I like being asked. Keep asking. One of these years I will surprise you.</p>' +
+      '<p>Ade</p>',
   },
 ];
 

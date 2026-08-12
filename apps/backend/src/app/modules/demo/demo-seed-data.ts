@@ -1451,6 +1451,11 @@ export const DEMO_ISSUE_ASSIGNMENTS: DemoIssueAssignmentDef[] = [
   },
 ];
 
+// ── Inbox ───────────────────────────────────────────────────────────────────
+// Campaign mail: supporters, press, suppliers and volunteers. The ownership and completeness mix
+// every dataset holds to is described once on `DemoEmailDef` (demo-data-types.ts) — read that
+// before adding or moving a message here.
+
 export const DEMO_EMAILS: DemoEmailDef[] = [
   {
     folder: 'inbox',
@@ -1530,6 +1535,170 @@ export const DEMO_EMAILS: DemoEmailDef[] = [
     daysAgo: 1,
     body_html:
       '<p>Merci Marc!</p><p>A large sign is yours — we will drop it off this week and confirm the day by text. Thanks for the support.</p>',
+  },
+
+  // Nothing has been done with these yet: they arrived, and no one has picked them up. The oldest
+  // is deliberately well past a working day, so the SLA pill on the list reads as overdue.
+  {
+    folder: 'inbox',
+    person: 'priya-sharma',
+    subject: 'Two friends want to come out Saturday',
+    preview_text: 'They have never canvassed before and would rather not be sent off on their own…',
+    status: 'open',
+    daysAgo: 0,
+    body_html:
+      '<p>Hi,</p><p>Two people from my building asked to come out Saturday. They have never canvassed before and would rather not be sent off on their own — can you pair them with someone for the first hour?</p><p>Priya</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'ted-wilson',
+    subject: 'Advance voting — where and when?',
+    preview_text: 'Norma and I would rather not queue on the day. Where do we go, and do we need to bring…',
+    status: 'open',
+    daysAgo: 9,
+    body_html:
+      '<p>Hello,</p><p>Norma and I would rather not queue on the day. Where do we go for advance voting, and do we need to bring anything with us beyond the card that came in the mail?</p><p>Ted Wilson</p>',
+  },
+
+  // Assigned and in someone's hands, but not answered yet.
+  {
+    folder: 'inbox',
+    person: 'marcus-webb',
+    subject: 'Door hanger proof — approve by Thursday',
+    preview_text: 'Proof attached. If it is right, say so by Thursday and you will have them Monday…',
+    status: 'open',
+    assignTo: 'u-emma',
+    daysAgo: 1,
+    attachments: ['door-hanger-proof'],
+    body_html:
+      '<p>Hi,</p><p>Proof attached. If it is right, say so by Thursday and you will have them Monday. After Thursday it becomes next week.</p>' +
+      '<p>The small print at the bottom is the size you asked for, which is smaller than I would set it.</p><p>Marcus<br>Hintonburg Print Co.</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'michelle-thibault',
+    subject: 'Block captains — one warning before you start',
+    preview_text: 'It works, but not the way the binder says it does. Give me twenty minutes before you…',
+    status: 'open',
+    assignTo: 'owner',
+    daysAgo: 2,
+    is_favourite: true,
+    body_html:
+      '<p>It works, but not the way the binder says it does. The captains who last are the ones given one street and left alone; the ones who quit are the ones handed a zone and a spreadsheet.</p>' +
+      '<p>Give me twenty minutes before you hand any of it out.</p><p>Michelle</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'julie-lavoie',
+    subject: 'Sweetland — two maybes and one yes',
+    preview_text: 'I asked along the street. Sheet attached with who can do what…',
+    status: 'open',
+    assignTo: 'u-carlos',
+    daysAgo: 4,
+    attachments: ['canvass-shift-sheet'],
+    body_html:
+      '<p>I asked along the street. Sheet attached with who can do what — the yes is Théo, who has not been out before and should go with someone who has.</p>' +
+      '<p>The two maybes will decide when they see the weather.</p><p>Julie</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'anna-kowalski',
+    subject: 'Labour council questionnaire — deadline Friday',
+    preview_text: 'The local sends the same six questions to every candidate and prints the answers…',
+    status: 'open',
+    assignTo: 'u-natalie',
+    daysAgo: 7,
+    body_html:
+      '<p>Hello,</p><p>The local sends the same six questions to every candidate and prints the answers side by side. Not answering is also printed.</p>' +
+      '<p>Friday at five. I can send the questions again if they did not reach you.</p><p>Anna</p>',
+  },
+
+  // Answered, and now waiting on them — the thread stays open until they write back.
+  {
+    folder: 'inbox',
+    person: 'rebecca-stein',
+    subject: 'Where do you actually stand on the transit levy?',
+    preview_text: 'I have read the pamphlet twice and I still cannot tell. A straight answer would…',
+    status: 'open',
+    assignTo: 'owner',
+    daysAgo: 5,
+    body_html:
+      '<p>I have read the pamphlet twice and I still cannot tell whether you would vote for it.</p>' +
+      '<p>A straight answer would decide my vote either way. I am not looking for the long version.</p><p>Rebecca Stein</p>',
+  },
+  {
+    folder: 'sent',
+    person: 'rebecca-stein',
+    subject: 'Re: Where do you actually stand on the transit levy?',
+    preview_text: 'Yes, with one condition — the reliability targets have to be published quarterly…',
+    status: 'open',
+    assignTo: 'owner',
+    daysAgo: 4,
+    body_html:
+      '<p>Rebecca,</p><p>Yes, with one condition: the reliability targets have to be published quarterly, by route, or the money disappears into the same hole as last time.</p>' +
+      '<p>Happy to be held to that in writing.</p>',
+  },
+  {
+    folder: 'sent',
+    person: 'isabelle-fortin',
+    subject: 'Re: Interview request: community profile piece',
+    preview_text: 'Thursday afternoon or Friday morning both work. For volunteers, try Grace and Harpreet…',
+    status: 'open',
+    assignTo: 'u-natalie',
+    daysAgo: 4,
+    body_html:
+      '<p>Hi Isabelle,</p><p>Thursday afternoon or Friday morning both work — say which and it is yours.</p>' +
+      '<p>For volunteers, try Grace Okafor and Harpreet Singh. Both have been at this longer than we have and neither will give you a talking point.</p>',
+  },
+
+  // Done and closed — the mail that shows what a finished thread looks like.
+  {
+    folder: 'sent',
+    person: 'omar-khalil',
+    subject: 'Welcome to Centretown',
+    preview_text: 'You signed up on the website last week — here is what is on in the neighbourhood…',
+    status: 'closed',
+    assignTo: 'u-natalie',
+    daysAgo: 11,
+    body_html:
+      '<p>Hello Omar,</p><p>You signed up on the website last week, so here is what is actually on: a park cleanup most months, door knocking on Saturdays, and a phone bank on Tuesday evenings.</p>' +
+      '<p>No obligation to any of it. Reply to this and it comes straight to us.</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'jake-morrison',
+    subject: 'Out this Saturday — back the week after',
+    preview_text: 'Knee is not up to three hours of stairs. Do not put me on the list for the 12th…',
+    status: 'closed',
+    assignTo: 'u-carlos',
+    daysAgo: 17,
+    body_html:
+      '<p>Knee is not up to three hours of stairs this week. Do not put me on the list for Saturday — I will be back for the one after.</p>' +
+      '<p>Happy to do phones from home in the meantime if that is useful.</p><p>Jake</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'vincenzo-rossi',
+    subject: 'Sign is up in the shop window',
+    preview_text: 'Front window, left of the door, where people queue for paint mixing…',
+    status: 'closed',
+    assignTo: 'u-emma',
+    daysAgo: 21,
+    body_html:
+      '<p>Front window, left of the door, where people queue for paint mixing. It will be seen.</p>' +
+      '<p>If you have a smaller one I will put it by the till as well.</p><p>Vincenzo</p>',
+  },
+  {
+    folder: 'inbox',
+    person: 'gordon-ferguson',
+    subject: 'Thank you for calling back',
+    preview_text: 'Most do not. I have not decided how I am voting but I appreciated the ten minutes…',
+    status: 'closed',
+    assignTo: 'owner',
+    daysAgo: 26,
+    body_html:
+      '<p>Most do not call back. I have not decided how I am voting, but I appreciated the ten minutes and the fact that you did not pretend to agree with me.</p>' +
+      '<p>Gordon Ferguson</p>',
   },
 ];
 

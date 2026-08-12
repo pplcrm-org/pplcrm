@@ -160,6 +160,23 @@ export const DEMO_ATTACHMENT_ASSETS = {
         ['January', '918', '444', '61'],
       ]),
   },
+  'door-hanger-proof': {
+    filename: 'door-hanger-proof.png',
+    content_type: 'image/png',
+    build: () => buildPng(300, 420, [0xd8, 0xcf, 0xba]),
+  },
+  'canvass-shift-sheet': {
+    filename: 'canvass-shift-sheet.csv',
+    content_type: 'text/csv',
+    build: () =>
+      csv([
+        ['name', 'saturday_am', 'saturday_pm', 'note'],
+        ['Priya S.', 'yes', 'yes', 'Can take a new canvasser out'],
+        ['Jake M.', 'no', 'yes', 'Back is better this week'],
+        ['Julie L.', 'yes', 'no', 'Sweetland only'],
+        ['Théo L.', 'yes', 'yes', 'First time out'],
+      ]),
+  },
 
   // Constituency office workspace.
   'sidewalk-hazard': {
@@ -178,6 +195,24 @@ export const DEMO_ATTACHMENT_ASSETS = {
         '20260226T230000Z',
         '20260227T010000Z',
       ),
+  },
+  'consultation-notice-proof': {
+    filename: 'consultation-notice-proof.png',
+    content_type: 'image/png',
+    build: () => buildPng(300, 420, [0xe4, 0xe1, 0xd6]),
+  },
+  'frank-street-petition': {
+    filename: 'frank-street-petition.csv',
+    content_type: 'text/csv',
+    build: () =>
+      csv([
+        ['name', 'address', 'signed'],
+        ['K. O’Brien', 'Frank Street', 'yes'],
+        ['M. O’Brien', 'Frank Street', 'yes'],
+        ['D. Petrov', 'Frank Street', 'yes'],
+        ['E. Petrova', 'Frank Street', 'yes'],
+        ['(seven more)', 'Frank Street', 'yes'],
+      ]),
   },
 
   // Nonprofit workspace.
@@ -202,6 +237,49 @@ export const DEMO_ATTACHMENT_ASSETS = {
     filename: 'service-hours-form.png',
     content_type: 'image/png',
     build: () => buildPng(300, 388, [0xe8, 0xe6, 0xdf]),
+  },
+  'volunteer-signin': {
+    filename: 'volunteer-signin.csv',
+    content_type: 'text/csv',
+    build: () =>
+      csv([
+        ['name', 'in', 'out', 'hours'],
+        ['Holly Tran', '09:00', '13:00', '4.0'],
+        ['Jess Lam', '09:00', '12:30', '3.5'],
+        ['Marco Bianchi', '10:00', '13:00', '3.0'],
+        ['Gail McIntyre', '08:30', '13:30', '5.0'],
+      ]),
+  },
+  'annual-report-proof': {
+    filename: 'annual-report-proof.png',
+    content_type: 'image/png',
+    build: () => buildPng(320, 414, [0xdc, 0xe3, 0xe6]),
+  },
+
+  // Church workspace.
+  'meal-train-rota': {
+    filename: 'meal-train-rota.csv',
+    content_type: 'text/csv',
+    build: () =>
+      csv([
+        ['date', 'cook', 'meal', 'note'],
+        ['Monday', 'June Benning', 'Shepherd’s pie', ''],
+        ['Wednesday', '(open)', '', 'Needs someone'],
+        ['Friday', 'Lise Doucette', 'Soup and bread', ''],
+        ['Sunday', '(open)', '', 'Needs someone'],
+      ]),
+  },
+  'cooking-rota': {
+    filename: 'cooking-rota.csv',
+    content_type: 'text/csv',
+    build: () =>
+      csv([
+        ['week', 'lead', 'second', 'servers'],
+        ['First', 'Joseph Kimani', 'Esther Kimani', '4'],
+        ['Second', 'Elena Ramos', 'Miguel Ramos', '3'],
+        ['Third', 'Ade Balogun', '(open)', '4'],
+        ['Fourth', 'Samuel Boateng', 'Akosua Boateng', '3'],
+      ]),
   },
 } satisfies Record<string, DemoAttachmentAsset>;
 
