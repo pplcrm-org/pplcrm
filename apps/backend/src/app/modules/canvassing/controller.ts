@@ -1747,18 +1747,31 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         const campaignId = await this.resolveKnockCampaignId(tenant_id, turf_id);
         if (!campaignId) throw new BadRequestError('This turf has no campaign to record a sign against.');
         const auth = this.companionAuth(tenant_id, actor);
-        const changed = op.payload.delivered
-          ? await this.deliveries.deliverHouseholdSign(trx, auth, {
-              household_id: householdId,
-              campaign_id: campaignId,
-              person_id: null,
-              via,
-            })
-          : await this.deliveries.undoHouseholdSignDelivery(trx, auth, {
-              household_id: householdId,
-              campaign_id: campaignId,
-              via,
-            });
+        let changed: boolean;
+        if (op.payload.delivered) {
+          const result = await this.deliveries.deliverHouseholdSign(trx, auth, {
+            household_id: householdId,
+            campaign_id: campaignId,
+            person_id: null,
+            via,
+          });
+          // Another campaign holds this household's open request, so the handover was recorded
+          // NOWHERE. An 'applied' ack here painted "delivered" on the volunteer's phone all
+          // shift while a driver stayed routed to the house (REVIEW6 T2-15) — reject instead,
+          // which the device routes to its held-results list with this message.
+          if (result === 'other_campaign') {
+            throw new BadRequestError(
+              "Another campaign is handling this household's sign request, so this handover was not recorded. Tell your organizer.",
+            );
+          }
+          changed = result === 'delivered';
+        } else {
+          changed = await this.deliveries.undoHouseholdSignDelivery(trx, auth, {
+            household_id: householdId,
+            campaign_id: campaignId,
+            via,
+          });
+        }
         // Nothing changed means it was already in that state — a retried op, or a second
         // canvasser at the same door. Still 'applied': the world matches what was asked.
         if (changed) await logActivity('household', householdId, { yard_sign_delivered: op.payload.delivered });
@@ -1963,7 +1976,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
       // "…and I gave them one just now". Asking and handing the sign over happen in the same
       // half-minute at a door, so they are one save — the alternative is a canvasser waiting
-      // on a sync before a second tap they will forget to make.
+      // on a sync before a second tap they will forget to make. Best-effort by design: an
+      // 'other_campaign' outcome is ignored here rather than rejecting the whole survey,
+      // because the conversation, contact capture and DNC in this op must still land.
       if (survey.yard_sign_delivered) {
         await this.deliveries.deliverHouseholdSign(trx, this.companionAuth(tenant_id, actor), {
           household_id,

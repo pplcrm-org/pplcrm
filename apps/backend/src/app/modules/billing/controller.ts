@@ -893,7 +893,25 @@ export class BillingController {
           const previousPlan: string = dbTenant.subscription_plan ?? 'free';
           const planName: string = priceMatch?.plan ?? previousPlan;
           const interval: BillingInterval = priceMatch?.interval ?? dbTenant.subscription_interval;
-          const quantity = item?.quantity ?? 1;
+
+          // Same clamp-and-push as syncSubscriptionFromStripe (T2-10a): a portal price-switch can
+          // carry a quantity above the target plan's ladder, and this webhook fires before any
+          // billing-page visit runs the reconciler. Storing the raw value would inflate the
+          // email-allowance bracket until then (REVIEW6 T2-12). No loop: the correction below
+          // raises another customer.subscription.updated whose quantity already equals the clamp,
+          // making the next pass a no-op, and syncSubscriptionQuantity itself skips a matching
+          // live quantity.
+          const stripeQuantity = item?.quantity ?? 1;
+          const planDef = getPlanDef(planName);
+          const quantity = planDef ? Math.min(stripeQuantity, maxQuantity(planDef.key)) : stripeQuantity;
+          const clampedBelowStripe = quantity !== stripeQuantity;
+          if (clampedBelowStripe) {
+            logger.warn(
+              `[processWebhookEvent] Tenant ${dbTenant.id}: Stripe quantity ${stripeQuantity} exceeds the ` +
+                `'${planName}' ladder max ${quantity} — storing the clamped value and correcting the Stripe ` +
+                `subscription now.`,
+            );
+          }
 
           await tenantsRepo.update({
             tenant_id: dbTenant.id,
@@ -908,6 +926,18 @@ export class BillingController {
             },
           });
           logger.info(`Subscription updated for Tenant ID: ${dbTenant.id}`);
+
+          if (clampedBelowStripe) {
+            try {
+              await syncSubscriptionQuantity(dbTenant.id, quantity);
+            } catch (err) {
+              logger.error(
+                { err },
+                `[processWebhookEvent] Failed to lower tenant ${dbTenant.id}'s Stripe quantity to ${quantity} — ` +
+                  `Stripe is still billing ${stripeQuantity}.`,
+              );
+            }
+          }
 
           // `customer.subscription.updated` fires for far more than a plan change: toggling
           // `cancel_at_period_end` (in-app cancel/resume) and item-quantity changes (the automatic

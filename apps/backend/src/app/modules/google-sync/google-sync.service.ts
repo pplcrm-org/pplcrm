@@ -24,11 +24,17 @@ const SECONDS_PER_HOUR = 3600;
 /** Overlap buffer on incremental syncs, so a message landing mid-run is not missed. */
 const INCREMENTAL_OVERLAP_SECONDS = 60;
 
+// Total-request deadline per attempt (same AbortSignal.timeout idiom as the other providers).
+// Without it a black-holed Gmail call holds a worker slot for undici's ~300s defaults.
+const GMAIL_REQUEST_TIMEOUT_MS = 30_000;
+
 async function fetchWithRetry(url: string, init?: RequestInit, maxRetries = 3): Promise<Response> {
   let attempt = 0;
   while (true) {
     attempt++;
-    const res = await fetch(url, init);
+    // A fresh signal per attempt — a single AbortSignal.timeout starts ticking at creation and
+    // would already be aborted by the time a rate-limited retry runs.
+    const res = await fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(GMAIL_REQUEST_TIMEOUT_MS) });
     if (res.status === 429 && attempt <= maxRetries) {
       const retryAfterHeader = res.headers.get('Retry-After');
       let delayMs = 5000;

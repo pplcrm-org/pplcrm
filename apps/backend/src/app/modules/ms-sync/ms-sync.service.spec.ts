@@ -7,7 +7,15 @@ import { SPECIAL_FOLDERS } from '../../../../../../libs/common/src';
 // `graphGet` receives the URL that was passed to `client.api(...)`, so a test can answer
 // per-folder. Tests that do not care keep using `mockResolvedValue`, which ignores the argument.
 const graphGet = vi.fn();
-const graphApi = vi.fn((url: string) => ({ get: () => graphGet(url) }));
+const graphApi = vi.fn((url: string) => {
+  // `.options()` mirrors GraphRequest's chainable per-request fetch options (the service uses it
+  // to set a timeout signal); the fake ignores the value and returns the same request.
+  const request = {
+    get: () => graphGet(url),
+    options: () => request,
+  };
+  return request;
+});
 
 vi.mock('@microsoft/microsoft-graph-client', () => ({
   Client: { init: () => ({ api: graphApi }) },

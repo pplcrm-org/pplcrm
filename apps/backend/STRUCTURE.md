@@ -57,6 +57,7 @@ apps/
           2026-08-07-households-located-index.ts
           2026-08-09-dashboard-stats-snapshots.ts
           2026-08-09-x-retention-and-ri-indexes.ts
+          2026-08-13-autovacuum-churn-tables.ts
           schema.sql
         config/
           email-folders.config.ts

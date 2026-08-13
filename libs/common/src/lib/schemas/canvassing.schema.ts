@@ -310,8 +310,15 @@ export const CompanionOpObj = z.discriminatedUnion('type', [
   z.object({ ...companionOpBase, type: z.literal('yard_sign'), payload: CompanionYardSignObj }),
 ]);
 
+/**
+ * Most ops the server accepts in one results POST. The phone slices its outbound batch to this
+ * same number — a queue past the cap used to send the whole thing, be rejected by this schema,
+ * and re-send the identical over-limit body forever (REVIEW6 T2-16a).
+ */
+export const COMPANION_OPS_MAX_PER_BATCH = 200;
+
 export const CompanionResultsObj = z.object({
-  ops: z.array(CompanionOpObj).min(1).max(200),
+  ops: z.array(CompanionOpObj).min(1).max(COMPANION_OPS_MAX_PER_BATCH),
 });
 
 /**

@@ -198,26 +198,39 @@ export async function handleMatchBoundaries(
     // presence of a district row — is what the 'unmatched' scope reads, so a household outside
     // every polygon is checked once per map change instead of once per night forever.
     //
+    // Only when every requested layer actually loaded. The stamp means "tested against the current
+    // maps"; writing it while a layer's file was unreadable would make households never tested
+    // against that map read as `outside` instead of `unknown` until the set next changes
+    // (REVIEW6 T2-19). Skipping it leaves them in the 'unmatched' scope, so the next pass retries
+    // them once the layer loads again.
+    //
     // Rows already stamped at or after the newest set change are skipped: they were already
     // checked against the current maps (a prior overlapping pass got there first), and the stamp
     // is the only column this UPDATE touches, so rewriting the whole household row again would be
     // pure dead-tuple churn (REVIEW6 T2-5).
-    let stampQuery = db
-      .updateTable('households')
-      .set({ boundary_checked_at: new Date() })
-      .where('tenant_id', '=', tenantId)
-      .where(
-        'id',
-        'in',
-        households.map((household) => household.id),
-      );
-    if (newestSetChange !== null) {
-      const cutoff = newestSetChange;
-      stampQuery = stampQuery.where((eb) =>
-        eb.or([eb('boundary_checked_at', 'is', null), eb('boundary_checked_at', '<', cutoff)]),
+    if (sets.length === setIds.length) {
+      let stampQuery = db
+        .updateTable('households')
+        .set({ boundary_checked_at: new Date() })
+        .where('tenant_id', '=', tenantId)
+        .where(
+          'id',
+          'in',
+          households.map((household) => household.id),
+        );
+      if (newestSetChange !== null) {
+        const cutoff = newestSetChange;
+        stampQuery = stampQuery.where((eb) =>
+          eb.or([eb('boundary_checked_at', 'is', null), eb('boundary_checked_at', '<', cutoff)]),
+        );
+      }
+      await stampQuery.execute();
+    } else {
+      logger.warn(
+        { correlationId, tenantId, requested: setIds.length, loaded: sets.length },
+        'Boundary match: a requested layer failed to load — freshness stamp skipped so these households are retried',
       );
     }
-    await stampQuery.execute();
   }
 
   const matchedRows = households.length;

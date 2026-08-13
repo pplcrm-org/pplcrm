@@ -323,18 +323,22 @@ export class DeliveriesController {
    *   the real guard against a duplicate; a conflict means another campaign is holding this
    *   household's request, and the honest answer there is to do nothing rather than write
    *   into a context this volunteer is not walking.
-   * - **It is idempotent.** An already-delivered request returns false and writes nothing,
-   *   so a retried offline op cannot double-log.
+   * - **It is idempotent.** An already-delivered request returns 'already_delivered' and writes
+   *   nothing, so a retried offline op cannot double-log.
    *
-   * Returns whether anything changed.
+   * The two nothing-happened outcomes are distinct on purpose: 'already_delivered' means the
+   * world already matches what was asked, but 'other_campaign' means the handover was recorded
+   * NOWHERE — the caller owes the volunteer an honest rejection, not a success toast that leaves
+   * a driver routed to this house later (REVIEW6 T2-15).
    */
   public async deliverHouseholdSign(
     trx: Transaction<Models>,
     auth: IAuthKeyPayload,
     input: { household_id: string; campaign_id: string; person_id: string | null; via: string },
-  ): Promise<boolean> {
-    const requestId = await this.resolveSignRequestForDelivery(trx, auth, input);
-    if (!requestId) return false;
+  ): Promise<'delivered' | 'already_delivered' | 'other_campaign'> {
+    const resolution = await this.resolveSignRequestForDelivery(trx, auth, input);
+    if (resolution.outcome !== 'ok') return resolution.outcome;
+    const requestId = resolution.requestId;
 
     const stop = await trx
       .selectFrom('delivery_route_stops')
@@ -363,7 +367,7 @@ export class DeliveriesController {
         .execute();
     }
     await this.logRequestStanding(trx, auth, [requestId], 'delivered', input.via);
-    return true;
+    return 'delivered';
   }
 
   /**
@@ -392,16 +396,31 @@ export class DeliveriesController {
     const requestId = String(request.id);
 
     const stop = await trx
-      .selectFrom('delivery_route_stops')
-      .select(['id', 'route_id'])
-      .where('tenant_id', '=', auth.tenant_id)
-      .where('request_id', '=', requestId)
-      .where('status', '=', 'delivered')
+      .selectFrom('delivery_route_stops as s')
+      .innerJoin('delivery_routes as r', 'r.id', 's.route_id')
+      .select(['s.id', 's.route_id', 'r.status as route_status'])
+      .where('s.tenant_id', '=', auth.tenant_id)
+      .where('r.tenant_id', '=', auth.tenant_id)
+      .where('s.request_id', '=', requestId)
+      .where('s.status', '=', 'delivered')
       .executeTakeFirst();
 
-    if (stop) {
+    if (stop && String(stop.route_status) !== 'canceled') {
       await this.undoStop(trx, auth, String(stop.route_id), String(stop.id));
     } else {
+      // No stop, or the stop's route was canceled after the delivery. Restoring a pending stop
+      // onto a canceled route would park the request where nobody will ever drive it AND hide it
+      // from planning, which only excludes requests that have a pending stop somewhere
+      // (REVIEW6 T2-14). Instead the stop takes the same 'skipped' state route-cancel gives
+      // undelivered stops, and the request itself returns to the pool.
+      if (stop) {
+        await trx
+          .updateTable('delivery_route_stops')
+          .set({ status: 'skipped', reason: 'Other', updatedby_id: auth.user_id, updated_at: new Date() })
+          .where('tenant_id', '=', auth.tenant_id)
+          .where('id', '=', String(stop.id))
+          .execute();
+      }
       await trx
         .updateTable('delivery_requests')
         .set({ status: 'approved', skip_reason: null, updatedby_id: auth.user_id, updated_at: new Date() })
@@ -418,7 +437,7 @@ export class DeliveriesController {
     trx: Transaction<Models>,
     auth: IAuthKeyPayload,
     input: { household_id: string; campaign_id: string; person_id: string | null },
-  ): Promise<string | null> {
+  ): Promise<{ outcome: 'ok'; requestId: string } | { outcome: 'already_delivered' } | { outcome: 'other_campaign' }> {
     const existing = await trx
       .selectFrom('delivery_requests')
       .select(['id', 'status'])
@@ -429,8 +448,8 @@ export class DeliveriesController {
       .orderBy('updated_at', 'desc')
       .executeTakeFirst();
     // Already delivered — a retried op, or a second canvasser at the same door.
-    if (existing && String(existing.status) === 'delivered') return null;
-    if (existing) return String(existing.id);
+    if (existing && String(existing.status) === 'delivered') return { outcome: 'already_delivered' };
+    if (existing) return { outcome: 'ok', requestId: String(existing.id) };
 
     const created = await trx
       .insertInto('delivery_requests')
@@ -451,7 +470,7 @@ export class DeliveriesController {
       .onConflict((oc) => oc.doNothing())
       .returning('id')
       .executeTakeFirst();
-    return created?.id != null ? String(created.id) : null;
+    return created?.id != null ? { outcome: 'ok', requestId: String(created.id) } : { outcome: 'other_campaign' };
   }
 
   // ---- Planning -----------------------------------------------------------

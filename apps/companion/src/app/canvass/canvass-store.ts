@@ -11,7 +11,7 @@ import type {
   CompanionTurfPayload,
   KnockResponse,
 } from '@common';
-import { CompanionOpObj } from '@common';
+import { COMPANION_OPS_MAX_PER_BATCH, CompanionOpObj } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 
 import { CompanionSessionService } from '../gate/companion-api';
@@ -1156,12 +1156,17 @@ export class CanvassStore {
    *
    * Stopping at a turf change still matters — each batch posts to one turf's endpoint, and
    * a queue can span turfs after a mid-shift switch. The next flush picks up the rest.
+   *
+   * Capped at the server's per-POST limit: a batch over it is rejected whole by the request
+   * schema, and since nothing here would shrink it, the phone re-sent the same over-limit
+   * body forever. The overflow travels in the next flush, exactly like a turf change.
    */
   private sendableBatch(): QueuedOp[] {
     const producible = this.producibleTempPersonIds();
     const out: QueuedOp[] = [];
     let turfId: string | undefined;
     for (const entry of this.queue()) {
+      if (out.length >= COMPANION_OPS_MAX_PER_BATCH) break;
       const personId = opPersonId(entry.op);
       if (personId != null && isTempPersonId(personId) && producible.has(personId)) continue;
       if (out.length === 0) turfId = entry.turf_id;

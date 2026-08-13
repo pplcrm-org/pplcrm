@@ -99,15 +99,19 @@ export class TeamFormComponent implements OnInit {
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
   protected signalPeople = signal<PersonOption[]>([]);
+  /** Members of the team a clone started from — `detail` stays null on the new-team route, so
+   *  they need their own signal to reach the options merge below (REVIEW6 T2-13). */
+  private readonly cloneSourceMembers = signal<NonNullable<TeamDetail['volunteers']>>([]);
   /**
    * Picker options = the eligible-to-add volunteers, plus everyone already on the team being
-   * edited. The add-list query is windowed (500 rows) and excludes 'former' volunteers, so a
-   * current member can be missing from it — and since saving replaces the whole roster, leaving
-   * them out of the options silently removed them from the team (REVIEW5 T1-11).
+   * edited or cloned. The add-list query is windowed (500 rows) and excludes 'former'
+   * volunteers, so a current member can be missing from it — and since saving replaces the
+   * whole roster, leaving them out of the options silently removed them from the team
+   * (REVIEW5 T1-11; clone path REVIEW6 T2-13).
    */
   protected readonly people = computed<PersonOption[]>(() => {
     const options = this.signalPeople();
-    const members = this.detail()?.volunteers ?? [];
+    const members = [...(this.detail()?.volunteers ?? []), ...this.cloneSourceMembers()];
     const known = new Set(options.map((person) => person.id));
     const missingMembers = members
       .filter((member) => !known.has(String(member.id)))
@@ -205,6 +209,9 @@ export class TeamFormComponent implements OnInit {
           if (sourceTeamId) {
             try {
               const teamDetail = await this.teams.getById(sourceTeamId);
+              // Before the payload: the roster-validity effect strips any volunteer_ids that are
+              // not in the picker options, so the source's members must be pickable first.
+              this.cloneSourceMembers.set(teamDetail.volunteers ?? []);
               this.payload.set({
                 name: teamDetail.name ? `${teamDetail.name} (Copy)` : '',
                 description: teamDetail.description ?? '',

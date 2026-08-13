@@ -63,6 +63,16 @@ function getRetryAfterHeader(err: unknown): string | undefined {
   return typeof raw === 'string' ? raw : undefined;
 }
 
+// Total-request deadline per Graph call, passed as a per-request fetch option — a signal in
+// Client.init's fetchOptions would be shared across every request and abort them all once it
+// fires. Fresh signal per attempt because callers re-invoke the thunk on retry.
+const GRAPH_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Per-request fetch options giving one Graph call a total deadline. */
+function graphTimeout() {
+  return { signal: AbortSignal.timeout(GRAPH_REQUEST_TIMEOUT_MS) };
+}
+
 async function graphCallWithRetry<T>(callFn: () => Promise<T>, maxRetries = 3): Promise<T> {
   let attempt = 0;
   while (true) {
@@ -100,7 +110,7 @@ async function graphCallWithRetry<T>(callFn: () => Promise<T>, maxRetries = 3): 
  */
 export async function fetchGraphAttachmentContent(client: Client, messageId: string, attachmentId: string) {
   const att: any = await graphCallWithRetry(() =>
-    client.api(`/me/messages/${messageId}/attachments/${attachmentId}`).get(),
+    client.api(`/me/messages/${messageId}/attachments/${attachmentId}`).options(graphTimeout()).get(),
   );
   if (!att?.contentBytes) {
     throw new Error(`MS Graph attachment ${attachmentId} returned no content`);
@@ -181,7 +191,7 @@ export class MsSyncService {
         const url = pageUrl;
         let messages: any[];
         try {
-          const response: any = await graphCallWithRetry(() => client.api(url).get());
+          const response: any = await graphCallWithRetry(() => client.api(url).options(graphTimeout()).get());
           messages = response.value ?? [];
 
           const nextLink = response['@odata.nextLink'] ?? null;
@@ -320,7 +330,10 @@ export class MsSyncService {
     if (msg.hasAttachments || hasCid) {
       try {
         const attRes = await graphCallWithRetry(() =>
-          client.api(`/me/messages/${msId}/attachments?$select=id,name,contentType,size,isInline,contentId`).get(),
+          client
+            .api(`/me/messages/${msId}/attachments?$select=id,name,contentType,size,isInline,contentId`)
+            .options(graphTimeout())
+            .get(),
         );
         graphAttachments = attRes.value ?? [];
       } catch (err) {

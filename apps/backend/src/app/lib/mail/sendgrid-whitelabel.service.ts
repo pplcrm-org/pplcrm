@@ -10,6 +10,11 @@ const DNS_LOOKUP_TIMEOUT_MS = 2000;
 const DNS_LOOKUP_TRIES = 2;
 const dnsResolver = new dns.Resolver({ timeout: DNS_LOOKUP_TIMEOUT_MS, tries: DNS_LOOKUP_TRIES });
 
+// Total-request timeout (same AbortSignal.timeout idiom as the other mail services). These calls
+// run inside user-clicked settings requests; a hung SendGrid API must not hold the request for
+// undici's ~300s defaults.
+const SENDGRID_REQUEST_TIMEOUT_MS = 15_000;
+
 export interface DNSVerificationRecord {
   host: string;
   type: string;
@@ -103,6 +108,7 @@ export class SendGridWhitelabelService {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(SENDGRID_REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {

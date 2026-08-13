@@ -22,6 +22,20 @@ import { extractBodyText, previewTextFrom } from '../services/email-body-text';
 /** Max addresses per header. Well above any real send, low enough to bound the raw MIME. */
 const MAX_RECIPIENTS_PER_FIELD = 100;
 
+/**
+ * Total-request deadline for one provider call on the send path (Gmail send, Graph draft /
+ * attachment upload / send). Generous because a single call can carry the whole message with
+ * attachments (up to ~25 MB base64); the point is that a black-holed provider releases the
+ * user's request in a minute instead of undici's ~300s defaults. Applied per request — a signal
+ * in Client.init's fetchOptions would be shared by every request and abort them all once fired.
+ */
+const SEND_REQUEST_TIMEOUT_MS = 60_000;
+
+/** Per-request fetch options giving one Graph call on the send path its own deadline. */
+function sendTimeout() {
+  return { signal: AbortSignal.timeout(SEND_REQUEST_TIMEOUT_MS) };
+}
+
 /** Recipient lists arrive as JSON strings in a multipart form, so they get parsed, not bound. */
 const recipientListSchema = z.array(z.string().trim().email()).max(MAX_RECIPIENTS_PER_FIELD);
 
@@ -603,7 +617,7 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
             })),
           };
 
-          const createdDraft = await client.api('/me/messages').post(msDraftMessage);
+          const createdDraft = await client.api('/me/messages').options(sendTimeout()).post(msDraftMessage);
           msDraftId = createdDraft.id;
           const graphInternetMessageId = createdDraft.internetMessageId;
 
@@ -631,16 +645,19 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
 
           // Upload attachments
           for (const file of files) {
-            await client.api(`/me/messages/${msDraftId}/attachments`).post({
-              '@odata.type': '#microsoft.graph.fileAttachment',
-              name: file.filename,
-              contentType: file.mimetype,
-              contentBytes: file.buffer.toString('base64'),
-            });
+            await client
+              .api(`/me/messages/${msDraftId}/attachments`)
+              .options(sendTimeout())
+              .post({
+                '@odata.type': '#microsoft.graph.fileAttachment',
+                name: file.filename,
+                contentType: file.mimetype,
+                contentBytes: file.buffer.toString('base64'),
+              });
           }
 
           // Send draft
-          await client.api(`/me/messages/${msDraftId}/send`).post({});
+          await client.api(`/me/messages/${msDraftId}/send`).options(sendTimeout()).post({});
 
           // Move local email to Sent on success
           const finalEmail = await db
@@ -718,6 +735,7 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
             body: JSON.stringify({
               raw: rawBase64Url,
             }),
+            signal: AbortSignal.timeout(SEND_REQUEST_TIMEOUT_MS),
           });
 
           if (!gmailRes.ok) {

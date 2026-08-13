@@ -284,6 +284,7 @@ export {
   isKnockOutcome,
   isKnockResponse,
   RECENT_KNOCK_WINDOW_DAYS,
+  COMPANION_OPS_MAX_PER_BATCH,
   CompanionSurveyObj,
   CompanionPersonResultObj,
   CompanionDoorOutcomeObj,

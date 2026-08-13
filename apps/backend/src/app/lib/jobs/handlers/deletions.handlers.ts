@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/node';
 import type { Kysely, Transaction } from 'kysely';
 import { sql } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
@@ -214,6 +215,14 @@ export async function performScheduledDeletions(db: Kysely<Models>): Promise<voi
       await cancelSubscriptionImmediately(tenantId);
     } catch (err) {
       logger.error({ err, tenantId }, 'Failed to cancel the Stripe subscription of a tenant being deleted');
+      // The job still completes, so nothing else alerts — and minutes later the wipe destroys the
+      // only stored copy of the subscription id. Capture explicitly so a human reconciles it in
+      // the Stripe dashboard before it bills a workspace that no longer exists (REVIEW6 T2-11).
+      // No-op when SENTRY_DSN is unset, same as the worker's own capture.
+      Sentry.captureException(err, {
+        tags: { jobType: 'perform_scheduled_deletions' },
+        extra: { tenantId, consequence: 'stripe-subscription-left-behind-after-tenant-wipe' },
+      });
     }
 
     // Capture owner emails before deletion — the whole tenant (background_jobs included) is wiped
