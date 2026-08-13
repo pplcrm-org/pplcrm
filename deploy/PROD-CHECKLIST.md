@@ -2,9 +2,11 @@
 
 > **STATUS 2026-07-21: initial bring-up is COMPLETE.** Everything below was executed and the stack is
 > live in test/pipeline mode (topology table in [`GO-LIVE-CHECKLIST.md`](./GO-LIVE-CHECKLIST.md) §0).
-> Unchecked boxes below are historical — they were done but not ticked during the deploy sprint. All
-> _remaining_ work (test→live keys, provider approvals, data wipe, scaling) is tracked in
-> `GO-LIVE-CHECKLIST.md`; work from that file, not this one.
+> Unchecked boxes below are historical — they were done but not ticked during the deploy sprint —
+> **with one exception:** the §4 "Platform sending domain (`send.pplcrm.com`)" block postdates
+> bring-up and is **genuinely not done**; it is a launch step (pair it with the shared From-address
+> policy in the newsletter worker). All other _remaining_ work (test→live keys, provider approvals,
+> data wipe, scaling) is tracked in `GO-LIVE-CHECKLIST.md`; work from that file, not this one.
 
 Target stack: **Azure** (Container Apps API + Postgres + Blob, Canada Central) + **Cloudflare** (DNS, TLS,
 Pages for the marketing site + `app.`, Workers for `go.` and `*.pplforms.com`). No edge VM; `api.pplcrm.com`
@@ -182,15 +184,22 @@ logs an error) if `SENDGRID_SHARED_SENDING_DOMAIN` matches the domain in `POSTMA
 
 GitHub Actions (for the CI pipeline in `.github/workflows/deploy.yml`):
 
-- [ ] Secrets: `VITE_GOOGLE_MAPS_API_KEY`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_MIGRATION_USER`,
-      `DB_MIGRATION_PASSWORD`, `SHARED_SECRET`, `AZURE_CREDENTIALS`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
-- [ ] Variables: `AZURE_RESOURCE_GROUP=pplcrm-cad-prod`, `AZURE_API_APP=pplcrm-api`, `CF_PAGES_PROJECT`
-      (add `AZURE_EDGE_APP`/`AZURE_EDGE_VM` only if you keep an `app.`/`go.` edge runtime — §0).
-- [ ] Add a **Worker deploy step** to `.github/workflows/deploy.yml` for `infra/pplforms-edge`
-      (`wrangler deploy`, reusing `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`). The workflow currently still runs
-      `az containerapp update` on a `pplcrm-edge` Container App — reconcile that with the §0 `app.`/`go.` decision
-      (drop it if they move off ACA, or repoint it).
-- [ ] Ensure the **migrate job's runner can reach Postgres** (public endpoint + firewall allow, or self-hosted runner in the VNet).
+> Corrected 2026-08-13 against what the workflows actually read (this list previously named
+> `DB_HOST`/`DB_PORT`/`DB_NAME`/`SHARED_SECRET`, none of which any workflow reads — the accurate
+> table also lives in `GO-LIVE-CHECKLIST.md` §1).
+
+- [x] Secrets: `VITE_GOOGLE_MAPS_API_KEY`, `PROD_DB_HOST`, `PROD_DB_NAME`, `PROD_DB_MIGRATION_USER`,
+      `PROD_DB_MIGRATION_PASSWORD`, `AZURE_CREDENTIALS`, `CLOUDFLARE_API_TOKEN`,
+      `CLOUDFLARE_ACCOUNT_ID`, `OPS_ALERT_SMS_NUMBER` (deploy-infra.yml). No `SHARED_SECRET` and no
+      `DB_PORT` — the backend's runtime secrets live on the Container App, not in GitHub.
+- [x] Variables: `AZURE_RESOURCE_GROUP=pplcrm-cad-prod`, `AZURE_API_APP=pplcrm-api`,
+      `CF_PAGES_PROJECT` (marketing site), `CF_APP_PAGES_PROJECT` (the CRM SPA Pages project —
+      read at deploy.yml's app-deploy step).
+- [x] Worker deploy steps for `infra/pplforms-edge` and `infra/go-edge` are **in `deploy.yml`**
+      (done during bring-up; the old "add a Worker deploy step / reconcile pplcrm-edge" to-do is
+      complete — the Caddy Container App is retired).
+- [x] The **migrate job's runner reaches Postgres** via the `AllowAzureServices` firewall rule
+      (GitHub-hosted runners are Azure IPs).
 - [ ] `VITE_GOOGLE_MAPS_API_KEY` restricted by HTTP referrer at Google (it ships to the browser).
 
 ## 5. First deploy

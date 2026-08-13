@@ -66,8 +66,11 @@ export interface LoadedBoundarySet {
  * than trusted, because the catalog is what told the workspace how many areas it was getting and
  * who published them.
  *
- * THE CATALOG IS EMPTY IN THIS RELEASE. The mechanism is complete and exercised the moment an entry
- * and its file exist; no coordinates have been invented in the meantime.
+ * The catalog ships six published maps (libs/common/src/lib/boundaries/catalog/catalog.entries.ts).
+ * Their files are NOT in the repo or the image — an operator must run
+ * `npm run boundary-catalog -- build` / `-- upload` against the production storage account, or
+ * every attempt to add a catalog map fails (GO-LIVE-CHECKLIST §8). No coordinates are invented
+ * here; every file is the published source's, verified by the catalog's SHA-256.
  */
 const BOUNDARY_ASSET_ENV_VAR = 'GIS_BOUNDARY_DATA_DIR';
 const HERE = path.dirname(fileURLToPath(import.meta.url));

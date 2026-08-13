@@ -117,6 +117,10 @@ Currently on **test** keys (`sk_test_...`), so upgrades run against Stripe test 
 - [ ] Swap to **live** secrets: `stripe-secret-key` → `sk_live_...`, and the **live** price IDs
       `stripe-plan-grassroots-price-id` / `stripe-plan-movement-price-id` (the live IDs are noted in
       `.env.production` comments — verify they still exist in the live dashboard).
+- [ ] Also the **annual** price IDs `stripe-plan-grassroots-annual-price-id` /
+      `stripe-plan-movement-annual-price-id` (unit amounts exactly 10× the monthly — "2 months
+      free"). The yearly billing toggle fails without them. Both modes' prices were created
+      2026-07-18; verify the live pair.
 - [ ] **Stripe Tax needs a head-office/origin address** on the **live** account
       (dashboard → Settings → Tax). Without it, `checkout.sessions.create` 500s — this exact error hit us in
       test mode. (Billing uses automatic tax; see the `stripe-tax-and-connect-decisions` memory.)
@@ -204,6 +208,14 @@ Verify each is registered in the respective **live** dashboard and its signing s
 
 ## 8. Data hygiene before real launch
 
+- [ ] **Upload the six published boundary-map files to production blob storage.** The catalog
+      (`libs/common/src/lib/boundaries/catalog/catalog.entries.ts`) offers six electoral maps to
+      every workspace, but the GeoJSON files are in neither the repo nor the image — the backend
+      downloads them from blob storage under the reserved `catalog/boundaries/` prefix. Until they
+      are uploaded, **every attempt to add any of the six maps fails, in every workspace**. Run
+      `npm run boundary-catalog -- build` then `npm run boundary-catalog -- upload` against the
+      **production** storage account (`pplcrmcadstorage`). See the `published-boundary-catalog`
+      memory for per-map licence notes.
 - [ ] Decide whether to **wipe test data**. There's a test owner account (user id 1, tenant 1, manually
       verified — re-point it to `hello@pplcrm.com` if kept) plus any test forms/donations/jobs created
       during the smoke test. The DB has no
@@ -238,6 +250,13 @@ Re-verified against the live Container App: all expected env vars present (incl.
   not single IPs (`AllowAdminClient` = `153.67.41.0/24`, old ISP; `AllowAdminClientStarlink` =
   `129.222.193.0/24`, added 2026-07-23). If a manual connection ETIMEDOUTs, check
   `curl https://api.ipify.org` against the rules and widen/add accordingly.
+
+- [ ] **Set the passkey relying-party domain**: Container App secret `webauthn-rp-id` (env
+      `WEBAUTHN_RP_ID`; companion secret `webauthn-rp-name`). The code **defaults to `localhost`**,
+      so with it unset, passkey registration and sign-in are broken on the real domain — the
+      passkey UI is live on the sign-in page and settings. Decide the value once (`pplcrm.com`, or
+      the app host): **changing it later invalidates every passkey already registered.** Documented
+      in `.env.production.example`.
 
 ## 10. Scaling & hardening for real traffic (currently sized for a pipeline test)
 
@@ -286,11 +305,22 @@ Re-verified against the live Container App: all expected env vars present (incl.
       paying ~CAD 7/mo each to catch a broken Pages deploy or an expired custom-domain cert is
       worth it. The api and worker probes are already on and stay on.
 - [ ] Consider putting `api.pplcrm.com` behind the Cloudflare proxy (currently DNS-only/grey for the managed
-      cert). Optional.
+      cert). Optional. **Decide together with the `TRUST_PROXY` measurement below.**
+- [ ] **Measure the real proxy hop count behind `TRUST_PROXY=1`** (open since the second review).
+      Log `req.ip` / `x-forwarded-for` / `cf-connecting-ip` for one request arriving through a
+      Cloudflare Worker (`*.pplforms.com` or `go.pplcrm.com`) and one arriving direct at
+      `api.pplcrm.com`. If Worker-path requests carry **two** proxy hops, every per-IP rate limit
+      on the public donation/form/companion endpoints currently treats all Worker traffic as **one
+      shared bucket** (one caller can exhaust it for everyone). Adjust `TRUST_PROXY` per the
+      finding — and re-measure if `api.pplcrm.com` later moves behind the Cloudflare proxy.
 
 ## 11. Final go-live smoke test (against live keys)
 
-1. Sign up a **real external** email → verification email arrives (Postmark live) → verify → log in.
+1. Sign up a **real external** email → verification email arrives (Postmark live) → verify →
+   **the closed-beta approval hold**: the new workspace stalls at "waiting for approval" until ops
+   clicks the approve link in the email sent to `OPS_ALERT_EMAIL` (see the `pplcrm-beta-approval`
+   skill; verify `AUTO_APPROVE_TENANTS` is absent in prod) → approve → log in. Decide whether the
+   gate stays on at launch.
 2. Upgrade to a paid plan → **live** Stripe checkout → webhook flips the plan → publish a form.
 3. Submit a form at `<org>.pplforms.com/f/:slug`; make a test donation at `<org>.pplforms.com/d/:slug`.
 4. Companion: open a `/t/:token` link, get the **real** SMS code (Twilio live), verify.
