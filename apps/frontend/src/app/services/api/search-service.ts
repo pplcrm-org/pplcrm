@@ -1,4 +1,4 @@
-import { Service, signal, debounced, effect, computed } from '@angular/core';
+import { Service, signal, debounced, effect } from '@angular/core';
 
 @Service()
 export class SearchService {
@@ -10,16 +10,29 @@ export class SearchService {
    * this to decide what ⌘K means on the current page: a grid is listening → the box
    * filters it; no grid → the box would be a dead input, so ⌘K opens the command
    * palette instead. Grids register in ngOnInit and unregister in ngOnDestroy.
+   *
+   * Tracked by ELEMENT, not by counter: grid pages are kept alive by the route-reuse strategy,
+   * which detaches them without ever running ngOnDestroy, so a counter never came back down and
+   * ⌘K stayed captured by a grid that was no longer on screen for the rest of the session
+   * (REVIEW7 D4). A detached component's element has `isConnected === false`, so checking at
+   * ask-time answers for the page actually showing; the Set keeps at most one entry per live
+   * grid instance and the reuse cache is capped at five, so the sweep is a handful of elements.
    */
-  private readonly _gridConsumers = signal(0);
-  public readonly hasGridConsumer = computed(() => this._gridConsumers() > 0);
+  private readonly gridConsumers = new Set<Element>();
 
-  public registerGridConsumer(): void {
-    this._gridConsumers.update((n) => n + 1);
+  public hasGridConsumer(): boolean {
+    for (const el of this.gridConsumers) {
+      if (el.isConnected) return true;
+    }
+    return false;
   }
 
-  public unregisterGridConsumer(): void {
-    this._gridConsumers.update((n) => Math.max(0, n - 1));
+  public registerGridConsumer(el: Element): void {
+    this.gridConsumers.add(el);
+  }
+
+  public unregisterGridConsumer(el: Element): void {
+    this.gridConsumers.delete(el);
   }
 
   // Native debounced signal

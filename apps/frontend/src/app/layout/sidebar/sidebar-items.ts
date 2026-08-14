@@ -245,6 +245,9 @@ export const SidebarItems: ISidebarItem[] = [
         name: 'Approvals',
         moduleId: 'volunteerAccess',
         route: '/volunteer-access',
+        // The route itself is role-guarded — without this flag the sidebar and palette offered
+        // it to Editors/Viewers whose click silently bounced to the dashboard (REVIEW7 D2).
+        adminOnly: true,
         icon: 'identification',
         // `r` (appRovals): `a` belongs to Automations.
         shortcut: 'r',

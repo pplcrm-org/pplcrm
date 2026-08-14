@@ -13,6 +13,11 @@ export class DashboardService extends TRPCService<any> {
     return this.api.dashboard.getStats.query();
   }
 
+  /** Single-row poll target while a snapshot refresh is pending (REVIEW7 A8). */
+  public getSnapshotStatus() {
+    return this.api.dashboard.getSnapshotStatus.query();
+  }
+
   /**
    * Queue a snapshot refresh (REVIEW6 T1-3). Coalesced and rate-limited server-side; the caller
    * shows its own error message (including the TOO_MANY_REQUESTS copy), so the generic handler is

@@ -350,6 +350,12 @@ export type CompanionResultsType = z.infer<typeof CompanionResultsObj>;
 export const CompanionOpResultObj = z.object({
   /** For person_create: the real id to swap in for the client's temp person. */
   person_id: idSchema.optional(),
+  /**
+   * The op applied, but one best-effort side effect did not — e.g. a survey's "I handed them a
+   * sign" when another campaign holds the household's sign request. Shown to the volunteer once;
+   * the op itself still counts as success.
+   */
+  warning: z.string().optional(),
 });
 export type CompanionOpResultType = z.infer<typeof CompanionOpResultObj>;
 

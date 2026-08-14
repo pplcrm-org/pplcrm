@@ -4,6 +4,7 @@ import type { IAuthKeyPayload } from '../../../../../../libs/common/src/lib/auth
 import { calculateWorkingTimeMs, TASK_OPEN_STATUSES } from '../../../../../../libs/common/src';
 import { BaseRepository } from '../../lib/base.repo';
 import { checkRateLimit } from '../../lib/rate-limiter';
+import { pinnedCampaignId } from '../../lib/tenant-context';
 import { settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
 import { IN_FIELD_WINDOW_MS } from '../canvassing/controller';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
@@ -20,6 +21,15 @@ const SENT_FOLDER_ID = '3';
 /** Manual snapshot refreshes per tenant per window — the button is coalesced anyway; this stops a held-down key. */
 const REFRESH_RATE_LIMIT = 3;
 const REFRESH_RATE_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Hard cap on rows either SLA-breach candidate query returns, oldest first (REVIEW7 A2). The
+ * calendar-age pre-filter bounds candidates by predicate only, so a workspace that stops working
+ * its inbox for a month could push tens of thousands of rows — and per-row lateral probes —
+ * through every dashboard load. Past the cap the breach COUNT reads "at least this many";
+ * oldest-first means the rows shown are the longest-breached ones, which is what triage needs.
+ */
+const BREACH_CANDIDATE_CAP = 2000;
 
 const MS_PER_HOUR = 1000 * 60 * 60;
 
@@ -116,7 +126,10 @@ export class DashboardController {
       WHERE e.tenant_id = ${tenant_id}
         AND e.folder_id = ${INBOX_FOLDER_ID}
         AND e.status = 'open'
+        AND e.detached_at IS NULL
         AND e.created_at <= ${cutoff}
+      ORDER BY e.created_at ASC
+      LIMIT ${BREACH_CANDIDATE_CAP}
     `.execute(this.db);
     return res.rows;
   }
@@ -176,6 +189,8 @@ export class DashboardController {
       .where('tenant_id', '=', tenant_id)
       .where('status', 'in', [...TASK_OPEN_STATUSES])
       .where('created_at', '<=', cutoff)
+      .orderBy('created_at', 'asc')
+      .limit(BREACH_CANDIDATE_CAP)
       .execute();
 
     const now = new Date();
@@ -224,31 +239,35 @@ export class DashboardController {
 
     const { users, userMap } = await this.loadUserMap(tenant_id);
 
-    // The live working set: open inbox emails only. Closed mail is snapshot territory.
-    const openEmails = await this.db
+    // The live working set: open inbox emails only, aggregated in SQL. Loading the rows to
+    // count them in a loop shipped every open conversation into Node per page view — three
+    // integers' worth of information at fifty thousand rows' cost (REVIEW7 A1). `detached_at`
+    // matches the inbox's own counts: a message archived upstream is invisible there, so the
+    // dashboard must not keep counting it (REVIEW7 A10).
+    const openRows = await this.db
       .selectFrom('emails')
-      .select(['id', 'created_at', 'assigned_to'])
+      .select(['assigned_to', sql<string>`count(*)`.as('cnt'), sql<Date>`min(created_at)`.as('oldest')])
       .where('tenant_id', '=', tenant_id)
       .where('folder_id', '=', INBOX_FOLDER_ID)
       .where('status', '=', 'open')
+      .where('detached_at', 'is', null)
+      .groupBy('assigned_to')
       .execute();
 
     const openCountByUser = new Map<string, number>();
     let unassignedCount = 0;
+    let totalOpenCount = 0;
     let oldestUnassignedCreatedAt: Date | null = null;
-    for (const email of openEmails) {
-      if (email.assigned_to == null) {
-        unassignedCount++;
-        const created = new Date(email.created_at);
-        if (!oldestUnassignedCreatedAt || created < oldestUnassignedCreatedAt) {
-          oldestUnassignedCreatedAt = created;
-        }
+    for (const row of openRows) {
+      const cnt = Number(row.cnt || 0);
+      totalOpenCount += cnt;
+      if (row.assigned_to == null) {
+        unassignedCount = cnt;
+        oldestUnassignedCreatedAt = row.oldest ? new Date(row.oldest) : null;
       } else {
-        const key = String(email.assigned_to);
-        openCountByUser.set(key, (openCountByUser.get(key) ?? 0) + 1);
+        openCountByUser.set(String(row.assigned_to), cnt);
       }
     }
-    const totalOpenCount = openEmails.length;
 
     // 5.1 Oldest unassigned open inbox email → the "waiting for an owner" next-action card
     // (age since arrival + how long until the first-response SLA is due, in working time).
@@ -333,18 +352,34 @@ export class DashboardController {
     // only renders for workspaces whose plan and modules allow field ops (decided in the
     // frontend with the sidebar's own gating), but the counts are computed unconditionally —
     // a workspace with no knocks pays for an index scan over zero rows.
+    //
+    // 'cleared' rows are excluded everywhere: they are the append-only "outcome toggled off"
+    // markers, not visits, and counting them made the dashboard disagree with the canvassing
+    // page (and let an undo tap read as "knocking now") (REVIEW7 A4). Conversations count
+    // DISTINCT households for the same reason — the canvassing page reasons per door, not per
+    // knock row. The turfs join carries the campaign pin: a campaign-pinned Editor sees their
+    // campaign's numbers, matching what the canvassing page will show on click-through
+    // (REVIEW7 A5).
     const inFieldHours = IN_FIELD_WINDOW_MS / MS_PER_HOUR;
+    const campaignPin = pinnedCampaignId();
     const knockRow = await this.db
       .selectFrom('turf_knocks')
+      .innerJoin('turfs', (join) =>
+        join.onRef('turfs.id', '=', 'turf_knocks.turf_id').on('turfs.tenant_id', '=', tenant_id),
+      )
       .select([
-        sql<number>`count(DISTINCT household_id)`.as('doors'),
-        sql<number>`count(*) FILTER (WHERE outcome = 'conversation')`.as('conversations'),
-        sql<number>`count(DISTINCT turf_id) FILTER (WHERE knocked_at >= now() - interval '1 hour' * ${inFieldHours})`.as(
+        sql<number>`count(DISTINCT turf_knocks.household_id)`.as('doors'),
+        sql<number>`count(DISTINCT turf_knocks.household_id) FILTER (WHERE turf_knocks.outcome = 'conversation')`.as(
+          'conversations',
+        ),
+        sql<number>`count(DISTINCT turf_knocks.turf_id) FILTER (WHERE turf_knocks.knocked_at >= now() - interval '1 hour' * ${inFieldHours})`.as(
           'in_field',
         ),
       ])
-      .where('tenant_id', '=', tenant_id)
-      .where('knocked_at', '>=', sql<Date>`now() - interval '7 days'`)
+      .where('turf_knocks.tenant_id', '=', tenant_id)
+      .where('turf_knocks.outcome', '<>', 'cleared')
+      .where('turf_knocks.knocked_at', '>=', sql<Date>`now() - interval '7 days'`)
+      .$if(campaignPin != null, (qb) => qb.where('turfs.campaign_id', '=', String(campaignPin)))
       .executeTakeFirst();
     const field = {
       doorsKnocked7d: Number(knockRow?.doors ?? 0),
@@ -353,12 +388,20 @@ export class DashboardController {
     };
 
     // The snapshot half. A workspace that has never had one computed gets a coalesced bootstrap
-    // enqueue — the ONE deliberate exception to "reads never trigger a refresh".
+    // enqueue — the ONE deliberate exception to "reads never trigger a refresh". Rate-limited
+    // like the manual button: the enqueue is an idempotent upsert, but eight simultaneous first
+    // visitors queuing eight identical jobs is still wasted work (REVIEW7 A9). Hitting the
+    // limit skips the enqueue rather than failing the read.
     const snapshot = await readLatestDashboardSnapshot(this.db, tenant_id);
     let refreshPending = await dashboardRefreshPending(this.db, tenant_id);
     if (!snapshot && !refreshPending) {
-      await enqueueDashboardStatsRefresh(this.db, tenant_id);
-      refreshPending = true;
+      try {
+        checkRateLimit(`dashboardStatsBootstrap:${tenant_id}`, REFRESH_RATE_LIMIT, REFRESH_RATE_WINDOW_MS);
+        await enqueueDashboardStatsRefresh(this.db, tenant_id);
+        refreshPending = true;
+      } catch {
+        // Another caller just queued it; the pending flag will read true on their side.
+      }
     }
 
     // Per-user LIVE numbers. Windowed closed counts and averages ride in snapshot.windows and are
@@ -403,6 +446,17 @@ export class DashboardController {
       taskSlaWarningThreshold: sla.taskWarningThreshold,
       taskSlaCriticalThreshold: sla.taskCriticalThreshold,
     };
+  }
+
+  /**
+   * Cheap poll target while a snapshot refresh is pending: one snapshot-row read plus one job
+   * probe. The frontend used to poll the FULL getStats — every live query, every 4 seconds,
+   * for up to a minute — just to notice `computedAt` change (REVIEW7 A8).
+   */
+  public async getSnapshotStatus(auth: IAuthKeyPayload) {
+    const snapshot = await readLatestDashboardSnapshot(this.db, auth.tenant_id);
+    const refreshPending = await dashboardRefreshPending(this.db, auth.tenant_id);
+    return { computedAt: snapshot ? snapshot.computedAt.toISOString() : null, refreshPending };
   }
 
   /** Queue a snapshot refresh for this workspace (coalesced; rate-limited per tenant). */

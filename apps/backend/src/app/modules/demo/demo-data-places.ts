@@ -103,17 +103,17 @@ export const DEMO_STREET_KEYS: readonly DemoStreetKey[] = DEMO_STREET_SPECS.map(
  * so a Chicago workspace never opens on a page of 613 numbers.
  */
 const STORY_SITES: Readonly<Record<string, { street: DemoStreetKey; index: number; phoneLocal?: string }>> = {
-  'hh-cooper': { street: 'st-cooper', index: 14, phoneLocal: '555-0221' },
+  'hh-cooper': { street: 'st-cooper', index: 14, phoneLocal: '555-0143' },
   'hh-fifth': { street: 'st-cooper', index: 5 },
   'hh-maclaren': { street: 'st-maclaren', index: 14 },
-  'hh-holmwood': { street: 'st-maclaren', index: 6, phoneLocal: '555-0268' },
+  'hh-holmwood': { street: 'st-maclaren', index: 6, phoneLocal: '555-0149' },
   'hh-frank': { street: 'st-frank', index: 10 },
   'hh-aylmer': { street: 'st-frank', index: 3 },
   'hh-arlington': { street: 'st-arlington', index: 12 },
   'hh-powell': { street: 'st-arlington', index: 5 },
   'hh-gladstone': { street: 'st-gladstone', index: 12 },
   'hh-sunnyside': { street: 'st-gladstone', index: 4 },
-  'hh-bay': { street: 'st-bay', index: 8, phoneLocal: '555-0244' },
+  'hh-bay': { street: 'st-bay', index: 8, phoneLocal: '555-0148' },
   'hh-huron': { street: 'st-bay', index: 2 },
   'hh-byron': { street: 'st-james', index: 3 },
   'hh-kirkwood': { street: 'st-james', index: 12 },

@@ -910,6 +910,12 @@ export class CanvassStore {
         if (ack.person_id != null) this.swapTempId(entry.temp_person_id, ack.person_id);
         else this.forgetUnresolvedPerson(entry);
       }
+      // Applied, but a best-effort side effect did not land (e.g. the survey's sign handover
+      // when another campaign holds the request). The op counts as synced; the volunteer
+      // still needs to hear what was NOT recorded.
+      if (ack.status !== 'rejected' && ack.warning) {
+        this.alerts.showInfo(`"${entry.label}": ${ack.warning}`);
+      }
     }
     this.persistQueue();
   }

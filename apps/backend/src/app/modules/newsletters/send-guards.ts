@@ -351,7 +351,7 @@ export async function hasVerifiedSendingDomain(db: Db, tenantId: string): Promis
       domains = row.value as { domain?: string; status?: string }[];
     }
   }
-  const fromDomain = fromEmail.split('@')[1];
+  const fromDomain = fromEmail.split('@')[1]?.toLowerCase();
   if (!fromDomain) return false;
 
   if (isSharedSendingAddress(fromEmail)) {
@@ -359,7 +359,9 @@ export async function hasVerifiedSendingDomain(db: Db, tenantId: string): Promis
     return isOwnSharedSendingAddress(fromEmail, tenant?.slug ?? null);
   }
 
-  return domains.some((d) => d.domain === fromDomain && d.status === 'verified');
+  // Same normalization as from-address-policy.ts — a stored domain with different case or stray
+  // whitespace must give the same answer here as there (REVIEW7 B9; divergence blocked sends).
+  return domains.some((d) => d.domain?.toLowerCase().trim() === fromDomain && d.status === 'verified');
 }
 
 /**

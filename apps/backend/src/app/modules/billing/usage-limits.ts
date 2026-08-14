@@ -262,8 +262,13 @@ export async function checkTenantUsage(tenantId: string, db: Kysely<any>): Promi
 
   // Bracket-quantity notify-then-adjust: only meaningful for purchasable plans with an active
   // (or trialing) subscription — free/enterprise tenants have no Stripe quantity to sync.
+  //
+  // Deferred entirely while demo data is present: the seed contributes ~200 phantom emailable
+  // subscribers, so a paying customer who has not yet removed it could be pushed over a bracket
+  // boundary and invoiced a prorated difference for rows they never created (REVIEW7 C4). The
+  // next usage check after the demo exit reconciles against the real count.
   const subscriptionStatus = (tenant['subscription_status'] as string) || '';
-  if (plan.purchasable && hasSettledPlan(subscriptionStatus)) {
+  if (plan.purchasable && hasSettledPlan(subscriptionStatus) && tenant['demo_mode_at'] == null) {
     const targetQuantity = bracketIndexForSubscribers(plan.key, currentSubscribers);
 
     if (targetQuantity === null) {

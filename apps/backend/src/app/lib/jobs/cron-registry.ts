@@ -64,6 +64,10 @@ const JOB_TIMEOUT_OVERRIDES = {
   ms_sync: LONG_JOB_TIMEOUT_MS,
   perform_scheduled_deletions: LONG_JOB_TIMEOUT_MS,
   purge_downgraded_inboxes: LONG_JOB_TIMEOUT_MS,
+  // Every workspace in one sequential pass, two 90-day aggregate scans each — 15 minutes is
+  // plausible to exceed at scale, and a timeout restarts the whole sweep from tenant one
+  // (REVIEW7 A3).
+  refresh_dashboard_stats: LONG_JOB_TIMEOUT_MS,
 } as const satisfies Partial<Record<JobType, number>>;
 
 export function jobTimeoutMs(type: string | undefined): number {

@@ -1,4 +1,5 @@
 import type { Kysely, Transaction } from 'kysely';
+import { getPlanDef } from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../env';
 import { InternalError } from '../../errors/app-errors';
@@ -69,6 +70,35 @@ export class SmsService {
     // that the Kysely model types as `string | null`; a typed handle would reject it.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see NOTE above; BigInt tenant_id vs Kysely string-id model. pplcrm-any-exceptions
     const dbClient = (trx || BaseRepository.dbInstance) as any;
+
+    // The pipe-level gate the email side gets from assertTenantMaySendTransactional. SMS
+    // recipients are always audience-chosen numbers, and every message costs real Twilio money
+    // on the platform account, so a suspended workspace sends nothing, and an UNPAID demo
+    // workspace sends nothing ("nothing you do in the demo reaches a real person" — the demo
+    // elevation opened the Movement-only volunteer flows that mint these texts, REVIEW7 C1).
+    // Skip-and-log rather than throw: the business write this rides in (a turf assignment, a
+    // route handoff) must still land — same drop semantics as the mail worker's send-or-drop.
+    if (options.tenant_id) {
+      const tenant = await (dbClient as Kysely<Models>)
+        .selectFrom('tenants')
+        .select(['suspended_at', 'demo_mode_at', 'subscription_plan'])
+        .where('id', '=', options.tenant_id)
+        .executeTakeFirst();
+      const storedPlanPaid = getPlanDef(tenant?.subscription_plan)?.purchasable === true;
+      if (tenant?.suspended_at || (tenant?.demo_mode_at && !storedPlanPaid)) {
+        logger.warn(
+          {
+            tenantId: options.tenant_id,
+            to: options.to,
+            suspended: !!tenant?.suspended_at,
+            demoMode: !!tenant?.demo_mode_at,
+          },
+          'SMS withheld — workspace is suspended or in demo mode',
+        );
+        return;
+      }
+    }
+
     await dbClient
       .insertInto('background_jobs')
       .values({

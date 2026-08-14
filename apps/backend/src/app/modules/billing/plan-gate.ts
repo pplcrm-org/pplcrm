@@ -1,7 +1,14 @@
 import type { Kysely, Transaction } from 'kysely';
 import { TRPCError } from '@trpc/server';
 
-import { GATED_FEATURES, PLANS_BY_KEY, effectivePlanKey, planAllowsFeature, type GatedFeature } from '@common';
+import {
+  GATED_FEATURES,
+  PLANS_BY_KEY,
+  effectivePlanKey,
+  effectivePlanKeyForFeature,
+  planAllowsFeature,
+  type GatedFeature,
+} from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { ForbiddenError } from '../../errors/app-errors';
 import { BaseRepository } from '../../lib/base.repo';
@@ -38,7 +45,11 @@ export async function assertPlanFeature(
     .select(['subscription_plan', 'demo_mode_at'])
     .where('id', '=', tenant_id)
     .executeTakeFirst();
-  if (!planAllowsFeature(effectivePlanKey(tenant?.subscription_plan, tenant?.demo_mode_at), feature)) {
+  // Feature-aware: DEMO_EXCLUDED_FEATURES (currently the scriptable API) gate on the stored
+  // plan even during the demo — data loaded through a key would outlive the demo (REVIEW7 C2).
+  if (
+    !planAllowsFeature(effectivePlanKeyForFeature(tenant?.subscription_plan, tenant?.demo_mode_at, feature), feature)
+  ) {
     throw new ForbiddenError(planGateMessage(feature));
   }
 }

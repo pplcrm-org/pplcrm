@@ -86,6 +86,7 @@ function detail(overrides: Partial<TurfDetail> = {}): TurfDetail {
     list_id: null,
     list_name: null,
     campaign_name: 'Test campaign',
+    campaign_id: 'camp-1',
     boundary_name: 'W1',
     boundary_set_id: 'set-1',
     boundary_label: 'Ward',
@@ -190,11 +191,14 @@ describe('TurfPrintPage', () => {
       expect(streetHeadings()).toEqual(['Alder St', 'Birch Rd']);
     });
 
-    it('lists the doors in walking order with the numbers the map uses', async () => {
+    it('lists the doors in walking order, numbered per street the way the phone numbers them', async () => {
       await open();
       const cells = doorRows().map((r) => Array.from(r.querySelectorAll('td')).map((c) => c.textContent?.trim() ?? ''));
       expect(cells.map((c) => c[1])).toEqual(EXPECTED_ORDER);
-      expect(cells.map((c) => c[0])).toEqual(['1', '2', '3', '4', '5', '6', '7']);
+      // Numbering restarts on each street (Alder St has 4 doors, Birch Rd 3) so "door 3 on
+      // Birch" means the same door on paper and on a volunteer's street-scoped phone list
+      // (REVIEW7 E3).
+      expect(cells.map((c) => c[0])).toEqual(['1', '2', '3', '4', '1', '2', '3']);
     });
 
     it('leaves the result and notes columns empty to write in', async () => {
@@ -248,7 +252,8 @@ describe('TurfPrintPage', () => {
 
     it('asks for the code quietly, so a plan gate can never toast over the sheet', async () => {
       await open();
-      expect(joinCodes.getForCampaign).toHaveBeenCalledWith({ silent: true });
+      // The TURF's campaign is passed explicitly — never the selected context (REVIEW7 E4).
+      expect(joinCodes.getForCampaign).toHaveBeenCalledWith({ silent: true }, 'camp-1');
       expect(joinCodes.qr).toHaveBeenCalledWith('code-1', { silent: true });
     });
 

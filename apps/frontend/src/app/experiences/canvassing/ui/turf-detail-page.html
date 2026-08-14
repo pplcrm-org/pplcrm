@@ -66,7 +66,7 @@
       <div class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
         <div>
           <p class="pc-eyebrow">Campaign</p>
-          @if (d.campaign_id) {
+          @if (d.campaign_id && canOpenCampaign()) {
           <a class="text-primary" [routerLink]="['/workspace/campaigns', d.campaign_id]"
             >{{ d.campaign_name || 'Campaign' }}</a
           >

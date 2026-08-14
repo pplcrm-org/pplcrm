@@ -758,10 +758,26 @@ export class CompanionAccessController {
   }
 
   public async createJoinCode(auth: IAuthKeyPayload, input: AddJoinCodeType): Promise<JoinCodeRow> {
+    // A turf-scoped code belongs to the TURF's campaign, whatever the client sent: the client's
+    // value is its currently selected context, and filing the code under that minted duplicate
+    // live codes per turf across contexts and attached redeeming volunteers to a campaign that
+    // does not own the turf (REVIEW7 E4). This also validates the turf is the tenant's own.
+    let campaignId = emptyToNull(input.campaign_id);
+    const turfId = emptyToNull(input.turf_id);
+    if (turfId) {
+      const turf = await this.joinCodesRepo.db
+        .selectFrom('turfs')
+        .select(['id', 'campaign_id'])
+        .where('tenant_id', '=', auth.tenant_id)
+        .where('id', '=', turfId)
+        .executeTakeFirst();
+      if (!turf) throw new NotFoundError('Turf not found.');
+      campaignId = turf.campaign_id != null ? String(turf.campaign_id) : null;
+    }
     const { id } = await this.joinCodesRepo.createCode({
       tenant_id: auth.tenant_id,
-      campaign_id: emptyToNull(input.campaign_id),
-      turf_id: emptyToNull(input.turf_id),
+      campaign_id: campaignId,
+      turf_id: turfId,
       label: input.label ?? null,
       expires_at: toDateOrNull(input.expires_at),
       max_uses: input.max_uses ?? null,

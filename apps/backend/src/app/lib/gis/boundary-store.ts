@@ -136,6 +136,14 @@ interface CacheEntry<T> {
  */
 const JSON_BYTES_TO_HEAP_FACTOR = 6;
 
+/**
+ * For sizing straight from a RAW GeoJSON file's byte length (the published cache): raw bytes
+ * include the feature properties the parser drops, and coordinate text ("‑79.3832,43.6532") is
+ * denser than its parsed float — so raw-bytes-to-heap runs well under the serialized-features
+ * factor above.
+ */
+const RAW_BYTES_TO_HEAP_FACTOR = 3;
+
 function estimateHeapBytes(features: readonly LoadedBoundaryFeature[]): number {
   return JSON.stringify(features).length * JSON_BYTES_TO_HEAP_FACTOR;
 }
@@ -169,11 +177,14 @@ class BoundaryLruCache<T> {
     this.delete(key);
     this.entries.set(key, { version, value, estimatedBytes });
     this.bytes += estimatedBytes;
-    // Evicting oldest-first can drop the entry just inserted if it alone exceeds the byte budget;
-    // that is fine — the caller holds its own reference, the layer just won't be cached.
+    // Evict oldest-first, but NEVER the entry just inserted. Self-eviction made any layer whose
+    // estimate alone exceeded the budget permanently uncacheable — every nightly match pass then
+    // re-downloaded, re-checksummed and re-parsed the same multi-megabyte file once per
+    // 500-household page (REVIEW7 B2). One oversized entry may now hold the cache over budget;
+    // that is bounded by the largest single layer and far cheaper than the re-parse loop.
     while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) {
       const oldest = this.entries.keys().next();
-      if (oldest.done) break;
+      if (oldest.done || oldest.value === key) break;
       this.delete(oldest.value);
     }
   }
@@ -490,7 +501,10 @@ async function loadPublishedFeatures(slug: string): Promise<readonly LoadedBound
   const frozen: readonly LoadedBoundaryFeature[] = Object.freeze(features);
   // Sized from the file's own byte length — re-serializing the parsed features just to measure
   // them cost a second full JSON.stringify of a national map on the event loop per cache miss.
-  publishedFeatureCache.put(slug, entry.sha256, frozen, bytes.length * JSON_BYTES_TO_HEAP_FACTOR);
+  // A smaller factor than the editable cache's: the raw GeoJSON includes per-feature properties
+  // the parser discards, so charging raw bytes at the parsed-heap factor over-billed a national
+  // map by several times (an 8 MB file charged 48 MB — the whole budget; REVIEW7 B2).
+  publishedFeatureCache.put(slug, entry.sha256, frozen, bytes.length * RAW_BYTES_TO_HEAP_FACTOR);
   return frozen;
 }
 

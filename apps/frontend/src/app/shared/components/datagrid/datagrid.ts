@@ -142,6 +142,8 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
   protected readonly dialogs = inject(ConfirmDialogService);
   private readonly route = inject(ActivatedRoute);
   private readonly searchSvc = inject(SearchService);
+  /** Host element handed to the grid-presence registry — see SearchService (REVIEW7 D4). */
+  private readonly hostRef = inject(ElementRef);
 
   // Header resize handled by ResizingController
 
@@ -1117,7 +1119,7 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
       return;
     }
     // The navbar's ⌘K falls back to the command palette once no grid is listening.
-    this.searchSvc.unregisterGridConsumer();
+    this.searchSvc.unregisterGridConsumer(this.hostRef.nativeElement);
     // Abort any inflight requests and release refs
     this.gridSvc.abort();
     this.tsTable = undefined;
@@ -1130,7 +1132,7 @@ export class DataGrid<T extends keyof Models, U> implements OnInit, AfterViewIni
     }
 
     // Tell the navbar a grid is consuming the search term on this page (⌘K = filter).
-    this.searchSvc.registerGridConsumer();
+    this.searchSvc.registerGridConsumer(this.hostRef.nativeElement);
 
     void (async () => {
       this.undoMgr.initialize(this);

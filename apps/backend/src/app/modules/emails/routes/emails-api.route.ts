@@ -24,17 +24,36 @@ const MAX_RECIPIENTS_PER_FIELD = 100;
 
 /**
  * Total-request deadline for one provider call on the send path (Gmail send, Graph draft /
- * attachment upload / send). Generous because a single call can carry the whole message with
- * attachments (up to ~25 MB base64); the point is that a black-holed provider releases the
- * user's request in a minute instead of undici's ~300s defaults. Applied per request — a signal
- * in Client.init's fetchOptions would be shared by every request and abort them all once fired.
+ * attachment upload / send). Generous because the Gmail send is ONE request carrying the whole
+ * message — 25 MB of attachments becomes ~33 MB of base64 in a single body, which at two
+ * minutes needs ~275 KB/s of sustained upload. The point is that a black-holed provider
+ * releases the user's request in minutes instead of undici's ~300s defaults. Applied per
+ * request — a signal in Client.init's fetchOptions would be shared by every request and abort
+ * them all once fired.
  */
-const SEND_REQUEST_TIMEOUT_MS = 60_000;
+const SEND_REQUEST_TIMEOUT_MS = 120_000;
 
 /** Per-request fetch options giving one Graph call on the send path its own deadline. */
 function sendTimeout() {
   return { signal: AbortSignal.timeout(SEND_REQUEST_TIMEOUT_MS) };
 }
+
+/**
+ * Did this send fail because OUR deadline fired — as opposed to the provider refusing it?
+ * The distinction decides what to tell the user: aborting the request does not undo work the
+ * provider already started, so a timed-out send may in fact have been delivered, and treating
+ * it as a clean failure ("failed — compose it again") invites a duplicate send (REVIEW7 B5).
+ * AbortSignal.timeout throws a DOMException named 'TimeoutError'; undici and the Graph client
+ * can surface it as 'AbortError' or wrapped one level down in `cause`.
+ */
+function isDeadlineAbort(err: unknown): boolean {
+  const names = (e: unknown): string[] =>
+    e instanceof Error ? [e.name, ...(e.cause instanceof Error ? [e.cause.name] : [])] : [];
+  return names(err).some((n) => n === 'TimeoutError' || n === 'AbortError');
+}
+
+const TIMED_OUT_SEND_MESSAGE =
+  'The send timed out. It may still have gone through — check your Sent folder before trying again. The message was kept in Drafts.';
 
 /** Recipient lists arrive as JSON strings in a multipart form, so they get parsed, not bound. */
 const recipientListSchema = z.array(z.string().trim().email()).max(MAX_RECIPIENTS_PER_FIELD);
@@ -685,7 +704,19 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
           return reply.jsendSuccess(finalEmail);
         } catch (err) {
           fastify.log.error(err, `Failed to send email via Microsoft Graph for email ${emailRow.id}`);
-          // Clean up local email
+          if (isDeadlineAbort(err)) {
+            // Our deadline fired mid-flight: Graph may have already accepted the send. Deleting
+            // the local row here told the user "failed", inviting a duplicate — keep the message
+            // in Drafts and say the outcome is unknown instead.
+            await db
+              .updateTable('emails')
+              .set({ folder_id: ALL_FOLDERS.DRAFTS, updated_at: new Date() })
+              .where('tenant_id', '=', tenantId)
+              .where('id', '=', String(emailRow.id))
+              .execute();
+            return reply.jsendError(TIMED_OUT_SEND_MESSAGE, 400);
+          }
+          // A definite provider refusal — clean up the local email.
           await db
             .deleteFrom('emails')
             .where('tenant_id', '=', tenantId)
@@ -789,7 +820,11 @@ const emailsApiRoute: FastifyPluginCallback = (fastify, _, done) => {
             .execute();
 
           return reply.jsendError(
-            err instanceof Error && err.message ? err.message : 'Failed to send email via Google. Saved to Drafts.',
+            isDeadlineAbort(err)
+              ? TIMED_OUT_SEND_MESSAGE
+              : err instanceof Error && err.message
+                ? err.message
+                : 'Failed to send email via Google. Saved to Drafts.',
             400,
           );
         }

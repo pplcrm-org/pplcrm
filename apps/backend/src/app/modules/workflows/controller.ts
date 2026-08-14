@@ -696,16 +696,21 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
       .groupBy('workflow_id')
       .execute();
 
-    // DISTINCT ON returns the newest run per workflow in one index-driven pass
-    // (idx_workflow_runs_tenant_workflow_created). The previous shape read every run row the
-    // workspace ever produced — with no LIMIT and no date bound — and kept the first per
-    // workflow in JS, which grew without bound (REVIEW6 T1-2).
+    // DISTINCT ON with the newest-first index (idx_workflow_runs_tenant_workflow_created). The
+    // previous shape read every run row the workspace ever produced and kept the first per
+    // workflow in JS (REVIEW6 T1-2). DISTINCT ON alone still walks every index entry (Postgres
+    // below 18 has no skip-scan), so the date bound is what makes it genuinely bounded — 90
+    // days, matching the retention sweep (WORKFLOW_RUN_RETENTION_DAYS): older rows are deleted
+    // nightly anyway, so the bound can only hide a run the sweep is about to remove
+    // (REVIEW7 B7).
+    const lastRunWindowStart = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
     const lastRuns = await db
       .selectFrom('workflow_runs')
       .distinctOn('workflow_id')
       .select(['workflow_id', 'status', 'step_number', 'step_kind', 'error', 'created_at'])
       .where('tenant_id', '=', tenantId)
       .where('workflow_id', 'in', workflowIds)
+      .where('created_at', '>=', lastRunWindowStart)
       .orderBy('workflow_id')
       .orderBy('created_at', 'desc')
       .execute();

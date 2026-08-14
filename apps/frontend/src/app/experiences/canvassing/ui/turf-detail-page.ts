@@ -18,10 +18,12 @@ import {
   KNOCK_RESPONSE_LABELS,
   groupForWalk,
   isKnockOutcome,
+  isPrivilegedRole,
   orderForWalk,
   simplifyPath,
   type KnockResponse,
 } from '../../../../../../../libs/common/src';
+import { AuthService } from '../../../auth/auth-service';
 import { CanvassingService, type TurfDetail, type TurfDoor } from '../services/canvassing-service';
 import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
 import { AssignTurfDialog } from './assign-turf-dialog';
@@ -109,6 +111,11 @@ export class TurfDetailPage {
   private readonly confirm = inject(ConfirmDialogService);
   private readonly router = inject(Router);
   private readonly orgMode = inject(OrgModeService);
+  private readonly auth = inject(AuthService);
+
+  /** The campaign page lives under role-guarded /workspace — for Editors/Viewers the link would
+   *  silently bounce to the dashboard, so they get plain text instead (REVIEW7 D5). */
+  protected readonly canOpenCampaign = computed(() => isPrivilegedRole(this.auth.getUserSignal()()?.role));
 
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;

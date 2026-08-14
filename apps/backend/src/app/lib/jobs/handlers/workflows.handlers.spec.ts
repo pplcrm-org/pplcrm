@@ -171,12 +171,15 @@ describe('handleProcessDripWorkflows plan gate', () => {
   });
 
   // Demo workspaces may BUILD automations (the tRPC gate resolves demo as the top tier) but
-  // processing stays deferred even on a paid plan: a run ends in outbound email, and the seeded
-  // demo contacts are reserved example.com addresses that can only bounce.
-  it('defers enrollments of a demo-mode tenant even when the stored plan includes automations', async () => {
+  // processing stays deferred for UNPAID workspaces: a run ends in outbound email, and the
+  // seeded demo contacts are reserved example.com addresses that can only bounce.
+  it('defers enrollments of an unpaid demo-mode tenant', async () => {
     const { db, updates, state } = makeFakeDb({
       workflow_enrollments: [DUE_ENROLLMENT],
-      tenants: { subscription_plan: 'movement', demo_mode_at: new Date('2026-08-01T00:00:00Z') },
+      // The realistic unpaid demo state is a free/null stored plan (free has no automations
+      // feature, so the plan half of the gate already defers; the demo clause additionally
+      // covers the one unpaid plan that does include automations — enterprise).
+      tenants: { subscription_plan: 'free', demo_mode_at: new Date('2026-08-01T00:00:00Z') },
     });
     await handleProcessDripWorkflows(db as any);
 
@@ -185,6 +188,19 @@ describe('handleProcessDripWorkflows plan gate', () => {
     expect(deferrals).toHaveLength(1);
     expect((deferrals[0].values['next_run_at'] as Date).getTime()).toBeGreaterThan(Date.now());
     expect(deferrals[0].values['status']).toBeUndefined();
+  });
+
+  // The paid exemption (REVIEW7 C3): "paid, demo data still present" is the normal transitional
+  // state — exiting the demo requires a settled subscription FIRST — and a paying customer's
+  // automations (donation thanks, receipts follow-ups) must not silently stall for it.
+  it('processes enrollments of a PAID tenant even while demo data is present', async () => {
+    const { db, state } = makeFakeDb({
+      workflow_enrollments: [DUE_ENROLLMENT],
+      tenants: { subscription_plan: 'movement', demo_mode_at: new Date('2026-08-01T00:00:00Z') },
+      workflows: [],
+    });
+    await handleProcessDripWorkflows(db as any);
+    expect(state.transactionCalls).toBe(1);
   });
 });
 

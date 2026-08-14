@@ -64,14 +64,22 @@ export interface CompareCategoryChart {
   readonly rows: readonly CategoryRow[];
 }
 
-const CHECKED_ON = 'August 11, 2026';
+/**
+ * One date PER CHART, not one shared constant: with a single constant, fixing one chart's
+ * cell and bumping the date silently re-dated the other charts' 40-odd sourced cells as
+ * "verified today" when they were not (REVIEW7 F7). Bump only the chart whose sources you
+ * actually re-read.
+ */
+const GENERIC_CHECKED_ON = 'August 11, 2026';
+const POLITICAL_CHECKED_ON = 'August 11, 2026';
+const CHURCH_CHECKED_ON = 'August 11, 2026';
 
 const GENERIC_CHART: CompareCategoryChart = {
   id: 'generic',
   heading: 'The tools you already have open',
   intro:
     'Mailchimp, HubSpot and the spreadsheet are excellent at their own jobs. Organizing streets, households and volunteers is not their job, and their own documentation says so.',
-  checkedOn: CHECKED_ON,
+  checkedOn: GENERIC_CHECKED_ON,
   competitors: [
     {
       slug: 'mailchimp',
@@ -203,7 +211,7 @@ const POLITICAL_CHART: CompareCategoryChart = {
   heading: 'The political platforms',
   intro:
     'The tools a campaign manager will name. NGP VAN is the US Democratic ecosystem’s standard and this chart says so; the structural differences are who can use each tool, what ships bundled, and what happens after the knock.',
-  checkedOn: CHECKED_ON,
+  checkedOn: POLITICAL_CHECKED_ON,
   competitors: [
     {
       slug: 'nationbuilder',
@@ -363,7 +371,7 @@ const COMMUNITY_CHART: CompareCategoryChart = {
   heading: 'The community and donor tools',
   intro:
     'The tools a non-profit or congregation is likely already using. Where they are strong — Planning Center’s households and Canadian receipting are real — the chart concedes it.',
-  checkedOn: CHECKED_ON,
+  checkedOn: CHURCH_CHECKED_ON,
   competitors: [
     {
       slug: 'planning-center',
@@ -452,7 +460,7 @@ const COMMUNITY_CHART: CompareCategoryChart = {
     {
       job: 'A shared team inbox',
       pplcrm:
-        'Connect Gmail or Microsoft 365 and mail flows both ways; every message gets an owner, a due date and a service-level clock.',
+        'Connect Gmail or Microsoft 365 and mail flows both ways; every message gets an owner and a service-level clock, and one click turns it into a task with a due date.',
       cells: [
         {
           verdict: 'not-offered',

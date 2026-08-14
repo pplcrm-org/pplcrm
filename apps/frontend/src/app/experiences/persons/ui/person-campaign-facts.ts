@@ -15,7 +15,9 @@ import {
   VOLUNTEER_STATUS_LABELS,
   STAFF_STATUSES,
   STAFF_STATUS_LABELS,
+  isPrivilegedRole,
 } from '../../../../../../../libs/common/src';
+import { AuthService } from '../../../auth/auth-service';
 import type { SupportLevel, VotingStatus, VolunteerStatus, StaffStatus } from '../../../../../../../libs/common/src';
 
 import { CampaignContextService } from '../../../services/campaign-context.service';
@@ -63,6 +65,11 @@ export class PersonCampaignFacts {
 
   protected readonly context = inject(CampaignContextService);
   private readonly orgMode = inject(OrgModeService);
+  private readonly auth = inject(AuthService);
+
+  /** Campaign pages live under role-guarded /workspace — Editors/Viewers get plain text instead
+   *  of a link that silently bounces to the dashboard (REVIEW7 D5). */
+  protected readonly canOpenCampaign = computed(() => isPrivilegedRole(this.auth.getUserSignal()()?.role));
 
   /**
    * Support level, voting status and the cross-campaign history only mean something to an

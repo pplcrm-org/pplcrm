@@ -179,7 +179,11 @@ until this is live.
 
 - [ ] **Browser key** (`VITE_GOOGLE_MAPS_API_KEY`, GitHub secret): restricted to **HTTP referrers**
       (`app.pplcrm.com/*`, `go.pplcrm.com/*`, `*.pplforms.com/*`, and localhost for dev), APIs limited to
-      **Maps JavaScript API + Places API**. `ApiTargetBlockedMapError` = key not allowed for those APIs.
+      **Maps JavaScript API + Places API + Maps Static API**. `ApiTargetBlockedMapError` = key not
+      allowed for those APIs. **Maps Static API must ALSO be enabled on the Google Cloud project**
+      (two separate settings — see the `pplcrm-canvassing` skill): the printable canvassing walk
+      sheet's street basemap uses it, and with either setting missing every walk sheet silently
+      falls back to the schematic with no roads and no error anywhere.
 - [ ] **Server key** (`google-maps-api-key`): **NO referrer restriction** (server sends no Referer — would
       break geocoding); restrict by IP and to **Geocoding API**.
 - [ ] Ensure **billing is enabled** on the Google Cloud project and quotas fit expected traffic.
@@ -298,6 +302,15 @@ Re-verified against the live Container App: all expected env vars present (incl.
       retention, Canada Central, geo-redundant backup disabled — matches the site's "retained for 7 days
       in Canada" claim exactly. Blob soft-delete is **off** (site makes no blob-backup claim; deleted
       blobs vanish immediately, which is consistent with — stronger than — the deletion promise).
+- [ ] **Check for orphaned availability webtests in the Azure portal.** The 2026-08-10 probe-cost
+      change removed the `app.pplcrm.com` / `go.pplcrm.com` webtests from the Bicep template, but
+      `deploy-infra.yml` deploys in the default **Incremental** mode, which never deletes
+      resources that disappear from a template — so `pplcrm-avail-app-cad`, `pplcrm-avail-go-cad`
+      and their two alerts are most likely still live, still billing at the old frequency, and no
+      longer described by any file in the repo. List the availability tests under the App
+      Insights resource in `pplcrm-cad-prod`; either delete the two orphans deliberately (the
+      stated ~80% cost drop has not happened until then) or re-add them to the template. Record
+      which world you found.
 - [ ] **Turn the edge availability probes back on**: set `param enableEdgeProbes = true` in
       `infra/azure/canadacentral-monitoring.bicepparam` and merge — CI deploys it. Pre-launch the
       probes for `app.pplcrm.com` and `go.pplcrm.com` are off (2026-08-10) because standard web

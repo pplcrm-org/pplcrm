@@ -1,7 +1,7 @@
 import type { PcIconNameType } from '@icons/icons.index';
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
-import { effectivePlanKey, isPrivilegedRole, planAllowsFeature } from '@common';
+import { ORG_MODE_IS_ELECTORAL, effectivePlanKey, isPrivilegedRole, planAllowsFeature } from '@common';
 
 import { AuthService } from '../auth/auth-service';
 import { SidebarItems, sidebarLabel, type ISidebarItem } from '../layout/sidebar/sidebar-items';
@@ -57,10 +57,17 @@ export class CommandPaletteService {
     const terms = this.orgMode.terms();
     const inboxAllowed = planAllowsFeature(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at), 'inbox');
 
+    // Children inherit the parent's admin flag: the sidebar drops a whole adminOnly group, but
+    // this flatten used to test each child alone, so the ADMIN group's unflagged children
+    // ("Go to Users/Activity/Workspace") surfaced for Viewers (REVIEW7 D2).
     const flat: ISidebarItem[] = [];
     for (const item of SidebarItems) {
       flat.push(item);
-      if (item.children) flat.push(...item.children);
+      if (item.children) {
+        for (const child of item.children) {
+          flat.push(item.adminOnly && !child.adminOnly ? { ...child, adminOnly: true } : child);
+        }
+      }
     }
 
     const actions: CommandAction[] = [];
@@ -98,9 +105,15 @@ export class CommandPaletteService {
     for (const s of SETTINGS_SECTIONS) byId.set(s.id, { title: s.title, icon: s.icon });
     for (const s of CUSTOM_SECTIONS) byId.set(s.id, { title: s.title, icon: s.icon });
 
+    // Same nav rule as the settings page's own sidebar: Campaigns is hidden from
+    // non-electoral organizations — a church has no election to add (REVIEW7 D8). The route
+    // still resolves for deep links; this only stops the palette advertising it.
+    const electoral = ORG_MODE_IS_ELECTORAL[this.orgMode.mode()];
+
     const actions: CommandAction[] = [];
     for (const group of WORKSPACE_NAV_GROUPS) {
       for (const id of group.ids) {
+        if (id === 'campaigns' && !electoral) continue;
         const meta = byId.get(id);
         if (!meta) continue;
         actions.push({

@@ -20,7 +20,9 @@ import {
   DashboardStatsWindowKey,
   DashboardWindowStatsType,
   effectivePlanKey,
+  isPrivilegedRole,
   planAllowsFeature,
+  type GatedFeature,
 } from '@common';
 
 interface UpcomingEvent {
@@ -91,22 +93,45 @@ export class Summary implements OnInit {
 
   /**
    * Field-operations card. Knock counts ride `dashboard.getStats`; the two
-   * readiness counts reuse the same endpoints the sidebar badges call. The card
-   * follows the sidebar's own gating: the module must be on for this org mode and
-   * the plan must allow field ops (demo workspaces gate as the top tier).
+   * readiness counts reuse the same endpoints the sidebar badges call. Each row
+   * gates on ITS OWN feature key — gating the deliveries row on the canvassing
+   * feature was only correct while both sat on the same tier (REVIEW7 A6) — and
+   * the volunteers row additionally needs a privileged role, because its link
+   * target (/volunteer-access) is role-guarded and a Viewer's click would bounce
+   * silently (REVIEW7 D5).
    */
   protected readonly fieldStats = signal<DashboardStats['field'] | null>(null);
   protected readonly signsReady = signal<number | null>(null);
   protected readonly volunteersWaiting = this.volunteerAccessSvc.pendingApprovals;
-  protected readonly showCanvassingRows = computed(() => this.orgMode.moduleVisibilities().get('canvassing') === 'on');
-  protected readonly showDeliveriesRow = computed(() => this.orgMode.moduleVisibilities().get('deliveries') === 'on');
-  protected readonly showFieldOps = computed(() => {
+  private readonly planAllows = (feature: GatedFeature): boolean => {
     const user = this.auth.getUserSignal()();
-    const allowed = planAllowsFeature(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at), 'canvassing');
-    return allowed && (this.showCanvassingRows() || this.showDeliveriesRow());
-  });
+    return planAllowsFeature(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at), feature);
+  };
+  protected readonly showCanvassingRows = computed(
+    () => this.orgMode.moduleVisibilities().get('canvassing') === 'on' && this.planAllows('canvassing'),
+  );
+  protected readonly showDeliveriesRow = computed(
+    () => this.orgMode.moduleVisibilities().get('deliveries') === 'on' && this.planAllows('deliveries'),
+  );
+  protected readonly showVolunteersRow = computed(
+    () => isPrivilegedRole(this.auth.getUserSignal()()?.role) && this.planAllows('companions'),
+  );
+  protected readonly showFieldOps = computed(
+    () => this.showCanvassingRows() || this.showDeliveriesRow() || this.showVolunteersRow(),
+  );
+
+  private fieldExtrasLoaded = false;
 
   constructor() {
+    // The readiness counts load once the gate opens. On a cold load the user signal (which
+    // carries the plan) can arrive after ngOnInit, so a plain init-time call skipped them for
+    // the rest of the visit (REVIEW7 A7). Once-guarded — gate signal churn must not refetch.
+    effect(() => {
+      if (this.showFieldOps() && !this.fieldExtrasLoaded) {
+        this.fieldExtrasLoaded = true;
+        void this.loadFieldExtras();
+      }
+    });
     effect(() => {
       const tab = this.defaultSlaTab();
       const open = this.showSlaDetails();
@@ -289,7 +314,6 @@ export class Summary implements OnInit {
 
   public ngOnInit() {
     void this.loadStats();
-    void this.loadFieldExtras();
   }
 
   /** The two counts the sidebar badges also use. Quiet on failure — a missing row beats a fake zero. */
@@ -514,10 +538,18 @@ export class Summary implements OnInit {
       return;
     }
     try {
-      const stats = await this.dashboardSvc.getStats();
-      const changed = stats.snapshot.computedAt !== this.snapshotComputedAt();
-      this.applyStats(stats);
-      if (changed) this.stopPolling();
+      // Poll the single-row status, not the full stats — the old shape re-ran every live
+      // dashboard query each tick just to see whether computedAt moved (REVIEW7 A8). The full
+      // read happens exactly once, after the snapshot lands.
+      const status = await this.dashboardSvc.getSnapshotStatus();
+      const changed = status.computedAt !== this.snapshotComputedAt();
+      if (changed) {
+        this.applyStats(await this.dashboardSvc.getStats());
+        this.stopPolling();
+      } else if (!status.refreshPending) {
+        this.stopPolling();
+        this.snapshotRefreshPending.set(false);
+      }
     } catch {
       // Transient — the next tick retries; the effect stops the interval once refreshPending clears.
     }

@@ -114,6 +114,8 @@ async function readClosedStats(db: Kysely<Models>, tenantId: string): Promise<Cl
     WHERE e.tenant_id = ${tenantId}
       AND e.folder_id = ${INBOX_FOLDER_ID}
       AND e.status = 'closed'
+      -- Detached mail is invisible in the inbox, so it must not count here either (REVIEW7 A10).
+      AND e.detached_at IS NULL
       AND e.updated_at >= now() - interval '90 days'
     GROUP BY 1
   `.execute(db);
@@ -161,6 +163,8 @@ async function readResponseStats(db: Kysely<Models>, tenantId: string): Promise<
     ) resp
     WHERE e.tenant_id = ${tenantId}
       AND e.folder_id = ${INBOX_FOLDER_ID}
+      -- Same detached rule as the closed-stats pass (REVIEW7 A10).
+      AND e.detached_at IS NULL
       AND e.created_at >= now() - interval '90 days'
     GROUP BY 1
   `.execute(db);

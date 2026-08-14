@@ -510,7 +510,10 @@ function generateNeighbourhood(): GeneratedNeighbourhood {
         const domain = EMAIL_DOMAINS[Math.floor(rng() * EMAIL_DOMAINS.length)];
         email = `${base}${n > 1 ? String(n) : ''}@${domain}`;
       }
-      const mobile = rng() < MOBILE_CHANCE ? `613-555-0${String(300 + mobileCounter++)}` : undefined;
+      // 555-0100..0199 is the ONLY block reserved for fiction (packPhone's invariant in
+      // demo-seed.ts) — numbers outside it are assignable, and a demo user can trigger a real
+      // Twilio text at a seeded number (REVIEW7 C5). 100 slots wrap; duplicates are fine.
+      const mobile = rng() < MOBILE_CHANCE ? `613-555-01${String(mobileCounter++ % 100).padStart(2, '0')}` : undefined;
       const supportLevel = rng() < SUPPORT_CHANCE ? pick(rng, SUPPORT_WEIGHTS) : undefined;
       const votingStatus = supportLevel && rng() < VOTING_CHANCE ? pick(rng, VOTING_WEIGHTS) : undefined;
       const doNotContact = rng() < DO_NOT_CONTACT_CHANCE;

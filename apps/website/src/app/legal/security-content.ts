@@ -13,7 +13,7 @@ export const SECURITY_DOC: LegalDoc = {
   title: 'Security',
   intro:
     'Boring, deliberate security: what we actually do to protect your list, described specifically enough to be checked. No badges we have not earned.',
-  updated: 'August 1, 2026',
+  updated: 'August 14, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -130,7 +130,7 @@ export const SECURITY_DOC: LegalDoc = {
     },
     {
       kind: 'p',
-      text: 'Every change to a record is written to the workspace activity log with who, what and when, including actions taken through volunteer links, which are labeled as such. Exports are logged too, so an admin can always answer “who pulled the list”. Activity is retained for 90 days and exportable. When a background mailbox sync fails, the error recorded on the connection carries a support code that lets us find the exact server-side event without you sending us your data. Our servers are also monitored around the clock: automated probes check the service from outside every few minutes and page us when it is unreachable, and server errors are reported to an error-tracking service (with credentials and workspace content stripped — see the privacy policy’s subprocessor list) so we usually know about a problem before you do.',
+      text: 'Every change to a record is written to the workspace activity log with who, what and when, including actions taken through volunteer links, which are labeled as such. Exports are logged too, so an admin can always answer “who pulled the list”. Activity is retained for 90 days and exportable. When a background mailbox sync fails, the error recorded on the connection carries a support code that lets us find the exact server-side event without you sending us your data. Our servers are also monitored around the clock: automated probes check the service that stores and serves your data from outside every few minutes and page us when it is unreachable, background processing is watched on a slower cycle, and server errors are reported to an error-tracking service (with credentials and workspace content stripped — see the privacy policy’s subprocessor list) so we usually know about a problem before you do.',
     },
     {
       kind: 'h2',

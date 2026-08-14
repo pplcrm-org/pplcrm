@@ -42,6 +42,17 @@ interface PaletteResult {
 
 const PEOPLE_LIMIT = 4;
 const HOUSEHOLDS_LIMIT = 4;
+
+/**
+ * The list endpoints page by `startRow`/`endRow` — a bare `limit` field is IGNORED by
+ * `resolvePageWindow`, which then defaults to MAX_PAGE_SIZE, so each keystroke's search was
+ * returning up to 5,000 full grid rows to be sliced to 4 client-side (REVIEW7 D1). Always send
+ * the window.
+ */
+const SEARCH_WINDOW = { startRow: 0, endRow: PEOPLE_LIMIT } as const;
+
+/** One character matches nearly everything and costs a whole-table scan server-side. */
+const MIN_QUERY_LENGTH = 2;
 const HELP_LIMIT = 3;
 const PEOPLE_DEBOUNCE_MS = 180;
 
@@ -157,7 +168,7 @@ export class CommandPalette {
       if (this.fetchTimer) {
         clearTimeout(this.fetchTimer);
       }
-      if (!open || !q) {
+      if (!open || q.length < MIN_QUERY_LENGTH) {
         this.people.set([]);
         this.householdHits.set([]);
         return;
@@ -223,7 +234,7 @@ export class CommandPalette {
     try {
       const res = await this.persons.getAll({
         searchStr: q,
-        limit: PEOPLE_LIMIT,
+        ...SEARCH_WINDOW,
         columns: ['id', 'first_name', 'last_name', 'email'],
       });
       if (token !== this.fetchToken) return; // a newer query superseded this one
@@ -244,7 +255,7 @@ export class CommandPalette {
     try {
       const res = await this.households.getAll({
         searchStr: q,
-        limit: HOUSEHOLDS_LIMIT,
+        ...SEARCH_WINDOW,
         columns: ['id', 'street_num', 'street1', 'city'],
       });
       if (token !== this.fetchToken) return; // a newer query superseded this one

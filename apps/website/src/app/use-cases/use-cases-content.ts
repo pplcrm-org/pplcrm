@@ -80,7 +80,7 @@ export const USE_CASES: readonly UseCase[] = [
     name: 'A federal riding campaign',
     kicker: 'Use case · Federal riding',
     hubLine:
-      'The Elections Canada riding map is built in. Cut turfs that stop at polling-division lines, and run signs, mail and money from one list.',
+      'The Elections Canada riding map is built in. Cut turfs that stop at your riding’s lines, and run signs, mail and money from one list.',
     h1: 'Run a federal riding, door by door.',
     heroSub:
       'pplCRM ships the Elections Canada federal map — all 343 ridings on the 2023 representation order — so your workspace knows your riding’s lines the day you create it.',
@@ -100,7 +100,7 @@ export const USE_CASES: readonly UseCase[] = [
       {
         n: '3',
         title: 'Cut turfs and knock',
-        body: 'Point the turf cutter at any list and it cuts walkable turfs that stop at polling-division lines — no volunteer sent across a boundary. Crews knock from their phones with no install and no accounts, or from a printed walk sheet with a QR code back into the app.',
+        body: 'Point the turf cutter at any list and it cuts walkable turfs that stop at the finest boundary your workspace holds — the polling division if you have uploaded one, the riding line from the built-in map otherwise. No volunteer is sent across a boundary. Crews knock from their phones with no install and no accounts, or from a printed walk sheet with a QR code back into the app.',
         links: [CANVASSING_LINK],
       },
       {
@@ -268,7 +268,7 @@ export const USE_CASES: readonly UseCase[] = [
       {
         n: '1',
         title: 'Put the inbox where the team is',
-        body: 'Connect the office’s Gmail or Microsoft mailbox and mail flows both ways. Every message gets an owner, a due date and a service-level clock, so nobody writes to the office twice about the same pothole — and nobody’s request dies in a personal inbox.',
+        body: 'Connect the office’s Gmail or Microsoft mailbox and mail flows both ways. Every message gets an owner and a service-level clock, and one click turns it into a task with a due date — so nobody writes to the office twice about the same pothole, and nobody’s request dies in a personal inbox.',
         links: [],
       },
       {

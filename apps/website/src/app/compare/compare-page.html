@@ -84,14 +84,20 @@
                   >{{ verdictLabel(cell.verdict) }}</span
                 >
               </div>
-              <!-- Below `sm` the note collapses behind the row's Show-details button; `sm:block`
-                   wins over the conditional `hidden` from that breakpoint up, so desktop always
-                   shows every note and the button never renders there. -->
+              <!-- Below `sm` the prose note collapses behind the row's Show-details button;
+                   `sm:block` wins over the conditional `hidden` from that breakpoint up, so
+                   desktop always shows every note and the button never renders there. The SOURCE
+                   link stays OUTSIDE the collapsed region: a negative verdict about a named
+                   vendor must never render without its citation visible, even on a phone
+                   (REVIEW7 F8) — only the explanation collapses. -->
               <p
                 class="mt-1.5 text-[12.5px] leading-relaxed text-base-content/60 sm:block"
                 [class.hidden]="!isExpanded(chart.id, row.job)"
               >
-                {{ cell.note }} @if (cell.source) {
+                {{ cell.note }}
+              </p>
+              @if (cell.source) {
+              <p class="mt-1 text-[12px]">
                 <a
                   [href]="cell.source"
                   target="_blank"
@@ -99,8 +105,8 @@
                   class="whitespace-nowrap font-semibold text-primary/80 hover:text-secondary"
                   >their docs ↗</a
                 >
-                }
               </p>
+              }
             </div>
             }
           </div>

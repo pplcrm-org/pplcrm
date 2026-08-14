@@ -1,4 +1,5 @@
 import type { Kysely, Transaction } from 'kysely';
+import { getPlanDef } from '@common';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { BaseRepository } from '../base.repo';
 import { consumeRateLimit } from '../durable-rate-limiter';
@@ -100,7 +101,7 @@ export async function assertTenantMaySendTransactional(
 
   const tenant = await client
     .selectFrom('tenants')
-    .select(['suspended_at', 'sending_paused_at', 'demo_mode_at'])
+    .select(['suspended_at', 'sending_paused_at', 'demo_mode_at', 'subscription_plan'])
     .where('id', '=', tenantId)
     .executeTakeFirst();
 
@@ -124,7 +125,16 @@ export async function assertTenantMaySendTransactional(
   // contacts are reserved example.com addresses that can only bounce, and "nothing you do in
   // the demo reaches a real person" is the promise the Help Center makes. Staff and account
   // mail keep flowing — those recipients are the workspace's own real logins.
-  if (audience === 'contact' && tenant?.demo_mode_at) {
+  //
+  // UNPAID workspaces only. Exiting the demo requires a settled subscription first, so "paid,
+  // demo data still present" is a normal transitional state — and a paying customer in it is
+  // collecting real donations whose acknowledgements and tax receipts are 'contact' mail.
+  // Blocking those silently (the job worker drops blocked messages) meant receipts recorded as
+  // issued were never emailed (REVIEW7 C3). A paid tenant's real contacts are legitimate;
+  // their seeded example.com contacts can only bounce into the suppression list, which is
+  // harmless.
+  const storedPlanPaid = getPlanDef(tenant?.subscription_plan)?.purchasable === true;
+  if (audience === 'contact' && tenant?.demo_mode_at && !storedPlanPaid) {
     throw new TransactionalSendBlockedError(
       `Tenant ${tenantId} is in demo mode — audience-facing transactional mail withheld until the demo data is removed.`,
       'demo_mode',

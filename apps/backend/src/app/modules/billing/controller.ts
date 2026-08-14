@@ -712,8 +712,14 @@ export class BillingController {
     // (e.g. Movement qty 11 → Grassroots max 10). Store the clamped value AND push it to Stripe
     // below (T2-10a; REVIEW5 Tier 2 #4 — storing it alone hid the overcharge from both reconcilers,
     // which compare their target against this same stored value, so nothing ever corrected Stripe).
+    //
+    // ONLY when the price was recognized. When it wasn't, `planName` above is a fallback guess —
+    // clamping against the guessed plan's ladder (worst case: 'free', max 1) and pushing that to
+    // Stripe would cut a paying customer's billed quantity because an env var is missing
+    // (REVIEW7 B1). A misconfiguration must degrade to "store the raw value", never to a write
+    // against the customer's subscription.
     const stripeQuantity = item?.quantity ?? 1;
-    const planDef = getPlanDef(planName);
+    const planDef = priceMatch ? getPlanDef(planName) : undefined;
     const quantity = planDef ? Math.min(stripeQuantity, maxQuantity(planDef.key)) : stripeQuantity;
     const clampedBelowStripe = quantity !== stripeQuantity;
     if (clampedBelowStripe) {
@@ -893,6 +899,13 @@ export class BillingController {
           const previousPlan: string = dbTenant.subscription_plan ?? 'free';
           const planName: string = priceMatch?.plan ?? previousPlan;
           const interval: BillingInterval = priceMatch?.interval ?? dbTenant.subscription_interval;
+          if (item && !priceMatch) {
+            logger.warn(
+              `[processWebhookEvent] Price ${item.price.id} matches no configured STRIPE_PLAN_*_PRICE_ID — ` +
+                `tenant ${dbTenant.id} keeps plan '${previousPlan}' and the raw quantity. Check that the env ` +
+                `price IDs (including the annual pair) belong to the active Stripe mode.`,
+            );
+          }
 
           // Same clamp-and-push as syncSubscriptionFromStripe (T2-10a): a portal price-switch can
           // carry a quantity above the target plan's ladder, and this webhook fires before any
@@ -901,8 +914,13 @@ export class BillingController {
           // raises another customer.subscription.updated whose quantity already equals the clamp,
           // making the next pass a no-op, and syncSubscriptionQuantity itself skips a matching
           // live quantity.
+          //
+          // ONLY when the price was recognized — with `priceMatch` undefined, `planName` is a
+          // fallback guess (worst case 'free', ladder max 1), and clamping against it would push
+          // quantity 1 to a paying customer's subscription because an env var is missing
+          // (REVIEW7 B1).
           const stripeQuantity = item?.quantity ?? 1;
-          const planDef = getPlanDef(planName);
+          const planDef = priceMatch ? getPlanDef(planName) : undefined;
           const quantity = planDef ? Math.min(stripeQuantity, maxQuantity(planDef.key)) : stripeQuantity;
           const clampedBelowStripe = quantity !== stripeQuantity;
           if (clampedBelowStripe) {

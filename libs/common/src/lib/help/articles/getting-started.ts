@@ -425,7 +425,11 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
       {
         kind: 'keys',
         rows: [
-          { keys: ['⌘', 'K'], action: 'Focus the search bar (Ctrl K on Windows and Linux)' },
+          {
+            keys: ['⌘', 'K'],
+            action:
+              'Focus the search bar — or open the command palette on a page with no list (Ctrl K on Windows and Linux)',
+          },
           { keys: ['⌘', '⇧', 'K'], action: 'Open the command palette (Ctrl Shift K on Windows and Linux)' },
           { keys: ['g'], action: 'Start a “go to” chord, then follow with a section key below' },
           { keys: ['?'], action: 'Show the shortcuts overlay' },

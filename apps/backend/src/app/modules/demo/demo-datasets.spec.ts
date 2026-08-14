@@ -60,6 +60,21 @@ describe('demo datasets', () => {
   });
 
   /**
+   * 555-0100..0199 is the only exchange block reserved for fiction in the North American
+   * numbering plan. A seeded number outside it is potentially assignable — and the volunteer
+   * flows can address a real Twilio text at it (REVIEW7 C5). packPhone only rewrites the area
+   * code, so the local part must be right in every dataset, hand-written or generated.
+   */
+  it('keeps every seeded mobile number inside the fictional 555-01XX block', () => {
+    for (const [mode, dataset] of seeded) {
+      for (const person of dataset.persons) {
+        if (person.mobile == null) continue;
+        expect(/-555-01\d\d$/.test(person.mobile), `${mode} person ${person.key} mobile ${person.mobile}`).toBe(true);
+      }
+    }
+  });
+
+  /**
    * ORG_MODE_SEEDS_DEMO (libs/common) is a hand-kept mirror of this registry, because the
    * frontend tour needs the answer and cannot import backend code. Nothing but this test keeps
    * the two honest.
@@ -193,10 +208,14 @@ describe('demo datasets', () => {
           }
         });
 
-        it('uses its own area code on every demo phone number it carries', () => {
+        it('uses its own area code and the fictional 555-01XX block on every demo phone number', () => {
           for (const site of pack.sites) {
             if (site.home_phone == null) continue;
             expect(site.home_phone.startsWith(`${pack.phoneAreaCode}-`), `${name} site ${site.key} phone`).toBe(true);
+            // Same reserved-for-fiction rule as the persons test above (REVIEW7 C5).
+            expect(/-555-01\d\d$/.test(site.home_phone), `${name} site ${site.key} phone ${site.home_phone}`).toBe(
+              true,
+            );
           }
         });
       });

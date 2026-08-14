@@ -1,6 +1,12 @@
 import type { Kysely, Selectable, Transaction } from 'kysely';
 import { sql } from 'kysely';
-import { WORKFLOW_EXIT_CONDITIONS, WORKFLOW_SEND_CONDITIONS, calculateWorkingTimeMs, planAllowsFeature } from '@common';
+import {
+  WORKFLOW_EXIT_CONDITIONS,
+  WORKFLOW_SEND_CONDITIONS,
+  calculateWorkingTimeMs,
+  getPlanDef,
+  planAllowsFeature,
+} from '@common';
 import type { WorkflowExitCondition, WorkflowMessageClass, WorkflowSendCondition } from '@common';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
@@ -74,8 +80,13 @@ export async function handleProcessDripWorkflows(db: Kysely<Models>): Promise<vo
           .select(['subscription_plan', 'demo_mode_at'])
           .where('id', '=', tenantId)
           .executeTakeFirst();
+        // Demo mode defers drips only for UNPAID workspaces: a paying customer who has not yet
+        // removed the demo data is a real customer whose automations must keep running — the
+        // same paid exemption the contact-mail guard applies (REVIEW7 C3).
+        const storedPlanPaid = getPlanDef(tenantRow?.subscription_plan)?.purchasable === true;
         automationsAllowed =
-          planAllowsFeature(tenantRow?.subscription_plan, 'automations') && tenantRow?.demo_mode_at == null;
+          planAllowsFeature(tenantRow?.subscription_plan, 'automations') &&
+          (storedPlanPaid || tenantRow?.demo_mode_at == null);
         automationsAllowedByTenant.set(tenantId, automationsAllowed);
         if (!automationsAllowed) {
           logger.info(

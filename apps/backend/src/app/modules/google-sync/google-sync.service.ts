@@ -32,9 +32,15 @@ async function fetchWithRetry(url: string, init?: RequestInit, maxRetries = 3): 
   let attempt = 0;
   while (true) {
     attempt++;
-    // A fresh signal per attempt — a single AbortSignal.timeout starts ticking at creation and
-    // would already be aborted by the time a rate-limited retry runs.
-    const res = await fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(GMAIL_REQUEST_TIMEOUT_MS) });
+    // A fresh timeout signal per attempt — a single AbortSignal.timeout starts ticking at
+    // creation and would already be aborted by the time a rate-limited retry runs. A caller's
+    // own signal is COMBINED with (never substituted for) the deadline: substituting let a
+    // future caller-supplied signal silently span all retries (REVIEW7 B8).
+    const timeout = AbortSignal.timeout(GMAIL_REQUEST_TIMEOUT_MS);
+    const res = await fetch(url, {
+      ...init,
+      signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+    });
     if (res.status === 429 && attempt <= maxRetries) {
       const retryAfterHeader = res.headers.get('Retry-After');
       let delayMs = 5000;

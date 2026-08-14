@@ -309,9 +309,10 @@
               i18n-hint="PersonView|Volunteer empty hint@@person.volunteer.emptyHint"
               hint="Shifts they sign up for or are assigned to appear here."
             >
+              <!-- /events has no index child — only /events/shifts renders (REVIEW7 D3). -->
               <a
                 class="btn btn-outline btn-primary btn-sm mt-1"
-                [routerLink]="['/events']"
+                [routerLink]="['/events/shifts']"
                 i18n="@@person.volunteer.emptyCta"
                 >Browse events &amp; shifts</a
               >

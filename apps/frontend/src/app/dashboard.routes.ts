@@ -609,6 +609,10 @@ export const dashboardRoutes: Routes = [
   {
     path: 'activity',
     loadComponent: () => import('./experiences/activity/ui/activity-feed').then((m) => m.ActivityFeed),
+    // Admin/owner only, like the sidebar group that advertises it: this is the workspace-wide
+    // audit feed — every record every teammate touched. It was reachable by any role via the
+    // command palette (REVIEW7 D2).
+    canActivate: [roleGuard],
     data: { breadcrumb: 'Activity' },
   },
   // Back-compat: old /activities links redirect to /activity.

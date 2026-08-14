@@ -42,7 +42,7 @@ const COMPANIES: DemoCompanyDef[] = [
     description: 'Independent grocer — donates surplus produce every Tuesday and Friday.',
     website: 'https://riverside-grocers.example.com',
     email: 'hello@riverside-grocers.example.com',
-    phone: '613-555-0310',
+    phone: '613-555-0150',
     industry: 'Grocery',
   },
   {
@@ -51,7 +51,7 @@ const COMPANIES: DemoCompanyDef[] = [
     description: 'Community credit union — matches staff giving and sponsors the winter drive.',
     website: 'https://bytown-credit.example.com',
     email: 'community@bytown-credit.example.com',
-    phone: '613-555-0311',
+    phone: '613-555-0151',
     industry: 'Financial services',
   },
   {
@@ -60,7 +60,7 @@ const COMPANIES: DemoCompanyDef[] = [
     description: 'Referral partner — sends clients to the food program and the settlement desk.',
     website: 'https://carleton-health.example.org',
     email: 'referrals@carleton-health.example.org',
-    phone: '613-555-0312',
+    phone: '613-555-0152',
     industry: 'Healthcare',
   },
   {
@@ -69,7 +69,7 @@ const COMPANIES: DemoCompanyDef[] = [
     description: 'Small firm — pro bono immigration clinic one evening a month.',
     website: 'https://elgin-legal.example.com',
     email: 'reception@elgin-legal.example.com',
-    phone: '613-555-0313',
+    phone: '613-555-0154',
     industry: 'Legal',
   },
   {
@@ -78,7 +78,7 @@ const COMPANIES: DemoCompanyDef[] = [
     description: 'Prints the annual report and the food-program flyers at cost.',
     website: 'https://glebe-print.example.com',
     email: 'orders@glebe-print.example.com',
-    phone: '613-555-0314',
+    phone: '613-555-0155',
     industry: 'Printing',
   },
   {
@@ -87,7 +87,7 @@ const COMPANIES: DemoCompanyDef[] = [
     description: 'Student volunteers earn community-service hours on the Saturday sort.',
     website: 'https://westboro-secondary.example.org',
     email: 'office@westboro-secondary.example.org',
-    phone: '613-555-0315',
+    phone: '613-555-0156',
     industry: 'Education',
   },
 ];

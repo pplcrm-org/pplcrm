@@ -555,6 +555,30 @@ export function effectivePlanKey(
 }
 
 /**
+ * Features the demo elevation must NOT unlock, each with the reason on record:
+ *
+ * - `api`: the scriptable write surface. The demo promise is "try everything, nothing reaches a
+ *   real person" — but data loaded through a key is not demo data: it survives the demo exit,
+ *   so an unpaid workspace could bulk-load a purchased list through the Zapier/person-upsert
+ *   endpoints during the demo and then drop to Free with the list intact. That is exactly the
+ *   abuse the paid gate on this feature exists to prevent (see the FEATURE_MATRIX note above).
+ */
+export const DEMO_EXCLUDED_FEATURES: ReadonlySet<GatedFeature> = new Set<GatedFeature>(['api']);
+
+/**
+ * `effectivePlanKey`, except that features in `DEMO_EXCLUDED_FEATURES` always gate on the
+ * stored plan. Use this — not `effectivePlanKey` — whenever the feature being gated is known.
+ */
+export function effectivePlanKeyForFeature(
+  planName: string | null | undefined,
+  demoModeAt: Date | string | null | undefined,
+  feature: GatedFeature,
+): PlanKey {
+  if (DEMO_EXCLUDED_FEATURES.has(feature)) return (getPlanDef(planName) ?? PLANS_BY_KEY.free).key;
+  return effectivePlanKey(planName, demoModeAt);
+}
+
+/**
  * Minimum plan for real (paid) household geocoding. Kept OUT of `GATED_FEATURES`/`FEATURE_MATRIX`
  * deliberately: this is a backend cost control, not a marketed tRPC-module feature — the heavy
  * geocoding consumers (canvassing turf-cutting, delivery routing) are already Movement-gated via

@@ -203,7 +203,9 @@
           <span class="block truncate text-[11px] text-base-content/45">Sign requests ready to route</span>
         </span>
       </a>
-      }
+      } @if (showVolunteersRow()) {
+      <!-- Privileged roles only: /volunteer-access is role-guarded, and a Viewer's click would
+           silently bounce to the dashboard (REVIEW7 D5). -->
       <a
         routerLink="/volunteer-access"
         class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
@@ -219,6 +221,7 @@
           <span class="block truncate text-[11px] text-base-content/45">Volunteers waiting for approval</span>
         </span>
       </a>
+      }
     </div>
   </div>
   }

@@ -1,7 +1,7 @@
 import { TRPCError } from '@trpc/server';
 import type { FastifyRequest } from 'fastify';
 
-import { effectivePlanKey, planAllowsFeature } from '@common';
+import { effectivePlanKeyForFeature, planAllowsFeature } from '@common';
 
 import { hashApiKey } from './api-key';
 import { BaseRepository } from './base.repo';
@@ -41,16 +41,17 @@ export async function lookupTenantByApiKey(providedKey: string): Promise<string 
   return tenantId;
 }
 
-/** Whether the owning tenant's plan still includes API access (GATED_FEATURES.api). Demo
- * workspaces gate as `DEMO_MODE_EFFECTIVE_PLAN`, so keys minted during the demo resolve — the
- * keyed surfaces only accept data in; nothing outbound rides on a key. */
+/** Whether the owning tenant's plan still includes API access (GATED_FEATURES.api). The API is
+ * in `DEMO_EXCLUDED_FEATURES`, so demo workspaces gate on their STORED plan here: data loaded
+ * through a key is not demo data — it survives the demo exit, which would let an unpaid
+ * workspace bulk-load a list during the demo and keep it on Free (REVIEW7 C2). */
 async function tenantPlanAllowsApi(tenantId: string): Promise<boolean> {
   const tenant = await BaseRepository.dbInstance
     .selectFrom('tenants')
     .select(['subscription_plan', 'demo_mode_at'])
     .where('id', '=', tenantId)
     .executeTakeFirst();
-  return planAllowsFeature(effectivePlanKey(tenant?.subscription_plan, tenant?.demo_mode_at), 'api');
+  return planAllowsFeature(effectivePlanKeyForFeature(tenant?.subscription_plan, tenant?.demo_mode_at, 'api'), 'api');
 }
 
 /**

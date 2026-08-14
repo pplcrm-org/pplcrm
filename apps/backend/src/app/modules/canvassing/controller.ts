@@ -1608,6 +1608,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   ): Promise<void> {
     const result: CompanionOpResultType = {};
     if (ack.person_id != null) result.person_id = ack.person_id;
+    // Kept so a lost-response retry repeats the warning instead of upgrading to clean success.
+    if (ack.warning != null) result.warning = ack.warning;
     if (Object.keys(result).length === 0) return;
     await trx
       .updateTable('companion_ops')
@@ -1704,7 +1706,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           contact_email: p.contact_email ?? null,
           subscribe: p.subscribe,
         });
-        await this.applySurveySideEffects(trx, {
+        const warning = await this.applySurveySideEffects(trx, {
           tenant_id,
           turf_id,
           household_id: householdId,
@@ -1714,7 +1716,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
         });
         await logActivity('household', householdId, { outcome: 'conversation', response: p.support ?? null });
         if (personId) await logActivity('person', personId, { outcome: 'conversation', response: p.support ?? null });
-        return { op_id: op.op_id, status: 'applied' };
+        return { op_id: op.op_id, status: 'applied', ...(warning ? { warning } : {}) };
       }
       case 'person_result': {
         const personId = String(op.payload.person_id);
@@ -1918,8 +1920,11 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       via: string;
       survey: CompanionSurveyType;
     },
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const { tenant_id, turf_id, household_id, actor, survey } = input;
+    // A best-effort side effect that could not land — returned so the ack can tell the
+    // volunteer instead of painting unqualified success (REVIEW7 B6).
+    let warning: string | undefined;
     const personId = survey.person_id != null ? String(survey.person_id) : null;
     const campaignId = await this.resolveKnockCampaignId(tenant_id, turf_id);
 
@@ -1977,15 +1982,21 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       // "…and I gave them one just now". Asking and handing the sign over happen in the same
       // half-minute at a door, so they are one save — the alternative is a canvasser waiting
       // on a sync before a second tap they will forget to make. Best-effort by design: an
-      // 'other_campaign' outcome is ignored here rather than rejecting the whole survey,
-      // because the conversation, contact capture and DNC in this op must still land.
+      // 'other_campaign' outcome must not reject the whole survey — the conversation, contact
+      // capture and DNC in this op still land — but it is surfaced as an ack warning rather
+      // than swallowed, because the delivery was recorded nowhere and a driver stays routed to
+      // this house (REVIEW7 B6).
       if (survey.yard_sign_delivered) {
-        await this.deliveries.deliverHouseholdSign(trx, this.companionAuth(tenant_id, actor), {
+        const signResult = await this.deliveries.deliverHouseholdSign(trx, this.companionAuth(tenant_id, actor), {
           household_id,
           campaign_id: campaignId,
           person_id: personId,
           via: input.via,
         });
+        if (signResult === 'other_campaign') {
+          warning =
+            "Saved — but the sign handover was not recorded: another campaign is handling this household's sign request. Tell your organizer.";
+        }
       }
     }
 
@@ -2086,6 +2097,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           .execute();
       }
     }
+
+    return warning;
   }
 
   /** Resolve + expiry-check an assignment token (uniform dead-link semantics). */

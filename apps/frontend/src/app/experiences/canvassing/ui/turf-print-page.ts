@@ -29,6 +29,9 @@ const DOOR_WORD: Record<DoorStatus, string> = {
   not_yet: 'To walk',
 };
 
+/** Auto-minted print codes live 30 days — long enough for a canvass wave, never permanent (REVIEW7 E1). */
+const PRINT_JOIN_CODE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 /**
  * The map's drawing box, sized to the Static Maps free-tier ceiling (640×640 CSS px)
  * so the basemap image and the SVG overlay are always the same rectangle.
@@ -215,9 +218,29 @@ export class TurfPrintPage {
   /** The whole turf flattened into one walking order — the numbers printed on the sheet. */
   protected readonly walkDoors = computed<TurfDoor[]>(() => orderForWalk(this.detail()?.doors ?? []));
 
+  /**
+   * Door numbers as the PHONE numbers them: restarting at 1 on each street, and a building's
+   * units sharing one number. The old whole-turf per-unit numbering meant "door 12" on paper
+   * was a different address than door 12 on a volunteer's phone — the phone scopes its list to
+   * one street and folds apartment units into a single row, so a 40-unit building offset every
+   * later number by 39 (REVIEW7 E3). Units are adjacent within a street's walking order, so a
+   * consecutive run of the same house number is one building.
+   */
   protected readonly walkSeq = computed<Map<string, number>>(() => {
     const seq = new Map<string, number>();
-    this.walkDoors().forEach((d, i) => seq.set(d.household_id, i + 1));
+    for (const group of this.groups()) {
+      let n = 0;
+      let lastBuildingKey: string | null = null;
+      for (const door of group.doors) {
+        const num = door.street_num?.trim().toLowerCase();
+        const buildingKey = num ? `num:${num}` : `hh:${door.household_id}`;
+        if (buildingKey !== lastBuildingKey) {
+          n += 1;
+          lastBuildingKey = buildingKey;
+        }
+        seq.set(door.household_id, n);
+      }
+    }
     return seq;
   });
 
@@ -365,9 +388,11 @@ export class TurfPrintPage {
 
     const toWalk = placed(this.walkDoors().filter((d) => d.status === 'not_yet'));
     const paths: PrintPath[] = [];
-    // A turf with nothing left still prints the walking shape — through every door —
-    // so a finished (or demo) turf reads as a walked route, not a scatter of dots.
-    const routeSource = toWalk.length >= 2 ? toWalk : all;
+    // A turf with NOTHING left still prints the walking shape — through every door — so a
+    // finished (or demo) turf reads as a walked route, not a scatter of dots. But with exactly
+    // one door remaining, no line: the old fallback drew the route through already-walked doors,
+    // which read as "still to do" (REVIEW7 E5); the lone remaining dot needs no route.
+    const routeSource = toWalk.length >= 2 ? toWalk : toWalk.length === 0 ? all : [];
     const route = simplifyPath(routeSource.map((p) => p.point)).map(project);
     if (route.length >= 2) {
       paths.push({
@@ -432,10 +457,26 @@ export class TurfPrintPage {
     try {
       // `silent` keeps the shared tRPC error handler from toasting: a workspace whose
       // plan has no companion access must still print a clean sheet, minus the code.
-      const rows = await this.joinCodes.getForCampaign({ silent: true });
+      //
+      // The TURF's campaign, not the selected one: filing the code under whichever campaign
+      // happened to be active minted a second live code for the same turf and attached
+      // redeeming volunteers to the wrong campaign (REVIEW7 E4). And a 30-day expiry: this
+      // code is minted by merely opening the print view and is typed/scannable off a paper
+      // sheet, so it must not be a permanent credential — reprinting after expiry simply
+      // mints a fresh one (REVIEW7 E1).
+      const turfCampaignId = detail.campaign_id ?? null;
+      const rows = await this.joinCodes.getForCampaign({ silent: true }, turfCampaignId);
       const code =
         rows.find((r) => r.status === 'active' && (r.turf_id ?? null) === detail.id) ??
-        (await this.joinCodes.create({ turf_id: detail.id, label: detail.name }, { silent: true }));
+        (await this.joinCodes.create(
+          {
+            turf_id: detail.id,
+            label: detail.name,
+            expires_at: new Date(Date.now() + PRINT_JOIN_CODE_TTL_MS).toISOString(),
+          },
+          { silent: true },
+          turfCampaignId,
+        ));
       this.qr.set(await this.joinCodes.qr(code.id, { silent: true }));
     } catch {
       this.qr.set(null);

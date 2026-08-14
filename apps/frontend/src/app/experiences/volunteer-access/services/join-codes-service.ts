@@ -34,18 +34,28 @@ function trpcOpts(opts?: JoinCodeCallOpts): { context: { skipErrorHandler: boole
 export class JoinCodesService extends TRPCService<'campaign_join_codes'> {
   private readonly campaignContext = inject(CampaignContextService);
 
-  public getForCampaign(opts?: JoinCodeCallOpts): Promise<JoinCodeRow[]> {
+  /**
+   * `campaignId` overrides the active context when the caller knows which campaign the code
+   * really belongs to — the walk sheet passes its TURF's campaign, because filing the code
+   * under whatever campaign happened to be selected minted duplicate live codes for one turf
+   * and attached redeeming volunteers to the wrong campaign (REVIEW7 E4).
+   */
+  public getForCampaign(opts?: JoinCodeCallOpts, campaignId?: string | null): Promise<JoinCodeRow[]> {
     return this.api.joinCodes.getForCampaign.query(
-      { campaign_id: this.campaignContext.activeCampaignId() },
+      { campaign_id: campaignId !== undefined ? campaignId : this.campaignContext.activeCampaignId() },
       trpcOpts(opts),
     ) as Promise<JoinCodeRow[]>;
   }
 
-  public create(input: Omit<AddJoinCodeType, 'campaign_id'>, opts?: JoinCodeCallOpts): Promise<JoinCodeRow> {
+  public create(
+    input: Omit<AddJoinCodeType, 'campaign_id'>,
+    opts?: JoinCodeCallOpts,
+    campaignId?: string | null,
+  ): Promise<JoinCodeRow> {
     return this.api.joinCodes.create.mutate(
       {
         ...input,
-        campaign_id: this.campaignContext.activeCampaignId(),
+        campaign_id: campaignId !== undefined ? campaignId : this.campaignContext.activeCampaignId(),
       },
       trpcOpts(opts),
     ) as Promise<JoinCodeRow>;

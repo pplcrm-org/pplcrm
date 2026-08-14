@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/node';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 
@@ -230,6 +231,17 @@ export async function handleMatchBoundaries(
         { correlationId, tenantId, requested: setIds.length, loaded: sets.length },
         'Boundary match: a requested layer failed to load — freshness stamp skipped so these households are retried',
       );
+      // With the stamp skipped, these households stay 'unmatched' and the nightly sweep re-walks
+      // them forever — safe, but unbounded cost, and the likeliest cause is a permanent operator
+      // mistake (map file never uploaded to blob storage). One capture per pass, on the first
+      // page only, so a human learns about it instead of a warn line per 500 households
+      // (REVIEW7 B4). No-op when SENTRY_DSN is unset.
+      if (cursor === null) {
+        Sentry.captureException(new Error('Boundary layer failed to load — households will be re-scanned nightly'), {
+          tags: { jobType: 'boundary_match' },
+          extra: { tenantId, requestedLayerCount: setIds.length, loadedLayerCount: sets.length, targetSetId },
+        });
+      }
     }
   }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { GATED_FEATURES, type GatedFeature } from '@common';
+import { DEMO_EXCLUDED_FEATURES, GATED_FEATURES, type GatedFeature } from '@common';
 import { BaseRepository } from '../../lib/base.repo';
 import { ForbiddenError } from '../../errors/app-errors';
 import { assertInboxAccess, assertPlanFeature } from './plan-gate';
@@ -47,12 +47,21 @@ describe('assertPlanFeature / assertInboxAccess demo-mode gating', () => {
     await expect(assertInboxAccess(BaseRepository.dbInstance, tenantId)).rejects.toThrow(/Grassroots/);
   });
 
-  it('lets a demo workspace through every gated feature regardless of the stored plan', async () => {
+  it('lets a demo workspace through every gated feature except the demo-excluded ones', async () => {
     await setTenant({ demo_mode_at: new Date() });
     for (const feature of Object.keys(GATED_FEATURES) as GatedFeature[]) {
+      if (DEMO_EXCLUDED_FEATURES.has(feature)) continue;
       await expect(assertPlanFeature(BaseRepository.dbInstance, tenantId, feature)).resolves.toBeUndefined();
     }
     await expect(assertInboxAccess(BaseRepository.dbInstance, tenantId)).resolves.toBeUndefined();
+  });
+
+  // The scriptable API stays on the STORED plan during the demo: data loaded through a key
+  // outlives the demo exit, so elevating it let an unpaid workspace bulk-load a list and keep
+  // it on Free (REVIEW7 C2).
+  it('keeps the API gated on the stored plan even in demo mode', async () => {
+    await setTenant({ demo_mode_at: new Date() });
+    await expect(assertPlanFeature(BaseRepository.dbInstance, tenantId, 'api')).rejects.toThrow(ForbiddenError);
   });
 
   it('re-locks gated features the moment demo mode ends', async () => {
