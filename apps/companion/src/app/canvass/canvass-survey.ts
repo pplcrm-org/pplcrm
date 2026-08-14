@@ -1,14 +1,16 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
 
 import type { CompanionPerson, KnockResponse } from '@common';
 import { KNOCK_RESPONSES, KNOCK_RESPONSE_LABELS } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { Icon } from '@icons/icon';
 
-import { CanvassStore } from './canvass-store';
+import { CanvassStore, type SurveyDraft } from './canvass-store';
 import { supportLevelLabel } from './canvass-ui';
 
 const EMAIL_SHAPE = /^\S+@\S+\.\S+$/;
+/** Typing saves too — this just lets a sentence land as one update, not one per key. */
+const SAVE_DEBOUNCE_MS = 600;
 
 /** No-conversation codes and the record corrections, kept apart on purpose — see below. */
 type QuickCode = 'not_home' | 'moved' | 'refused';
@@ -16,9 +18,15 @@ type QuickCode = 'not_home' | 'moved' | 'refused';
 /**
  * The survey (spec §3.5) for one person — or the anonymous household-level
  * conversation when the view carries no person. No-conversation codes come
- * first (one tap and out); support level is the one required field, except
- * that a DNC-only or seniors-only save is allowed. Pre-fills from the previous
- * survey when re-opened.
+ * first (one tap and out). Pre-fills from the previous survey when re-opened.
+ *
+ * **There is no save button — every answer saves as it is given.** Each tap rewrites one
+ * held draft op in the store (`saveSurveyDraft`), persisted immediately so a phone that
+ * dies mid-conversation still holds the answers, and released to sync as ONE op when the
+ * screen closes (`commitSurveyDraft` in `finishVisit`) — the server keeps knock history
+ * append-only, so syncing per tap would file one visit as a dozen knocks. Answers that
+ * come back to exactly how the screen opened withdraw the draft: nothing changed, so no
+ * conversation is recorded.
  *
  * **Corrections to the file live at the bottom, behind a confirmation.** "Deceased" and
  * "Error in data" are not reports of a visit — they change the record for everyone, and
@@ -193,7 +201,7 @@ type QuickCode = 'not_home' | 'moved' | 'refused';
             (input)="onText('email', $event)"
           />
           @if (email().trim() && !emailValid()) {
-            <p class="text-xs text-error" role="alert">That email doesn't look complete.</p>
+            <p class="text-xs text-error" role="alert">That email doesn't look complete, so it won't be saved.</p>
           }
           <label class="flex min-h-11 items-center justify-between gap-3" [class.opacity-60]="!canSubscribe()">
             <span>
@@ -221,9 +229,12 @@ type QuickCode = 'not_home' | 'moved' | 'refused';
         (input)="onText('notes', $event)"
       ></textarea>
 
-      <button type="button" class="btn btn-primary w-full" [disabled]="saveBlocker() !== null" (click)="save()">
-        {{ saveBlocker() ?? 'Save & sync' }}
-      </button>
+      <div class="flex flex-col gap-2">
+        <button type="button" class="btn btn-primary w-full" (click)="back()">Done</button>
+        <p class="text-center text-xs text-base-content/60" aria-live="polite">
+          {{ dirty() ? 'Saved on this phone.' : 'Answers save automatically as you tap.' }}
+        </p>
+      </div>
 
       @if (isPerson()) {
         <!-- Record corrections. Last, quiet, and confirmed — these change the file for
@@ -305,13 +316,37 @@ export class CanvassSurvey {
   protected readonly correction = signal<'deceased' | 'data_error' | null>(null);
   protected readonly errorNote = signal('');
 
-  protected readonly householdId = computed(() => {
-    const view = this.store.view();
-    return view.kind === 'survey' ? view.household_id : null;
-  });
+  /**
+   * The door and person this screen opened for, captured once. Back navigation changes
+   * the view BEFORE this component is destroyed, so the save-on-exit path must never
+   * re-read them from the view — it would find the next screen's answer and drop the op.
+   */
+  private readonly openedFor: { household_id: string; person_id: string | null } | null;
+  /**
+   * Latest person id seen while the view still points at this survey. A person added at
+   * the door carries a temp id that the server swaps for a real one mid-edit, and the
+   * view is where that swap lands (`CanvassStore.swapTempId`) — so reads go through the
+   * view while it is still ours, and fall back to the last known id once it has moved on.
+   */
+  private lastPersonId: string | null = null;
+  /** The queued op this visit's answers live under; null until the first real change. */
+  private draftOpId: string | null = null;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The survey exactly as the screen opened. Differing from it is what earns an op. */
+  private baseline = '';
+  /** A one-tap code replaced this visit's survey; the exit save must not resurrect it. */
+  private draftWithdrawn = false;
+  private savedThisVisit = false;
+
+  protected readonly householdId = computed(() => this.openedFor?.household_id ?? null);
   protected readonly personId = computed(() => {
+    const opened = this.openedFor;
+    if (opened == null) return null;
     const view = this.store.view();
-    return view.kind === 'survey' ? view.person_id : null;
+    if (view.kind === 'survey' && view.household_id === opened.household_id) {
+      this.lastPersonId = view.person_id;
+    }
+    return this.lastPersonId;
   });
   protected readonly isPerson = computed(() => this.personId() != null);
   protected readonly person = computed<CompanionPerson | null>(() => {
@@ -343,34 +378,41 @@ export class CanvassSurvey {
     const email = this.email().trim();
     return email === '' || EMAIL_SHAPE.test(email);
   });
-  protected readonly canSubscribe = computed(() => this.phone().trim() !== '' || this.email().trim() !== '');
+  /** A subscription needs somewhere to go: a phone, or an email that is actually one. */
+  protected readonly canSubscribe = computed(
+    () => this.phone().trim() !== '' || (this.email().trim() !== '' && this.emailValid()),
+  );
 
-  /** Why the save is blocked — or null when it can go. Explained-disabled (§3). */
-  protected readonly saveBlocker = computed<string | null>(() => {
-    if (!this.emailValid()) return 'Fix the email to save';
-    if (this.support() == null && !this.setDnc() && !this.senior()) return 'Pick a support level to save';
-    return null;
-  });
+  /** Anything on this screen differs from how it opened. Drives the auto-save line. */
+  protected readonly dirty = computed(() => this.fingerprint() !== this.baseline);
 
   constructor() {
     // Pre-fill from the earlier survey when re-opening (notes and contact info
     // are deliberately never echoed back — payload minimization, spec §2).
     const view = this.store.view();
-    if (view.kind !== 'survey') return;
-    const household = this.store.householdById(view.household_id);
-    const person = view.person_id == null ? null : household?.people.find((p) => p.id === view.person_id);
+    this.openedFor = view.kind === 'survey' ? { household_id: view.household_id, person_id: view.person_id } : null;
+    this.lastPersonId = this.openedFor?.person_id ?? null;
+    inject(DestroyRef).onDestroy(() => this.finishVisit());
+    const opened = this.openedFor;
+    if (opened == null) return;
+    const household = this.store.householdById(opened.household_id);
+    const person = opened.person_id == null ? null : household?.people.find((p) => p.id === opened.person_id);
     // Age comes off the PERSON, not off a knock: it is a fact about them that any earlier
     // canvasser may have recorded, and pre-filling it is what makes un-ticking it a
     // correction rather than a blanket "not a senior" claim about the whole turf.
     this.senior.set(person?.senior === true);
-    const prefill = view.person_id == null ? household?.hh_survey : person?.survey;
-    if (!prefill) return;
-    this.support.set(prefill.support);
-    this.issues.set([...prefill.issues]);
-    this.wantsVolunteer.set(prefill.wants_volunteer);
-    this.wantsYardSign.set(prefill.wants_yard_sign);
-    this.setDnc.set(prefill.set_dnc);
-    this.subscribe.set(prefill.subscribe);
+    const prefill = opened.person_id == null ? household?.hh_survey : person?.survey;
+    if (prefill) {
+      this.support.set(prefill.support);
+      this.issues.set([...prefill.issues]);
+      this.wantsVolunteer.set(prefill.wants_volunteer);
+      this.wantsYardSign.set(prefill.wants_yard_sign);
+      this.setDnc.set(prefill.set_dnc);
+      this.subscribe.set(prefill.subscribe);
+    }
+    // After the pre-fill: the baseline is what the volunteer SEES when the screen opens,
+    // and only an answer that moves away from it is a conversation worth an op.
+    this.baseline = this.fingerprint();
   }
 
   protected back(): void {
@@ -385,6 +427,8 @@ export class CanvassSurvey {
   }
 
   protected confirmDataError(): void {
+    // The survey draft, if any, deliberately survives: "wrong name, but we did talk" is
+    // a real conversation AND a record problem, and both deserve to land.
     const householdId = this.householdId();
     const personId = this.personId();
     const note = this.errorNote().trim();
@@ -396,6 +440,9 @@ export class CanvassSurvey {
   }
 
   protected confirmDeceased(): void {
+    // Whatever the visit's survey held is withdrawn: support levels and follow-ups for
+    // a person who has died are not answers anybody gave.
+    this.withdrawDraft();
     const householdId = this.householdId();
     const personId = this.personId();
     if (householdId == null || personId == null) return;
@@ -410,8 +457,11 @@ export class CanvassSurvey {
     if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) return;
     if (field === 'phone') this.phone.set(target.value);
     else if (field === 'email') this.email.set(target.value);
-    else if (field === 'error') this.errorNote.set(target.value);
-    else this.notes.set(target.value);
+    else if (field === 'error') {
+      this.errorNote.set(target.value);
+      return; // The correction note travels with its own op, not with the survey.
+    } else this.notes.set(target.value);
+    this.scheduleSave();
   }
 
   protected onToggle(
@@ -448,11 +498,13 @@ export class CanvassSurvey {
         void _exhaustive;
       }
     }
+    this.saveDraft();
   }
 
-  /** Tap the selected level again to unpick it (a DNC-only save stays possible). */
+  /** Tap the selected level again to unpick it. */
   protected pickSupport(response: KnockResponse): void {
     this.support.set(this.support() === response ? null : response);
+    this.saveDraft();
   }
 
   /** What the CRM held coming in — shown only until this walk records its own answer. */
@@ -463,6 +515,9 @@ export class CanvassSurvey {
   }
 
   protected recordNoConversation(result: QuickCode): void {
+    // "Not home" is the record of this visit; answers tapped before it were a mistake by
+    // definition (nobody answered), so the draft is withdrawn rather than synced.
+    this.withdrawDraft();
     const householdId = this.householdId();
     const personId = this.personId();
     if (householdId == null || personId == null) return;
@@ -472,11 +527,17 @@ export class CanvassSurvey {
     this.back();
   }
 
-  protected save(): void {
-    const householdId = this.householdId();
-    if (householdId == null || this.saveBlocker() != null) return;
+  protected toggleIssue(issue: string): void {
+    this.issues.update((current) =>
+      current.includes(issue) ? current.filter((i) => i !== issue) : [...current, issue],
+    );
+    this.saveDraft();
+  }
+
+  /** The survey op's payload for the answers as they stand right now. */
+  private currentDraft(): SurveyDraft {
     const isPerson = this.isPerson();
-    this.store.submitSurvey(householdId, this.personId(), {
+    return {
       support: this.support(),
       issues: this.issues(),
       wants_volunteer: isPerson ? this.wantsVolunteer() : false,
@@ -485,18 +546,86 @@ export class CanvassSurvey {
       set_dnc: this.setDnc(),
       senior: isPerson ? this.senior() : false,
       contact_phone: isPerson && this.phone().trim() ? this.phone().trim() : null,
-      contact_email: isPerson && this.email().trim() ? this.email().trim() : null,
+      // A half-typed email is left out rather than saved wrong; the inline message under
+      // the field says so. Everything else still saves.
+      contact_email: isPerson && this.emailValid() && this.email().trim() ? this.email().trim() : null,
       subscribe: isPerson && this.canSubscribe() ? this.subscribe() : false,
       notes: this.notes().trim() ? this.notes().trim() : null,
-    });
-    const syncing = this.store.online() && !this.store.workOffline();
-    this.alerts.showSuccess(syncing ? 'Saved · syncing to pplCRM…' : 'Saved. Will sync when back online');
-    this.back();
+    };
   }
 
-  protected toggleIssue(issue: string): void {
-    this.issues.update((current) =>
-      current.includes(issue) ? current.filter((i) => i !== issue) : [...current, issue],
+  /** Order-blind on issues: re-picking the same chips is the same survey. */
+  private fingerprint(): string {
+    const draft = this.currentDraft();
+    return JSON.stringify({ ...draft, issues: [...draft.issues].sort() });
+  }
+
+  /**
+   * Push the current answers into the store's held draft op. Taps call this directly —
+   * the moment the volunteer selects something, it is saved; typing arrives through
+   * `scheduleSave`. Answers back at the baseline withdraw the op instead: nothing
+   * changed, and an op would file a conversation that did not happen.
+   */
+  private saveDraft(): void {
+    if (this.saveTimer != null) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    const opened = this.openedFor;
+    if (opened == null || this.draftWithdrawn) return;
+    if (this.fingerprint() === this.baseline) {
+      if (this.draftOpId != null && this.store.discardSurveyDraft(this.draftOpId)) {
+        this.draftOpId = null;
+        this.savedThisVisit = false;
+      }
+      return;
+    }
+    this.draftOpId = this.store.saveSurveyDraft(
+      opened.household_id,
+      this.personId(),
+      this.currentDraft(),
+      this.draftOpId,
     );
+    this.savedThisVisit = true;
+  }
+
+  private scheduleSave(): void {
+    if (this.saveTimer != null) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.saveDraft();
+    }, SAVE_DEBOUNCE_MS);
+  }
+
+  /** A one-tap code or a deceased marking replaced this visit's survey. */
+  private withdrawDraft(): void {
+    if (this.saveTimer != null) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (this.draftOpId != null) this.store.discardSurveyDraft(this.draftOpId);
+    this.draftOpId = null;
+    this.savedThisVisit = false;
+    this.draftWithdrawn = true;
+  }
+
+  /**
+   * The screen is closing (back tap, tab switch, next door): land any pending edit,
+   * release the draft op to sync, and say what happened — the same toast the old save
+   * button showed, now tied to actually leaving the door.
+   */
+  private finishVisit(): void {
+    if (this.saveTimer != null) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (this.draftWithdrawn) return;
+    this.saveDraft();
+    if (this.draftOpId == null) return;
+    this.store.commitSurveyDraft(this.draftOpId);
+    if (this.savedThisVisit) {
+      const syncing = this.store.online() && !this.store.workOffline();
+      this.alerts.showSuccess(syncing ? 'Saved · syncing to pplCRM…' : 'Saved. Will sync when back online');
+    }
   }
 }

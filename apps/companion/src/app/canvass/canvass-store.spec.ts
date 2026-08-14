@@ -5,7 +5,7 @@ import type { CompanionHousehold, CompanionOpAck, CompanionPerson, CompanionTurf
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 
 import { CompanionSessionService } from '../gate/companion-api';
-import { CanvassStore } from './canvass-store';
+import { CanvassStore, type SurveyDraft } from './canvass-store';
 
 /** A resident with every payload field defaulted, so a test states only what it is about. */
 function person(over: Partial<CompanionPerson> & { id: string; name: string }): CompanionPerson {
@@ -18,6 +18,24 @@ function person(over: Partial<CompanionPerson> & { id: string; name: string }): 
     senior: null,
     result: null,
     survey: null,
+    ...over,
+  };
+}
+
+/** A survey draft with every field defaulted, so a test states only what it is about. */
+function surveyDraft(over: Partial<SurveyDraft> = {}): SurveyDraft {
+  return {
+    support: 'supporter',
+    issues: [],
+    wants_volunteer: false,
+    wants_yard_sign: false,
+    yard_sign_delivered: false,
+    set_dnc: false,
+    senior: false,
+    contact_phone: null,
+    contact_email: null,
+    subscribe: false,
+    notes: null,
     ...over,
   };
 }
@@ -213,29 +231,45 @@ describe('CanvassStore', () => {
       await store.load(TOKEN);
     });
 
-    it('submitSurvey overlays the person as canvassed and syncs one op', async () => {
-      store.submitSurvey('10', '1', {
-        support: 'supporter',
-        issues: ['Roads'],
-        wants_volunteer: true,
-        wants_yard_sign: false,
-        yard_sign_delivered: false,
-        set_dnc: false,
-        contact_phone: null,
-        contact_email: null,
-        subscribe: false,
-        notes: 'Nice porch',
-      });
+    it('saveSurveyDraft overlays immediately but holds the op back from sync while editing', async () => {
+      store.saveSurveyDraft('10', '1', surveyDraft({ issues: ['Roads'], wants_volunteer: true }));
       const alice = store.householdById('10')?.people[0];
       expect(alice?.result).toBe('canvassed');
       expect(alice?.survey?.support).toBe('supporter');
       await flushMicrotasks();
+      // Still on the queue (persisted for a crash), skipped by the sync pass, and the
+      // status honestly says there is nothing in flight.
+      expect(store.queue()).toHaveLength(1);
+      expect(store.syncStatus()).toBe('idle');
+      expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/results'))).toHaveLength(0);
+    });
+
+    it('edits coalesce into the held op, and commit releases it as ONE survey', async () => {
+      const opId = store.saveSurveyDraft('10', '1', surveyDraft());
+      const opId2 = store.saveSurveyDraft('10', '1', surveyDraft({ notes: 'Nice porch' }), opId);
+      // One doorstep conversation = one op = one knock row, however many taps it took.
+      expect(opId2).toBe(opId);
+      expect(store.queue()).toHaveLength(1);
+
+      store.commitSurveyDraft(opId);
+      await flushMicrotasks();
       expect(store.queue()).toHaveLength(0);
       expect(store.syncStatus()).toBe('idle');
       expect(store.lastSyncedAt()).not.toBeNull();
-      const [op] = postedOps(fetchMock, 0);
-      expect(op.type).toBe('survey');
-      expect(op.payload['notes']).toBe('Nice porch');
+      const posted = postedOps(fetchMock, 0);
+      expect(posted).toHaveLength(1);
+      expect(posted[0].type).toBe('survey');
+      expect(posted[0].payload['notes']).toBe('Nice porch');
+    });
+
+    it('discardSurveyDraft withdraws a held draft and its overlay', async () => {
+      const opId = store.saveSurveyDraft('10', '1', surveyDraft());
+      expect(store.householdById('10')?.people[0]?.result).toBe('canvassed');
+      expect(store.discardSurveyDraft(opId)).toBe(true);
+      expect(store.queue()).toHaveLength(0);
+      expect(store.householdById('10')?.people[0]?.result).toBeNull();
+      await flushMicrotasks();
+      expect(fetchMock.mock.calls.filter((c) => String(c[0]).endsWith('/results'))).toHaveLength(0);
     });
 
     it('yardSign marks an owed sign delivered, overlays it, and syncs one op', async () => {
@@ -322,18 +356,7 @@ describe('CanvassStore', () => {
       store.online.set(false);
       store.addPerson('11', 'New Neighbor');
       const tempId = store.householdById('11')?.people[0]?.id ?? '';
-      store.submitSurvey('11', tempId, {
-        support: 'undecided',
-        issues: [],
-        wants_volunteer: false,
-        wants_yard_sign: false,
-        yard_sign_delivered: false,
-        set_dnc: false,
-        contact_phone: null,
-        contact_email: null,
-        subscribe: false,
-        notes: null,
-      });
+      store.commitSurveyDraft(store.saveSurveyDraft('11', tempId, surveyDraft({ support: 'undecided' })));
       expect(store.queue()).toHaveLength(2);
 
       fetchMock.mockImplementation((url: string, init?: RequestInit) => {
@@ -481,19 +504,7 @@ describe('CanvassStore', () => {
       store.online.set(false);
       store.addPerson('11', 'New Neighbor');
       const tempId = store.householdById('11')?.people[0]?.id ?? '';
-      store.submitSurvey('11', tempId, {
-        support: 'undecided',
-        issues: [],
-        wants_volunteer: false,
-        wants_yard_sign: false,
-        yard_sign_delivered: false,
-        set_dnc: false,
-        senior: false,
-        contact_phone: null,
-        contact_email: null,
-        subscribe: false,
-        notes: null,
-      });
+      store.commitSurveyDraft(store.saveSurveyDraft('11', tempId, surveyDraft({ support: 'undecided' })));
       return tempId;
     }
 
@@ -769,18 +780,7 @@ describe('CanvassStore', () => {
     });
 
     it('cannot undo a survey once it synced', async () => {
-      store.submitSurvey('10', '1', {
-        support: 'supporter',
-        issues: [],
-        wants_volunteer: false,
-        wants_yard_sign: false,
-        yard_sign_delivered: false,
-        set_dnc: false,
-        contact_phone: null,
-        contact_email: null,
-        subscribe: false,
-        notes: null,
-      });
+      store.commitSurveyDraft(store.saveSurveyDraft('10', '1', surveyDraft()));
       await flushMicrotasks();
       expect(store.canUndo()).toBe(false);
       expect(store.undo()).toBe(false);

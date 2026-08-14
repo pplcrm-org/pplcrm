@@ -516,7 +516,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       { kind: 'h2', id: 'companion', text: 'The Canvass Companion' },
       {
         kind: 'p',
-        text: 'The Companion is a web app, nothing to install. After verifying, the volunteer lands on their assignment, taps **Start walking**, and works the door list in the suggested walk order (any order works). Each row shows who lives there by full name — with a shared surname said once, so “Heather & Ross Gagnon” rather than the surname twice. At each door they survey the people on file (support level, top issues, follow-up flags, and notes) or record a one-tap result like not home or moved. Door-level outcomes (nobody home, inaccessible, refused, moved out) close a door with one tap and can be cleared just as fast, and “+ Add someone at this door” captures a new name on the spot. Every result syncs live to the person, the household, the turf’s progress, and the Activity log, attributed honestly as “via Canvass Companion”. No signal? Results queue on the phone and upload automatically when the volunteer is back online.',
+        text: 'The Companion is a web app, nothing to install. After verifying, the volunteer lands on their assignment, taps **Start walking**, and works the door list in the suggested walk order (any order works). Each row shows who lives there by full name — with a shared surname said once, so “Heather & Ross Gagnon” rather than the surname twice. At each door they survey the people on file (support level, top issues, follow-up flags, and notes) or record a one-tap result like not home or moved. There is no save button — every answer is saved the moment it is tapped, and the visit syncs as one record when the volunteer moves on. Door-level outcomes (nobody home, inaccessible, refused, moved out) close a door with one tap and can be cleared just as fast, and “+ Add someone at this door” captures a new name on the spot. Every result syncs live to the person, the household, the turf’s progress, and the Activity log, attributed honestly as “via Canvass Companion”. No signal? Results queue on the phone and upload automatically when the volunteer is back online.',
       },
       {
         kind: 'p',
@@ -564,7 +564,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'For somebody who asks for a sign and is handed one on the spot, the survey does both in one save: tick **Wants a yard sign** and the line underneath it, **I gave them one just now**. That creates the request and marks it delivered together, so there is no second step to forget and nothing to wait for a signal to sync. The line is hidden on a door whose sign has already been delivered — a sign cannot arrive twice.',
+        text: 'For somebody who asks for a sign and is handed one on the spot, the survey does both in one step: tick **Wants a yard sign** and the line underneath it, **I gave them one just now**. That creates the request and marks it delivered together, so there is no second step to forget and nothing to wait for a signal to sync. The line is hidden on a door whose sign has already been delivered — a sign cannot arrive twice.',
       },
       {
         kind: 'p',

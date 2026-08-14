@@ -573,9 +573,21 @@ resolved `tenant_id` + `turf_id`. The `X-Companion-Session` header proves WHO �
   `senior` → `persons.senior`, two transitions only (see "Two person columns the
   door writes" above). The `person_result` codes `deceased` and `data_error` have
   their own side effects in `applyPersonResultSideEffects`.
+- **The survey auto-saves — there is no save button (2026-08-14).** Every tap on the
+  door screen rewrites ONE queued-but-**held** op (`CanvassStore.saveSurveyDraft`,
+  `heldOpIds`): persisted to the queue immediately (a dead phone still holds the
+  answers) but skipped by every flush, then released to sync as one op when the
+  screen closes (`commitSurveyDraft`, from the component's `DestroyRef` hook). The
+  coalescing is not optional: a survey op that reaches the server is an append-only
+  `turf_knocks` row, so syncing per tap would file one conversation as a dozen
+  knocks. Answers that come back to exactly the screen's opening state withdraw the
+  draft (`discardSurveyDraft`) — no change, no knock; the one-tap codes and
+  "deceased" also withdraw it (the visit's record is the code), while "error in
+  data" deliberately keeps it. The component captures `household_id`/`person_id` at
+  construction because back-navigation changes the view **before** destroy fires.
 - **Offline**: the app queues ops in `localStorage` (`pc-canvass-queue`), replays
   them as an optimistic overlay (`canvass-derive.ts applyLocalOps`), and flushes on
-  the `online` event / load — idempotent via `op_id`. Four rules keep a queue from
+  the `online` event / load — idempotent via `op_id`. These rules keep a queue from
   wedging, all in `CanvassStore` and all with specs:
   - `sendableBatch()` **skips** an op whose `tmp-…` person is still waiting on its
     `person_create`; it must never `break`, or one held entry freezes every unrelated

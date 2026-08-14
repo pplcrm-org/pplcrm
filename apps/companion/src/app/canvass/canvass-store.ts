@@ -254,6 +254,14 @@ export class CanvassStore {
    * so treating them as revocable would silently diverge from the server.
    */
   private readonly inFlightOpIds = signal<ReadonlySet<string>>(new Set<string>());
+  /**
+   * Ops being live-edited on an open survey screen. The screen saves on every tap, but a
+   * survey op that reaches the server becomes an append-only knock row — synced per tap,
+   * one doorstep conversation would land as a dozen knocks. So the draft op sits on the
+   * queue (persisted, like everything else) while every sync pass skips it, each further
+   * tap rewrites it in place, and closing the screen releases it to travel once, final.
+   */
+  private readonly heldOpIds = signal<ReadonlySet<string>>(new Set<string>());
 
   /** Server payload with the local overlay replayed on top — the one source the views read. */
   public readonly households = computed<CompanionHousehold[]>(() => {
@@ -626,30 +634,67 @@ export class CanvassStore {
 
   // --------------------------------------------------------------- actions --
 
-  /** Save a survey for a person (or the door itself when personId is null). */
-  public submitSurvey(householdId: string, personId: string | null, draft: SurveyDraft): void {
-    const op: CompanionOpType = {
-      ...this.baseOp(),
-      type: 'survey',
-      payload: {
-        household_id: householdId,
-        person_id: personId,
-        support: draft.support,
-        issues: draft.issues,
-        wants_volunteer: draft.wants_volunteer,
-        wants_yard_sign: draft.wants_yard_sign,
-        // Meaningless without the request it delivers, and sending it alone would ask the
-        // server to deliver a sign nobody has asked for.
-        yard_sign_delivered: draft.wants_yard_sign && draft.yard_sign_delivered,
-        set_dnc: draft.set_dnc,
-        senior: draft.senior,
-        contact_phone: draft.contact_phone,
-        contact_email: draft.contact_email,
-        subscribe: draft.subscribe,
-        notes: draft.notes,
-      },
-    };
-    this.record(op, `${this.personLabel(householdId, personId)} · ${this.addressOf(householdId)}`);
+  /**
+   * Auto-save the survey for a person (or the door itself when personId is null).
+   *
+   * Called on every edit the survey screen makes. The first edit queues a HELD op (see
+   * `heldOpIds`) — persisted immediately, so a phone that dies at the doorstep still
+   * holds the answers — and every further edit rewrites that op in place, so one visit
+   * becomes one knock row on the server rather than one per tap. Returns the op id the
+   * draft lives under; the caller passes it back on the next edit and hands it to
+   * `commitSurveyDraft` when the screen closes.
+   *
+   * If `previousOpId` has already left the queue (a rejected op moved to the held list,
+   * say), a fresh op is created — knock history is append-only on the server, so an op
+   * that is out of our hands can never be edited, only followed.
+   */
+  public saveSurveyDraft(
+    householdId: string,
+    personId: string | null,
+    draft: SurveyDraft,
+    previousOpId: string | null = null,
+  ): string {
+    const label = `${this.personLabel(householdId, personId)} · ${this.addressOf(householdId)}`;
+    const existing = previousOpId == null ? undefined : this.queue().find((e) => e.op.op_id === previousOpId);
+    if (existing && existing.op.type === 'survey' && !this.inFlightOpIds().has(existing.op.op_id)) {
+      const op: CompanionOpType = {
+        ...this.surveyOp(householdId, personId, draft),
+        // The op's identity and its doorstep time both belong to the first edit.
+        op_id: existing.op.op_id,
+        recorded_at: existing.op.recorded_at,
+      };
+      const replace = (entries: QueuedOp[]): QueuedOp[] =>
+        entries.map((e) => (e.op.op_id === op.op_id ? { ...e, op, label } : e));
+      this.queue.update(replace);
+      this.localOps.update(replace);
+      this.persistQueue();
+      return op.op_id;
+    }
+    const op = this.surveyOp(householdId, personId, draft);
+    this.holdOp(op.op_id);
+    this.record(op, label);
+    return op.op_id;
+  }
+
+  /** The survey screen closed — release its draft op and let it sync. */
+  public commitSurveyDraft(opId: string): void {
+    this.releaseOp(opId);
+    void this.flush();
+  }
+
+  /**
+   * Withdraw a draft op: the edits came back to exactly what the screen opened with, or
+   * a one-tap code replaced the visit's survey. Only a still-queued, not-in-flight op
+   * can be withdrawn; returns whether it was.
+   */
+  public discardSurveyDraft(opId: string): boolean {
+    this.releaseOp(opId);
+    if (this.inFlightOpIds().has(opId) || !this.queue().some((e) => e.op.op_id === opId)) return false;
+    this.queue.update((q) => q.filter((e) => e.op.op_id !== opId));
+    this.localOps.update((l) => l.filter((e) => e.op.op_id !== opId));
+    if (this.lastAction()?.op_id === opId) this.lastAction.set(null);
+    this.persistQueue();
+    return true;
   }
 
   /**
@@ -750,6 +795,7 @@ export class CanvassStore {
     const queued = !inFlight && this.queue().some((entry) => entry.op.op_id === action.op_id);
     this.lastAction.set(null);
     if (queued) {
+      this.releaseOp(action.op_id);
       this.queue.update((q) => q.filter((entry) => entry.op.op_id !== action.op_id));
       this.localOps.update((l) => l.filter((entry) => entry.op.op_id !== action.op_id));
       this.persistQueue();
@@ -776,7 +822,10 @@ export class CanvassStore {
     // the "couldn't sync" list the moment the app notices, not only once a POST succeeds.
     this.quarantineUnresolvable();
     if (this.workOffline() && !manual) return;
-    if (this.queue().length === 0) {
+    // Held drafts (a survey screen mid-edit) don't count: with only those queued there
+    // is nothing to send yet, and claiming 'syncing' or 'error' about them would lie.
+    const hasSendable = (): boolean => this.queue().some((e) => !this.heldOpIds().has(e.op.op_id));
+    if (!hasSendable()) {
       this.syncStatus.set('idle');
       return;
     }
@@ -787,7 +836,7 @@ export class CanvassStore {
     this.flushing = true;
     this.syncStatus.set('syncing');
     try {
-      while (this.queue().length > 0) {
+      while (hasSendable()) {
         // Hold back ops that reference a temp person id — their person_create
         // (still queued) must ack first so the real id can swap in.
         const batch = this.sendableBatch();
@@ -912,6 +961,7 @@ export class CanvassStore {
     this.blocked.set([]);
     this.localOps.set([]);
     this.myDoorIds.set(new Set<string>());
+    this.heldOpIds.set(new Set<string>());
     this.lastAction.set(null);
     this.workOffline.set(false);
     this.syncStatus.set('idle');
@@ -966,6 +1016,44 @@ export class CanvassStore {
 
   private baseOp(): { op_id: string; recorded_at: string } {
     return { op_id: crypto.randomUUID(), recorded_at: new Date().toISOString() };
+  }
+
+  /** A fresh survey op for the draft in its current state. */
+  private surveyOp(householdId: string, personId: string | null, draft: SurveyDraft): CompanionOpType {
+    return {
+      ...this.baseOp(),
+      type: 'survey',
+      payload: {
+        household_id: householdId,
+        person_id: personId,
+        support: draft.support,
+        issues: draft.issues,
+        wants_volunteer: draft.wants_volunteer,
+        wants_yard_sign: draft.wants_yard_sign,
+        // Meaningless without the request it delivers, and sending it alone would ask the
+        // server to deliver a sign nobody has asked for.
+        yard_sign_delivered: draft.wants_yard_sign && draft.yard_sign_delivered,
+        set_dnc: draft.set_dnc,
+        senior: draft.senior,
+        contact_phone: draft.contact_phone,
+        contact_email: draft.contact_email,
+        subscribe: draft.subscribe,
+        notes: draft.notes,
+      },
+    };
+  }
+
+  private holdOp(opId: string): void {
+    const next = new Set(this.heldOpIds());
+    next.add(opId);
+    this.heldOpIds.set(next);
+  }
+
+  private releaseOp(opId: string): void {
+    if (!this.heldOpIds().has(opId)) return;
+    const next = new Set(this.heldOpIds());
+    next.delete(opId);
+    this.heldOpIds.set(next);
   }
 
   /** Move a result out of the queue and into the list the volunteer can act on. */
@@ -1228,6 +1316,9 @@ export class CanvassStore {
   private unresolvableEntries(): QueuedOp[] {
     const producible = this.producibleTempPersonIds();
     return this.queue().filter((entry) => {
+      // A held draft is still being edited; pulling it out from under the open screen
+      // would strand the volunteer's next tap. It is judged once its screen closes.
+      if (this.heldOpIds().has(entry.op.op_id)) return false;
       const personId = opPersonId(entry.op);
       return personId != null && isTempPersonId(personId) && !producible.has(personId);
     });
@@ -1273,6 +1364,8 @@ export class CanvassStore {
     let turfId: string | undefined;
     for (const entry of this.queue()) {
       if (out.length >= COMPANION_OPS_MAX_PER_BATCH) break;
+      // A held draft is mid-edit on an open survey screen; it travels once released.
+      if (this.heldOpIds().has(entry.op.op_id)) continue;
       const personId = opPersonId(entry.op);
       if (personId != null && isTempPersonId(personId) && producible.has(personId)) continue;
       if (out.length === 0) turfId = entry.turf_id;
