@@ -4,6 +4,7 @@ import type { Models } from '../../../../../../libs/common/src/lib/kysely.models
 import { jobPayloadSchema, legacyImportJobSchema } from './job-payloads';
 import { handleCheckAllUsageLimits, handleCheckUsageLimits, handleZapierTrigger } from './handlers/billing.handlers';
 import { handleMatchBoundaries, handleSweepUnmatchedBoundaries } from './handlers/boundaries.handlers';
+import { handlePurgeCanvassPings } from './handlers/canvass-live.handlers';
 import { handleRefreshDashboardStats, handleRefreshDashboardStatsTenant } from './handlers/dashboard-stats.handlers';
 import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
 import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
@@ -150,6 +151,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'sweep_unmatched_boundaries':
       await handleSweepUnmatchedBoundaries(db);
+      break;
+    case 'purge_canvass_pings':
+      await handlePurgeCanvassPings(db);
       break;
     case 'materialize_demo_attachments':
       await handleMaterializeDemoAttachments(job, db);

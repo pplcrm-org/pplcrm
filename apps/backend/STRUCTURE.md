@@ -59,6 +59,7 @@ apps/
           2026-08-09-x-retention-and-ri-indexes.ts
           2026-08-13-autovacuum-churn-tables.ts
           2026-08-14-retention-prune-indexes.ts
+          2026-08-14-z-canvass-live-locations.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -84,6 +85,7 @@ apps/
               automation-mail.handlers.ts
               billing.handlers.ts
               boundaries.handlers.ts
+              canvass-live.handlers.ts
               dashboard-stats.handlers.ts
               deletions.handlers.ts
               demo.handlers.ts
@@ -155,6 +157,7 @@ apps/
           hibp.ts
           html-escape.ts
           import-rows.ts
+          local-time.ts
           oauth-state.ts
           outbound-url-guard.ts
           paging.ts
@@ -238,6 +241,7 @@ apps/
               cutting-engine.ts
               turf-boundary.ts
             repositories/
+              canvass-shifts.repo.ts
               turf-assignments.repo.ts
               turf-households.repo.ts
               turf-knocks.repo.ts

@@ -33,6 +33,11 @@ export const CRON_JOBS = {
   // "I need it fresher than nightly" without any view-triggered recompute.
   refresh_dashboard_stats: DAY_MS,
   refresh_companies_google: DAY_MS,
+  // The Live-tab privacy contract: canvassing location pings are today-only. Hourly rather
+  // than nightly because "midnight" is each workspace's own local midnight — every run
+  // purges only the tenants whose midnight has passed, so coordinates live at most one
+  // hour past it regardless of timezone.
+  purge_canvass_pings: HOUR_MS,
   // Re-matches households that hold no boundary row yet — ones geocoded before a map existed, or
   // imported with coordinates and no district columns. Pure processor work with no external call,
   // so it is safe to run over every workspace nightly. There is deliberately NO companion

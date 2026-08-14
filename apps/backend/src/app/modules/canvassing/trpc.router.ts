@@ -57,6 +57,17 @@ export const CanvassingRouter = router({
     .input(RemoveCanvasserObj)
     .mutation(({ ctx, input }) => controller.removeVolunteerFromTurf(ctx.auth, input)),
 
+  // The Live tab and its two satellite blocks. Admin/owner only — volunteer positions are
+  // the most sensitive read in the module (spec: requires canvassing.manage; canvassers
+  // never see each other, and editors have no reason to).
+  getLive: adminOrOwnerProcedure.query(({ ctx }) => controller.getLive(ctx.auth)),
+  getPersonLive: adminOrOwnerProcedure
+    .input(z.object({ person_id: idSchema }))
+    .query(({ ctx, input }) => controller.getPersonLive(ctx.auth, input.person_id)),
+  getTurfLive: adminOrOwnerProcedure
+    .input(z.object({ turf_id: idSchema }))
+    .query(({ ctx, input }) => controller.getTurfLive(ctx.auth, input.turf_id)),
+
   // Companion survey vocabulary (issues chips + door script), campaign-scoped.
   getCompanionSettings: authProcedure
     .input(z.object({ campaign_id: idSchema.optional() }).optional())

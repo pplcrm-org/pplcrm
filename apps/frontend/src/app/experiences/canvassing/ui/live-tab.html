@@ -1,0 +1,227 @@
+<div class="flex flex-col gap-4">
+  @if (!live() && loading()) {
+  <div class="flex justify-center py-16">
+    <span class="loading loading-spinner loading-md opacity-40" aria-label="Loading the live board"></span>
+  </div>
+  } @else if (!live() && loadFailed()) {
+  <div class="card border border-base-300 bg-base-100 p-6 text-sm text-base-content/70">
+    Could not load the live board. It retries every 30 seconds while this tab is open.
+  </div>
+  } @if (live(); as l) {
+  <!-- Overview: one pin per turf, canvasser dots above, coverage panel beside. -->
+  <section class="card border border-base-300 bg-base-100">
+    <div class="flex flex-wrap items-center justify-between gap-2 p-4 pb-2">
+      <h2 class="text-sm font-semibold">Where the crew is</h2>
+      <span class="text-xs text-base-content/50">
+        Pings every minute @if (newestPing(); as newest) { · last {{ agoOf(newest) }} }
+      </span>
+    </div>
+    <div class="grid grid-cols-1 gap-4 p-4 pt-2 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+      <div class="flex flex-col gap-2">
+        <pc-map class="block h-[420px] w-full rounded-lg" [markers]="overviewMarkers()" ariaLabel="Live crew map">
+        </pc-map>
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-base-content/60">
+          <div class="flex flex-wrap items-center gap-3">
+            <span class="inline-flex items-center gap-1.5">
+              <span class="inline-block h-2.5 w-2.5 rounded-full bg-live" aria-hidden="true"></span> Canvasser now
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+              <span class="inline-block h-2.5 w-2.5 rounded-full bg-primary" aria-hidden="true"></span> Turf in progress
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+              <span class="inline-block h-2.5 w-2.5 rounded-full bg-success" aria-hidden="true"></span> Every door
+              knocked
+            </span>
+            <span class="inline-flex items-center gap-1.5">
+              <span class="inline-block h-2.5 w-2.5 rounded-full bg-warning" aria-hidden="true"></span> Waiting for a
+              canvasser
+            </span>
+          </div>
+          <span>One pin per turf, coloured by status. Selecting a row below rings that canvasser here.</span>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-3 text-sm">
+        @if (walkingTurfs().length > 0) {
+        <div>
+          <div class="pc-eyebrow mb-1">Being walked now</div>
+          <div class="text-base-content/80">{{ turfNames(walkingTurfs()) }}</div>
+        </div>
+        } @if (pausedTurfs().length > 0) {
+        <div>
+          <div class="pc-eyebrow mb-1">Knocked today, nobody on them now</div>
+          <div class="text-base-content/80">{{ turfNames(pausedTurfs()) }}</div>
+        </div>
+        } @if (finishedTurfs().length > 0) {
+        <div>
+          <div class="pc-eyebrow mb-1">Every door knocked</div>
+          <div class="text-base-content/80">{{ turfNames(finishedTurfs()) }}</div>
+        </div>
+        } @if (walkingTurfs().length === 0 && pausedTurfs().length === 0 && finishedTurfs().length === 0) {
+        <div class="text-base-content/60">No canvassing activity today.</div>
+        }
+
+        <!-- Pinned to the bottom: the reassignment answer, as information. The organizer
+               acts in Turfs & assignments, where the assignment tools live. -->
+        @if (waitingTurfs().length > 0) {
+        <div class="mt-auto rounded-lg border border-warning/40 bg-warning/10 p-3">
+          <div class="pc-eyebrow mb-1 text-warning-content/80">
+            {{ waitingTurfs().length }} {{ waitingTurfs().length === 1 ? 'turf' : 'turfs' }} waiting for a canvasser
+          </div>
+          <ul class="flex flex-col gap-1">
+            @for (turf of waitingTurfs(); track turf.id) {
+            <li class="flex items-baseline justify-between gap-2">
+              <a class="text-primary hover:underline" [routerLink]="['/canvassing', turf.id]">{{ turf.name }}</a>
+              <span class="text-xs text-base-content/60">
+                {{ turf.door_count }} doors @if (turf.nearest_crew; as crew) { · {{ crew.name.split(' ')[0] }} is {{
+                crewDistanceOf(crew.distance_m) }} away }
+              </span>
+            </li>
+            }
+          </ul>
+        </div>
+        }
+      </div>
+    </div>
+  </section>
+
+  <section class="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+    <!-- The shift board: the working surface. -->
+    <div class="card border border-base-300 bg-base-100">
+      <div class="flex items-center justify-between p-4 pb-2">
+        <h2 class="text-sm font-semibold">Shift board</h2>
+        <span class="text-xs text-base-content/50">Knock tape: 5-minute slots since {{ timeOf(l.tape_start) }}</span>
+      </div>
+      @if (canvassers().length === 0 && wrapped().length === 0) {
+      <div class="p-4 pt-2 text-sm text-base-content/60">
+        Nobody is in the field right now. @if (l.last_shift_ended_at) { The last shift ended at {{
+        timeOf(l.last_shift_ended_at) }}. }
+      </div>
+      } @else {
+      <div class="overflow-x-auto p-2">
+        <table class="table pc-table">
+          <thead>
+            <tr>
+              <th>Canvasser</th>
+              <th class="min-w-56">Turf</th>
+              <th>Last seen</th>
+              <th class="text-right">Doors</th>
+              <th class="w-[200px]">Knocks</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (c of canvassers(); track c.shift_id) {
+            <tr
+              class="cursor-pointer"
+              [class]="c.person_id === selectedId() ? 'border-l-2 border-live bg-live/5' : 'hover:bg-base-200/40'"
+              (click)="select(c.person_id)"
+            >
+              <td class="font-medium">
+                <span class="inline-flex items-center gap-2">
+                  <span
+                    class="inline-block h-2 w-2 rounded-full"
+                    [class]="isStale(c) ? 'bg-live/40' : 'bg-live'"
+                    aria-hidden="true"
+                  ></span>
+                  {{ c.name }}
+                </span>
+              </td>
+              <td class="whitespace-nowrap">{{ c.turf_name }}</td>
+              <td class="whitespace-nowrap text-base-content/70">{{ lastSeenLabel(c) }}</td>
+              <td class="text-right tabular-nums">{{ c.doors }}</td>
+              <td>
+                <div class="flex h-2 w-full overflow-hidden rounded-full bg-base-200">
+                  @for (run of tapeRunsOf(c.tape); track $index) {
+                  <div
+                    class="h-full"
+                    [style.width.%]="run.widthPct"
+                    [class]="run.knocked ? 'bg-primary' : 'bg-transparent'"
+                  ></div>
+                  }
+                </div>
+              </td>
+            </tr>
+            @if (c.person_id === selectedId()) {
+            <tr class="border-l-2 border-live bg-live/5">
+              <td colspan="5" class="text-xs text-base-content/70">
+                <div class="flex flex-wrap items-center gap-x-4 gap-y-1 py-1">
+                  <span>
+                    On {{ c.turf_name }} since {{ timeOf(c.started_at) }} · {{ distanceOf(c.distance_m) }} walked · {{
+                    c.conversations }} {{ c.conversations === 1 ? 'conversation' : 'conversations' }}
+                  </span>
+                  <span class="flex items-center gap-3">
+                    <a class="text-primary hover:underline" [routerLink]="['/people', c.person_id]">
+                      Canvasser record
+                    </a>
+                    <a class="text-primary hover:underline" [routerLink]="['/canvassing', c.turf_id]">
+                      Knocks this shift ({{ c.doors }})
+                    </a>
+                  </span>
+                </div>
+              </td>
+            </tr>
+            } } @if (wrapped().length > 0) {
+            <tr>
+              <td colspan="5" class="pc-eyebrow pt-4">Wrapped up today</td>
+            </tr>
+            @for (w of wrapped(); track w.shift_id) {
+            <tr class="text-base-content/50">
+              <td>
+                <a class="hover:text-primary" [routerLink]="['/people', w.person_id]">{{ w.name }}</a>
+              </td>
+              <td class="whitespace-nowrap">{{ w.turf_name }}</td>
+              <td class="whitespace-nowrap">Ended {{ timeOf(w.ended_at) }}</td>
+              <td class="text-right tabular-nums">{{ w.doors }}</td>
+              <td>
+                <div class="flex h-2 w-full overflow-hidden rounded-full bg-base-200">
+                  @for (run of tapeRunsOf(w.tape); track $index) {
+                  <div
+                    class="h-full"
+                    [style.width.%]="run.widthPct"
+                    [class]="run.knocked ? 'bg-base-content/30' : 'bg-transparent'"
+                  ></div>
+                  }
+                </div>
+              </td>
+            </tr>
+            } }
+          </tbody>
+        </table>
+      </div>
+      }
+    </div>
+
+    <!-- Street panel: the followed canvasser at street zoom. -->
+    <div class="card border border-base-300 bg-base-100">
+      @if (selected(); as sel) {
+      <div class="flex flex-wrap items-baseline justify-between gap-2 p-4 pb-2">
+        <h2 class="text-sm font-semibold">{{ sel.name }} · {{ sel.turf_name }}</h2>
+        <span class="text-xs text-base-content/50">{{ sel.doors }} doors · since {{ timeOf(sel.started_at) }}</span>
+      </div>
+      @if (sel.precision === 'turf') {
+      <p class="px-4 pb-2 text-xs text-base-content/60">
+        This campaign shares turf-level presence only — doors below, no positions or paths.
+      </p>
+      }
+      <div class="p-4 pt-1">
+        <pc-map
+          class="block h-72 w-full rounded-lg"
+          [markers]="streetMarkers()"
+          [polylines]="streetPolylines()"
+          [ariaLabel]="sel.name + ' street map'"
+        >
+        </pc-map>
+        <p class="mt-2 text-xs text-base-content/50">
+          Path is today only and clears at midnight. Pick any row to follow that canvasser.
+        </p>
+      </div>
+      } @else {
+      <div class="flex h-full min-h-72 items-center justify-center p-6 text-sm text-base-content/60">
+        @if (canvassers().length === 0) { Nobody is in the field right now. } @else { Pick a row to follow that
+        canvasser here. }
+      </div>
+      }
+    </div>
+  </section>
+  }
+</div>

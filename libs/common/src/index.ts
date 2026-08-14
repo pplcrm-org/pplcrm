@@ -294,6 +294,12 @@ export {
   CompanionOpResultObj,
   CompanionResultsObj,
   CompanionClaimSegmentObj,
+  CompanionLocationPingObj,
+  LOCATION_PRECISIONS,
+  LOCATION_PING_INTERVAL_MS,
+  SHIFT_STALE_CLOSE_MS,
+  STALE_PING_MS,
+  isLocationPrecision,
   UpdateCompanionSettingsObj,
   AddDeliveryRequestObj,
   UpdateDeliveryRequestObj,
@@ -645,6 +651,8 @@ export type {
   CompanionTurfPayload,
   CompanionSegmentClaim,
   CompanionClaimSegmentType,
+  CompanionLocationPingType,
+  LocationPrecision,
   UpdateCompanionSettingsType,
 } from './lib/schemas/canvassing.schema';
 export type {
@@ -855,6 +863,22 @@ export { classifyHelpRoute } from './lib/help/help-links';
 export { blockToMarkdown, articleToMarkdown } from './lib/help/help-markdown';
 
 export { haversineKm, type LatLng } from './lib/geo/haversine';
+export {
+  DISTANCE_MAX_ACCURACY_M,
+  DISTANCE_MAX_SPEED_KMH,
+  KNOCK_TAPE_SLOT_MS,
+  PATH_MAX_POINTS,
+  PATH_MIN_SPACING_M,
+  POSITION_MAX_ACCURACY_M,
+  decimatePath,
+  distanceIncrementM,
+  formatCrewDistance,
+  formatWalkDistance,
+  haversineMeters,
+  knockTape,
+  nearestPoint,
+  type DistancePoint,
+} from './lib/geo/live-geometry';
 export {
   groupForWalk,
   orderForWalk,

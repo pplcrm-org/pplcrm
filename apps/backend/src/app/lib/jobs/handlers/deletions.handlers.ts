@@ -109,6 +109,9 @@ export const TENANT_SCOPED_TABLES = [
   'task_subtasks',
   'tasks',
   'teams',
+  // Pings reference their shift, so they go first.
+  'canvass_location_pings',
+  'canvass_shifts',
   'turf_segment_claims',
   'turf_assignments',
   'turf_households',

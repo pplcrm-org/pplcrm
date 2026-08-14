@@ -18,15 +18,27 @@ export interface PcLatLng {
  * runtime so overlays stay correct across a light/dark theme flip. `muted`
  * resolves to `base-content` at reduced opacity.
  */
-export type PcMapVariant = 'primary' | 'success' | 'warning' | 'error' | 'info' | 'neutral' | 'muted';
+export type PcMapVariant = 'primary' | 'success' | 'warning' | 'error' | 'info' | 'neutral' | 'muted' | 'live';
 
 /** One point marker. `payload` is echoed back on `markerClicked`. */
 export interface PcMapMarker<T = unknown> {
   position: PcLatLng;
   variant?: PcMapVariant;
   tooltip?: string;
-  /** Short text drawn inside the pin (a stop number, 1–2 characters). Omit for a plain dot. */
+  /** Short text drawn inside the pin (a stop number or initials, 1–2 characters). Omit for a plain dot. */
   label?: string;
+  /**
+   * Pin diameter in px, overriding the size the label presence implies. The live board
+   * uses this to draw canvasser dots above turf pins; leave unset everywhere else.
+   */
+  size?: number;
+  /** Soft ring around the pin — the "this one is selected" treatment on the live board. */
+  halo?: boolean;
+  /**
+   * Translucent with a hollow centre — a factually stale reading (an old last ping).
+   * Display only; never a warning colour.
+   */
+  dimmed?: boolean;
   id?: string;
   payload?: T;
 }

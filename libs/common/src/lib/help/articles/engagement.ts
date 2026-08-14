@@ -390,6 +390,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       'print',
       'paper',
       'walk sheet',
+      'live',
+      'location',
+      'shift',
+      'where is',
     ],
     related: ['teams', 'lists', 'district-boundaries', 'drawing-boundaries', 'events-shifts'],
     blocks: [
@@ -572,7 +576,26 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: '**Survey settings** (top of the Canvassing page) controls what canvassers see: the top-issues chips they can tag and the door script that opens every survey, both scoped to the campaign the turf was cut for.',
+        text: '**Survey settings** (top of the Canvassing page) controls what canvassers see: the top-issues chips they can tag and the door script that opens every survey, both scoped to the campaign the turf was cut for. The same dialog holds **Live location detail** — whether the Live tab shows street-level dots and paths, or only who is on which turf.',
+      },
+      { kind: 'h2', id: 'live', text: 'The Live tab: where the crew is right now' },
+      {
+        kind: 'p',
+        text: 'The **Live** tab (admins and owners only) answers where the crew is right now. While a volunteer walks a turf, their Companion shares its position with the campaign once a minute. The tab shows one pin per turf coloured by status, a violet dot for each canvasser out now, and a **shift board**: one row per canvasser with their turf, when they were last heard from, doors so far, and a knock tape — a strip showing when their knocks landed, so steady work and a forty-minute gap both read at a glance. Selecting a row rings that canvasser on the map and opens a street-level panel with their path so far today against the turf’s doors, which is how “did the route actually get walked” gets answered. Canvassers who finished earlier appear under **Wrapped up today** with their end times, so an absent volunteer reads as finished rather than missing.',
+      },
+      {
+        kind: 'list',
+        items: [
+          '**Positions exist only during a shift.** A shift opens when the Companion starts reporting and closes when the volunteer taps End shift, after 30 minutes with no activity (shown ending at their last activity, not the timeout), or at midnight. A closed shift shows an end time and totals, never a position.',
+          '**Coordinates are deleted every night.** Only the day’s totals survive: when the shift ran, doors knocked, distance walked.',
+          '**The volunteer always knows.** The Companion shows a “Sharing your location with the campaign” banner for the whole shift, and confirms when sharing stops. A volunteer who declines location still appears on the board — their row says “Location off” and their knocks and door counts work as usual.',
+          '**Canvassers never see each other’s positions.** The Live tab, and the matching blocks on the person record and the turf page, are visible to admins and owners only.',
+          '**Turf-level mode.** Set **Live location detail** to turf level in Survey settings and the CRM is only ever sent who is on which turf — no dots, no paths.',
+        ],
+      },
+      {
+        kind: 'p',
+        text: 'The tab is deliberately read-only: it reports and links out to the canvasser’s record and their turf, and nothing more. Turfs with nobody on them are named in the amber block beside the map along with who is nearest — the acting happens in **Turfs & assignments**, where the assignment tools live. The same live picture appears in two more places: a person record shows an **OUT NOW** pill with today’s map and figures while that person’s shift is open, and a turf page shows **SOMEONE ON IT NOW** with each walker’s last-seen time.',
       },
       { kind: 'h2', id: 'report', text: 'The field report' },
       {

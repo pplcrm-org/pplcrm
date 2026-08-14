@@ -169,6 +169,10 @@
       ></pc-person-campaign-facts>
     </div>
 
+    <!-- Canvassing today (Live). Renders only for admin/owner, and only while there is an
+         open shift or walked work today — silent for everyone else. -->
+    <pc-person-canvass-live [personId]="id()!" />
+
     <!-- Full-width tabs workspace (§1 "numbers before clicks") -->
     <div class="flex flex-col gap-6">
       <pc-tabs [tabs]="personTabs()" [(activeTab)]="activeTab">

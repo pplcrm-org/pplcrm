@@ -24,6 +24,7 @@ libs/
             index.ts
         geo/
           haversine.ts
+          live-geometry.ts
           walk-order.ts
         help/
           articles/

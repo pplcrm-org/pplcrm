@@ -86,6 +86,8 @@ apps/
               companion-settings-dialog.ts
               cut-turfs-dialog.html
               cut-turfs-dialog.ts
+              live-tab.html
+              live-tab.ts
               turf-detail-page.html
               turf-detail-page.ts
               turf-print-page.html
@@ -294,6 +296,7 @@ apps/
               people-in-household.ts
               person-campaign-facts.html
               person-campaign-facts.ts
+              person-canvass-live.ts
               person-connections.ts
               person-form.html
               person-form.ts

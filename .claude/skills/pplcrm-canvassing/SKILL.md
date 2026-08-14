@@ -417,6 +417,41 @@ new way to lose recorded doors). `canvasser_name` is denormalized onto the row l
 so reading claims never touches `persons`. The payload marks the reader's own claim `mine:
 true` and the store drops those — "Showing" and "You're here" would say the same thing twice.
 
+## Live volunteer locations (2026-08-14) — the Live tab
+
+Two more tables (migration `2026-08-14-z-canvass-live-locations.ts`, repo
+`repositories/canvass-shifts.repo.ts`):
+
+| Table                    | What it is                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `canvass_shifts`         | One walking session. Opens on the first Companion activity (ping or knock batch), closes on Finish / 30 min quiet (`ended_at` = last activity, enforced by `closeStale` at read time) / local midnight. Carries `distance_walked_m` (accumulated at ping time), `location_state` ('sharing'/'off'/'unknown'), and a last-ping mirror. Outlives the day. |
+| `canvass_location_pings` | One broadcast per minute. **TODAY-ONLY**: the hourly `purge_canvass_pings` cron deletes every row past each tenant's local midnight (`organization.timezone` setting; `lib/local-time.ts`). Nothing may copy a coordinate into longer-lived storage — that is the feature's privacy contract.                                                           |
+
+Rules that hold:
+
+- The Companion (`CanvassStore`) POSTs `/api/canvass/turf/:turfId/location` every 60 s
+  while a turf is open, behind a persistent "Sharing your location" banner in
+  `canvass-page.ts`; `endShift()` stops the watch and POSTs `/api/canvass/shift/end`
+  BEFORE revoking the session. `{denied:true}` reports a refused permission once per
+  turf — the board shows "Location off" and knocks still work.
+- Live reads (`canvassing.getLive` / `getPersonLive` / `getTurfLive`) are
+  **adminOrOwnerProcedure** — canvassers never see each other; editors see nothing.
+  All geometry is server-side (`libs/common/src/lib/geo/live-geometry.ts`: decimation,
+  distance rules, knock tape, nearest crew) — the client draws what it is sent.
+- `campaigns.canvass_location_precision` ('street' default | 'turf', edited in the
+  Survey-settings dialog): under 'turf' the API omits coordinates and paths entirely.
+- Knock attribution to a shift is by (turf, `canvasser_name`, time window) — the same
+  name-keying the turf detail page uses. `TurfKnocksRepo.getEventsSince` is the raw feed;
+  do not String()-round-trip its dates (milliseconds matter at shift-open boundaries).
+- `FieldSummary.outNowCount` (open shifts) is the live count on the page header and the
+  Live tab's pill; `inFieldCount` (6-hour knock window on turfs) still exists separately.
+- Frontend: `ui/live-tab.ts` (+ `.html`) polls every 30 s while visible, freezes row
+  order, mirrors selection in `?canvasser=`. Person page: `persons/ui/person-canvass-live.ts`.
+  Turf page: live section + violet dots/paths on the door map. The violet is the
+  `--color-live` token / `live` map variant and means exactly one thing: a person, now.
+- The privacy claims are stated in the website privacy policy — see the live-locations
+  row in `pplcrm-website-claims` before changing retention, visibility, or the banner.
+
 ## The cutting engine (`modules/canvassing/lib/cutting-engine.ts`)
 
 Pure, dependency-free, unit-tested (`cutting-engine.spec.ts`). `cutTurfs(doors,

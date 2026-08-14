@@ -4,6 +4,8 @@ import type {
   CompanionClaimSegmentType,
   CompanionDoorOutcome,
   CompanionHousehold,
+  CompanionLocationPingType,
+  LocationPrecision,
   CompanionOpAck,
   CompanionOpResultType,
   CompanionOpType,
@@ -30,11 +32,18 @@ import type {
 import {
   COVERAGE_MAX_DOORS,
   CompanionOpResultObj,
+  DEFAULT_TIMEZONE,
+  KNOCK_TAPE_SLOT_MS,
   RECENT_KNOCK_WINDOW_DAYS,
   SUPPORT_LEVELS,
   TASK_OPEN_STATUSES,
   VOTING_STATUSES,
+  decimatePath,
   isKnockResponse,
+  isLocationPrecision,
+  isValidTimeZone,
+  knockTape,
+  nearestPoint,
 } from '../../../../../../libs/common/src';
 
 import { env } from '../../../env';
@@ -60,7 +69,9 @@ import {
   type CutPreview,
   type DoorPoint,
 } from './lib/cutting-engine';
+import { localMidnightUtc } from '../../lib/local-time';
 import { resolveTurfBoundary, type TurfBoundaryContext } from './lib/turf-boundary';
+import { CanvassShiftsRepo, type ShiftRow } from './repositories/canvass-shifts.repo';
 import { TurfHouseholdsRepo, type CoverageDoorRow } from './repositories/turf-households.repo';
 import { type TurfCanvasser, TurfAssignmentsRepo, generateTurfToken } from './repositories/turf-assignments.repo';
 import {
@@ -68,6 +79,7 @@ import {
   type CanvasserWork,
   type FieldReport,
   type LastDoorKnock,
+  type LiveKnockEvent,
   type ResponseMix,
 } from './repositories/turf-knocks.repo';
 import { TurfSegmentClaimsRepo } from './repositories/turf-segment-claims.repo';
@@ -200,6 +212,97 @@ export interface FieldSummary {
   doorsAttempted: number;
   doorsTotal: number;
   waitingCount: number;
+  /** Canvassers with an open shift right now — the Live tab's count pill. */
+  outNowCount: number;
+}
+
+// ---- Live tab payloads --------------------------------------------------------------
+
+/** A turf as the live board reads it, distinct from the stored lifecycle. */
+export type LiveTurfStatus = 'finished' | 'walking' | 'paused' | 'waiting';
+
+/** One canvasser with an open shift. Coordinates are omitted under turf precision. */
+export interface LiveCanvasser {
+  shift_id: string;
+  person_id: string;
+  name: string;
+  turf_id: string;
+  turf_name: string;
+  started_at: string;
+  /** Server receive time of the newest ping; null before the first one. */
+  last_ping_at: string | null;
+  location_state: 'sharing' | 'off' | 'unknown';
+  /** Campaign privacy setting for this shift's campaign. */
+  precision: LocationPrecision;
+  position: { lat: number; lng: number } | null;
+  /** Today's decimated trail (open shifts, street precision only). */
+  path: { lat: number; lng: number }[] | null;
+  doors: number;
+  conversations: number;
+  distance_m: number;
+  /** 5-minute knock buckets over the shared tape window — drawn as runs and gaps. */
+  tape: boolean[];
+}
+
+/** A shift that closed today — the "Wrapped up today" group. Never carries a position. */
+export interface LiveWrappedShift {
+  shift_id: string;
+  person_id: string;
+  name: string;
+  turf_id: string;
+  turf_name: string;
+  started_at: string;
+  ended_at: string;
+  doors: number;
+  conversations: number;
+  distance_m: number;
+  tape: boolean[];
+}
+
+export interface LiveTurf {
+  id: string;
+  name: string;
+  centroid_lat: number | null;
+  centroid_lng: number | null;
+  door_count: number;
+  attempted: number;
+  status: LiveTurfStatus;
+  /** For turfs with no open shift, when somebody is out: who is closest and how far. */
+  nearest_crew: { name: string; distance_m: number } | null;
+}
+
+export interface CanvassLive {
+  as_of: string;
+  /** Start of the shared knock-tape window (shared so every row's track lines up). */
+  tape_start: string;
+  out_now: number;
+  /** When the most recent shift ended, for the nobody-out empty state. */
+  last_shift_ended_at: string | null;
+  canvassers: LiveCanvasser[];
+  wrapped: LiveWrappedShift[];
+  turfs: LiveTurf[];
+}
+
+/** The person page's canvassing block. */
+export interface PersonCanvassLive {
+  open: {
+    shift_id: string;
+    turf_id: string;
+    turf_name: string;
+    started_at: string;
+    last_ping_at: string | null;
+    location_state: 'sharing' | 'off' | 'unknown';
+    precision: LocationPrecision;
+    position: { lat: number; lng: number } | null;
+    path: { lat: number; lng: number }[] | null;
+  } | null;
+  today: { doors: number; conversations: number; support_ids: number; distance_m: number };
+}
+
+/** The turf page's "On this turf now" block. */
+export interface TurfLive {
+  now: LiveCanvasser[];
+  earlier: LiveWrappedShift[];
 }
 
 export interface InFieldToday {
@@ -418,6 +521,7 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   private readonly subscriptionsRepo = new CampaignSubscriptionsRepo();
   private readonly companionAccess = new CompanionAccessController();
   private readonly deliveries = new DeliveriesController();
+  private readonly shifts = new CanvassShiftsRepo();
 
   constructor() {
     super(new TurfsRepo());
@@ -600,7 +704,8 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   }
 
   public async getFieldSummary(auth: IAuthKeyPayload): Promise<FieldSummary> {
-    const turfs = await this.getTurfs(auth);
+    await this.shifts.closeStale(auth.tenant_id);
+    const [turfs, openShifts] = await Promise.all([this.getTurfs(auth), this.shifts.openShifts(auth.tenant_id)]);
     let inFieldCount = 0;
     let waitingCount = 0;
     let doorsAttempted = 0;
@@ -612,13 +717,318 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       // "Waiting for a canvasser": cut but not being worked and never touched.
       if ((t.status === 'draft' || t.status === 'assigned') && t.attempted === 0) waitingCount++;
     }
-    return { turfCount: turfs.length, inFieldCount, doorsAttempted, doorsTotal, waitingCount };
+    return {
+      turfCount: turfs.length,
+      inFieldCount,
+      doorsAttempted,
+      doorsTotal,
+      waitingCount,
+      outNowCount: openShifts.length,
+    };
   }
 
   public async getInFieldToday(auth: IAuthKeyPayload): Promise<InFieldToday> {
     const { from, to } = this.dayWindow(new Date());
     const summary = await this.knocks.getWindowSummary({ tenant_id: auth.tenant_id, from, to });
     return { doorsKnocked: summary.doors, conversations: summary.conversations, responseMix: summary.responseMix };
+  }
+
+  // ------------------------------------------------------------- live ------
+
+  /**
+   * Everything the Live tab renders, in one read. All geometry happens server-side —
+   * paths are decimated, the knock tape is bucketed, nearest-crew distances are
+   * computed — so the client draws exactly what it is sent and derives nothing.
+   *
+   * Deliberately read-only and inference-free (§ privacy rules): it reports last-seen
+   * times and lets the organizer judge. No flags, no alerts, no off-turf detection.
+   */
+  public async getLive(auth: IAuthKeyPayload): Promise<CanvassLive> {
+    const tenant_id = auth.tenant_id;
+    await this.shifts.closeStale(tenant_id);
+    const now = new Date();
+    const midnight = localMidnightUtc(now, await this.tenantTimeZone(tenant_id));
+
+    const [open, wrapped, turfRows, progress, events, precisions, lastEnded] = await Promise.all([
+      this.shifts.openShifts(tenant_id),
+      this.shifts.wrappedSince({ tenant_id, since: midnight }),
+      this.turfsRepo().getTurfs(tenant_id),
+      this.knocks.getProgressByTenant(tenant_id),
+      this.knocks.getEventsSince({ tenant_id, since: midnight }),
+      this.locationPrecisionByCampaign(tenant_id),
+      this.shifts.lastEndedAt(tenant_id),
+    ]);
+
+    const turfNames = new Map(turfRows.map((t) => [t.id, t.name]));
+    const tapeStart = this.tapeWindowStart(now, midnight, [...open, ...wrapped]);
+    const grouped = groupKnockEvents(events);
+
+    const canvassers: LiveCanvasser[] = [];
+    for (const shift of open) {
+      canvassers.push(await this.toLiveCanvasser(tenant_id, shift, grouped, precisions, turfNames, tapeStart, now));
+    }
+    const wrappedRows: LiveWrappedShift[] = wrapped.map((shift) =>
+      this.toLiveWrapped(shift, grouped, turfNames, tapeStart, now),
+    );
+
+    // One dot per open shift for nearest-crew distances. The shift's own last-ping mirror
+    // is used (never exposed raw), so this works under turf precision too — only a rounded
+    // distance ever leaves the server.
+    const crewPositions = open
+      .filter((s) => s.last_lat != null && s.last_lng != null)
+      .map((s) => ({ lat: Number(s.last_lat), lng: Number(s.last_lng), name: s.canvasser_name }));
+    const walkingTurfs = new Set(open.map((s) => s.turf_id));
+    const knockedToday = new Set(events.map((e) => e.turf_id));
+
+    const turfs: LiveTurf[] = turfRows
+      .filter((t) => t.status !== 'retired')
+      .map((t) => {
+        const attempted = progress.get(t.id)?.attempted ?? 0;
+        const status: LiveTurfStatus =
+          t.door_count > 0 && attempted >= t.door_count
+            ? 'finished'
+            : walkingTurfs.has(t.id)
+              ? 'walking'
+              : knockedToday.has(t.id)
+                ? 'paused'
+                : 'waiting';
+        let nearest_crew: LiveTurf['nearest_crew'] = null;
+        if (!walkingTurfs.has(t.id) && t.centroid_lat != null && t.centroid_lng != null && crewPositions.length > 0) {
+          const found = nearestPoint({ lat: Number(t.centroid_lat), lng: Number(t.centroid_lng) }, crewPositions);
+          const crew = found ? crewPositions[found.index] : undefined;
+          if (found && crew) nearest_crew = { name: crew.name, distance_m: Math.round(found.meters) };
+        }
+        return {
+          id: t.id,
+          name: t.name,
+          centroid_lat: t.centroid_lat,
+          centroid_lng: t.centroid_lng,
+          door_count: t.door_count,
+          attempted,
+          status,
+          nearest_crew,
+        };
+      });
+
+    return {
+      as_of: now.toISOString(),
+      tape_start: tapeStart.toISOString(),
+      out_now: open.length,
+      last_shift_ended_at: lastEnded ? lastEnded.toISOString() : null,
+      canvassers,
+      wrapped: wrappedRows,
+      turfs,
+    };
+  }
+
+  /** The person page's canvassing block: the open shift (if any) plus today's figures. */
+  public async getPersonLive(auth: IAuthKeyPayload, personId: string): Promise<PersonCanvassLive> {
+    const tenant_id = auth.tenant_id;
+    await this.shifts.closeStale(tenant_id);
+    const now = new Date();
+    const midnight = localMidnightUtc(now, await this.tenantTimeZone(tenant_id));
+
+    const [open, wrapped, events, precisions] = await Promise.all([
+      this.shifts.openShifts(tenant_id),
+      this.shifts.wrappedSince({ tenant_id, since: midnight }),
+      this.knocks.getEventsSince({ tenant_id, since: midnight }),
+      this.locationPrecisionByCampaign(tenant_id),
+    ]);
+
+    const grouped = groupKnockEvents(events);
+    const mine = [...open, ...wrapped].filter((s) => s.volunteer_person_id === personId);
+    const households = new Set<string>();
+    let conversations = 0;
+    let supportIds = 0;
+    let distance = 0;
+    for (const shift of mine) {
+      const work = shiftWorkOf(shift, grouped, now);
+      for (const id of work.households) households.add(id);
+      conversations += work.conversations;
+      supportIds += work.support_ids;
+      distance += shift.distance_walked_m;
+    }
+
+    const openShift = open.find((s) => s.volunteer_person_id === personId) ?? null;
+    let openBlock: PersonCanvassLive['open'] = null;
+    if (openShift) {
+      const precision = precisionOf(precisions, openShift.campaign_id);
+      const { position, path } = await this.shiftGeometry(tenant_id, openShift, precision);
+      const turf = await this.turfsRepo().getTurfCore({ tenant_id, id: openShift.turf_id });
+      openBlock = {
+        shift_id: openShift.id,
+        turf_id: openShift.turf_id,
+        turf_name: turf?.name ?? 'Turf',
+        started_at: openShift.started_at.toISOString(),
+        last_ping_at: openShift.last_ping_at?.toISOString() ?? null,
+        location_state: openShift.location_state,
+        precision,
+        position,
+        path,
+      };
+    }
+
+    return {
+      open: openBlock,
+      today: {
+        doors: households.size,
+        conversations,
+        support_ids: supportIds,
+        distance_m: Math.round(distance),
+      },
+    };
+  }
+
+  /** The turf page's "On this turf now" block. */
+  public async getTurfLive(auth: IAuthKeyPayload, turfId: string): Promise<TurfLive> {
+    const tenant_id = auth.tenant_id;
+    await this.shifts.closeStale(tenant_id);
+    const now = new Date();
+    const midnight = localMidnightUtc(now, await this.tenantTimeZone(tenant_id));
+
+    const [open, wrapped, events, precisions, turf] = await Promise.all([
+      this.shifts.openShifts(tenant_id),
+      this.shifts.wrappedSince({ tenant_id, since: midnight }),
+      this.knocks.getEventsSince({ tenant_id, since: midnight }),
+      this.locationPrecisionByCampaign(tenant_id),
+      this.turfsRepo().getTurfCore({ tenant_id, id: turfId }),
+    ]);
+
+    const turfNames = new Map<string, string>([[turfId, turf?.name ?? 'Turf']]);
+    const grouped = groupKnockEvents(events);
+    const openHere = open.filter((s) => s.turf_id === turfId);
+    const wrappedHere = wrapped.filter((s) => s.turf_id === turfId);
+    const tapeStart = this.tapeWindowStart(now, midnight, [...openHere, ...wrappedHere]);
+
+    const nowRows: LiveCanvasser[] = [];
+    for (const shift of openHere) {
+      nowRows.push(await this.toLiveCanvasser(tenant_id, shift, grouped, precisions, turfNames, tapeStart, now));
+    }
+    return {
+      now: nowRows,
+      earlier: wrappedHere.map((s) => this.toLiveWrapped(s, grouped, turfNames, tapeStart, now)),
+    };
+  }
+
+  /** One open shift → its live row, geometry included (and omitted under turf precision). */
+  private async toLiveCanvasser(
+    tenant_id: string,
+    shift: ShiftRow,
+    grouped: Map<string, LiveKnockEvent[]>,
+    precisions: Map<string, LocationPrecision>,
+    turfNames: Map<string, string>,
+    tapeStart: Date,
+    now: Date,
+  ): Promise<LiveCanvasser> {
+    const work = shiftWorkOf(shift, grouped, now);
+    const precision = precisionOf(precisions, shift.campaign_id);
+    const { position, path } = await this.shiftGeometry(tenant_id, shift, precision);
+    return {
+      shift_id: shift.id,
+      person_id: shift.volunteer_person_id,
+      name: shift.canvasser_name,
+      turf_id: shift.turf_id,
+      turf_name: turfNames.get(shift.turf_id) ?? 'Turf',
+      started_at: shift.started_at.toISOString(),
+      last_ping_at: shift.last_ping_at?.toISOString() ?? null,
+      location_state: shift.location_state,
+      precision,
+      position,
+      path,
+      doors: work.households.size,
+      conversations: work.conversations,
+      distance_m: Math.round(shift.distance_walked_m),
+      tape: knockTape(work.times, tapeStart, now),
+    };
+  }
+
+  private toLiveWrapped(
+    shift: ShiftRow,
+    grouped: Map<string, LiveKnockEvent[]>,
+    turfNames: Map<string, string>,
+    tapeStart: Date,
+    now: Date,
+  ): LiveWrappedShift {
+    const work = shiftWorkOf(shift, grouped, now);
+    return {
+      shift_id: shift.id,
+      person_id: shift.volunteer_person_id,
+      name: shift.canvasser_name,
+      turf_id: shift.turf_id,
+      turf_name: turfNames.get(shift.turf_id) ?? 'Turf',
+      started_at: shift.started_at.toISOString(),
+      ended_at: (shift.ended_at ?? now).toISOString(),
+      doors: work.households.size,
+      conversations: work.conversations,
+      distance_m: Math.round(shift.distance_walked_m),
+      tape: knockTape(work.times, tapeStart, now),
+    };
+  }
+
+  /**
+   * Position + decimated path for an open shift — or nothing at all under turf precision.
+   * The omission is the privacy mechanism: a client cannot draw a dot it was never sent.
+   */
+  private async shiftGeometry(
+    tenant_id: string,
+    shift: ShiftRow,
+    precision: LocationPrecision,
+  ): Promise<{ position: { lat: number; lng: number } | null; path: { lat: number; lng: number }[] | null }> {
+    if (precision === 'turf' || shift.ended_at != null) return { position: null, path: null };
+    const pings = await this.shifts.pingsForShift({ tenant_id, shift_id: shift.id });
+    const last = pings[pings.length - 1];
+    if (last == null) return { position: null, path: null };
+    return {
+      position: { lat: last.lat, lng: last.lng },
+      path: decimatePath(pings.map((p) => ({ lat: p.lat, lng: p.lng }))),
+    };
+  }
+
+  /**
+   * Where the shared knock tape begins: 3 PM local by default (the canonical door-knocking
+   * window), pulled earlier to the first shift of the day so a morning canvass still has a
+   * track. Aligned to a slot boundary so every row's buckets line up.
+   */
+  private tapeWindowStart(now: Date, midnight: Date, shifts: ShiftRow[]): Date {
+    const threePm = new Date(midnight.getTime() + 15 * 60 * 60 * 1000);
+    let start = threePm;
+    for (const s of shifts) {
+      if (s.started_at < start) start = s.started_at;
+    }
+    if (start > now) start = now;
+    if (start < midnight) start = midnight;
+    const offset = Math.floor((start.getTime() - midnight.getTime()) / KNOCK_TAPE_SLOT_MS) * KNOCK_TAPE_SLOT_MS;
+    return new Date(midnight.getTime() + offset);
+  }
+
+  /** The workspace's IANA zone (`organization.timezone` setting), defaulted like the SLA code. */
+  private async tenantTimeZone(tenant_id: string): Promise<string> {
+    const row = await this.knocks.db
+      .selectFrom('settings')
+      .select(['value'])
+      .where('tenant_id', '=', tenant_id)
+      .where('key', '=', 'organization.timezone')
+      .executeTakeFirst();
+    // Values are stored JSON-encoded; tolerate a quoted string like the roam policy does.
+    const raw = typeof row?.value === 'string' ? row.value.replace(/^"+|"+$/g, '') : '';
+    return isValidTimeZone(raw) ? raw : DEFAULT_TIMEZONE;
+  }
+
+  /** Each campaign's live-location precision; anything unset or unrecognized reads 'street'. */
+  private async locationPrecisionByCampaign(tenant_id: string): Promise<Map<string, LocationPrecision>> {
+    const rows = await this.knocks.db
+      .selectFrom('campaigns')
+      .select(['id', 'canvass_location_precision'])
+      .where('tenant_id', '=', tenant_id)
+      .execute();
+    const map = new Map<string, LocationPrecision>();
+    for (const r of rows) {
+      map.set(
+        String(r.id),
+        isLocationPrecision(r.canvass_location_precision) ? r.canvass_location_precision : 'street',
+      );
+    }
+    return map;
   }
 
   public async getFieldReport(auth: IAuthKeyPayload, input: FieldReportRangeType): Promise<FieldReport> {
@@ -1525,6 +1935,63 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
     return this.applyCompanionOps(await this.assignmentForSession(sessionToken, turfId), ops);
   }
 
+  /**
+   * One location broadcast from a walking Companion — POST /turf/:turfId/location.
+   *
+   * Also the shift's front door: the first ping of the day opens it. `{denied:true}`
+   * opens the shift too (a volunteer with location off is still out walking) and only
+   * flips its location_state, so the roster can say "Location off" instead of nothing.
+   * No idempotency ledger — a duplicated ping is one more dot on a trail that is purged
+   * at midnight.
+   */
+  public async postLocationPing(
+    sessionToken: string | null,
+    turfId: string,
+    input: CompanionLocationPingType,
+  ): Promise<{ ok: true }> {
+    const assignment = await this.assignmentForSession(sessionToken, turfId);
+    const tenant_id = assignment.tenant_id;
+    const volunteerId = String(assignment.volunteer_person_id);
+    const [canvasserName, campaignId] = await Promise.all([
+      this.personFirstLast(tenant_id, volunteerId),
+      this.resolveKnockCampaignId(tenant_id, turfId),
+    ]);
+    const shift = await this.shifts.ensureOpenShift({
+      tenant_id,
+      turf_id: turfId,
+      campaign_id: campaignId,
+      volunteer_person_id: volunteerId,
+      canvasser_name: canvasserName,
+    });
+    if ('denied' in input) {
+      await this.shifts.markLocationOff({ tenant_id, shift_id: shift.id });
+      return { ok: true };
+    }
+    await this.shifts.recordPing({
+      tenant_id,
+      shift,
+      lat: input.lat,
+      lng: input.lng,
+      accuracy_m: input.accuracy_m ?? null,
+      recorded_at: input.recorded_at ? this.clampRecordedAt(input.recorded_at) : null,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * The volunteer tapped Finish — POST /shift/end. Closes their open shift with an honest
+   * end time before the device session is revoked. Session-only: there is nothing to name,
+   * so there is nothing to guess.
+   */
+  public async finishCompanionShift(sessionToken: string | null): Promise<{ ok: true }> {
+    const session = await this.companionAccess.resolveSession(sessionToken);
+    await this.shifts.finishForVolunteer({
+      tenant_id: session.tenant_id,
+      volunteer_person_id: session.person_id,
+    });
+    return { ok: true };
+  }
+
   private async applyCompanionOps(
     assignment: CompanionContext,
     ops: CompanionOpType[],
@@ -1534,6 +2001,27 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
 
     const doorIds = new Set(await this.turfHouseholds.getHouseholdIds({ tenant_id, turf_id }));
     const canvasserName = await this.personFirstLast(tenant_id, String(assignment.volunteer_person_id));
+
+    // A knock batch is shift activity: it opens the shift when there is none (a volunteer
+    // with location off still gets a live-board row). Ensured BEFORE the ops are applied
+    // so the batch's knock timestamps land inside the shift's window — created after,
+    // the first knock of the day would predate started_at by milliseconds and be credited
+    // to no shift. Best-effort: a shift stamp must never fail the results.
+    let shiftId: string | null = null;
+    if (assignment.volunteer_person_id != null) {
+      try {
+        const shift = await this.shifts.ensureOpenShift({
+          tenant_id,
+          turf_id,
+          campaign_id: await this.resolveKnockCampaignId(tenant_id, turf_id),
+          volunteer_person_id: String(assignment.volunteer_person_id),
+          canvasser_name: canvasserName,
+        });
+        shiftId = shift.id;
+      } catch {
+        // The op acks are the contract; the live board self-heals on the next ping.
+      }
+    }
 
     const acks: CompanionOpAck[] = [];
     for (const op of ops) {
@@ -1570,6 +2058,15 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
           status: 'rejected',
           error: publicMessageOf(err, 'Could not record this result.'),
         });
+      }
+    }
+
+    // Refresh the 30-minute activity clock once real work landed.
+    if (shiftId != null && acks.some((a) => a.status === 'applied')) {
+      try {
+        await this.shifts.touchActivity({ tenant_id, shift_id: shiftId });
+      } catch {
+        // Same best-effort rule as above.
       }
     }
     return { acks };
@@ -2357,14 +2854,24 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
   public async getCompanionSettings(
     auth: IAuthKeyPayload,
     campaign_id?: string,
-  ): Promise<{ campaign_id: string; campaign_name: string; issues: string[]; script: string }> {
+  ): Promise<{
+    campaign_id: string;
+    campaign_name: string;
+    issues: string[];
+    script: string;
+    location_precision: LocationPrecision;
+  }> {
     const resolved = await this.campaignsRepo.resolveForWrite({ tenant_id: auth.tenant_id, campaign_id });
-    const campaign = await this.companionCampaign(auth.tenant_id, String(resolved));
+    const [campaign, precisions] = await Promise.all([
+      this.companionCampaign(auth.tenant_id, String(resolved)),
+      this.locationPrecisionByCampaign(auth.tenant_id),
+    ]);
     return {
       campaign_id: String(resolved),
       campaign_name: campaign.name,
       issues: campaign.issues,
       script: campaign.script,
+      location_precision: precisionOf(precisions, String(resolved)),
     };
   }
 
@@ -2378,6 +2885,9 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       .set({
         canvass_issues: input.issues,
         canvass_script: input.script ?? null,
+        // Omitted = leave alone, so an older client saving the survey vocabulary can never
+        // silently reset a campaign's location privacy choice.
+        ...(input.location_precision != null ? { canvass_location_precision: input.location_precision } : {}),
         updatedby_id: auth.user_id,
         updated_at: new Date(),
       })
@@ -2583,6 +3093,51 @@ export class CanvassingController extends BaseController<'turfs', TurfsRepo> {
       }
     }
   }
+}
+
+/** Key knock events the way shifts attribute them: turf + normalized canvasser name. */
+function knockEventKey(turf_id: string, name: string | null): string {
+  return `${turf_id}|${(name ?? '').trim().toLowerCase()}`;
+}
+
+function groupKnockEvents(events: LiveKnockEvent[]): Map<string, LiveKnockEvent[]> {
+  const map = new Map<string, LiveKnockEvent[]>();
+  for (const e of events) {
+    const key = knockEventKey(e.turf_id, e.canvasser_name);
+    const list = map.get(key);
+    if (list) list.push(e);
+    else map.set(key, [e]);
+  }
+  return map;
+}
+
+interface ShiftWork {
+  households: Set<string>;
+  conversations: number;
+  support_ids: number;
+  times: Date[];
+}
+
+/**
+ * The knocks that belong to one shift: same turf, same canvasser name, inside the shift's
+ * window. Name-keyed because `turf_knocks` carries a name, not a volunteer id — the same
+ * attribution the turf detail page and field report use.
+ */
+function shiftWorkOf(shift: ShiftRow, grouped: Map<string, LiveKnockEvent[]>, now: Date): ShiftWork {
+  const end = shift.ended_at ?? now;
+  const work: ShiftWork = { households: new Set(), conversations: 0, support_ids: 0, times: [] };
+  for (const e of grouped.get(knockEventKey(shift.turf_id, shift.canvasser_name)) ?? []) {
+    if (e.knocked_at < shift.started_at || e.knocked_at > end) continue;
+    work.households.add(e.household_id);
+    if (e.conversation) work.conversations++;
+    if (e.support_id) work.support_ids++;
+    work.times.push(e.knocked_at);
+  }
+  return work;
+}
+
+function precisionOf(map: Map<string, LocationPrecision>, campaign_id: string | null): LocationPrecision {
+  return (campaign_id != null ? map.get(campaign_id) : undefined) ?? 'street';
 }
 
 /**

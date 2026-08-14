@@ -84,6 +84,8 @@ async function cleanTenant(db: any, tenantId: string): Promise<void> {
     'companion_approval_tokens',
     'companion_sessions',
     'companion_volunteers',
+    'canvass_location_pings',
+    'canvass_shifts',
     'turf_segment_claims',
     'turf_assignments',
     'turfs',
@@ -372,6 +374,64 @@ describe('mergePersons re-points everything that names the source person', () =>
       .executeTakeFirst();
     expect(String(assignment.volunteer_person_id)).toBe(String(target.id));
     expect(assignment.status).toBe('active');
+  });
+
+  it('keeps walked-shift history (and today’s pings) when the walker is merged away', async () => {
+    const target = await addPerson('Target');
+    const source = await addPerson('Source');
+    const turfId = await addTurf();
+
+    // Both CASCADE-delete with the person, so an unhandled merge would silently erase the
+    // shift record the field report and the Live tab read.
+    const shift = await db
+      .insertInto('canvass_shifts')
+      .values({
+        tenant_id: seed.tenantId,
+        turf_id: turfId,
+        volunteer_person_id: source.id,
+        canvasser_name: 'Source Duplicate',
+        ended_at: new Date(),
+        end_reason: 'finished',
+        distance_walked_m: 1200,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const shiftId = String(shift.id);
+    await db
+      .insertInto('canvass_location_pings')
+      .values({
+        tenant_id: seed.tenantId,
+        shift_id: shiftId,
+        turf_id: turfId,
+        volunteer_person_id: source.id,
+        lat: 45.42,
+        lng: -75.69,
+      })
+      .execute();
+
+    await repo.mergePersons({
+      tenant_id: seed.tenantId,
+      target_id: target.id,
+      source_id: source.id,
+      user_id: seed.userId,
+    });
+
+    const mergedShift = await db
+      .selectFrom('canvass_shifts')
+      .select(['volunteer_person_id', 'distance_walked_m'])
+      .where('tenant_id', '=', seed.tenantId)
+      .where('id', '=', shiftId)
+      .executeTakeFirst();
+    expect(String(mergedShift.volunteer_person_id)).toBe(String(target.id));
+    expect(Number(mergedShift.distance_walked_m)).toBe(1200);
+
+    const mergedPing = await db
+      .selectFrom('canvass_location_pings')
+      .select(['volunteer_person_id'])
+      .where('tenant_id', '=', seed.tenantId)
+      .where('shift_id', '=', shiftId)
+      .executeTakeFirst();
+    expect(String(mergedPing.volunteer_person_id)).toBe(String(target.id));
   });
 
   it('moves the companion volunteer row when only the source person is a volunteer', async () => {

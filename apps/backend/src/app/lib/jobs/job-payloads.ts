@@ -170,6 +170,12 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
   /** Nightly: re-match anything still unmatched, for every workspace holding a boundary set. */
   z.object({ type: z.literal('sweep_unmatched_boundaries') }),
   /**
+   * Hourly: for every tenant whose local midnight has passed, close canvass shifts still
+   * open from yesterday and DELETE yesterday's location pings. The Live tab's privacy
+   * contract — no coordinate persists past the day — is enforced here.
+   */
+  z.object({ type: z.literal('purge_canvass_pings') }),
+  /**
    * Materialize the demo inbox's attachment payloads (build the bytes, upload, link a `files`
    * row). Enqueued in the signup transaction rather than uploaded inline: blob I/O in the
    * signup path adds latency, makes a storage outage a signup problem, and strands blobs if

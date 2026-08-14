@@ -16,6 +16,12 @@ export interface PcTabOption {
   route?: string;
   /** Match the route exactly for the active state (default false). */
   exact?: boolean;
+  /**
+   * A live surface: a pulsing live-accent dot precedes the label and the active state uses
+   * the `live` token instead of primary, so the tab is tellable at a glance from ordinary
+   * ones. The dot and badge only render while `badge` is set — hide both by omitting it.
+   */
+  live?: boolean;
 }
 
 /** Which of the two house tab looks a bar renders in. */
@@ -82,9 +88,12 @@ const UNDERLINE_BADGE = 'text-xs tabular-nums opacity-70';
             [attr.title]="!tab.disabled && tab.tooltip ? tab.tooltip : null"
             (click)="!tab.disabled && selectTab(tab.id)"
           >
+            @if (tab.live && tab.badge !== undefined && tab.badge !== null) {
+              <span class="inline-block h-[7px] w-[7px] animate-pulse rounded-full bg-live" aria-hidden="true"></span>
+            }
             <span>{{ tab.label }}</span>
             @if (tab.badge !== undefined && tab.badge !== null) {
-              <span [class]="badgeClass(activeTab() === tab.id)">{{ tab.badge }}</span>
+              <span [class]="badgeClass(activeTab() === tab.id, tab.live === true)">{{ tab.badge }}</span>
             }
           </button>
         }
@@ -114,7 +123,8 @@ export class TabBar {
       : `${PILL_BASE} ${PILL_INACTIVE} cursor-pointer hover:bg-base-200/60`,
   );
 
-  protected badgeClass(active: boolean): string {
+  protected badgeClass(active: boolean, live = false): string {
+    if (live) return 'rounded-full bg-live/15 px-1.5 text-xs font-semibold tabular-nums text-live';
     if (this.variant() === 'underline') return UNDERLINE_BADGE;
     return active ? PILL_BADGE_ACTIVE : PILL_BADGE_INACTIVE;
   }
@@ -127,7 +137,9 @@ export class TabBar {
     const active = this.activeTab() === tab.id;
     const cursor = tab.disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer';
     if (this.variant() === 'underline') {
-      return `${UNDERLINE_BASE} ${active ? UNDERLINE_ACTIVE : UNDERLINE_INACTIVE} ${cursor}`;
+      const activeClass = tab.live ? 'border-live font-semibold text-live' : UNDERLINE_ACTIVE;
+      const inactiveClass = tab.live ? 'border-transparent text-base-content/70 hover:text-live' : UNDERLINE_INACTIVE;
+      return `${UNDERLINE_BASE} ${active ? activeClass : inactiveClass} ${cursor}`;
     }
     const hover = !tab.disabled && !active ? 'hover:bg-base-200/60' : '';
     return `${PILL_BASE} ${active ? PILL_ACTIVE : PILL_INACTIVE} ${cursor} ${hover}`;

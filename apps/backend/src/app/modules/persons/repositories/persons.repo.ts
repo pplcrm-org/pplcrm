@@ -1120,6 +1120,23 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         .where('tenant_id', '=', input.tenant_id)
         .where('volunteer_person_id', '=', input.source_id)
         .execute();
+      // canvass_shifts / canvass_location_pings CASCADE-delete with the person, which would
+      // silently erase walked-shift history (and tonight's live pings) on a merge. Neither
+      // column is part of any unique key, so a plain re-point keeps the shifts. The unlikely
+      // seam — both people somehow holding an open shift at merge time — is left to the
+      // shift lifecycle itself: the next ping's ensureOpenShift closes the older one.
+      await trx
+        .updateTable('canvass_shifts')
+        .set({ volunteer_person_id: input.target_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('volunteer_person_id', '=', input.source_id)
+        .execute();
+      await trx
+        .updateTable('canvass_location_pings')
+        .set({ volunteer_person_id: input.target_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('volunteer_person_id', '=', input.source_id)
+        .execute();
       // donation_receipts: official receipts (per_gift/cumulative) have no per-person
       // uniqueness — plain re-point; the donor name/address PRINTED on an issued receipt is a
       // frozen snapshot and stays exactly as issued. Live STATEMENTS are unique per

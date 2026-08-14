@@ -1,4 +1,4 @@
-import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core';
+import { DestroyRef, Injectable, computed, effect, inject, signal } from '@angular/core';
 
 import type {
   CompanionDoorOutcome,
@@ -11,10 +11,11 @@ import type {
   CompanionTurfPayload,
   KnockResponse,
 } from '@common';
-import { COMPANION_OPS_MAX_PER_BATCH, CompanionOpObj } from '@common';
+import { COMPANION_OPS_MAX_PER_BATCH, CompanionOpObj, LOCATION_PING_INTERVAL_MS } from '@common';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 
 import { CompanionSessionService } from '../gate/companion-api';
+import { GeoPosition } from './geo-position';
 import {
   applyLocalOps,
   deriveSegments,
@@ -195,6 +196,7 @@ function isBlockedOp(value: unknown): value is BlockedOp {
 export class CanvassStore {
   private readonly alerts = inject(AlertService);
   private readonly session = inject(CompanionSessionService);
+  private readonly geo = inject(GeoPosition);
 
   /** The server turf payload — never mutated after load. */
   public readonly payload = signal<CompanionTurfPayload | null>(null);
@@ -233,6 +235,13 @@ export class CanvassStore {
   public readonly lastRefreshedAt = signal<Date | null>(null);
   /** A refresh is in flight — distinct from the initial load, which blanks the screen. */
   public readonly refreshing = signal(false);
+  /**
+   * A turf is open and this device is actively broadcasting its position (spec: the
+   * volunteer must see a persistent indicator for the whole open shift). Honest by
+   * construction: `GeoPosition.stop()` resets its state, so this can never claim
+   * sharing after `endShift()`.
+   */
+  public readonly locationSharing = computed(() => this.payload() != null && this.geo.state() === 'ready');
 
   /** All ops recorded this session (queued + acked) — the optimistic overlay source. */
   private readonly localOps = signal<QueuedOp[]>([]);
@@ -343,6 +352,10 @@ export class CanvassStore {
 
   private flushing = false;
   private token = '';
+  /** The turf whose permission-denied verdict was already reported — once per turf, not per minute. */
+  private deniedReportedForTurf: string | null = null;
+  /** The turf that already got its arrival ping, so opening a turf shows up within seconds. */
+  private immediatePingTurf: string | null = null;
 
   constructor() {
     const onOnline = (): void => {
@@ -355,9 +368,31 @@ export class CanvassStore {
     };
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
+
+    // The location broadcast (Live tab): one POST a minute while a turf is open. Lives in
+    // the store — not the walk-list component — so switching to the Map or Me tab doesn't
+    // silently stop the trail the volunteer has been told is being shared.
+    const pingTimer = setInterval(() => void this.sendLocationPing(), LOCATION_PING_INTERVAL_MS);
+
+    // Arrival ping: the first usable fix (or a denial verdict) after a turf opens is sent
+    // straight away, so the organizer sees the volunteer within one board poll rather
+    // than a minute later.
+    effect(() => {
+      const turfId = this.payload()?.turf_id ?? null;
+      const state = this.geo.state();
+      if (turfId == null) {
+        this.immediatePingTurf = null;
+        return;
+      }
+      if ((state !== 'ready' && state !== 'denied') || this.immediatePingTurf === turfId) return;
+      this.immediatePingTurf = turfId;
+      void this.sendLocationPing();
+    });
+
     inject(DestroyRef).onDestroy(() => {
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
+      clearInterval(pingTimer);
     });
   }
 
@@ -382,6 +417,7 @@ export class CanvassStore {
       // After the payload, because the tally is keyed by turf id.
       this.restoreMyDoors();
       this.applyDefaultScope();
+      this.startLocationSharing();
       void this.flush();
     } catch {
       this.loadError.set('Could not load your turf. Check your connection and try again.');
@@ -505,6 +541,7 @@ export class CanvassStore {
       this.mapMode.set('walk');
       this.restoreMyDoors();
       this.applyDefaultScope();
+      this.startLocationSharing();
       this.view.set({ kind: 'list' });
       void this.flush();
       return true;
@@ -854,6 +891,13 @@ export class CanvassStore {
    * as well, so a copied token dies with the shift rather than outliving it.
    */
   public async endShift(): Promise<void> {
+    // Stop the location broadcast FIRST: the watch must not outlive the "sharing
+    // stopped" confirmation the volunteer is about to read, and a ping fired after the
+    // session below is revoked would 401. Then tell the server the shift is over, while
+    // the session is still valid — so the board reads the tap's time, not a 30-minute
+    // timeout later.
+    this.geo.stop();
+    await this.postShiftEnd();
     // Hand the street back so tomorrow's group isn't told it's taken. The TTL would get
     // there eventually; saying so now is the honest version.
     if (this.segmentKey() != null) void this.postSegmentClaim(null, null);
@@ -997,6 +1041,62 @@ export class CanvassStore {
       });
     } catch {
       // Advisory only — the group's picture is briefly stale and nothing else changes.
+    }
+  }
+
+  /**
+   * Start (or resume) the location broadcast for a freshly opened turf. This is the one
+   * place the app asks for the permission without a tap: the volunteer has just opened
+   * their turf and the shell is showing the sharing banner, so the prompt has its
+   * context. A refusal is respected — one `{denied:true}` report and nothing more.
+   */
+  private startLocationSharing(): void {
+    this.deniedReportedForTurf = null;
+    this.geo.request();
+  }
+
+  /**
+   * One location broadcast. Silent on every failure by design — a volunteer at a
+   * doorstep must never see an error about a dot on an organizer's map; the next
+   * minute's ping is the retry. Sends `{denied:true}` once per turf when the
+   * permission is off, so the board can say "Location off" instead of nothing.
+   */
+  private async sendLocationPing(): Promise<void> {
+    const turfId = this.payload()?.turf_id;
+    if (!turfId || !this.online() || this.sessionExpired()) return;
+    const state = this.geo.state();
+    let body: string | null = null;
+    if (state === 'ready') {
+      const fix = this.geo.fix();
+      if (!fix) return;
+      body = JSON.stringify({
+        lat: fix.lat,
+        lng: fix.lng,
+        accuracy_m: fix.accuracy_m ?? undefined,
+        recorded_at: fix.at.toISOString(),
+      });
+    } else if (state === 'denied' && this.deniedReportedForTurf !== turfId) {
+      body = JSON.stringify({ denied: true });
+    }
+    if (body == null) return;
+    try {
+      const res = await fetch(`/api/canvass/turf/${encodeURIComponent(turfId)}/location`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this.session.headers() },
+        body,
+      });
+      if (res.ok && state === 'denied') this.deniedReportedForTurf = turfId;
+    } catch {
+      // Silent — see above.
+    }
+  }
+
+  /** Close the shift server-side. The 30-minute timeout is the fallback if this misses. */
+  private async postShiftEnd(): Promise<void> {
+    try {
+      await fetch('/api/canvass/shift/end', { method: 'POST', headers: this.session.headers() });
+    } catch {
+      // Ending the device session still proceeds; the server closes the shift by timeout.
     }
   }
 

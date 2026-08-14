@@ -67,6 +67,15 @@ type TabId = 'list' | 'map' | 'me';
                held-results bar is deliberately outside the Me tab: a volunteer who never
                opens that tab used to get no sign at all that their queue had stopped. -->
           <div class="sticky top-0 z-20">
+            @if (store.locationSharing()) {
+              <div
+                class="flex items-center justify-center gap-2 bg-info px-4 py-1.5 text-center text-xs font-medium text-info-content"
+                role="status"
+              >
+                <span class="inline-block h-2 w-2 animate-pulse rounded-full bg-info-content" aria-hidden="true"></span>
+                Sharing your location with the campaign
+              </div>
+            }
             @if (!store.online()) {
               <div class="bg-warning px-4 py-2 text-center text-xs font-medium text-warning-content" role="status">
                 Offline: {{ store.queue().length }} {{ store.queue().length === 1 ? 'result' : 'results' }} queued in

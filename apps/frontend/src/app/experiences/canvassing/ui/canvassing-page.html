@@ -20,7 +20,7 @@
   <!-- Surface switch (turfs / field report) — the underline tab row the People grid uses -->
   <pc-tab-bar
     class="mb-4"
-    [tabs]="pageTabs"
+    [tabs]="pageTabs()"
     [activeTab]="tab()"
     (activeTabChange)="selectTab($event)"
     variant="underline"
@@ -248,7 +248,10 @@
       <p>Every knock they log updates this table, the person, the household and the Activity log within seconds.</p>
     </div>
   </section>
-  } } @else {
+  } } @else if (tab() === 'live') {
+  <!-- Live: where the crew is right now. Admin/owner only; the component polls while visible. -->
+  <pc-canvass-live-tab />
+  } @else {
   <!-- Field report -->
   <section>
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">

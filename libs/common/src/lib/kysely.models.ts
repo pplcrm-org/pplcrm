@@ -125,6 +125,8 @@ export interface Models {
   companion_approval_tokens: CompanionApprovalTokens;
   companion_organizer_tokens: CompanionOrganizerTokens;
   turf_segment_claims: TurfSegmentClaims;
+  canvass_shifts: CanvassShifts;
+  canvass_location_pings: CanvassLocationPings;
   boundary_sets: BoundarySets;
   boundary_features: BoundaryFeatures;
   household_districts: HouseholdDistricts;
@@ -310,6 +312,9 @@ interface Campaigns extends Omit<RecordType, 'createdby_id'> {
   canvass_issues: Generated<string[]>;
   /** Door script shown (collapsible) at the top of the companion survey. */
   canvass_script: string | null;
+  /** Live-tab privacy fallback: 'street' = dots and paths; 'turf' = presence only, the live
+   *  API never returns a coordinate. See canvass_shifts / canvass_location_pings. */
+  canvass_location_precision: Generated<'street' | 'turf'>;
 
   // ---- What office this campaign is contesting. See libs/common/src/lib/jurisdictions. ----
 
@@ -682,6 +687,57 @@ interface TurfSegmentClaims {
   claimed_at: Generated<Timestamp>;
   expires_at: Timestamp;
   released_at: Timestamp | null;
+}
+
+/**
+ * One canvassing walking session (the Live tab). Opens on the first Companion activity
+ * (location ping or knock batch), closes on Finish / 30 min without activity (ended_at =
+ * the last activity) / local midnight. The row outlives the day; its coordinates do not —
+ * see canvass_location_pings. last_* mirror the newest ping so the distance accumulator
+ * and the staleness check never re-read the ping table.
+ */
+interface CanvassShifts {
+  id: Generated<string>;
+  tenant_id: string;
+  turf_id: string;
+  /** Denormalized from the turf at open, so a later turf edit does not rewrite history. */
+  campaign_id: string | null;
+  volunteer_person_id: string;
+  /** Denormalized like `turf_knocks.canvasser_name`; knock attribution joins on this name. */
+  canvasser_name: string;
+  started_at: Generated<Timestamp>;
+  /** Last ping or knock. What the 30-minute auto-close compares against. */
+  last_activity_at: Generated<Timestamp>;
+  ended_at: Timestamp | null;
+  end_reason: 'finished' | 'timeout' | 'midnight' | 'switched' | null;
+  /** What the device told us: 'sharing' once a coordinate arrived, 'off' = permission denied. */
+  location_state: Generated<'unknown' | 'sharing' | 'off'>;
+  /** Accumulated at ping time (see live-geometry.ts rules). Survives the nightly ping purge. */
+  distance_walked_m: Generated<number>;
+  last_lat: number | null;
+  last_lng: number | null;
+  last_accuracy_m: number | null;
+  last_ping_at: Timestamp | null;
+}
+
+/**
+ * One location broadcast from a Companion during an open shift. TODAY ONLY: the
+ * purge_canvass_pings job deletes every row once local midnight passes. Nothing may copy
+ * these coordinates into longer-lived storage — that promise is the privacy contract of
+ * the Live tab. `recorded_at` is the device clock (display always uses `received_at`; a
+ * device clock hours off must not read as "1 min ago").
+ */
+interface CanvassLocationPings {
+  id: Generated<string>;
+  tenant_id: string;
+  shift_id: string;
+  turf_id: string;
+  volunteer_person_id: string;
+  lat: number;
+  lng: number;
+  accuracy_m: number | null;
+  recorded_at: Timestamp | null;
+  received_at: Generated<Timestamp>;
 }
 
 /**

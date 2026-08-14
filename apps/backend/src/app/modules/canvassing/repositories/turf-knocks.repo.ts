@@ -65,6 +65,19 @@ const CONVERSATION = 'conversation';
 /** The append-only "outcome toggled off" marker — a reset, not a visit. */
 const CLEARED = 'cleared';
 
+/** Payload bound for the live board's day-of-knocks read, far above any real day. */
+const LIVE_KNOCK_EVENTS_CAP = 20_000;
+
+/** One knock as the Live tab consumes it — see `getEventsSince`. */
+export interface LiveKnockEvent {
+  turf_id: string;
+  canvasser_name: string | null;
+  household_id: string;
+  knocked_at: Date;
+  conversation: boolean;
+  support_id: boolean;
+}
+
 export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
   constructor() {
     super('turf_knocks');
@@ -303,6 +316,37 @@ export class TurfKnocksRepo extends BaseRepository<'turf_knocks'> {
       });
     }
     return map;
+  }
+
+  /**
+   * Every real knock since `since`, flat — the Live tab's raw material. The controller
+   * groups these per shift by (turf_id, canvasser_name, time window), which is the only
+   * attribution `turf_knocks` supports (knocks carry a name, not a volunteer id).
+   * `cleared` markers are excluded: an undone outcome is a reset, not a visit. Capped
+   * defensively; a workspace's single day of knocking sits far below the cap.
+   */
+  public async getEventsSince(
+    input: { tenant_id: string; since: Date },
+    trx?: Transaction<Models>,
+  ): Promise<LiveKnockEvent[]> {
+    const rows = await this.getSelect(trx)
+      .select(['turf_id', 'canvasser_name', 'household_id', 'knocked_at', 'outcome', 'response'])
+      .where('tenant_id', '=', input.tenant_id)
+      .where('knocked_at', '>=', input.since)
+      .where('outcome', '<>', CLEARED)
+      .orderBy('knocked_at', 'asc')
+      .limit(LIVE_KNOCK_EVENTS_CAP)
+      .execute();
+    return rows.map((r) => ({
+      turf_id: String(r.turf_id),
+      canvasser_name: r.canvasser_name == null ? null : String(r.canvasser_name),
+      household_id: String(r.household_id),
+      // Not String()-round-tripped: that truncates milliseconds, and a knock landing in
+      // the same second its shift opened would fall just outside the shift's window.
+      knocked_at: new Date(r.knocked_at),
+      conversation: String(r.outcome) === CONVERSATION,
+      support_id: r.response === 'supporter',
+    }));
   }
 
   /**

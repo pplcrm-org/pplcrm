@@ -1,5 +1,5 @@
 import { DatePipe } from '@angular/common';
-import { Component, computed, effect, inject, input, signal, untracked } from '@angular/core';
+import { Component, DestroyRef, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -16,6 +16,7 @@ import { RecordActivities } from '@experiences/activity/ui/record-activities/rec
 import {
   KNOCK_OUTCOME_LABELS,
   KNOCK_RESPONSE_LABELS,
+  formatWalkDistance,
   groupForWalk,
   isKnockOutcome,
   isPrivilegedRole,
@@ -24,7 +25,7 @@ import {
   type KnockResponse,
 } from '../../../../../../../libs/common/src';
 import { AuthService } from '../../../auth/auth-service';
-import { CanvassingService, type TurfDetail, type TurfDoor } from '../services/canvassing-service';
+import { CanvassingService, type TurfDetail, type TurfDoor, type TurfLive } from '../services/canvassing-service';
 import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
 import { AssignTurfDialog } from './assign-turf-dialog';
 import {
@@ -44,6 +45,24 @@ import { OrgModeService } from '../../../services/org-mode.service';
 type TurfStatus = TurfDetail['status'];
 type DoorStatus = TurfDoor['status'];
 type DoorFilter = 'all' | DoorStatus;
+
+/** Live-block poll — same cadence as the Live tab (pings arrive every minute). */
+const LIVE_POLL_MS = 30_000;
+
+function liveInitialsOf(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  return (
+    (words[0]?.charAt(0) ?? '') + (words.length > 1 ? (words[words.length - 1]?.charAt(0) ?? '') : '')
+  ).toUpperCase();
+}
+
+function liveAgoLabel(iso: string | null): string {
+  if (!iso) return 'no ping yet';
+  const min = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000));
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  return `${Math.floor(min / 60)} h ${min % 60} min ago`;
+}
 
 /**
  * Door dots read the same here as on the field report's coverage map.
@@ -121,6 +140,8 @@ export class TurfDetailPage {
   protected readonly loading = this._loading.visible;
 
   protected readonly detail = signal<TurfDetail | null>(null);
+  /** "On this turf now" — open shifts + today's earlier canvassers. Admin/owner only. */
+  protected readonly liveData = signal<TurfLive | null>(null);
   protected readonly doorFilter = signal<DoorFilter>('all');
   protected readonly rosterOpen = signal(false);
   protected readonly qrOpen = signal(false);
@@ -138,7 +159,15 @@ export class TurfDetailPage {
     effect(() => {
       this.id();
       untracked(() => void this.load());
+      untracked(() => void this.loadLive());
     });
+
+    // Keep the live block current while the page is visible — same cadence as the Live
+    // tab (pings arrive every minute). Never touches the rest of the page.
+    const liveTimer = setInterval(() => {
+      if (!document.hidden) void this.loadLive();
+    }, LIVE_POLL_MS);
+    inject(DestroyRef).onDestroy(() => clearInterval(liveTimer));
 
     // The parent crumb is worded by the tenant's organization mode, matching the
     // sidebar entry and the route's own `data.breadcrumb` term — this trail overwrites
@@ -246,6 +275,60 @@ export class TurfDetailPage {
     if (!d || d.boundary.length === 0) return [];
     return [{ path: d.boundary, variant: 'neutral', dashed: true, label: d.name, id: d.id }];
   });
+
+  // ---- "On this turf now" (Live) -------------------------------------------
+
+  protected readonly liveNow = computed(() => this.liveData()?.now ?? []);
+  protected readonly liveEarlier = computed(() => this.liveData()?.earlier ?? []);
+
+  /** Canvasser dots over the door map — only while somebody is out, only with coordinates. */
+  protected readonly liveMarkers = computed<PcMapMarker[]>(() =>
+    this.liveNow().flatMap((c) => {
+      if (!c.position) return [];
+      return [
+        {
+          position: c.position,
+          variant: 'live' as const,
+          size: 22,
+          label: liveInitialsOf(c.name),
+          tooltip: `${c.name} · last ping ${liveAgoLabel(c.last_ping_at)}`,
+        },
+      ];
+    }),
+  );
+
+  protected readonly livePolylines = computed<PcMapPolyline[]>(() =>
+    this.liveNow().flatMap((c) =>
+      c.path && c.path.length >= 2 ? [{ path: c.path, variant: 'live' as const, dashed: false }] : [],
+    ),
+  );
+
+  /** What the door map draws: the doors as always, plus the live layer on top. */
+  protected readonly allMarkers = computed<PcMapMarker[]>(() => [...this.markers(), ...this.liveMarkers()]);
+  protected readonly allPolylines = computed<PcMapPolyline[]>(() => [...this.polylines(), ...this.livePolylines()]);
+
+  protected liveAgo(iso: string | null): string {
+    return liveAgoLabel(iso);
+  }
+
+  protected liveTime(iso: string): string {
+    return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  protected liveDistance(meters: number): string {
+    return formatWalkDistance(meters);
+  }
+
+  private async loadLive(): Promise<void> {
+    // Same admin/owner predicate the campaign link uses; the server refuses editors too.
+    if (!this.canOpenCampaign()) return;
+    try {
+      this.liveData.set(await this.svc.getTurfLive(this.id()));
+    } catch {
+      // Plan-gated or transient — the page simply shows no live block.
+      this.liveData.set(null);
+    }
+  }
 
   /** Doors that can't be pinned yet — honest about why the map is short of dots. */
   protected readonly ungeocoded = computed<number>(() => {

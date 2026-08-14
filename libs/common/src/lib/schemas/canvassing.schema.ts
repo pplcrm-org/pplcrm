@@ -581,10 +581,52 @@ export interface CompanionTurfPayload {
   segment_claims: CompanionSegmentClaim[];
 }
 
+// ------------------------------------------------------------------------
+// Live volunteer locations (§ Live tab)
+
+/**
+ * Campaign-level privacy setting for the live surfaces. 'street' returns coordinates and
+ * paths to staff; 'turf' returns presence only — the API omits coordinates entirely, so
+ * no client can draw a dot it was never sent.
+ */
+export const LOCATION_PRECISIONS = ['street', 'turf'] as const;
+export type LocationPrecision = (typeof LOCATION_PRECISIONS)[number];
+export function isLocationPrecision(value: unknown): value is LocationPrecision {
+  return (LOCATION_PRECISIONS as readonly unknown[]).includes(value);
+}
+
+/** Companion broadcast cadence while a shift is open. */
+export const LOCATION_PING_INTERVAL_MS = 60_000;
+/** No pings and no knocks for this long closes the shift (ended_at = last activity). */
+export const SHIFT_STALE_CLOSE_MS = 30 * 60 * 1000;
+/** A live dot older than this renders dimmed. Factual display only — never a warning. */
+export const STALE_PING_MS = 15 * 60 * 1000;
+
+/**
+ * One location broadcast — POST /api/canvass/turf/:turfId/location.
+ *
+ * `{denied: true}` is the Companion reporting that the browser permission was refused, so
+ * the roster can say "Location off" instead of showing a silent gap. `recorded_at` is the
+ * device clock and is stored as sent; every display uses the server's received time — a
+ * device clock hours off must not read as "1 min ago".
+ */
+export const CompanionLocationPingObj = z.union([
+  z.object({
+    lat: z.number().gte(-90).lte(90),
+    lng: z.number().gte(-180).lte(180),
+    accuracy_m: z.number().gte(0).lte(100_000).nullable().optional(),
+    recorded_at: z.string().datetime().optional(),
+  }),
+  z.object({ denied: z.literal(true) }),
+]);
+export type CompanionLocationPingType = z.infer<typeof CompanionLocationPingObj>;
+
 /** Staff-configured survey vocabulary (campaigns.canvass_issues/script). */
 export const UpdateCompanionSettingsObj = z.object({
   campaign_id: idSchema.optional(),
   issues: z.array(z.string().trim().min(1).max(80)).max(30),
   script: z.string().trim().max(4000).nullable(),
+  /** Optional so older clients keep working; omitted = leave the stored value alone. */
+  location_precision: z.enum(LOCATION_PRECISIONS).optional(),
 });
 export type UpdateCompanionSettingsType = z.infer<typeof UpdateCompanionSettingsObj>;

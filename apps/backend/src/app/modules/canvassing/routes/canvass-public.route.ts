@@ -1,6 +1,10 @@
 import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastify';
 
-import { CompanionClaimSegmentObj, CompanionResultsObj } from '../../../../../../../libs/common/src';
+import {
+  CompanionClaimSegmentObj,
+  CompanionLocationPingObj,
+  CompanionResultsObj,
+} from '../../../../../../../libs/common/src';
 import { CanvassingController } from '../controller';
 import { isRateLimited } from '../../../lib/rate-limiter';
 import { publicMessageOf as messageOf } from '../../../lib/public-route-errors';
@@ -134,6 +138,36 @@ const canvassPublicRoute: FastifyPluginCallback = (fastify, _opts, done) => {
     } catch (err: unknown) {
       fastify.log.error(err);
       return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to update your street.') });
+    }
+  });
+
+  // One location broadcast while a shift is open — or {denied:true} when the browser
+  // permission is off, so the live board can say "Location off". Fire-and-forget on the
+  // client; a lost or duplicated ping costs one dot on a trail that is purged at midnight.
+  fastify.post('/turf/:turfId/location', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { turfId } = req.params as { turfId: string };
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    const parsed = CompanionLocationPingObj.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'Invalid location payload.' });
+    try {
+      return reply
+        .status(200)
+        .send(await controller.postLocationPing(sessionTokenOf(req), String(turfId), parsed.data));
+    } catch (err: unknown) {
+      fastify.log.error(err);
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to record your location.') });
+    }
+  });
+
+  // The volunteer tapped Finish. Called by the companion BEFORE it revokes the device
+  // session, so the shift's end time is the tap, not a 30-minute timeout later.
+  fastify.post('/shift/end', async (req: FastifyRequest, reply: FastifyReply) => {
+    if (rateLimited(req.ip)) return reply.status(429).send({ error: 'Too many requests. Please slow down.' });
+    try {
+      return reply.status(200).send(await controller.finishCompanionShift(sessionTokenOf(req)));
+    } catch (err: unknown) {
+      fastify.log.error(err);
+      return reply.status(statusOf(err)).send({ error: messageOf(err, 'Unable to end your shift.') });
     }
   });
 

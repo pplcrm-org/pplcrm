@@ -4,6 +4,7 @@ import type { CoverageRequestType, IAuthKeyPayload } from '@common';
 import { COVERAGE_MAX_DOORS } from '@common';
 
 import { BaseRepository } from '../../lib/base.repo';
+import { purgeCanvassPingsForTenant } from '../../lib/jobs/handlers/canvass-live.handlers';
 import { hashToken } from '../../lib/token-hash';
 import { CanvassingController, type CoverageFull } from './controller';
 import { resolveTurfBoundary } from './lib/turf-boundary';
@@ -366,6 +367,9 @@ async function cleanup(db: Db, tenantId: string): Promise<void> {
   // "Error in data" at the door opens a review task assigned to a real user, so tasks
   // have to go before persons and authusers or the teardown trips their foreign keys.
   await db.deleteFrom('tasks').where('tenant_id', '=', tenantId).execute();
+  // Pings reference their shift, so they go first.
+  await db.deleteFrom('canvass_location_pings').where('tenant_id', '=', tenantId).execute();
+  await db.deleteFrom('canvass_shifts').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_knocks').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_segment_claims').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('turf_assignments').where('tenant_id', '=', tenantId).execute();
@@ -1986,5 +1990,217 @@ describe('CanvassingController', () => {
     expect(after.canvassers[0]?.active).toBe(false);
     expect(after.canvassers[0]?.doors).toBe(2);
     expect(after.attempted).toBe(2);
+  });
+
+  describe('live volunteer locations', () => {
+    /** Cut one turf, put the seed volunteer on it, and hand back their session. */
+    async function assignedTurfWithSession(): Promise<{ turfId: string; session: string }> {
+      await controller.cutTurfs(auth, { list_id: s.listId, doors_per_turf: 40 });
+      const [turf] = await controller.getTurfs(auth);
+      if (!turf) throw new Error('expected a turf');
+      await controller.assignTurf(auth, {
+        turf_id: turf.id,
+        team_id: null,
+        volunteer_person_id: s.volunteerPersonId,
+      });
+      const session = await mintApprovedSession(db, s.tenantId, s.volunteerPersonId, s.userId);
+      return { turfId: turf.id, session };
+    }
+
+    it('opens a shift on the first ping and shows the canvasser live, then wraps on finish', async () => {
+      const { turfId, session } = await assignedTurfWithSession();
+
+      await controller.postLocationPing(session, turfId, { lat: 41.85, lng: -87.69, accuracy_m: 12 });
+      // 80 m north a minute of wall-clock later would be walking pace; the accumulator
+      // compares ping arrival times, so back-date the first ping's mirror to make the
+      // second segment plausible rather than instantaneous.
+      await db
+        .updateTable('canvass_shifts')
+        .set({ last_ping_at: new Date(Date.now() - 60_000) })
+        .where('tenant_id', '=', s.tenantId)
+        .execute();
+      await controller.postLocationPing(session, turfId, { lat: 41.8507, lng: -87.69, accuracy_m: 10 });
+
+      const live = await controller.getLive(auth);
+      expect(live.out_now).toBe(1);
+      expect(live.canvassers.length).toBe(1);
+      const [row] = live.canvassers;
+      expect(row?.name).toBe('Sam Volunteer');
+      expect(row?.turf_id).toBe(turfId);
+      expect(row?.location_state).toBe('sharing');
+      expect(row?.position?.lat).toBeCloseTo(41.8507, 3);
+      expect(row?.path?.length).toBeGreaterThanOrEqual(2);
+      // ~78 m between the two pings, at a plausible walking speed.
+      expect(row?.distance_m).toBeGreaterThan(50);
+      expect(row?.distance_m).toBeLessThan(110);
+
+      const summary = await controller.getFieldSummary(auth);
+      expect(summary.outNowCount).toBe(1);
+
+      // The turf reads as being walked while the shift is open.
+      expect(live.turfs.find((t) => t.id === turfId)?.status).toBe('walking');
+
+      // Finish: the dot and path go, the row moves to wrapped with an end time.
+      await controller.finishCompanionShift(session);
+      const after = await controller.getLive(auth);
+      expect(after.out_now).toBe(0);
+      expect(after.canvassers).toEqual([]);
+      expect(after.wrapped.length).toBe(1);
+      expect(after.wrapped[0]?.name).toBe('Sam Volunteer');
+      expect(after.wrapped[0]?.distance_m).toBe(live.canvassers[0]?.distance_m);
+      expect(after.last_shift_ended_at).not.toBeNull();
+    });
+
+    it('reports "location off" for a denied permission, and knocks still open the shift', async () => {
+      const { turfId, session } = await assignedTurfWithSession();
+
+      // A knock batch alone opens the shift — location never granted.
+      const payload = await controller.getCompanionTurfBySession(session, turfId);
+      const door = payload.households[0]!;
+      await controller.postCompanionResultsBySession(session, turfId, [
+        {
+          op_id: 'op-live-knock-1',
+          recorded_at: null,
+          type: 'door_outcome',
+          payload: { household_id: door.id, outcome: 'no_answer' },
+        },
+      ]);
+      await controller.postLocationPing(session, turfId, { denied: true });
+
+      const live = await controller.getLive(auth);
+      expect(live.canvassers.length).toBe(1);
+      const [row] = live.canvassers;
+      expect(row?.location_state).toBe('off');
+      expect(row?.position).toBeNull();
+      expect(row?.path).toBeNull();
+      expect(row?.doors).toBe(1);
+      expect(row?.tape.some(Boolean)).toBe(true);
+    });
+
+    it('closes a quiet shift at its last activity, not the moment the timeout was noticed', async () => {
+      const { turfId, session } = await assignedTurfWithSession();
+      await controller.postLocationPing(session, turfId, { lat: 41.85, lng: -87.69, accuracy_m: 12 });
+
+      const lastActivity = new Date(Date.now() - 45 * 60 * 1000);
+      await db
+        .updateTable('canvass_shifts')
+        .set({ last_activity_at: lastActivity })
+        .where('tenant_id', '=', s.tenantId)
+        .execute();
+
+      const live = await controller.getLive(auth);
+      expect(live.out_now).toBe(0);
+      expect(live.wrapped.length).toBe(1);
+      expect(new Date(live.wrapped[0]!.ended_at).getTime()).toBeCloseTo(lastActivity.getTime(), -3);
+    });
+
+    it('never returns a coordinate on any surface under turf-level precision', async () => {
+      await controller.updateCompanionSettings(auth, {
+        campaign_id: s.campaignId,
+        issues: [],
+        script: null,
+        location_precision: 'turf',
+      });
+      const { turfId, session } = await assignedTurfWithSession();
+      await controller.postLocationPing(session, turfId, { lat: 41.85, lng: -87.69, accuracy_m: 12 });
+
+      const live = await controller.getLive(auth);
+      const [row] = live.canvassers;
+      expect(row?.precision).toBe('turf');
+      expect(row?.position).toBeNull();
+      expect(row?.path).toBeNull();
+      // Presence still reads: the turf, the person, and the last-heard-from time survive.
+      expect(row?.turf_id).toBe(turfId);
+      expect(row?.last_ping_at).not.toBeNull();
+
+      const personLive = await controller.getPersonLive(auth, s.volunteerPersonId);
+      expect(personLive.open?.position).toBeNull();
+      expect(personLive.open?.path).toBeNull();
+
+      const turfLive = await controller.getTurfLive(auth, turfId);
+      expect(turfLive.now[0]?.position).toBeNull();
+      expect(turfLive.now[0]?.path).toBeNull();
+
+      expect(JSON.stringify(live)).not.toContain('87.69');
+      expect(JSON.stringify(personLive)).not.toContain('87.69');
+      expect(JSON.stringify(turfLive)).not.toContain('87.69');
+    });
+
+    it('serves the person block and the turf block from the same shift', async () => {
+      const { turfId, session } = await assignedTurfWithSession();
+      await controller.postLocationPing(session, turfId, { lat: 41.85, lng: -87.69, accuracy_m: 12 });
+      const payload = await controller.getCompanionTurfBySession(session, turfId);
+      const home = payload.households.find((h) => h.people.length > 0);
+      if (!home) throw new Error('expected a door with residents');
+      await controller.postCompanionResultsBySession(session, turfId, [
+        {
+          op_id: 'op-live-survey-1',
+          recorded_at: null,
+          type: 'survey',
+          payload: {
+            household_id: home.id,
+            person_id: home.people[0]?.id ?? null,
+            support: 'supporter',
+            issues: [],
+            wants_volunteer: false,
+            wants_yard_sign: false,
+            set_dnc: false,
+            subscribe: false,
+          },
+        },
+      ]);
+
+      const personLive = await controller.getPersonLive(auth, s.volunteerPersonId);
+      expect(personLive.open?.turf_id).toBe(turfId);
+      expect(personLive.open?.position).not.toBeNull();
+      expect(personLive.today.doors).toBe(1);
+      expect(personLive.today.conversations).toBe(1);
+      expect(personLive.today.support_ids).toBe(1);
+
+      const turfLive = await controller.getTurfLive(auth, turfId);
+      expect(turfLive.now.length).toBe(1);
+      expect(turfLive.now[0]?.person_id).toBe(s.volunteerPersonId);
+      expect(turfLive.earlier).toEqual([]);
+    });
+
+    it('purges yesterday’s pings at local midnight and keeps the shift aggregates', async () => {
+      const { turfId, session } = await assignedTurfWithSession();
+      await controller.postLocationPing(session, turfId, { lat: 41.85, lng: -87.69, accuracy_m: 12 });
+
+      // Age the whole shift into yesterday: pings received before local midnight, the
+      // shift opened before it and long quiet.
+      const yesterday = new Date(Date.now() - 26 * 60 * 60 * 1000);
+      await db
+        .updateTable('canvass_location_pings')
+        .set({ received_at: yesterday })
+        .where('tenant_id', '=', s.tenantId)
+        .execute();
+      await db
+        .updateTable('canvass_shifts')
+        .set({ started_at: yesterday, last_activity_at: yesterday, last_ping_at: yesterday })
+        .where('tenant_id', '=', s.tenantId)
+        .execute();
+
+      const deleted = await purgeCanvassPingsForTenant(db, s.tenantId);
+      expect(deleted).toBe(1);
+
+      const pings = await db
+        .selectFrom('canvass_location_pings')
+        .select('id')
+        .where('tenant_id', '=', s.tenantId)
+        .execute();
+      expect(pings).toEqual([]);
+
+      // The shift row survives with its totals; ended_at is its last activity (it went
+      // quiet long before midnight), and no coordinate remains anywhere.
+      const shift = await db
+        .selectFrom('canvass_shifts')
+        .selectAll()
+        .where('tenant_id', '=', s.tenantId)
+        .executeTakeFirstOrThrow();
+      expect(shift.ended_at).not.toBeNull();
+      expect(new Date(shift.ended_at ?? 0).getTime()).toBeCloseTo(yesterday.getTime(), -3);
+      expect(shift.end_reason).toBe('timeout');
+    });
   });
 });

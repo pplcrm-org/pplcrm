@@ -17,6 +17,7 @@ import { DonationsService } from '../../../services/api/donations-service';
 import { EventsService } from '../../../services/api/events-service';
 import { ConnectionsService } from '../../../services/api/connections-service';
 import { PersonCampaignFacts } from './person-campaign-facts';
+import { PersonCanvassLiveCard } from './person-canvass-live';
 import { PersonConnections } from './person-connections';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { createLoadingGate } from '@uxcommon/loading-gate';
@@ -52,6 +53,7 @@ import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
     SystemMetadata,
     Tags,
     PersonCampaignFacts,
+    PersonCanvassLiveCard,
     PersonConnections,
     ModalShell,
     EmptyState,

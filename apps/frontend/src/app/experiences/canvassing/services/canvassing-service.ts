@@ -24,6 +24,12 @@ export type InFieldToday = RouterOutputs['canvassing']['getInFieldToday'];
 export type FieldReport = RouterOutputs['canvassing']['getFieldReport'];
 export type Coverage = RouterOutputs['canvassing']['getCoverage'];
 export type CutPreview = RouterOutputs['canvassing']['previewCut'];
+export type CanvassLive = RouterOutputs['canvassing']['getLive'];
+export type LiveCanvasser = CanvassLive['canvassers'][number];
+export type LiveWrappedShift = CanvassLive['wrapped'][number];
+export type LiveTurf = CanvassLive['turfs'][number];
+export type PersonCanvassLive = RouterOutputs['canvassing']['getPersonLive'];
+export type TurfLive = RouterOutputs['canvassing']['getTurfLive'];
 
 @Service()
 export class CanvassingService extends TRPCService<unknown> {
@@ -41,6 +47,19 @@ export class CanvassingService extends TRPCService<unknown> {
 
   public getInFieldToday(): Promise<InFieldToday> {
     return this.api.canvassing.getInFieldToday.query();
+  }
+
+  /** The whole Live tab in one read. Admin/owner only — the server refuses editors. */
+  public getLive(): Promise<CanvassLive> {
+    return this.api.canvassing.getLive.query();
+  }
+
+  public getPersonLive(personId: string): Promise<PersonCanvassLive> {
+    return this.api.canvassing.getPersonLive.query({ person_id: personId });
+  }
+
+  public getTurfLive(turfId: string): Promise<TurfLive> {
+    return this.api.canvassing.getTurfLive.query({ turf_id: turfId });
   }
 
   public getFieldReport(input: FieldReportRangeType): Promise<FieldReport> {

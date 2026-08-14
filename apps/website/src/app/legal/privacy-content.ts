@@ -11,7 +11,7 @@ export const PRIVACY_DOC: LegalDoc = {
   title: 'Privacy policy',
   intro:
     'What we collect, why, where it lives, and the things we will never do with it. Written to be read, not skimmed past.',
-  updated: 'August 1, 2026',
+  updated: 'August 14, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -74,6 +74,7 @@ export const PRIVACY_DOC: LegalDoc = {
       kind: 'list',
       items: [
         '**Addresses and maps.** Household addresses can be geocoded so they appear on maps and turfs. Geocoding sends the street address to the Google Maps Geocoding API and stores the resulting coordinates.',
+        '**Volunteer locations during canvassing.** While a volunteer walks a turf with the Canvass Companion, the app reports their position to their organization about once a minute, behind a banner on their phone that says so for the whole shift. Positions are visible only to the organization’s admins — never to other volunteers — and are deleted at midnight; only the day’s totals survive (when the shift ran, doors knocked, distance walked). An organization can restrict this to turf-level presence with no coordinates at all, and a volunteer who declines the browser’s location permission can still canvass.',
         '**Synced mailboxes.** If a workspace admin connects Gmail or Microsoft 365, we sync email content into the workspace so conversations sit next to the people they belong to. We take as little as does the job: syncing starts from **the last 48 hours** — we do not import your mail archive — and attachments are not copied to our servers unless someone opens them, apart from small inline images. Attachments on messages your provider marked as spam are never copied at all. The OAuth tokens for these connections are encrypted at rest with AES-256-GCM, and you can disconnect at any time. Our use of data received from Google APIs adheres to the Google API Services User Data Policy, including its Limited Use requirements.',
         '**Newsletter engagement.** When an organization sends a newsletter, delivery and engagement events (bounces, unsubscribes, opens and clicks) are recorded so the sender can respect them.',
         '**Uploaded files.** Imports and attachments are stored in Canada with the rest of your workspace data.',

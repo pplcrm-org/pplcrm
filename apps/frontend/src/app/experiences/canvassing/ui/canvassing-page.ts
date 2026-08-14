@@ -30,6 +30,8 @@ import { RowActions } from '@uxcommon/components/row-actions/row-actions';
 import { StatusBadge } from '@uxcommon/components/status-badge/status-badge';
 import { TabBar, type PcTabOption } from '@uxcommon/components/tabs/tabs';
 
+import { isPrivilegedRole } from '@common';
+
 import type { FieldReportRangeType, MapViewportType } from '../../../../../../../libs/common/src';
 import {
   CanvassingService,
@@ -40,7 +42,9 @@ import {
   type TurfListItem,
 } from '../services/canvassing-service';
 import { companionUrl, volunteerLinkSentPhrase } from '../../../shared/public-pages';
+import { AuthService } from '../../../auth/auth-service';
 import { AssignTurfDialog } from './assign-turf-dialog';
+import { CanvassLiveTab } from './live-tab';
 import { CompanionSettingsDialog } from './companion-settings-dialog';
 import { CutTurfsDialog } from './cut-turfs-dialog';
 import {
@@ -62,7 +66,7 @@ import { JoinCodePanel } from '../../volunteer-access/ui/join-code-panel';
 import { OrgModeService } from '../../../services/org-mode.service';
 
 type TurfStatus = TurfListItem['status'];
-type Tab = 'turfs' | 'report';
+type Tab = 'turfs' | 'live' | 'report';
 type ReportRange = FieldReportRangeType['range'];
 type CoverageStatus = Coverage['doors'][number]['status'];
 type CoverageView = 'map' | 'boundary';
@@ -147,6 +151,7 @@ const RANGES: { key: ReportRange; label: string }[] = [
     RowActions,
     StatusBadge,
     TabBar,
+    CanvassLiveTab,
     CutTurfsDialog,
     AssignTurfDialog,
     CompanionSettingsDialog,
@@ -158,6 +163,7 @@ export class CanvassingPage implements OnInit {
   private readonly svc = inject(CanvassingService);
   private readonly alerts = inject(AlertService);
   private readonly dialog = inject(ConfirmDialogService);
+  private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
   private readonly orgMode = inject(OrgModeService);
   private readonly destroyRef = inject(DestroyRef);
@@ -175,10 +181,22 @@ export class CanvassingPage implements OnInit {
 
   protected readonly tab = signal<Tab>('turfs');
 
-  protected readonly pageTabs: PcTabOption[] = [
-    { id: 'turfs', label: 'Turfs & assignments' },
-    { id: 'report', label: 'Field report' },
-  ];
+  /**
+   * The Live tab is admin/owner only (volunteer positions are the most sensitive read in
+   * the module; the server refuses editors regardless). Its dot + count pill render only
+   * while somebody is actually out — a plain "Live" label otherwise.
+   */
+  protected readonly canSeeLive = computed<boolean>(() => isPrivilegedRole(this.auth.getUserSignal()()?.role));
+
+  protected readonly pageTabs = computed<PcTabOption[]>(() => {
+    const tabs: PcTabOption[] = [{ id: 'turfs', label: 'Turfs & assignments' }];
+    if (this.canSeeLive()) {
+      const outNow = this.summary()?.outNowCount ?? 0;
+      tabs.push({ id: 'live', label: 'Live', live: true, badge: outNow > 0 ? outNow : undefined });
+    }
+    tabs.push({ id: 'report', label: 'Field report' });
+    return tabs;
+  });
   protected readonly turfs = signal<TurfListItem[]>([]);
   protected readonly summary = signal<FieldSummary | null>(null);
   protected readonly today = signal<InFieldToday | null>(null);
@@ -261,7 +279,9 @@ export class CanvassingPage implements OnInit {
     if (!s) return '';
     const parts = [
       `${s.turfCount} ${s.turfCount === 1 ? 'turf' : 'turfs'}`,
-      `${s.inFieldCount} in the field now`,
+      // Live count: canvassers with an open shift right now, not the older 6-hour
+      // knock-window turf count — one number on all three tabs, matching the Live pill.
+      `${s.outNowCount} in the field now`,
       `${s.doorsAttempted.toLocaleString()} of ${s.doorsTotal.toLocaleString()} doors attempted`,
       `${s.waitingCount} waiting for a canvasser`,
     ];
@@ -531,7 +551,8 @@ export class CanvassingPage implements OnInit {
   }
 
   protected selectTab(tab: string): void {
-    if (tab !== 'turfs' && tab !== 'report') return;
+    if (tab !== 'turfs' && tab !== 'report' && tab !== 'live') return;
+    if (tab === 'live' && !this.canSeeLive()) return;
     this.tab.set(tab);
     if (tab === 'report' && !this.report()) void this.loadReport();
   }

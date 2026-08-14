@@ -29,7 +29,14 @@ binding contract in `docs/spec/pc-map-usage.md`. Do **not** hand-roll a
 - A marker's optional `label` (1–2 chars) draws inside the pin — that's how a
   delivery route numbers its stops. `polylines` are **open paths** and default to
   `dashed: true`: a route line shows the visit order we computed, not a road path
-  we didn't. Don't switch one to solid to make it look tidier.
+  we didn't. Don't switch one to solid to make it look tidier. (One exception: the
+  canvassing Live surfaces draw a walked path solid, because it IS measured
+  positions, in the `live` variant.)
+- Markers also take `size` (px diameter override), `halo` (selected treatment) and
+  `dimmed` (translucent hollow dot for a stale reading) — added for the canvassing
+  Live tab (2026-08-14); leave them unset elsewhere. The `live` `PcMapVariant`
+  resolves the `--color-live` token (violet, both themes) and means exactly one
+  thing: a person in the field right now — never a door or turf status.
 - Outputs: `markerClicked`, `polygonClicked` — each echoes the item's `payload`.
 - Give it a height (`class="block h-48"`); it has a `min-h-40` floor.
 - Marker/polygon colours resolve from DaisyUI `--color-*` tokens at runtime and

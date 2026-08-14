@@ -24,6 +24,11 @@
             <span [title]="statusHint[d.status]">
               <pc-status-badge [type]="tone(d.status)">{{ statusLabel[d.status] }}</pc-status-badge>
             </span>
+            @if (liveNow().length > 0) {
+            <span class="rounded-full bg-live px-2 py-0.5 text-[10px] font-bold tracking-wide text-live-content">
+              SOMEONE ON IT NOW
+            </span>
+            }
           </div>
           <p class="max-w-xl text-xs text-base-content/60">{{ statusHint[d.status] }}</p>
         </div>
@@ -128,15 +133,49 @@
     </div>
   </section>
 
+  <!-- On this turf now (Live). Renders only for admin/owner with live data; today only. -->
+  @if (liveNow().length > 0 || liveEarlier().length > 0) {
+  <section class="card border border-base-300 bg-base-100">
+    <div class="flex items-center justify-between p-4 pb-2">
+      <h2 class="text-sm font-semibold">On this turf now</h2>
+      <span class="text-xs text-base-content/50">Today only · positions clear at midnight</span>
+    </div>
+    <div class="flex flex-col gap-1 px-4 pb-4 text-sm">
+      @for (c of liveNow(); track c.shift_id) {
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <span class="inline-flex items-center gap-2 font-medium">
+          <span class="inline-block h-2 w-2 animate-pulse rounded-full bg-live" aria-hidden="true"></span>
+          {{ c.name }}
+        </span>
+        <span class="text-xs text-base-content/60">
+          {{ c.location_state === 'off' ? 'Location off' : liveAgo(c.last_ping_at) }} · {{ c.doors }} doors · {{
+          liveDistance(c.distance_m) }} ·
+          <a class="text-primary hover:underline" [routerLink]="['/people', c.person_id]">Canvasser record</a>
+        </span>
+      </div>
+      } @for (w of liveEarlier(); track w.shift_id) {
+      <div class="flex flex-wrap items-baseline justify-between gap-2 text-base-content/50">
+        <span>
+          <a class="hover:text-primary" [routerLink]="['/people', w.person_id]">{{ w.name }}</a>
+        </span>
+        <span class="text-xs"
+          >Ended {{ liveTime(w.ended_at) }} · {{ w.doors }} doors · {{ liveDistance(w.distance_m) }}</span
+        >
+      </div>
+      }
+    </div>
+  </section>
+  }
+
   <!-- Where the doors are -->
   <section class="card border border-base-300 bg-base-100">
     <div class="card-body gap-2 p-4">
       @if (markers().length > 0) {
       <pc-map
         class="block h-80 w-full rounded-lg"
-        [markers]="markers()"
+        [markers]="allMarkers()"
         [polygons]="polygons()"
-        [polylines]="polylines()"
+        [polylines]="allPolylines()"
         [ariaLabel]="d.name + ' door map'"
       ></pc-map>
       <div class="flex flex-wrap gap-3 text-xs text-base-content/70">
@@ -155,7 +194,13 @@
           <span class="inline-block h-2 w-3 rounded-sm border border-dashed border-base-content/40"></span>
           Turf boundary
         </span>
-        @if (ungeocoded() > 0) {
+        @if (liveNow().length > 0) {
+        <span class="flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-live"></span> Canvasser now</span>
+        <span class="flex items-center gap-1">
+          <span class="inline-block h-0 w-4 border-t-2 border-live"></span>
+          Path today
+        </span>
+        } @if (ungeocoded() > 0) {
         <span class="text-base-content/50">
           {{ ungeocoded() }} {{ ungeocoded() === 1 ? 'door has' : 'doors have' }} no coordinates yet — they are in the
           list below but not on the map.

@@ -233,8 +233,15 @@ export class CanvassMe {
       cancelText: 'Keep walking',
     });
     if (!confirmed) return;
+    // Read before endShift() tears the state down, so the confirmation can honestly say
+    // sharing stopped — and never claims it for a volunteer who kept location off.
+    const wasSharing = this.store.locationSharing();
     await this.store.endShift();
-    this.alerts.showSuccess('Shift ended. This phone is signed out');
+    this.alerts.showSuccess(
+      wasSharing
+        ? 'Shift ended. Location sharing stopped and this phone is signed out'
+        : 'Shift ended. This phone is signed out',
+    );
   }
 
   protected retryBlocked(): void {

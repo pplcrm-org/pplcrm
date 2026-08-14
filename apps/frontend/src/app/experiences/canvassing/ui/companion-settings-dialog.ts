@@ -7,6 +7,8 @@ import { Icon } from '@icons/icon';
 import { getUserErrorMessage } from '../../../services/api/user-message';
 import { CanvassingService } from '../services/canvassing-service';
 
+import type { LocationPrecision } from '@common';
+
 const MAX_ISSUES = 30;
 
 /**
@@ -68,6 +70,22 @@ const MAX_ISSUES = 30;
           ></textarea>
         </label>
 
+        <label class="flex flex-col gap-2">
+          <span class="text-xs font-medium">Live location detail (the Live tab)</span>
+          <select
+            class="select select-bordered select-sm w-full"
+            [ngModel]="precision()"
+            (ngModelChange)="precision.set($event)"
+            aria-label="Live location detail"
+          >
+            <option value="street">Street level — dots and today's path on the map</option>
+            <option value="turf">Turf level — who is on which turf, no positions</option>
+          </select>
+          <span class="text-xs text-base-content/50">
+            Either way, coordinates are deleted at midnight and volunteers see a sharing banner the whole shift.
+          </span>
+        </label>
+
         <div class="modal-action">
           <button type="button" class="btn btn-ghost btn-sm" (click)="closed.emit()">Cancel</button>
           <button type="button" class="btn btn-primary btn-sm" [disabled]="saving()" (click)="save()">
@@ -90,6 +108,7 @@ export class CompanionSettingsDialog implements OnInit {
   protected readonly draft = signal('');
   protected readonly issues = signal<string[]>([]);
   protected readonly maxIssues = MAX_ISSUES;
+  protected readonly precision = signal<LocationPrecision>('street');
   protected readonly saving = signal(false);
 
   private readonly alerts = inject(AlertService);
@@ -119,6 +138,7 @@ export class CompanionSettingsDialog implements OnInit {
         campaign_id: this.campaignId,
         issues: this.issues(),
         script: this.script().trim() || null,
+        location_precision: this.precision(),
       });
       this.alerts.showSuccess('Saved. Companions pick this up on their next sync');
       this.closed.emit();
@@ -140,6 +160,7 @@ export class CompanionSettingsDialog implements OnInit {
       this.campaignName.set(settings.campaign_name);
       this.issues.set(settings.issues);
       this.script.set(settings.script);
+      this.precision.set(settings.location_precision);
     } catch {
       this.alerts.showError('Could not load settings');
       this.closed.emit();

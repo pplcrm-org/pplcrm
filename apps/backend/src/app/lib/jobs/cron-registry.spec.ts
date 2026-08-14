@@ -18,6 +18,7 @@ const EXPECTED_CRON_TYPES = [
   'perform_scheduled_deletions',
   'prune_newsletter_events',
   'prune_retention',
+  'purge_canvass_pings',
   'purge_downgraded_inboxes',
   'recompute_address_fingerprints',
   'recompute_all_duplicates',

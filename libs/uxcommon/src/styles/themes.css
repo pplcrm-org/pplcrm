@@ -10,6 +10,13 @@
    DaisyUI blocks below, same as --color-line. */
 @theme {
   --color-base-50: #fbfbfc;
+  /* live: the canvassing Live-tab accent — a person in the field RIGHT NOW, and nothing
+     else. Registered here so Tailwind generates bg-live/text-live/border-live (incl.
+     opacity modifiers); real values are per theme below. Violet on purpose: every other
+     accent in the palette (blue/teal/amber) already means a door or turf status, and
+     "a person, now" must never be confusable with either. */
+  --color-live: #5c4fe0;
+  --color-live-content: #ffffff;
 }
 
 /* pc-icon builds `w-${size} h-${size}` at runtime (icon.ts), which Tailwind's static
@@ -50,6 +57,10 @@
   --color-warning-content: #342c0b;
   --color-error: #eb4d4b;
   --color-error-content: #ffffff;
+
+  /* Live-canvasser accent — see the @theme registration at the top of this file. */
+  --color-live: #5c4fe0;
+  --color-live-content: #ffffff;
 
   /* Hairline border token — one line color app-wide, per theme (design §5). */
   --color-line: #e7e5e4;
@@ -133,6 +144,10 @@
 
   /* Button/input rounding — keep identical to the light theme (UX-GUIDELINES "Buttons"). */
   --radius-field: 0.25rem;
+
+  /* Live-canvasser accent — lifted for dark so the dot doesn't sink into the page. */
+  --color-live: #8b7ff7;
+  --color-live-content: #120b3a;
 
   /* Feedback */
   --color-info: #3ea6ff;

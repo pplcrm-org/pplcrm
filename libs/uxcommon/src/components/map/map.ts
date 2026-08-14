@@ -35,6 +35,9 @@ const LABELLED_PIN_PX = 22;
 const USER_DOT_PX = 16;
 const USER_DOT_HALO_PX = 5;
 const USER_DOT_HALO_OPACITY = 0.25;
+const MARKER_HALO_PX = 8;
+const MARKER_HALO_OPACITY = 0.25;
+const DIMMED_MARKER_OPACITY = 0.6;
 
 const DASHED_STROKE_WEIGHT = 1.5;
 const DASHED_STROKE_OPACITY = 0.6;
@@ -629,7 +632,7 @@ export class PcMap {
     const color = this.resolveColor(marker.variant ?? 'primary');
     const label = marker.label;
     const pin = document.createElement('div');
-    const size = label ? LABELLED_PIN_PX : PIN_PX;
+    const size = marker.size ?? (label ? LABELLED_PIN_PX : PIN_PX);
     pin.style.width = `${size}px`;
     pin.style.height = `${size}px`;
     pin.style.borderRadius = '9999px';
@@ -639,13 +642,25 @@ export class PcMap {
     // Advanced markers anchor content at its bottom-centre (built for teardrop pins).
     // A round dot must sit ON its coordinate, not float half a dot above the roof.
     pin.style.transform = 'translateY(50%)';
+    if (marker.dimmed) {
+      // A stale reading: translucent with a hollow centre. Same colour, quieter claim.
+      pin.style.opacity = String(DIMMED_MARKER_OPACITY);
+      pin.style.background = 'var(--color-base-100, #fff)';
+      pin.style.border = `3px solid ${color}`;
+    }
+    if (marker.halo) {
+      const halo = color.startsWith('rgb(')
+        ? color.replace('rgb(', 'rgba(').replace(')', `, ${MARKER_HALO_OPACITY})`)
+        : color;
+      pin.style.boxShadow = `0 0 0 ${MARKER_HALO_PX}px ${halo}, 0 1px 3px rgba(0,0,0,0.4)`;
+    }
     if (label) {
       // A numbered pin reads the visit order straight off the map.
       pin.textContent = label;
       pin.style.display = 'flex';
       pin.style.alignItems = 'center';
       pin.style.justifyContent = 'center';
-      pin.style.color = 'var(--color-base-100, #fff)';
+      pin.style.color = marker.dimmed ? color : 'var(--color-base-100, #fff)';
       pin.style.fontFamily = 'inherit';
       pin.style.fontSize = '11px';
       pin.style.fontWeight = '700';
