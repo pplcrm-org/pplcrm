@@ -106,9 +106,16 @@ describe('doorStatus', () => {
     expect(doorStatus(household({ people: [] }))).toBe('not_visited');
   });
 
-  it('is in_progress when only some people have results', () => {
+  it('is canvassed after one conversation, even with other residents unresolved', () => {
     const h = household({ people: [person({ id: '1', result: 'canvassed' }), person({ id: '2' })] });
+    expect(doorStatus(h)).toBe('canvassed');
+  });
+
+  it('is in_progress when some people have non-conversation results and the rest have none', () => {
+    const h = household({ people: [person({ id: '1', result: 'deceased' }), person({ id: '2' })] });
     expect(doorStatus(h)).toBe('in_progress');
+    const notHome = household({ people: [person({ id: '1', result: 'not_home' }), person({ id: '2' })] });
+    expect(doorStatus(notHome)).toBe('in_progress');
   });
 
   it('is not_visited when nothing was recorded', () => {
@@ -139,6 +146,11 @@ describe('isAttempted', () => {
     expect(isAttempted(household())).toBe(false);
     const inProgress = household({ people: [person({ id: '1', result: 'refused' }), person({ id: '2' })] });
     expect(isAttempted(inProgress)).toBe(false);
+  });
+
+  it('counts a door where one of several residents was surveyed', () => {
+    const oneTalk = household({ people: [person({ id: '1', result: 'canvassed' }), person({ id: '2' })] });
+    expect(isAttempted(oneTalk)).toBe(true);
   });
 });
 

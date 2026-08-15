@@ -34,13 +34,22 @@ export type DoorStatus = 'dnc' | `outcome:${CompanionDoorOutcome}` | 'canvassed'
 /**
  * The one derivation the whole walk list hangs off. Precedence: DNC beats
  * everything (skip the door — it still counts), then an explicit door outcome,
- * then survey completion.
+ * then what was recorded at the door.
+ *
+ * ONE conversation resolves the door. Canvassers talk to whoever answers, not
+ * to every name on file, so a surveyed person (or the anonymous household
+ * survey) marks the door canvassed even while other residents have no result —
+ * which is also what the backend counts: any knock row makes the door
+ * attempted in turf progress. 'in_progress' is only the rarer partial state
+ * with no conversation in it: somebody marked one resident moved, deceased,
+ * refused or not-home and left the rest open.
  */
 export function doorStatus(h: CompanionHousehold): DoorStatus {
   if (h.dnc) return 'dnc';
   if (h.door_outcome != null) return `outcome:${h.door_outcome}`;
   const resulted = h.people.filter((p) => p.result != null).length;
-  if (h.hh_survey != null || (h.people.length > 0 && resulted === h.people.length)) return 'canvassed';
+  const talked = h.hh_survey != null || h.people.some((p) => p.result === 'canvassed');
+  if (talked || (h.people.length > 0 && resulted === h.people.length)) return 'canvassed';
   if (resulted > 0) return 'in_progress';
   return 'not_visited';
 }
