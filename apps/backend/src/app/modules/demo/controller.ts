@@ -1,5 +1,5 @@
-import { hasSettledPlan, type IAuthKeyPayload } from '../../../../../../libs/common/src';
-import { ForbiddenError, InternalError, NotFoundError } from '../../errors/app-errors';
+import type { IAuthKeyPayload } from '../../../../../../libs/common/src';
+import { InternalError, NotFoundError } from '../../errors/app-errors';
 import { BaseController } from '../../lib/base.controller';
 import { logger } from '../../logger';
 import { StorageService } from '../../lib/storage.service';
@@ -65,19 +65,14 @@ export class DemoController extends BaseController<'settings', SettingsRepo> {
 
     const tenant = await this.getRepo()
       .db.selectFrom('tenants')
-      .select(['placeholder_household_id', 'subscription_status'])
+      .select(['placeholder_household_id'])
       .where('id', '=', auth.tenant_id)
       .executeTakeFirst();
 
-    // Demo mode is the pre-plan test drive: exiting (and the configuration it
-    // unlocks) requires a subscription first. Same active-status rule as billing.
-    const hasActiveSubscription = hasSettledPlan(tenant?.subscription_status);
-    if (!hasActiveSubscription) {
-      throw new ForbiddenError(
-        'Choose a plan before exiting demo mode. Once you subscribe, you can remove the demo data and set up your workspace.',
-      );
-    }
-
+    // No plan gate here, deliberately. Demo mode gates as the top tier, so every feature is
+    // already open and there is nothing to buy while it lasts; billing is closed until this
+    // runs. Removing the demo data is what produces the clean workspace a plan is chosen for,
+    // so it must never require one.
     const placeholderHouseholdId = tenant?.placeholder_household_id;
     if (!placeholderHouseholdId) {
       throw new InternalError('This workspace has no placeholder household. Cannot exit demo mode.');

@@ -1157,7 +1157,11 @@ describe('demo seeding and exit-demo', () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it('exitDemoMode requires an active subscription, then succeeds', async () => {
+  /**
+   * Exiting has no prerequisite (changed 2026-08-15). It used to require a settled plan; billing
+   * is now the step that comes AFTER the demo data is gone, so a gate here would be a deadlock.
+   */
+  it('exitDemoMode succeeds with no plan chosen, and clears the flag', async () => {
     // The controller opens its own transaction, so this test uses real rows
     // (cleaned up in finally) instead of the rollback harness.
     const db = BaseRepository.dbInstance;
@@ -1237,11 +1241,8 @@ describe('demo seeding and exit-demo', () => {
         })
         .execute();
 
-      // No plan → refused.
-      await expect(controller.exitDemoMode(auth)).rejects.toBeInstanceOf(ForbiddenError);
-
-      // Active subscription → exit proceeds and clears the flag + manifest.
-      await db.updateTable('tenants').set({ subscription_status: 'active' }).where('id', '=', tenant_id).execute();
+      // No plan, no subscription status — the tenant has decided nothing yet, and the exit
+      // proceeds anyway, clearing the flag and the manifest.
       const result = await controller.exitDemoMode(auth);
       expect(result.success).toBe(true);
       const tenant = await db

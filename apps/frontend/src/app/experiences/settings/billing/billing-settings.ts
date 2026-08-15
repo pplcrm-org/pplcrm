@@ -556,7 +556,8 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
   }
 
   /** Commit to the Free plan. Not a checkout: Free isn't purchasable, so this records the choice
-   * directly. It is what unblocks leaving demo mode, which needs a settled plan decision. */
+   * directly. Refused server-side while the demo data is still in place, like every billing
+   * mutation — the demo is removed first, and the plan is chosen for the clean workspace. */
   protected async continueOnFree() {
     const warning = await this.downgradeWarning();
     if (warning) {

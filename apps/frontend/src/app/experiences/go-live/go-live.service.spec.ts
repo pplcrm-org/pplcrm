@@ -106,13 +106,30 @@ describe('GoLiveService', () => {
     });
   });
 
-  /** demo.exit and every kind of sender verification refuse without a settled plan, so offering
-   * them early is offering buttons that throw. */
-  it('locks the demo and phone steps until a plan is chosen, and says why', () => {
-    expect(service.lockedReason()['demo']).toBe('Choose a plan first');
-    expect(service.lockedReason()['phone']).toBe('Choose a plan first');
-    // Sending is NOT locked: the platform address needs no verification, only a plan-free upsert.
-    expect(service.lockedReason()['sending']).toBeUndefined();
+  /**
+   * The order is: remove the demo data, then choose a plan, then verify a sender. Every billing
+   * mutation refuses while the demo data is in place, and sender/phone verification refuses
+   * without a settled plan — so each step says which one is actually outstanding rather than
+   * offering a button that throws.
+   */
+  describe('locked steps', () => {
+    it('locks the plan and phone steps while the demo data is in place', () => {
+      user.set({ tenant_demo_mode_at: new Date() });
+
+      expect(service.lockedReason()['plan']).toBe('Remove the demo data first');
+      expect(service.lockedReason()['phone']).toBe('Remove the demo data, then choose a plan');
+      // Removing the demo data has no prerequisite of its own — it is the first step.
+      expect(service.lockedReason()['demo']).toBeUndefined();
+      // Sending is NOT locked: the platform address needs no verification, only a plain upsert.
+      expect(service.lockedReason()['sending']).toBeUndefined();
+    });
+
+    it('locks only the phone step once the demo data is gone but no plan is chosen', () => {
+      user.set({ tenant_demo_mode_at: null });
+
+      expect(service.lockedReason()['plan']).toBeUndefined();
+      expect(service.lockedReason()['phone']).toBe('Choose a plan first');
+    });
   });
 
   /** The phone step's truth lives on the tenant, not in the settings snapshot, so it needs its
@@ -181,6 +198,7 @@ describe('GoLiveService', () => {
 
       // Plan, phone and people are still unmet in this fixture; team is never listed because
       // inviting teammates is genuinely optional and must not read as an unfinished obligation.
+      // Order matches the wizard: the demo removal comes first, so it leads the list when unmet.
       expect(service.outstanding()).toEqual(['plan', 'phone', 'people']);
       expect(service.outstanding()).not.toContain('team');
     });

@@ -22,14 +22,20 @@ interface DemoSummaryItem {
   count: number;
 }
 
-const STEP_ORDER: GoLiveStepId[] = ['plan', 'organization', 'phone', 'sending', 'demo', 'people', 'team'];
+/**
+ * Removing the demo data comes first: every billing mutation is refused while the sample records
+ * are in place (demo mode already unlocks every feature, so there is nothing to buy), and a plan
+ * chosen against a demo workspace would be priced on sample people. Everything after that needs a
+ * settled plan — sender, domain and phone verification all do.
+ */
+const STEP_ORDER: GoLiveStepId[] = ['demo', 'plan', 'organization', 'phone', 'sending', 'people', 'team'];
 
 const STEP_LABELS: Record<GoLiveStepId, string> = {
+  demo: 'Remove demo data',
   plan: 'Choose a plan',
   organization: 'Your organization',
   phone: 'Verify your mobile',
   sending: 'Sending email',
-  demo: 'Remove demo data',
   people: 'Your people',
   team: 'Your team',
 };
@@ -77,6 +83,11 @@ export class GoLivePage implements OnInit {
   protected readonly currentId = computed(() => this.state().step);
   protected readonly demoSummary = signal<DemoSummaryItem[]>([]);
 
+  /** "Step 3 of 7" derived from the order rather than typed into each panel — the numbers were
+   * hand-written per step and silently went wrong the first time the order changed. */
+  protected readonly stepCount = STEP_ORDER.length;
+  protected readonly stepNumber = computed(() => STEP_ORDER.indexOf(this.currentId()) + 1);
+
   /** Stamped on every link that leaves the wizard for a real page, so that page shows the way
    * back (see `SetupReturnBar`). */
   protected readonly setupParam = { [SETUP_RETURN_PARAM]: 1 };
@@ -84,6 +95,10 @@ export class GoLivePage implements OnInit {
   /** Verification is refused server-side until a plan is settled, so the step says so instead of
    * offering a control that only produces an error toast. */
   protected readonly planLocked = computed(() => !this.done()['plan']);
+
+  /** Billing itself is refused while the demo data is in place, so the plan step explains that
+   * rather than showing plan buttons that would only produce an error toast. */
+  protected readonly demoStillPresent = computed(() => !this.done()['demo']);
 
   /** Organization fields are edited locally and saved on continue, so a half-typed address is
    * never persisted as if it were a decision. */
@@ -269,7 +284,7 @@ export class GoLivePage implements OnInit {
       await this.demo.exitDemo();
       await this.auth.getCurrentUser();
       await this.goLive.refreshContacts();
-      this.alerts.showSuccess('Demo data removed. Your workspace is ready for real contacts.');
+      this.alerts.showSuccess('Demo data removed. This workspace is yours now — choose a plan next.');
       await this.next();
     } catch (err) {
       this.alerts.showError(getUserErrorMessage(err, 'Could not remove the demo data. Please try again.'));

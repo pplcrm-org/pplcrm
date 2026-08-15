@@ -3,11 +3,13 @@ import { BillingRouter } from './trpc.router';
 import { BillingController } from './controller';
 import { BaseRepository } from '../../lib/base.repo';
 
-function mockAuthDb(role: string) {
+/** One stubbed row answers both lookups the router makes: the role check on the procedure, and
+ * the tenant's `demo_mode_at` read by the demo guard. */
+function mockAuthDb(role: string, demo_mode_at: Date | null = null) {
   const mockQB: any = {
     select: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
-    executeTakeFirst: vi.fn().mockResolvedValue({ role, verified: true }),
+    executeTakeFirst: vi.fn().mockResolvedValue({ role, verified: true, demo_mode_at }),
   };
   vi.spyOn(BaseRepository, 'dbInstance', 'get').mockReturnValue({
     selectFrom: vi.fn().mockReturnValue(mockQB),
@@ -219,5 +221,56 @@ describe('BillingRouter', () => {
   it('should reject unauthenticated requests with UNAUTHORIZED', async () => {
     const caller = BillingRouter.createCaller({} as any);
     await expect(caller.getDetails()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  /**
+   * Billing is closed while the seeded demo data is in place. A demo workspace already gates as
+   * the top tier, so the only thing it could buy is what it already has, and the subscriber count
+   * it would be billed on is a count of sample people. The order is: remove the demo data, then
+   * choose a plan.
+   */
+  describe('while the demo data is still in place', () => {
+    beforeEach(() => {
+      vi.restoreAllMocks();
+      mockAuthDb('owner', new Date());
+    });
+
+    const auth = { tenant_id: '1', user_id: '1', session_id: 's1' } as any;
+
+    it('refuses every mutation that would change what the workspace pays', async () => {
+      const caller = BillingRouter.createCaller({ auth } as any);
+      const spies = [
+        vi.spyOn(BillingController.prototype, 'createCheckoutSession'),
+        vi.spyOn(BillingController.prototype, 'switchPlan'),
+        vi.spyOn(BillingController.prototype, 'createPortalSession'),
+        vi.spyOn(BillingController.prototype, 'selectFreePlan'),
+        vi.spyOn(BillingController.prototype, 'cancelSubscription'),
+        vi.spyOn(BillingController.prototype, 'resumeSubscription'),
+        vi.spyOn(BillingController.prototype, 'activateMockPlan'),
+        vi.spyOn(BillingController.prototype, 'cancelMockPlan'),
+      ];
+
+      await expect(caller.createCheckout({ plan: 'grassroots' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.switchPlan({ plan: 'movement' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.createPortal()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.selectFree()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.cancelSubscription()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.resumeSubscription()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.activateMockPlan({ plan: 'grassroots' })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.cancelMockPlan()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+      // Refused at the guard, not inside the controller: nothing reached Stripe or the database.
+      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('still answers the reads the billing page needs to explain itself', async () => {
+      const detailsSpy = vi
+        .spyOn(BillingController.prototype, 'getBillingDetails')
+        .mockResolvedValue({ plan: 'free' } as any);
+      const caller = BillingRouter.createCaller({ auth } as any);
+
+      await expect(caller.getDetails()).resolves.toEqual({ plan: 'free' });
+      expect(detailsSpy).toHaveBeenCalled();
+    });
   });
 });

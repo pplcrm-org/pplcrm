@@ -195,13 +195,13 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'While the demo data is in place, **every feature is open regardless of plan** — the workspace is treated as if it were on the Movement plan so you can try forms, donations, automations, lists, volunteer management, canvassing, deliveries, companion access, the API, and the shared inbox before deciding what to pay for. When you remove the demo data, the workspace goes back to the features of the plan you actually chose.',
+        text: 'While the demo data is in place, **every feature is open regardless of plan** — the workspace is treated as if it were on the Movement plan so you can try forms, donations, automations, lists, volunteer management, canvassing, deliveries, companion access, the API, and the shared inbox before deciding what to pay for. That is why [Billing](/workspace/billing) stays closed during the demo: there is nothing to buy that you do not already have. When you remove the demo data the workspace drops to the Free plan’s features, and choosing a plan is the next step.',
       },
       {
         kind: 'callout',
         tone: 'warning',
         title: 'What stays locked during the demo',
-        text: 'Two different things are gated, and it is worth knowing which is which. **Until you choose a plan** — Free counts, and it takes one click on the [Billing](/workspace/billing) page — you cannot verify a sender email, a sending domain, or your mobile number. **Until you remove the demo data** nothing outbound to your audience can happen: you cannot send newsletters, and automated emails, form confirmations, and donation-receipt emails are held back rather than sent (receipts still generate as PDFs you can download). You also cannot invite teammates on the [Users](/users) page, connect a mailbox, or connect a Stripe account for donations. So verification is something you do *during* the demo, in the order the [go-live setup](/go-live) walks you through, not after it. Everything else works throughout, including workspace settings; update your organization details, service levels, and defaults at any time and they carry over when you exit the demo.',
+        text: 'The order is fixed: remove the demo data first, then choose a plan, then set up sending. **Until you remove the demo data**, [Billing](/workspace/billing) is closed — the demo already unlocks every feature, so there is nothing to buy, and your subscriber count is still a count of sample people. Nothing outbound to your audience can happen either: you cannot send newsletters, and automated emails, form confirmations, and donation-receipt emails are held back rather than sent (receipts still generate as PDFs you can download). You also cannot invite teammates on the [Users](/users) page, connect a mailbox, or connect a Stripe account for donations. **Until you then choose a plan** — Free counts, and it takes one click — you cannot verify a sender email, a sending domain, or your mobile number. Removing the demo data itself needs nothing: it is what gives you the clean workspace the plan is chosen for. Everything else works throughout, including workspace settings; update your organization details, service levels, and defaults at any time and they carry over when you exit the demo.',
       },
       { kind: 'h2', id: 'exit', text: 'Exiting demo mode' },
       {
@@ -214,17 +214,17 @@ export const GETTING_STARTED_ARTICLES: HelpArticle[] = [
           {
             title: 'Choose Set up my workspace',
             detail:
-              'This opens [Go live](/go-live), which walks through everything in the order it has to happen: choosing a plan, your organization details, verifying a mobile number, sending setup, and then removing the demo data.',
-          },
-          {
-            title: 'Choose a plan',
-            detail:
-              'Removing the demo data needs a settled plan, so this comes first. Free is a real plan and does not expire; paid plans are on the [Billing](/workspace/billing) page.',
+              'This opens [Go live](/go-live), which walks through everything in the order it has to happen: removing the demo data, choosing a plan, your organization details, verifying a mobile number, and sending setup. The card also has a plain "Just remove the demo data" button if that is all you want.',
           },
           {
             title: 'Remove the demo data',
             detail:
-              'The wizard lists the exact counts of what will be deleted and what is kept. This cannot be undone.',
+              'This comes first and needs nothing beforehand. The wizard lists the exact counts of what will be deleted and what is kept. This cannot be undone.',
+          },
+          {
+            title: 'Choose a plan',
+            detail:
+              'Billing opens once the demo data is gone, so the plan applies to a workspace holding only your own records. Free is a real plan and does not expire; paid plans are on the [Billing](/workspace/billing) page.',
           },
           {
             title: 'Start fresh',

@@ -171,7 +171,7 @@ export class NewslettersPage {
    */
   protected sendBlocker(row: NewsletterRow): string | null {
     if (this.isDemo()) {
-      return 'Sending is locked during the demo. Choose a plan, then exit demo mode';
+      return 'Sending is locked during the demo. Remove the demo data to unlock it';
     }
     if (!this.orgAddressSet()) {
       return 'Set your organization’s mailing address under Settings → Organization — it appears in the footer of every newsletter';

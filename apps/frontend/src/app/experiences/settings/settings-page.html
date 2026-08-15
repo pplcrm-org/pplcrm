@@ -300,15 +300,18 @@
 
           <div class="border-t border-base-200 pt-6 mt-6 space-y-6">
             @if (!planSelected()) {
-            <!-- Plan guard (§2/§3): verification is blocked server-side until a plan is settled;
-                 explain it and prevent the dead end. Free counts, and the demo data can stay. -->
+            <!-- Plan guard (§2/§3): verification is blocked server-side until a plan is settled,
+                 and billing is closed until the demo data is gone — so name whichever of the two
+                 is actually outstanding instead of pointing at a page that would also refuse. -->
             <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
               <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
               <p class="text-xs leading-relaxed text-base-content/80">
-                Choose a plan on the
+                @if (isDemo()) {
+                <a routerLink="/go-live" class="link text-primary">Remove the demo data</a>
+                first, then choose a plan — verifying a sender email or your phone number needs a settled plan. } @else
+                { Choose a plan on the
                 <button type="button" class="link text-primary" (click)="selectSection('billing')">Billing</button>
-                page to verify a sender email or your phone number. Free counts, and you don't have to remove the demo
-                data first.
+                page to verify a sender email or your phone number. Free counts and takes one click. }
               </p>
             </div>
             }
@@ -448,20 +451,26 @@
         <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
           <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
           <p class="text-xs leading-relaxed text-base-content/80">
-            @if (custom.id === 'email-sync') { Email sync isn't available in demo mode. } @else { Donation settings
-            aren't available in demo mode. } Choose a plan on the
-            <button type="button" class="link text-primary" (click)="selectSection('billing')">Billing</button>
-            page, then exit demo mode to unlock it.
+            @if (custom.id === 'billing') { Billing is closed while the demo data is in place. Demo mode already unlocks
+            every feature, so there is nothing to buy yet, and your subscriber count is still a count of sample people.
+            } @else if (custom.id === 'email-sync') { Email sync isn't available in demo mode. } @else { Donation
+            settings aren't available in demo mode. }
+            <a routerLink="/go-live" class="link text-primary">Remove the demo data</a>
+            to unlock @if (custom.id === 'billing') { your plan choice } @else { it }.
           </p>
         </div>
         } @else if (isPlanLocked(custom.id)) {
-        <!-- Plan guard (§2/§3): domain verification needs a settled plan, not demo removal -->
+        <!-- Plan guard (§2/§3): domain verification needs a settled plan, which is only reachable
+             once the demo data is gone (billing is closed during the demo) -->
         <div class="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5">
           <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
           <p class="text-xs leading-relaxed text-base-content/80">
-            Choose a plan on the
+            @if (isDemo()) {
+            <a routerLink="/go-live" class="link text-primary">Remove the demo data</a>
+            first, then choose a plan — a sending domain can only be verified once a plan is settled. } @else { Choose a
+            plan on the
             <button type="button" class="link text-primary" (click)="selectSection('billing')">Billing</button>
-            page to verify a sending domain. Free counts, and you don't have to remove the demo data first.
+            page to verify a sending domain. Free counts and takes one click. }
           </p>
         </div>
         } @else if (isTierLocked(custom.id)) {
@@ -544,8 +553,12 @@
           } @case ('storage') {
           <pc-storage-settings></pc-storage-settings>
           } @case ('billing') {
+          <!-- During the demo the banner above is the whole section: plan cards a demo workspace
+               cannot act on would be a wall of dead buttons, and their prices would be computed
+               from sample subscribers. -->
+          @if (!isDemoLocked('billing')) {
           <pc-billing-settings></pc-billing-settings>
-          } @case ('api-keys') {
+          } } @case ('api-keys') {
           <pc-api-keys-settings></pc-api-keys-settings>
           } @case ('account') {
           <pc-account-settings></pc-account-settings>

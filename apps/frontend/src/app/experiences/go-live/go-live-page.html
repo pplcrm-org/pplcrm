@@ -30,15 +30,23 @@
         <!-- ─────────────────────────── Plan ─────────────────────────── -->
         @case ('plan') {
         <div>
-          <p class="pc-eyebrow">Step 1 of 7</p>
+          <p class="pc-eyebrow">Step {{ stepNumber() }} of {{ stepCount }}</p>
           <h2 class="mt-1 text-base font-bold tracking-tight">Choose a plan</h2>
           <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
-            Removing the demo data needs a settled plan, so this comes first. Free is a real plan, not a trial: it does
-            not expire.
+            The demo opened every feature regardless of plan, so this is the first real choice: what your own workspace
+            runs on. Free is a real plan, not a trial — it does not expire.
           </p>
         </div>
 
-        @if (done()['plan']) {
+        @if (demoStillPresent()) {
+        <div class="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/10 px-3.5 py-2.5">
+          <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
+          <p class="text-xs leading-relaxed text-base-content/80">
+            Remove the demo data first. Nothing is for sale while it is in place — the demo already includes every
+            feature, and a plan chosen now would be priced on sample people.
+          </p>
+        </div>
+        } @else if (done()['plan']) {
         <div class="flex items-start gap-2.5 rounded-lg border border-success/30 bg-success/10 px-3.5 py-2.5">
           <pc-icon name="check-circle" [size]="5" class="mt-0.5 shrink-0 text-success"></pc-icon>
           <p class="text-xs text-base-content/80">Your plan is set. You can change it any time under Billing.</p>
@@ -71,17 +79,24 @@
         </div>
         }
 
-        <div class="flex justify-end gap-2 border-t border-base-200 pt-4">
+        <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
+          <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="back()">Back</button>
+          @if (demoStillPresent()) {
+          <button type="button" class="btn btn-primary btn-sm" (click)="selectStep('demo')">
+            Remove the demo data
+          </button>
+          } @else {
           <button type="button" class="btn btn-primary btn-sm" [disabled]="!done()['plan']" (click)="next()">
             Continue
           </button>
+          }
         </div>
         }
 
         <!-- ─────────────────────── Organization ─────────────────────── -->
         @case ('organization') {
         <div>
-          <p class="pc-eyebrow">Step 2 of 7</p>
+          <p class="pc-eyebrow">Step {{ stepNumber() }} of {{ stepCount }}</p>
           <h2 class="mt-1 text-base font-bold tracking-tight">Your organization</h2>
           <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
             Your postal address goes in the footer of every email you send. Anti-spam law in Canada and the US requires
@@ -147,7 +162,7 @@
         <!-- ────────────────────────── Phone ─────────────────────────── -->
         @case ('phone') {
         <div>
-          <p class="pc-eyebrow">Step 3 of 7</p>
+          <p class="pc-eyebrow">Step {{ stepNumber() }} of {{ stepCount }}</p>
           <h2 class="mt-1 text-base font-bold tracking-tight">Verify your mobile number</h2>
           <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
             Every workspace verifies a mobile number once. It is what keeps spammers off the sending reputation you
@@ -160,8 +175,7 @@
         <div class="flex items-start gap-2.5 rounded-lg border border-warning/40 bg-warning/10 px-3.5 py-2.5">
           <pc-icon name="exclamation-triangle" [size]="5" class="mt-0.5 shrink-0 text-warning"></pc-icon>
           <p class="text-xs leading-relaxed text-base-content/80">
-            Choose a plan first — verification is locked until then. Free counts, and the demo data can stay where it
-            is.
+            Choose a plan first — verification is locked until then. Free counts and takes one click.
           </p>
         </div>
         } @else {
@@ -177,7 +191,7 @@
         <!-- ───────────────────────── Sending ────────────────────────── -->
         @case ('sending') {
         <div>
-          <p class="pc-eyebrow">Step 4 of 7</p>
+          <p class="pc-eyebrow">Step {{ stepNumber() }} of {{ stepCount }}</p>
           <h2 class="mt-1 text-base font-bold tracking-tight">
             @if (state().sendsEmail === null) { Will you send email from pplCRM? } @else { Where should your email come
             from? }
@@ -290,11 +304,12 @@
         <!-- ─────────────────────── Remove demo ──────────────────────── -->
         @case ('demo') {
         <div>
-          <p class="pc-eyebrow">Step 5 of 7</p>
+          <p class="pc-eyebrow">Step {{ stepNumber() }} of {{ stepCount }}</p>
           <h2 class="mt-1 text-base font-bold tracking-tight">Remove the demo data</h2>
           <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
-            This is the point of no return, and the point where the workspace becomes yours. Everything you created
-            while exploring is kept.
+            This comes first: it is the point of no return, and the point where the workspace becomes yours. Everything
+            you created while exploring is kept. Once the sample records are gone you can choose a plan — billing stays
+            closed until then, because the demo already includes every feature.
           </p>
         </div>
 
@@ -332,8 +347,8 @@
         </div>
         }
 
-        <div class="flex justify-between gap-2 border-t border-base-200 pt-4">
-          <button type="button" class="btn btn-outline btn-primary btn-sm" (click)="back()">Back</button>
+        <!-- First step, so no Back: there is nothing behind it. -->
+        <div class="flex justify-end gap-2 border-t border-base-200 pt-4">
           <button type="button" class="btn btn-primary btn-sm" [disabled]="!done()['demo']" (click)="next()">
             Continue
           </button>
@@ -343,7 +358,7 @@
         <!-- ────────────────────────── People ────────────────────────── -->
         @case ('people') {
         <div>
-          <p class="pc-eyebrow">Step 6 of 7</p>
+          <p class="pc-eyebrow">Step {{ stepNumber() }} of {{ stepCount }}</p>
           <h2 class="mt-1 text-base font-bold tracking-tight">Bring in your people</h2>
           <p class="mt-1.5 max-w-prose text-xs text-base-content/60">
             Import a spreadsheet, or start adding contacts one at a time. You can always do both later.
@@ -376,7 +391,7 @@
         <!-- ─────────────────────────── Team ─────────────────────────── -->
         @case ('team') {
         <div>
-          <p class="pc-eyebrow">Step 7 of 7</p>
+          <p class="pc-eyebrow">Step {{ stepNumber() }} of {{ stepCount }}</p>
           <h2 class="mt-1 text-base font-bold tracking-tight">
             @if (allEssentialsDone()) { Your workspace is live } @else { Almost there }
           </h2>

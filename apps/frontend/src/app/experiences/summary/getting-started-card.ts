@@ -6,11 +6,11 @@ import { AuthService } from '../../auth/auth-service';
 import { GoLiveService, type GoLiveStepId } from '../go-live/go-live.service';
 
 const STEP_COPY: Record<GoLiveStepId, { label: string; why: string }> = {
-  plan: { label: 'Choose a plan', why: 'Needed before the demo data can be removed' },
+  demo: { label: 'Remove the demo data', why: 'Your workspace still holds sample records' },
+  plan: { label: 'Choose a plan', why: 'Sender verification and your feature set both depend on it' },
   organization: { label: 'Add your mailing address', why: 'Required by law in every newsletter footer' },
   phone: { label: 'Verify your mobile number', why: 'A one-time check before your first send' },
   sending: { label: 'Set up sending', why: 'Newsletters stay locked until this is done' },
-  demo: { label: 'Remove the demo data', why: 'Your workspace still holds sample records' },
   people: { label: 'Bring in your people', why: 'Import a spreadsheet or add contacts one at a time' },
   team: { label: 'Invite your team', why: 'Optional' },
 };

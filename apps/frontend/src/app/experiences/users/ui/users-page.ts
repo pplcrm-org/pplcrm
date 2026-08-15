@@ -138,7 +138,7 @@ export class UsersPageComponent implements OnInit {
   /** Why inviting is unavailable — null when it isn't. Doubles as the tooltip copy (§2 explained-disabled). */
   protected readonly inviteLockReason = computed<string | null>(() => {
     if (this.isDemo()) {
-      return 'Inviting teammates is locked during the demo. Choose a plan, then exit demo mode';
+      return 'Inviting teammates is locked during the demo. Remove the demo data first';
     }
     if (this.seatsRemaining() === 0) {
       return `All ${this.seatUsage()?.seatLimit} seats on the ${this.planLabel()} plan are in use. Upgrade in Settings → Billing`;

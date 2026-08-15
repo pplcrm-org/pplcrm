@@ -5,7 +5,7 @@ import { TRPCService } from '../../services/api/trpc-service';
 import { PersonsService } from '../persons/services/persons-service';
 import { SettingsService } from '../settings/services/settings-service';
 
-export type GoLiveStepId = 'plan' | 'organization' | 'phone' | 'sending' | 'demo' | 'people' | 'team';
+export type GoLiveStepId = 'demo' | 'plan' | 'organization' | 'phone' | 'sending' | 'people' | 'team';
 
 /** Persisted wizard progress. Per TENANT: a workspace is configured once, by whoever gets there
  * first. (The product tour is the mirror image — per user, because each person learns once.) */
@@ -21,7 +21,7 @@ export interface GoLiveState {
 
 export const GO_LIVE_SETTINGS_KEY = 'setup.wizard';
 
-const DEFAULT_STATE: GoLiveState = { step: 'plan', sendsEmail: null, deferred: [], completedAt: null };
+const DEFAULT_STATE: GoLiveState = { step: 'demo', sendsEmail: null, deferred: [], completedAt: null };
 
 /**
  * Drives the go-live wizard.
@@ -95,11 +95,11 @@ export class GoLiveService extends TRPCService<any> {
 
   public readonly isDone = computed(
     (): Record<GoLiveStepId, boolean> => ({
+      demo: this.demoDone(),
       plan: this.planDone(),
       organization: this.organizationDone(),
       phone: this.phoneDone(),
       sending: this.sendingDone(),
-      demo: this.demoDone(),
       people: this.peopleDone(),
       team: this.teamDone(),
     }),
@@ -107,19 +107,26 @@ export class GoLiveService extends TRPCService<any> {
 
   /**
    * Steps whose server-side gate isn't satisfied yet, so the button would throw rather than work.
-   * Removing the demo data needs a settled plan (`demo.exit` refuses otherwise), and so does
-   * every kind of sender verification (see the backend's `assertPlanSelected`) — which is why
-   * the plan step comes first.
+   *
+   * Every billing mutation refuses while the demo data is in place (demo mode already gates as the
+   * top tier, so there is nothing to buy), which is why the demo removal comes first and the plan
+   * step is locked until it is done. Sender and phone verification then need a settled plan (the
+   * backend's `assertPlanSelected`), so they stay locked until the plan is chosen.
    */
-  public readonly lockedReason = computed(
-    (): Partial<Record<GoLiveStepId, string>> =>
-      this.planDone() ? {} : { phone: 'Choose a plan first', demo: 'Choose a plan first' },
-  );
+  public readonly lockedReason = computed((): Partial<Record<GoLiveStepId, string>> => {
+    if (!this.demoDone()) {
+      return {
+        plan: 'Remove the demo data first',
+        phone: 'Remove the demo data, then choose a plan',
+      };
+    }
+    return this.planDone() ? {} : { phone: 'Choose a plan first' };
+  });
 
   /** What is still outstanding once the wizard is closed — the dashboard checklist's input. */
   public readonly outstanding = computed<GoLiveStepId[]>(() => {
     const done = this.isDone();
-    const steps: GoLiveStepId[] = ['plan', 'organization', 'phone', 'sending', 'demo', 'people'];
+    const steps: GoLiveStepId[] = ['demo', 'plan', 'organization', 'phone', 'sending', 'people'];
     return steps.filter((id) => !done[id]);
   });
 
@@ -158,8 +165,8 @@ export class GoLiveService extends TRPCService<any> {
     }
   }
 
-  /** Commit to Free. Not a checkout — Free is not purchasable, so it records the choice directly
-   * and is the only way a free workspace reaches the settled status demo.exit requires. */
+  /** Commit to Free. Not a checkout — Free is not purchasable, so it records the choice directly.
+   * Refused server-side while the demo data is still in place, like every billing mutation. */
   public async selectFreePlan(): Promise<void> {
     await this.api.billing.selectFree.mutate();
     await this.refreshPlan();

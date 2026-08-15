@@ -117,8 +117,9 @@ All constants (caps, rates, messages) live at the top of that file. Enforcement 
      barrier). Phone verification lives in `settings/controller.ts` (`requestPhoneVerification` /
      `confirmPhoneVerification`, Twilio SMS via `lib/sms`, code hash stored on the tenant row —
      deliberately NOT in settings, whose snapshot is client-readable). Requesting a code needs a
-     settled plan, not demo removal (see the demo/plan gate section below). UI: Workspace →
-     Communications → "Sending phone verification", and step 3 of the go-live wizard.
+     settled plan, which since 2026-08-15 means the demo data must be gone first (see the
+     demo/plan gate section below). UI: Workspace → Communications → "Sending phone
+     verification", and step 4 of the go-live wizard.
    - Free plan and emailable-subscriber count > 1,000 (the live count via
      `countEmailableSubscribers`, checked against `exceededSubscriberCap`) → PRECONDITION_FAILED
      (added 2026-08-01). Free only, by decision — paid tiers over their top bracket stay
@@ -423,29 +424,39 @@ service must never require an upgrade.
 
 ## Demo gate vs plan gate — `apps/backend/src/app/modules/demo/demo-guard.ts`
 
-Two guards, different questions. Confusing them deadlocks the go-live wizard, which is exactly
-what happened before 2026-07-26.
+Two guards, applied in a fixed order (reversed 2026-08-15): **remove the demo data first, choose a
+plan second.**
 
-| Guard                | Asks                                    | Blocks                                                                                                    |
-| -------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `assertNotDemoMode`  | is the seeded demo data still in place? | sending newsletters, inviting teammates, mailbox sync (Google/MS), Stripe Connect                         |
-| `assertPlanSelected` | has the tenant settled on a plan?       | phone verification, sender-email verification, domain add/verify/delete (all in `settings/controller.ts`) |
+| Guard                | Asks                                    | Blocks                                                                                                                                       |
+| -------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `assertNotDemoMode`  | is the seeded demo data still in place? | sending newsletters, inviting teammates, mailbox sync (Google/MS), Stripe Connect, **and every billing mutation** (`billing/trpc.router.ts`) |
+| `assertPlanSelected` | has the tenant settled on a plan?       | phone verification, sender-email verification, domain add/verify/delete (all in `settings/controller.ts`)                                    |
+
+`demo.exit` itself has **no** gate. It used to require a settled plan; that is gone, because
+removing the demo data is what produces the clean workspace a plan is chosen for. Billing reads
+(`getDetails`, `getUsage`, `getDowngradeImpact`) and `syncSubscription` stay open; every mutation
+that could change what the workspace pays goes through `assertBillingOpen` in the billing router
+and refuses with `DEMO_MODE_BILLING_BLOCKED_MESSAGE`.
 
 Since 2026-08-10 demo mode also UNLOCKS the plan-tier feature gates (`effectivePlanKey`, see the
 plan-gates section above) — demo mode locks the outward-facing surface while opening every
-feature tier, so "in demo" means MORE features and LESS sending, never the reverse.
+feature tier, so "in demo" means MORE features and LESS sending, never the reverse. That is also
+why billing is closed during the demo: a demo workspace already has everything the top tier sells,
+and its billed subscriber count would be a count of seeded sample people.
 
 "Settled" = `hasSettledPlan(tenants.subscription_status)` from `plans.ts` — `active` or
 `trialing`, which **includes Free**, since `billing.selectFree` writes `active`/`free`. A brand-new
 tenant has a null status; that is what "hasn't decided" means. Don't re-inline `['active','trialing']`.
 
-Why verification is plan-gated and not demo-gated: the wizard verifies phone and domain at steps 3
-and 4, _before_ removing the demo data at step 5 — and removing the demo data itself requires a
-plan. Gate verification on demo mode and step 3 becomes unreachable until step 5, which is
-unreachable until step 1. The frontend mirrors this: `settings-page.ts` has `isDemoLocked`
-(email-sync, donations) and a separate `isPlanLocked` (domains), and the communications
-verification block keys off `tenant_plan_selected` on the signed-in user — set in
-`sanitizeUser`, refreshed after any plan change.
+Because billing is closed during the demo, `assertPlanSelected` can only be satisfied after the
+demo data is gone — so it reads `demo_mode_at` too and throws `PLAN_REQUIRED_IN_DEMO_MESSAGE`
+("remove the demo data first") instead of pointing at a Billing page that would also refuse. The
+frontend mirrors this: `settings-page.ts` has `isDemoLocked` (email-sync, donations, **billing** —
+the section renders the explaining banner instead of the plan cards) and a separate `isPlanLocked`
+(domains) whose banner branches on `isDemo()`, and the communications verification block keys off
+`tenant_plan_selected` on the signed-in user — set in `sanitizeUser`, refreshed after any plan
+change. The go-live wizard's `STEP_ORDER` is `demo, plan, organization, phone, sending, people,
+team`, and its step numbers are derived from that array rather than typed into each panel.
 
 ## Test traps
 

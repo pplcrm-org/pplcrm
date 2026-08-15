@@ -1,7 +1,7 @@
 import { DatePipe } from '@angular/common';
 import { Component, OnInit, WritableSignal, computed, effect, inject, input, signal } from '@angular/core';
 import { FormField, email, form, pattern, validate } from '@angular/forms/signals';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { Icon } from '@icons/icon';
 import { PcIconNameType } from '@icons/icons.index';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
@@ -74,6 +74,7 @@ interface NavGroup {
   imports: [
     FormField,
     Icon,
+    RouterLink,
     MsSyncSettings,
     GoogleSyncSettings,
     BillingSettingsComponent,
@@ -216,15 +217,17 @@ export class SettingsPage implements OnInit {
   }
 
   /** Custom sections whose actions the demo guard blocks; they render an explaining banner
-   *  and their controls are disabled instead of failing server-side. Domains is NOT one of
-   *  them — verification is gated on a settled plan, not on demo mode (see `isPlanLocked`). */
+   *  and their controls are disabled instead of failing server-side. Billing is one of them:
+   *  a demo workspace gates as the top tier, so there is nothing to buy, and every billing
+   *  mutation is refused until the demo data is removed. */
   protected isDemoLocked(sectionId: string): boolean {
-    return this.isDemo() && (sectionId === 'email-sync' || sectionId === 'donations');
+    return this.isDemo() && (sectionId === 'email-sync' || sectionId === 'donations' || sectionId === 'billing');
   }
 
-  /** Sections the server gates on a settled plan rather than on demo mode: proving you own a
-   *  domain, an email address or a phone number is setup, and the go-live wizard asks for it
-   *  while the demo data is still in place. */
+  /** Sections the server gates on a settled plan: proving you own a domain, an email address or
+   *  a phone number is setup, and it needs a plan. Because billing is closed during the demo,
+   *  this is only reachable after the demo data is gone — `isDemo()` decides which of the two
+   *  outstanding steps the banner names. */
   protected isPlanLocked(sectionId: string): boolean {
     return !this.planSelected() && sectionId === 'domains';
   }

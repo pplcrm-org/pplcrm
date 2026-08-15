@@ -75,7 +75,7 @@ const TEMPLATE_OPTIONS: ReadonlyArray<{
 
 const STEP_LABELS = ['Template', 'Content', 'Audience & details', 'Review & send'] as const;
 const LOCKED_STEP_TOOLTIP = 'Complete the current step first';
-const DEMO_SEND_TOOLTIP = 'Sending is locked during the demo. Choose a plan, then exit demo mode';
+const DEMO_SEND_TOOLTIP = 'Sending is locked during the demo. Remove the demo data to unlock it';
 const SUBJECT_COACH = "Add a subject line. It's the one field every recipient sees.";
 const FROM_NAME_COACH = 'Add a from name so recipients know who the email is from.';
 const FROM_ADDRESS_COACH = 'Choose a verified sender address.';
