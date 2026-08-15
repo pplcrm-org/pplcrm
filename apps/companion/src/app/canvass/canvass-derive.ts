@@ -29,20 +29,20 @@ import {
 // Door status
 // ---------------------------------------------------------------------------
 
-export type DoorStatus = 'dnc' | `outcome:${CompanionDoorOutcome}` | 'canvassed' | 'in_progress' | 'not_visited';
+export type DoorStatus = 'dnc' | `outcome:${CompanionDoorOutcome}` | 'canvassed' | 'visited' | 'not_visited';
 
 /**
  * The one derivation the whole walk list hangs off. Precedence: DNC beats
  * everything (skip the door — it still counts), then an explicit door outcome,
  * then what was recorded at the door.
  *
- * ONE conversation resolves the door. Canvassers talk to whoever answers, not
- * to every name on file, so a surveyed person (or the anonymous household
- * survey) marks the door canvassed even while other residents have no result —
- * which is also what the backend counts: any knock row makes the door
- * attempted in turf progress. 'in_progress' is only the rarer partial state
- * with no conversation in it: somebody marked one resident moved, deceased,
- * refused or not-home and left the rest open.
+ * ONE recorded answer resolves the door. Canvassers talk to whoever answers,
+ * not to every name on file: a conversation (a surveyed person, or the
+ * anonymous household survey) marks the door canvassed, and any other person
+ * result — not home, moved, refused, deceased — marks it visited. Both count
+ * as attempted, which is also what the backend counts: any knock row makes
+ * the door attempted in turf progress. Residents without a result stay open
+ * on the door screen for a later pass; they never hold the door hostage.
  */
 export function doorStatus(h: CompanionHousehold): DoorStatus {
   if (h.dnc) return 'dnc';
@@ -50,7 +50,7 @@ export function doorStatus(h: CompanionHousehold): DoorStatus {
   const resulted = h.people.filter((p) => p.result != null).length;
   const talked = h.hh_survey != null || h.people.some((p) => p.result === 'canvassed');
   if (talked || (h.people.length > 0 && resulted === h.people.length)) return 'canvassed';
-  if (resulted > 0) return 'in_progress';
+  if (resulted > 0) return 'visited';
   return 'not_visited';
 }
 
@@ -69,8 +69,8 @@ export function doorStatusLabel(status: DoorStatus): string {
       return 'Moved out';
     case 'canvassed':
       return 'Canvassed';
-    case 'in_progress':
-      return 'In progress';
+    case 'visited':
+      return 'Visited';
     case 'not_visited':
       return 'Not visited';
     default: {
@@ -81,13 +81,13 @@ export function doorStatusLabel(status: DoorStatus): string {
 }
 
 /**
- * A door counts toward progress once it is resolved: canvassed, marked with a
- * door outcome, or DNC ("DNC doors still count toward your turf" — spec §3.4).
- * In-progress doors are not yet attempted.
+ * A door counts toward progress once ANYTHING was recorded at it: a survey, a
+ * person result, a door outcome, or DNC ("DNC doors still count toward your
+ * turf" — spec §3.4). The backend counts the same way — any knock row makes
+ * the door attempted — so the phone's numbers and the campaign's agree.
  */
 export function isAttempted(h: CompanionHousehold): boolean {
-  const status = doorStatus(h);
-  return status !== 'not_visited' && status !== 'in_progress';
+  return doorStatus(h) !== 'not_visited';
 }
 
 /** The next open door: lowest walk_order not yet attempted. */

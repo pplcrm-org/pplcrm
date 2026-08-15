@@ -20,8 +20,10 @@ export function statusBadgeClass(status: DoorStatus): string {
     case 'outcome:inaccessible':
     case 'outcome:moved':
       return 'badge badge-warning';
-    case 'in_progress':
-      return 'badge badge-info badge-outline';
+    case 'visited':
+      // Outlined success: the door is resolved (it counts as attempted, like the walk
+      // map's "Done"), just without a conversation behind it the way solid green has.
+      return 'badge badge-success badge-outline';
     case 'not_visited':
       return 'badge badge-ghost';
     default: {

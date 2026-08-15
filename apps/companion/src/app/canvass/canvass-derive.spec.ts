@@ -111,11 +111,11 @@ describe('doorStatus', () => {
     expect(doorStatus(h)).toBe('canvassed');
   });
 
-  it('is in_progress when some people have non-conversation results and the rest have none', () => {
+  it('is visited when some people have non-conversation results and the rest have none', () => {
     const h = household({ people: [person({ id: '1', result: 'deceased' }), person({ id: '2' })] });
-    expect(doorStatus(h)).toBe('in_progress');
+    expect(doorStatus(h)).toBe('visited');
     const notHome = household({ people: [person({ id: '1', result: 'not_home' }), person({ id: '2' })] });
-    expect(doorStatus(notHome)).toBe('in_progress');
+    expect(doorStatus(notHome)).toBe('visited');
   });
 
   it('is not_visited when nothing was recorded', () => {
@@ -130,7 +130,7 @@ describe('doorStatusLabel', () => {
     expect(doorStatusLabel('outcome:inaccessible')).toBe('Inaccessible');
     expect(doorStatusLabel('outcome:refused')).toBe('Refused');
     expect(doorStatusLabel('canvassed')).toBe('Canvassed');
-    expect(doorStatusLabel('in_progress')).toBe('In progress');
+    expect(doorStatusLabel('visited')).toBe('Visited');
     expect(doorStatusLabel('not_visited')).toBe('Not visited');
   });
 });
@@ -142,15 +142,16 @@ describe('isAttempted', () => {
     expect(isAttempted(household({ dnc: true }))).toBe(true);
   });
 
-  it('does not count not-visited or in-progress doors', () => {
+  it('does not count doors where nothing was recorded', () => {
     expect(isAttempted(household())).toBe(false);
-    const inProgress = household({ people: [person({ id: '1', result: 'refused' }), person({ id: '2' })] });
-    expect(isAttempted(inProgress)).toBe(false);
+    expect(isAttempted(household({ people: [person()] }))).toBe(false);
   });
 
-  it('counts a door where one of several residents was surveyed', () => {
+  it('counts a door where anything was recorded for any resident', () => {
     const oneTalk = household({ people: [person({ id: '1', result: 'canvassed' }), person({ id: '2' })] });
     expect(isAttempted(oneTalk)).toBe(true);
+    const oneRefusal = household({ people: [person({ id: '1', result: 'refused' }), person({ id: '2' })] });
+    expect(isAttempted(oneRefusal)).toBe(true);
   });
 });
 
