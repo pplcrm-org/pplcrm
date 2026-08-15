@@ -8,7 +8,14 @@ import type {
   KnockResponse,
   LatLng,
 } from '@common';
-import { KNOCK_RESPONSE_TO_STANCE, SUPPORT_LEVEL_TO_STANCE, VOTED_STATUSES, orderForWalk, streetKeyOf } from '@common';
+import {
+  KNOCK_RESPONSE_TO_STANCE,
+  SUPPORT_LEVEL_TO_STANCE,
+  VOTED_STATUSES,
+  orderForWalk,
+  streetKeyOf,
+  streetNumberValue,
+} from '@common';
 
 /**
  * Pure derivations over the Companion turf payload (spec §3 "derived, never
@@ -166,6 +173,72 @@ export function deriveSegments(households: readonly CompanionHousehold[]): Canva
  */
 export function segmentKeyOf(h: CompanionHousehold): string {
   return streetKeyOf(h.street) || UNKNOWN_SEGMENT_KEY;
+}
+
+// ---------------------------------------------------------------------------
+// Street sides — the odd-numbered side and the even-numbered side
+// ---------------------------------------------------------------------------
+
+/** Which house-number parity side of the street a door stands on. */
+export type StreetSide = 'odd' | 'even';
+
+/** The walk list's side narrowing: one parity side, or no narrowing at all. */
+export type SideFilter = StreetSide | 'both';
+
+/** A door's side, or null when its house number has no leading digits to read one from. */
+export function doorSide(h: CompanionHousehold): StreetSide | null {
+  const num = streetNumberValue(h.street_num);
+  if (num == null) return null;
+  return num % 2 === 0 ? 'even' : 'odd';
+}
+
+export interface SideBreakdown {
+  /** Whether narrowing to one side is worth offering for these doors at all. */
+  available: boolean;
+  /** Doors the 'odd' filter would show — odd-numbered plus the unplaceable ones. */
+  odd: number;
+  /** Doors the 'even' filter would show — even-numbered plus the unplaceable ones. */
+  even: number;
+}
+
+/** Fewer numbered doors than this on a side and "filter to that side" filters almost nothing. */
+const MIN_DOORS_PER_SIDE = 2;
+
+/**
+ * Whether a side filter makes sense for the doors in scope, and what each side holds.
+ *
+ * Volunteers walk one side of a street at a time, and house numbers are even on one side
+ * and odd on the other — so the side is derivable, not stored. It is only offered when it
+ * would mean something: a single street (parity across different streets says nothing
+ * about where anyone is standing), at least MIN_DOORS_PER_SIDE numbered doors on each
+ * side, and no more unplaceable doors than numbered ones. Anywhere thinner the control
+ * disappears rather than offering a filter that mostly cannot filter.
+ */
+export function deriveSideBreakdown(households: readonly CompanionHousehold[]): SideBreakdown {
+  let odd = 0;
+  let even = 0;
+  let unplaced = 0;
+  const streets = new Set<string>();
+  for (const h of households) {
+    streets.add(segmentKeyOf(h));
+    const side = doorSide(h);
+    if (side === 'odd') odd += 1;
+    else if (side === 'even') even += 1;
+    else unplaced += 1;
+  }
+  const available =
+    streets.size === 1 && odd >= MIN_DOORS_PER_SIDE && even >= MIN_DOORS_PER_SIDE && odd + even >= unplaced;
+  return { available, odd: odd + unplaced, even: even + unplaced };
+}
+
+/**
+ * Whether a door shows under a side filter. A door whose number carries no parity shows on
+ * BOTH sides — a filter may narrow the walk, but it must never make a door unreachable.
+ */
+export function matchesSide(h: CompanionHousehold, side: SideFilter): boolean {
+  if (side === 'both') return true;
+  const placed = doorSide(h);
+  return placed == null || placed === side;
 }
 
 // ---------------------------------------------------------------------------

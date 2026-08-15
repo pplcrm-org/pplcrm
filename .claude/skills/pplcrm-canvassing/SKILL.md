@@ -387,6 +387,21 @@ Rules that hold:
   info-toned (blue) to match the walk map; `inaccessible`/`moved` chips stay
   warning while the walk map shows them as done.
 
+**Odd/even side filter (2026-08-14).** Within a scoped street the walk list offers
+"Both sides / Odd (n) / Even (n)" — volunteers walk one parity side at a time.
+`CanvassStore.sideFilter` (`'both'` default; resets on street change, turf switch and
+end-shift) narrows `scopedHouseholds`, so the list rows, numbering, next-door ring, map
+pins and dashed path all follow. Pure logic in `canvass-derive.ts`: `doorSide` (parity of
+`streetNumberValue`), `deriveSideBreakdown` (the control only appears for a single street
+with ≥2 numbered doors per side and no more unnumbered doors than numbered — anywhere
+thinner it hides rather than offering a filter that can't filter), `matchesSide` (a door
+with no readable number shows on BOTH sides — the filter must never make a door
+unreachable). `CanvassStore.crossSide` powers "Switch to the other side" on the list's
+empty-remaining state and the map's done panel, offered before "Pick the next street".
+Scope narration goes through `scopeLabel` in `canvass-ui.ts` ("the odd side of James
+Street") in both the list and the map. Choosing a side does not claim the street and is
+never sent to the server.
+
 **Live refresh**: `CanvassStore.refresh()` re-pulls the turf every 60s while the walk list
 is open and replaces ONLY the server payload — `localOps` replay on top, so nothing queued
 or optimistic is lost and re-applying an op the server already has is a no-op. It is

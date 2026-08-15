@@ -2,7 +2,7 @@ import type { CompanionLastKnock, CompanionPersonResult, KnockResponse, SupportL
 import { KNOCK_RESPONSE_LABELS, SUPPORT_LEVEL_LABELS } from '@common';
 import type { PcIconNameType } from '@icons/icons.index';
 
-import type { DoorStance, DoorStatus } from './canvass-derive';
+import type { DoorStance, DoorStatus, StreetSide } from './canvass-derive';
 
 /** Small presentational helpers shared by the canvass views. No state. */
 
@@ -131,6 +131,15 @@ function isSameCanvasser(knockName: string | null, myName: string | null): boole
 }
 
 export { firstNameOf } from './canvass-derive';
+
+/**
+ * The scope as a phrase: "James Street", "the odd side of James Street", "this turf".
+ * Shared by the walk list and the map so the two never name the same doors differently.
+ */
+export function scopeLabel(street: string | null, side: StreetSide | null): string {
+  const where = street ?? 'this turf';
+  return side == null ? where : `the ${side} side of ${where}`;
+}
 
 export function initialsOf(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);

@@ -3,7 +3,7 @@ import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signa
 import type { CompanionHousehold } from '@common';
 import { Icon } from '@icons/icon';
 
-import type { WalkEntry } from './canvass-derive';
+import type { SideFilter, WalkEntry } from './canvass-derive';
 import {
   conversations,
   doorStatus,
@@ -16,7 +16,7 @@ import {
 } from './canvass-derive';
 import { CanvassSegmentPicker } from './canvass-segment-picker';
 import { CanvassStore } from './canvass-store';
-import { statusBadgeClass, stanceStyle, type StanceStyle } from './canvass-ui';
+import { scopeLabel, statusBadgeClass, stanceStyle, type StanceStyle } from './canvass-ui';
 
 /**
  * How often the turf re-pulls itself while the walk list is open.
@@ -116,6 +116,27 @@ type ListFilter = 'all' | 'remaining' | 'visited';
         }
       </div>
 
+      <!-- One side of the street at a time — how streets are actually walked. Only shown
+           when the street genuinely splits into two numbered sides; composes with the
+           filter row above ("Remaining" + "Odd" = the working set). -->
+      @if (store.sideBreakdown().available) {
+        <div class="flex gap-2" role="group" aria-label="Side of the street">
+          @for (option of sideOptions; track option) {
+            <button
+              type="button"
+              class="btn btn-sm flex-1"
+              [class.btn-primary]="store.sideFilter() === option"
+              [class.btn-outline]="store.sideFilter() !== option"
+              [class.btn-secondary]="store.sideFilter() !== option"
+              [attr.aria-pressed]="store.sideFilter() === option"
+              (click)="store.sideFilter.set(option)"
+            >
+              {{ sideLabel(option) }}
+            </button>
+          }
+        </div>
+      }
+
       <div class="flex flex-col gap-2">
         @for (entry of filtered(); track entry.key) {
           <button
@@ -176,7 +197,11 @@ type ListFilter = 'all' | 'remaining' | 'visited';
         } @empty {
           <div class="flex flex-col items-center gap-2 rounded-lg border border-base-300 bg-base-100 p-6 text-center">
             <p class="text-base-content/70">{{ emptyMessage() }}</p>
-            @if (filter() !== 'all') {
+            @if (filter() === 'remaining' && store.crossSide(); as other) {
+              <button type="button" class="btn btn-primary" (click)="store.sideFilter.set(other)">
+                Switch to the {{ other }} side
+              </button>
+            } @else if (filter() !== 'all') {
               <button type="button" class="btn btn-outline btn-primary" (click)="filter.set('all')">
                 Show every door here
               </button>
@@ -197,6 +222,8 @@ export class CanvassList {
     { id: 'remaining', label: 'Remaining' },
     { id: 'visited', label: 'Visited' },
   ];
+  /** 'Both sides' first: it is the default, and it names what the other two narrow. */
+  protected readonly sideOptions: SideFilter[] = ['both', 'odd', 'even'];
 
   /**
    * Progress on the street in view, with the turf stated underneath.
@@ -259,14 +286,39 @@ export class CanvassList {
     return entries.length;
   }
 
+  /** "Odd (7)" — the count is what picking that side would show, unplaceable doors included. */
+  protected sideLabel(side: SideFilter): string {
+    const breakdown = this.store.sideBreakdown();
+    switch (side) {
+      case 'both':
+        return 'Both sides';
+      case 'odd':
+        return `Odd (${breakdown.odd})`;
+      case 'even':
+        return `Even (${breakdown.even})`;
+      default: {
+        const _exhaustive: never = side;
+        return _exhaustive;
+      }
+    }
+  }
+
+  private scopeDescription(): string {
+    return scopeLabel(this.store.activeSegment()?.street ?? null, this.store.activeSide());
+  }
+
   protected emptyMessage(): string {
     const filter = this.filter();
     // Say which scope is empty. "Every door is attempted" about one street, read as if it
     // were the whole turf, would send a volunteer home early.
-    const where = this.store.activeSegment()?.street ?? 'this turf';
+    const where = this.scopeDescription();
     switch (filter) {
       case 'remaining':
-        return `Every door on ${where} is attempted. Pick the next street.`;
+        // When the other side of this street still has doors, the button under this
+        // message says "switch side" — telling them to leave the street would be wrong.
+        return this.store.crossSide()
+          ? `Every door on ${where} is attempted.`
+          : `Every door on ${where} is attempted. Pick the next street.`;
       case 'visited':
         return `No doors visited on ${where} yet. Start with the ringed door.`;
       case 'all':
@@ -313,9 +365,9 @@ export class CanvassList {
   }
 
   protected progressLine(): string {
-    const total = this.scopeTotal();
-    const where = this.store.activeSegment()?.street ?? 'this turf';
-    return `${this.scopeAttempted()} of ${total} doors attempted on ${where}`;
+    // Named with the side in force ("the odd side of James Street"), because the counts
+    // follow the side — an unnarrated narrowing would read as doors going missing.
+    return `${this.scopeAttempted()} of ${this.scopeTotal()} doors attempted on ${this.scopeDescription()}`;
   }
 
   protected residents(h: CompanionHousehold): string {

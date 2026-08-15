@@ -19,10 +19,12 @@ import { GeoPosition } from './geo-position';
 import {
   applyLocalOps,
   deriveSegments,
+  deriveSideBreakdown,
   deriveWalkEntries,
   entryRemaining,
   isAttempted,
   isTempPersonId,
+  matchesSide,
   meStats,
   nextDoor,
   opPersonId,
@@ -31,6 +33,9 @@ import {
   unitsOf,
   type CanvassSegment,
   type LocalOp,
+  type SideBreakdown,
+  type SideFilter,
+  type StreetSide,
   type WalkEntry,
 } from './canvass-derive';
 
@@ -225,6 +230,16 @@ export class CanvassStore {
    */
   public readonly segmentKey = signal<string | null>(null);
   /**
+   * Which house-number side of the scoped street is in view; 'both' = no narrowing.
+   *
+   * Volunteers walk one side of a street at a time, so this is the working set within the
+   * street the same way the street is the working set within the turf. Lives here for the
+   * same reason `segmentKey` does — the list and the map must never show different doors.
+   * Resets with the street and with the turf; only offered when `sideBreakdown` says the
+   * street actually splits into two walkable sides.
+   */
+  public readonly sideFilter = signal<SideFilter>('both');
+  /**
    * Which colouring the map tab shows: 'walk' (visit status, the default — the
    * walker's question is "where next", not "how are we polling") or 'results'
    * (the stance colours the walk-list rows use). Lives here so it survives tab
@@ -277,11 +292,43 @@ export class CanvassStore {
    * and that street dropped out) falls back to the whole turf rather than showing an
    * empty list: the volunteer did nothing wrong and an empty screen would not say so.
    */
-  public readonly scopedHouseholds = computed<CompanionHousehold[]>(() => {
+  private readonly streetScopedHouseholds = computed<CompanionHousehold[]>(() => {
     const key = this.segmentKey();
     if (key == null) return this.households();
     const matching = this.households().filter((h) => segmentKeyOf(h) === key);
     return matching.length > 0 ? matching : this.households();
+  });
+  /**
+   * Whether the street in view splits into two walkable sides, and how many doors each
+   * side holds. Computed BEFORE the side filter applies — the control's counts describe
+   * what picking each side would show, not what is already shown.
+   */
+  public readonly sideBreakdown = computed<SideBreakdown>(() => deriveSideBreakdown(this.streetScopedHouseholds()));
+  public readonly scopedHouseholds = computed<CompanionHousehold[]>(() => {
+    const base = this.streetScopedHouseholds();
+    const side = this.sideFilter();
+    // A side chosen on a street that no longer supports one (a refresh changed the doors)
+    // goes inert rather than hiding doors behind a control that is no longer on screen.
+    if (side === 'both' || !this.sideBreakdown().available) return base;
+    return base.filter((h) => matchesSide(h, side));
+  });
+  /** The side actually narrowing the view — null when on 'both' or the control is hidden. */
+  public readonly activeSide = computed<StreetSide | null>(() => {
+    const side = this.sideFilter();
+    return side !== 'both' && this.sideBreakdown().available ? side : null;
+  });
+  /**
+   * The opposite side of the scoped street, when a side is in view and the other one still
+   * has unattempted doors — the "you're done here, cross the street" affordance. Both the
+   * list and the map offer it in place of "pick the next street", which would send a
+   * volunteer to another street while work remains on the one they are standing on.
+   */
+  public readonly crossSide = computed<StreetSide | null>(() => {
+    const side = this.activeSide();
+    if (side == null) return null;
+    const other: StreetSide = side === 'odd' ? 'even' : 'odd';
+    const hasWork = this.streetScopedHouseholds().some((h) => matchesSide(h, other) && !isAttempted(h));
+    return hasWork ? other : null;
   });
   /** The scoped street, or null when the whole turf is in view. */
   public readonly activeSegment = computed<CanvassSegment | null>(() => {
@@ -546,6 +593,7 @@ export class CanvassStore {
       this.lastRefreshedAt.set(new Date());
       // A street scope belongs to the turf it was chosen on, never to the next one.
       this.segmentKey.set(null);
+      this.sideFilter.set('both');
       this.mapMode.set('walk');
       this.restoreMyDoors();
       this.applyDefaultScope();
@@ -596,6 +644,8 @@ export class CanvassStore {
    * knock. Nothing here or on the server treats a claim as permission.
    */
   public chooseSegment(key: string | null): void {
+    // A side belongs to the street it was chosen on. Re-confirming the same street keeps it.
+    if (key !== this.segmentKey()) this.sideFilter.set('both');
     this.segmentKey.set(key);
     const street = key == null ? null : (this.segments().find((s) => s.key === key)?.street ?? null);
     void this.postSegmentClaim(key, street);
@@ -966,6 +1016,7 @@ export class CanvassStore {
     this.workOffline.set(false);
     this.syncStatus.set('idle');
     this.segmentKey.set(null);
+    this.sideFilter.set('both');
     this.mapMode.set('walk');
     this.view.set({ kind: 'landing' });
     // Last, so a slow or failed revoke never leaves turf data on screen after the

@@ -8,7 +8,9 @@ import {
   buildingKeyOf,
   conversations,
   deriveSegments,
+  deriveSideBreakdown,
   deriveWalkEntries,
+  doorSide,
   doorStatus,
   doorStatusLabel,
   entryRemaining,
@@ -16,6 +18,7 @@ import {
   householdStance,
   isAttempted,
   isTempPersonId,
+  matchesSide,
   meStats,
   nextDoor,
   opPersonId,
@@ -668,6 +671,75 @@ describe('orderEntriesForWalk', () => {
       household({ id: 'd', street: 'First St', street_num: '3', walk_order: 2 }),
     ]);
     expect(orderEntriesForWalk(entries).map((e) => e.key)).toEqual(['b', 'd', 'a', 'c']);
+  });
+});
+
+describe('street sides', () => {
+  it('doorSide reads parity from the leading digits, null when there are none', () => {
+    expect(doorSide(household({ street_num: '218' }))).toBe('even');
+    expect(doorSide(household({ street_num: '3A' }))).toBe('odd');
+    expect(doorSide(household({ street_num: 'Rear' }))).toBeNull();
+    expect(doorSide(household({ street_num: null }))).toBeNull();
+  });
+
+  it('offers the side filter for one street with two real sides, and counts each', () => {
+    const breakdown = deriveSideBreakdown([
+      household({ id: 'a', street_num: '1' }),
+      household({ id: 'b', street_num: '3' }),
+      household({ id: 'c', street_num: '2' }),
+      household({ id: 'd', street_num: '4' }),
+      household({ id: 'e', street_num: '6' }),
+    ]);
+    expect(breakdown).toEqual({ available: true, odd: 2, even: 3 });
+  });
+
+  it('shows a door with no readable number on both sides, and counts it on both', () => {
+    const oddDoor = household({ id: 'a', street_num: '1' });
+    const unnumbered = household({ id: 'e', street_num: 'Rear' });
+    const doors = [
+      oddDoor,
+      household({ id: 'b', street_num: '3' }),
+      household({ id: 'c', street_num: '2' }),
+      household({ id: 'd', street_num: '4' }),
+      unnumbered,
+    ];
+    expect(deriveSideBreakdown(doors)).toEqual({ available: true, odd: 3, even: 3 });
+    expect(matchesSide(unnumbered, 'odd')).toBe(true);
+    expect(matchesSide(unnumbered, 'even')).toBe(true);
+    expect(matchesSide(oddDoor, 'even')).toBe(false);
+    expect(matchesSide(oddDoor, 'both')).toBe(true);
+  });
+
+  it('withholds the filter when the doors span streets, a side is thin, or numbers are mostly unreadable', () => {
+    const twoStreets = [
+      household({ id: 'a', street: 'First St', street_num: '1' }),
+      household({ id: 'b', street: 'First St', street_num: '3' }),
+      household({ id: 'c', street: 'Second St', street_num: '2' }),
+      household({ id: 'd', street: 'Second St', street_num: '4' }),
+    ];
+    expect(deriveSideBreakdown(twoStreets).available).toBe(false);
+
+    const oneSided = [
+      household({ id: 'a', street_num: '1' }),
+      household({ id: 'b', street_num: '2' }),
+      household({ id: 'c', street_num: '4' }),
+      household({ id: 'd', street_num: '6' }),
+    ];
+    expect(deriveSideBreakdown(oneSided).available).toBe(false);
+
+    const mostlyUnnumbered = [
+      household({ id: 'a', street_num: '1' }),
+      household({ id: 'b', street_num: '3' }),
+      household({ id: 'c', street_num: '2' }),
+      household({ id: 'd', street_num: '4' }),
+      household({ id: 'e', street_num: null }),
+      household({ id: 'f', street_num: null }),
+      household({ id: 'g', street_num: null }),
+      household({ id: 'h', street_num: null }),
+      household({ id: 'i', street_num: null }),
+    ];
+    expect(deriveSideBreakdown(mostlyUnnumbered).available).toBe(false);
+    expect(deriveSideBreakdown([])).toEqual({ available: false, odd: 0, even: 0 });
   });
 });
 

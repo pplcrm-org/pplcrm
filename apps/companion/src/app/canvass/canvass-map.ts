@@ -15,6 +15,7 @@ import {
 } from './canvass-derive';
 import { CanvassSegmentPicker } from './canvass-segment-picker';
 import { CanvassStore } from './canvass-store';
+import { scopeLabel } from './canvass-ui';
 import { GeoPosition } from './geo-position';
 
 interface LegendItem {
@@ -50,9 +51,9 @@ interface LegendItem {
         <h1 class="text-xl font-bold">{{ store.payload()?.turf_name }} on the map</h1>
         <!-- The map follows the walk list's scope; saying so beats a map that quietly
              shows fewer pins than the volunteer remembers (§2). -->
-        @if (store.activeSegment(); as segment) {
+        @if (store.activeSegment()) {
           <p class="text-xs text-base-content/70">
-            Showing {{ segment.street }} · {{ segment.doors }} of {{ store.stats().doors_total }} doors in this turf
+            Showing {{ scopeName() }} · {{ scopeTotal() }} of {{ store.stats().doors_total }} doors in this turf
           </p>
         }
       </header>
@@ -82,7 +83,11 @@ interface LegendItem {
         } @else if (scopeTotal() > 0) {
           <div class="flex flex-col gap-2 rounded-lg border border-base-300 bg-base-100 p-3">
             <p class="font-medium">Every door on {{ scopeName() }} is done.</p>
-            @if (store.segments().length > 1) {
+            @if (store.crossSide(); as other) {
+              <button type="button" class="btn btn-primary" (click)="store.sideFilter.set(other)">
+                Switch to the {{ other }} side
+              </button>
+            } @else if (store.segments().length > 1) {
               <button type="button" class="btn btn-primary" (click)="pickerOpen.set(!pickerOpen())">
                 Pick the next street
               </button>
@@ -252,9 +257,9 @@ export class CanvassMap {
     () => this.store.scopedHouseholds().filter((h) => h.lat == null || h.lng == null).length,
   );
 
-  /** The street in view, or the whole turf when nothing narrower is scoped. */
+  /** The scope in view: "James Street", "the odd side of James Street", or "this turf". */
   protected scopeName(): string {
-    return this.store.activeSegment()?.street ?? 'this turf';
+    return scopeLabel(this.store.activeSegment()?.street ?? null, this.store.activeSide());
   }
 
   protected unmappedMessage(): string {
