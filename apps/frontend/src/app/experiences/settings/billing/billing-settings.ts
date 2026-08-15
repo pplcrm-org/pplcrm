@@ -122,11 +122,12 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     () => this.details()?.plan === 'free' && !!this.details()?.hasActiveSubscription,
   );
 
-  /** Moving to Free is only self-serve while no modifiable subscription exists; otherwise it is
-   * a cancellation — the "Downgrade to Free" button in the Current plan section. Keyed on the
-   * backend's live-subscription predicate, not the stored Stripe id: after a cancellation lands
-   * the id is cleared, but even a stale one must not block the Free card forever (T1-9). */
-  protected readonly canChooseFree = computed(() => !this.details()?.canModifySubscription);
+  /** Moving to Free means two different operations. With no modifiable subscription it records
+   * the choice directly (`selectFree`); with one live it IS a cancellation, so the card runs the
+   * same period-end cancellation the Current plan section offers. Keyed on the backend's
+   * live-subscription predicate, not the stored Stripe id: after a cancellation lands the id is
+   * cleared, but even a stale one must not misroute the Free card forever (T1-9). */
+  protected readonly freeIsCancellation = computed(() => !!this.details()?.canModifySubscription);
 
   /** A subscription is live and modifiable (includes `past_due`). Plan changes must then go
    * through `switchPlan` (updates the existing subscription); Checkout would CREATE a second
@@ -202,8 +203,13 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     if (this.outgrewFree()) {
       return `Your list is past the ${this.formatCount(this.freeSubscriberCap)}-subscriber Free limit.`;
     }
-    if (!this.canChooseFree()) {
-      return 'Cancel your subscription first — use “Downgrade to Free” in the Current plan section above.';
+    // A cancellation is already scheduled, so the move to Free is already happening; offering
+    // the button again would either do nothing or read as a second, different action.
+    if (this.details()?.cancelAtPeriodEnd) {
+      const endsAt = this.details()?.endsAt;
+      return endsAt
+        ? `Already scheduled — this workspace moves to Free on ${endsAt.toLocaleDateString('en-US', { dateStyle: 'medium' })}.`
+        : 'Already scheduled — this workspace moves to Free at the end of the paid period.';
     }
     return null;
   }
@@ -215,13 +221,27 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
       }
       return 'Current plan';
     }
-    if (plan.key === 'free') return 'Switch to Free';
+    // Same words as the Current plan section's button, because it now starts the same flow.
+    if (plan.key === 'free') return this.freeIsCancellation() ? 'Downgrade to Free' : 'Switch to Free';
     if (!this.hasLiveSubscription()) return `Choose ${plan.name}`;
     return this.isUpgrade(plan) ? `Upgrade to ${plan.name}` : `Switch to ${plan.name}`;
   }
 
+  /** Whether this card's own action is in flight. The Free card can be running either the plain
+   * Free selection (`pendingPlan`) or the cancellation flow (`cancelPending`). */
+  protected ctaBusy(plan: PlanDef): boolean {
+    if (plan.key === 'free' && this.freeIsCancellation()) return this.cancelPending();
+    return this.pendingPlan() === plan.key;
+  }
+
+  /** What the button says while its action runs — the three paths do different things. */
+  protected ctaBusyLabel(plan: PlanDef): string {
+    if (plan.key === 'free') return this.freeIsCancellation() ? 'Canceling…' : 'Switching…';
+    return this.hasLiveSubscription() ? 'Switching…' : 'Opening Stripe…';
+  }
+
   protected ctaDisabled(plan: PlanDef): boolean {
-    if (this.pendingPlan() === plan.key || this.blockedReason(plan) !== null) return true;
+    if (this.ctaBusy(plan) || this.blockedReason(plan) !== null) return true;
     if (!this.isCurrentPlan(plan)) return false;
     // The current plan's card doubles as the monthly↔annual switch when the toggle points at
     // the other interval; with the toggle on the subscribed interval it stays a disabled marker.
@@ -236,13 +256,19 @@ export class BillingSettingsComponent extends TRPCService<any> implements OnInit
     );
   }
 
-  /** Picking a tier. Free records a choice directly (it isn't purchasable); a first paid plan
-   * goes through Stripe Checkout; with a live subscription the switch happens in place — using
-   * Checkout there would create a second subscription. One entry point so the cards stay uniform. */
+  /** Picking a tier. Free records a choice directly (it isn't purchasable) unless a paid
+   * subscription is live, in which case moving to Free IS the cancellation and the card runs it
+   * rather than pointing at another button. A first paid plan goes through Stripe Checkout; with
+   * a live subscription the switch happens in place — using Checkout there would create a second
+   * subscription. One entry point so the cards stay uniform. */
   protected async choosePlan(plan: PlanDef): Promise<void> {
     if (this.ctaDisabled(plan)) return;
     if (plan.key === 'free') {
-      await this.continueOnFree();
+      if (this.freeIsCancellation()) {
+        await this.startCancelFlow();
+      } else {
+        await this.continueOnFree();
+      }
       return;
     }
     if (this.hasLiveSubscription()) {

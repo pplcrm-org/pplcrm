@@ -95,6 +95,8 @@ describe('BillingSettingsComponent', () => {
         createCheckout: { mutate: vi.fn().mockResolvedValue({ url: 'https://checkout.stripe.test/session' }) },
         switchPlan: { mutate: vi.fn().mockResolvedValue({ plan: 'movement', interval: 'month', endsAt: null }) },
         syncSubscription: { mutate: vi.fn().mockResolvedValue({ synced: false }) },
+        cancelSubscription: { mutate: vi.fn().mockResolvedValue({ endsAt: null, immediate: false }) },
+        resumeSubscription: { mutate: vi.fn().mockResolvedValue(undefined) },
         activateMockPlan: { mutate: vi.fn().mockResolvedValue(undefined) },
         cancelMockPlan: { mutate: vi.fn().mockResolvedValue(undefined) },
       },
@@ -387,13 +389,34 @@ describe('BillingSettingsComponent', () => {
       return plan;
     };
 
-    it('sends a paid subscriber to the portal instead of switching in place', async () => {
+    /**
+     * With a live subscription, moving to Free IS the cancellation. The card used to be greyed
+     * out with a note telling the user to press a different button that ran exactly the flow they
+     * had just asked for, so it now runs that flow itself.
+     */
+    it('runs the cancellation flow for a subscriber instead of greying the card out', async () => {
       await render();
+      mockDialogs.confirm.mockResolvedValue(true);
+      mockApi.billing.cancelSubscription.mutate.mockResolvedValue({ endsAt: null, immediate: false });
 
-      expect(component['canChooseFree']()).toBe(false);
-      expect(component['blockedReason'](freePlan())).toBe(
-        'Cancel your subscription first — use “Downgrade to Free” in the Current plan section above.',
-      );
+      expect(component['freeIsCancellation']()).toBe(true);
+      expect(component['blockedReason'](freePlan())).toBeNull();
+      expect(component['ctaDisabled'](freePlan())).toBe(false);
+      expect(component['ctaLabel'](freePlan())).toBe('Downgrade to Free');
+
+      await component['choosePlan'](freePlan());
+
+      expect(mockDialogs.confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Cancel your subscription?' }));
+      expect(mockApi.billing.cancelSubscription.mutate).toHaveBeenCalled();
+      // Never the plain Free selection: the backend refuses it while a subscription is live.
+      expect(mockApi.billing.selectFree.mutate).not.toHaveBeenCalled();
+    });
+
+    /** A second cancellation would be a no-op the user cannot tell apart from the first. */
+    it('blocks — and dates — a card whose cancellation is already scheduled', async () => {
+      await render({ details: { cancelAtPeriodEnd: true, endsAt: new Date('2026-09-30T00:00:00Z') } });
+
+      expect(component['blockedReason'](freePlan())).toContain('Already scheduled');
       expect(component['ctaDisabled'](freePlan())).toBe(true);
     });
 
@@ -409,11 +432,12 @@ describe('BillingSettingsComponent', () => {
     });
 
     it('refuses to act on a blocked card even if the click gets through', async () => {
-      await render();
+      await render({ usage: { subscribers: FREE_CAP + 1 } });
 
       await component['choosePlan'](freePlan());
 
       expect(mockApi.billing.selectFree.mutate).not.toHaveBeenCalled();
+      expect(mockApi.billing.cancelSubscription.mutate).not.toHaveBeenCalled();
       expect(mockDialogs.confirm).not.toHaveBeenCalled();
     });
 

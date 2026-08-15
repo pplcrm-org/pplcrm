@@ -230,17 +230,18 @@
         </div>
 
         <div class="mt-6 space-y-2 pt-4">
+          <!-- The Free card turns destructive once there is a subscription to cancel, so it takes
+               the error outline the Current plan section's cancel button uses. -->
           <button
             type="button"
             class="btn w-full"
-            [class]="isCurrentPlan(plan) ? 'btn-outline btn-primary' : plan.key === 'free' ? 'btn-outline btn-primary' : 'btn-primary'"
+            [class]="isCurrentPlan(plan) ? 'btn-outline btn-primary' : plan.key === 'free' ? (freeIsCancellation() ? 'btn-outline btn-error' : 'btn-outline btn-primary') : 'btn-primary'"
             [disabled]="ctaDisabled(plan)"
             (click)="choosePlan(plan)"
           >
-            @if (pendingPlan() === plan.key) {
+            @if (ctaBusy(plan)) {
             <span class="loading loading-spinner loading-xs"></span>
-            {{ plan.key === 'free' || hasLiveSubscription() ? 'Switching…' : 'Opening Stripe…' }} } @else { {{
-            ctaLabel(plan) }} }
+            {{ ctaBusyLabel(plan) }} } @else { {{ ctaLabel(plan) }} }
           </button>
           <!-- Guide, don't just grey out: a disabled button with no reason is a dead end. -->
           @if (blockedReason(plan); as reason) {
