@@ -47,9 +47,24 @@
           </p>
         </div>
         } @else if (done()['plan']) {
-        <div class="flex items-start gap-2.5 rounded-lg border border-success/30 bg-success/10 px-3.5 py-2.5">
-          <pc-icon name="check-circle" [size]="5" class="mt-0.5 shrink-0 text-success"></pc-icon>
-          <p class="text-xs text-base-content/80">Your plan is set. You can change it any time under Billing.</p>
+        <!-- The settled state names Billing, so it has to be able to get you there: from here the
+             plan is the one thing a user may still want to change (upgrade before importing a
+             list, switch to annual), and sending them hunting through Workspace for it is the
+             dead end this wizard exists to avoid. -->
+        <div class="space-y-3">
+          <div class="flex items-start gap-2.5 rounded-lg border border-success/30 bg-success/10 px-3.5 py-2.5">
+            <pc-icon name="check-circle" [size]="5" class="mt-0.5 shrink-0 text-success"></pc-icon>
+            <p class="text-xs text-base-content/80">Your plan is set. You can change it any time under Billing.</p>
+          </div>
+          <a
+            routerLink="/workspace/billing"
+            [queryParams]="setupParam"
+            class="btn btn-outline btn-primary btn-sm"
+            aria-label="Open the Billing page to change your plan"
+          >
+            <pc-icon name="credit-card" [size]="4"></pc-icon>
+            Change plan or billing details
+          </a>
         </div>
         } @else {
         <div class="space-y-3">
