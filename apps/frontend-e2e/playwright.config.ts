@@ -18,13 +18,27 @@ export default defineConfig({
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
-  webServer: {
-    command: 'npx nx serve frontend',
-    url: 'http://localhost:4200',
-    reuseExistingServer: !isCI,
-    // A cold CI runner compiling the Angular app blows straight past Playwright's 60s default.
-    timeout: isCI ? 300_000 : 120_000,
-  },
+  // Both apps: the authenticated-journey spec runs against the REAL backend (no route
+  // stubbing), and the frontend targets http://localhost:3000 directly in dev
+  // (apps/frontend/src/environments/environment.ts). Locally both entries attach to
+  // already-running dev servers (verify skill); CI starts them cold.
+  webServer: [
+    {
+      command: 'npx nx serve backend',
+      // /healthz only answers 200 once Postgres is reachable (and boot migrations, which
+      // run by default via MIGRATE_ON_BOOT, are done) — a real readiness probe, unlike '/'.
+      url: 'http://localhost:3000/healthz',
+      reuseExistingServer: !isCI,
+      timeout: isCI ? 300_000 : 120_000,
+    },
+    {
+      command: 'npx nx serve frontend',
+      url: 'http://localhost:4200',
+      reuseExistingServer: !isCI,
+      // A cold CI runner compiling the Angular app blows straight past Playwright's 60s default.
+      timeout: isCI ? 300_000 : 120_000,
+    },
+  ],
   projects: [
     {
       name: 'chromium',

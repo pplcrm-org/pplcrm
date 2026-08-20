@@ -17,7 +17,9 @@ name: Verify
 #   test    — needs a REAL Postgres: backend specs run against a disposable `pplcrm_test` DB
 #             (apps/backend/vite.config.ts globalSetup), there is no DB mocking layer.
 #   build   — the four deployables, production config, same command deploy.yml uses.
-#   e2e     — Playwright, `@smoke`-tagged only. See the grep note on that job.
+#   e2e     — Playwright, the whole suite: the stubbed sign-in spec plus the authenticated
+#             journey, which needs a REAL backend and Postgres (same service container and
+#             role provisioning as `test` — Playwright's webServer starts the backend itself).
 
 on:
   pull_request:
@@ -174,6 +176,43 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
+    # The authenticated-journey spec runs against the REAL backend (no route stubbing), so this
+    # job now provisions the same disposable Postgres as the `test` job — same service container,
+    # same least-privilege roles, same setup-test-db.sh. Playwright's webServer block starts the
+    # backend (and frontend) itself; this job only has to give it a database and env to run with.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Mirrors the `test` job's block (which mirrors the gitignored .env.test): app role for
+      # runtime CRUD, owner role for the boot migrations (MIGRATE_ON_BOOT defaults to true, so
+      # the backend builds the schema itself on first boot). The spec's DB step reuses these
+      # same vars to flip the signup gates on its throwaway tenant.
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      DB_NAME: pplcrm_test
+      DB_USER: pplcrm_app
+      DB_PASSWORD: ci-app-pw
+      DB_MIGRATION_USER: pplcrm_owner
+      DB_MIGRATION_PASSWORD: ci-owner-pw
+      DB_SSL: 'false'
+      JWT_SECRET: ci-jwt-secret
+      SHARED_SECRET: ci-shared-secret
+      # Closed-beta gate: nobody is here to click the ops approval link, so signups are
+      # approved on creation — the same explicit opt-in the backend test suite documents
+      # (apps/backend/vite.config.ts) and env.ts calls the intended dev/test setting.
+      AUTO_APPROVE_TENANTS: 'true'
+      # POSTMARK_SERVER_TOKEN stays deliberately unset: signup enqueues a verification email,
+      # and without a token the mail service logs a "[POSTMARK DEV MOCK]" line instead of
+      # sending (transactional-mail.service.ts) — no real SMTP from CI.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -181,6 +220,29 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      # The two roles must exist before setup-test-db.sh runs — it hard-fails if they are
+      # missing rather than silently creating a superuser-owned DB.
+      - name: Create least-privilege DB roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 <<SQL
+          CREATE ROLE pplcrm_owner LOGIN PASSWORD '${DB_MIGRATION_PASSWORD}';
+          CREATE ROLE pplcrm_app   LOGIN PASSWORD '${DB_PASSWORD}';
+          SQL
+      # Reuse the project's own provisioning script rather than duplicating its grants here, so
+      # CI follows automatically when the role model changes.
+      - name: Provision pplcrm_test
+        env:
+          PGSUPERUSER: postgres
+          PGPASSWORD: postgres
+        run: apps/backend/scripts/setup-test-db.sh
+      # `nx serve backend` (spawned by Playwright's webServer) runs Node with
+      # --env-file=.env.development (apps/backend/project.json), and Node hard-fails when that
+      # file is missing. It is gitignored, so give CI a stub — real config comes from this
+      # job's env block, which takes precedence over env-file values anyway.
+      - name: Stub .env.development for nx serve backend
+        run: echo '# CI stub — real config comes from the e2e job env block in verify.yml' > .env.development
       - name: Install Playwright chromium
         run: npx playwright install --with-deps chromium
       # The WHOLE suite, not a tagged subset: the four specs written against the pre-two-step-signin
