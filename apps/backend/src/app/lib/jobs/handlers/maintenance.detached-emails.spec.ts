@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BaseRepository } from '../../base.repo';
 import { StorageService } from '../../storage.service';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../test-utils/exclusive-db-lock';
 import { pruneDetachedEmails } from './maintenance.handlers';
 
 /**
@@ -13,6 +14,12 @@ import { pruneDetachedEmails } from './maintenance.handlers';
  * decided. A comment, an assignee, a closed status or a star means the row is kept indefinitely,
  * however old it is.
  */
+
+// The sweep under test DELETEs `emails` rows by age across the whole table, so its statement
+// can block on any emails row a concurrent spec file holds locked in an open transaction —
+// the same receiving-end hazard documented on DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE, whose
+// holders (the job/handler specs) are the files most likely to be writing emails rows.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only access to the private db handle
 const db = (BaseRepository as any)._db;

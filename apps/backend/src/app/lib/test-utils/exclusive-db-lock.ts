@@ -14,9 +14,12 @@ export const DB_TEST_LOCKS = {
    * The `background_jobs` table as a whole queue.
    *
    * Only for specs that touch the queue globally: one that asserts which row `claimNextPendingJob`
-   * picks out of the whole table, or one that runs a sweep selecting rows by age. Four files
+   * picks out of the whole table, or one that runs a sweep selecting rows by age. Six files
    * qualify today: job-claim.spec.ts, worker.retry-backoff.spec.ts, worker.reliability.spec.ts,
-   * and job-handlers.spec.ts, whose prune_retention sweep DELETEs by age across the whole table.
+   * job-handlers.spec.ts (its prune_retention sweep DELETEs by age across the whole table), and
+   * the two maintenance sweep specs maintenance.detached-emails.spec.ts and
+   * maintenance.exports-retention.spec.ts, whose handlers sweep `emails` / `data_exports` by age
+   * across the whole table and can otherwise block on rows the queue specs hold open.
    *
    * A spec that merely LEAVES a `pending` row behind does NOT need this, and should not take it —
    * that would serialize roughly thirty files for nothing. The claim order is

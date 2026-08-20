@@ -46,7 +46,11 @@ describe('BackgroundJobWorker pool', () => {
     await vi.waitFor(() => expect(processed).toBe(total), { timeout: 2000 });
     w.isRunning = false;
 
-    // The pool must have reached — but never exceeded — the configured cap.
-    expect(observedMax).toBe(w.maxConcurrency);
+    // The cap is the correctness bound: exceeding it is the bug this spec exists to catch.
+    // Requiring EXACT saturation is scheduler-dependent — with 5ms stub jobs a starved runner
+    // can drain the queue without ever having all slots busy at one instant — so the lower
+    // bound only pins that the pool actually runs jobs concurrently.
+    expect(observedMax).toBeLessThanOrEqual(w.maxConcurrency);
+    expect(observedMax).toBeGreaterThan(1);
   });
 });

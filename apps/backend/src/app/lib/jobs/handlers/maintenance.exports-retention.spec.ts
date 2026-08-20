@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BaseRepository } from '../../base.repo';
 import { StorageService } from '../../storage.service';
+import { DB_TEST_LOCKS, useExclusiveDbLock } from '../../test-utils/exclusive-db-lock';
 import { pruneExpiredExports } from './maintenance.handlers';
 
 /**
@@ -11,6 +12,11 @@ import { pruneExpiredExports } from './maintenance.handlers';
  * The blob half is the part worth pinning. Deleting only the row would silently orphan the file —
  * the row holds the only copy of the storage key, so after that nothing can find it again.
  */
+
+// The sweep under test DELETEs `data_exports` rows by age across the whole table. That table is
+// also swept globally by worker.reliability.spec.ts's recovery test, which holds the queue lock —
+// so this file takes the same lock rather than risk the two sweeps blocking on each other's rows.
+useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only access to the private db handle
 const db = (BaseRepository as any)._db;

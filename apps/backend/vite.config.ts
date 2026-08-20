@@ -31,6 +31,13 @@ export default defineConfig(() => ({
     globals: true,
     passWithNoTests: true,
     environment: 'node',
+    // These specs run against one real shared Postgres with spec files in parallel, so a
+    // test's wall time includes every other file's queries. Vitest's 5s default is sized
+    // for isolated in-memory tests and intermittently fails DB-heavy specs under full-suite
+    // load (observed: auth controller signUp+cleanup and demo-seed fixtures timing out in
+    // one run out of three, passing alone). 30s is a hang detector, not a performance bar.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     // Runs once before any worker: guardrails the target DB, migrates it to
     // latest, and truncates it to a clean slate. Keeps the whole suite on the
     // disposable pplcrm_test database so specs can never touch real data.
@@ -59,6 +66,10 @@ export default defineConfig(() => ({
       // 46.85% stmts / 33.24% branch / 55.24% funcs / 48% lines). These may
       // only ever be raised, never lowered — if your change drops coverage
       // below them, add tests rather than editing the thresholds.
+      // NOT enforced by CI (unlike frontend/common/uxcommon, whose verify.yml step
+      // passes --coverage): under V8 instrumentation this DB-heavy suite slows enough
+      // that its largest fixture (demo-seed.spec.ts) exceeds even the 30s test timeout,
+      // and these numbers were never re-measured. Fires only on a manual --coverage run.
       thresholds: {
         statements: 45,
         branches: 32,

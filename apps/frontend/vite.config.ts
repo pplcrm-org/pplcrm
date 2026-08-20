@@ -38,7 +38,9 @@ export default defineConfig(() => ({
       // Coverage ratchet: set just under the measured baseline (2026-07-17:
       // 56.96% stmts / 39.72% branch / 55.18% funcs / 56.98% lines). These may
       // only ever be raised, never lowered — if your change drops coverage
-      // below them, add tests rather than editing the thresholds.
+      // below them, add tests rather than editing the thresholds. Enforced by CI
+      // since 2026-08-20 (verify.yml runs this project's tests with --coverage;
+      // still passing as measured that day).
       thresholds: {
         statements: 55,
         branches: 38,

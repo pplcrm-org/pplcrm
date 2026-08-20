@@ -143,9 +143,13 @@ describe('RecordDonationDialog', () => {
 
   it('should search for donors and populate results', async () => {
     vi.useFakeTimers();
-    component['onDonorSearchChange']('jane');
-    await vi.advanceTimersByTimeAsync(300);
-    vi.useRealTimers();
+    try {
+      component['onDonorSearchChange']('jane');
+      await vi.advanceTimersByTimeAsync(300);
+    } finally {
+      // Without the finally, a failure above leaves fake timers active for the rest of the file.
+      vi.useRealTimers();
+    }
     await fixture.whenStable();
 
     expect(mockPersonsSvc.getAllWithAddress).toHaveBeenCalledWith({ searchStr: 'jane', startRow: 0, endRow: 10 });

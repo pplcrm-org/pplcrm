@@ -151,7 +151,14 @@ jobs:
         run: apps/backend/scripts/setup-test-db.sh
       # Schema is built by globalSetup (0001_baseline) on the first backend run.
       - name: Unit + integration tests
-        run: npx nx run-many -t test -p frontend backend common uxcommon companion website
+        run: npx nx run-many -t test -p backend companion website
+      # These three also enforce their coverage ratchets (thresholds in each project's vite
+      # config, re-baselined to measured reality 2026-08-20 — they had drifted while nothing
+      # ran --coverage). Backend stays outside the coverage gate: under V8 instrumentation the
+      # DB-heavy suite slows enough that its largest fixture (demo-seed) exceeds even the 30s
+      # test timeout. Revisit if those specs are ever restructured.
+      - name: Unit tests + coverage ratchet
+        run: npx nx run-many -t test -p frontend common uxcommon --args="--coverage"
 
   build:
     runs-on: ubuntu-latest

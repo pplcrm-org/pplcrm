@@ -34,6 +34,8 @@ cd apps/frontend && npx vitest run src/app/layout/favourite-toggle/favourite-tog
 
 Backend specs need Postgres reachable — DB env is injected by `apps/backend/vite.config.ts` (`test.env`), so the DB in that block must exist locally.
 
+**Coverage ratchet (CI-enforced for three projects):** verify.yml runs frontend, common, and uxcommon with `--coverage`, which enforces the thresholds in each project's vite config (re-baselined to measured reality 2026-08-20). Backend is deliberately outside the gate: V8 instrumentation slows the DB-heavy suite enough that demo-seed.spec.ts exceeds even the 30s test timeout. If your change deletes tests or adds untested code in one of the three gated projects, check before pushing: `tools/quiet.sh npx nx test common --args=--coverage` (same for `frontend` / `uxcommon`).
+
 **Trap: `nx test backend --args="apps/backend/src/..."` reports success while running ZERO tests.** Vitest's cwd is `apps/backend`, so a repo-root-prefixed path filter matches no files — and the config sets `passWithNoTests: true`, so the run prints success anyway. A whole batch of specs was once "verified" this way without ever executing. Path filters must be `src/`-relative (`--args="src/app/modules/x/y.spec.ts"`), and after any filtered run, confirm the reported test count is non-zero and plausible for the file.
 
 **Rebuilding the test DB:** if `globalSetup` dies with `corrupted migrations` (e.g. a new migration file sorts before one already applied — happens with in-flight work in a shared worktree), drop and re-provision the disposable test DB; the next run rebuilds the schema from the baseline: `psql -U "$(whoami)" -d postgres -c 'DROP DATABASE IF EXISTS pplcrm_test' && apps/backend/scripts/setup-test-db.sh` (check `pg_stat_activity` for open connections first).
@@ -59,12 +61,12 @@ useExclusiveDbLock(DB_TEST_LOCKS.BACKGROUND_JOB_QUEUE);
 
 Keys live in `DB_TEST_LOCKS` — add one per shared resource, never reuse an unrelated file's. The lock is held by a transaction (`startTransaction()` pins one pooled connection) and taken with `pg_advisory_xact_lock`, so it releases on rollback _and_ on a mid-run crash — a wedged file can't block the next run.
 
-`DB_TEST_LOCKS` in `exclusive-db-lock.ts` is the source of truth for which files hold what; `grep -rn useExclusiveDbLock apps/backend/src` gives the live list. As of 2026-08-09:
+`DB_TEST_LOCKS` in `exclusive-db-lock.ts` is the source of truth for which files hold what; `grep -rn useExclusiveDbLock apps/backend/src` gives the live list. As of 2026-08-20:
 
-| Key                    | Holders                                                                                                                                                                                                                |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BACKGROUND_JOB_QUEUE` | `lib/jobs/job-claim.spec.ts`, `lib/jobs/worker.retry-backoff.spec.ts`, `lib/jobs/worker.reliability.spec.ts`, `lib/jobs/job-handlers.spec.ts`                                                                          |
-| `RECEIPT_COUNTERS`     | `lib/jobs/handlers/receipts.handlers.spec.ts`, `modules/donations/receipts/cancel-reissue-refusals.spec.ts`, `modules/donations/receipts/controller.spec.ts`, `modules/donations/repositories/receipt-counter.spec.ts` |
+| Key                    | Holders                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BACKGROUND_JOB_QUEUE` | `lib/jobs/job-claim.spec.ts`, `lib/jobs/worker.retry-backoff.spec.ts`, `lib/jobs/worker.reliability.spec.ts`, `lib/jobs/job-handlers.spec.ts`, `lib/jobs/handlers/maintenance.detached-emails.spec.ts`, `lib/jobs/handlers/maintenance.exports-retention.spec.ts` (the last two run whole-table age sweeps over `emails` / `data_exports`) |
+| `RECEIPT_COUNTERS`     | `lib/jobs/handlers/receipts.handlers.spec.ts`, `modules/donations/receipts/cancel-reissue-refusals.spec.ts`, `modules/donations/receipts/controller.spec.ts`, `modules/donations/repositories/receipt-counter.spec.ts`                                                                                                                     |
 
 ## Mocking conventions (copy these — they're real)
 

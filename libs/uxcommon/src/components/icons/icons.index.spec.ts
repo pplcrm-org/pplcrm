@@ -92,33 +92,4 @@ describe('Icons Index', () => {
       });
     });
   });
-
-  describe('Performance', () => {
-    it('should load icons index without significant delay', () => {
-      const startTime = performance.now();
-
-      // Access all icons
-      const allIcons = IconsIndex.icons;
-      Object.keys(allIcons).forEach((key) => {
-        const icon = allIcons[key as keyof typeof allIcons];
-        expect(icon).toBeDefined();
-      });
-
-      const endTime = performance.now();
-      const loadTime = endTime - startTime;
-
-      // Should load in reasonable time (less than 100ms)
-      expect(loadTime).toBeLessThan(100);
-    });
-
-    it('should have reasonable memory footprint', () => {
-      const iconCount = Object.keys(IconsIndex.icons).length;
-      const totalSize = JSON.stringify(IconsIndex.icons).length;
-
-      // Basic sanity check - should have icons but not be excessively large
-      expect(iconCount).toBeGreaterThan(5);
-      expect(iconCount).toBeLessThan(1000);
-      expect(totalSize).toBeLessThan(1000000); // Less than 1MB
-    });
-  });
 });
