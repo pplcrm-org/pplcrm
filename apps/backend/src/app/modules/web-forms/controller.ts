@@ -243,6 +243,63 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
     return allowed;
   }
 
+  /**
+   * The web-form half of yard-sign intake (the canvasser's doorstep half lives in
+   * modules/canvassing). Creates a `delivery_requests` row for the submitter's household —
+   * status 'new', so staff approve before anything routes; source 'web_form' and the form's
+   * uuid on the row say where it came from. Quietly does nothing when:
+   *  - the person has no real household (an existing contact on the placeholder — an anonymous
+   *    submission may not move them to a typed address, so there is no door to deliver to);
+   *  - the household already holds an open request (tenant-wide open-per-household index; the
+   *    pre-check plus ON CONFLICT DO NOTHING mirror the canvass survey path — a concurrent
+   *    request must not abort the whole submission);
+   *  - the plan does not include deliveries (the checked box still lands in form_submissions,
+   *    so nothing is lost — the pool entry just is not created).
+   */
+  private async maybeCreateYardSignRequest(
+    trx: Transaction<Models>,
+    args: {
+      tenantId: string;
+      campaignId: string;
+      personId: string;
+      householdId: string;
+      placeholderHouseholdId: string;
+      webFormId: string;
+      creatorId: string;
+    },
+  ): Promise<void> {
+    const { tenantId, campaignId, personId, householdId, placeholderHouseholdId, webFormId, creatorId } = args;
+    if (!householdId || householdId === placeholderHouseholdId) return;
+    try {
+      await assertPlanFeature(trx, tenantId, 'deliveries');
+    } catch {
+      return;
+    }
+    const open = await trx
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .where('household_id', '=', householdId)
+      .where('status', 'in', ['new', 'approved'])
+      .executeTakeFirst();
+    if (open) return;
+    await trx
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        household_id: householdId,
+        person_id: personId,
+        web_form_id: webFormId,
+        source: 'web_form',
+        status: 'new',
+        createdby_id: creatorId,
+        updatedby_id: creatorId,
+      })
+      .onConflict((oc) => oc.doNothing())
+      .execute();
+  }
+
   public async submitFormPublic(
     tenant: PublicTenant,
     slug: string,
@@ -549,7 +606,7 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
         // attached only for a genuinely new person — the case this code exists for.
         const existing = await trx
           .selectFrom('persons')
-          .select(['id', 'first_name', 'last_name', 'mobile'])
+          .select(['id', 'first_name', 'last_name', 'mobile', 'household_id'])
           .where('tenant_id', '=', tenantId)
           .where(sql`lower(email)`, '=', email.toLowerCase())
           .executeTakeFirst();
@@ -705,6 +762,30 @@ export class WebFormsController extends BaseController<'web_forms', WebFormsRepo
           } catch (err) {
             logger.error({ err }, 'Failed to trigger new_subscriber workflow in WebFormsController');
           }
+        }
+
+        // Yard-sign intake (2026-08-20): a checked `yard_sign` catalog box becomes a delivery
+        // request — the self-serve twin of the canvasser's "wants a yard sign" survey answer.
+        // The field must be switched ON on this form (a stale embed's stray key is not a
+        // request), and the checkbox posts 'yes'.
+        const yardSignOn = fieldArray.some(
+          (f) =>
+            typeof f === 'object' &&
+            f !== null &&
+            (f as Record<string, unknown>)['key'] === 'yard_sign' &&
+            (f as Record<string, unknown>)['on'] === true,
+        );
+        const yardSignChecked = ['yes', 'true', 'on', '1'].includes((payload['yard_sign'] ?? '').trim().toLowerCase());
+        if (yardSignOn && yardSignChecked) {
+          await this.maybeCreateYardSignRequest(trx, {
+            tenantId,
+            campaignId,
+            personId,
+            householdId: existing ? String(existing.household_id ?? '') : finalHouseholdId,
+            placeholderHouseholdId: String(householdId),
+            webFormId: formId,
+            creatorId,
+          });
         }
 
         // Add target custom tags & read-only system tag

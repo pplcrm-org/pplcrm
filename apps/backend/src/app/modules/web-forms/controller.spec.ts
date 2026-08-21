@@ -1227,3 +1227,215 @@ describe('WebFormsController redirect URL safety', () => {
     });
   });
 });
+
+describe('WebFormsController — yard-sign intake', () => {
+  const controller = new WebFormsController();
+  const db = (BaseRepository as any)._db;
+  let tenantId: string;
+  let tenantSlug: string;
+  let userId: string;
+  let campaignId: string;
+
+  const tenant = () => ({ id: tenantId, slug: tenantSlug });
+
+  const YARD_SIGN_FIELDS = [
+    { key: 'full_name', label: 'Full name', type: 'text', on: true, required: false },
+    { key: 'email', label: 'Email', type: 'text', on: true, required: true },
+    { key: 'street1', label: 'Street address', type: 'text', on: true, required: false },
+    { key: 'city', label: 'City', type: 'text', on: true, required: false },
+    { key: 'zip', label: 'ZIP code', type: 'text', on: true, required: false },
+    { key: 'yard_sign', label: 'I’d like a yard sign', type: 'checkbox', on: true, required: false },
+  ];
+
+  async function seedYardSignForm(slug: string, overrides: Record<string, unknown> = {}): Promise<string> {
+    const formId = randomUUID();
+    await db
+      .insertInto('web_forms')
+      .values({
+        id: formId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Sign request form',
+        slug,
+        status: 'published',
+        fields: JSON.stringify(YARD_SIGN_FIELDS),
+        createdby_id: userId,
+        updatedby_id: userId,
+        ...overrides,
+      })
+      .execute();
+    return formId;
+  }
+
+  beforeEach(async () => {
+    const seed = await createTestSeed(db);
+    tenantId = seed.tenantId;
+    tenantSlug = seed.tenantSlug;
+    userId = seed.userId;
+    campaignId = seed.campaignId;
+    // Deliveries is a Movement-plan feature; the Grassroots-plan skip is asserted separately.
+    await db.updateTable('tenants').set({ subscription_plan: 'movement' }).where('id', '=', tenantId).execute();
+  });
+
+  afterEach(async () => {
+    await db.deleteFrom('delivery_requests').where('tenant_id', '=', tenantId).execute();
+    await cleanTenant(db, tenantId);
+  });
+
+  it('a checked box from a new person with an address creates a NEW-status request for their household', async () => {
+    const formId = await seedYardSignForm('sign-intake-new-person');
+    await controller.submitFormPublic(
+      tenant(),
+      'sign-intake-new-person',
+      {
+        email: 'wants.sign@example.com',
+        full_name: 'Willa Signer',
+        street1: '12 Maple St',
+        city: 'Testville',
+        zip: 'K1A0A1',
+        yard_sign: 'yes',
+      },
+      '127.0.0.30',
+    );
+
+    const person = await db
+      .selectFrom('persons')
+      .select(['id', 'household_id'])
+      .where('tenant_id', '=', tenantId)
+      .where('email', '=', 'wants.sign@example.com')
+      .executeTakeFirstOrThrow();
+    const request = await db
+      .selectFrom('delivery_requests')
+      .selectAll()
+      .where('tenant_id', '=', tenantId)
+      .executeTakeFirst();
+    expect(request).toBeDefined();
+    expect(String(request.household_id)).toBe(String(person.household_id));
+    expect(String(request.person_id)).toBe(String(person.id));
+    expect(request.status).toBe('new');
+    expect(request.source).toBe('web_form');
+    expect(String(request.web_form_id)).toBe(formId);
+  });
+
+  it('an unchecked box creates nothing', async () => {
+    await seedYardSignForm('sign-intake-unchecked');
+    await controller.submitFormPublic(
+      tenant(),
+      'sign-intake-unchecked',
+      { email: 'no.sign@example.com', full_name: 'Nora Nosign', street1: '9 Oak St', city: 'T', zip: 'K1A0A2' },
+      '127.0.0.31',
+    );
+    const requests = await db
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .execute();
+    expect(requests).toHaveLength(0);
+  });
+
+  it('a person with no real household creates nothing — there is no door to deliver to', async () => {
+    await seedYardSignForm('sign-intake-no-address');
+    await controller.submitFormPublic(
+      tenant(),
+      'sign-intake-no-address',
+      { email: 'floating@example.com', full_name: 'Flo Ating', yard_sign: 'yes' },
+      '127.0.0.32',
+    );
+    const requests = await db
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .execute();
+    expect(requests).toHaveLength(0);
+  });
+
+  it('a household with an open request is not duplicated — the submission still succeeds', async () => {
+    await seedYardSignForm('sign-intake-dup-a');
+    await seedYardSignForm('sign-intake-dup-b');
+    const payload = {
+      email: 'repeat.requester@example.com',
+      full_name: 'Ray Peat',
+      street1: '4 Elm St',
+      city: 'Testville',
+      zip: 'K1A0A3',
+      yard_sign: 'yes',
+    };
+    await controller.submitFormPublic(tenant(), 'sign-intake-dup-a', payload, '127.0.0.33');
+    await controller.submitFormPublic(tenant(), 'sign-intake-dup-b', payload, '127.0.0.34');
+    const requests = await db
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .execute();
+    expect(requests).toHaveLength(1);
+  });
+
+  it('on a plan without deliveries the answer is stored but no request is created', async () => {
+    await db.updateTable('tenants').set({ subscription_plan: 'grassroots' }).where('id', '=', tenantId).execute();
+    await seedYardSignForm('sign-intake-plan-gate');
+    await controller.submitFormPublic(
+      tenant(),
+      'sign-intake-plan-gate',
+      {
+        email: 'gated@example.com',
+        full_name: 'Gale Ted',
+        street1: '7 Pine St',
+        city: 'Testville',
+        zip: 'K1A0A4',
+        yard_sign: 'yes',
+      },
+      '127.0.0.35',
+    );
+    const requests = await db
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .execute();
+    expect(requests).toHaveLength(0);
+    const submission = await db
+      .selectFrom('form_submissions')
+      .select(['answers'])
+      .where('tenant_id', '=', tenantId)
+      .executeTakeFirstOrThrow();
+    const answers = typeof submission.answers === 'string' ? JSON.parse(submission.answers) : submission.answers;
+    expect(answers['yard_sign']).toBe('yes');
+  });
+
+  it('a stray yard_sign key on a form whose field is OFF creates nothing', async () => {
+    const fieldsOff = YARD_SIGN_FIELDS.map((f) => (f.key === 'yard_sign' ? { ...f, on: false } : f));
+    const formId = randomUUID();
+    await db
+      .insertInto('web_forms')
+      .values({
+        id: formId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Off form',
+        slug: 'sign-intake-field-off',
+        status: 'published',
+        fields: JSON.stringify(fieldsOff),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    await controller.submitFormPublic(
+      tenant(),
+      'sign-intake-field-off',
+      {
+        email: 'stray@example.com',
+        full_name: 'Stray Key',
+        street1: '2 Birch St',
+        city: 'Testville',
+        zip: 'K1A0A5',
+        yard_sign: 'yes',
+      },
+      '127.0.0.36',
+    );
+    const requests = await db
+      .selectFrom('delivery_requests')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .execute();
+    expect(requests).toHaveLength(0);
+  });
+});

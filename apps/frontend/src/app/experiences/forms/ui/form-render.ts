@@ -68,6 +68,12 @@ import { FormDetail } from '../services/forms-service';
                     }
                   </div>
                 }
+                @case ('checkbox') {
+                  <label class="flex items-center gap-2 text-sm text-base-content">
+                    <input type="checkbox" class="checkbox checkbox-sm" disabled />
+                    Yes
+                  </label>
+                }
                 @default {
                   <input
                     class="input input-bordered w-full bg-base-100 text-sm"

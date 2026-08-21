@@ -95,6 +95,16 @@ type PageState = 'loading' | 'open' | 'closed' | 'notfound' | 'thanks';
                         }
                       </div>
                     }
+                    @case ('checkbox') {
+                      <label class="flex items-center gap-2 text-sm text-base-content">
+                        <input
+                          type="checkbox"
+                          class="checkbox checkbox-sm"
+                          (change)="setValue(field.key, $any($event.target).checked ? 'yes' : '')"
+                        />
+                        Yes
+                      </label>
+                    }
                     @default {
                       <input
                         class="input input-bordered w-full text-sm"

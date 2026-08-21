@@ -16,7 +16,15 @@ import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, moveItemInArra
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
-import { FORM_TEMPLATES, FormField, FormType, UpdateFormType, debounce } from '../../../../../../../libs/common/src';
+import {
+  FORM_TEMPLATES,
+  FormField,
+  FormType,
+  UpdateFormType,
+  debounce,
+  effectivePlanKey,
+  planAllowsFeature,
+} from '../../../../../../../libs/common/src';
 import { AlertService } from '@uxcommon/components/alerts/alert-service';
 import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
 import { ModalShell } from '@uxcommon/components/modal-shell/modal-shell';
@@ -151,6 +159,13 @@ export class FormsPageComponent implements OnInit, OnDestroy {
   private readonly _loading = createLoadingGate();
   protected readonly loading = this._loading.visible;
   protected readonly loaded = this._loading.loaded;
+
+  /** Whether a checked yard-sign box actually creates a Deliveries request on this plan —
+   *  the field's editor hint states which of the two behaviors the workspace gets. */
+  protected planAllowsDeliveries(): boolean {
+    const user = this.auth.getUser();
+    return planAllowsFeature(effectivePlanKey(user?.tenant_plan, user?.tenant_demo_mode_at), 'deliveries');
+  }
 
   protected readonly forms = signal<FormDetail[]>([]);
   protected readonly selectedId = signal<string | null>(null);
@@ -776,6 +791,8 @@ export class FormsPageComponent implements OnInit, OnDestroy {
           );
         }
         lines.push(`  </fieldset>`);
+      } else if (field.type === 'checkbox') {
+        lines.push(`  <label><input type="checkbox" name="${field.key}" value="yes"> ${label}</label>`);
       } else {
         const type = field.key === 'email' ? 'email' : 'text';
         lines.push(`  <label>${label}${star}<br><input type="${type}" name="${field.key}"${req}></label>`);

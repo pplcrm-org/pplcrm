@@ -217,9 +217,19 @@ never a bare disabled select. Picking a status with no request calls `addRequest
   the route detail, live routes only) re-runs the same mint+notify inside one transaction; if the
   volunteer has no usable contact it throws and the transaction rolls back, so the existing link
   survives a resend that reaches nobody.
-- Deferred (not yet built): web-form `yard_sign` intake branch, and a grid-level "Add request"
-  household-picker dialog. Manual entry per household DOES exist — the `pc-yard-sign-standing`
-  control on the household/person pages calls `addRequest`.
+- Web-form `yard_sign` intake SHIPPED 2026-08-20: every form carries a standard-catalog
+  `yard_sign` checkbox (off by default; `type: 'checkbox'` is a single yes/no box added to
+  FormFieldObj for it). When the form's field is ON and the box was checked,
+  `WebFormsController.maybeCreateYardSignRequest` (called inside the submit transaction)
+  inserts a `delivery_requests` row — status 'new', source 'web_form', the form's uuid on
+  `web_form_id`, requester = the submitter. It quietly skips when the person has no real
+  household (existing contact on the placeholder — link-not-edit), when the household already
+  holds an open request (pre-check + ON CONFLICT DO NOTHING, canvass-path pattern), or when
+  the plan lacks deliveries (the answer still lands in form_submissions). Spec: the yard-sign
+  describe block in `modules/web-forms/controller.spec.ts`.
+- Deferred (not yet built): a grid-level "Add request" household-picker dialog. Manual entry
+  per household DOES exist — the `pc-yard-sign-standing` control on the household/person
+  pages calls `addRequest`.
 
 ## Campaigns (§15) — requests and routes belong to a context
 

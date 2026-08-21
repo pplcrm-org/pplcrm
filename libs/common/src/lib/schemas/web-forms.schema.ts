@@ -126,11 +126,12 @@ export const FormTypeEnum = z.enum(FORM_TYPES);
 export const FORM_STATUSES = ['draft', 'published', 'archived'] as const;
 export type FormStatus = (typeof FORM_STATUSES)[number];
 
-/** A single configurable field on a form. Stored as JSON in `web_forms.fields`. */
+/** A single configurable field on a form. Stored as JSON in `web_forms.fields`.
+ * `checkbox` (2026-08-20) is a single yes/no box — submitted as 'yes' when checked. */
 export const FormFieldObj = z.object({
   key: z.string().min(1),
   label: z.string().min(1),
-  type: z.enum(['text', 'area', 'select', 'checks']),
+  type: z.enum(['text', 'area', 'select', 'checks', 'checkbox']),
   options: z.array(z.string()).optional(),
   placeholder: z.string().optional(),
   help: z.string().optional(),
@@ -167,6 +168,9 @@ export const FORM_STANDARD_CATALOG: FormField[] = [
   { key: 'street1', label: 'Street address', type: 'text', on: false, required: false },
   { key: 'city', label: 'City', type: 'text', on: false, required: false },
   { key: 'zip', label: 'ZIP code', type: 'text', on: false, required: false },
+  // Checked box → a delivery request in the Deliveries pool (status 'new', staff approve).
+  // Needs an address to point a driver at, so turn the address fields on alongside it.
+  { key: 'yard_sign', label: 'I’d like a yard sign', type: 'checkbox', on: false, required: false },
 ];
 
 /** Creation templates — all start from name + email, then add type-specific fields. */

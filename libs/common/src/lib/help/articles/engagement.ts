@@ -283,7 +283,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
           {
             title: 'Turn fields on and set what’s required',
             detail:
-              'Check a field to add it; click its Optional/Required pill to toggle. Drag a field by its handle to reorder it; the order you set is the order people see on the public form. Changes apply to the live form instantly. There is nothing to save.',
+              'Check a field to add it; click its Optional/Required pill to toggle. Drag a field by its handle to reorder it; the order you set is the order people see on the public form. Changes apply to the live form instantly. There is nothing to save. Every form also carries an optional **“I’d like a yard sign”** checkbox: turn it on and a checked box creates a sign request in [Deliveries](/help/deliveries) for the submitter’s address (Movement plan; turn the address fields on with it so new supporters have an address to deliver to).',
           },
           {
             title: 'Publish when it’s ready',
@@ -652,6 +652,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'Every request is tied to a household, so its map location comes from the household’s address. The **Readiness** chip tells you the geocode state (**Located**, **Locating…**, or **Address problem**), and a request must be approved and located to be routed. Select rows and use **Approve** or **Decline** in the selection bar; the count is repeated on every button.',
+      },
+      {
+        kind: 'p',
+        text: 'Requests arrive three ways: staff record one on a household or person page, canvassers record one at the door in the [Canvass Companion](/help/canvassing), and supporters can ask for one themselves on any [web form](/help/forms) that has the **“I’d like a yard sign”** checkbox turned on — a checked box lands here as a new request for the submitter’s address, waiting for your approval like any other.',
       },
       {
         kind: 'callout',

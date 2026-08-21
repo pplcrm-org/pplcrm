@@ -581,7 +581,13 @@
               {{ field.required ? 'Required' : 'Optional' }}
             </button>
           </div>
-          }
+          @if (field.key === 'yard_sign' && field.on) {
+          <p class="ml-14 text-xs text-base-content/50">
+            @if (planAllowsDeliveries()) { A checked box lands in Deliveries as a new sign request for the submitter's
+            address — turn on the address fields so new supporters have one. } @else { On the Movement plan a checked
+            box lands in Deliveries as a new sign request. On this plan the answer is only stored with the response. }
+          </p>
+          } }
         </div>
         <p class="mt-1 text-xs text-base-content/50">
           Drag the handle to reorder fields; the order matches the public form. Every response creates or updates a
