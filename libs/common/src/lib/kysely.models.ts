@@ -677,7 +677,8 @@ interface TurfSegmentClaims {
   tenant_id: string;
   turf_id: string;
   assignment_id: string;
-  volunteer_person_id: string;
+  /** NULL when the person was deleted — the claim survives as history via `canvasser_name`. */
+  volunteer_person_id: string | null;
   /** Normalized street (lowercased, whitespace-collapsed) — matches `segmentKeyOf`. */
   street_key: string;
   /** The spelling to display, kept because normalizing what a volunteer reads is a lie. */
@@ -1043,7 +1044,8 @@ export interface DonationReceipts extends RecordType {
   serial: number | null;
   receipt_number: string | null;
   status: Generated<string>;
-  person_id: string;
+  /** NULL when the donor was deleted — the document stands on its frozen donor_* snapshot. */
+  person_id: string | null;
   /** Set for per-gift receipts (from the donation); NULL for cumulative receipts and statements. */
   campaign_id: string | null;
   donor_name: string;
@@ -1911,7 +1913,7 @@ export interface WorkflowSteps {
   delay_unit: 'days' | 'hours';
   // Spec §16: steps are polymorphic. `kind` discriminates; the value each kind carries lives
   // in `config` (send_email uses subject/html/text columns; wait uses delay_days/delay_unit).
-  kind: 'wait' | 'send_email' | 'add_tag' | 'create_task' | 'notify_team';
+  kind: 'wait' | 'send_email' | 'add_tag' | 'create_task' | 'notify_team' | 'add_to_list';
   config: Json | null;
   subject: string | null;
   preview_text: string | null;

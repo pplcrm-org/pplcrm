@@ -1,4 +1,4 @@
-import { resolveWorkflowMessageClass } from '@common';
+import { parseDateArrivesConfig, resolveWorkflowMessageClass } from '@common';
 import { BaseController } from '../../lib/base.controller';
 import { WorkflowsRepo } from './repositories/workflows.repo';
 import { WorkflowEnrollmentsRepo } from './repositories/workflow-enrollments.repo';
@@ -24,8 +24,28 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
     }
   }
 
+  /**
+   * An ACTIVE date_arrives workflow must carry a valid config (campaign + days-before + list),
+   * or the daily cron would sit silently on it — and worse, its NULL trigger_event_id would
+   * make it catch every other date workflow's firing through the "Any" match in
+   * triggerWorkflow. Draft and paused rows may stay unconfigured while being built.
+   */
+  private static assertDateArrivesConfig(
+    triggerType: string | undefined,
+    status: string | null | undefined,
+    triggerEventId: string | null | undefined,
+  ): void {
+    if (triggerType !== 'date_arrives' || status !== 'active') return;
+    if (!parseDateArrivesConfig(triggerEventId)) {
+      throw new BadRequestError(
+        'This automation needs a campaign, a days-before value and a list before it can be turned on.',
+      );
+    }
+  }
+
   public override async add(row: OperationDataType<'workflows', 'insert'>, trx?: Transaction<Models>) {
     WorkflowsController.stringifyExitConditions(row as Record<string, unknown>);
+    WorkflowsController.assertDateArrivesConfig(row.trigger_type, row.status ?? 'draft', row.trigger_event_id);
     // Server-side message-class enforcement (REVIEW3 two-class plan): a trigger that determines
     // the class always wins over whatever the client sent — the win-back trigger cannot be made
     // 'relationship' through the API — and an omitted class falls back to the trigger's default.
@@ -40,6 +60,21 @@ export class WorkflowsController extends BaseController<'workflows', WorkflowsRe
   }) {
     WorkflowsController.stringifyExitConditions(input.row as Record<string, unknown>);
     const { row } = input;
+    // Same guard as add(). A partial update (e.g. a bare status flip to 'active') may carry
+    // any subset of the three fields, so the missing ones are read from the stored row.
+    if (row.trigger_type !== undefined || row.status !== undefined || row.trigger_event_id !== undefined) {
+      const stored = await this.getRepo()
+        .db.selectFrom('workflows')
+        .select(['trigger_type', 'status', 'trigger_event_id'])
+        .where('tenant_id', '=', input.tenant_id)
+        .where('id', '=', input.id)
+        .executeTakeFirst();
+      WorkflowsController.assertDateArrivesConfig(
+        row.trigger_type ?? stored?.trigger_type,
+        row.status ?? stored?.status,
+        row.trigger_event_id === undefined ? stored?.trigger_event_id : row.trigger_event_id,
+      );
+    }
     // Same enforcement as add(). A partial update may carry only one of the pair, so the
     // missing half is read from the stored row before normalizing.
     if (row.trigger_type !== undefined || row.message_class !== undefined) {
@@ -829,7 +864,7 @@ function canonicalJson(value: unknown): string {
 }
 
 export interface SequenceStepInput {
-  kind: 'wait' | 'send_email' | 'add_tag' | 'create_task' | 'notify_team';
+  kind: 'wait' | 'send_email' | 'add_tag' | 'create_task' | 'notify_team' | 'add_to_list';
   config?: Record<string, unknown> | null;
   delay_days?: number;
   delay_unit?: 'days' | 'hours';

@@ -2,8 +2,9 @@ import type { PcIconNameType } from '@icons/icons.index';
 import type { WorkflowExitCondition, WorkflowSendCondition, WorkflowStepKind, WorkflowTriggerType } from '@common';
 import type { QueryBuilderGroupNode, QueryBuilderRuleNode } from '@common';
 
-// Spec §16 — the twelve trigger cards of the picker, in the spec's order. Copy (title +
-// description) is lifted to match the spec; the three shown verbatim in the mockup are marked.
+// Spec §16 — the trigger cards of the picker, in the spec's order (the spec's original twelve
+// plus the field-ops and date cards added 2026-08-20). Copy (title + description) is lifted to
+// match the spec; the three shown verbatim in the mockup are marked.
 export interface TriggerCardMeta {
   type: WorkflowTriggerType;
   icon: PcIconNameType;
@@ -90,8 +91,25 @@ export const TRIGGER_CARDS: readonly TriggerCardMeta[] = [
     title: 'Supporter goes quiet',
     description: 'Runs when a subscriber has not opened or clicked anything for a while (you pick how long).',
   },
-  // 'date_arrives' deliberately has no card: nothing on the backend fires it yet, and a card
-  // for a trigger that never runs is dishonest UI. The enum value stays for saved-row back-compat.
+  {
+    type: 'event_registered',
+    icon: 'add-ticket',
+    title: 'Event registration',
+    description: 'Runs when someone registers for an event — new contact or existing supporter.',
+  },
+  {
+    type: 'sign_delivered',
+    icon: 'map-pin',
+    title: 'Yard sign delivered',
+    description: 'Runs when a requested yard sign reaches the house — a thank-you the moment it lands.',
+  },
+  {
+    type: 'date_arrives',
+    icon: 'add-schedule',
+    title: 'Campaign date arrives',
+    description:
+      'Runs for everyone on a list a set number of days before a campaign’s end date — countdown reminders, election-day sends.',
+  },
 ] as const;
 
 // Spec §16 sequence editor — the five options of the ADD A STEP menu, each with a hint line.
@@ -106,6 +124,7 @@ export const STEP_KINDS: readonly StepKindMeta[] = [
   { kind: 'wait', icon: 'arrow-path', label: 'Wait', hint: 'Pause the sequence for a set time.' },
   { kind: 'send_email', icon: 'paper-airplane', label: 'Send email', hint: 'Send a one-off email to the contact.' },
   { kind: 'add_tag', icon: 'add-label', label: 'Add tag', hint: 'Label the contact for segmenting.' },
+  { kind: 'add_to_list', icon: 'add-list', label: 'Add to list', hint: 'Put the contact on a static list.' },
   { kind: 'create_task', icon: 'add-task', label: 'Create task', hint: 'Give a teammate something to do.' },
   { kind: 'notify_team', icon: 'user-group', label: 'Notify team', hint: 'Alert a teammate in-app.' },
 ] as const;
@@ -129,6 +148,9 @@ export function triggerCardMeta(type: WorkflowTriggerType | string): TriggerCard
 export interface StepConfig {
   tag_id?: string | null;
   tag_name?: string | null;
+  /** add_to_list — the target STATIC list; list_name is denormalized for the step card. */
+  list_id?: string | null;
+  list_name?: string | null;
   task_title?: string | null;
   notify_user_id?: string | null;
   notify_user_name?: string | null;
@@ -228,6 +250,8 @@ export function stepSummary(step: RecipeStep): string {
     }
     case 'add_tag':
       return config.tag_name ? `add tag ${config.tag_name}` : 'add tag';
+    case 'add_to_list':
+      return config.list_name ? `add to list ${config.list_name}` : 'add to list';
     case 'create_task':
       return config.task_title ? `create task ${config.task_title}` : 'create task';
     case 'notify_team':

@@ -3,12 +3,16 @@ import { queryBuilderNodeSchema } from './core.schema';
 
 // Spec §16 Automations — the trigger picker's cards. `volunteer_signup` is kept for
 // backward compatibility with the pre-rebuild volunteer onboarding trigger (fired from the
-// volunteer-events controller) but is not offered as a card. `date_arrives` stays in the
-// enum for saved-row back-compat but has no picker card: no backend fires it yet, and a
-// dead card is dishonest UI. `task_sla_breach` is fired by the hourly
-// detect_task_sla_breaches cron (spec §4 → §16), which enrolls the breached task's linked
-// person. `supporter_lapsed` is fired by the daily detect_lapsed_supporters cron; its
-// trigger_event_id holds the inactivity threshold in days (default 90).
+// volunteer-events controller) but is not offered as a card. `task_sla_breach` is fired by
+// the hourly detect_task_sla_breaches cron (spec §4 → §16), which enrolls the breached
+// task's linked person. `supporter_lapsed` is fired by the daily detect_lapsed_supporters
+// cron; its trigger_event_id holds the inactivity threshold in days (default 90).
+// `date_arrives` is fired by the daily detect_date_arrivals cron; its trigger_event_id
+// holds a DateArrivesConfigObj JSON blob (days before a campaign's end date + the list
+// whose members enroll). `sign_delivered` fires when a household's yard-sign request
+// reaches 'delivered', enrolling the requester; its trigger_event_id is always null.
+// `event_registered` fires when a person registers for an event (new or existing person);
+// its trigger_event_id holds the event id, null meaning "any event".
 export const WORKFLOW_TRIGGER_TYPES = [
   'manual',
   'web_form_submitted',
@@ -24,6 +28,8 @@ export const WORKFLOW_TRIGGER_TYPES = [
   'supporter_lapsed',
   'date_arrives',
   'volunteer_signup',
+  'sign_delivered',
+  'event_registered',
 ] as const;
 
 export type WorkflowTriggerType = (typeof WORKFLOW_TRIGGER_TYPES)[number];
@@ -46,7 +52,9 @@ const messageClassSchema = z.enum(WORKFLOW_MESSAGE_CLASSES);
 // Triggers that fire off the recipient's OWN action — operational (relationship) mail, and the
 // editor locks the class. `new_unsubscriber` is here because it fires on the person's own
 // unsubscribe: classing it as marketing would make the trigger unusable (the recipient just
-// revoked the subscription marketing requires).
+// revoked the subscription marketing requires). `sign_delivered` and `event_registered` are
+// here because both respond to something the recipient themselves asked for (a yard sign,
+// an event spot).
 const RELATIONSHIP_LOCKED_TRIGGERS: ReadonlySet<WorkflowTriggerType> = new Set([
   'web_form_submitted',
   'donation_recorded',
@@ -55,6 +63,8 @@ const RELATIONSHIP_LOCKED_TRIGGERS: ReadonlySet<WorkflowTriggerType> = new Set([
   'task_sla_breach',
   'volunteer_signup',
   'new_unsubscriber',
+  'sign_delivered',
+  'event_registered',
 ]);
 
 // Triggers that are re-solicitation by definition — always marketing, not switchable.
@@ -91,8 +101,17 @@ export function resolveWorkflowMessageClass(
   return lockedMessageClassForTrigger(trigger) ?? requested ?? 'marketing';
 }
 
-// Spec §16 sequence editor — the five step kinds offered by the ADD A STEP menu.
-export const WORKFLOW_STEP_KINDS = ['wait', 'send_email', 'add_tag', 'create_task', 'notify_team'] as const;
+// Spec §16 sequence editor — the step kinds offered by the ADD A STEP menu. `add_to_list`
+// puts the enrolled person on a STATIC list (smart lists compute their own members, so the
+// editor only offers static ones); the executor is a no-op when the person is already on it.
+export const WORKFLOW_STEP_KINDS = [
+  'wait',
+  'send_email',
+  'add_tag',
+  'create_task',
+  'notify_team',
+  'add_to_list',
+] as const;
 
 export type WorkflowStepKind = (typeof WORKFLOW_STEP_KINDS)[number];
 
@@ -126,6 +145,10 @@ export const WorkflowStepConfigObj = z
     tag_name: z.string().nullable().optional(),
     // create_task
     task_title: z.string().nullable().optional(),
+    // add_to_list — the target STATIC list. list_name is denormalized for the step card's
+    // summary line, same as tag_name on add_tag.
+    list_id: z.string().nullable().optional(),
+    list_name: z.string().nullable().optional(),
     // notify_team
     notify_user_id: z.string().nullable().optional(),
     notify_user_name: z.string().nullable().optional(),
@@ -237,3 +260,39 @@ export const WorkflowRunObj = z.object({
 });
 
 export type WorkflowRunType = z.infer<typeof WorkflowRunObj>;
+
+// ---------------------------------------------------------------------------
+// date_arrives trigger config
+// ---------------------------------------------------------------------------
+
+export const DATE_ARRIVES_MAX_DAYS_BEFORE = 365;
+
+/**
+ * What a `date_arrives` workflow stores in `trigger_event_id` (as a JSON string, because the
+ * column holds one text value and this trigger needs three): fire `days_before` days before
+ * `campaign_id`'s end date, enrolling every current member of `list_id`. 0 = on the end date
+ * itself. The daily cron re-reads the campaign's end date at every run, so moving the date
+ * moves the firing day with no workflow edit.
+ */
+export const DateArrivesConfigObj = z.object({
+  days_before: z.number().int().min(0).max(DATE_ARRIVES_MAX_DAYS_BEFORE),
+  campaign_id: z.string().min(1),
+  list_id: z.string().min(1),
+});
+
+export type DateArrivesConfigType = z.infer<typeof DateArrivesConfigObj>;
+
+/** Validating encoder — the UI must not save a config the cron would reject. */
+export function encodeDateArrivesConfig(config: DateArrivesConfigType): string {
+  return JSON.stringify(DateArrivesConfigObj.parse(config));
+}
+
+/** Null for anything unparseable — the cron and the editor both treat that as "not configured". */
+export function parseDateArrivesConfig(raw: string | null | undefined): DateArrivesConfigType | null {
+  if (!raw) return null;
+  try {
+    return DateArrivesConfigObj.parse(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}

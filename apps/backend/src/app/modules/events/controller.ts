@@ -467,6 +467,22 @@ export class EventsController extends BaseController<'events', EventsRepo> {
         }
       }
 
+      // Staff-recorded registrations fire the same trigger as public RSVPs. A row created
+      // straight into 'cancelled' is not a registration, so it fires nothing.
+      if ((payload.status ?? 'registered') !== 'cancelled') {
+        try {
+          const workflowsCtrl = new WorkflowsController();
+          await workflowsCtrl.triggerWorkflow(
+            auth.tenant_id,
+            String(payload.person_id),
+            'event_registered',
+            String(payload.event_id),
+          );
+        } catch (err) {
+          logger.error({ err }, 'Failed to trigger event_registered workflow in addRegistration');
+        }
+      }
+
       try {
         await this.userActivity.log({
           tenant_id: auth.tenant_id,
@@ -775,6 +791,16 @@ export class EventsController extends BaseController<'events', EventsRepo> {
           })
           .returning('id')
           .executeTakeFirstOrThrow();
+
+        // Unlike contact_created above (new people only), this fires for EVERY registrant —
+        // an existing supporter registering is exactly the moment an event follow-up
+        // automation exists for.
+        try {
+          const workflowsCtrl = new WorkflowsController();
+          await workflowsCtrl.triggerWorkflow(tenantId, personId, 'event_registered', String(event.id), trx);
+        } catch (err) {
+          logger.error({ err }, 'Failed to trigger event_registered workflow in rsvpPublic');
+        }
 
         // Queue confirmation email
         if (event.send_registration_confirmation !== false) {

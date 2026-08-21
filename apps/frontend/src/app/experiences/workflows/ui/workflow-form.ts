@@ -4,7 +4,14 @@ import { CdkDrag, CdkDragHandle, CdkDragPlaceholder, CdkDropList, moveItemInArra
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { ActivatedRoute, Router, RouterModule } from '@angular/router';
-import { AddWorkflowObj, defaultMessageClassForTrigger, lockedMessageClassForTrigger } from '@common';
+import {
+  AddWorkflowObj,
+  DATE_ARRIVES_MAX_DAYS_BEFORE,
+  defaultMessageClassForTrigger,
+  encodeDateArrivesConfig,
+  lockedMessageClassForTrigger,
+  parseDateArrivesConfig,
+} from '@common';
 import type {
   QueryBuilderGroupNode,
   WorkflowExitCondition,
@@ -23,6 +30,8 @@ import { TagsService } from '@experiences/tags/services/tags-service';
 import { FormsService } from '@experiences/forms/services/forms-service';
 import { ListsService } from '@experiences/lists/services/lists-service';
 import { TeamsService } from '@experiences/teams/services/teams-service';
+import { CampaignsService } from '@experiences/campaigns/services/campaigns-service';
+import { EventsFrontendService } from '@experiences/events/services/events-frontend-service';
 import { QueryBuilderComponent, QueryBuilderField } from '@frontend/shared/components/query-builder/query-builder';
 import { ConfirmDialogService } from '../../../services/shared-dialog.service';
 import { ShiftsService } from '../../shifts/services/shifts-service';
@@ -98,7 +107,16 @@ interface EnrollmentRow {
     CdkDragPlaceholder,
   ],
   templateUrl: './workflow-form.html',
-  providers: [WorkflowsService, ShiftsService, TagsService, FormsService, ListsService, TeamsService],
+  providers: [
+    WorkflowsService,
+    ShiftsService,
+    TagsService,
+    FormsService,
+    ListsService,
+    TeamsService,
+    CampaignsService,
+    EventsFrontendService,
+  ],
 })
 export class WorkflowFormComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
@@ -110,6 +128,8 @@ export class WorkflowFormComponent implements OnInit {
   private readonly formsSvc = inject(FormsService);
   private readonly listsSvc = inject(ListsService);
   private readonly teamsSvc = inject(TeamsService);
+  private readonly campaignsSvc = inject(CampaignsService);
+  private readonly eventsSvc = inject(EventsFrontendService);
   private readonly dialogs = inject(ConfirmDialogService);
 
   private readonly _loading = createLoadingGate();
@@ -141,6 +161,29 @@ export class WorkflowFormComponent implements OnInit {
   protected readonly lists = signal<OptionRow[]>([]);
   protected readonly volunteerEvents = signal<OptionRow[]>([]);
   protected readonly teamMembers = signal<OptionRow[]>([]);
+  protected readonly events = signal<OptionRow[]>([]);
+  // Rich list rows so the add-to-list step and the date trigger can filter by type.
+  private readonly listRows = signal<ListOptionRow[]>([]);
+  /** add_to_list step targets: static people lists only (smart lists compute their own members). */
+  protected readonly staticPeopleLists = computed<OptionRow[]>(() =>
+    this.listRows()
+      .filter((l) => !l.is_dynamic && l.object === 'people')
+      .map((l) => ({ id: l.id, name: l.name })),
+  );
+  /** date_arrives audience: any people list (enrollments are person rows). */
+  protected readonly peopleLists = computed<OptionRow[]>(() =>
+    this.listRows()
+      .filter((l) => l.object === 'people')
+      .map((l) => ({ id: l.id, name: l.name })),
+  );
+  /** Campaigns that carry an end date — the only ones a date trigger can count down to. */
+  protected readonly datedCampaigns = signal<OptionRow[]>([]);
+
+  // date_arrives config (encoded into trigger_event_id as DateArrivesConfigObj JSON).
+  protected readonly dateArrivesDaysBefore = signal<number>(14);
+  protected readonly dateArrivesCampaignId = signal<string>('');
+  protected readonly dateArrivesListId = signal<string>('');
+  protected readonly dateArrivesMaxDays = DATE_ARRIVES_MAX_DAYS_BEFORE;
 
   // "End the sequence early when..." — sequence-level goals the drip worker checks per tick.
   protected readonly exitConditionOptions = EXIT_CONDITION_OPTIONS;
@@ -204,11 +247,17 @@ export class WorkflowFormComponent implements OnInit {
     lockedMessageClassForTrigger(this.payload().trigger_type),
   );
 
-  // The trigger needs a specific target (tag / form / list / shift status). Manual and the
-  // event-less triggers don't.
+  // The trigger needs a specific target (tag / form / list / shift status / event). Manual and
+  // the event-less triggers don't; date_arrives has its own three-part config block instead.
   protected readonly triggerNeedsTarget = computed(() => {
     const t = this.payload().trigger_type;
-    return t === 'tag_added' || t === 'web_form_submitted' || t === 'list_joined' || t === 'volunteer_shift_status';
+    return (
+      t === 'tag_added' ||
+      t === 'web_form_submitted' ||
+      t === 'list_joined' ||
+      t === 'volunteer_shift_status' ||
+      t === 'event_registered'
+    );
   });
 
   protected readonly triggerTargetOptions = computed<OptionRow[]>(() => {
@@ -221,6 +270,8 @@ export class WorkflowFormComponent implements OnInit {
         return this.lists();
       case 'volunteer_shift_status':
         return SHIFT_STATUS_OPTIONS;
+      case 'event_registered':
+        return this.events();
       default:
         return [];
     }
@@ -287,6 +338,13 @@ export class WorkflowFormComponent implements OnInit {
       message_class: defaultMessageClassForTrigger(type),
       name: p.name || `${meta ? meta.title : 'New'} automation`,
     }));
+    if (type === 'date_arrives') {
+      // Fresh three-part config; syncDateArrivesConfig writes trigger_event_id once all
+      // three parts are chosen (empty until then, which the server refuses to activate).
+      this.dateArrivesDaysBefore.set(14);
+      this.dateArrivesCampaignId.set('');
+      this.dateArrivesListId.set('');
+    }
     if (this.steps().length === 0) {
       // Seed a sensible first step so the sequence isn't blank.
       this.steps.set([this.makeStep('send_email')]);
@@ -300,6 +358,36 @@ export class WorkflowFormComponent implements OnInit {
 
   protected setTriggerTarget(id: string): void {
     this.payload.update((p) => ({ ...p, trigger_event_id: id }));
+  }
+
+  // ── date_arrives config ────────────────────────────────────────────────────
+  protected setDateArrivesDays(value: string): void {
+    this.dateArrivesDaysBefore.set(Number(value));
+    this.syncDateArrivesConfig();
+  }
+
+  protected setDateArrivesCampaign(id: string): void {
+    this.dateArrivesCampaignId.set(id);
+    this.syncDateArrivesConfig();
+  }
+
+  protected setDateArrivesList(id: string): void {
+    this.dateArrivesListId.set(id);
+    this.syncDateArrivesConfig();
+  }
+
+  /** Encode the three-part config into trigger_event_id — empty until every part is chosen,
+   *  which the server accepts on a draft and refuses to activate. */
+  private syncDateArrivesConfig(): void {
+    const campaignId = this.dateArrivesCampaignId();
+    const listId = this.dateArrivesListId();
+    const raw = Math.floor(this.dateArrivesDaysBefore());
+    const days = Math.min(DATE_ARRIVES_MAX_DAYS_BEFORE, Math.max(0, Number.isFinite(raw) ? raw : 0));
+    const encoded =
+      campaignId && listId
+        ? encodeDateArrivesConfig({ days_before: days, campaign_id: campaignId, list_id: listId })
+        : '';
+    this.payload.update((p) => ({ ...p, trigger_event_id: encoded }));
   }
 
   protected setStatus(status: 'active' | 'paused'): void {
@@ -361,6 +449,13 @@ export class WorkflowFormComponent implements OnInit {
     if (!step) return;
     const tag = this.tags().find((t) => t.id === tagId);
     this.updateStep(index, { config: { ...step.config, tag_id: tagId, tag_name: tag?.name ?? null } });
+  }
+
+  protected setStepList(index: number, listId: string): void {
+    const step = this.steps()[index];
+    if (!step) return;
+    const list = this.staticPeopleLists().find((l) => l.id === listId);
+    this.updateStep(index, { config: { ...step.config, list_id: listId || null, list_name: list?.name ?? null } });
   }
 
   protected setStepTaskTitle(index: number, title: string): void {
@@ -609,18 +704,46 @@ export class WorkflowFormComponent implements OnInit {
 
   // ── loaders ────────────────────────────────────────────────────────────────
   private async loadPickers(): Promise<void> {
-    const [tags, forms, lists, shifts, teams] = await Promise.all([
+    const [tags, forms, listRaw, shifts, teams, events, campaignsRaw] = await Promise.all([
       this.safeRows(() => this.tagsSvc.getAll({ limit: 1000 })),
       this.safeRows(() => this.formsSvc.getAll({ limit: 1000 })),
-      this.safeRows(() => this.listsSvc.getAll({ limit: 1000 })),
+      this.safeRawRows(() => this.listsSvc.getAll({ limit: 1000 })),
       this.safeRows(() => this.volunteerEventsSvc.getAll({ limit: 1000 })),
       this.safeRows(() => this.teamsSvc.getAll({ limit: 1000 })),
+      this.safeRows(() => this.eventsSvc.getAll({ limit: 1000 })),
+      this.safeRawRows(() => this.campaignsSvc.getAll({ limit: 1000 })),
     ]);
     this.tags.set(tags);
     this.webForms.set(forms);
-    this.lists.set(lists);
+    this.lists.set(listRaw.map((r) => ({ id: String(r['id']), name: String(r['name'] ?? r['id']) })));
+    this.listRows.set(
+      listRaw.map((r) => ({
+        id: String(r['id']),
+        name: String(r['name'] ?? r['id']),
+        is_dynamic: r['is_dynamic'] === true,
+        object: r['object'] === 'households' ? 'households' : 'people',
+      })),
+    );
     this.volunteerEvents.set(shifts);
     this.teamMembers.set(teams);
+    this.events.set(events);
+    // Only campaigns with an end date can anchor a countdown; label carries the date so the
+    // author sees what the trigger counts down to.
+    this.datedCampaigns.set(
+      campaignsRaw
+        .filter((r) => typeof r['enddate'] === 'string' && r['enddate'] !== '')
+        .map((r) => ({ id: String(r['id']), name: `${String(r['name'] ?? r['id'])} — ends ${String(r['enddate'])}` })),
+    );
+  }
+
+  /** Like safeRows but keeps the raw records, for pickers that need more than id+name. */
+  private async safeRawRows(fn: () => Promise<{ rows?: unknown[] } | undefined>): Promise<Record<string, unknown>[]> {
+    try {
+      const res = await fn();
+      return (res?.rows ?? []).map((r) => r as Record<string, unknown>);
+    } catch {
+      return [];
+    }
   }
 
   private async safeRows(fn: () => Promise<{ rows?: unknown[] } | undefined>): Promise<OptionRow[]> {
@@ -667,6 +790,14 @@ export class WorkflowFormComponent implements OnInit {
         if (Array.isArray(exits)) {
           const known = EXIT_CONDITION_OPTIONS.map((o) => o.value as string);
           this.exitConditions.set(exits.filter((e): e is WorkflowExitCondition => known.includes(String(e))));
+        }
+        if (trigger === 'date_arrives') {
+          const config = parseDateArrivesConfig(record.trigger_event_id);
+          if (config) {
+            this.dateArrivesDaysBefore.set(config.days_before);
+            this.dateArrivesCampaignId.set(config.campaign_id);
+            this.dateArrivesListId.set(config.list_id);
+          }
         }
       }
     } catch {
@@ -779,6 +910,13 @@ const SHIFT_STATUS_OPTIONS: OptionRow[] = [
   { id: 'no_show', name: 'No-show' },
   { id: 'cancelled', name: 'Cancelled' },
 ];
+
+interface ListOptionRow {
+  id: string;
+  name: string;
+  is_dynamic: boolean;
+  object: 'people' | 'households';
+}
 
 function emptyConditions(): QueryBuilderGroupNode {
   return { kind: 'group', id: newUid(), conjunction: 'AND', rules: [] };

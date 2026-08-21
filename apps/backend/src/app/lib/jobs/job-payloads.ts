@@ -332,6 +332,7 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     // on legacy jobs, which were already metered at enqueue time.
     meterOnSend: z.boolean().optional(),
   }),
+  z.object({ type: z.literal('detect_date_arrivals') }),
   z.object({ type: z.literal('detect_lapsed_supporters') }),
   z.object({ type: z.literal('detect_task_sla_breaches') }),
   z.object({ type: z.literal('perform_scheduled_deletions') }),

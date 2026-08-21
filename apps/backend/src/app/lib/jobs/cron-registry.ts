@@ -22,6 +22,7 @@ export const CRON_JOBS = {
   check_all_usage_limits: DAY_MS,
   check_due_tasks: DAY_MS,
   cleanup_activities: DAY_MS,
+  detect_date_arrivals: DAY_MS,
   detect_lapsed_supporters: DAY_MS,
   perform_scheduled_deletions: DAY_MS,
   prune_newsletter_events: DAY_MS,

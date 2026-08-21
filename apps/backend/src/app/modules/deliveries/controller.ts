@@ -39,6 +39,7 @@ import { logger } from '../../logger';
 import type { Models, OperationDataType } from '../../../../../../libs/common/src/lib/kysely.models';
 import { CampaignsRepo } from '../campaigns/repositories/campaigns.repo';
 import { CompanionAccessController } from '../companion-access/controller';
+import { WorkflowsController } from '../workflows/controller';
 import { DeliveryRequestsRepo } from './repositories/delivery-requests.repo';
 import { DeliveryRouteStopsRepo } from './repositories/delivery-route-stops.repo';
 import { DeliveryRoutesRepo } from './repositories/delivery-routes.repo';
@@ -289,6 +290,19 @@ export class DeliveriesController {
         directIds = input.ids.filter((id) => !handled.has(id));
       }
       if (directIds.length > 0) {
+        // The sign_delivered trigger fires only on a genuine transition, so capture which of
+        // these rows were not already delivered before the blanket update below.
+        let newlyDelivered: string[] = [];
+        if (input.status === 'delivered') {
+          const notYet = await trx
+            .selectFrom('delivery_requests')
+            .select(['id'])
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('id', 'in', directIds)
+            .where('status', '!=', 'delivered')
+            .execute();
+          newlyDelivered = notYet.map((r) => String(r.id));
+        }
         await trx
           .updateTable('delivery_requests')
           .set({
@@ -300,6 +314,7 @@ export class DeliveriesController {
           .where('tenant_id', '=', auth.tenant_id)
           .where('id', 'in', directIds)
           .execute();
+        await this.triggerSignDeliveredWorkflows(trx, auth.tenant_id, newlyDelivered);
       }
       await this.logRequestStanding(trx, auth, input.ids, input.status);
       return { updated: input.ids.length };
@@ -365,6 +380,10 @@ export class DeliveriesController {
         .where('tenant_id', '=', auth.tenant_id)
         .where('id', '=', requestId)
         .execute();
+      // The stop path fires inside applyStopTransition; this direct flip must fire its own.
+      // resolveSignRequestForDelivery already returned 'already_delivered' for a re-delivery,
+      // so reaching here is a genuine transition.
+      await this.triggerSignDeliveredWorkflows(trx, auth.tenant_id, [requestId]);
     }
     await this.logRequestStanding(trx, auth, [requestId], 'delivered', input.via);
     return 'delivered';
@@ -1289,6 +1308,35 @@ export class DeliveriesController {
   }
 
   // ---- Shared transition helpers ------------------------------------------
+  /**
+   * Fire the `sign_delivered` automation trigger for requests that just reached 'delivered'.
+   * Enrollment is person-based, so a request without a requester (`person_id` null — e.g. a
+   * canvasser planting a sign nobody asked for) enrolls nobody. Runs on the caller's
+   * transaction; a workflow failure is logged and never rolls the delivery back.
+   */
+  private async triggerSignDeliveredWorkflows(
+    trx: Transaction<Models>,
+    tenantId: string,
+    requestIds: string[],
+  ): Promise<void> {
+    if (requestIds.length === 0) return;
+    try {
+      const rows = await trx
+        .selectFrom('delivery_requests')
+        .select(['id', 'person_id'])
+        .where('tenant_id', '=', tenantId)
+        .where('id', 'in', requestIds)
+        .execute();
+      const workflowsCtrl = new WorkflowsController();
+      for (const row of rows) {
+        if (row.person_id == null) continue;
+        await workflowsCtrl.triggerWorkflow(tenantId, String(row.person_id), 'sign_delivered', null, trx);
+      }
+    } catch (err) {
+      logger.error({ err }, 'Failed to trigger sign_delivered workflows');
+    }
+  }
+
   private async applyStopTransition(
     trx: Transaction<Models>,
     auth: IAuthKeyPayload,
@@ -1328,6 +1376,9 @@ export class DeliveriesController {
         .where('tenant_id', '=', auth.tenant_id)
         .where('id', '=', String(stop.request_id))
         .execute();
+      // A pending stop implies the request was 'approved' (the derived-routed invariant), so
+      // reaching here is always a genuine transition to delivered.
+      await this.triggerSignDeliveredWorkflows(trx, auth.tenant_id, [String(stop.request_id)]);
     } else {
       const skipReason = reason ?? 'Other';
       await trx

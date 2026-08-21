@@ -5,9 +5,10 @@ import {
   WORKFLOW_SEND_CONDITIONS,
   calculateWorkingTimeMs,
   getPlanDef,
+  parseDateArrivesConfig,
   planAllowsFeature,
 } from '@common';
-import type { WorkflowExitCondition, WorkflowMessageClass, WorkflowSendCondition } from '@common';
+import type { IAuthKeyPayload, WorkflowExitCondition, WorkflowMessageClass, WorkflowSendCondition } from '@common';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { env } from '../../../../env';
 import { logger } from '../../../logger';
@@ -428,6 +429,124 @@ export async function handleDetectLapsedSupporters(db: Kysely<Models>): Promise<
   }
 
   await scheduleNextRun(db, 'detect_lapsed_supporters', CRON_JOBS.detect_lapsed_supporters);
+}
+
+const MAX_DATE_ARRIVES_ENROLLMENTS_PER_RUN = 5000;
+const DATE_ARRIVES_GRACE_DAYS = 2;
+const DATE_ARRIVES_DEDUPE_DAYS = 7;
+
+/**
+ * Daily scan behind the `date_arrives` trigger ("A campaign date arrives"). Each active
+ * workflow stores a DateArrivesConfigObj JSON blob in trigger_event_id: fire `days_before`
+ * days before `campaign_id`'s end date, enrolling every current member of `list_id` (people
+ * lists only — enrollments are person rows). The end date is re-read at every run, so moving
+ * the campaign's date moves the firing day with no workflow edit.
+ *
+ * Day math is UTC-calendar. A workflow fires on its target day OR up to
+ * DATE_ARRIVES_GRACE_DAYS after it — a worker outage on election-day-minus-14 must not
+ * silently skip the countdown send. The enrollment dedupe keeps the grace window (and the
+ * cap's carry-over) from enrolling anyone twice. The per-run cap is logged when it truncates
+ * (no silent caps); the remainder enrolls on the following daily runs inside the grace window.
+ */
+export async function handleDetectDateArrivals(db: Kysely<Models>): Promise<void> {
+  const now = new Date();
+  const todayUtcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  // NOTE: unscoped by design — the daily cron enumerates every tenant's active date_arrives
+  // workflows in one pass; each row carries the tenant_id that scopes all downstream work.
+  // eslint-disable-next-line local/no-unscoped-db-query
+  const dateWorkflows = await db
+    .selectFrom('workflows')
+    .select(['id', 'tenant_id', 'trigger_event_id'])
+    .where('trigger_type', '=', 'date_arrives')
+    .where('status', '=', 'active')
+    .execute();
+
+  if (dateWorkflows.length > 0) {
+    const { WorkflowsController } = await import('../../../modules/workflows/controller');
+    const { ListsController } = await import('../../../modules/lists/controller');
+    const workflowsCtrl = new WorkflowsController();
+    const listsCtrl = new ListsController();
+
+    for (const wf of dateWorkflows) {
+      const tenantId = String(wf.tenant_id);
+      const workflowId = String(wf.id);
+      try {
+        const config = parseDateArrivesConfig(wf.trigger_event_id);
+        if (!config) {
+          logger.warn({ workflowId, tenantId }, '[date-arrives] Active workflow has no valid config; skipping');
+          continue;
+        }
+
+        const campaign = await db
+          .selectFrom('campaigns')
+          .select(['enddate', 'status'])
+          .where('tenant_id', '=', tenantId)
+          .where('id', '=', config.campaign_id)
+          .executeTakeFirst();
+        if (!campaign || campaign.status === 'archived' || !campaign.enddate) continue;
+        // `enddate` is a Postgres `date`, modeled as 'YYYY-MM-DD'; the slice guards against a
+        // driver handing back a full timestamp string.
+        const endMs = Date.parse(`${String(campaign.enddate).slice(0, 10)}T00:00:00Z`);
+        if (Number.isNaN(endMs)) continue;
+        const daysPastTarget = Math.floor((todayUtcMs - (endMs - config.days_before * DAY_MS)) / DAY_MS);
+        if (daysPastTarget < 0 || daysPastTarget > DATE_ARRIVES_GRACE_DAYS) continue;
+
+        // getCurrentMembers needs an acting user; the tenant admin is the same actor
+        // enrollments are attributed to inside triggerWorkflow.
+        const tenantRow = await db
+          .selectFrom('tenants')
+          .select(['admin_id'])
+          .where('id', '=', tenantId)
+          .executeTakeFirst();
+        if (!tenantRow?.admin_id) {
+          logger.warn({ workflowId, tenantId }, '[date-arrives] Tenant has no admin user; skipping');
+          continue;
+        }
+        const auth = { tenant_id: tenantId, user_id: String(tenantRow.admin_id), session_id: '' } as IAuthKeyPayload;
+
+        const members = await listsCtrl.getCurrentMembers(auth, config.list_id);
+        if (members.object !== 'people') {
+          logger.warn({ workflowId, tenantId }, '[date-arrives] Configured list is a household list; skipping');
+          continue;
+        }
+        if (members.ids.length === 0) continue;
+
+        const dedupeCutoff = new Date(now.getTime() - DATE_ARRIVES_DEDUPE_DAYS * DAY_MS);
+        const recent = await db
+          .selectFrom('workflow_enrollments')
+          .select(['person_id'])
+          .where('tenant_id', '=', tenantId)
+          .where('workflow_id', '=', workflowId)
+          .where('created_at', '>', dedupeCutoff)
+          .execute();
+        const recentSet = new Set(recent.map((r) => String(r.person_id)));
+        const candidates = members.ids.filter((id) => !recentSet.has(id));
+        const capped = candidates.slice(0, MAX_DATE_ARRIVES_ENROLLMENTS_PER_RUN);
+        if (capped.length < candidates.length) {
+          logger.warn(
+            { workflowId, tenantId, enrolledNow: capped.length, totalDue: candidates.length },
+            '[date-arrives] Per-run cap hit; the remainder enrolls on the next daily runs inside the grace window',
+          );
+        }
+
+        for (const personId of capped) {
+          // The trigger path evaluates the workflow's "ONLY ENROLL IF" conditions; passing the
+          // workflow's own trigger_event_id keeps differently-configured workflows separate.
+          await workflowsCtrl.triggerWorkflow(tenantId, personId, 'date_arrives', wf.trigger_event_id);
+        }
+        if (capped.length > 0) {
+          logger.info(
+            { workflowId, tenantId, enrolled: capped.length, daysPastTarget },
+            '[date-arrives] Enrolled list members',
+          );
+        }
+      } catch (err) {
+        logger.error({ err, workflowId }, '[date-arrives] Failed to scan workflow');
+      }
+    }
+  }
+
+  await scheduleNextRun(db, 'detect_date_arrivals', CRON_JOBS.detect_date_arrivals);
 }
 
 /** Self-rescheduling hourly scan behind the `task_sla_breach` trigger ("Task breaches SLA"). */
@@ -892,6 +1011,56 @@ export async function executeActionStep(trx: Transaction<Models>, ctx: ActionCon
             updatedby_id: ctx.actorId,
           })
           .execute();
+      }
+      return { runRecorded: false };
+    }
+
+    case 'add_to_list': {
+      if (!person) throw new Error('No contact to add to the list');
+      const listId = str(config['list_id']);
+      if (!listId) throw new Error('No list configured for this step');
+      if (!ctx.actorId) throw new Error('Automation has no owner to attribute the list change to');
+      const list = await trx
+        .selectFrom('lists')
+        .select(['id', 'is_dynamic', 'object'])
+        .where('tenant_id', '=', ctx.tenantId)
+        .where('id', '=', listId)
+        .executeTakeFirst();
+      if (!list) throw new Error('The configured list no longer exists');
+      // Smart lists compute their own members from rules; hand-adding a row would be
+      // overwritten by the next refresh. The editor only offers static people lists, but the
+      // list could have been swapped out from under a saved step — refuse honestly.
+      if (list.is_dynamic)
+        throw new Error('The configured list is a smart list — add-to-list steps need a static list');
+      if (list.object !== 'people')
+        throw new Error('The configured list is a household list — the enrolled contact is a person');
+      const already = await trx
+        .selectFrom('map_lists_persons')
+        .select('person_id')
+        .where('tenant_id', '=', ctx.tenantId)
+        .where('list_id', '=', listId)
+        .where('person_id', '=', person.id)
+        .executeTakeFirst();
+      if (!already) {
+        await trx
+          .insertInto('map_lists_persons')
+          .values({
+            tenant_id: ctx.tenantId,
+            list_id: listId,
+            person_id: person.id,
+            createdby_id: ctx.actorId,
+            updatedby_id: ctx.actorId,
+          })
+          .execute();
+        // A genuinely new static-list member fires list_joined, same as the web-form
+        // target-list path — so list-joined automations chain off this step. Re-enrollment
+        // loops are bounded: an existing membership inserts nothing and fires nothing.
+        try {
+          const { WorkflowsController } = await import('../../../modules/workflows/controller');
+          await new WorkflowsController().triggerWorkflow(ctx.tenantId, String(person.id), 'list_joined', listId, trx);
+        } catch (err) {
+          logger.error({ err, listId }, 'add_to_list step failed to fire list_joined');
+        }
       }
       return { runRecorded: false };
     }

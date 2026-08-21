@@ -60,6 +60,8 @@ apps/
           2026-08-13-autovacuum-churn-tables.ts
           2026-08-14-retention-prune-indexes.ts
           2026-08-14-z-canvass-live-locations.ts
+          2026-08-20-integrity-and-hot-path-indexes.ts
+          2026-08-20-workflow-add-to-list-step.ts
           schema.sql
         config/
           email-folders.config.ts

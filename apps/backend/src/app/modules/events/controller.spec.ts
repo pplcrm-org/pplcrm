@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IAuthKeyPayload } from '@common';
 import { EventsController } from './controller';
+import { WorkflowsController } from '../workflows/controller';
 import { BaseRepository } from '../../lib/base.repo';
 
 const rand = (): string => String(Math.floor(Math.random() * 100000000) + 10000000);
@@ -500,5 +501,115 @@ describe('EventsController', () => {
     const payload = eventPayload({ name: null });
 
     await expect(controller.addEvent(payload as any, auth)).rejects.toBeInstanceOf(Error);
+  });
+});
+
+describe('EventsController — event_registered automation trigger', () => {
+  const controller = new EventsController();
+  const db = (BaseRepository as any)._db;
+  let tenantId: string;
+  let userId: string;
+  let auth: IAuthKeyPayload;
+  let triggerSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    const seed = await createTestSeed(db);
+    tenantId = seed.tenantId;
+    userId = seed.userId;
+    auth = { tenant_id: tenantId, user_id: userId, name: 'Test User', session_id: 'test-session' };
+    // Pin the workflow side shut: these tests assert WHEN the trigger fires and with what
+    // event id, not what enrollment does with it.
+    triggerSpy = vi.spyOn(WorkflowsController.prototype, 'triggerWorkflow').mockResolvedValue(undefined) as ReturnType<
+      typeof vi.spyOn
+    >;
+  });
+
+  afterEach(async () => {
+    triggerSpy.mockRestore();
+    await cleanTenant(db, tenantId);
+  });
+
+  function eventPayload(overrides: Record<string, unknown> = {}) {
+    const now = Date.now();
+    return {
+      name: 'Trigger Fair',
+      slug: `trigger-fair-${rand()}`,
+      start_time: new Date(now + 24 * 60 * 60 * 1000).toISOString(),
+      end_time: new Date(now + 26 * 60 * 60 * 1000).toISOString(),
+      is_published: true,
+      ...overrides,
+    };
+  }
+
+  it('a public RSVP from an EXISTING person fires event_registered with the event id', async () => {
+    const event = await controller.addEvent(eventPayload(), auth);
+    const email = `existing-${rand()}@example.com`;
+    // First RSVP creates the person (fires contact_created + event_registered)…
+    await controller.rsvpPublic(tenantId, event.slug, { email, first_name: 'Exi' }, `10.9.0.${rand().slice(-2)}`);
+    triggerSpy.mockClear();
+
+    // …then the same person registers for a SECOND event: no contact_created, but the
+    // registration itself must still start automations — that is the whole point (§16).
+    const second = await controller.addEvent(eventPayload({ slug: `trigger-fair-b-${rand()}` }), auth);
+    await controller.rsvpPublic(tenantId, second.slug, { email }, `10.9.1.${rand().slice(-2)}`);
+
+    const person = await db
+      .selectFrom('persons')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .where('email', '=', email)
+      .executeTakeFirstOrThrow();
+    expect(triggerSpy).toHaveBeenCalledTimes(1);
+    expect(triggerSpy).toHaveBeenCalledWith(
+      tenantId,
+      String(person.id),
+      'event_registered',
+      String(second.id),
+      expect.anything(),
+    );
+  });
+
+  it('a public RSVP from a NEW person fires both contact_created and event_registered', async () => {
+    const event = await controller.addEvent(eventPayload(), auth);
+    const email = `newbie-${rand()}@example.com`;
+    await controller.rsvpPublic(tenantId, event.slug, { email, first_name: 'New' }, `10.9.2.${rand().slice(-2)}`);
+
+    const triggers = triggerSpy.mock.calls.map((c) => c[2]);
+    expect(triggers).toContain('contact_created');
+    expect(triggers).toContain('event_registered');
+  });
+
+  it('a staff-recorded registration fires event_registered for the chosen person', async () => {
+    const event = await controller.addEvent(eventPayload(), auth);
+    const personId = rand();
+    const seedRow = await db
+      .selectFrom('tenants')
+      .select(['placeholder_household_id'])
+      .where('id', '=', tenantId)
+      .executeTakeFirstOrThrow();
+    const campaign = await db
+      .selectFrom('campaigns')
+      .select(['id'])
+      .where('tenant_id', '=', tenantId)
+      .executeTakeFirstOrThrow();
+    await db
+      .insertInto('persons')
+      .values({
+        id: personId,
+        tenant_id: tenantId,
+        campaign_id: String(campaign.id),
+        household_id: String(seedRow.placeholder_household_id),
+        first_name: 'Stafford',
+        last_name: 'Added',
+        email: `staff-${rand()}@example.com`,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    await controller.addRegistration({ event_id: String(event.id), person_id: personId }, auth);
+
+    expect(triggerSpy).toHaveBeenCalledTimes(1);
+    expect(triggerSpy).toHaveBeenCalledWith(tenantId, personId, 'event_registered', String(event.id));
   });
 });

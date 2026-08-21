@@ -6,6 +6,7 @@ import { BaseRepository } from '../../lib/base.repo';
 import { generateToken, hashToken } from '../../lib/token-hash';
 import { CompanionAccessController } from '../companion-access/controller';
 import { DeliveriesController } from './controller';
+import { WorkflowsController } from '../workflows/controller';
 
 type Db = typeof BaseRepository.dbInstance;
 
@@ -713,5 +714,111 @@ describe('DeliveriesController — reorderStops (drag-to-reorder)', () => {
     } finally {
       await cleanup(db, other.tenantId);
     }
+  });
+});
+
+describe('DeliveriesController — sign_delivered automation trigger', () => {
+  const controller = new DeliveriesController();
+  const db = BaseRepository.dbInstance;
+  let s: Seed;
+  let staffAuth: IAuthKeyPayload;
+  let triggerSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    s = await seed(db);
+    staffAuth = { tenant_id: s.tenantId, user_id: s.organizerId, name: 'Sam Staff', session_id: 'sess', role: 'user' };
+    // The workflow side is pinned shut: these tests assert WHEN the trigger fires and with
+    // whom, not what enrollment does with it (workflows.handlers.spec.ts owns that).
+    triggerSpy = vi.spyOn(WorkflowsController.prototype, 'triggerWorkflow').mockResolvedValue(undefined) as ReturnType<
+      typeof vi.spyOn
+    >;
+  });
+
+  afterEach(async () => {
+    triggerSpy.mockRestore();
+    await cleanup(db, s.tenantId);
+  });
+
+  /** The seeded requests in stop-seq order (the seed helper does not return them). */
+  async function seededRequests(): Promise<string[]> {
+    const rows = await db
+      .selectFrom('delivery_route_stops')
+      .select(['request_id', 'seq'])
+      .where('tenant_id', '=', s.tenantId)
+      .orderBy('seq', 'asc')
+      .execute();
+    return rows.map((r) => String(r.request_id));
+  }
+
+  it('delivering through the route stop fires once, for the requester', async () => {
+    const [req1] = await seededRequests();
+    await db
+      .updateTable('delivery_requests')
+      .set({ person_id: s.volunteerPersonId })
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', req1)
+      .execute();
+
+    await controller.setRequestStatus(staffAuth, { ids: [req1], status: 'delivered' });
+
+    expect(triggerSpy).toHaveBeenCalledTimes(1);
+    expect(triggerSpy).toHaveBeenCalledWith(s.tenantId, s.volunteerPersonId, 'sign_delivered', null, expect.anything());
+  });
+
+  it('a request without a requester enrolls nobody (a sign in a lawn is not a person)', async () => {
+    const requests = await seededRequests();
+    await controller.setRequestStatus(staffAuth, { ids: [requests[1]], status: 'delivered' });
+    expect(triggerSpy).not.toHaveBeenCalled();
+  });
+
+  it('re-marking an already-delivered request fires nothing', async () => {
+    const [req1] = await seededRequests();
+    await db
+      .updateTable('delivery_requests')
+      .set({ person_id: s.volunteerPersonId })
+      .where('tenant_id', '=', s.tenantId)
+      .where('id', '=', req1)
+      .execute();
+    await controller.setRequestStatus(staffAuth, { ids: [req1], status: 'delivered' });
+    triggerSpy.mockClear();
+
+    await controller.setRequestStatus(staffAuth, { ids: [req1], status: 'delivered' });
+    expect(triggerSpy).not.toHaveBeenCalled();
+  });
+
+  it('the direct flip (no route stop) fires too — the stop path is not the only door', async () => {
+    // A fourth household with an approved request that never made it onto a route.
+    const householdId = rand();
+    await db
+      .insertInto('households')
+      .values({
+        id: householdId,
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        street_num: '9',
+        street1: 'Birch St',
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .execute();
+    const request = await db
+      .insertInto('delivery_requests')
+      .values({
+        tenant_id: s.tenantId,
+        campaign_id: s.campaignId,
+        household_id: householdId,
+        person_id: s.volunteerPersonId,
+        source: 'manual',
+        status: 'approved',
+        createdby_id: s.organizerId,
+        updatedby_id: s.organizerId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+
+    await controller.setRequestStatus(staffAuth, { ids: [String(request.id)], status: 'delivered' });
+
+    expect(triggerSpy).toHaveBeenCalledTimes(1);
+    expect(triggerSpy).toHaveBeenCalledWith(s.tenantId, s.volunteerPersonId, 'sign_delivered', null, expect.anything());
   });
 });

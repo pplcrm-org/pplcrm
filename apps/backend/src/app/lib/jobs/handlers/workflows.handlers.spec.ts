@@ -19,12 +19,21 @@ vi.mock('../../../modules/workflows/controller', () => ({
     public triggerWorkflow = triggerWorkflowSpy;
   },
 }));
+// The date-arrivals scan dynamically imports the lists controller for live list membership;
+// stub it so the fake-db tests control who is "on the list".
+const getCurrentMembersSpy = vi.hoisted(() => vi.fn());
+vi.mock('../../../modules/lists/controller', () => ({
+  ListsController: class {
+    public getCurrentMembers = getCurrentMembersSpy;
+  },
+}));
 
 import { AUTOMATION_PHONE_UNVERIFIED_MESSAGE } from '../../../modules/newsletters/send-guards';
 import {
   detectTaskSlaBreaches,
   evaluateSendCondition,
   executeActionStep,
+  handleDetectDateArrivals,
   handleProcessDripWorkflows,
 } from './workflows.handlers';
 
@@ -306,5 +315,173 @@ describe('detectTaskSlaBreaches', () => {
 
     await expect(detectTaskSlaBreaches(db as any)).resolves.toBeUndefined();
     expect(updates.filter((u) => u.table === 'tasks')).toHaveLength(1);
+  });
+});
+
+describe('executeActionStep add_to_list', () => {
+  const CTX = {
+    tenantId: '42',
+    workflowId: 'w1',
+    enrollmentId: 'e1',
+    actorId: 'u1',
+    person: { id: 'p1', email: 'sup@example.org', first_name: 'Sam', last_name: 'Lee' },
+    step: {
+      kind: 'add_to_list',
+      step_number: 1,
+      subject: null,
+      html_content: null,
+      plain_text_content: null,
+      config: { list_id: 'L1', list_name: 'GOTV wave' },
+    },
+    messageClass: 'relationship',
+  };
+  const STATIC_PEOPLE_LIST = { id: 'L1', is_dynamic: false, object: 'people' };
+
+  beforeEach(() => {
+    triggerWorkflowSpy.mockReset();
+  });
+
+  it('adds the person to a static people list and fires list_joined for the new member', async () => {
+    const { db, inserts } = makeFakeDb({ lists: STATIC_PEOPLE_LIST, map_lists_persons: [] });
+    const outcome = await executeActionStep(db as any, CTX as any);
+    expect(outcome.runRecorded).toBe(false);
+
+    const memberships = inserts.filter((i) => i.table === 'map_lists_persons');
+    expect(memberships).toHaveLength(1);
+    expect(memberships[0].values).toMatchObject({ tenant_id: '42', list_id: 'L1', person_id: 'p1' });
+    expect(triggerWorkflowSpy).toHaveBeenCalledTimes(1);
+    expect(triggerWorkflowSpy).toHaveBeenCalledWith('42', 'p1', 'list_joined', 'L1', db);
+  });
+
+  it('writes nothing and fires nothing when the person is already on the list', async () => {
+    const { db, inserts } = makeFakeDb({ lists: STATIC_PEOPLE_LIST, map_lists_persons: { person_id: 'p1' } });
+    await executeActionStep(db as any, CTX as any);
+    expect(inserts.filter((i) => i.table === 'map_lists_persons')).toHaveLength(0);
+    expect(triggerWorkflowSpy).not.toHaveBeenCalled();
+  });
+
+  it('refuses a smart list — its members are computed, not hand-added', async () => {
+    const { db } = makeFakeDb({ lists: { ...STATIC_PEOPLE_LIST, is_dynamic: true } });
+    await expect(executeActionStep(db as any, CTX as any)).rejects.toThrow(/smart list/);
+  });
+
+  it('refuses a household list — the enrolled contact is a person', async () => {
+    const { db } = makeFakeDb({ lists: { ...STATIC_PEOPLE_LIST, object: 'households' } });
+    await expect(executeActionStep(db as any, CTX as any)).rejects.toThrow(/household list/);
+  });
+
+  it('fails clearly when the configured list no longer exists', async () => {
+    const { db } = makeFakeDb({ lists: [] });
+    await expect(executeActionStep(db as any, CTX as any)).rejects.toThrow(/no longer exists/);
+  });
+});
+
+describe('handleDetectDateArrivals', () => {
+  /** 'YYYY-MM-DD' for the UTC calendar day `daysFromToday` days from now. */
+  function utcDateString(daysFromToday: number): string {
+    const n = new Date();
+    const ms = Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()) + daysFromToday * 24 * 60 * 60 * 1000;
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+
+  const CONFIG = JSON.stringify({ days_before: 14, campaign_id: 'c1', list_id: 'L1' });
+  const DATE_WORKFLOW = { id: 'w1', tenant_id: '42', trigger_event_id: CONFIG };
+  const TENANT = { admin_id: 'u9' };
+
+  beforeEach(() => {
+    triggerWorkflowSpy.mockReset();
+    getCurrentMembersSpy.mockReset();
+    getCurrentMembersSpy.mockResolvedValue({ object: 'people', ids: ['p1', 'p2'], count: 2 });
+  });
+
+  it('enrolls every list member on the target day (end date minus days_before)', async () => {
+    const { db } = makeFakeDb({
+      workflows: [DATE_WORKFLOW],
+      campaigns: { enddate: utcDateString(14), status: 'active' },
+      tenants: TENANT,
+      workflow_enrollments: [],
+    });
+    await handleDetectDateArrivals(db as any);
+
+    expect(triggerWorkflowSpy).toHaveBeenCalledTimes(2);
+    expect(triggerWorkflowSpy).toHaveBeenCalledWith('42', 'p1', 'date_arrives', CONFIG);
+    expect(triggerWorkflowSpy).toHaveBeenCalledWith('42', 'p2', 'date_arrives', CONFIG);
+  });
+
+  it('still fires inside the grace window, so a missed worker day cannot skip the send', async () => {
+    const { db } = makeFakeDb({
+      workflows: [DATE_WORKFLOW],
+      // End date 13 days out: the 14-days-before target was yesterday.
+      campaigns: { enddate: utcDateString(13), status: 'active' },
+      tenants: TENANT,
+      workflow_enrollments: [],
+    });
+    await handleDetectDateArrivals(db as any);
+    expect(triggerWorkflowSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('does nothing before the target day', async () => {
+    const { db } = makeFakeDb({
+      workflows: [DATE_WORKFLOW],
+      campaigns: { enddate: utcDateString(20), status: 'active' },
+      tenants: TENANT,
+      workflow_enrollments: [],
+    });
+    await handleDetectDateArrivals(db as any);
+    expect(getCurrentMembersSpy).not.toHaveBeenCalled();
+    expect(triggerWorkflowSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips members already enrolled inside the dedupe window (the grace window cannot double-enroll)', async () => {
+    const { db } = makeFakeDb({
+      workflows: [DATE_WORKFLOW],
+      campaigns: { enddate: utcDateString(14), status: 'active' },
+      tenants: TENANT,
+      workflow_enrollments: [{ person_id: 'p1' }],
+    });
+    await handleDetectDateArrivals(db as any);
+    expect(triggerWorkflowSpy).toHaveBeenCalledTimes(1);
+    expect(triggerWorkflowSpy).toHaveBeenCalledWith('42', 'p2', 'date_arrives', CONFIG);
+  });
+
+  it('skips an active workflow whose config does not parse', async () => {
+    const { db } = makeFakeDb({
+      workflows: [{ ...DATE_WORKFLOW, trigger_event_id: 'not json' }],
+      campaigns: { enddate: utcDateString(14), status: 'active' },
+      tenants: TENANT,
+      workflow_enrollments: [],
+    });
+    await handleDetectDateArrivals(db as any);
+    expect(triggerWorkflowSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips archived campaigns and campaigns without an end date', async () => {
+    const archived = makeFakeDb({
+      workflows: [DATE_WORKFLOW],
+      campaigns: { enddate: utcDateString(14), status: 'archived' },
+      tenants: TENANT,
+      workflow_enrollments: [],
+    });
+    await handleDetectDateArrivals(archived.db as any);
+    const dateless = makeFakeDb({
+      workflows: [DATE_WORKFLOW],
+      campaigns: { enddate: null, status: 'active' },
+      tenants: TENANT,
+      workflow_enrollments: [],
+    });
+    await handleDetectDateArrivals(dateless.db as any);
+    expect(triggerWorkflowSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips a household list rather than enrolling nothing silently', async () => {
+    getCurrentMembersSpy.mockResolvedValue({ object: 'households', ids: ['h1'], count: 1 });
+    const { db } = makeFakeDb({
+      workflows: [DATE_WORKFLOW],
+      campaigns: { enddate: utcDateString(14), status: 'active' },
+      tenants: TENANT,
+      workflow_enrollments: [],
+    });
+    await handleDetectDateArrivals(db as any);
+    expect(triggerWorkflowSpy).not.toHaveBeenCalled();
   });
 });

@@ -620,13 +620,18 @@ export type {
   WorkflowSendCondition,
   WorkflowExitCondition,
   WorkflowMessageClass,
+  DateArrivesConfigType,
 } from './lib/schemas/workflows.schema';
 export {
   WORKFLOW_SEND_CONDITIONS,
   WORKFLOW_EXIT_CONDITIONS,
   WORKFLOW_MESSAGE_CLASSES,
+  DATE_ARRIVES_MAX_DAYS_BEFORE,
+  DateArrivesConfigObj,
   defaultMessageClassForTrigger,
+  encodeDateArrivesConfig,
   lockedMessageClassForTrigger,
+  parseDateArrivesConfig,
   resolveWorkflowMessageClass,
 } from './lib/schemas/workflows.schema';
 export type {

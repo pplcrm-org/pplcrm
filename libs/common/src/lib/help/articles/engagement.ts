@@ -222,6 +222,11 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
             title: 'Review turnout',
             detail: 'Registrations and attendance appear on the event, and on each person’s **Events** tab.',
           },
+          {
+            title: 'Follow up automatically',
+            detail:
+              'Every registration — a stranger on the public page or a supporter your team registers by hand — can start an [automation](/help/automations) on the **Event registration** trigger: a confirmation sequence, a day-after thank-you, an ask to bring a friend. Limit it to one event or let it run for all of them.',
+          },
         ],
       },
       { kind: 'h2', id: 'shifts', text: 'Volunteer shifts' },
@@ -698,6 +703,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'A stop can also be closed by somebody who never opened the route. Canvassers carrying signs can mark one delivered from the door in the [Canvass Companion](/help/canvassing), and that closes the stop here — so a driver who reloads their route finds that house already ticked instead of driving to a lawn that has its sign. It counts toward the route the same way, including finishing the route when it was the last stop.',
+      },
+      {
+        kind: 'p',
+        text: 'Delivery is also an [automation](/help/automations) trigger: the moment a request reaches **Delivered** — by a driver, a canvasser at the door, or a staff flip — the person who asked for the sign can enter a sequence on the **Yard sign delivered** trigger, so the thank-you goes out while the sign is still news. A request with no named requester enrolls nobody.',
       },
       { kind: 'h2', id: 'standing', text: 'Yard sign standing on profiles' },
       {

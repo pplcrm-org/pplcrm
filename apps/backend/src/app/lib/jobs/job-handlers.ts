@@ -49,6 +49,7 @@ import {
 import { handlePurgeDowngradedInboxes } from './handlers/inbox-purge.handlers';
 import { handleGoogleSync, handleMsSync, handleScheduleSyncJobs } from './handlers/sync.handlers';
 import {
+  handleDetectDateArrivals,
   handleDetectLapsedSupporters,
   handleDetectTaskSlaBreaches,
   handleProcessDripWorkflows,
@@ -217,6 +218,9 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'send-automation-email':
       await handleSendAutomationEmail(db, job);
+      break;
+    case 'detect_date_arrivals':
+      await handleDetectDateArrivals(db);
       break;
     case 'detect_lapsed_supporters':
       await handleDetectLapsedSupporters(db);

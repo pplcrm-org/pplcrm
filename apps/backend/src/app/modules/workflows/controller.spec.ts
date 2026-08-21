@@ -436,3 +436,68 @@ describe('WorkflowsController Integration', () => {
     expect((workflow as any).updated_by_name).toBe('Test User');
   });
 });
+
+describe('WorkflowsController — date_arrives activation guard', () => {
+  const controller = new WorkflowsController();
+  const db = getDb();
+  let tenantId: string;
+  let userId: string;
+  let campaignId: string;
+
+  beforeEach(async () => {
+    const seed = await seedTenantAndUser(db);
+    tenantId = seed.tenantId;
+    userId = seed.userId;
+    campaignId = seed.campaignId;
+  });
+
+  afterEach(async () => {
+    await cleanTenant(db, tenantId);
+  });
+
+  const validConfig = () => JSON.stringify({ days_before: 14, campaign_id: campaignId, list_id: '1' });
+
+  function row(overrides: Record<string, unknown>) {
+    return {
+      tenant_id: tenantId,
+      name: `Date wf ${rand()}`,
+      trigger_type: 'date_arrives',
+      createdby_id: userId,
+      updatedby_id: userId,
+      ...overrides,
+    } as Parameters<WorkflowsController['add']>[0];
+  }
+
+  it('refuses to CREATE an active date_arrives workflow without a valid config', async () => {
+    await expect(controller.add(row({ status: 'active', trigger_event_id: null }))).rejects.toThrow(
+      /campaign, a days-before value and a list/,
+    );
+    await expect(controller.add(row({ status: 'active', trigger_event_id: 'not json' }))).rejects.toThrow(
+      /campaign, a days-before value and a list/,
+    );
+  });
+
+  it('allows an unconfigured DRAFT (built later) and a configured ACTIVE one', async () => {
+    const draft = await controller.add(row({ status: 'draft', trigger_event_id: null }));
+    expect(draft).toBeDefined();
+    const active = await controller.add(row({ status: 'active', trigger_event_id: validConfig() }));
+    expect(active).toBeDefined();
+  });
+
+  it('refuses a bare status flip to active while the stored config is missing', async () => {
+    const draft = await controller.add(row({ status: 'draft', trigger_event_id: null }));
+    await expect(
+      controller.update({ tenant_id: tenantId, id: String((draft as { id: unknown }).id), row: { status: 'active' } }),
+    ).rejects.toThrow(/campaign, a days-before value and a list/);
+  });
+
+  it('lets the same flip through once the stored config is valid', async () => {
+    const draft = await controller.add(row({ status: 'draft', trigger_event_id: validConfig() }));
+    const updated = await controller.update({
+      tenant_id: tenantId,
+      id: String((draft as { id: unknown }).id),
+      row: { status: 'active' },
+    });
+    expect(updated).toBeDefined();
+  });
+});

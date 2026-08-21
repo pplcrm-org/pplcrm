@@ -169,6 +169,48 @@
               />
               <span class="text-base-content/70">days (no opens or clicks)</span>
             </div>
+            } @if (payload().trigger_type === 'date_arrives') {
+            <div class="mt-3 flex flex-col gap-2 text-xs">
+              <div class="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  [max]="dateArrivesMaxDays"
+                  class="input input-bordered input-sm w-20 text-center"
+                  [value]="dateArrivesDaysBefore()"
+                  (change)="setDateArrivesDays($any($event.target).value)"
+                />
+                <span class="text-base-content/70">days before the end date of</span>
+              </div>
+              <select
+                class="select select-bordered select-sm w-full text-xs"
+                [value]="dateArrivesCampaignId()"
+                (change)="setDateArrivesCampaign($any($event.target).value)"
+              >
+                <option value="">Choose a campaign…</option>
+                @for (opt of datedCampaigns(); track opt.id) {
+                <option [value]="opt.id">{{ opt.name }}</option>
+                }
+              </select>
+              @if (datedCampaigns().length === 0) {
+              <span class="text-base-content/60"
+                >Only campaigns with an end date appear here — set one under Campaigns first.</span
+              >
+              }
+              <select
+                class="select select-bordered select-sm w-full text-xs"
+                [value]="dateArrivesListId()"
+                (change)="setDateArrivesList($any($event.target).value)"
+              >
+                <option value="">Choose the list to enroll…</option>
+                @for (opt of peopleLists(); track opt.id) {
+                <option [value]="opt.id">{{ opt.name }}</option>
+                }
+              </select>
+              <span class="text-base-content/60"
+                >Everyone on the list on that day is enrolled once. Moving the campaign's end date moves the send.</span
+              >
+            </div>
             }
           </div>
 
@@ -284,7 +326,22 @@
                 <option [value]="tag.id">{{ tag.name }}</option>
                 }
               </select>
-              } @case ('create_task') {
+              } @case ('add_to_list') {
+              <select
+                class="select select-bordered select-sm w-full text-xs"
+                [value]="step.config.list_id ?? ''"
+                (change)="setStepList(i, $any($event.target).value)"
+              >
+                <option value="">Choose a static list…</option>
+                @for (list of staticPeopleLists(); track list.id) {
+                <option [value]="list.id">{{ list.name }}</option>
+                }
+              </select>
+              @if (staticPeopleLists().length === 0) {
+              <p class="mt-1 text-[10px] text-base-content/50">
+                No static people lists yet — smart lists compute their own members, so this step needs a static one.
+              </p>
+              } } @case ('create_task') {
               <input
                 type="text"
                 class="input input-bordered input-sm w-full text-xs"
