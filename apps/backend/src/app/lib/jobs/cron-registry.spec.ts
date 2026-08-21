@@ -14,6 +14,7 @@ const EXPECTED_CRON_TYPES = [
   'check_all_usage_limits',
   'check_due_tasks',
   'cleanup_activities',
+  'detect_date_arrivals',
   'detect_lapsed_supporters',
   'perform_scheduled_deletions',
   'prune_newsletter_events',
