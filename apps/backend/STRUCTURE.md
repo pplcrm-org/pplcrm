@@ -60,8 +60,9 @@ apps/
           2026-08-13-autovacuum-churn-tables.ts
           2026-08-14-retention-prune-indexes.ts
           2026-08-14-z-canvass-live-locations.ts
-          2026-08-20-integrity-and-hot-path-indexes.ts
           2026-08-20-workflow-add-to-list-step.ts
+          2026-08-20-x-integrity-and-hot-path-indexes.ts
+          2026-08-20-zzz-squash-bookkeeping.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -154,6 +155,7 @@ apps/
           csv.ts
           download-headers.ts
           durable-rate-limiter.ts
+          engagement-stats.ts
           fastify.types.ts
           file-references.ts
           hibp.ts

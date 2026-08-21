@@ -1,4 +1,5 @@
 import type { Kysely, Updateable } from 'kysely';
+import { sql } from 'kysely';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 import { StorageService } from '../../../lib/storage.service';
 import {
@@ -507,188 +508,209 @@ export class EmailIngesterService {
       }
     }
 
-    return this.db.transaction().execute(async (trx) => {
-      // Sanitize up front: the email row is inserted before the body (it owns the id the body
-      // references), but it now carries the display snippet, which must come from the same
-      // extract as `email_bodies.body_text`. The cid rewrite below only edits `src` attributes,
-      // and the extractor strips all tags — so extracting here and after the rewrite are
-      // identical, and this avoids sanitizing twice.
-      const sanitizedHtml = sanitizeHtml(email.bodyHtml);
+    // Sanitize up front: the email row carries the display snippet, which must come from the same
+    // extract as `email_bodies.body_text`. The cid rewrite below only edits `src` attributes,
+    // and the extractor strips all tags — so extracting here and after the rewrite are
+    // identical, and this avoids sanitizing twice.
+    const sanitizedHtml = sanitizeHtml(email.bodyHtml);
 
-      // 1. Insert into emails
-      const emailRow = await trx
-        .insertInto('emails')
-        .values({
-          tenant_id: tenantId,
-          campaign_id: campaignId,
-          folder_id: folderId,
-          from_email: email.fromEmail,
-          to_email: email.toEmail,
-          subject: email.subject,
-          preview: dedupeKey, // the DEDUPE KEY, never displayed — see preview_text
-          preview_text: previewTextFrom(extractBodyText(sanitizedHtml)),
-          assigned_to: null,
-          is_favourite: false,
-          deleted_at: null,
-          status: 'open',
-          // Denormalized sort key — mirrors the email_headers.date_sent written below so the
-          // inbox can sort on one indexed column instead of a COALESCE across a join.
-          date_sent: email.dateSent,
-          createdby_id: requestedBy,
-          updatedby_id: requestedBy,
-        })
-        .returningAll()
-        .executeTakeFirst();
+    // The row id is drawn from the emails sequence UP FRONT (the same sequence the insert default
+    // uses) because the CID rewrite bakes it into attachment URLs and the body blob must be
+    // uploaded BEFORE the transaction opens: an Azure Storage round-trip inside the transaction
+    // held a pooled connection and pinned the vacuum horizon for its whole duration, so two
+    // tenants syncing large mail at once could starve the API of connections. Attachments (above)
+    // already upload pre-transaction for the same reason.
+    const allocated = await sql<{ id: string }>`
+      SELECT nextval(pg_get_serial_sequence('public.emails', 'id')) AS id
+    `.execute(this.db);
+    const allocatedRow = allocated.rows[0];
+    if (!allocatedRow) throw new Error('Failed to allocate an emails id from the sequence');
+    const emailId = String(allocatedRow.id);
 
-      if (!emailRow) return false;
-
-      const emailId = String(emailRow.id);
-
-      // 2. Rewrite inline CID references in body content, then store the body.
-      //
-      // The rewrite points at our own endpoint rather than embedding the bytes, so it applies to
-      // deferred inline images too — the endpoint materializes them on first view. In Spam it is
-      // skipped entirely: loading an image in junk mail confirms the address is live, and those
-      // payloads are never fetched anyway.
-      let bodyHtml = sanitizedHtml;
-      if (allowsInlineImages(folderId)) {
-        const inlineCids = [...materialized, ...deferred].filter((a) => a.is_inline && a.cid);
-        for (const att of inlineCids) {
-          const cidEscaped = (att.cid as string).replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-          const regex = new RegExp(`src=['"]cid:${cidEscaped}['"]`, 'gi');
-          bodyHtml = bodyHtml.replace(regex, `src="${env.apiUrl}/api/emails/${emailId}/attachments/cid/${att.cid}"`);
-        }
+    // Rewrite inline CID references in body content, then store the body.
+    //
+    // The rewrite points at our own endpoint rather than embedding the bytes, so it applies to
+    // deferred inline images too — the endpoint materializes them on first view. In Spam it is
+    // skipped entirely: loading an image in junk mail confirms the address is live, and those
+    // payloads are never fetched anyway.
+    let bodyHtml = sanitizedHtml;
+    if (allowsInlineImages(folderId)) {
+      const inlineCids = [...materialized, ...deferred].filter((a) => a.is_inline && a.cid);
+      for (const att of inlineCids) {
+        const cidEscaped = (att.cid as string).replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const regex = new RegExp(`src=['"]cid:${cidEscaped}['"]`, 'gi');
+        bodyHtml = bodyHtml.replace(regex, `src="${env.apiUrl}/api/emails/${emailId}/attachments/cid/${att.cid}"`);
       }
+    }
 
-      // Keep a searchable text extract in Postgres; push the HTML itself to blob storage unless it
-      // is small enough that a round-trip would cost more than it saves.
-      const bodyText = extractBodyText(bodyHtml);
-      const keepInline = Buffer.byteLength(bodyHtml, 'utf8') <= INLINE_BODY_MAX_BYTES;
-      let bodyStorageKey: string | null = null;
+    // Keep a searchable text extract in Postgres; push the HTML itself to blob storage unless it
+    // is small enough that a round-trip would cost more than it saves.
+    const bodyText = extractBodyText(bodyHtml);
+    const keepInline = Buffer.byteLength(bodyHtml, 'utf8') <= INLINE_BODY_MAX_BYTES;
+    let bodyStorageKey: string | null = null;
 
-      if (!keepInline) {
-        const key = `emails/bodies/${crypto.randomUUID()}.html`;
-        try {
-          await this.storageService.upload(key, Buffer.from(bodyHtml, 'utf8'), 'text/html; charset=utf-8');
-          bodyStorageKey = key;
-        } catch (err) {
-          // Storage is unavailable — fall back to inline rather than losing the body entirely.
-          logger.error({ err }, `Failed to store body blob for message ${email.id}; keeping it inline`);
-        }
+    if (!keepInline) {
+      const key = `emails/bodies/${crypto.randomUUID()}.html`;
+      try {
+        await this.storageService.upload(key, Buffer.from(bodyHtml, 'utf8'), 'text/html; charset=utf-8');
+        bodyStorageKey = key;
+      } catch (err) {
+        // Storage is unavailable — fall back to inline rather than losing the body entirely.
+        logger.error({ err }, `Failed to store body blob for message ${email.id}; keeping it inline`);
       }
+    }
 
-      await trx
-        .insertInto('email_bodies')
-        .values({
-          tenant_id: tenantId,
-          email_id: emailId,
-          body_html: bodyStorageKey ? null : bodyHtml,
-          storage_key: bodyStorageKey,
-          body_text: bodyText,
-          createdby_id: requestedBy,
-          updatedby_id: requestedBy,
-        })
-        .execute();
+    try {
+      return await this.db.transaction().execute(async (trx) => {
+        // 1. Insert into emails, under the pre-allocated id.
+        const emailRow = await trx
+          .insertInto('emails')
+          .values({
+            id: emailId,
+            tenant_id: tenantId,
+            campaign_id: campaignId,
+            folder_id: folderId,
+            from_email: email.fromEmail,
+            to_email: email.toEmail,
+            subject: email.subject,
+            preview: dedupeKey, // the DEDUPE KEY, never displayed — see preview_text
+            preview_text: previewTextFrom(extractBodyText(sanitizedHtml)),
+            assigned_to: null,
+            is_favourite: false,
+            deleted_at: null,
+            status: 'open',
+            // Denormalized sort key — mirrors the email_headers.date_sent written below so the
+            // inbox can sort on one indexed column instead of a COALESCE across a join.
+            date_sent: email.dateSent,
+            createdby_id: requestedBy,
+            updatedby_id: requestedBy,
+          })
+          .returningAll()
+          .executeTakeFirst();
 
-      // 3. Insert attachment rows. Materialized ones link a `files` row; deferred ones carry only
-      //    the provider reference, and get their `file_id` on first download.
-      let pos = 0;
+        if (!emailRow) return false;
 
-      for (const att of materialized) {
-        pos++;
-        const fileId =
-          att.existing_file_id ??
-          String(
-            (
-              await trx
-                .insertInto('files')
-                .values({
-                  tenant_id: tenantId,
-                  filename: att.filename,
-                  mime_type: att.content_type,
-                  size_bytes: att.size_bytes,
-                  storage_key: att.storage_key,
-                  sha256_hex: att.sha256_hex,
-                  uploaded_by: requestedBy,
-                })
-                .returning('id')
-                .executeTakeFirstOrThrow()
-            ).id,
-          );
-
+        // 2. Store the body row (its blob, if any, was uploaded before the transaction).
         await trx
-          .insertInto('email_attachments')
+          .insertInto('email_bodies')
           .values({
             tenant_id: tenantId,
             email_id: emailId,
-            filename: att.filename,
-            content_type: att.content_type,
-            size_bytes: att.size_bytes,
-            cid: att.cid,
-            is_inline: att.is_inline,
-            pos,
-            file_id: fileId,
-            remote_ref: att.remote_ref,
+            body_html: bodyStorageKey ? null : bodyHtml,
+            storage_key: bodyStorageKey,
+            body_text: bodyText,
             createdby_id: requestedBy,
             updatedby_id: requestedBy,
           })
           .execute();
-      }
 
-      for (const att of deferred) {
-        pos++;
+        // 3. Insert attachment rows. Materialized ones link a `files` row; deferred ones carry only
+        //    the provider reference, and get their `file_id` on first download.
+        let pos = 0;
+
+        for (const att of materialized) {
+          pos++;
+          const fileId =
+            att.existing_file_id ??
+            String(
+              (
+                await trx
+                  .insertInto('files')
+                  .values({
+                    tenant_id: tenantId,
+                    filename: att.filename,
+                    mime_type: att.content_type,
+                    size_bytes: att.size_bytes,
+                    storage_key: att.storage_key,
+                    sha256_hex: att.sha256_hex,
+                    uploaded_by: requestedBy,
+                  })
+                  .returning('id')
+                  .executeTakeFirstOrThrow()
+              ).id,
+            );
+
+          await trx
+            .insertInto('email_attachments')
+            .values({
+              tenant_id: tenantId,
+              email_id: emailId,
+              filename: att.filename,
+              content_type: att.content_type,
+              size_bytes: att.size_bytes,
+              cid: att.cid,
+              is_inline: att.is_inline,
+              pos,
+              file_id: fileId,
+              remote_ref: att.remote_ref,
+              createdby_id: requestedBy,
+              updatedby_id: requestedBy,
+            })
+            .execute();
+        }
+
+        for (const att of deferred) {
+          pos++;
+          await trx
+            .insertInto('email_attachments')
+            .values({
+              tenant_id: tenantId,
+              email_id: emailId,
+              filename: att.filename,
+              content_type: att.content_type,
+              size_bytes: att.size_bytes,
+              cid: att.cid,
+              is_inline: att.is_inline,
+              pos,
+              file_id: null,
+              remote_ref: att.remote_ref,
+              createdby_id: requestedBy,
+              updatedby_id: requestedBy,
+            })
+            .execute();
+        }
+
+        // 4. Insert headers
+        const internetMessageId = email.internetMessageId ?? '';
+        const rawHeaders = `Message-ID: ${internetMessageId}\r\nSubject: ${email.subject ?? ''}\r\nFrom: ${email.fromEmail ?? ''}\r\nTo: ${email.toEmail ?? ''}\r\nDate: ${email.dateSent.toUTCString()}\r\n`;
+
         await trx
-          .insertInto('email_attachments')
+          .insertInto('email_headers')
           .values({
             tenant_id: tenantId,
             email_id: emailId,
-            filename: att.filename,
-            content_type: att.content_type,
-            size_bytes: att.size_bytes,
-            cid: att.cid,
-            is_inline: att.is_inline,
-            pos,
-            file_id: null,
-            remote_ref: att.remote_ref,
+            headers_json: JSON.stringify({ internetMessageId }),
+            raw_headers: rawHeaders,
+            date_sent: email.dateSent,
             createdby_id: requestedBy,
             updatedby_id: requestedBy,
           })
           .execute();
+
+        // 5. Insert recipients
+        if (email.recipients.length > 0) {
+          const recipientRows = email.recipients.map((r, i) => ({
+            tenant_id: tenantId,
+            email_id: emailId,
+            kind: r.kind,
+            name: r.name,
+            email: r.email,
+            pos: i,
+            createdby_id: requestedBy,
+            updatedby_id: requestedBy,
+          }));
+          await trx.insertInto('email_recipients').values(recipientRows).execute();
+        }
+
+        return true;
+      });
+    } catch (err) {
+      // The transaction rolled back, so no row points at the pre-uploaded body blob — delete it
+      // (best effort) rather than strand it in storage.
+      if (bodyStorageKey) {
+        this.storageService.delete(bodyStorageKey).catch(() => undefined);
       }
-
-      // 4. Insert headers
-      const internetMessageId = email.internetMessageId ?? '';
-      const rawHeaders = `Message-ID: ${internetMessageId}\r\nSubject: ${email.subject ?? ''}\r\nFrom: ${email.fromEmail ?? ''}\r\nTo: ${email.toEmail ?? ''}\r\nDate: ${email.dateSent.toUTCString()}\r\n`;
-
-      await trx
-        .insertInto('email_headers')
-        .values({
-          tenant_id: tenantId,
-          email_id: emailId,
-          headers_json: JSON.stringify({ internetMessageId }),
-          raw_headers: rawHeaders,
-          date_sent: email.dateSent,
-          createdby_id: requestedBy,
-          updatedby_id: requestedBy,
-        })
-        .execute();
-
-      // 5. Insert recipients
-      if (email.recipients.length > 0) {
-        const recipientRows = email.recipients.map((r, i) => ({
-          tenant_id: tenantId,
-          email_id: emailId,
-          kind: r.kind,
-          name: r.name,
-          email: r.email,
-          pos: i,
-          createdby_id: requestedBy,
-          updatedby_id: requestedBy,
-        }));
-        await trx.insertInto('email_recipients').values(recipientRows).execute();
-      }
-
-      return true;
-    });
+      throw err;
+    }
   }
 }

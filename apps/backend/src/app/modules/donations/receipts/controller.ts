@@ -245,29 +245,35 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
    */
   private async resolveDonor(
     tenantId: string,
-    personId: string,
+    // Nullable since fk_donation_receipts_person went SET NULL: a receipt can outlive its donor,
+    // and reissue paths hand this the receipt's person_id. A null falls through to the donation's
+    // own name/address snapshot, same as a person row that no longer exists.
+    personId: string | null,
     donation?: Selectable<Models['donations']> | null,
   ): Promise<{ donor: DonorSnapshot | null; hasAddress: boolean }> {
-    const person = await this.donationsRepo.db
-      .selectFrom('persons')
-      .leftJoin('households', 'households.id', 'persons.household_id')
-      .select([
-        'persons.first_name',
-        'persons.middle_names',
-        'persons.last_name',
-        'persons.email',
-        'households.street_num',
-        'households.street1',
-        'households.street2',
-        'households.apt',
-        'households.city',
-        'households.state',
-        'households.zip',
-        'households.country',
-      ])
-      .where('persons.tenant_id', '=', tenantId)
-      .where('persons.id', '=', personId)
-      .executeTakeFirst();
+    const person =
+      personId == null
+        ? undefined
+        : await this.donationsRepo.db
+            .selectFrom('persons')
+            .leftJoin('households', 'households.id', 'persons.household_id')
+            .select([
+              'persons.first_name',
+              'persons.middle_names',
+              'persons.last_name',
+              'persons.email',
+              'households.street_num',
+              'households.street1',
+              'households.street2',
+              'households.apt',
+              'households.city',
+              'households.state',
+              'households.zip',
+              'households.country',
+            ])
+            .where('persons.tenant_id', '=', tenantId)
+            .where('persons.id', '=', personId)
+            .executeTakeFirst();
 
     const name = [person?.first_name, person?.middle_names, person?.last_name]
       .concat(!person ? [donation?.first_name, donation?.last_name] : [])
@@ -820,7 +826,8 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
       coverageYear: number;
       serial: number;
       numberPrefix: string;
-      personId: string;
+      /** Nullable: a reissue of a receipt whose donor was since deleted keeps person_id NULL. */
+      personId: string | null;
       campaignId: string | null;
       donor: DonorSnapshot;
       amountCents: number;
@@ -1535,7 +1542,8 @@ export class DonationReceiptsController extends BaseController<'donation_receipt
     dbOrTrx: Pick<Transaction<Models>, 'insertInto'>,
     tenantId: string,
     userId: string,
-    personId: string,
+    // NULL when the receipt's donor was deleted — the activity still records the receipt event.
+    personId: string | null,
     activity: string,
   ): Promise<void> {
     try {

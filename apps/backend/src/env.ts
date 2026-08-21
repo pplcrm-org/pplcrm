@@ -142,10 +142,14 @@ export const envSchema = z.object({
   // lib/gis/geocode-queue.ts). Caps daily Google spend per tenant; only bites very large imports.
   GEOCODE_DAILY_BUDGET: z.coerce.number().int().min(1).default(25000),
   // Max connections in the shared pg pool. The API server, the job worker (up to
-  // WORKER_CONCURRENCY concurrent claimers), the webhook worker, and LISTEN/NOTIFY
-  // listeners all draw from this pool, so keep it comfortably above WORKER_CONCURRENCY
-  // and well under Postgres max_connections. Default 20 (pg's own default is 10).
-  DB_POOL_MAX: z.coerce.number().int().min(1).max(200).default(20),
+  // WORKER_CONCURRENCY concurrent claimers), and the webhook worker draw from this pool;
+  // the two LISTEN/NOTIFY listeners each hold a dedicated client OUTSIDE it, so real
+  // demand per process is DB_POOL_MAX + 2. Keep that well under the server's
+  // max_connections: prod runs Azure B1ms (max_connections 35), so the default 12
+  // leaves room for two replicas (2 × 14 = 28) plus Azure's own reserved sessions —
+  // the previous default of 20 could not (2 × 22 = 44 > 35). Raise it only together
+  // with the Postgres tier. (pg's own default is 10.)
+  DB_POOL_MAX: z.coerce.number().int().min(1).max(200).default(12),
   // Money-touching mock paths (unsigned donation-webhook parsing, mock donation writer) require an
   // EXPLICIT opt-in, never merely "NODE_ENV !== production" — an unset NODE_ENV must not silently
   // accept forged payment data (SECURITY-REVIEW 4.2). Only ever set this in local dev.

@@ -16,15 +16,26 @@ describe('receipt counter (gap-free per tenant-year)', () => {
   const db = (BaseRepository as any)._db;
   const tenantIds: string[] = [];
 
+  // fk_receipt_counters_tenant: counters only exist for a real tenant, so each test mints one.
+  const newTenant = async (): Promise<string> => {
+    const tenantId = rand();
+    await db
+      .insertInto('tenants')
+      .values({ id: tenantId, name: `Receipt Counter Test ${tenantId}` })
+      .execute();
+    tenantIds.push(tenantId);
+    return tenantId;
+  };
+
   afterEach(async () => {
     for (const tenantId of tenantIds.splice(0)) {
-      await db.deleteFrom('receipt_counters').where('tenant_id', '=', tenantId).execute();
+      // Deleting the tenant cascades its counters (fk_receipt_counters_tenant ON DELETE CASCADE).
+      await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
     }
   });
 
   it('hands out strictly sequential numbers under concurrency', async () => {
-    const tenantId = rand();
-    tenantIds.push(tenantId);
+    const tenantId = await newTenant();
 
     // Five concurrent transactions race the insert-if-absent upsert; each holds the row lock
     // only until its own commit.
@@ -37,8 +48,7 @@ describe('receipt counter (gap-free per tenant-year)', () => {
   });
 
   it('returns a rolled-back number instead of leaving a gap', async () => {
-    const tenantId = rand();
-    tenantIds.push(tenantId);
+    const tenantId = await newTenant();
 
     const first = await db.transaction().execute(async (trx: any) => repo.nextSerial(trx, tenantId, YEAR));
     expect(first).toBe(1);
@@ -57,8 +67,7 @@ describe('receipt counter (gap-free per tenant-year)', () => {
     // Separate years and tenants count independently.
     const otherYear = await db.transaction().execute(async (trx: any) => repo.nextSerial(trx, tenantId, YEAR + 1));
     expect(otherYear).toBe(1);
-    const otherTenant = rand();
-    tenantIds.push(otherTenant);
+    const otherTenant = await newTenant();
     const other = await db.transaction().execute(async (trx: any) => repo.nextSerial(trx, otherTenant, YEAR));
     expect(other).toBe(1);
   });

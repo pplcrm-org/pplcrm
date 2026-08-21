@@ -87,18 +87,26 @@ export class EmailRepo extends BaseRepository<'emails'> {
           .on('ers.user_id', '=', user_id)
           .on('ers.tenant_id', '=', tenant_id),
       )
+      // Sender matching is TWO joins (primary address, then email2) instead of one join with an
+      // OR across both columns: an OR'd join condition can only be hash/merge-joined by reading
+      // the tenant's whole persons table per page, while two strict equality joins each drive the
+      // matching partial index (idx_persons_tenant_email_lookup / _email2_lookup) as a per-row
+      // probe. COALESCE below prefers the primary-address match, like the OR's left operand did.
       .leftJoin('persons as p_sender', (join) =>
         join
           .onRef('p_sender.tenant_id', '=', 'emails.tenant_id')
-          .on(
-            sql`lower(p_sender.email) = lower(emails.from_email) or lower(p_sender.email2) = lower(emails.from_email)`,
-          ),
+          .on(sql`lower(p_sender.email) = lower(emails.from_email)`),
+      )
+      .leftJoin('persons as p_sender2', (join) =>
+        join
+          .onRef('p_sender2.tenant_id', '=', 'emails.tenant_id')
+          .on(sql`lower(p_sender2.email2) = lower(emails.from_email)`),
       )
       // `date_sent` now comes from selectAll('emails') — it is denormalized onto the row and kept
       // in step with the header, so selecting eh.date_sent as well would duplicate the alias.
       .selectAll('emails')
-      .select('p_sender.first_name as sender_first_name')
-      .select('p_sender.last_name as sender_last_name')
+      .select(sql<string | null>`coalesce(p_sender.first_name, p_sender2.first_name)`.as('sender_first_name'))
+      .select(sql<string | null>`coalesce(p_sender.last_name, p_sender2.last_name)`.as('sender_last_name'))
       // numeric count (coalesced to 0)
       .select(sql<number>`COALESCE(ea.att_count, 0)`.as('attachment_count'))
       // boolean has_attachment via EXISTS (fast)

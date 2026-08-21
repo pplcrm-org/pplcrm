@@ -21,7 +21,7 @@ import { DonationPledgesRepo } from './repositories/pledges.repo';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import type { Models } from '../../../../../../libs/common/src/lib/kysely.models';
 import { WorkflowsController } from '../workflows/controller';
-import type { Selectable, Updateable } from 'kysely';
+import type { Selectable, Transaction, Updateable } from 'kysely';
 import { logger } from '../../logger';
 import { assertTenantMayAcceptDonations, tenantMayAcceptDonations, type SettingsLookup } from './donation-guards';
 import { StripeDonationProcessor } from './processors/stripe-processor';
@@ -172,6 +172,106 @@ export class DonationsController extends BaseController<'donations', DonationsRe
 
   constructor() {
     super(new DonationsRepo());
+  }
+
+  /**
+   * Deleting a gift has to respect its paper trail (fk_donation_receipt_items_donation):
+   * a gift covered by an OFFICIAL document (tax receipt or year-end statement — issued or
+   * cancelled, both are retained records that cite it) cannot be deleted; the reversal flow
+   * (refund/chargeback) is how a receipted gift is undone. A gift covered only by its automatic
+   * acknowledgement CAN be deleted: the acknowledgement's items are detached and the
+   * acknowledgement itself is cancelled, since a thank-you note pins no legal state.
+   */
+  public override async delete(tenant_id: string, idToDelete: string, userId?: string) {
+    const result = await this.getRepo()
+      .transaction()
+      .execute(async (trx) => {
+        await this.releaseReceiptLinksForDelete(trx, tenant_id, [idToDelete], userId);
+        return this.getRepo().delete({ tenant_id, id: idToDelete }, trx);
+      });
+    try {
+      if (userId != null) {
+        await this.userActivity.log({
+          tenant_id,
+          user_id: userId,
+          activity: 'delete',
+          entity: 'donations',
+          entity_id: String(idToDelete),
+          quantity: 1,
+          metadata: { id: idToDelete },
+        });
+      }
+    } catch (e) {
+      logger.error({ err: e }, 'Failed to log delete donation activity');
+    }
+    return result;
+  }
+
+  public override async deleteMany(tenant_id: string, idsToDelete: string[], userId?: string) {
+    return this.getRepo()
+      .transaction()
+      .execute(async (trx) => {
+        await this.releaseReceiptLinksForDelete(trx, tenant_id, idsToDelete, userId);
+        return this.getRepo().deleteMany({ tenant_id, ids: idsToDelete }, trx);
+      });
+  }
+
+  /** See delete()/deleteMany() above. Runs inside the same transaction as the row delete. */
+  private async releaseReceiptLinksForDelete(
+    trx: Transaction<Models>,
+    tenant_id: string,
+    ids: string[],
+    userId?: string,
+  ): Promise<void> {
+    if (ids.length === 0) return;
+
+    const official = await trx
+      .selectFrom('donation_receipt_items as dri')
+      .innerJoin('donation_receipts as dr', 'dr.id', 'dri.receipt_id')
+      .select('dri.donation_id')
+      .where('dri.tenant_id', '=', tenant_id)
+      .where('dri.donation_id', 'in', ids)
+      .where('dr.kind', '!=', 'acknowledgement')
+      .limit(1)
+      .executeTakeFirst();
+    if (official) {
+      throw new BadRequestError(
+        'This gift is covered by an official tax receipt or year-end statement, which must be retained. ' +
+          'Reverse or refund the gift instead — that cancels its receipts and keeps the paper trail.',
+      );
+    }
+
+    const ackReceipts = await trx
+      .selectFrom('donation_receipt_items as dri')
+      .innerJoin('donation_receipts as dr', 'dr.id', 'dri.receipt_id')
+      .select('dr.id')
+      .distinct()
+      .where('dri.tenant_id', '=', tenant_id)
+      .where('dri.donation_id', 'in', ids)
+      .where('dr.kind', '=', 'acknowledgement')
+      .execute();
+    if (ackReceipts.length === 0) return;
+    const ackIds = ackReceipts.map((r) => String(r.id));
+
+    await trx
+      .deleteFrom('donation_receipt_items')
+      .where('tenant_id', '=', tenant_id)
+      .where('receipt_id', 'in', ackIds)
+      .execute();
+    await trx
+      .updateTable('donation_receipts')
+      .set({
+        status: 'cancelled',
+        cancelled_reason: 'Donation deleted',
+        cancelled_at: new Date(),
+        cancelled_by: userId ?? null,
+        updated_at: new Date(),
+        ...(userId != null ? { updatedby_id: userId } : {}),
+      })
+      .where('tenant_id', '=', tenant_id)
+      .where('id', 'in', ackIds)
+      .where('status', '=', 'issued')
+      .execute();
   }
 
   public async getPersonDonationsList(tenantId: string, personId: string) {
