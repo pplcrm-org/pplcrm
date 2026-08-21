@@ -1,6 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
+import * as path from 'path';
 
 const isCI = !!process.env.CI;
+
+// Playwright runs webServer commands from THIS directory by default. `nx serve` resolves the
+// workspace's tsconfig.base.json against the cwd, so a cold CI start from apps/frontend-e2e dies
+// with "Cannot read file 'tsconfig.base.json'" before the health probe ever answers (locally the
+// entries attach to already-running servers, which is why this only ever failed in CI).
+const repoRoot = path.resolve(__dirname, '../..');
 
 export default defineConfig({
   testDir: './src',
@@ -25,6 +32,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'npx nx serve backend',
+      cwd: repoRoot,
       // /healthz only answers 200 once Postgres is reachable (and boot migrations, which
       // run by default via MIGRATE_ON_BOOT, are done) — a real readiness probe, unlike '/'.
       url: 'http://localhost:3000/healthz',
@@ -33,6 +41,7 @@ export default defineConfig({
     },
     {
       command: 'npx nx serve frontend',
+      cwd: repoRoot,
       url: 'http://localhost:4200',
       reuseExistingServer: !isCI,
       // A cold CI runner compiling the Angular app blows straight past Playwright's 60s default.
