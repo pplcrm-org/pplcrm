@@ -138,6 +138,15 @@ const PERSONS_COLUMN_MAPPING_KEYS = [
   // getAllWithAddress when boundary data exists — see electoralAreaSelects.
   'electoral_area',
   'any_electoral_area',
+  // Activity history (engagement-stats.ts, personStatsMapping) — mapped while the pstats
+  // lateral is present, which is every normal page's data query.
+  'last_donation_days',
+  'donation_total_year',
+  'has_active_pledge',
+  'last_knock_days',
+  'last_newsletter_open_days',
+  'last_event_days',
+  'last_shift_days',
 ];
 
 const HOUSEHOLDS_COLUMN_MAPPING_KEYS = [
@@ -154,6 +163,8 @@ const HOUSEHOLDS_COLUMN_MAPPING_KEYS = [
   'issues',
   'electoral_area',
   'any_electoral_area',
+  // Knock recency (engagement-stats.ts, householdStatsMapping).
+  'last_knock_days',
 ];
 
 describe('rule-builder field parity with the backend columnMapping', () => {

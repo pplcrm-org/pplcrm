@@ -126,6 +126,14 @@
           <option [value]="choice.value" [selected]="item.value === choice.value">{{ choice.label }}</option>
           }
         </select>
+        } @else if (fieldDef?.inputType === 'number') {
+        <input
+          type="number"
+          class="input input-bordered input-sm w-full bg-base-100 text-xs sm:max-w-32"
+          placeholder="Number…"
+          [value]="item.value || ''"
+          (input)="setRuleValue(i, $any($event.target).value)"
+        />
         } @else {
         <input
           type="text"

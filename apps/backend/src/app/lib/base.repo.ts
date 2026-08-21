@@ -665,13 +665,47 @@ export class BaseRepository<T extends keyof Models> {
     return ret as unknown as UpdateQueryBuilder<Models, T, T, UpdateResult>;
   }
 
-  // SECURITY (S-8, schema review 2026-07-06): `column` is interpolated verbatim via
+  // SECURITY (S-8, schema review 2026-07-06): `mapping.col` is interpolated verbatim via
   // sql.raw() and MUST NEVER contain client input. Callers resolve it from a
   // server-side columnMapping allow-list (see applyAdvancedFilters); a client's
   // raw field string is only ever used as a lookup key into that map, never passed
   // here directly. Filter *values* are always bound parameters. Preserve this
   // invariant when adding call sites.
-  protected buildRuleExpression(eb: any, column: string, isCast: boolean, op: string, val: unknown) {
+  protected buildRuleExpression(
+    eb: any,
+    mapping: { col: string; isCast?: boolean; numeric?: boolean },
+    op: string,
+    val: unknown,
+  ) {
+    const column = mapping.col;
+    const isCast = !!mapping.isCast;
+    // Numeric columns (computed day counts, dollar totals) compare as numbers, never through
+    // ILIKE — and their emptiness is IS NULL alone, because `= ''` is a type error against a
+    // numeric expression. An unparseable value or a text operator drops the rule, mirroring
+    // the unmapped-field behavior rather than failing the whole query.
+    if (mapping.numeric) {
+      const pattern = op || 'equals';
+      if (pattern === 'isEmpty' || pattern === 'empty') return sql`${sql.raw(column)} IS NULL`;
+      if (pattern === 'isNotEmpty' || pattern === 'notempty') return sql`${sql.raw(column)} IS NOT NULL`;
+      const n = Number(String(val ?? '').trim());
+      if (!Number.isFinite(n)) return null;
+      switch (pattern) {
+        case 'gt':
+          return sql`${sql.raw(column)} > ${n}`;
+        case 'gte':
+          return sql`${sql.raw(column)} >= ${n}`;
+        case 'lt':
+          return sql`${sql.raw(column)} < ${n}`;
+        case 'lte':
+          return sql`${sql.raw(column)} <= ${n}`;
+        case 'equals':
+          return sql`${sql.raw(column)} = ${n}`;
+        case 'notEquals':
+          return sql`${sql.raw(column)} != ${n}`;
+        default:
+          return null;
+      }
+    }
     // Allow users to type * as a wildcard; normalize to SQL %.
     // The operator's own wrapping is always applied — Postgres collapses %% naturally.
     const normalized = String(val ?? '').replace(/\*/g, '%');
@@ -714,7 +748,7 @@ export class BaseRepository<T extends keyof Models> {
       | QueryBuilderGroupNode
       | { conjunction: 'AND' | 'OR'; rules: { field: string; op: string; value: unknown }[] }
       | undefined,
-    columnMapping: Record<string, { col: string; isCast?: boolean }>,
+    columnMapping: Record<string, { col: string; isCast?: boolean; numeric?: boolean }>,
   ) {
     if (!advancedFilterModel) {
       return query;
@@ -756,7 +790,7 @@ export class BaseRepository<T extends keyof Models> {
   private buildGroupExpression(
     eb: any,
     group: QueryBuilderGroupNode,
-    columnMapping: Record<string, { col: string; isCast?: boolean }>,
+    columnMapping: Record<string, { col: string; isCast?: boolean; numeric?: boolean }>,
     depth = 0,
   ): any {
     // The rule builder nests groups, and this walks them recursively. The UI never goes more
@@ -783,7 +817,7 @@ export class BaseRepository<T extends keyof Models> {
           }
 
           const mappedOp = node.op === 'eq' ? 'equals' : node.op === 'neq' ? 'notEquals' : node.op;
-          return this.buildRuleExpression(eb, mapping.col, !!mapping.isCast, mappedOp, node.value);
+          return this.buildRuleExpression(eb, mapping, mappedOp, node.value);
         } else {
           return this.buildGroupExpression(eb, node, columnMapping, depth + 1);
         }

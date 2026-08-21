@@ -74,6 +74,30 @@ export const DECEASED_CHOICES: RuleChoice[] = [
 export const ELECTORAL_AREA_FIELD = 'electoral_area';
 export const ANY_ELECTORAL_AREA_FIELD = 'any_electoral_area';
 
+/**
+ * The activity-history fields (2026-08-20), computed server-side per person (or household, for
+ * knock recency): days since the last donation / door knock / newsletter open / event
+ * registration / volunteer shift, plus dollars given this calendar year. All compare as
+ * NUMBERS (the backend maps them with `numeric: true`), and NULL means "never happened", which
+ * the is set / is not set operators read as has-happened / never. Donations, knocks and event
+ * registrations are facts of the active campaign context; newsletter opens and shifts are
+ * workspace-wide.
+ */
+export const NUMERIC_RULE_FIELDS = [
+  'last_donation_days',
+  'donation_total_year',
+  'last_knock_days',
+  'last_newsletter_open_days',
+  'last_event_days',
+  'last_shift_days',
+] as const;
+
+/** `EXISTS` over active recurring pledges, cast to a yes/no by the repo like do_not_contact. */
+export const ACTIVE_PLEDGE_CHOICES: RuleChoice[] = [
+  { value: 'true', label: 'Yes — active recurring pledge' },
+  { value: 'false', label: 'No active pledge' },
+];
+
 /** Field name → the label shown in the picker and in the definition sentence. */
 export const RULE_FIELD_LABELS: Record<string, string> = {
   tags: 'Tags',
@@ -86,6 +110,14 @@ export const RULE_FIELD_LABELS: Record<string, string> = {
   do_not_contact: 'Do not contact',
   senior: 'Senior (65+)',
   deceased: 'Deceased',
+  // Activity history — the unit rides in the label so the number input needs no explaining.
+  last_donation_days: 'Last donation (days ago)',
+  donation_total_year: 'Donated this year ($)',
+  has_active_pledge: 'Recurring pledge',
+  last_knock_days: 'Last door knock (days ago)',
+  last_newsletter_open_days: 'Last newsletter open (days ago)',
+  last_event_days: 'Last event registration (days ago)',
+  last_shift_days: 'Last volunteer shift (days ago)',
   first_name: 'First Name',
   last_name: 'Last Name',
   email: 'Email',
@@ -116,6 +148,7 @@ export const RULE_FIELD_CHOICES: Record<string, RuleChoice[]> = {
   do_not_contact: DO_NOT_CONTACT_CHOICES,
   senior: SENIOR_CHOICES,
   deceased: DECEASED_CHOICES,
+  has_active_pledge: ACTIVE_PLEDGE_CHOICES,
 };
 
 /**
@@ -127,7 +160,13 @@ export const RULE_FIELD_CHOICES: Record<string, RuleChoice[]> = {
  * household with no boundary has not been placed on a map yet.
  */
 export function ruleOpUsesSetWording(field: string): boolean {
-  return RULE_FIELD_CHOICES[field] != null || field === ELECTORAL_AREA_FIELD || field === ANY_ELECTORAL_AREA_FIELD;
+  return (
+    RULE_FIELD_CHOICES[field] != null ||
+    field === ELECTORAL_AREA_FIELD ||
+    field === ANY_ELECTORAL_AREA_FIELD ||
+    // NULL on a recency/total field means "never happened" — has-happened / never wording.
+    (NUMERIC_RULE_FIELDS as readonly string[]).includes(field)
+  );
 }
 
 /**

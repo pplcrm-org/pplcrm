@@ -8,7 +8,7 @@ export interface QueryBuilderField {
   name: string;
   label: string;
   operators: { value: string; label: string }[];
-  inputType: 'text' | 'autocomplete' | 'select' | 'none';
+  inputType: 'text' | 'autocomplete' | 'select' | 'number' | 'none';
   choices?: { value: string; label: string }[];
 }
 

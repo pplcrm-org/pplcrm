@@ -24,6 +24,7 @@ import { QueryBuilderNode, QueryBuilderGroupNode, cloneQueryBuilderNode } from '
 import {
   ANY_ELECTORAL_AREA_FIELD,
   ELECTORAL_AREA_FIELD,
+  NUMERIC_RULE_FIELDS,
   RULE_FIELD_CHOICES,
   ruleFieldLabel,
 } from '@experiences/lists/services/list-rule-fields';
@@ -74,6 +75,23 @@ const CHOICE_OPERATORS: RuleOperator[] = [
 const BOOLEAN_OPERATORS: RuleOperator[] = [
   { value: 'eq', label: 'is' },
   { value: 'neq', label: 'is not' },
+];
+
+/**
+ * Computed numbers (the days-ago recencies and the dollars-this-year total). The server
+ * compares these as numbers (`numeric: true` in the repo mapping), so only numeric operators
+ * are offered; "is set / is not set" reads has-happened / never, because NULL on these fields
+ * means the thing never happened. "Last donation (days ago) is at most 90" = donated within
+ * the last 90 days.
+ */
+const NUMERIC_OPERATORS: RuleOperator[] = [
+  { value: 'lte', label: 'is at most' },
+  { value: 'gte', label: 'is at least' },
+  { value: 'lt', label: 'is less than' },
+  { value: 'gt', label: 'is more than' },
+  { value: 'equals', label: 'equals' },
+  { value: 'isNotEmpty', label: 'is set' },
+  { value: 'isEmpty', label: 'is not set' },
 ];
 
 /**
@@ -440,6 +458,7 @@ export class ListForm implements OnInit {
     const text = (name: string) => field(name, 'text', TEXT_OPERATORS);
     const tag = (name: string) => field(name, 'autocomplete', TAG_OPERATORS);
     const choice = (name: string) => field(name, 'select', CHOICE_OPERATORS);
+    const numeric = (name: string) => field(name, 'number', NUMERIC_OPERATORS);
     // Both electoral fields, always together. Offering only one would hide the question the other
     // answers, and the explanation under the builder names them as a pair.
     const electoral = () => [
@@ -463,6 +482,16 @@ export class ListForm implements OnInit {
         // only useful question is whether it is there at all.
         choice('senior'),
         field('deceased', 'select', BOOLEAN_OPERATORS),
+        // Activity history (2026-08-20) — computed per person on the server. Gifts, knocks and
+        // event registrations are facts of the active campaign; opens and shifts are
+        // workspace-wide. See engagement-stats.ts for the exact definitions.
+        numeric('last_donation_days'),
+        numeric('donation_total_year'),
+        field('has_active_pledge', 'select', BOOLEAN_OPERATORS),
+        numeric('last_knock_days'),
+        numeric('last_newsletter_open_days'),
+        numeric('last_event_days'),
+        numeric('last_shift_days'),
         text('first_name'),
         text('last_name'),
         text('email'),
@@ -481,6 +510,8 @@ export class ListForm implements OnInit {
     return [
       tag('tags'),
       tag('issues'),
+      // Households have doors: knock recency is the one activity-history field here.
+      numeric('last_knock_days'),
       ...electoral(),
       text('city'),
       text('state'),
@@ -749,6 +780,37 @@ export class ListForm implements OnInit {
       if (!val) return false;
       const has = tagSet.has(val);
       return op === 'eq' || op === 'equals' || op === 'contains' ? has : !has;
+    }
+
+    // The activity-history fields compare as numbers, mirroring the server's numeric branch in
+    // buildRuleExpression. NULL = never happened, which only the is set / is not set operators
+    // match.
+    if ((NUMERIC_RULE_FIELDS as readonly string[]).includes(field)) {
+      const raw = row?.[field];
+      const rowNum = raw == null || raw === '' ? null : Number(raw);
+      const hasValue = rowNum != null && !Number.isNaN(rowNum);
+      if (op === 'empty' || op === 'isEmpty') return !hasValue;
+      if (op === 'notempty' || op === 'isNotEmpty') return hasValue;
+      const cmp = Number(String(val ?? '').trim());
+      if (!hasValue || !Number.isFinite(cmp)) return false;
+      switch (op) {
+        case 'gt':
+          return rowNum > cmp;
+        case 'gte':
+          return rowNum >= cmp;
+        case 'lt':
+          return rowNum < cmp;
+        case 'lte':
+          return rowNum <= cmp;
+        case 'equals':
+        case 'eq':
+          return rowNum === cmp;
+        case 'notEquals':
+        case 'neq':
+          return rowNum !== cmp;
+        default:
+          return true;
+      }
     }
 
     // For other fields, retrieve the row value

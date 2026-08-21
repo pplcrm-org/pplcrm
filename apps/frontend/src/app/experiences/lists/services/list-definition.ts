@@ -23,6 +23,11 @@ const OP_LABELS: Record<string, string> = {
   isNotEmpty: 'is not empty',
   empty: 'is empty',
   notempty: 'is not empty',
+  // Numeric operators (the activity-history fields) — same words the picker offers.
+  gt: 'is more than',
+  gte: 'is at least',
+  lt: 'is less than',
+  lte: 'is at most',
 };
 
 /**

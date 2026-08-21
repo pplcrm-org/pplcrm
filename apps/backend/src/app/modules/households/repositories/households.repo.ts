@@ -25,6 +25,12 @@ import {
   type HouseholdAreaListing,
   type HouseholdAreaRow,
 } from '../electoral-areas';
+import {
+  HOUSEHOLD_STATS_RULE_FIELDS,
+  householdStatsLateral,
+  householdStatsMapping,
+  referencesStatsFields,
+} from '../../../lib/engagement-stats';
 import { logger } from '../../../logger';
 
 /** households columns the grid may sort on — prefixed `households.` in ORDER BY. */
@@ -303,15 +309,30 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     // The keyset cursor, flattened to a plain string so the guarded `.where` below needs neither a
     // cast nor a non-null assertion. An id is never the empty string, so '' means "no cursor".
     const scanCursorId = input.fullScan?.afterId ?? '';
+    // Knock recency (engagement-stats.ts): campaign-scoped like the person-side facts — '0'
+    // matches no rows. The data query of a normal page always carries the lateral (the column is
+    // selected for the preview); a full scan and the count attach it only when a rule reads it.
+    const campaignId = options.campaignId ?? '0';
+    const needsStats = referencesStatsFields(filterModel, advModel, HOUSEHOLD_STATS_RULE_FIELDS);
+    const dataIncludesStats = !isFullScan || needsStats;
 
     // Shared where clause builder (for both queries). `includeLateral` controls the electoral
     // lateral join: the data query always carries it (the columns are selected), the count query
     // only when a filter actually reads them — see the count below.
-    const applyFilters = <QB extends AnyQB>(qb: QB, includeLateral: boolean) => {
+    const applyFilters = <QB extends AnyQB>(qb: QB, includeLateral: boolean, includeStats: boolean) => {
       let q = qb
         .leftJoin('map_households_tags', 'map_households_tags.household_id', 'households.id')
         .leftJoin('tags', 'tags.id', 'map_households_tags.tag_id')
         .leftJoin('tenants', 'tenants.id', 'households.tenant_id')
+        // Knock recency (engagement-stats.ts) — a correlated scalar subquery, so like hd_areas
+        // below it returns exactly one row per household and never multiplies the array_agg.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic Kysely lateral (pplcrm-any-exceptions)
+        .$if(includeStats, (qb2: any) =>
+          qb2.leftJoinLateral(
+            (eb: any) => householdStatsLateral(eb, campaignId),
+            (join: any) => join.onTrue(),
+          ),
+        )
         // Electoral geography. A household is in several boundaries at once, so this is a lateral
         // aggregate rather than a plain join: a plain join would multiply the household row by its
         // number of boundaries, and the tag/issue `array_agg` below would then repeat every tag
@@ -436,6 +457,9 @@ export class HouseholdRepo extends BaseRepository<'households'> {
               ),
             }
           : {}),
+        // Days since the household's door was last knocked in this campaign — mapped only while
+        // the hstats lateral is present, same rule as above.
+        ...(includeStats ? householdStatsMapping() : {}),
       };
       q = this.applyAdvancedFilters(q, advModel, columnMapping);
 
@@ -448,7 +472,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     // count's predicate identical to the data query's.
     const countNeedsElectoral = referencesElectoralAreas(filterModel, advModel);
     const countMatchingHouseholds = async (): Promise<number> => {
-      const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral)
+      const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral, needsStats)
         .select(({ fn }) => [fn.count(sql`DISTINCT households.id`).as('total')])
         .execute();
       return Number(countResult[0]?.['total'] || 0);
@@ -460,7 +484,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
     const totalCount = isFullScan ? null : await countMatchingHouseholds();
 
     // Data query
-    const rows = await applyFilters(this.getSelect(trx), true)
+    const rows = await applyFilters(this.getSelect(trx), true, dataIncludesStats)
       .select([
         'households.id',
         'households.country',
@@ -482,6 +506,8 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'households.geocoding_status',
         'households.updated_at',
       ])
+      // Selected for the same preview-parity reason as the electoral columns above.
+      .$if(dataIncludesStats, (qb) => qb.select(['hstats.last_knock_days']))
       // One more column per boundary map, so a workspace holding both a riding map and a ward map
       // gets a column for each instead of the two names joined into one string.
       .select(areaSetOuterSelects(areaSetColumns))
@@ -539,6 +565,7 @@ export class HouseholdRepo extends BaseRepository<'households'> {
         'hd_areas.electoral_area',
         'hd_areas.any_electoral_area',
         ...areaSetRefs(areaSetColumns),
+        ...(dataIncludesStats ? ['hstats.last_knock_days'] : []),
         'households.geocoding_status',
         'households.created_at',
         'households.updated_at',

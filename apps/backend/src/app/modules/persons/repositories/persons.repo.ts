@@ -21,6 +21,12 @@ import {
   seatStatusSelect,
   referencesElectoralAreas,
 } from '../../households/electoral-areas';
+import {
+  PERSON_STATS_RULE_FIELDS,
+  personStatsLateral,
+  personStatsMapping,
+  referencesStatsFields,
+} from '../../../lib/engagement-stats';
 
 /** persons columns the grid may sort on — prefixed `persons.` in ORDER BY. */
 const SORTABLE_PERSON_COLUMNS: readonly string[] = [
@@ -289,6 +295,11 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     // A backend full scan reads fixed-size batches walked by primary key; everything else — which
     // is every request that arrived over tRPC — is clamped to one page as before.
     const isFullScan = input.fullScan != null;
+    // The activity-history rule fields (engagement-stats.ts): a normal page's data query always
+    // carries their lateral so the preview rows hold the columns the rules filter on; a
+    // membership full scan and the count attach it only when a rule actually reads one.
+    const needsStats = referencesStatsFields(filterModel, advModel, PERSON_STATS_RULE_FIELDS);
+    const dataIncludesStats = !isFullScan || needsStats;
     const page = isFullScan ? { offset: 0, limit: FULL_SCAN_BATCH_SIZE } : resolvePageWindow(options);
     // The keyset cursor, flattened to a plain string so the guarded `.where` below needs neither a
     // cast nor a non-null assertion. An id is never the empty string, so '' means "no cursor".
@@ -296,8 +307,9 @@ export class PersonsRepo extends BaseRepository<'persons'> {
 
     // Shared where clause builder. `includeLateral` controls the electoral lateral join: the data
     // query always carries it (the columns are selected), the count query only when a filter
-    // actually reads them — see the count below.
-    const applyFilters = <QB extends AnyQB>(qb: QB, includeLateral: boolean) => {
+    // actually reads them — see the count below. `includeStats` does the same for the
+    // activity-history lateral (`pstats`).
+    const applyFilters = <QB extends AnyQB>(qb: QB, includeLateral: boolean, includeStats: boolean) => {
       let q = qb
         .leftJoin('households', 'persons.household_id', 'households.id')
         .leftJoin('map_peoples_tags', 'map_peoples_tags.person_id', 'persons.id')
@@ -318,6 +330,16 @@ export class PersonsRepo extends BaseRepository<'persons'> {
                 .select([...electoralAreaSelects(seatSetId), ...areaSetLateralSelects(areaSetColumns)])
                 .as('hd_areas'),
             (join: JoinBuilder<Models, 'households'>) => join.onTrue(),
+          ),
+        )
+        // The activity-history stats (engagement-stats.ts) — all correlated scalar subqueries,
+        // so like hd_areas it returns exactly one row per person and never multiplies the
+        // tag/issue array_agg below.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic Kysely lateral (pplcrm-any-exceptions)
+        .$if(includeStats, (qb2: any) =>
+          qb2.leftJoinLateral(
+            (eb: any) => personStatsLateral(eb, campaignId),
+            (join: any) => join.onTrue(),
           ),
         )
         .leftJoin('campaign_person_facts as cpf', (join) =>
@@ -466,6 +488,9 @@ export class PersonsRepo extends BaseRepository<'persons'> {
               ),
             }
           : {}),
+        // Activity history (days since last gift/knock/open/event/shift, dollars this year,
+        // active pledge). Mapped only while the pstats lateral is present, same rule as above.
+        ...(includeStats ? personStatsMapping() : {}),
       };
       q = this.applyAdvancedFilters(q, advModel, columnMapping);
 
@@ -478,7 +503,7 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     // count's predicate identical to the data query's.
     const countNeedsElectoral = referencesElectoralAreas(filterModel, advModel);
     const countMatchingPeople = async (): Promise<number> => {
-      const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral)
+      const countResult = await applyFilters(this.getSelect(trx), countNeedsElectoral, needsStats)
         .select(({ fn }) => [fn.count(sql`DISTINCT persons.id`).as('total')])
         .execute();
       return Number(countResult[0]?.['total'] || 0);
@@ -490,7 +515,7 @@ export class PersonsRepo extends BaseRepository<'persons'> {
     const totalCount = isFullScan ? null : await countMatchingPeople();
 
     // Data query
-    const rows = await applyFilters(this.getSelect(trx), true)
+    const rows = await applyFilters(this.getSelect(trx), true, dataIncludesStats)
       .select((eb) => [
         'persons.id',
         'persons.first_name',
@@ -534,6 +559,19 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         // One more column per boundary map, so the grid can show a ward column next to the riding
         // column instead of only the two of them joined into one string.
         ...areaSetOuterSelects(areaSetColumns),
+        // Activity-history stats — selected as well as filtered on, because the list builder's
+        // live preview evaluates the same rules client-side against these rows.
+        ...(dataIncludesStats
+          ? [
+              'pstats.last_donation_days',
+              'pstats.donation_total_year',
+              'pstats.has_active_pledge',
+              'pstats.last_knock_days',
+              'pstats.last_newsletter_open_days',
+              'pstats.last_event_days',
+              'pstats.last_shift_days',
+            ]
+          : []),
         // Whether this person's household is in the campaign's own territory. Reads the household
         // joined above, so a person with no household answers 'unknown' rather than a wrong 'no'.
         seatStatusSelect(seatSetId, seat.seatAreaNames, seat.setStampedAt),
@@ -580,6 +618,17 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         'hd_areas.electoral_area',
         'hd_areas.any_electoral_area',
         ...areaSetRefs(areaSetColumns),
+        ...(dataIncludesStats
+          ? [
+              'pstats.last_donation_days',
+              'pstats.donation_total_year',
+              'pstats.has_active_pledge',
+              'pstats.last_knock_days',
+              'pstats.last_newsletter_open_days',
+              'pstats.last_event_days',
+              'pstats.last_shift_days',
+            ]
+          : []),
         // Grouped because the seat-status expression above reads it off the joined household row.
         'households.boundary_checked_at',
       ])

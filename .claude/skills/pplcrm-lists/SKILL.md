@@ -30,9 +30,18 @@ A new field needs all of:
 
 1. **Backend mapping** — add `field_name: { col: 'table.column' }` to `columnMapping` in
    `modules/persons/repositories/persons.repo.ts` (`getAllWithAddress`) and/or
-   `modules/households/repositories/households.repo.ts`. Booleans and numerics need
-   `{ col: 'x.y::text', isCast: true }` — every operator is ILIKE-based, so the rule
-   compares against `'true'` / `'false'`.
+   `modules/households/repositories/households.repo.ts`. Booleans need
+   `{ col: 'x.y::text', isCast: true }` — the text operators are ILIKE-based, so the rule
+   compares against `'true'` / `'false'`. Real numbers (2026-08-20) use `{ col: '...',
+numeric: true }` instead: the compiler then supports `gt/gte/lt/lte/equals/notEquals`
+   as numeric comparisons and `isEmpty/isNotEmpty` as bare `IS [NOT] NULL`, and drops any
+   text operator. The seven activity-history fields (days since last donation / knock /
+   newsletter open / event registration / shift, dollars this year, active pledge) come
+   from correlated-scalar-subquery laterals built in `lib/engagement-stats.ts` (`pstats`
+   on people, `hstats` on households), attached like the electoral lateral: always on a
+   normal page's data query, only-when-referenced on the count and on membership full
+   scans (`referencesStatsFields`). Their end-to-end spec is
+   `modules/lists/engagement-rule-fields.spec.ts`.
 2. **A join, if the column is not already reachable.** Campaign-scoped facts join on
    `options.campaignId` (see below).
 3. **The selected columns + GROUP BY** in the same query — the list-builder's live preview
@@ -50,6 +59,14 @@ drift.
 Status/enum fields use `inputType: 'select'` with `choices`, and the operator set
 `is / is not / is set / is not set` — "is empty" is wrong for a NULL status, which means
 "not a volunteer", not "an empty string".
+
+Numeric fields use `inputType: 'number'` with `NUMERIC_OPERATORS` (list-form.ts) and are
+listed in `NUMERIC_RULE_FIELDS` (list-rule-fields.ts), which the client-side preview
+evaluator (`evalRule`) reads to compare as numbers — add a numeric field to that list or
+the preview will string-compare it. NULL on these fields means "never happened", so they
+use the is set / is not set wording too. Campaign scoping: donations, knocks and event
+registrations filter on `options.campaignId` ('0' = match nothing); newsletter opens and
+volunteer shifts are deliberately tenant-wide (`volunteer_events` has no campaign column).
 
 ## The two electoral geography fields (added 2026-08-02)
 
