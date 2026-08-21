@@ -142,7 +142,16 @@ describe('DashboardController Closed Emails Attribution', () => {
     expect(stats.totalOpenCount).toBe(0);
     expect(stats.unassignedCount).toBe(0);
     // The field-operations counts ride the same response; an empty workspace reads all zeros.
-    expect(stats.field).toEqual({ doorsKnocked7d: 0, conversations7d: 0, turfsKnockingNow: 0 });
+    expect(stats.field).toEqual({
+      doorsKnocked7d: 0,
+      conversations7d: 0,
+      turfsKnockingNow: 0,
+      turfDoorsTotal: 0,
+      turfDoorsKnocked: 0,
+      signsDelivered7d: 0,
+    });
+    // Same for the money tile (same repo query as the Donations page tiles).
+    expect(stats.donations).toEqual({ thisMonthCents: 0, thisMonthCount: 0 });
 
     // No snapshot exists yet — the read reports that honestly and queues the coalesced bootstrap.
     expect(stats.snapshot.windows).toBeNull();
@@ -161,5 +170,204 @@ describe('DashboardController Closed Emails Attribution', () => {
     await controller.getStats(auth);
     const jobs = await db.selectFrom('background_jobs').select('id').where('tenant_id', '=', tenantId).execute();
     expect(jobs.length).toBe(1);
+  });
+});
+
+describe('DashboardController — field-ops coverage, delivered signs and money tiles', () => {
+  const controller = new DashboardController();
+  const db = (BaseRepository as any)._db;
+  const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
+  let tenantId: string;
+  let userId: string;
+  let campaignId: string;
+
+  beforeEach(async () => {
+    tenantId = rand();
+    userId = rand();
+    campaignId = rand();
+    await db.insertInto('tenants').values({ id: tenantId, name: 'Tiles Test Tenant' }).execute();
+    await db
+      .insertInto('authusers')
+      .values({
+        id: userId,
+        tenant_id: tenantId,
+        email: `tiles-${userId}@example.com`,
+        password: 'x',
+        first_name: 'Tile',
+        last_name: 'Tester',
+        verified: true,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    await db
+      .insertInto('campaigns')
+      .values({
+        id: campaignId,
+        tenant_id: tenantId,
+        admin_id: userId,
+        name: 'Tiles Campaign',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+  });
+
+  afterEach(async () => {
+    await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('dashboard_stats_snapshots').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('delivery_route_stops').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('delivery_routes').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('delivery_requests').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('turf_knocks').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('turf_households').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('turfs').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('donations').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('households').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('campaigns').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('authusers').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('tenants').where('id', '=', tenantId).execute();
+  });
+
+  it('counts covered doors on live turfs, delivered signs over both paths, and money this month', async () => {
+    // Three doors on one live turf; door 1 knocked (a 'cleared' undo row must not count as
+    // coverage on door 2).
+    const turfId = rand();
+    await db
+      .insertInto('turfs')
+      .values({
+        id: turfId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Tile Turf',
+        status: 'active',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    const doorIds = [rand(), rand(), rand()];
+    for (const [i, id] of doorIds.entries()) {
+      await db
+        .insertInto('households')
+        .values({
+          id,
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          street_num: String(i + 1),
+          street1: 'Tile St',
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+      await db
+        .insertInto('turf_households')
+        .values({ tenant_id: tenantId, turf_id: turfId, household_id: id, walk_order: i + 1 })
+        .execute();
+    }
+    await db
+      .insertInto('turf_knocks')
+      .values([
+        {
+          tenant_id: tenantId,
+          turf_id: turfId,
+          household_id: doorIds[0],
+          outcome: 'conversation',
+          source: 'companion',
+          knocked_at: new Date(),
+          createdby_id: userId,
+          updatedby_id: userId,
+        },
+        {
+          tenant_id: tenantId,
+          turf_id: turfId,
+          household_id: doorIds[1],
+          outcome: 'cleared',
+          source: 'companion',
+          knocked_at: new Date(),
+          createdby_id: userId,
+          updatedby_id: userId,
+        },
+      ])
+      .execute();
+
+    // Sign deliveries: one through a route stop (acted_at now), one direct flip with no stop.
+    const [reqStop, reqDirect] = [rand(), rand()];
+    await db
+      .insertInto('delivery_requests')
+      .values([
+        {
+          id: reqStop,
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          household_id: doorIds[0],
+          source: 'manual',
+          status: 'delivered',
+          createdby_id: userId,
+          updatedby_id: userId,
+        },
+        {
+          id: reqDirect,
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          household_id: doorIds[1],
+          source: 'manual',
+          status: 'delivered',
+          createdby_id: userId,
+          updatedby_id: userId,
+        },
+      ])
+      .execute();
+    const routeRow = await db
+      .insertInto('delivery_routes')
+      .values({
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: 'Tile Route',
+        status: 'completed',
+        start_address: '1 Tile Way',
+        params: JSON.stringify({}),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    await db
+      .insertInto('delivery_route_stops')
+      .values({
+        tenant_id: tenantId,
+        route_id: String(routeRow.id),
+        request_id: reqStop,
+        seq: 1,
+        status: 'delivered',
+        acted_at: new Date(),
+        acted_via: 'volunteer_link',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    // Money: one $25 gift this month, one old gift that must not count.
+    await db
+      .insertInto('donations')
+      .values([
+        { tenant_id: tenantId, campaign_id: campaignId, amount: 2500, status: 'succeeded' },
+        {
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          amount: 9900,
+          status: 'succeeded',
+          created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
+        },
+      ])
+      .execute();
+
+    const auth = { tenant_id: tenantId, user_id: userId, name: 'Tile' } as any;
+    const stats = await controller.getStats(auth);
+
+    expect(stats.field.turfDoorsTotal).toBe(3);
+    expect(stats.field.turfDoorsKnocked).toBe(1);
+    // One via the stop's acted_at, one via the direct flip — each request once.
+    expect(stats.field.signsDelivered7d).toBe(2);
+    expect(stats.donations).toEqual({ thisMonthCents: 2500, thisMonthCount: 1 });
   });
 });

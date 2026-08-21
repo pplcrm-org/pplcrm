@@ -7,6 +7,7 @@ import { checkRateLimit } from '../../lib/rate-limiter';
 import { pinnedCampaignId } from '../../lib/tenant-context';
 import { settingsMapFrom, slaPolicyFrom } from '../../lib/sla-policy';
 import { IN_FIELD_WINDOW_MS } from '../canvassing/controller';
+import { DonationsRepo } from '../donations/repositories/donations.repo';
 import { SettingsRepo } from '../settings/repositories/settings.repo';
 import {
   dashboardRefreshPending,
@@ -381,10 +382,78 @@ export class DashboardController {
       .where('turf_knocks.knocked_at', '>=', sql<Date>`now() - interval '7 days'`)
       .$if(campaignPin != null, (qb) => qb.where('turfs.campaign_id', '=', String(campaignPin)))
       .executeTakeFirst();
+    // 5.5 Turf coverage: doors knocked at least once vs total doors across live (non-retired)
+    // turfs — the same numerator/denominator the canvassing turf list derives per turf, rolled
+    // up. All-time per door (a door reached in week one stays covered), unlike the 7-day
+    // activity counts above. Campaign-pinned like them (REVIEW7 A5 reasoning applies).
+    const coverageRow = await this.db
+      .selectFrom('turf_households as th')
+      .innerJoin('turfs as t', (join) => join.onRef('t.id', '=', 'th.turf_id').on('t.tenant_id', '=', tenant_id))
+      .select([
+        sql<number>`count(*)`.as('total'),
+        sql<number>`count(*) FILTER (WHERE EXISTS (
+          SELECT 1 FROM turf_knocks k
+          WHERE k.tenant_id = th.tenant_id
+            AND k.turf_id = th.turf_id
+            AND k.household_id = th.household_id
+            AND k.outcome <> 'cleared'
+        ))`.as('knocked'),
+      ])
+      .where('th.tenant_id', '=', tenant_id)
+      .where('t.status', '!=', 'retired')
+      .$if(campaignPin != null, (qb) => qb.where('t.campaign_id', '=', String(campaignPin)))
+      .executeTakeFirst();
+
+    // 5.6 Signs delivered in the last 7 days. Deliveries through a route stop carry the honest
+    // acted_at timestamp; a direct flip (staff or canvasser with no pending stop) has only the
+    // request row's updated_at — good enough for a 7-day activity tile. The NOT EXISTS keeps
+    // each request counted once whichever path delivered it.
+    const signStops = await this.db
+      .selectFrom('delivery_route_stops as s')
+      .innerJoin('delivery_requests as r', (join) =>
+        join.onRef('r.id', '=', 's.request_id').on('r.tenant_id', '=', tenant_id),
+      )
+      .select([sql<number>`count(*)`.as('n')])
+      .where('s.tenant_id', '=', tenant_id)
+      .where('s.status', '=', 'delivered')
+      .where('s.acted_at', '>=', sql<Date>`now() - interval '7 days'`)
+      .$if(campaignPin != null, (qb) => qb.where('r.campaign_id', '=', String(campaignPin)))
+      .executeTakeFirst();
+    const signDirect = await this.db
+      .selectFrom('delivery_requests as r')
+      .select([sql<number>`count(*)`.as('n')])
+      .where('r.tenant_id', '=', tenant_id)
+      .where('r.status', '=', 'delivered')
+      .where('r.updated_at', '>=', sql<Date>`now() - interval '7 days'`)
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom('delivery_route_stops as s')
+              .select('s.id')
+              .where('s.tenant_id', '=', tenant_id)
+              .whereRef('s.request_id', '=', 'r.id')
+              .where('s.status', '=', 'delivered'),
+          ),
+        ),
+      )
+      .$if(campaignPin != null, (qb) => qb.where('r.campaign_id', '=', String(campaignPin)))
+      .executeTakeFirst();
+
     const field = {
       doorsKnocked7d: Number(knockRow?.doors ?? 0),
       conversations7d: Number(knockRow?.conversations ?? 0),
       turfsKnockingNow: Number(knockRow?.in_field ?? 0),
+      turfDoorsTotal: Number(coverageRow?.total ?? 0),
+      turfDoorsKnocked: Number(coverageRow?.knocked ?? 0),
+      signsDelivered7d: Number(signStops?.n ?? 0) + Number(signDirect?.n ?? 0),
+    };
+
+    // 5.7 Money this month, from the same repo query the Donations page tiles use — so the two
+    // screens can never disagree. It honours the caller's campaign pin itself.
+    const ledger = await new DonationsRepo().getLedgerSummary(tenant_id, 'all');
+    const donations = {
+      thisMonthCents: ledger.thisMonthCents,
+      thisMonthCount: ledger.thisMonthCount,
     };
 
     // The snapshot half. A workspace that has never had one computed gets a coalesced bootstrap
@@ -426,6 +495,7 @@ export class DashboardController {
       totalOpenCount,
       userLive,
       field,
+      donations,
       contactsGrowth,
       oldestUnassignedAgeHours,
       firstResponseDueHours,

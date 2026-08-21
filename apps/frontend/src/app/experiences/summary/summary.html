@@ -192,6 +192,20 @@
           <span class="block truncate text-[11px] text-base-content/45">Turfs knocking right now</span>
         </span>
       </a>
+      <a
+        routerLink="/canvassing"
+        class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
+      >
+        <pc-icon name="check-circle" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        <span class="min-w-0">
+          <span class="block text-[17px] font-bold leading-tight tabular-nums">
+            {{ fieldStats()?.turfDoorsKnocked ?? '—' }} / {{ fieldStats()?.turfDoorsTotal ?? '—' }}
+          </span>
+          <span class="block truncate text-[11px] text-base-content/45">
+            Doors covered, all live turfs@if (turfCoveragePct() !== null) { ({{ turfCoveragePct() }}%)}
+          </span>
+        </span>
+      </a>
       } @if (showDeliveriesRow()) {
       <a
         routerLink="/deliveries"
@@ -201,6 +215,18 @@
         <span class="min-w-0">
           <span class="block text-[17px] font-bold leading-tight tabular-nums">{{ signsReady() ?? '—' }}</span>
           <span class="block truncate text-[11px] text-base-content/45">Sign requests ready to route</span>
+        </span>
+      </a>
+      <a
+        routerLink="/deliveries/routes"
+        class="flex items-center gap-3 rounded-md border border-line bg-base-50/50 px-3 py-2.5 hover:border-primary/40"
+      >
+        <pc-icon name="check-circle" [size]="4" class="shrink-0 text-primary"></pc-icon>
+        <span class="min-w-0">
+          <span class="block text-[17px] font-bold leading-tight tabular-nums">
+            {{ fieldStats()?.signsDelivered7d ?? '—' }}
+          </span>
+          <span class="block truncate text-[11px] text-base-content/45">Signs delivered · 7 days</span>
         </span>
       </a>
       } @if (showVolunteersRow()) {
@@ -228,7 +254,7 @@
 
   <!-- Quiet stat tiles: LIVE numbers only, neutral values, primary icons (§5).
        Each tile links to the page that explains its number. -->
-  <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
+  <div class="grid grid-cols-1 gap-4 sm:grid-cols-3" [class.lg:grid-cols-4]="showDonationsTile()">
     <a routerLink="/inbox" class="rounded-lg border border-line bg-base-100 p-4 hover:border-primary/40">
       <div class="flex items-start justify-between">
         <div class="pc-eyebrow">Open emails</div>
@@ -269,6 +295,25 @@
       }
       <div class="mt-1 text-[11px] text-base-content/45">New in the last 30 days</div>
     </a>
+
+    @if (showDonationsTile()) {
+    <a routerLink="/donations" class="rounded-lg border border-line bg-base-100 p-4 hover:border-primary/40">
+      <div class="flex items-start justify-between">
+        <div class="pc-eyebrow">Donated this month</div>
+        <pc-icon name="currency-dollar" [size]="4" class="shrink-0 text-primary"></pc-icon>
+      </div>
+      @if (isInitialLoading()) {
+      <div class="skeleton mt-2 h-6 w-14 rounded"></div>
+      } @else {
+      <div class="mt-1 text-[23px] font-bold leading-tight tabular-nums text-base-content">
+        {{ formatDollars(donationsMonth()?.thisMonthCents) }}
+      </div>
+      }
+      <div class="mt-1 text-[11px] text-base-content/45">
+        {{ donationsMonth()?.thisMonthCount ?? 0 }} gifts · same numbers as the Donations page
+      </div>
+    </a>
+    }
   </div>
 
   <!-- Growth chart (2fr) + Coming up (1fr) -->

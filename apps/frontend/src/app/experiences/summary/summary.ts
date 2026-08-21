@@ -119,6 +119,23 @@ export class Summary implements OnInit {
   protected readonly showFieldOps = computed(
     () => this.showCanvassingRows() || this.showDeliveriesRow() || this.showVolunteersRow(),
   );
+  /** The money tile gates like the sidebar's Donations entry: module on + plan allows. */
+  protected readonly showDonationsTile = computed(
+    () => this.orgMode.moduleVisibilities().get('donations') === 'on' && this.planAllows('donations'),
+  );
+  protected readonly donationsMonth = signal<DashboardStats['donations'] | null>(null);
+  /** Doors reached at least once vs total doors on live turfs, as a whole percent. */
+  protected readonly turfCoveragePct = computed(() => {
+    const f = this.fieldStats();
+    const total = f?.turfDoorsTotal ?? 0;
+    if (!f || total <= 0) return null;
+    return Math.round((100 * (f.turfDoorsKnocked ?? 0)) / total);
+  });
+
+  protected formatDollars(cents: number | null | undefined): string {
+    if (cents == null) return '—';
+    return '$' + (cents / 100).toLocaleString('en-CA', { maximumFractionDigits: 0 });
+  }
 
   private fieldExtrasLoaded = false;
 
@@ -378,6 +395,7 @@ export class Summary implements OnInit {
     this.totalOpenCount.set(stats.totalOpenCount || 0);
     this.userLive.set(stats.userLive ?? []);
     this.fieldStats.set(stats.field ?? null);
+    this.donationsMonth.set(stats.donations ?? null);
 
     const totalNewContacts = (stats.contactsGrowth || []).reduce(
       (acc: number, cur: { count?: number }) => acc + Number(cur.count || 0),
