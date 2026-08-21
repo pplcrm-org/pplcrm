@@ -418,6 +418,53 @@ describe('PersonsRepo Integration', () => {
     expect(checkSource).toBeUndefined();
   });
 
+  // Regression: the email is copied while the source row still exists inside the merge
+  // transaction, and idx_persons_tenant_email_unique forbids two rows in a tenant holding
+  // the same address. Before the fix this exact shape — survivor without an email, duplicate
+  // with one — failed the whole merge with a unique-constraint error from the Duplicates page.
+  it('should merge the email onto an email-less target without tripping the unique email index', async () => {
+    const email = `merge-email-${String(Math.floor(Math.random() * 100000000) + 10000000)}@example.com`;
+
+    const target = await repo.add({
+      row: {
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        household_id: householdId,
+        first_name: 'Keeper',
+        last_name: 'NoEmail',
+        mobile: '555-000-1111',
+        createdby_id: userId,
+        updatedby_id: userId,
+      },
+    });
+
+    const source = await repo.add({
+      row: {
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        household_id: householdId,
+        first_name: 'Keeper',
+        last_name: 'NoEmail',
+        email,
+        createdby_id: userId,
+        updatedby_id: userId,
+      },
+    });
+
+    await repo.mergePersons({
+      tenant_id: tenantId,
+      target_id: target.id,
+      source_id: source.id,
+      user_id: userId,
+    });
+
+    const updatedTarget = await repo.getOneBy('id', { tenant_id: tenantId, value: target.id });
+    expect(updatedTarget?.email).toBe(email);
+
+    const checkSource = await repo.getOneBy('id', { tenant_id: tenantId, value: source.id });
+    expect(checkSource).toBeUndefined();
+  });
+
   it('should re-point donations, form submissions, shifts, workflow enrollments and connections on merge', async () => {
     const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
     const addPerson = (first: string) =>

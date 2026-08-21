@@ -936,6 +936,14 @@ export class PersonsRepo extends BaseRepository<'persons'> {
       }
 
       if (Object.keys(targetUpdate).length > 0) {
+        // idx_persons_tenant_email_unique forbids two rows in a tenant holding the same
+        // address, and the source row is only deleted at the end of this transaction — so
+        // copying its email onto the target would collide with the source's own row and
+        // roll the whole merge back. Free the address on the source first (it is about to
+        // be deleted anyway).
+        if (targetUpdate['email'] != null) {
+          await this.update({ tenant_id: input.tenant_id, id: input.source_id, row: { email: null } }, trx);
+        }
         targetUpdate['updatedby_id'] = input.user_id;
         targetUpdate['updated_at'] = sql`now()`;
         await this.update({ tenant_id: input.tenant_id, id: input.target_id, row: targetUpdate }, trx);

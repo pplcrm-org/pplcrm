@@ -67,10 +67,10 @@ async function seedTenantWithPair(groupKey: string): Promise<SeededTenant> {
     .values([
       // Same-name pair: persons carries a per-tenant unique index on lower(email)
       // (idx_persons_tenant_email_unique), so an email-keyed pair cannot exist as two committed
-      // rows. The email lives on the TARGET and the source carries only a mobile — the reverse
-      // (source has the email, target none) makes mergePersons copy the source's email onto the
-      // target while the source row still exists, which that same index rejects and the whole
-      // merge fails. Real bug, reported separately; not pinned here to avoid enshrining it.
+      // rows. The email lives on the TARGET and the source carries only a mobile. The reverse
+      // shape (source has the email, target none) once failed the whole merge against that same
+      // index; mergePersons now frees the source's address before the copy, and the regression
+      // is pinned in persons.repo.spec.ts ("merge the email onto an email-less target").
       {
         id: targetId,
         tenant_id: tenantId,
