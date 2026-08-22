@@ -13,10 +13,13 @@ import { Client } from 'pg';
  *  - Postgres reachable with the same DB_* env the backend uses. Two gates hold a fresh
  *    tenant out of EVERY sign-in path (password, 2FA, passkey):
  *      1. email verification (`authusers.verified`),
- *      2. the closed-beta approval gate (`tenants.approval_status` — auto-approved at
- *         signup only where AUTO_APPROVE_TENANTS=true, e.g. CI and the intended dev setup).
- *    The documented dev/test way past them is flipping the rows directly (verify skill),
- *    which `unlockThrowawayTenant` below does for both, idempotently.
+ *      2. the closed-beta approval gate (`tenants.approval_status`).
+ *    AUTO_APPROVE_TENANTS must stay UNSET in this spec's environment: with it, signUp
+ *    issues session tokens immediately, the browser lands signed-in on the dashboard, and
+ *    the sign-in steps below wait forever on a page that no longer exists (the 2026-08-22
+ *    CI failure; verify.yml's e2e job documents the same rule). Unset, signup bounces to
+ *    /signin and the documented dev/test way past the gates is flipping the rows directly
+ *    (verify skill), which `unlockThrowawayTenant` below does for both, idempotently.
  *
  * Each run signs up a fresh tenant (timestamped email) so the test is rerunnable without
  * cleanup. Throwaway tenants accumulate in the dev DB by design: tenant DELETE does not

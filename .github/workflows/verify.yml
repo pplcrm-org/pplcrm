@@ -206,10 +206,12 @@ jobs:
       DB_SSL: 'false'
       JWT_SECRET: ci-jwt-secret
       SHARED_SECRET: ci-shared-secret
-      # Closed-beta gate: nobody is here to click the ops approval link, so signups are
-      # approved on creation — the same explicit opt-in the backend test suite documents
-      # (apps/backend/vite.config.ts) and env.ts calls the intended dev/test setting.
-      AUTO_APPROVE_TENANTS: 'true'
+      # AUTO_APPROVE_TENANTS is deliberately NOT set here (unlike the backend test suite):
+      # with it, signUp issues session tokens immediately and the browser lands signed-in on
+      # the dashboard, so /signin redirects away and the authenticated-journey spec waits
+      # forever for the email field (this exact failure, 2026-08-22). Unset, signup holds the
+      # tenant pending and bounces to /signin — the flow the journey spec drives; its
+      # unlockThrowawayTenant() flips the verification and approval rows directly in the DB.
       # POSTMARK_SERVER_TOKEN stays deliberately unset: signup enqueues a verification email,
       # and without a token the mail service logs a "[POSTMARK DEV MOCK]" line instead of
       # sending (transactional-mail.service.ts) — no real SMTP from CI.

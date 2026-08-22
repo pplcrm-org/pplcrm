@@ -4,9 +4,11 @@ import {
   DATE_ARRIVES_MAX_DAYS_BEFORE,
   WORKFLOW_STEP_KINDS,
   WORKFLOW_TRIGGER_TYPES,
+  defaultMessageClassForTrigger,
   encodeDateArrivesConfig,
   lockedMessageClassForTrigger,
   parseDateArrivesConfig,
+  resolveWorkflowMessageClass,
 } from './workflows.schema';
 
 describe('date_arrives config codec', () => {
@@ -56,5 +58,25 @@ describe('message classing of the field-ops triggers', () => {
     expect(WORKFLOW_TRIGGER_TYPES).toContain('sign_delivered');
     expect(WORKFLOW_TRIGGER_TYPES).toContain('event_registered');
     expect(WORKFLOW_STEP_KINDS).toContain('add_to_list');
+  });
+
+  it('defaults: a locked trigger keeps its class, an ambiguous one falls to marketing (the safe side)', () => {
+    expect(defaultMessageClassForTrigger('sign_delivered')).toBe('relationship');
+    expect(defaultMessageClassForTrigger('supporter_lapsed')).toBe('marketing');
+    expect(defaultMessageClassForTrigger('date_arrives')).toBe('marketing');
+    // Unknown backend values degrade to ambiguous → marketing, never a crash.
+    expect(defaultMessageClassForTrigger('not_a_real_trigger')).toBe('marketing');
+  });
+
+  it('resolveWorkflowMessageClass: a locked trigger always beats the requested class', () => {
+    // The win-back trigger cannot be talked into relationship mail via the API.
+    expect(resolveWorkflowMessageClass('supporter_lapsed', 'relationship')).toBe('marketing');
+    // A recipient-initiated trigger cannot be downgraded to marketing.
+    expect(resolveWorkflowMessageClass('sign_delivered', 'marketing')).toBe('relationship');
+    // Ambiguous triggers keep the author's choice…
+    expect(resolveWorkflowMessageClass('date_arrives', 'relationship')).toBe('relationship');
+    // …and fall back to marketing when no class was sent at all.
+    expect(resolveWorkflowMessageClass('date_arrives', null)).toBe('marketing');
+    expect(resolveWorkflowMessageClass('date_arrives', undefined)).toBe('marketing');
   });
 });
