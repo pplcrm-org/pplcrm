@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict DNoSUNfhc4pGoAAhzexFaQwtf4dvy24gRLwoec7E6RpfbLiJ6RLl7HDbVU36KcA
+\restrict TqCTP8GcEbvFQJneJcyqrJqXv9oGwnCUj1Bgc9vgffzf1LhXn7xAGDbp7479hBF
 
--- Dumped from database version 16.14 (Homebrew)
+-- Dumped from database version 18.4 (Homebrew)
 -- Dumped by pg_dump version 18.4 (Homebrew)
 
 SET statement_timeout = 0;
@@ -116,7 +116,7 @@ CREATE TABLE public.authusers (
     id bigint NOT NULL,
     tenant_id bigint,
     verified boolean DEFAULT false,
-    role text,
+    role text DEFAULT 'user'::text NOT NULL,
     first_name text,
     last_name text,
     email text NOT NULL,
@@ -138,7 +138,7 @@ CREATE TABLE public.authusers (
     deactivated_at timestamp with time zone,
     campaign_id bigint,
     deleted_at timestamp with time zone,
-    CONSTRAINT chk_authusers_role CHECK (((role IS NULL) OR (role = ANY (ARRAY['owner'::text, 'admin'::text, 'user'::text, 'viewer'::text]))))
+    CONSTRAINT chk_authusers_role CHECK ((role = ANY (ARRAY['owner'::text, 'admin'::text, 'user'::text, 'viewer'::text])))
 );
 
 ALTER TABLE ONLY public.authusers FORCE ROW LEVEL SECURITY;
@@ -185,8 +185,10 @@ CREATE TABLE public.background_jobs (
     locked_by text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    priority integer DEFAULT 0 NOT NULL,
     CONSTRAINT chk_background_jobs_status CHECK ((status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text])))
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_cost_delay='1');
 
 ALTER TABLE ONLY public.background_jobs FORCE ROW LEVEL SECURITY;
 
@@ -212,6 +214,90 @@ ALTER SEQUENCE public.background_jobs_id_seq OWNER TO pplcrm_owner;
 --
 
 ALTER SEQUENCE public.background_jobs_id_seq OWNED BY public.background_jobs.id;
+
+
+--
+-- Name: boundary_features; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.boundary_features (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    set_id bigint NOT NULL,
+    name text NOT NULL,
+    code text,
+    geometry jsonb NOT NULL,
+    bbox jsonb NOT NULL,
+    createdby_id bigint NOT NULL,
+    updatedby_id bigint,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.boundary_features FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.boundary_features OWNER TO pplcrm_owner;
+
+--
+-- Name: boundary_features_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.boundary_features ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.boundary_features_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: boundary_sets; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.boundary_sets (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    slug text NOT NULL,
+    label text NOT NULL,
+    jurisdiction text NOT NULL,
+    role text NOT NULL,
+    chamber text,
+    region text,
+    vintage text,
+    source text NOT NULL,
+    file_id bigint,
+    name_property text,
+    code_property text,
+    feature_count integer,
+    createdby_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_boundary_sets_chamber CHECK (((chamber IS NULL) OR (chamber = ANY (ARRAY['upper'::text, 'lower'::text])))),
+    CONSTRAINT chk_boundary_sets_jurisdiction CHECK ((jurisdiction = ANY (ARRAY['ca_federal'::text, 'ca_provincial'::text, 'ca_municipal'::text, 'us_federal'::text, 'us_state'::text, 'us_local'::text, 'other'::text]))),
+    CONSTRAINT chk_boundary_sets_role CHECK ((role = ANY (ARRAY['seat_area'::text, 'subdivision'::text, 'locality'::text]))),
+    CONSTRAINT chk_boundary_sets_source CHECK ((source = ANY (ARRAY['bundled'::text, 'upload'::text, 'import'::text, 'drawn'::text])))
+);
+
+ALTER TABLE ONLY public.boundary_sets FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.boundary_sets OWNER TO pplcrm_owner;
+
+--
+-- Name: boundary_sets_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.boundary_sets ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.boundary_sets_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
 
 
 --
@@ -241,6 +327,82 @@ ALTER TABLE public.bug_reports OWNER TO pplcrm_owner;
 
 ALTER TABLE public.bug_reports ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.bug_reports_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: campaign_areas; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.campaign_areas (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    campaign_id bigint NOT NULL,
+    set_id bigint,
+    name text NOT NULL,
+    code text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    createdby_id bigint
+);
+
+ALTER TABLE ONLY public.campaign_areas FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.campaign_areas OWNER TO pplcrm_owner;
+
+--
+-- Name: campaign_areas_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.campaign_areas ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.campaign_areas_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: campaign_join_codes; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.campaign_join_codes (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    campaign_id bigint,
+    turf_id bigint,
+    code text NOT NULL,
+    label text,
+    status text DEFAULT 'active'::text NOT NULL,
+    expires_at timestamp with time zone,
+    max_uses integer,
+    use_count integer DEFAULT 0 NOT NULL,
+    createdby_id bigint NOT NULL,
+    updatedby_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_cjc_max_uses CHECK (((max_uses IS NULL) OR (max_uses > 0))),
+    CONSTRAINT chk_cjc_status CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text])))
+);
+
+ALTER TABLE ONLY public.campaign_join_codes FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.campaign_join_codes OWNER TO pplcrm_owner;
+
+--
+-- Name: campaign_join_codes_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.campaign_join_codes ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.campaign_join_codes_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -371,7 +533,21 @@ CREATE TABLE public.campaigns (
     status text DEFAULT 'active'::text NOT NULL,
     canvass_issues text[] DEFAULT '{}'::text[] NOT NULL,
     canvass_script text,
+    jurisdiction text DEFAULT 'other'::text NOT NULL,
+    office_region text,
+    office_locality text,
+    chamber text,
+    seat_type text DEFAULT 'district'::text NOT NULL,
+    seat_name text,
+    seat_position text,
+    seat_label_override text,
+    office_title text,
+    canvass_location_precision text DEFAULT 'street'::text NOT NULL,
+    CONSTRAINT campaigns_canvass_location_precision_check CHECK ((canvass_location_precision = ANY (ARRAY['street'::text, 'turf'::text]))),
+    CONSTRAINT chk_campaigns_chamber CHECK (((chamber IS NULL) OR (chamber = ANY (ARRAY['upper'::text, 'lower'::text])))),
+    CONSTRAINT chk_campaigns_jurisdiction CHECK ((jurisdiction = ANY (ARRAY['ca_federal'::text, 'ca_provincial'::text, 'ca_municipal'::text, 'us_federal'::text, 'us_state'::text, 'us_local'::text, 'other'::text]))),
     CONSTRAINT chk_campaigns_kind CHECK ((kind = ANY (ARRAY['office'::text, 'election'::text]))),
+    CONSTRAINT chk_campaigns_seat_type CHECK ((seat_type = ANY (ARRAY['district'::text, 'at_large'::text]))),
     CONSTRAINT chk_campaigns_status CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text])))
 );
 
@@ -399,6 +575,87 @@ ALTER SEQUENCE public.campaigns_id_seq OWNER TO pplcrm_owner;
 --
 
 ALTER SEQUENCE public.campaigns_id_seq OWNED BY public.campaigns.id;
+
+
+--
+-- Name: canvass_location_pings; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.canvass_location_pings (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    shift_id bigint NOT NULL,
+    turf_id bigint NOT NULL,
+    volunteer_person_id bigint NOT NULL,
+    lat double precision NOT NULL,
+    lng double precision NOT NULL,
+    accuracy_m real,
+    recorded_at timestamp with time zone,
+    received_at timestamp with time zone DEFAULT now() NOT NULL
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_cost_delay='0');
+
+ALTER TABLE ONLY public.canvass_location_pings FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.canvass_location_pings OWNER TO pplcrm_owner;
+
+--
+-- Name: canvass_location_pings_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.canvass_location_pings ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.canvass_location_pings_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: canvass_shifts; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.canvass_shifts (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    turf_id bigint NOT NULL,
+    campaign_id bigint,
+    volunteer_person_id bigint NOT NULL,
+    canvasser_name text NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_activity_at timestamp with time zone DEFAULT now() NOT NULL,
+    ended_at timestamp with time zone,
+    end_reason text,
+    location_state text DEFAULT 'unknown'::text NOT NULL,
+    distance_walked_m double precision DEFAULT 0 NOT NULL,
+    last_lat double precision,
+    last_lng double precision,
+    last_accuracy_m real,
+    last_ping_at timestamp with time zone,
+    CONSTRAINT canvass_shifts_end_reason_check CHECK ((end_reason = ANY (ARRAY['finished'::text, 'timeout'::text, 'midnight'::text, 'switched'::text]))),
+    CONSTRAINT canvass_shifts_location_state_check CHECK ((location_state = ANY (ARRAY['unknown'::text, 'sharing'::text, 'off'::text])))
+);
+
+ALTER TABLE ONLY public.canvass_shifts FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.canvass_shifts OWNER TO pplcrm_owner;
+
+--
+-- Name: canvass_shifts_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.canvass_shifts ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.canvass_shifts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
 
 
 --
@@ -452,6 +709,40 @@ ALTER SEQUENCE public.companies_id_seq OWNED BY public.companies.id;
 
 
 --
+-- Name: companion_approval_tokens; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.companion_approval_tokens (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    volunteer_id bigint NOT NULL,
+    admin_user_id bigint NOT NULL,
+    token_hash text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    used_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.companion_approval_tokens FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.companion_approval_tokens OWNER TO pplcrm_owner;
+
+--
+-- Name: companion_approval_tokens_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.companion_approval_tokens ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.companion_approval_tokens_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: companion_ops; Type: TABLE; Schema: public; Owner: pplcrm_owner
 --
 
@@ -460,6 +751,7 @@ CREATE TABLE public.companion_ops (
     op_id text NOT NULL,
     scope text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    result jsonb,
     CONSTRAINT chk_cops_scope CHECK ((scope = ANY (ARRAY['canvass'::text, 'deliveries'::text])))
 );
 
@@ -467,6 +759,40 @@ ALTER TABLE ONLY public.companion_ops FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE public.companion_ops OWNER TO pplcrm_owner;
+
+--
+-- Name: companion_organizer_tokens; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.companion_organizer_tokens (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    join_code_id bigint NOT NULL,
+    admin_user_id bigint NOT NULL,
+    token_hash text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.companion_organizer_tokens FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.companion_organizer_tokens OWNER TO pplcrm_owner;
+
+--
+-- Name: companion_organizer_tokens_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.companion_organizer_tokens ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.companion_organizer_tokens_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 
 --
 -- Name: companion_sessions; Type: TABLE; Schema: public; Owner: pplcrm_owner
@@ -525,6 +851,10 @@ CREATE TABLE public.companion_volunteers (
     updatedby_id bigint,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    can_roam boolean,
+    join_claim_hash text,
+    join_claim_expires_at timestamp with time zone,
+    join_code_id bigint,
     CONSTRAINT chk_cvol_channel CHECK (((verify_channel IS NULL) OR (verify_channel = ANY (ARRAY['email'::text, 'sms'::text])))),
     CONSTRAINT chk_cvol_status CHECK ((status = ANY (ARRAY['invited'::text, 'verified'::text, 'approved'::text, 'revoked'::text])))
 );
@@ -547,6 +877,22 @@ ALTER TABLE public.companion_volunteers ALTER COLUMN id ADD GENERATED ALWAYS AS 
     CACHE 1
 );
 
+
+--
+-- Name: dashboard_stats_snapshots; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.dashboard_stats_snapshots (
+    tenant_id bigint NOT NULL,
+    snapshot_date date NOT NULL,
+    computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    payload jsonb NOT NULL
+);
+
+ALTER TABLE ONLY public.dashboard_stats_snapshots FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.dashboard_stats_snapshots OWNER TO pplcrm_owner;
 
 --
 -- Name: data_exports; Type: TABLE; Schema: public; Owner: pplcrm_owner
@@ -624,6 +970,7 @@ CREATE TABLE public.data_imports (
     source_file_size bigint,
     skip_reasons jsonb DEFAULT '[]'::jsonb NOT NULL,
     email_verification jsonb,
+    processed_row_offset bigint DEFAULT 0 NOT NULL,
     CONSTRAINT chk_data_imports_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text]))))
 );
 
@@ -901,6 +1248,118 @@ ALTER SEQUENCE public.donation_pledges_id_seq OWNED BY public.donation_pledges.i
 
 
 --
+-- Name: donation_receipt_items; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.donation_receipt_items (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    receipt_id bigint NOT NULL,
+    donation_id bigint NOT NULL,
+    amount_cents integer NOT NULL,
+    gift_date date NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_dri_amount CHECK ((amount_cents > 0))
+);
+
+ALTER TABLE ONLY public.donation_receipt_items FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.donation_receipt_items OWNER TO pplcrm_owner;
+
+--
+-- Name: donation_receipt_items_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.donation_receipt_items ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.donation_receipt_items_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: donation_receipts; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.donation_receipts (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    kind text NOT NULL,
+    regime text,
+    year integer NOT NULL,
+    serial integer,
+    receipt_number text,
+    status text DEFAULT 'issued'::text NOT NULL,
+    person_id bigint,
+    campaign_id bigint,
+    donor_name text NOT NULL,
+    donor_email text,
+    donor_address_line1 text,
+    donor_address_line2 text,
+    donor_city text,
+    donor_province text,
+    donor_postal_code text,
+    donor_country text,
+    amount_cents integer NOT NULL,
+    advantage_cents integer DEFAULT 0 NOT NULL,
+    eligible_cents integer NOT NULL,
+    advantage_description text,
+    gift_date date,
+    issuer_snapshot jsonb NOT NULL,
+    replaces_receipt_id bigint,
+    reissue_required boolean DEFAULT false NOT NULL,
+    cancelled_reason text,
+    cancelled_at timestamp with time zone,
+    cancelled_by bigint,
+    file_id bigint,
+    issued_at timestamp with time zone DEFAULT now() NOT NULL,
+    emailed_at timestamp with time zone,
+    createdby_id bigint NOT NULL,
+    updatedby_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    pdf_failed_at timestamp with time zone,
+    pdf_error text,
+    coverage_year integer,
+    CONSTRAINT chk_dr_amounts CHECK (((amount_cents > 0) AND (advantage_cents >= 0) AND (eligible_cents = (amount_cents - advantage_cents)))),
+    CONSTRAINT chk_dr_cancelled_fields CHECK (((status <> 'cancelled'::text) OR ((cancelled_reason IS NOT NULL) AND (cancelled_at IS NOT NULL)))),
+    CONSTRAINT chk_dr_kind CHECK ((kind = ANY (ARRAY['acknowledgement'::text, 'per_gift'::text, 'cumulative'::text, 'statement'::text]))),
+    CONSTRAINT chk_dr_number_presence CHECK (((serial IS NULL) = (receipt_number IS NULL))),
+    CONSTRAINT chk_dr_qc_statement_only CHECK (((regime <> 'political_qc'::text) OR (kind = 'statement'::text))),
+    CONSTRAINT chk_dr_regime CHECK (
+CASE kind
+    WHEN 'acknowledgement'::text THEN (regime IS NULL)
+    WHEN 'statement'::text THEN ((regime IS NULL) OR (regime = ANY (ARRAY['cra_charity'::text, 'political_federal'::text, 'political_on'::text, 'political_bc'::text, 'political_ab'::text, 'political_qc'::text])))
+    ELSE (regime = ANY (ARRAY['cra_charity'::text, 'political_federal'::text, 'political_on'::text, 'political_bc'::text, 'political_ab'::text, 'political_qc'::text]))
+END),
+    CONSTRAINT chk_dr_serial_presence CHECK (((kind = 'statement'::text) = (serial IS NULL))),
+    CONSTRAINT chk_dr_status CHECK ((status = ANY (ARRAY['issued'::text, 'cancelled'::text])))
+);
+
+ALTER TABLE ONLY public.donation_receipts FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.donation_receipts OWNER TO pplcrm_owner;
+
+--
+-- Name: donation_receipts_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.donation_receipts ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.donation_receipts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: donations; Type: TABLE; Schema: public; Owner: pplcrm_owner
 --
 
@@ -924,7 +1383,6 @@ CREATE TABLE public.donations (
     country text,
     pledge_id bigint,
     method text DEFAULT 'card'::text NOT NULL,
-    receipt_sent boolean DEFAULT true NOT NULL,
     campaign_id bigint NOT NULL,
     stripe_payment_intent_id text,
     refunded_at timestamp with time zone,
@@ -1349,9 +1807,13 @@ CREATE TABLE public.emails (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     campaign_id bigint NOT NULL,
+    date_sent timestamp with time zone DEFAULT now() NOT NULL,
+    preview_text text,
+    detached_at timestamp with time zone,
     CONSTRAINT chk_emails_folder_id CHECK ((folder_id = ANY (ARRAY[(3)::bigint, (4)::bigint, (5)::bigint, (7)::bigint, (10)::bigint, (11)::bigint]))),
     CONSTRAINT chk_emails_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['open'::text, 'closed'::text]))))
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_cost_delay='1');
 
 ALTER TABLE ONLY public.emails FORCE ROW LEVEL SECURITY;
 
@@ -1592,6 +2054,42 @@ ALTER TABLE ONLY public.form_submissions FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.form_submissions OWNER TO pplcrm_owner;
 
 --
+-- Name: geocode_cache; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.geocode_cache (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    address_fp text NOT NULL,
+    status text NOT NULL,
+    lat double precision,
+    lng double precision,
+    formatted_address text,
+    type text,
+    looked_up_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_geocode_cache_status CHECK ((status = ANY (ARRAY['success'::text, 'zero_results'::text])))
+);
+
+ALTER TABLE ONLY public.geocode_cache FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.geocode_cache OWNER TO pplcrm_owner;
+
+--
+-- Name: geocode_cache_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.geocode_cache ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.geocode_cache_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: google_oauth_tokens; Type: TABLE; Schema: public; Owner: pplcrm_owner
 --
 
@@ -1616,6 +2114,39 @@ ALTER TABLE ONLY public.google_oauth_tokens FORCE ROW LEVEL SECURITY;
 
 
 ALTER TABLE public.google_oauth_tokens OWNER TO pplcrm_owner;
+
+--
+-- Name: household_districts; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.household_districts (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    household_id bigint NOT NULL,
+    set_id bigint NOT NULL,
+    name text NOT NULL,
+    code text,
+    matched_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+ALTER TABLE ONLY public.household_districts FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.household_districts OWNER TO pplcrm_owner;
+
+--
+-- Name: household_districts_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.household_districts ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.household_districts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
 
 --
 -- Name: households; Type: TABLE; Schema: public; Owner: pplcrm_owner
@@ -1647,12 +2178,10 @@ CREATE TABLE public.households (
     lng double precision,
     formatted_address text,
     type text,
-    district text,
-    precinct text,
-    ward text,
     geocoding_status text DEFAULT 'pending'::text,
     search_vector tsvector GENERATED ALWAYS AS ((((((((((setweight(to_tsvector('simple'::regconfig, COALESCE(street1, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(city, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(address_fp_full, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(zip, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(state, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(home_phone, ''::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(street_num, ''::text)), 'C'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(apt, ''::text)), 'C'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(street2, ''::text)), 'C'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(country, ''::text)), 'C'::"char"))) STORED,
     slug text,
+    boundary_checked_at timestamp with time zone,
     CONSTRAINT chk_households_geocoding_status CHECK (((geocoding_status IS NULL) OR (geocoding_status = ANY (ARRAY['pending'::text, 'success'::text, 'failed'::text, 'skipped'::text]))))
 );
 
@@ -1805,7 +2334,8 @@ CREATE TABLE public.map_lists_households (
     updatedby_id bigint NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_cost_delay='1');
 
 ALTER TABLE ONLY public.map_lists_households FORCE ROW LEVEL SECURITY;
 
@@ -1824,7 +2354,8 @@ CREATE TABLE public.map_lists_persons (
     updatedby_id bigint NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_cost_delay='1');
 
 ALTER TABLE ONLY public.map_lists_persons FORCE ROW LEVEL SECURITY;
 
@@ -2145,6 +2676,8 @@ CREATE TABLE public.newsletters (
     send_offset integer,
     resend_of_id bigint,
     send_cursor text,
+    from_name text,
+    from_email text,
     CONSTRAINT chk_newsletters_click_rate_range CHECK (((click_rate >= (0)::numeric) AND (click_rate <= (100)::numeric))),
     CONSTRAINT chk_newsletters_open_rate_range CHECK (((open_rate >= (0)::numeric) AND (open_rate <= (100)::numeric)))
 );
@@ -2379,6 +2912,8 @@ CREATE TABLE public.persons (
     do_not_contact_channels text[],
     volunteer_status text,
     staff_status text,
+    deceased_at timestamp with time zone,
+    senior boolean,
     CONSTRAINT chk_persons_staff_status CHECK (((staff_status IS NULL) OR (staff_status = ANY (ARRAY['active'::text, 'inactive'::text, 'former'::text])))),
     CONSTRAINT chk_persons_volunteer_status CHECK (((volunteer_status IS NULL) OR (volunteer_status = ANY (ARRAY['prospective'::text, 'active'::text, 'inactive'::text, 'former'::text]))))
 );
@@ -2423,7 +2958,8 @@ CREATE TABLE public.potential_duplicates (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     household_id bigint,
     company_id bigint
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_cost_delay='1');
 
 ALTER TABLE ONLY public.potential_duplicates FORCE ROW LEVEL SECURITY;
 
@@ -2507,6 +3043,80 @@ ALTER SEQUENCE public.profiles_id_seq OWNED BY public.profiles.id;
 
 
 --
+-- Name: rate_limits; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.rate_limits (
+    key text NOT NULL,
+    window_start timestamp with time zone NOT NULL,
+    count integer DEFAULT 0 NOT NULL
+);
+
+
+ALTER TABLE public.rate_limits OWNER TO pplcrm_owner;
+
+--
+-- Name: receipt_counters; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.receipt_counters (
+    tenant_id bigint NOT NULL,
+    year integer NOT NULL,
+    kind text NOT NULL,
+    n integer NOT NULL,
+    CONSTRAINT chk_rc_n CHECK ((n > 0))
+);
+
+ALTER TABLE ONLY public.receipt_counters FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.receipt_counters OWNER TO pplcrm_owner;
+
+--
+-- Name: receipt_statement_runs; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.receipt_statement_runs (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    year integer NOT NULL,
+    status text DEFAULT 'running'::text NOT NULL,
+    cursor_person_id bigint,
+    donors_total integer,
+    generated_count integer DEFAULT 0 NOT NULL,
+    emailed_count integer DEFAULT 0 NOT NULL,
+    skipped_no_email integer DEFAULT 0 NOT NULL,
+    failed_count integer DEFAULT 0 NOT NULL,
+    error text,
+    requested_by bigint NOT NULL,
+    createdby_id bigint NOT NULL,
+    updatedby_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    official_count integer DEFAULT 0 NOT NULL,
+    CONSTRAINT chk_rsr_status CHECK ((status = ANY (ARRAY['running'::text, 'completed'::text, 'failed'::text])))
+);
+
+ALTER TABLE ONLY public.receipt_statement_runs FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.receipt_statement_runs OWNER TO pplcrm_owner;
+
+--
+-- Name: receipt_statement_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.receipt_statement_runs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.receipt_statement_runs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: sessions; Type: TABLE; Schema: public; Owner: pplcrm_owner
 --
 
@@ -2524,7 +3134,8 @@ CREATE TABLE public.sessions (
     other_properties jsonb,
     expires_at timestamp with time zone,
     last_used_at timestamp with time zone
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_cost_delay='1');
 
 ALTER TABLE ONLY public.sessions FORCE ROW LEVEL SECURITY;
 
@@ -2789,6 +3400,7 @@ CREATE TABLE public.tasks (
     file_id bigint,
     person_id bigint,
     sla_breached_at timestamp with time zone,
+    created_by_workflow_id bigint,
     CONSTRAINT chk_tasks_priority CHECK (((priority IS NULL) OR (priority = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text, 'urgent'::text])))),
     CONSTRAINT chk_tasks_status CHECK ((status = ANY (ARRAY['todo'::text, 'in_progress'::text, 'waiting'::text, 'done'::text, 'archived'::text])))
 );
@@ -2905,7 +3517,16 @@ CREATE TABLE public.tenants (
     phone_verification_code_hash text,
     phone_verification_expires_at timestamp with time zone,
     phone_verification_attempts integer DEFAULT 0 NOT NULL,
-    subscription_interval text DEFAULT 'month'::text NOT NULL
+    subscription_interval text DEFAULT 'month'::text NOT NULL,
+    approval_status text DEFAULT 'pending'::text NOT NULL,
+    approval_requested_at timestamp with time zone,
+    approved_at timestamp with time zone,
+    declined_at timestamp with time zone,
+    approval_token_hash text,
+    data_region text DEFAULT 'any'::text NOT NULL,
+    inbox_purge_scheduled_at timestamp with time zone,
+    CONSTRAINT tenants_approval_status_check CHECK ((approval_status = ANY (ARRAY['pending'::text, 'approved'::text, 'declined'::text]))),
+    CONSTRAINT tenants_data_region_check CHECK ((data_region = ANY (ARRAY['any'::text, 'ca'::text, 'us'::text, 'eu'::text])))
 );
 
 
@@ -2943,13 +3564,13 @@ CREATE TABLE public.turf_assignments (
     updatedby_id bigint NOT NULL,
     turf_id bigint NOT NULL,
     team_id bigint,
-    token text NOT NULL,
     status text DEFAULT 'active'::text NOT NULL,
     assigned_at timestamp with time zone DEFAULT now() NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     volunteer_person_id bigint,
-    expires_at timestamp with time zone
+    expires_at timestamp with time zone,
+    token_hash text NOT NULL
 );
 
 ALTER TABLE ONLY public.turf_assignments FORCE ROW LEVEL SECURITY;
@@ -3055,6 +3676,43 @@ ALTER SEQUENCE public.turf_knocks_id_seq OWNED BY public.turf_knocks.id;
 
 
 --
+-- Name: turf_segment_claims; Type: TABLE; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE TABLE public.turf_segment_claims (
+    id bigint NOT NULL,
+    tenant_id bigint NOT NULL,
+    turf_id bigint NOT NULL,
+    assignment_id bigint NOT NULL,
+    volunteer_person_id bigint,
+    street_key text NOT NULL,
+    street_label text NOT NULL,
+    canvasser_name text NOT NULL,
+    claimed_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    released_at timestamp with time zone
+);
+
+ALTER TABLE ONLY public.turf_segment_claims FORCE ROW LEVEL SECURITY;
+
+
+ALTER TABLE public.turf_segment_claims OWNER TO pplcrm_owner;
+
+--
+-- Name: turf_segment_claims_id_seq; Type: SEQUENCE; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.turf_segment_claims ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.turf_segment_claims_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: turfs; Type: TABLE; Schema: public; Owner: pplcrm_owner
 --
 
@@ -3069,11 +3727,12 @@ CREATE TABLE public.turfs (
     target_doors integer,
     centroid_lat double precision,
     centroid_lng double precision,
-    ward text,
     notes text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    campaign_id bigint NOT NULL
+    campaign_id bigint NOT NULL,
+    boundary_set_id bigint,
+    boundary_name text
 );
 
 ALTER TABLE ONLY public.turfs FORCE ROW LEVEL SECURITY;
@@ -3307,7 +3966,8 @@ CREATE TABLE public.webhook_events (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     processed_at timestamp with time zone,
     CONSTRAINT chk_webhook_events_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['pending'::text, 'processing'::text, 'processed'::text, 'failed'::text]))))
-);
+)
+WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_cost_delay='1');
 
 ALTER TABLE ONLY public.webhook_events FORCE ROW LEVEL SECURITY;
 
@@ -3398,7 +4058,7 @@ CREATE TABLE public.workflow_runs (
     clicked_at timestamp with time zone,
     bounced_at timestamp with time zone,
     spam_reported_at timestamp with time zone,
-    CONSTRAINT chk_workflow_runs_status CHECK ((status = ANY (ARRAY['success'::text, 'failed'::text, 'skipped'::text])))
+    CONSTRAINT chk_workflow_runs_status CHECK ((status = ANY (ARRAY['pending'::text, 'success'::text, 'failed'::text, 'skipped'::text])))
 );
 
 ALTER TABLE ONLY public.workflow_runs FORCE ROW LEVEL SECURITY;
@@ -3439,7 +4099,7 @@ CREATE TABLE public.workflow_steps (
     delay_unit text DEFAULT 'days'::text NOT NULL,
     kind text DEFAULT 'send_email'::text NOT NULL,
     config jsonb,
-    CONSTRAINT chk_workflow_steps_kind CHECK ((kind = ANY (ARRAY['wait'::text, 'send_email'::text, 'add_tag'::text, 'create_task'::text, 'notify_team'::text])))
+    CONSTRAINT chk_workflow_steps_kind CHECK ((kind = ANY (ARRAY['wait'::text, 'send_email'::text, 'add_tag'::text, 'create_task'::text, 'notify_team'::text, 'add_to_list'::text])))
 );
 
 ALTER TABLE ONLY public.workflow_steps FORCE ROW LEVEL SECURITY;
@@ -3486,6 +4146,8 @@ CREATE TABLE public.workflows (
     trigger_event_id text,
     conditions jsonb,
     exit_conditions jsonb,
+    message_class text DEFAULT 'marketing'::text NOT NULL,
+    CONSTRAINT chk_workflows_message_class CHECK ((message_class = ANY (ARRAY['relationship'::text, 'marketing'::text]))),
     CONSTRAINT chk_workflows_status CHECK (((status IS NULL) OR (status = ANY (ARRAY['draft'::text, 'active'::text, 'paused'::text]))))
 );
 
@@ -3525,7 +4187,9 @@ CREATE TABLE public.workspace_api_keys (
     key_hash text NOT NULL,
     key_preview text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    last_used_at timestamp with time zone
+    last_used_at timestamp with time zone,
+    slot smallint DEFAULT 1 NOT NULL,
+    CONSTRAINT chk_workspace_api_keys_slot CHECK ((slot = ANY (ARRAY[1, 2])))
 );
 
 
@@ -3980,11 +4644,75 @@ ALTER TABLE ONLY public.background_jobs
 
 
 --
+-- Name: boundary_features boundary_features_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.boundary_features
+    ADD CONSTRAINT boundary_features_id_key UNIQUE (id);
+
+
+--
+-- Name: boundary_features boundary_features_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.boundary_features
+    ADD CONSTRAINT boundary_features_pk PRIMARY KEY (id, tenant_id);
+
+
+--
+-- Name: boundary_sets boundary_sets_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.boundary_sets
+    ADD CONSTRAINT boundary_sets_id_key UNIQUE (id);
+
+
+--
+-- Name: boundary_sets boundary_sets_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.boundary_sets
+    ADD CONSTRAINT boundary_sets_pk PRIMARY KEY (id, tenant_id);
+
+
+--
 -- Name: bug_reports bug_reports_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE ONLY public.bug_reports
     ADD CONSTRAINT bug_reports_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: campaign_areas campaign_areas_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_areas
+    ADD CONSTRAINT campaign_areas_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: campaign_join_codes campaign_join_codes_code_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_join_codes
+    ADD CONSTRAINT campaign_join_codes_code_key UNIQUE (code);
+
+
+--
+-- Name: campaign_join_codes campaign_join_codes_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_join_codes
+    ADD CONSTRAINT campaign_join_codes_id_key UNIQUE (id);
+
+
+--
+-- Name: campaign_join_codes campaign_join_codes_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_join_codes
+    ADD CONSTRAINT campaign_join_codes_pk PRIMARY KEY (id, tenant_id);
 
 
 --
@@ -4036,6 +4764,22 @@ ALTER TABLE ONLY public.campaigns
 
 
 --
+-- Name: canvass_location_pings canvass_location_pings_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.canvass_location_pings
+    ADD CONSTRAINT canvass_location_pings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: canvass_shifts canvass_shifts_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.canvass_shifts
+    ADD CONSTRAINT canvass_shifts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: companies companies_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -4052,11 +4796,59 @@ ALTER TABLE ONLY public.companies
 
 
 --
+-- Name: companion_approval_tokens companion_approval_tokens_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_approval_tokens
+    ADD CONSTRAINT companion_approval_tokens_id_key UNIQUE (id);
+
+
+--
+-- Name: companion_approval_tokens companion_approval_tokens_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_approval_tokens
+    ADD CONSTRAINT companion_approval_tokens_pk PRIMARY KEY (id, tenant_id);
+
+
+--
+-- Name: companion_approval_tokens companion_approval_tokens_token_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_approval_tokens
+    ADD CONSTRAINT companion_approval_tokens_token_key UNIQUE (token_hash);
+
+
+--
 -- Name: companion_ops companion_ops_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE ONLY public.companion_ops
     ADD CONSTRAINT companion_ops_pk PRIMARY KEY (tenant_id, op_id);
+
+
+--
+-- Name: companion_organizer_tokens companion_organizer_tokens_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_organizer_tokens
+    ADD CONSTRAINT companion_organizer_tokens_id_key UNIQUE (id);
+
+
+--
+-- Name: companion_organizer_tokens companion_organizer_tokens_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_organizer_tokens
+    ADD CONSTRAINT companion_organizer_tokens_pk PRIMARY KEY (id, tenant_id);
+
+
+--
+-- Name: companion_organizer_tokens companion_organizer_tokens_token_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_organizer_tokens
+    ADD CONSTRAINT companion_organizer_tokens_token_key UNIQUE (token_hash);
 
 
 --
@@ -4097,6 +4889,14 @@ ALTER TABLE ONLY public.companion_volunteers
 
 ALTER TABLE ONLY public.companion_volunteers
     ADD CONSTRAINT companion_volunteers_pk PRIMARY KEY (id, tenant_id);
+
+
+--
+-- Name: dashboard_stats_snapshots dashboard_stats_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.dashboard_stats_snapshots
+    ADD CONSTRAINT dashboard_stats_snapshots_pkey PRIMARY KEY (tenant_id, snapshot_date);
 
 
 --
@@ -4193,6 +4993,38 @@ ALTER TABLE ONLY public.donation_pledges
 
 ALTER TABLE ONLY public.donation_pledges
     ADD CONSTRAINT donation_pledges_stripe_subscription_id_key UNIQUE (stripe_subscription_id);
+
+
+--
+-- Name: donation_receipt_items donation_receipt_items_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipt_items
+    ADD CONSTRAINT donation_receipt_items_id_key UNIQUE (id);
+
+
+--
+-- Name: donation_receipt_items donation_receipt_items_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipt_items
+    ADD CONSTRAINT donation_receipt_items_pk PRIMARY KEY (id, tenant_id);
+
+
+--
+-- Name: donation_receipts donation_receipts_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT donation_receipts_id_key UNIQUE (id);
+
+
+--
+-- Name: donation_receipts donation_receipts_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT donation_receipts_pk PRIMARY KEY (id, tenant_id);
 
 
 --
@@ -4364,6 +5196,22 @@ ALTER TABLE ONLY public.form_submissions
 
 
 --
+-- Name: geocode_cache geocode_cache_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.geocode_cache
+    ADD CONSTRAINT geocode_cache_id_key UNIQUE (id);
+
+
+--
+-- Name: geocode_cache geocode_cache_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.geocode_cache
+    ADD CONSTRAINT geocode_cache_pk PRIMARY KEY (id, tenant_id);
+
+
+--
 -- Name: google_oauth_tokens google_oauth_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -4377,6 +5225,22 @@ ALTER TABLE ONLY public.google_oauth_tokens
 
 ALTER TABLE ONLY public.google_oauth_tokens
     ADD CONSTRAINT google_oauth_tokens_tenant_campaign_key UNIQUE (tenant_id, campaign_id);
+
+
+--
+-- Name: household_districts household_districts_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.household_districts
+    ADD CONSTRAINT household_districts_id_key UNIQUE (id);
+
+
+--
+-- Name: household_districts household_districts_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.household_districts
+    ADD CONSTRAINT household_districts_pk PRIMARY KEY (id, tenant_id);
 
 
 --
@@ -4660,6 +5524,38 @@ ALTER TABLE ONLY public.profiles
 
 
 --
+-- Name: rate_limits rate_limits_pkey; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.rate_limits
+    ADD CONSTRAINT rate_limits_pkey PRIMARY KEY (key, window_start);
+
+
+--
+-- Name: receipt_counters receipt_counters_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_counters
+    ADD CONSTRAINT receipt_counters_pk PRIMARY KEY (tenant_id, year, kind);
+
+
+--
+-- Name: receipt_statement_runs receipt_statement_runs_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_statement_runs
+    ADD CONSTRAINT receipt_statement_runs_id_key UNIQUE (id);
+
+
+--
+-- Name: receipt_statement_runs receipt_statement_runs_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_statement_runs
+    ADD CONSTRAINT receipt_statement_runs_pk PRIMARY KEY (id, tenant_id);
+
+
+--
 -- Name: sessions sessions_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -4796,11 +5692,11 @@ ALTER TABLE ONLY public.turf_assignments
 
 
 --
--- Name: turf_assignments turf_assignments_token_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+-- Name: turf_assignments turf_assignments_token_hash_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE ONLY public.turf_assignments
-    ADD CONSTRAINT turf_assignments_token_key UNIQUE (token);
+    ADD CONSTRAINT turf_assignments_token_hash_key UNIQUE (token_hash);
 
 
 --
@@ -4825,6 +5721,22 @@ ALTER TABLE ONLY public.turf_knocks
 
 ALTER TABLE ONLY public.turf_knocks
     ADD CONSTRAINT turf_knocks_pk PRIMARY KEY (id, tenant_id);
+
+
+--
+-- Name: turf_segment_claims turf_segment_claims_id_key; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.turf_segment_claims
+    ADD CONSTRAINT turf_segment_claims_id_key UNIQUE (id);
+
+
+--
+-- Name: turf_segment_claims turf_segment_claims_pk; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.turf_segment_claims
+    ADD CONSTRAINT turf_segment_claims_pk PRIMARY KEY (id, tenant_id);
 
 
 --
@@ -4860,6 +5772,14 @@ ALTER TABLE ONLY public.email_headers
 
 
 --
+-- Name: boundary_sets uq_boundary_sets_slug; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.boundary_sets
+    ADD CONSTRAINT uq_boundary_sets_slug UNIQUE (tenant_id, slug);
+
+
+--
 -- Name: companion_volunteers uq_companion_volunteers_person; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -4884,11 +5804,35 @@ ALTER TABLE ONLY public.campaign_subscriptions
 
 
 --
+-- Name: donation_receipt_items uq_dri_receipt_donation; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipt_items
+    ADD CONSTRAINT uq_dri_receipt_donation UNIQUE (tenant_id, receipt_id, donation_id);
+
+
+--
 -- Name: email_suppressions uq_esup_email_reason; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE ONLY public.email_suppressions
     ADD CONSTRAINT uq_esup_email_reason UNIQUE (tenant_id, email, reason);
+
+
+--
+-- Name: geocode_cache uq_geocode_cache_address; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.geocode_cache
+    ADD CONSTRAINT uq_geocode_cache_address UNIQUE (tenant_id, address_fp);
+
+
+--
+-- Name: household_districts uq_household_districts_household_set; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.household_districts
+    ADD CONSTRAINT uq_household_districts_household_set UNIQUE (household_id, set_id);
 
 
 --
@@ -4908,11 +5852,19 @@ ALTER TABLE ONLY public.settings
 
 
 --
--- Name: workspace_api_keys uq_workspace_api_keys_tenant_id; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+-- Name: workspace_api_keys uq_workspace_api_keys_key_hash; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE ONLY public.workspace_api_keys
-    ADD CONSTRAINT uq_workspace_api_keys_tenant_id UNIQUE (tenant_id);
+    ADD CONSTRAINT uq_workspace_api_keys_key_hash UNIQUE (key_hash);
+
+
+--
+-- Name: workspace_api_keys uq_workspace_api_keys_tenant_slot; Type: CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.workspace_api_keys
+    ADD CONSTRAINT uq_workspace_api_keys_tenant_slot UNIQUE (tenant_id, slot);
 
 
 --
@@ -5122,6 +6074,13 @@ CREATE UNIQUE INDEX households_tenant_slug_unique ON public.households USING btr
 
 
 --
+-- Name: idx_authusers_password_reset_code; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_authusers_password_reset_code ON public.authusers USING btree (password_reset_code) WHERE (password_reset_code IS NOT NULL);
+
+
+--
 -- Name: idx_background_jobs_active_type; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5132,7 +6091,14 @@ CREATE INDEX idx_background_jobs_active_type ON public.background_jobs USING btr
 -- Name: idx_background_jobs_claim; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
-CREATE INDEX idx_background_jobs_claim ON public.background_jobs USING btree (run_at, id) WHERE (status = 'pending'::text);
+CREATE INDEX idx_background_jobs_claim ON public.background_jobs USING btree (priority DESC, id) WHERE (status = 'pending'::text);
+
+
+--
+-- Name: idx_background_jobs_processing_tenant; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_background_jobs_processing_tenant ON public.background_jobs USING btree (tenant_id) WHERE (status = 'processing'::text);
 
 
 --
@@ -5143,10 +6109,87 @@ CREATE INDEX idx_background_jobs_tenant_status ON public.background_jobs USING b
 
 
 --
+-- Name: idx_background_jobs_terminal_updated; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_background_jobs_terminal_updated ON public.background_jobs USING btree (status, updated_at) WHERE (status = ANY (ARRAY['completed'::text, 'failed'::text]));
+
+
+--
+-- Name: idx_boundary_features_set; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_boundary_features_set ON public.boundary_features USING btree (tenant_id, set_id);
+
+
+--
+-- Name: idx_boundary_features_set_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_boundary_features_set_ri ON public.boundary_features USING btree (set_id);
+
+
+--
+-- Name: idx_boundary_sets_file_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_boundary_sets_file_ri ON public.boundary_sets USING btree (file_id);
+
+
+--
+-- Name: idx_boundary_sets_jurisdiction; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_boundary_sets_jurisdiction ON public.boundary_sets USING btree (tenant_id, jurisdiction, role);
+
+
+--
 -- Name: idx_bug_reports_tenant; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_bug_reports_tenant ON public.bug_reports USING btree (tenant_id, created_at DESC);
+
+
+--
+-- Name: idx_campaign_areas_set_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_campaign_areas_set_ri ON public.campaign_areas USING btree (set_id);
+
+
+--
+-- Name: idx_campaign_join_codes_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_campaign_join_codes_campaign ON public.campaign_join_codes USING btree (tenant_id, campaign_id, status);
+
+
+--
+-- Name: idx_campaign_person_facts_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_campaign_person_facts_person_ri ON public.campaign_person_facts USING btree (person_id);
+
+
+--
+-- Name: idx_campaign_subscriptions_email; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_campaign_subscriptions_email ON public.campaign_subscriptions USING btree (tenant_id, campaign_id, email);
+
+
+--
+-- Name: idx_campaign_subscriptions_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_campaign_subscriptions_person_ri ON public.campaign_subscriptions USING btree (person_id);
+
+
+--
+-- Name: idx_canvass_pings_shift_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_canvass_pings_shift_ri ON public.canvass_location_pings USING btree (shift_id);
 
 
 --
@@ -5185,10 +6228,38 @@ CREATE INDEX idx_companies_trgm_name ON public.companies USING gin (name public.
 
 
 --
+-- Name: idx_companion_approval_tokens_volunteer; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_companion_approval_tokens_volunteer ON public.companion_approval_tokens USING btree (tenant_id, volunteer_id);
+
+
+--
+-- Name: idx_companion_ops_created_prune; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_companion_ops_created_prune ON public.companion_ops USING btree (created_at);
+
+
+--
+-- Name: idx_companion_organizer_tokens_code; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_companion_organizer_tokens_code ON public.companion_organizer_tokens USING btree (tenant_id, join_code_id);
+
+
+--
 -- Name: idx_companion_sessions_tenant_volunteer; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_companion_sessions_tenant_volunteer ON public.companion_sessions USING btree (tenant_id, volunteer_id);
+
+
+--
+-- Name: idx_companion_volunteers_join_claim; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX idx_companion_volunteers_join_claim ON public.companion_volunteers USING btree (join_claim_hash) WHERE (join_claim_hash IS NOT NULL);
 
 
 --
@@ -5227,6 +6298,13 @@ CREATE INDEX idx_csub_tenant_person ON public.campaign_subscriptions USING btree
 
 
 --
+-- Name: idx_data_exports_created_prune; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_data_exports_created_prune ON public.data_exports USING btree (created_at);
+
+
+--
 -- Name: idx_data_exports_tenant_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5241,6 +6319,13 @@ CREATE INDEX idx_data_exports_tenant_pending ON public.data_exports USING btree 
 
 
 --
+-- Name: idx_data_imports_source_prune; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_data_imports_source_prune ON public.data_imports USING btree (processed_at) WHERE (source_file_key IS NOT NULL);
+
+
+--
 -- Name: idx_data_imports_tag; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5252,6 +6337,20 @@ CREATE INDEX idx_data_imports_tag ON public.data_imports USING btree (tag_id);
 --
 
 CREATE INDEX idx_data_imports_tenant_processed ON public.data_imports USING btree (tenant_id, processed_at);
+
+
+--
+-- Name: idx_delivery_requests_household_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_delivery_requests_household_ri ON public.delivery_requests USING btree (household_id);
+
+
+--
+-- Name: idx_delivery_requests_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_delivery_requests_person_ri ON public.delivery_requests USING btree (person_id);
 
 
 --
@@ -5304,6 +6403,13 @@ CREATE INDEX idx_delivery_routes_tenant_status ON public.delivery_routes USING b
 
 
 --
+-- Name: idx_delivery_routes_volunteer_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_delivery_routes_volunteer_person_ri ON public.delivery_routes USING btree (volunteer_person_id);
+
+
+--
 -- Name: idx_dismissed_duplicate_groups_tenant; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5318,6 +6424,13 @@ CREATE INDEX idx_donation_periods_tenant_campaign ON public.donation_periods USI
 
 
 --
+-- Name: idx_donation_pledges_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_donation_pledges_person_ri ON public.donation_pledges USING btree (person_id);
+
+
+--
 -- Name: idx_donation_pledges_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5325,10 +6438,38 @@ CREATE INDEX idx_donation_pledges_tenant_campaign ON public.donation_pledges USI
 
 
 --
+-- Name: idx_donation_receipts_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_donation_receipts_person ON public.donation_receipts USING btree (tenant_id, person_id, year);
+
+
+--
+-- Name: idx_donation_receipts_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_donation_receipts_status ON public.donation_receipts USING btree (tenant_id, status, kind);
+
+
+--
+-- Name: idx_donation_receipts_year_end; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_donation_receipts_year_end ON public.donation_receipts USING btree (tenant_id, COALESCE(coverage_year, year)) WHERE ((kind = ANY (ARRAY['statement'::text, 'cumulative'::text])) AND (status = 'issued'::text));
+
+
+--
 -- Name: idx_donations_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_donations_person ON public.donations USING btree (tenant_id, person_id);
+
+
+--
+-- Name: idx_donations_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_donations_person_ri ON public.donations USING btree (person_id);
 
 
 --
@@ -5346,10 +6487,24 @@ CREATE INDEX idx_donations_tenant_campaign ON public.donations USING btree (tena
 
 
 --
+-- Name: idx_donations_tenant_campaign_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_donations_tenant_campaign_created ON public.donations USING btree (tenant_id, campaign_id, created_at DESC);
+
+
+--
 -- Name: idx_donations_tenant_payment_intent; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_donations_tenant_payment_intent ON public.donations USING btree (tenant_id, stripe_payment_intent_id) WHERE (stripe_payment_intent_id IS NOT NULL);
+
+
+--
+-- Name: idx_dri_donation; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_dri_donation ON public.donation_receipt_items USING btree (tenant_id, donation_id);
 
 
 --
@@ -5395,10 +6550,24 @@ CREATE INDEX idx_email_drafts_user_id ON public.email_drafts USING btree (tenant
 
 
 --
+-- Name: idx_email_headers_email_date; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_email_headers_email_date ON public.email_headers USING btree (email_id, date_sent DESC);
+
+
+--
 -- Name: idx_email_read_states_email; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_email_read_states_email ON public.email_read_states USING btree (tenant_id, email_id);
+
+
+--
+-- Name: idx_email_read_states_email_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_email_read_states_email_ri ON public.email_read_states USING btree (email_id);
 
 
 --
@@ -5409,10 +6578,45 @@ CREATE INDEX idx_email_recipients_kind ON public.email_recipients USING btree (e
 
 
 --
+-- Name: idx_email_recipients_to_address; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_email_recipients_to_address ON public.email_recipients USING btree (tenant_id, lower(email)) WHERE (kind = 'to'::text);
+
+
+--
+-- Name: idx_email_trash_email_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_email_trash_email_ri ON public.email_trash USING btree (email_id);
+
+
+--
 -- Name: idx_email_trash_tenant_email_unique; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE UNIQUE INDEX idx_email_trash_tenant_email_unique ON public.email_trash USING btree (tenant_id, email_id);
+
+
+--
+-- Name: idx_emails_detached_at; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_emails_detached_at ON public.emails USING btree (detached_at) WHERE (detached_at IS NOT NULL);
+
+
+--
+-- Name: idx_emails_inbox_sort; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_emails_inbox_sort ON public.emails USING btree (tenant_id, campaign_id, folder_id, date_sent DESC, id DESC);
+
+
+--
+-- Name: idx_emails_inbox_sort_attached; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_emails_inbox_sort_attached ON public.emails USING btree (tenant_id, campaign_id, folder_id, date_sent DESC, id DESC) WHERE (detached_at IS NULL);
 
 
 --
@@ -5430,10 +6634,24 @@ CREATE INDEX idx_emails_tenant_campaign ON public.emails USING btree (tenant_id,
 
 
 --
+-- Name: idx_emails_tenant_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_emails_tenant_created ON public.emails USING btree (tenant_id, created_at DESC);
+
+
+--
 -- Name: idx_emails_tenant_folder; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_emails_tenant_folder ON public.emails USING btree (tenant_id, folder_id);
+
+
+--
+-- Name: idx_emails_tenant_folder_status; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_emails_tenant_folder_status ON public.emails USING btree (tenant_id, folder_id, status);
 
 
 --
@@ -5455,6 +6673,13 @@ CREATE INDEX idx_esup_tenant_email ON public.email_suppressions USING btree (ten
 --
 
 CREATE INDEX idx_event_registrations_ticket ON public.event_registrations USING btree (ticket_type_id) WHERE (ticket_type_id IS NOT NULL);
+
+
+--
+-- Name: idx_event_ticket_types_event; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_event_ticket_types_event ON public.event_ticket_types USING btree (tenant_id, event_id, sort_order);
 
 
 --
@@ -5490,6 +6715,27 @@ CREATE INDEX idx_form_submissions_person ON public.form_submissions USING btree 
 --
 
 CREATE INDEX idx_form_submissions_tenant_form ON public.form_submissions USING btree (tenant_id, form_id, created_at DESC);
+
+
+--
+-- Name: idx_geocode_cache_age; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_geocode_cache_age ON public.geocode_cache USING btree (tenant_id, looked_up_at);
+
+
+--
+-- Name: idx_household_districts_lookup; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_household_districts_lookup ON public.household_districts USING btree (tenant_id, set_id, name);
+
+
+--
+-- Name: idx_household_districts_set_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_household_districts_set_ri ON public.household_districts USING btree (set_id);
 
 
 --
@@ -5539,6 +6785,20 @@ CREATE INDEX idx_households_tenant_campaign ON public.households USING btree (te
 --
 
 CREATE INDEX idx_households_tenant_geocoding ON public.households USING btree (tenant_id, geocoding_status);
+
+
+--
+-- Name: idx_households_tenant_keyset; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_households_tenant_keyset ON public.households USING btree (tenant_id, id);
+
+
+--
+-- Name: idx_households_tenant_located; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_households_tenant_located ON public.households USING btree (tenant_id, lat, lng) WHERE ((lat IS NOT NULL) AND (lng IS NOT NULL));
 
 
 --
@@ -5598,6 +6858,13 @@ CREATE INDEX idx_lists_tenant_status ON public.lists USING btree (tenant_id, sta
 
 
 --
+-- Name: idx_map_households_tags_household_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_map_households_tags_household_ri ON public.map_households_tags USING btree (household_id);
+
+
+--
 -- Name: idx_map_households_tags_tag; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5612,6 +6879,20 @@ CREATE INDEX idx_map_lists_households_hh ON public.map_lists_households USING bt
 
 
 --
+-- Name: idx_map_lists_households_list; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_map_lists_households_list ON public.map_lists_households USING btree (list_id);
+
+
+--
+-- Name: idx_map_lists_persons_list; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_map_lists_persons_list ON public.map_lists_persons USING btree (list_id);
+
+
+--
 -- Name: idx_map_lists_persons_person; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5623,6 +6904,13 @@ CREATE INDEX idx_map_lists_persons_person ON public.map_lists_persons USING btre
 --
 
 CREATE INDEX idx_map_newsletters_lists_list ON public.map_newsletters_lists USING btree (tenant_id, list_id);
+
+
+--
+-- Name: idx_map_peoples_tags_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_map_peoples_tags_person_ri ON public.map_peoples_tags USING btree (person_id);
 
 
 --
@@ -5647,6 +6935,13 @@ CREATE INDEX idx_map_teams_persons_person ON public.map_teams_persons USING btre
 
 
 --
+-- Name: idx_map_teams_persons_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_map_teams_persons_person_ri ON public.map_teams_persons USING btree (person_id);
+
+
+--
 -- Name: idx_map_web_forms_lists_list; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5665,6 +6960,20 @@ CREATE INDEX idx_newsletter_content_checks_newsletter ON public.newsletter_conte
 --
 
 CREATE INDEX idx_newsletter_events_newsletter_event ON public.newsletter_events USING btree (newsletter_id, event_type);
+
+
+--
+-- Name: idx_newsletter_events_person_activity; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_newsletter_events_person_activity ON public.newsletter_events USING btree (tenant_id, email, "timestamp" DESC);
+
+
+--
+-- Name: idx_newsletter_events_tenant_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_newsletter_events_tenant_created ON public.newsletter_events USING btree (tenant_id, created_at);
 
 
 --
@@ -5703,6 +7012,13 @@ CREATE INDEX idx_newsletters_tenant_campaign ON public.newsletters USING btree (
 
 
 --
+-- Name: idx_notifications_created_prune; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_notifications_created_prune ON public.notifications USING btree (created_at);
+
+
+--
 -- Name: idx_notifications_read; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5710,10 +7026,24 @@ CREATE INDEX idx_notifications_read ON public.notifications USING btree (tenant_
 
 
 --
+-- Name: idx_notifications_user_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_notifications_user_created ON public.notifications USING btree (tenant_id, user_id, created_at DESC);
+
+
+--
 -- Name: idx_persons_company_id; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_persons_company_id ON public.persons USING btree (company_id);
+
+
+--
+-- Name: idx_persons_deceased; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_persons_deceased ON public.persons USING btree (tenant_id) WHERE (deceased_at IS NOT NULL);
 
 
 --
@@ -5731,6 +7061,20 @@ CREATE INDEX idx_persons_fts ON public.persons USING gin (search_vector);
 
 
 --
+-- Name: idx_persons_household_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_persons_household_ri ON public.persons USING btree (household_id);
+
+
+--
+-- Name: idx_persons_senior; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_persons_senior ON public.persons USING btree (tenant_id) WHERE (senior IS TRUE);
+
+
+--
 -- Name: idx_persons_tenant_assigned; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5745,10 +7089,24 @@ CREATE INDEX idx_persons_tenant_company ON public.persons USING btree (tenant_id
 
 
 --
+-- Name: idx_persons_tenant_email2_lookup; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_persons_tenant_email2_lookup ON public.persons USING btree (tenant_id, lower(email2)) WHERE (email2 IS NOT NULL);
+
+
+--
 -- Name: idx_persons_tenant_email_btree; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_persons_tenant_email_btree ON public.persons USING btree (tenant_id, email);
+
+
+--
+-- Name: idx_persons_tenant_email_lookup; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_persons_tenant_email_lookup ON public.persons USING btree (tenant_id, lower(email)) WHERE (email IS NOT NULL);
 
 
 --
@@ -5878,6 +7236,13 @@ CREATE INDEX idx_profiles_avatar_file_id ON public.profiles USING btree (avatar_
 
 
 --
+-- Name: idx_rate_limits_window_start; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_rate_limits_window_start ON public.rate_limits USING btree (window_start);
+
+
+--
 -- Name: idx_sessions_expires_at; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -5962,10 +7327,45 @@ CREATE INDEX idx_teams_lead_user ON public.teams USING btree (team_lead_user_id)
 
 
 --
+-- Name: idx_teams_team_captain_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_teams_team_captain_ri ON public.teams USING btree (team_captain_id);
+
+
+--
 -- Name: idx_teams_tenant_captain; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_teams_tenant_captain ON public.teams USING btree (tenant_id, team_captain_id);
+
+
+--
+-- Name: idx_tenants_approval_status_pending; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_tenants_approval_status_pending ON public.tenants USING btree (approval_requested_at) WHERE (approval_status = 'pending'::text);
+
+
+--
+-- Name: idx_tenants_approval_token_hash; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX idx_tenants_approval_token_hash ON public.tenants USING btree (approval_token_hash) WHERE (approval_token_hash IS NOT NULL);
+
+
+--
+-- Name: idx_tenants_data_region_stated; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_tenants_data_region_stated ON public.tenants USING btree (data_region) WHERE (data_region <> 'any'::text);
+
+
+--
+-- Name: idx_tenants_placeholder_household_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_tenants_placeholder_household_ri ON public.tenants USING btree (placeholder_household_id);
 
 
 --
@@ -5990,10 +7390,24 @@ CREATE INDEX idx_turf_assignments_turf ON public.turf_assignments USING btree (t
 
 
 --
+-- Name: idx_turf_assignments_turf_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_assignments_turf_ri ON public.turf_assignments USING btree (turf_id);
+
+
+--
 -- Name: idx_turf_households_household; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_turf_households_household ON public.turf_households USING btree (tenant_id, household_id);
+
+
+--
+-- Name: idx_turf_households_household_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_households_household_ri ON public.turf_households USING btree (household_id);
 
 
 --
@@ -6004,10 +7418,24 @@ CREATE INDEX idx_turf_households_turf ON public.turf_households USING btree (ten
 
 
 --
+-- Name: idx_turf_households_turf_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_households_turf_ri ON public.turf_households USING btree (turf_id);
+
+
+--
 -- Name: idx_turf_knocks_household; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_turf_knocks_household ON public.turf_knocks USING btree (tenant_id, household_id);
+
+
+--
+-- Name: idx_turf_knocks_household_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_knocks_household_ri ON public.turf_knocks USING btree (household_id);
 
 
 --
@@ -6018,10 +7446,59 @@ CREATE INDEX idx_turf_knocks_knocked_at ON public.turf_knocks USING btree (tenan
 
 
 --
+-- Name: idx_turf_knocks_person_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_knocks_person_ri ON public.turf_knocks USING btree (person_id);
+
+
+--
 -- Name: idx_turf_knocks_turf; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_turf_knocks_turf ON public.turf_knocks USING btree (tenant_id, turf_id);
+
+
+--
+-- Name: idx_turf_knocks_turf_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_knocks_turf_ri ON public.turf_knocks USING btree (turf_id);
+
+
+--
+-- Name: idx_turf_segment_claims_assignment_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_segment_claims_assignment_ri ON public.turf_segment_claims USING btree (assignment_id);
+
+
+--
+-- Name: idx_turf_segment_claims_live_assignment; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX idx_turf_segment_claims_live_assignment ON public.turf_segment_claims USING btree (tenant_id, turf_id, assignment_id) WHERE (released_at IS NULL);
+
+
+--
+-- Name: idx_turf_segment_claims_live_turf; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_segment_claims_live_turf ON public.turf_segment_claims USING btree (tenant_id, turf_id) WHERE (released_at IS NULL);
+
+
+--
+-- Name: idx_turf_segment_claims_turf_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turf_segment_claims_turf_ri ON public.turf_segment_claims USING btree (turf_id);
+
+
+--
+-- Name: idx_turfs_boundary_set; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_turfs_boundary_set ON public.turfs USING btree (boundary_set_id);
 
 
 --
@@ -6050,6 +7527,20 @@ CREATE INDEX idx_turfs_tenant_list ON public.turfs USING btree (tenant_id, list_
 --
 
 CREATE INDEX idx_turfs_tenant_status ON public.turfs USING btree (tenant_id, status);
+
+
+--
+-- Name: idx_user_activity_record_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_user_activity_record_created ON public.user_activity USING btree (tenant_id, entity, entity_id, created_at DESC);
+
+
+--
+-- Name: idx_user_activity_tenant_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_user_activity_tenant_created ON public.user_activity USING btree (tenant_id, created_at DESC);
 
 
 --
@@ -6137,6 +7628,20 @@ CREATE UNIQUE INDEX idx_web_forms_tenant_slug ON public.web_forms USING btree (t
 
 
 --
+-- Name: idx_webhook_events_failed_prune; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_webhook_events_failed_prune ON public.webhook_events USING btree (updated_at) WHERE (status = 'failed'::text);
+
+
+--
+-- Name: idx_webhook_events_processed_prune; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_webhook_events_processed_prune ON public.webhook_events USING btree (processed_at) WHERE (status = 'processed'::text);
+
+
+--
 -- Name: idx_webhook_events_status_run_at; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -6172,6 +7677,13 @@ CREATE INDEX idx_workflow_enrollments_workflow_person ON public.workflow_enrollm
 
 
 --
+-- Name: idx_workflow_runs_created_prune; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_workflow_runs_created_prune ON public.workflow_runs USING btree (created_at);
+
+
+--
 -- Name: idx_workflow_runs_tenant_workflow_created; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -6179,10 +7691,24 @@ CREATE INDEX idx_workflow_runs_tenant_workflow_created ON public.workflow_runs U
 
 
 --
+-- Name: idx_workflow_runs_workflow_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_workflow_runs_workflow_ri ON public.workflow_runs USING btree (workflow_id);
+
+
+--
 -- Name: idx_workflow_steps_tenant_workflow; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE INDEX idx_workflow_steps_tenant_workflow ON public.workflow_steps USING btree (tenant_id, workflow_id, step_number);
+
+
+--
+-- Name: idx_workflow_steps_workflow_ri; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX idx_workflow_steps_workflow_ri ON public.workflow_steps USING btree (workflow_id);
 
 
 --
@@ -6200,10 +7726,45 @@ CREATE INDEX idx_workflows_trigger_event_id ON public.workflows USING btree (tri
 
 
 --
--- Name: idx_workspace_api_keys_key_hash; Type: INDEX; Schema: public; Owner: pplcrm_owner
+-- Name: ix_campaign_areas_tenant_campaign; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
-CREATE INDEX idx_workspace_api_keys_key_hash ON public.workspace_api_keys USING btree (key_hash);
+CREATE INDEX ix_campaign_areas_tenant_campaign ON public.campaign_areas USING btree (tenant_id, campaign_id);
+
+
+--
+-- Name: ix_canvass_pings_shift; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX ix_canvass_pings_shift ON public.canvass_location_pings USING btree (tenant_id, shift_id, received_at);
+
+
+--
+-- Name: ix_canvass_pings_tenant_received; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX ix_canvass_pings_tenant_received ON public.canvass_location_pings USING btree (tenant_id, received_at);
+
+
+--
+-- Name: ix_canvass_shifts_open_turf; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX ix_canvass_shifts_open_turf ON public.canvass_shifts USING btree (tenant_id, turf_id) WHERE (ended_at IS NULL);
+
+
+--
+-- Name: ix_canvass_shifts_open_volunteer; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX ix_canvass_shifts_open_volunteer ON public.canvass_shifts USING btree (tenant_id, volunteer_person_id) WHERE (ended_at IS NULL);
+
+
+--
+-- Name: ix_canvass_shifts_tenant_started; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE INDEX ix_canvass_shifts_tenant_started ON public.canvass_shifts USING btree (tenant_id, started_at);
 
 
 --
@@ -6270,6 +7831,13 @@ CREATE INDEX sessions_user_index ON public.sessions USING btree (user_id);
 
 
 --
+-- Name: uq_campaign_areas_campaign_name; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX uq_campaign_areas_campaign_name ON public.campaign_areas USING btree (campaign_id, lower(btrim(name)));
+
+
+--
 -- Name: uq_delivery_requests_open_per_household; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
@@ -6291,10 +7859,52 @@ CREATE UNIQUE INDEX uq_delivery_route_stops_route_seq ON public.delivery_route_s
 
 
 --
+-- Name: uq_donation_receipts_ack_serial; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX uq_donation_receipts_ack_serial ON public.donation_receipts USING btree (tenant_id, year, serial) WHERE ((serial IS NOT NULL) AND (kind = 'acknowledgement'::text));
+
+
+--
+-- Name: uq_donation_receipts_official_serial; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX uq_donation_receipts_official_serial ON public.donation_receipts USING btree (tenant_id, year, serial) WHERE ((serial IS NOT NULL) AND (kind = ANY (ARRAY['per_gift'::text, 'cumulative'::text])));
+
+
+--
+-- Name: uq_donation_receipts_statement_coverage; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX uq_donation_receipts_statement_coverage ON public.donation_receipts USING btree (tenant_id, person_id, COALESCE(coverage_year, year)) WHERE ((kind = 'statement'::text) AND (status = 'issued'::text));
+
+
+--
 -- Name: uq_lists_system_key; Type: INDEX; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE UNIQUE INDEX uq_lists_system_key ON public.lists USING btree (tenant_id, campaign_id, system_key) WHERE (system_key IS NOT NULL);
+
+
+--
+-- Name: uq_lists_tenant_campaign_name; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX uq_lists_tenant_campaign_name ON public.lists USING btree (tenant_id, campaign_id, name);
+
+
+--
+-- Name: uq_rsr_one_running; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX uq_rsr_one_running ON public.receipt_statement_runs USING btree (tenant_id, year) WHERE (status = 'running'::text);
+
+
+--
+-- Name: uq_turf_assignments_active_volunteer; Type: INDEX; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE UNIQUE INDEX uq_turf_assignments_active_volunteer ON public.turf_assignments USING btree (tenant_id, turf_id, volunteer_person_id) WHERE ((status = 'active'::text) AND (volunteer_person_id IS NOT NULL));
 
 
 --
@@ -6726,6 +8336,86 @@ ALTER TABLE ONLY public.authusers
 
 
 --
+-- Name: campaign_areas campaign_areas_campaign_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_areas
+    ADD CONSTRAINT campaign_areas_campaign_id_fkey FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id) ON DELETE CASCADE;
+
+
+--
+-- Name: campaign_areas campaign_areas_set_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_areas
+    ADD CONSTRAINT campaign_areas_set_id_fkey FOREIGN KEY (set_id) REFERENCES public.boundary_sets(id) ON DELETE SET NULL;
+
+
+--
+-- Name: campaign_areas campaign_areas_tenant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_areas
+    ADD CONSTRAINT campaign_areas_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: canvass_location_pings canvass_location_pings_shift_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.canvass_location_pings
+    ADD CONSTRAINT canvass_location_pings_shift_id_fkey FOREIGN KEY (shift_id) REFERENCES public.canvass_shifts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: canvass_location_pings canvass_location_pings_tenant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.canvass_location_pings
+    ADD CONSTRAINT canvass_location_pings_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: canvass_shifts canvass_shifts_campaign_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.canvass_shifts
+    ADD CONSTRAINT canvass_shifts_campaign_id_fkey FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id) ON DELETE SET NULL;
+
+
+--
+-- Name: canvass_shifts canvass_shifts_tenant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.canvass_shifts
+    ADD CONSTRAINT canvass_shifts_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: canvass_shifts canvass_shifts_turf_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.canvass_shifts
+    ADD CONSTRAINT canvass_shifts_turf_id_fkey FOREIGN KEY (turf_id) REFERENCES public.turfs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: canvass_shifts canvass_shifts_volunteer_person_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.canvass_shifts
+    ADD CONSTRAINT canvass_shifts_volunteer_person_id_fkey FOREIGN KEY (volunteer_person_id) REFERENCES public.persons(id) ON DELETE CASCADE;
+
+
+--
+-- Name: dashboard_stats_snapshots dashboard_stats_snapshots_tenant_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.dashboard_stats_snapshots
+    ADD CONSTRAINT dashboard_stats_snapshots_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
 -- Name: email_comments email_comments_email_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -6790,6 +8480,22 @@ ALTER TABLE ONLY public.background_jobs
 
 
 --
+-- Name: boundary_features fk_boundary_features_set; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.boundary_features
+    ADD CONSTRAINT fk_boundary_features_set FOREIGN KEY (set_id) REFERENCES public.boundary_sets(id) ON DELETE CASCADE;
+
+
+--
+-- Name: boundary_sets fk_boundary_sets_file; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.boundary_sets
+    ADD CONSTRAINT fk_boundary_sets_file FOREIGN KEY (file_id) REFERENCES public.files(id) ON DELETE SET NULL;
+
+
+--
 -- Name: households fk_campaign_id; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -6811,6 +8517,46 @@ ALTER TABLE ONLY public.map_campaigns_users
 
 ALTER TABLE ONLY public.persons
     ADD CONSTRAINT fk_campaign_id FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
+
+
+--
+-- Name: campaign_join_codes fk_campaign_join_codes_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_join_codes
+    ADD CONSTRAINT fk_campaign_join_codes_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id) ON DELETE SET NULL;
+
+
+--
+-- Name: campaign_join_codes fk_campaign_join_codes_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_join_codes
+    ADD CONSTRAINT fk_campaign_join_codes_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
+
+
+--
+-- Name: campaign_join_codes fk_campaign_join_codes_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_join_codes
+    ADD CONSTRAINT fk_campaign_join_codes_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: campaign_join_codes fk_campaign_join_codes_turf; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_join_codes
+    ADD CONSTRAINT fk_campaign_join_codes_turf FOREIGN KEY (turf_id) REFERENCES public.turfs(id) ON DELETE SET NULL;
+
+
+--
+-- Name: campaign_join_codes fk_campaign_join_codes_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.campaign_join_codes
+    ADD CONSTRAINT fk_campaign_join_codes_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
 
 
 --
@@ -6851,6 +8597,54 @@ ALTER TABLE ONLY public.companies
 
 ALTER TABLE ONLY public.companies
     ADD CONSTRAINT fk_companies_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
+
+
+--
+-- Name: companion_approval_tokens fk_companion_approval_tokens_admin; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_approval_tokens
+    ADD CONSTRAINT fk_companion_approval_tokens_admin FOREIGN KEY (admin_user_id) REFERENCES public.authusers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: companion_approval_tokens fk_companion_approval_tokens_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_approval_tokens
+    ADD CONSTRAINT fk_companion_approval_tokens_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: companion_approval_tokens fk_companion_approval_tokens_volunteer; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_approval_tokens
+    ADD CONSTRAINT fk_companion_approval_tokens_volunteer FOREIGN KEY (volunteer_id) REFERENCES public.companion_volunteers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: companion_organizer_tokens fk_companion_organizer_tokens_admin; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_organizer_tokens
+    ADD CONSTRAINT fk_companion_organizer_tokens_admin FOREIGN KEY (admin_user_id) REFERENCES public.authusers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: companion_organizer_tokens fk_companion_organizer_tokens_join_code; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_organizer_tokens
+    ADD CONSTRAINT fk_companion_organizer_tokens_join_code FOREIGN KEY (join_code_id) REFERENCES public.campaign_join_codes(id) ON DELETE CASCADE;
+
+
+--
+-- Name: companion_organizer_tokens fk_companion_organizer_tokens_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.companion_organizer_tokens
+    ADD CONSTRAINT fk_companion_organizer_tokens_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
 
 
 --
@@ -7142,6 +8936,94 @@ ALTER TABLE ONLY public.donation_pledges
 
 
 --
+-- Name: donation_receipt_items fk_donation_receipt_items_donation; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipt_items
+    ADD CONSTRAINT fk_donation_receipt_items_donation FOREIGN KEY (donation_id) REFERENCES public.donations(id);
+
+
+--
+-- Name: donation_receipt_items fk_donation_receipt_items_receipt; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipt_items
+    ADD CONSTRAINT fk_donation_receipt_items_receipt FOREIGN KEY (receipt_id) REFERENCES public.donation_receipts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: donation_receipt_items fk_donation_receipt_items_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipt_items
+    ADD CONSTRAINT fk_donation_receipt_items_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: donation_receipts fk_donation_receipts_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT fk_donation_receipts_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id) ON DELETE SET NULL;
+
+
+--
+-- Name: donation_receipts fk_donation_receipts_cancelled_by; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT fk_donation_receipts_cancelled_by FOREIGN KEY (cancelled_by) REFERENCES public.authusers(id);
+
+
+--
+-- Name: donation_receipts fk_donation_receipts_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT fk_donation_receipts_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
+
+
+--
+-- Name: donation_receipts fk_donation_receipts_file; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT fk_donation_receipts_file FOREIGN KEY (file_id) REFERENCES public.files(id) ON DELETE SET NULL;
+
+
+--
+-- Name: donation_receipts fk_donation_receipts_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT fk_donation_receipts_person FOREIGN KEY (person_id) REFERENCES public.persons(id) ON DELETE SET NULL;
+
+
+--
+-- Name: donation_receipts fk_donation_receipts_replaces; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT fk_donation_receipts_replaces FOREIGN KEY (replaces_receipt_id) REFERENCES public.donation_receipts(id);
+
+
+--
+-- Name: donation_receipts fk_donation_receipts_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT fk_donation_receipts_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: donation_receipts fk_donation_receipts_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.donation_receipts
+    ADD CONSTRAINT fk_donation_receipts_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
+
+
+--
 -- Name: donations fk_donations_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -7390,26 +9272,26 @@ ALTER TABLE ONLY public.events
 
 
 --
--- Name: volunteer_events fk_events_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+-- Name: events fk_events_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
-ALTER TABLE ONLY public.volunteer_events
+ALTER TABLE ONLY public.events
     ADD CONSTRAINT fk_events_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
 
 
 --
--- Name: volunteer_events fk_events_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+-- Name: events fk_events_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
-ALTER TABLE ONLY public.volunteer_events
+ALTER TABLE ONLY public.events
     ADD CONSTRAINT fk_events_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 
 --
--- Name: volunteer_events fk_events_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+-- Name: events fk_events_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
-ALTER TABLE ONLY public.volunteer_events
+ALTER TABLE ONLY public.events
     ADD CONSTRAINT fk_events_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
 
 
@@ -7446,6 +9328,14 @@ ALTER TABLE ONLY public.form_submissions
 
 
 --
+-- Name: geocode_cache fk_geocode_cache_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.geocode_cache
+    ADD CONSTRAINT fk_geocode_cache_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
 -- Name: google_oauth_tokens fk_google_oauth_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -7459,6 +9349,22 @@ ALTER TABLE ONLY public.google_oauth_tokens
 
 ALTER TABLE ONLY public.google_oauth_tokens
     ADD CONSTRAINT fk_google_oauth_tokens_campaign FOREIGN KEY (campaign_id) REFERENCES public.campaigns(id);
+
+
+--
+-- Name: household_districts fk_household_districts_household; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.household_districts
+    ADD CONSTRAINT fk_household_districts_household FOREIGN KEY (household_id) REFERENCES public.households(id) ON DELETE CASCADE;
+
+
+--
+-- Name: household_districts fk_household_districts_set; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.household_districts
+    ADD CONSTRAINT fk_household_districts_set FOREIGN KEY (set_id) REFERENCES public.boundary_sets(id) ON DELETE CASCADE;
 
 
 --
@@ -7838,6 +9744,54 @@ ALTER TABLE ONLY public.profiles
 
 
 --
+-- Name: receipt_counters fk_receipt_counters_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_counters
+    ADD CONSTRAINT fk_receipt_counters_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: receipt_statement_runs fk_receipt_statement_runs_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_statement_runs
+    ADD CONSTRAINT fk_receipt_statement_runs_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
+
+
+--
+-- Name: receipt_statement_runs fk_receipt_statement_runs_cursor_person; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_statement_runs
+    ADD CONSTRAINT fk_receipt_statement_runs_cursor_person FOREIGN KEY (cursor_person_id) REFERENCES public.persons(id) ON DELETE SET NULL;
+
+
+--
+-- Name: receipt_statement_runs fk_receipt_statement_runs_requested_by; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_statement_runs
+    ADD CONSTRAINT fk_receipt_statement_runs_requested_by FOREIGN KEY (requested_by) REFERENCES public.authusers(id);
+
+
+--
+-- Name: receipt_statement_runs fk_receipt_statement_runs_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_statement_runs
+    ADD CONSTRAINT fk_receipt_statement_runs_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: receipt_statement_runs fk_receipt_statement_runs_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.receipt_statement_runs
+    ADD CONSTRAINT fk_receipt_statement_runs_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
+
+
+--
 -- Name: sessions fk_sessions_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -8166,6 +10120,46 @@ ALTER TABLE ONLY public.turf_knocks
 
 
 --
+-- Name: turf_segment_claims fk_turf_segment_claims_assignment; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.turf_segment_claims
+    ADD CONSTRAINT fk_turf_segment_claims_assignment FOREIGN KEY (assignment_id) REFERENCES public.turf_assignments(id) ON DELETE CASCADE;
+
+
+--
+-- Name: turf_segment_claims fk_turf_segment_claims_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.turf_segment_claims
+    ADD CONSTRAINT fk_turf_segment_claims_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id) ON DELETE CASCADE;
+
+
+--
+-- Name: turf_segment_claims fk_turf_segment_claims_turf; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.turf_segment_claims
+    ADD CONSTRAINT fk_turf_segment_claims_turf FOREIGN KEY (turf_id) REFERENCES public.turfs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: turf_segment_claims fk_turf_segment_claims_volunteer; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.turf_segment_claims
+    ADD CONSTRAINT fk_turf_segment_claims_volunteer FOREIGN KEY (volunteer_person_id) REFERENCES public.persons(id) ON DELETE SET NULL;
+
+
+--
+-- Name: turfs fk_turfs_boundary_set; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.turfs
+    ADD CONSTRAINT fk_turfs_boundary_set FOREIGN KEY (boundary_set_id) REFERENCES public.boundary_sets(id) ON DELETE SET NULL;
+
+
+--
 -- Name: turfs fk_turfs_campaign; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
 --
 
@@ -8243,6 +10237,30 @@ ALTER TABLE ONLY public.user_activity
 
 ALTER TABLE ONLY public.map_campaigns_users
     ADD CONSTRAINT fk_user_id FOREIGN KEY (user_id) REFERENCES public.authusers(id);
+
+
+--
+-- Name: volunteer_events fk_volunteer_events_createdby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.volunteer_events
+    ADD CONSTRAINT fk_volunteer_events_createdby FOREIGN KEY (createdby_id) REFERENCES public.authusers(id);
+
+
+--
+-- Name: volunteer_events fk_volunteer_events_tenant; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.volunteer_events
+    ADD CONSTRAINT fk_volunteer_events_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+
+--
+-- Name: volunteer_events fk_volunteer_events_updatedby; Type: FK CONSTRAINT; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE ONLY public.volunteer_events
+    ADD CONSTRAINT fk_volunteer_events_updatedby FOREIGN KEY (updatedby_id) REFERENCES public.authusers(id);
 
 
 --
@@ -8594,10 +10612,34 @@ ALTER TABLE public.authusers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.background_jobs ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: boundary_features; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.boundary_features ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: boundary_sets; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.boundary_sets ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: bug_reports; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE public.bug_reports ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: campaign_areas; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.campaign_areas ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: campaign_join_codes; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.campaign_join_codes ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: campaign_person_facts; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
@@ -8618,16 +10660,40 @@ ALTER TABLE public.campaign_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.campaigns ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: canvass_location_pings; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.canvass_location_pings ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: canvass_shifts; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.canvass_shifts ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: companies; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: companion_approval_tokens; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.companion_approval_tokens ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: companion_ops; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE public.companion_ops ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: companion_organizer_tokens; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.companion_organizer_tokens ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: companion_sessions; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
@@ -8640,6 +10706,12 @@ ALTER TABLE public.companion_sessions ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.companion_volunteers ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: dashboard_stats_snapshots; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.dashboard_stats_snapshots ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: data_exports; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
@@ -8688,6 +10760,18 @@ ALTER TABLE public.donation_periods ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.donation_pledges ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: donation_receipt_items; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.donation_receipt_items ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: donation_receipts; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.donation_receipts ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: donations; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
@@ -8786,10 +10870,22 @@ ALTER TABLE public.files ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.form_submissions ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: geocode_cache; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.geocode_cache ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: google_oauth_tokens; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
 --
 
 ALTER TABLE public.google_oauth_tokens ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: household_districts; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.household_districts ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: households; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
@@ -8936,6 +11032,18 @@ ALTER TABLE public.potential_duplicates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: receipt_counters; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.receipt_counters ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: receipt_statement_runs; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.receipt_statement_runs ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: sessions; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
 --
 
@@ -8998,10 +11106,38 @@ CREATE POLICY tenant_isolation ON public.background_jobs USING (((NULLIF(current
 
 
 --
+-- Name: boundary_features tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.boundary_features USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: boundary_sets tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.boundary_sets USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
 -- Name: bug_reports tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE POLICY tenant_isolation ON public.bug_reports USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: campaign_areas tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.campaign_areas USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: campaign_join_codes tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.campaign_join_codes USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
 
 
 --
@@ -9026,6 +11162,20 @@ CREATE POLICY tenant_isolation ON public.campaigns USING (((NULLIF(current_setti
 
 
 --
+-- Name: canvass_location_pings tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.canvass_location_pings USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: canvass_shifts tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.canvass_shifts USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
 -- Name: companies tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
 --
 
@@ -9033,10 +11183,24 @@ CREATE POLICY tenant_isolation ON public.companies USING (((NULLIF(current_setti
 
 
 --
+-- Name: companion_approval_tokens tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.companion_approval_tokens USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
 -- Name: companion_ops tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE POLICY tenant_isolation ON public.companion_ops USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: companion_organizer_tokens tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.companion_organizer_tokens USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
 
 
 --
@@ -9051,6 +11215,13 @@ CREATE POLICY tenant_isolation ON public.companion_sessions USING (((NULLIF(curr
 --
 
 CREATE POLICY tenant_isolation ON public.companion_volunteers USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: dashboard_stats_snapshots tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.dashboard_stats_snapshots USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
 
 
 --
@@ -9107,6 +11278,20 @@ CREATE POLICY tenant_isolation ON public.donation_periods USING (((NULLIF(curren
 --
 
 CREATE POLICY tenant_isolation ON public.donation_pledges USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: donation_receipt_items tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.donation_receipt_items USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: donation_receipts tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.donation_receipts USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
 
 
 --
@@ -9222,10 +11407,24 @@ CREATE POLICY tenant_isolation ON public.form_submissions USING (((NULLIF(curren
 
 
 --
+-- Name: geocode_cache tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.geocode_cache USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
 -- Name: google_oauth_tokens tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
 --
 
 CREATE POLICY tenant_isolation ON public.google_oauth_tokens USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: household_districts tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.household_districts USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
 
 
 --
@@ -9397,6 +11596,20 @@ CREATE POLICY tenant_isolation ON public.profiles USING (((NULLIF(current_settin
 
 
 --
+-- Name: receipt_counters tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.receipt_counters USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: receipt_statement_runs tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.receipt_statement_runs USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
 -- Name: sessions tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
 --
 
@@ -9471,6 +11684,13 @@ CREATE POLICY tenant_isolation ON public.turf_households USING (((NULLIF(current
 --
 
 CREATE POLICY tenant_isolation ON public.turf_knocks USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
+
+
+--
+-- Name: turf_segment_claims tenant_isolation; Type: POLICY; Schema: public; Owner: pplcrm_owner
+--
+
+CREATE POLICY tenant_isolation ON public.turf_segment_claims USING (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint))) WITH CHECK (((NULLIF(current_setting('app.tenant_id'::text, true), ''::text) IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::bigint)));
 
 
 --
@@ -9567,6 +11787,12 @@ ALTER TABLE public.turf_households ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.turf_knocks ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: turf_segment_claims; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
+--
+
+ALTER TABLE public.turf_segment_claims ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: turfs; Type: ROW SECURITY; Schema: public; Owner: pplcrm_owner
@@ -9670,6 +11896,34 @@ GRANT SELECT,USAGE ON SEQUENCE public.background_jobs_id_seq TO pplcrm_app;
 
 
 --
+-- Name: TABLE boundary_features; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.boundary_features TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE boundary_features_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.boundary_features_id_seq TO pplcrm_app;
+
+
+--
+-- Name: TABLE boundary_sets; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.boundary_sets TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE boundary_sets_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.boundary_sets_id_seq TO pplcrm_app;
+
+
+--
 -- Name: TABLE bug_reports; Type: ACL; Schema: public; Owner: pplcrm_owner
 --
 
@@ -9681,6 +11935,34 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.bug_reports TO pplcrm_app;
 --
 
 GRANT SELECT,USAGE ON SEQUENCE public.bug_reports_id_seq TO pplcrm_app;
+
+
+--
+-- Name: TABLE campaign_areas; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.campaign_areas TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE campaign_areas_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.campaign_areas_id_seq TO pplcrm_app;
+
+
+--
+-- Name: TABLE campaign_join_codes; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.campaign_join_codes TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE campaign_join_codes_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.campaign_join_codes_id_seq TO pplcrm_app;
 
 
 --
@@ -9726,6 +12008,34 @@ GRANT SELECT,USAGE ON SEQUENCE public.campaigns_id_seq TO pplcrm_app;
 
 
 --
+-- Name: TABLE canvass_location_pings; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.canvass_location_pings TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE canvass_location_pings_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.canvass_location_pings_id_seq TO pplcrm_app;
+
+
+--
+-- Name: TABLE canvass_shifts; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.canvass_shifts TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE canvass_shifts_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.canvass_shifts_id_seq TO pplcrm_app;
+
+
+--
 -- Name: TABLE companies; Type: ACL; Schema: public; Owner: pplcrm_owner
 --
 
@@ -9740,10 +12050,38 @@ GRANT SELECT,USAGE ON SEQUENCE public.companies_id_seq TO pplcrm_app;
 
 
 --
+-- Name: TABLE companion_approval_tokens; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.companion_approval_tokens TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE companion_approval_tokens_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.companion_approval_tokens_id_seq TO pplcrm_app;
+
+
+--
 -- Name: TABLE companion_ops; Type: ACL; Schema: public; Owner: pplcrm_owner
 --
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.companion_ops TO pplcrm_app;
+
+
+--
+-- Name: TABLE companion_organizer_tokens; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.companion_organizer_tokens TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE companion_organizer_tokens_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.companion_organizer_tokens_id_seq TO pplcrm_app;
 
 
 --
@@ -9772,6 +12110,13 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.companion_volunteers TO pplcrm
 --
 
 GRANT SELECT,USAGE ON SEQUENCE public.companion_volunteers_id_seq TO pplcrm_app;
+
+
+--
+-- Name: TABLE dashboard_stats_snapshots; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.dashboard_stats_snapshots TO pplcrm_app;
 
 
 --
@@ -9877,6 +12222,34 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.donation_pledges TO pplcrm_app
 --
 
 GRANT SELECT,USAGE ON SEQUENCE public.donation_pledges_id_seq TO pplcrm_app;
+
+
+--
+-- Name: TABLE donation_receipt_items; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.donation_receipt_items TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE donation_receipt_items_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.donation_receipt_items_id_seq TO pplcrm_app;
+
+
+--
+-- Name: TABLE donation_receipts; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.donation_receipts TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE donation_receipts_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.donation_receipts_id_seq TO pplcrm_app;
 
 
 --
@@ -10090,10 +12463,38 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.form_submissions TO pplcrm_app
 
 
 --
+-- Name: TABLE geocode_cache; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.geocode_cache TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE geocode_cache_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.geocode_cache_id_seq TO pplcrm_app;
+
+
+--
 -- Name: TABLE google_oauth_tokens; Type: ACL; Schema: public; Owner: pplcrm_owner
 --
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.google_oauth_tokens TO pplcrm_app;
+
+
+--
+-- Name: TABLE household_districts; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.household_districts TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE household_districts_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.household_districts_id_seq TO pplcrm_app;
 
 
 --
@@ -10377,6 +12778,34 @@ GRANT SELECT,USAGE ON SEQUENCE public.profiles_id_seq TO pplcrm_app;
 
 
 --
+-- Name: TABLE rate_limits; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.rate_limits TO pplcrm_app;
+
+
+--
+-- Name: TABLE receipt_counters; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.receipt_counters TO pplcrm_app;
+
+
+--
+-- Name: TABLE receipt_statement_runs; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.receipt_statement_runs TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE receipt_statement_runs_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.receipt_statement_runs_id_seq TO pplcrm_app;
+
+
+--
 -- Name: TABLE sessions; Type: ACL; Schema: public; Owner: pplcrm_owner
 --
 
@@ -10535,6 +12964,20 @@ GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.turf_knocks TO pplcrm_app;
 --
 
 GRANT SELECT,USAGE ON SEQUENCE public.turf_knocks_id_seq TO pplcrm_app;
+
+
+--
+-- Name: TABLE turf_segment_claims; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.turf_segment_claims TO pplcrm_app;
+
+
+--
+-- Name: SEQUENCE turf_segment_claims_id_seq; Type: ACL; Schema: public; Owner: pplcrm_owner
+--
+
+GRANT SELECT,USAGE ON SEQUENCE public.turf_segment_claims_id_seq TO pplcrm_app;
 
 
 --
@@ -10716,5 +13159,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE pplcrm_owner IN SCHEMA public GRANT SELECT,INS
 -- PostgreSQL database dump complete
 --
 
-\unrestrict DNoSUNfhc4pGoAAhzexFaQwtf4dvy24gRLwoec7E6RpfbLiJ6RLl7HDbVU36KcA
+\unrestrict TqCTP8GcEbvFQJneJcyqrJqXv9oGwnCUj1Bgc9vgffzf1LhXn7xAGDbp7479hBF
 

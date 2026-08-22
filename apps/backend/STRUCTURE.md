@@ -16,52 +16,6 @@ apps/
       app/
         _migrations/
           0001_baseline.ts
-          2026-07-26-list-name-unique.ts
-          2026-07-26-sort-indexes-hot-lists.ts
-          2026-07-27-workspace-api-keys-two-slots.ts
-          2026-07-27-x-authusers-role-not-null.ts
-          2026-07-27-y-rate-limits.ts
-          2026-07-27-z-turf-assignment-token-hash.ts
-          2026-07-28-turf-multiple-canvassers.ts
-          2026-07-28-x-tenant-approval.ts
-          2026-07-28-z-canvass-volunteer-roam.ts
-          2026-07-28-zz-companion-join-codes.ts
-          2026-07-28-zzz-street-claims-organizer.ts
-          2026-07-28-zzzz-emails-preview-text.ts
-          2026-07-29-office-mode-differentiation.ts
-          2026-07-30-canvass-person-flags.ts
-          2026-07-31-tenant-data-region.ts
-          2026-08-01-emails-detached-at.ts
-          2026-08-01-z-companion-op-result.ts
-          2026-08-01-zz-tenants-inbox-purge-scheduled-at.ts
-          2026-08-01-zzz-donation-receipts.ts
-          2026-08-02-a-campaign-jurisdiction.ts
-          2026-08-02-b-boundary-sets.ts
-          2026-08-02-c-geocode-cost-control.ts
-          2026-08-02-d-turf-boundaries.ts
-          2026-08-02-e-drop-legacy-geography.ts
-          2026-08-02-f-boundary-match-convergence.ts
-          2026-08-02-g-donation-acknowledgements.ts
-          2026-08-02-h-receipt-serial-per-sequence.ts
-          2026-08-03-a-backfill-donation-acknowledgements.ts
-          2026-08-03-b-receipt-pdf-render-failure.ts
-          2026-08-04-a-fk-ri-indexes.ts
-          2026-08-04-b-receipt-coverage-year.ts
-          2026-08-04-c-workflow-run-status.ts
-          2026-08-04-d-task-automation-origin.ts
-          2026-08-04-e-workflow-message-class.ts
-          2026-08-04-import-resume-offset.ts
-          2026-08-05-a-newsletter-sender-identity.ts
-          2026-08-05-background-jobs-priority.ts
-          2026-08-06-campaign-areas.ts
-          2026-08-07-households-located-index.ts
-          2026-08-09-dashboard-stats-snapshots.ts
-          2026-08-09-x-retention-and-ri-indexes.ts
-          2026-08-13-autovacuum-churn-tables.ts
-          2026-08-14-retention-prune-indexes.ts
-          2026-08-14-z-canvass-live-locations.ts
-          2026-08-20-workflow-add-to-list-step.ts
-          2026-08-20-x-integrity-and-hot-path-indexes.ts
           2026-08-20-zzz-squash-bookkeeping.ts
           schema.sql
         config/
