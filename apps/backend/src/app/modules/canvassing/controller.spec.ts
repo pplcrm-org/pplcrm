@@ -2090,8 +2090,21 @@ describe('CanvassingController', () => {
 
       const live = await controller.getLive(auth);
       expect(live.out_now).toBe(0);
-      expect(live.wrapped.length).toBe(1);
-      expect(new Date(live.wrapped[0]!.ended_at).getTime()).toBeCloseTo(lastActivity.getTime(), -3);
+      // The claim under test is "closed at its last activity (45 min ago), not at notice time
+      // (now)" — so read ended_at straight off the shift row. The previous assertions went
+      // through live.wrapped, which filters to shifts that ended TODAY in the tenant's local
+      // day: for 45 minutes after local midnight the closed shift legitimately belongs to
+      // yesterday and vanishes from that group, which is exactly when CI runs this suite
+      // (03:4x–04:1x UTC), and its 500ms toBeCloseTo also raced the ping round-trip. The 10s
+      // window still separates the two hypotheses (last activity vs notice time) by 45 minutes.
+      const closedShift = await db
+        .selectFrom('canvass_shifts')
+        .select('ended_at')
+        .where('tenant_id', '=', s.tenantId)
+        .executeTakeFirstOrThrow();
+      expect(closedShift.ended_at).not.toBeNull();
+      // Non-null proven by the assertion above.
+      expect(Math.abs(new Date(closedShift.ended_at!).getTime() - lastActivity.getTime())).toBeLessThan(10_000);
     });
 
     it('never returns a coordinate on any surface under turf-level precision', async () => {
