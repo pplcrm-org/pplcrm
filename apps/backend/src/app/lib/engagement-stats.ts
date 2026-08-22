@@ -83,12 +83,16 @@ export function householdStatsMapping(): Record<string, { col: string; isCast?: 
    the caller's, and the correlated-subquery select items defeat the generic inference. */
 
 /**
- * The person-stats lateral: `SELECT (subq) AS x, … ` with no FROM, one scalar subquery per
- * field, each correlated to the outer `persons` row. Alias `pstats`.
+ * The person-stats lateral: one scalar subquery per field, each correlated to the outer
+ * `persons` row. Alias `pstats`. Built over a one-row `(select 1)` FROM rather than
+ * `selectNoFrom` because the installed kysely (0.28) only offers selectNoFrom on the
+ * QueryCreator, not on the builder a leftJoinLateral callback receives — semantically
+ * identical (exactly one lateral row either way).
  */
 export function personStatsLateral(eb: any, campaignId: string): any {
   return eb
-    .selectNoFrom([
+    .selectFrom(sql`(select 1)`.as('_lat'))
+    .select([
       eb
         .selectFrom('donations as d')
         .select(sql<number | null>`(current_date - max(d.created_at)::date)`.as('v'))
@@ -162,10 +166,12 @@ export function personStatsLateral(eb: any, campaignId: string): any {
     .as('pstats');
 }
 
-/** The household-stats lateral: knock recency correlated to the outer `households` row. */
+/** The household-stats lateral: knock recency correlated to the outer `households` row.
+ * Same one-row-FROM shape as personStatsLateral, for the same kysely-0.28 reason. */
 export function householdStatsLateral(eb: any, campaignId: string): any {
   return eb
-    .selectNoFrom([
+    .selectFrom(sql`(select 1)`.as('_lat'))
+    .select([
       eb
         .selectFrom('turf_knocks as k')
         .innerJoin('turfs as t', (join: any) =>
