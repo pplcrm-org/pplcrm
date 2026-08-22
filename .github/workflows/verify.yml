@@ -121,6 +121,12 @@ jobs:
       DB_MIGRATION_USER: pplcrm_owner
       DB_MIGRATION_PASSWORD: ci-owner-pw
       DB_SSL: 'false'
+      # The suite runs 200+ spec files in parallel against this one Postgres; it was
+      # stabilized (2026-08-20, testTimeout 30s) under a 20-connection pool. The env.ts
+      # default later dropped to 12 to fit the PROD server's max_connections budget —
+      # correct for prod, but on a 2-core runner it starves the DB-heavy specs, so CI pins
+      # the size the suite was tuned for.
+      DB_POOL_MAX: '20'
       JWT_SECRET: ci-jwt-secret
       SHARED_SECRET: ci-shared-secret
       # Explicit opt-ins the specs assert against (settings/controller.spec.ts verifies a domain
