@@ -1,5 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 const isCI = !!process.env.CI;
 
@@ -7,7 +8,8 @@ const isCI = !!process.env.CI;
 // workspace's tsconfig.base.json against the cwd, so a cold CI start from apps/frontend-e2e dies
 // with "Cannot read file 'tsconfig.base.json'" before the health probe ever answers (locally the
 // entries attach to already-running servers, which is why this only ever failed in CI).
-const repoRoot = path.resolve(__dirname, '../..');
+// import.meta.url, not __dirname: this config loads as an ES module, where __dirname is undefined.
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 export default defineConfig({
   testDir: './src',

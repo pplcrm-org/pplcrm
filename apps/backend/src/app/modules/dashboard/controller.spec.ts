@@ -261,7 +261,14 @@ describe('DashboardController — field-ops coverage, delivered signs and money 
         .execute();
       await db
         .insertInto('turf_households')
-        .values({ tenant_id: tenantId, turf_id: turfId, household_id: id, walk_order: i + 1 })
+        .values({
+          tenant_id: tenantId,
+          turf_id: turfId,
+          household_id: id,
+          walk_order: i + 1,
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
         .execute();
     }
     await db
@@ -291,12 +298,11 @@ describe('DashboardController — field-ops coverage, delivered signs and money 
       .execute();
 
     // Sign deliveries: one through a route stop (acted_at now), one direct flip with no stop.
-    const [reqStop, reqDirect] = [rand(), rand()];
-    await db
+    // delivery_requests.id is GENERATED ALWAYS AS IDENTITY, so the DB assigns the ids.
+    const requestRows = await db
       .insertInto('delivery_requests')
       .values([
         {
-          id: reqStop,
           tenant_id: tenantId,
           campaign_id: campaignId,
           household_id: doorIds[0],
@@ -306,7 +312,6 @@ describe('DashboardController — field-ops coverage, delivered signs and money 
           updatedby_id: userId,
         },
         {
-          id: reqDirect,
           tenant_id: tenantId,
           campaign_id: campaignId,
           household_id: doorIds[1],
@@ -316,7 +321,9 @@ describe('DashboardController — field-ops coverage, delivered signs and money 
           updatedby_id: userId,
         },
       ])
+      .returning('id')
       .execute();
+    const reqStop = String(requestRows[0]?.id);
     const routeRow = await db
       .insertInto('delivery_routes')
       .values({
@@ -325,6 +332,8 @@ describe('DashboardController — field-ops coverage, delivered signs and money 
         name: 'Tile Route',
         status: 'completed',
         start_address: '1 Tile Way',
+        start_lat: 43.65,
+        start_lng: -79.38,
         params: JSON.stringify({}),
         createdby_id: userId,
         updatedby_id: userId,

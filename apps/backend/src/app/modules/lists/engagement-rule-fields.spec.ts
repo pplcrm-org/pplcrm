@@ -134,6 +134,8 @@ async function seed(db: typeof BaseRepository.dbInstance): Promise<Seed> {
       person_id: personActive,
       monthly_amount: 2500,
       status: 'active',
+      createdby_id: userId,
+      updatedby_id: userId,
     })
     .execute();
 
@@ -206,7 +208,8 @@ async function seed(db: typeof BaseRepository.dbInstance): Promise<Seed> {
       name: 'Rally',
       slug: `rally-${eventId}`,
       start_time: daysAgo(15),
-      end_time: daysAgo(15),
+      // events_end_after_start_check is a STRICT '>', so the same instant twice is rejected.
+      end_time: new Date(daysAgo(15).getTime() + 60 * 60 * 1000),
       createdby_id: userId,
       updatedby_id: userId,
     })
