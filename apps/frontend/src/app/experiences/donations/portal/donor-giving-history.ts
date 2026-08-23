@@ -75,11 +75,13 @@ const METHOD_LABELS: Record<string, string> = {
               <li class="flex items-center justify-between gap-2">
                 <span class="text-xs text-base-content">
                   {{ kindLabel(receipt.kind) }}
+                  <!-- non-breaking space before each ·: inter-span whitespace collapses,
+                       which rendered "A-2026-00001· 2026" -->
                   @if (receipt.number) {
-                    <span class="text-base-content/60">· {{ receipt.number }}</span>
+                    <span class="text-base-content/60">&nbsp;· {{ receipt.number }}</span>
                   }
                   @if (receipt.year) {
-                    <span class="text-base-content/60">· {{ receipt.year }}</span>
+                    <span class="text-base-content/60">&nbsp;· {{ receipt.year }}</span>
                   }
                 </span>
                 @if (receipt.pdf_ready) {

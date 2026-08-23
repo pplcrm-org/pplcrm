@@ -9,6 +9,7 @@
 export function requestSourceLabel(source: string): string {
   if (source === 'web_form') return 'web form';
   if (source === 'canvass') return 'canvass';
+  if (source === 'donor_portal') return 'donor portal';
   return 'manual';
 }
 

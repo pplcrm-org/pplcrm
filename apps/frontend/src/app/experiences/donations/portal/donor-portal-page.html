@@ -11,7 +11,8 @@
     <div class="pc-panel p-8 text-center">
       <h1 class="mb-2 text-xl font-semibold text-base-content">This link is no longer active</h1>
       <p class="mb-6 text-sm text-base-content/60">It may have expired or been replaced.</p>
-      <a class="btn btn-primary" routerLink="/g">Email me a new link</a>
+      <!-- preserve the query so a dev/app-origin ?t=<slug> survives into the request page -->
+      <a class="btn btn-primary" routerLink="/g" queryParamsHandling="preserve">Email me a new link</a>
     </div>
     } @case ('error') {
     <div class="pc-panel p-8 text-center">

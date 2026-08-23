@@ -184,8 +184,15 @@ describe('PersonView', () => {
     expect(mockAlertSvc.showSuccess).toHaveBeenCalledWith('Email copied to clipboard');
   });
 
-  it('derives donation method from existing columns and receipt from REAL receipt coverage', () => {
-    expect(component['donationMethod']({ stripe_session_id: 'cs_1', pledge_id: 'pl_1' })).toBe('Card · monthly');
+  it('derives donation method from the stored method column and receipt from REAL receipt coverage', () => {
+    // The method column is the truth the /donations grid and the donor portal already show;
+    // this tab must agree. Legacy rows without a method fall back to the session-id inference.
+    expect(component['donationMethod']({ method: 'card', stripe_session_id: 'cs_1', pledge_id: 'pl_1' })).toBe(
+      'Card · monthly',
+    );
+    expect(component['donationMethod']({ method: 'card', pledge_id: null })).toBe('Card');
+    expect(component['donationMethod']({ method: 'cash', stripe_session_id: 'cs_1', pledge_id: null })).toBe('Cash');
+    expect(component['donationMethod']({ method: 'bank_transfer', pledge_id: null })).toBe('Bank transfer');
     expect(component['donationMethod']({ stripe_session_id: 'cs_1', pledge_id: null })).toBe('Card');
     expect(component['donationMethod']({ stripe_session_id: null, pledge_id: null })).toBe('Manual');
 

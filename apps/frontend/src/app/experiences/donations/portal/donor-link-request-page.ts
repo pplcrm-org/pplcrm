@@ -90,6 +90,12 @@ export class DonorLinkRequestPage {
     } catch (err) {
       if (err instanceof DonorPortalApiError && err.status === 429) {
         this.error.set('Too many link requests right now. Wait a few minutes and try again.');
+      } else if (err instanceof DonorPortalApiError && err.status === 404) {
+        // The server answered; the request just named no known organization. Saying
+        // "check your connection" here would be untrue.
+        this.error.set(
+          'This page could not tell which organization you give to. Use the link from one of their emails.',
+        );
       } else {
         this.error.set('Could not reach the server. Check your connection and try again.');
       }

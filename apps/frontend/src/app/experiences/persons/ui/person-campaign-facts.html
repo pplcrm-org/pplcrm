@@ -31,9 +31,12 @@
         [disabled]="saving() || readonlyContext()"
         (change)="onSupportChange($event)"
       >
-        <option value="" i18n>Unknown (never asked)</option>
+        <!-- [selected] on each option, not just [value] on the select: the options render after
+             the select's value property is set, which silently reset the browser's selection to
+             the first option on every load. -->
+        <option value="" [selected]="!activeFact()?.support_level" i18n>Unknown (never asked)</option>
         @for (level of supportLevels; track level) {
-        <option [value]="level">{{ supportLabels[level] }}</option>
+        <option [value]="level" [selected]="level === activeFact()?.support_level">{{ supportLabels[level] }}</option>
         }
       </select>
     </label>
@@ -46,9 +49,9 @@
         [disabled]="saving() || readonlyContext()"
         (change)="onVotingChange($event)"
       >
-        <option value="" i18n>Unknown</option>
+        <option value="" [selected]="!activeFact()?.voting_status" i18n>Unknown</option>
         @for (status of votingStatuses; track status) {
-        <option [value]="status">{{ votingLabels[status] }}</option>
+        <option [value]="status" [selected]="status === activeFact()?.voting_status">{{ votingLabels[status] }}</option>
         }
       </select>
     </label>
@@ -148,9 +151,9 @@
           [disabled]="saving()"
           (change)="onVolunteerStatusChange($event)"
         >
-          <option value="" i18n>Not a volunteer</option>
+          <option value="" [selected]="!volunteerSel()" i18n>Not a volunteer</option>
           @for (status of volunteerStatuses; track status) {
-          <option [value]="status">{{ volunteerLabels[status] }}</option>
+          <option [value]="status" [selected]="status === volunteerSel()">{{ volunteerLabels[status] }}</option>
           }
         </select>
       </label>
@@ -163,9 +166,9 @@
           [disabled]="saving()"
           (change)="onStaffStatusChange($event)"
         >
-          <option value="" i18n>Not staff</option>
+          <option value="" [selected]="!staffSel()" i18n>Not staff</option>
           @for (status of staffStatuses; track status) {
-          <option [value]="status">{{ staffLabels[status] }}</option>
+          <option [value]="status" [selected]="status === staffSel()">{{ staffLabels[status] }}</option>
           }
         </select>
       </label>

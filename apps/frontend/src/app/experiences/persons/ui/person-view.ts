@@ -299,7 +299,15 @@ export class PersonView {
 
   /** Payment method label for a donation row (§3): Card / Manual, with a `· monthly` suffix for pledge-linked rows. */
   protected donationMethod(donation: any): string {
-    const base = donation?.stripe_session_id ? 'Card' : 'Manual';
+    // Trust the stored method column — the /donations grid and the donor portal both read it,
+    // and inferring from stripe_session_id here made the same gift read "Card" there and
+    // "Manual" on this tab. The inference survives only for legacy rows with no method.
+    const method = String(donation?.method || '');
+    const base = method
+      ? method.charAt(0).toUpperCase() + method.slice(1).replace(/_/g, ' ')
+      : donation?.stripe_session_id
+        ? 'Card'
+        : 'Manual';
     return donation?.pledge_id ? `${base} · monthly` : base;
   }
 

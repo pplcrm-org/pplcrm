@@ -39,7 +39,14 @@ export function tenantFromHost(): string | null {
 /** `?t=<tenant>` query suffix for public API calls made from a public page. */
 export function tenantQuery(): string {
   const tenant = tenantFromHost();
-  return tenant ? `?t=${encodeURIComponent(tenant)}` : '';
+  if (tenant) return `?t=${encodeURIComponent(tenant)}`;
+  // Bare-host fallback: forward a `?t=` the current URL already carries. Dev portal links are
+  // minted on the app origin with `?t=<slug>` (no wildcard DNS locally), and without this the
+  // SPA silently dropped the tenant and every request 404'd. Safe in production: the pplforms
+  // edge overwrites `?t=` with the real subdomain on every proxied call, so a URL-supplied
+  // value can never point a tenant's page at another workspace.
+  const t = new URLSearchParams(window.location.search).get('t');
+  return t ? `?t=${encodeURIComponent(t)}` : '';
 }
 
 /**

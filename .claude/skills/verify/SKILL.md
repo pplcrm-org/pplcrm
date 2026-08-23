@@ -31,9 +31,12 @@ await page.addInitScript(() => {
 
 ## Auth: throwaway tenant
 
-1. **Sign up** at `/signup`: placeholders "Your first name", "Organization name (or self)",
-   "Enter your email", one password field; the submit button is **"Continue →"** (2026-08-12 —
-   it was "JOIN" earlier; match with `getByRole('button', { name: /Continue/ })`).
+1. **Sign up** at `/signup`: as of 2026-08-23 (observed live) this is a **3-step wizard**
+   (Account → Organization → Contact), no longer a single form — advance each step with its
+   **"Continue"** button (`getByRole('button', { name: /Continue/ })`); skipping the
+   organization-kind step still seeds a demo dataset, so a fresh workspace opens in demo mode.
+   Fields per step follow the old placeholders ("Your first name", "Organization name (or
+   self)", "Enter your email", one password field).
    **Trap — HIBP**: the live backend rejects any password seen in a breach corpus, so
    `StrongPassword123!`-style test passwords fail with "appeared in a known data breach".
    Use a unique per-run password (e.g. `Vf-${Date.now()}-Xq7!pplcrm`) and derive it from the
