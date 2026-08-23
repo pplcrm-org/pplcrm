@@ -33,11 +33,8 @@ try/catch — a notification failure must never fail the business mutation.
 
 1. `libs/common/src/lib/schemas/auth.schema.ts` — `NotificationPreferencesObj` (the source type).
 2. `apps/backend/src/app/modules/auth/controller.ts` → `sanitizeUser()` defaults object (frontend build fails on the missing property otherwise).
-3. `apps/frontend/.../settings/personal-settings-dialog/personal-settings-dialog.ts` — `NOTIF_ROWS` entry + `persistNotifications()` payload.
-4. `apps/frontend/.../settings/settings.config.ts` — the `notifications` section field pair (`notifications.<key>` + `notifications.<key>_in_app`). A `_sms` suffix gets its own Text column; a `_sms` key with no email twin becomes a standalone row (`getNotificationGroups` in settings-page.ts pairs by suffix, and both matrices render an empty cell for a missing channel).
-5. `apps/frontend/.../settings/settings-page.ts` — three spots: `loadUserPrefs` fallback object, the `notifications_<key>` payload mapping, and `saveSection`'s `parseBool` mapping.
-6. `apps/frontend/.../settings/settings-page.spec.ts` — the notification-group **count assertion** (`groups.length`).
-7. Help Center prose if the feature is user-visible (`libs/common/src/lib/help/articles/*`).
+3. `apps/frontend/.../settings/personal-settings-dialog/personal-settings-dialog.ts` — `NOTIF_ROWS` entry + `persistNotifications()` payload. This dialog (opened from the avatar menu) is now the ONLY frontend surface for notification preferences — the old `settings.config.ts` / `settings-page.ts` notification section and its group-count spec assertion were removed when preferences moved here (verified 2026-08-22; `settings.config.ts:57` documents the move). `loadUserPrefs` iterates `NOTIF_ROWS` generically, so no separate load-side edit exists.
+4. Help Center prose if the feature is user-visible (`libs/common/src/lib/help/articles/*`).
 
 ## Traps
 

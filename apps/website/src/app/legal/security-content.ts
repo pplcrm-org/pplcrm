@@ -13,7 +13,7 @@ export const SECURITY_DOC: LegalDoc = {
   title: 'Security',
   intro:
     'Boring, deliberate security: what we actually do to protect your list, described specifically enough to be checked. No badges we have not earned.',
-  updated: 'August 14, 2026',
+  updated: 'August 22, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -78,6 +78,10 @@ export const SECURITY_DOC: LegalDoc = {
     {
       kind: 'p',
       text: 'The two links we text to staff are held to the same rule. An approve-by-text link decides one volunteer and dies on the first tap, after three days at most. The organizer link for a sign-up QR code shows that code and the people who scanned it, can approve only those people, and stops working after twelve hours or the moment you rotate the code. Both are stored hashed, and both only ever go to the mobile number on the recipient’s own profile.',
+    },
+    {
+      kind: 'p',
+      text: 'A donor’s giving-page link follows the same construction: it shows that one donor their own giving and nothing else, is stored hashed, expires on its own, and can be revoked by the organization at any time. Card updates on that page happen on Stripe’s hosted pages — card numbers never touch ours.',
     },
     {
       kind: 'h2',

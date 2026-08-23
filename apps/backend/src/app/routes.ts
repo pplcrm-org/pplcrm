@@ -22,6 +22,7 @@ import zapierInboundRoute from './modules/zapier/zapier-inbound.route';
 import canvassPublicRoute from './modules/canvassing/routes/canvass-public.route';
 import deliveriesPublicRoute from './modules/deliveries/routes/deliveries-public.route';
 import companionPublicRoute from './modules/companion-access/routes/companion-public.route';
+import donorPortalPublicRoute from './modules/donor-portal/routes/donor-portal-public.route';
 
 // A worker heartbeat older than this = the in-process job worker is wedged (the ops watchdog
 // beats every 5 minutes; 20 = 3-4 missed cycles plus slack for retry backoff).
@@ -61,6 +62,9 @@ export const routes: FastifyPluginCallback = (fastify, _opts, done) => {
 
   // Companion access layer: verify + approve gate for both volunteer companions
   fastify.register(companionPublicRoute, { prefix: '/api/companion' });
+
+  // Donor self-service portal (/g/:token pages; the token is the credential)
+  fastify.register(donorPortalPublicRoute, { prefix: '/api/donor-portal' });
 
   // Register Stripe billing webhook route
   fastify.register(billingWebhookRoute, { prefix: '/api/billing' });

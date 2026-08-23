@@ -24,6 +24,7 @@ import { BillingRouter } from './billing/trpc.router';
 import { WorkflowsRouter } from './workflows/trpc.router';
 import { DonationReceiptsRouter } from './donations/receipts/trpc.router';
 import { DonationsRouter } from './donations/trpc.router';
+import { DonorPortalRouter } from './donor-portal/trpc.router';
 import { ExportsRouter } from './exports/trpc.router';
 import { UsersRouter } from './users/trpc.router';
 import { EventsRouter } from './events/trpc.router';
@@ -66,6 +67,7 @@ export const trpcRouter = router({
   billing: BillingRouter,
   donations: DonationsRouter,
   donationReceipts: DonationReceiptsRouter,
+  donorPortal: DonorPortalRouter,
   workflows: WorkflowsRouter,
   exports: ExportsRouter,
   users: UsersRouter,

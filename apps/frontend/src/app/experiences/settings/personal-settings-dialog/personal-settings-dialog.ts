@@ -81,6 +81,14 @@ const NOTIF_ROWS: NotifRow[] = [
     defaultOn: true,
   },
   {
+    key: 'donor_pledge_cancelled',
+    label: 'Donor cancelled a monthly pledge',
+    helper: 'When a donor cancels their monthly gift from their giving portal',
+    emailKey: 'donor_pledge_cancelled',
+    inAppKey: 'donor_pledge_cancelled_in_app',
+    defaultOn: true,
+  },
+  {
     key: 'import_summary',
     label: 'Import summary',
     helper: 'Completion stats after a spreadsheet import',
@@ -226,6 +234,8 @@ export class PersonalSettingsDialog {
         export_ready_in_app: p['export_ready_in_app'] ?? true,
         statements_ready: p['statements_ready'] ?? true,
         statements_ready_in_app: p['statements_ready_in_app'] ?? true,
+        donor_pledge_cancelled: p['donor_pledge_cancelled'] ?? true,
+        donor_pledge_cancelled_in_app: p['donor_pledge_cancelled_in_app'] ?? true,
         import_summary: p['import_summary'] ?? true,
         companion_approval_sms: p['companion_approval_sms'] ?? true,
       },

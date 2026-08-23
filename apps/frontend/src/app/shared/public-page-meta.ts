@@ -53,6 +53,15 @@ export class PublicPageMeta {
     }
   }
 
+  /**
+   * A page whose content is personal to its visitor (the donor giving portal). Call it alongside
+   * `set()`: the title and share card still name the page, but robots are told to stay out, so a
+   * pasted or leaked link never lands in a search index.
+   */
+  public markPrivate(): void {
+    this.meta.updateTag({ name: 'robots', content: 'noindex, nofollow' }, "name='robots'");
+  }
+
   /** A page that resolved to nothing. Keeps the tab honest and keeps the miss out of indexes. */
   public setNotFound(kind: 'form' | 'event' | 'page'): void {
     this.title.setTitle(kind === 'page' ? 'Page not found' : `This ${kind} is not available`);

@@ -21,6 +21,7 @@ export const PUBLIC_ROUTE_PREFIXES = [
   '/f/',
   '/e/',
   '/v/',
+  '/g',
 ] as const;
 
 export function isPublicRoute(url: string): boolean {

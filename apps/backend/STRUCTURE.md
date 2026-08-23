@@ -17,6 +17,7 @@ apps/
         _migrations/
           0001_baseline.ts
           2026-08-20-zzz-squash-bookkeeping.ts
+          2026-08-22-donor-portal.ts
           schema.sql
         config/
           email-folders.config.ts
@@ -46,6 +47,7 @@ apps/
               dashboard-stats.handlers.ts
               deletions.handlers.ts
               demo.handlers.ts
+              donor-portal.handlers.ts
               export.handlers.ts
               import-verification.ts
               import.handlers.ts
@@ -271,6 +273,14 @@ apps/
             controller.ts
             donation-guards.ts
             stripe-connect.ts
+            trpc.router.ts
+          donor-portal/
+            repositories/
+              portal-links.repo.ts
+            routes/
+              donor-portal-public.route.ts
+            controller.ts
+            portal-url.ts
             trpc.router.ts
           duplicates/
             repositories/

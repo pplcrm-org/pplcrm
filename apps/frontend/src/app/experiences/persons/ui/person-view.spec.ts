@@ -13,6 +13,7 @@ import { DonationsService } from '../../../services/api/donations-service';
 import { TagsService } from '@experiences/tags/services/tags-service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
 import { DeliveriesRequestsService } from '@experiences/deliveries/services/deliveries-requests-service';
+import { AuthService } from '../../../auth/auth-service';
 import { signal } from '@angular/core';
 
 describe('PersonView', () => {
@@ -55,6 +56,9 @@ describe('PersonView', () => {
       getStats: vi.fn().mockResolvedValue({ cumulativeAmount: 100, limitAmount: 500, remainingAmount: 400 }),
       getHistory: vi.fn().mockResolvedValue([{ id: 'd1', amount: 50 }]),
       getPersonPledges: vi.fn().mockResolvedValue([]),
+      getPortalLinkStatus: vi
+        .fn()
+        .mockResolvedValue({ live_count: 0, last_created_at: null, last_used_at: null, expires_at: null }),
     };
 
     mockTagsSvc = {
@@ -136,6 +140,8 @@ describe('PersonView', () => {
         { provide: TagsService, useValue: mockTagsSvc },
         { provide: CampaignContextService, useValue: mockCampaignContext },
         { provide: DeliveriesRequestsService, useValue: mockDeliveriesSvc },
+        // The donor-portal panel on the Donations tab reads the demo-mode flag off the auth user.
+        { provide: AuthService, useValue: { getUserSignal: () => signal(null) } },
       ],
     }).compileComponents();
 
@@ -232,6 +238,18 @@ describe('PersonView', () => {
     expect(component['statusChip']()).toBe('Former volunteer');
     component['person'].set({ volunteer_status: null, staff_status: 'active' });
     expect(component['statusChip']()).toBe('Staff');
+  });
+
+  it('embeds the giving-portal panel in the Donations tab', async () => {
+    await fixture.whenStable();
+    component['activeTab'].set('donations');
+    fixture.detectChanges();
+    await new Promise((r) => setTimeout(r, 10));
+    fixture.detectChanges();
+
+    const panel = (fixture.nativeElement as HTMLElement).querySelector('pc-donor-portal-panel');
+    expect(panel, 'expected the donor-portal panel inside the Donations tab').toBeTruthy();
+    expect(mockDonationsSvc.getPortalLinkStatus).toHaveBeenCalledWith('p1');
   });
 
   it('maps the preferred contact channel to a human label', () => {

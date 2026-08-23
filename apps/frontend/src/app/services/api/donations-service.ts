@@ -227,6 +227,26 @@ export class DonationsService extends AbstractAPIService<'donations', Record<str
     return this.api.donations.getResidencyContext.query();
   }
 
+  // ── Donor giving portal (staff side) ────────────────────────────────────────
+
+  /** Link state for the giving-portal panel on the person record. */
+  public getPortalLinkStatus(personId: string) {
+    return this.api.donorPortal.getLinkStatus.query({ personId });
+  }
+
+  /** Stops every live giving-portal link for this person immediately. */
+  public revokePortalLinks(personId: string) {
+    return this.api.donorPortal.revokeLinks.mutate({ personId });
+  }
+
+  /**
+   * Mint a giving-portal link (and email it when the person has an address). Adds a link — it
+   * never invalidates earlier ones. Returns the raw URL once so the panel can offer Copy link.
+   */
+  public sendPortalLink(personId: string) {
+    return this.api.donorPortal.sendLink.mutate({ personId });
+  }
+
   // ── Stripe Connect (hosted onboarding; no tenant-held secrets) ────────────────
 
   public getStripeConnectStatus() {

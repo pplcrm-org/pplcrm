@@ -48,6 +48,23 @@ export const jobPayloadSchema = z.discriminatedUnion('type', [
     email: z.boolean().default(true),
     user_id: idSchema.nullish(),
   }),
+  // Donor portal: look up the address typed into the public "email me my link" page and, when it
+  // matches a person, mint + email a giving-portal link. The lookup lives HERE, not in the route,
+  // so the route's answer is identical for matching and non-matching addresses (no donor probing).
+  z.object({
+    type: z.literal('send-donor-portal-link'),
+    tenant_id: idSchema,
+    email: z.string(),
+  }),
+  // Donor portal: a pledge was cancelled — notify the workspace's admins/owners (bell + email,
+  // each behind the donor_pledge_cancelled preference pair). source 'portal' = the donor did it
+  // on their giving page; 'stripe' = the cancellation arrived via webhook.
+  z.object({
+    type: z.literal('notify-donor-pledge-cancelled'),
+    tenant_id: idSchema,
+    pledge_id: idSchema,
+    source: z.enum(['portal', 'stripe']),
+  }),
   // One-time sweep over gifts recorded before acknowledgements existed. Stores each PDF and sends
   // NO email — a donor should not receive a receipt for a gift from months ago. `cursor` carries
   // the keyset resume point on continuation.

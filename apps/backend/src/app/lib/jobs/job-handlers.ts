@@ -7,6 +7,7 @@ import { handleMatchBoundaries, handleSweepUnmatchedBoundaries } from './handler
 import { handlePurgeCanvassPings } from './handlers/canvass-live.handlers';
 import { handleRefreshDashboardStats, handleRefreshDashboardStatsTenant } from './handlers/dashboard-stats.handlers';
 import { handlePerformScheduledDeletions } from './handlers/deletions.handlers';
+import { handleNotifyDonorPledgeCancelled, handleSendDonorPortalLink } from './handlers/donor-portal.handlers';
 import { handleMaterializeDemoAttachments } from './handlers/demo.handlers';
 import { handleExportCsv } from './handlers/export.handlers';
 import { handleImportCsvJob, handleLegacyImportJob } from './handlers/import.handlers';
@@ -107,6 +108,12 @@ export async function executeJob(payload: unknown, db: Kysely<Models>, jobId?: s
       break;
     case 'run-year-end-statements':
       await handleRunYearEndStatements(job, db);
+      break;
+    case 'send-donor-portal-link':
+      await handleSendDonorPortalLink(job, db);
+      break;
+    case 'notify-donor-pledge-cancelled':
+      await handleNotifyDonorPledgeCancelled(job, db);
       break;
     case 'refresh_list':
       await handleRefreshList(job);

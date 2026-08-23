@@ -61,6 +61,7 @@ export const TENANT_SCOPED_TABLES = [
   'receipt_counters',
   'receipt_statement_runs',
   'donations',
+  'donor_portal_links',
   'email_attachments',
   'email_bodies',
   'email_comments',

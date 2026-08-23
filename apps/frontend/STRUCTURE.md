@@ -123,6 +123,16 @@ apps/
               yard-sign-standing.html
               yard-sign-standing.ts
           donations/
+            portal/
+              donor-address-form.ts
+              donor-get-involved.ts
+              donor-giving-history.ts
+              donor-link-request-page.ts
+              donor-pledge-card.ts
+              donor-portal-api.ts
+              donor-portal-page.html
+              donor-portal-page.ts
+              donor-preferences.ts
             ui/
               donation-receipts-page.html
               donation-receipts-page.ts
@@ -131,6 +141,7 @@ apps/
               donation-view.ts
               donations-grid.html
               donations-grid.ts
+              donor-portal-panel.ts
               pledges-grid.html
               pledges-grid.ts
               record-donation-dialog.html

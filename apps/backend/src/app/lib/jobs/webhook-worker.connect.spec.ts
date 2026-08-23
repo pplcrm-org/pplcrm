@@ -63,6 +63,7 @@ async function seedPerson(tenantId: string, userId: string): Promise<string> {
 
 async function cleanTenant(tenantId: string): Promise<void> {
   await db.updateTable('tenants').set({ admin_id: null }).where('id', '=', tenantId).execute();
+  await db.deleteFrom('background_jobs').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('settings').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('user_activity').where('tenant_id', '=', tenantId).execute();
   await db.deleteFrom('donation_pledges').where('tenant_id', '=', tenantId).execute();
@@ -317,6 +318,100 @@ describe('WebhookEventWorker — Stripe Connect dispatch', () => {
 
       expect(await pledgeStatus()).toBe('past_due');
       expect(await eventStatus(freshEventId)).toBe('processed');
+    });
+  });
+
+  // The staff "a donor cancelled their pledge" notification must fire exactly once per real
+  // transition. A portal-initiated cancel marks the row cancelled first, so the Stripe echo of
+  // that cancel matches zero rows (status != 'cancelled' guard) and enqueues nothing.
+  describe('subscription.deleted → notify-donor-pledge-cancelled dedupe', () => {
+    let personId: string;
+    let campaignId: string;
+    let subscriptionId: string;
+
+    beforeEach(async () => {
+      campaignId = String(Math.floor(Math.random() * 100000000) + 1000000);
+      await db
+        .insertInto('campaigns')
+        .values({
+          id: campaignId,
+          tenant_id: tenantId,
+          admin_id: adminId,
+          name: 'Cancel Notify Campaign',
+          createdby_id: adminId,
+          updatedby_id: adminId,
+        })
+        .execute();
+      personId = await seedPerson(tenantId, adminId);
+      subscriptionId = `sub_cancel_${Math.random().toString(36).slice(2, 10)}`;
+    });
+
+    async function seedPledge(status: 'active' | 'cancelled'): Promise<string> {
+      const pledge = await db
+        .insertInto('donation_pledges')
+        .values({
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          person_id: personId,
+          stripe_subscription_id: subscriptionId,
+          monthly_amount: 2500,
+          status,
+          cancelled_at: status === 'cancelled' ? new Date() : null,
+          createdby_id: adminId,
+          updatedby_id: adminId,
+        })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      return String(pledge.id);
+    }
+
+    async function notifyJobs(): Promise<Array<Record<string, unknown>>> {
+      const rows = await db.selectFrom('background_jobs').selectAll().where('tenant_id', '=', tenantId).execute();
+      return rows
+        .map((r: any) => (typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload))
+        .filter((p: any) => p.type === 'notify-donor-pledge-cancelled');
+    }
+
+    it('a deleted event for an ALREADY-cancelled pledge enqueues no notify job', async () => {
+      await seedPledge('cancelled');
+      const eventId = await enqueueEvent(tenantId, {
+        id: 'evt_sub_del_echo',
+        type: 'customer.subscription.deleted',
+        account: 'acct_w1',
+        data: { object: { id: subscriptionId, status: 'canceled' } },
+      });
+
+      await (worker as any).processNextEvent(eventId);
+
+      expect(await notifyJobs()).toHaveLength(0);
+      expect(await eventStatus(eventId)).toBe('processed');
+    });
+
+    it('a deleted event for a live pledge cancels it and enqueues exactly one notify job', async () => {
+      const pledgeId = await seedPledge('active');
+      const eventId = await enqueueEvent(tenantId, {
+        id: 'evt_sub_del_live',
+        type: 'customer.subscription.deleted',
+        account: 'acct_w1',
+        data: { object: { id: subscriptionId, status: 'canceled' } },
+      });
+
+      await (worker as any).processNextEvent(eventId);
+
+      const pledge = await db
+        .selectFrom('donation_pledges')
+        .select(['status', 'cancelled_at'])
+        .where('tenant_id', '=', tenantId)
+        .where('id', '=', pledgeId)
+        .executeTakeFirstOrThrow();
+      expect(String(pledge.status)).toBe('cancelled');
+      expect(pledge.cancelled_at).not.toBeNull();
+
+      const jobs = await notifyJobs();
+      expect(jobs).toHaveLength(1);
+      expect(String(jobs[0]['pledge_id'])).toBe(pledgeId);
+      expect(jobs[0]['source']).toBe('stripe');
+      expect(await eventStatus(eventId)).toBe('processed');
     });
   });
 

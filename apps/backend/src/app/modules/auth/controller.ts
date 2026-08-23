@@ -2842,6 +2842,8 @@ ${waitlistNote}
       export_ready_in_app: true,
       statements_ready: true,
       statements_ready_in_app: true,
+      donor_pledge_cancelled: true,
+      donor_pledge_cancelled_in_app: true,
       import_summary: true,
       companion_approval_sms: true,
     };

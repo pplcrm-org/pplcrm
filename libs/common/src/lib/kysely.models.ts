@@ -62,6 +62,7 @@ export interface Models {
   donation_pledges: DonationPledges;
   donation_receipts: DonationReceipts;
   donation_receipt_items: DonationReceiptItems;
+  donor_portal_links: DonorPortalLinks;
   receipt_counters: ReceiptCounters;
   receipt_statement_runs: ReceiptStatementRuns;
   emails: Emails;
@@ -566,9 +567,10 @@ export interface DeliveryRequests extends RecordType {
   household_id: string;
   person_id: string | null;
   web_form_id: string | null;
-  // 'canvass' = raised at the door via the Canvass Companion survey (spec §3.6). The DB CHECK
-  // (migration 2026-07-12-companion-apps.ts) allows it; keep this union in lockstep with that CHECK.
-  source: Generated<'web_form' | 'manual' | 'canvass'>;
+  // 'canvass' = raised at the door via the Canvass Companion survey (spec §3.6); 'donor_portal' =
+  // requested by the donor on their own giving page (/g/:token). Keep this union in lockstep with
+  // the chk_delivery_requests_source CHECK (widened by migration 2026-08-22-donor-portal.ts).
+  source: Generated<'web_form' | 'manual' | 'canvass' | 'donor_portal'>;
   status: Generated<'new' | 'approved' | 'declined' | 'delivered'>;
   notes: string | null;
   skip_reason: string | null;
@@ -1094,6 +1096,25 @@ export interface DonationReceiptItems {
   amount_cents: number;
   gift_date: ColumnType<Date, Date | string, Date | string>;
   created_at: Generated<Timestamp>;
+}
+
+/**
+ * Donor giving-portal bearer links. Only the sha256 hash of the raw token is stored; the raw
+ * token is embedded once in an outgoing URL (`/g/<token>`). Multiple live links per person
+ * coexist on purpose — a link rides every donor document email, and minting a new one must not
+ * kill the one in last month's inbox. Staff revocation clears every live link for the person.
+ */
+export interface DonorPortalLinks {
+  id: Generated<string>;
+  tenant_id: string;
+  person_id: string;
+  token_hash: string;
+  created_at: Generated<Timestamp>;
+  /** Staff sender; NULL = minted by the system (document email or the self-request page). */
+  createdby_id: string | null;
+  expires_at: Timestamp;
+  revoked_at: Timestamp | null;
+  last_used_at: Timestamp | null;
 }
 
 /**

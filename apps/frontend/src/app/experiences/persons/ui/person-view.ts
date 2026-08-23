@@ -14,6 +14,7 @@ import { CampaignContextService } from '../../../services/campaign-context.servi
 import { PersonsService } from '../services/persons-service';
 import { VolunteerService } from '../../../services/api/volunteer-service';
 import { DonationsService } from '../../../services/api/donations-service';
+import { DonorPortalPanel } from '../../donations/ui/donor-portal-panel';
 import { EventsService } from '../../../services/api/events-service';
 import { ConnectionsService } from '../../../services/api/connections-service';
 import { PersonCampaignFacts } from './person-campaign-facts';
@@ -57,6 +58,7 @@ import { EmptyState } from '@uxcommon/components/empty-state/empty-state';
     PersonConnections,
     ModalShell,
     EmptyState,
+    DonorPortalPanel,
   ],
   templateUrl: './person-view.html',
 })

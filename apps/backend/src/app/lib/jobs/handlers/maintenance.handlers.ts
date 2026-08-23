@@ -62,6 +62,10 @@ const COMPLETED_JOBS_RETENTION_DAYS = 7;
 const FAILED_JOBS_RETENTION_DAYS = 30;
 const WEBHOOK_EVENTS_RETENTION_DAYS = 90;
 const EXPIRED_SESSION_GRACE_DAYS = 30;
+// A dead giving-portal link (expired or revoked) lingers this long so the staff panel can still
+// answer "when was it last used", then goes. Live links are governed by their own expires_at
+// (PORTAL_LINK_TTL_DAYS = 365, quoted in the privacy policy).
+const DONOR_PORTAL_LINK_GRACE_DAYS = 90;
 
 /**
  * Daily dashboard-statistics snapshots (dashboard_stats_snapshots). Only the newest row is ever
@@ -425,6 +429,22 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
     return res.numAffectedRows ?? 0n;
   });
 
+  // Dead giving-portal links (donor self-service pages): a link stays queryable for 90 days past
+  // its expiry or revocation purely so the staff panel can still say "last used", then goes. Live
+  // links are never touched — their own expires_at is the retention that matters.
+  const prunedDonorPortalLinks = await deleteInBatches(async () => {
+    const res = await sql`
+      DELETE FROM donor_portal_links
+      WHERE ctid IN (
+        SELECT ctid FROM donor_portal_links
+        WHERE (expires_at < now() - make_interval(days => ${DONOR_PORTAL_LINK_GRACE_DAYS}))
+           OR (revoked_at IS NOT NULL
+                AND revoked_at < now() - make_interval(days => ${DONOR_PORTAL_LINK_GRACE_DAYS}))
+        LIMIT ${RETENTION_BATCH})
+    `.execute(db);
+    return res.numAffectedRows ?? 0n;
+  });
+
   // Dashboard snapshot history past the trend window. The newest row per tenant is always inside
   // the window by construction (the nightly sweep rewrites it), so this only ever removes history.
   const prunedDashboardSnapshots = await deleteInBatches(async () => {
@@ -502,6 +522,7 @@ export async function handlePruneRetention(db: Kysely<Models>): Promise<void> {
       prunedWorkflowRuns: prunedWorkflowRuns.toString(),
       prunedNotifications: prunedNotifications.toString(),
       prunedCompanionOps: prunedCompanionOps.toString(),
+      prunedDonorPortalLinks: prunedDonorPortalLinks.toString(),
       prunedExports: prunedExports.rows,
       exportBlobDeleteFailures: prunedExports.blobFailures,
       prunedImportSourceFiles: prunedImportSources.rows,

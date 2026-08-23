@@ -76,6 +76,25 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
         kind: 'p',
         text: 'Pledges live in their own view beside donations. Keeping promised and received money separate keeps reports honest, and gives you a follow-up queue of pledges yet to convert.',
       },
+      { kind: 'h2', id: 'donor-portal', text: 'The giving portal: donors help themselves' },
+      {
+        kind: 'p',
+        text: 'Every donor can be given a personal giving page. On it they see their own giving history and nothing else: their gifts, their receipt PDFs, the monthly pledge behind their card, their mailing address, and their newsletter preferences. From that one page a donor can download any receipt, update the card behind a monthly gift, change its amount, cancel it, fix their mailing address, unsubscribe or resubscribe, raise a hand to volunteer, or ask for a yard sign.',
+      },
+      {
+        kind: 'p',
+        text: 'The link travels three ways. Every receipt and acknowledgement email now carries it automatically. You can send one by hand from the **Giving portal** panel on the Donations tab of the person’s record under [People](/people) — the panel also offers **Copy link**, which is the way in when the donor has no email on file or your workspace still holds demo data (demo workspaces never email real contacts). And donors themselves can request one: the public request page asks only for an email address and answers the same way whether or not it matches anyone, so nobody can use it to learn who has donated.',
+      },
+      {
+        kind: 'p',
+        text: 'Links expire on their own after a year, and sending a new one never breaks the old one — the link in last month’s receipt email keeps working. **Revoke link** on the same panel stops every live link for that donor at once. When a donor cancels their monthly pledge from the portal, administrators are told by bell and email; the toggle for that notice lives in personal settings under “Donor cancelled a monthly pledge”.',
+      },
+      {
+        kind: 'callout',
+        tone: 'tip',
+        title: 'Addresses feed tax receipts',
+        text: 'The year-end run can only issue an official tax receipt to a donor with a mailing address on file. The portal asks donors to keep their own address current, which quietly turns year-end summaries into real tax receipts without any data entry on your side.',
+      },
       { kind: 'h2', id: 'pages', text: 'Fundraising pages: money online' },
       {
         kind: 'steps',
@@ -128,6 +147,10 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       {
         kind: 'p',
         text: 'When a donation is recorded — through a fundraising page, a monthly pledge charge, or the **Record donation** dialog — pplCRM emails the donor a **donation receipt** within moments, with a PDF attached. It shows your organization, the donor, the amount, the date and the payment method, and it carries a numbered reference beginning with **A-**. There is nothing to set up and nothing to turn on: it works in a brand-new workspace, and it works for organizations that issue no tax receipts at all.',
+      },
+      {
+        kind: 'p',
+        text: 'Donors do not have to keep those emails. The receipt email also carries a link to the donor’s personal giving page, where every current receipt, acknowledgement, and year-end statement of theirs can be downloaded again — see the giving-portal section of [Donations](/help/donations). A donor asking you to re-send a receipt usually just needs that link.',
       },
       {
         kind: 'p',

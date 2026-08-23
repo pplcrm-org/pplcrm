@@ -94,6 +94,7 @@ async function cleanTenant(db: any, tenantId: string): Promise<void> {
     'tasks',
     'donation_receipt_items',
     'donation_receipts',
+    'donor_portal_links',
     'donations',
     'potential_duplicates',
     'persons',
@@ -295,6 +296,42 @@ describe('mergePersons re-points everything that names the source person', () =>
     expect(String((byId.get(sourceStatementId) as any).person_id)).toBe(String(target.id));
     // The target's own statement stands.
     expect((byId.get(targetStatementId) as any).status).toBe('issued');
+  });
+
+  it('re-points giving-portal links so a merged donor’s emailed links keep working', async () => {
+    const target = await addPerson('Target');
+    const source = await addPerson('Source');
+
+    // Two live links (several coexist on purpose — one per emailed document). The composite
+    // person FK is ON DELETE CASCADE, so an unhandled merge would silently kill them both.
+    for (let i = 0; i < 2; i++) {
+      await db
+        .insertInto('donor_portal_links')
+        .values({
+          tenant_id: seed.tenantId,
+          person_id: source.id,
+          token_hash: `merge-link-${rand()}`,
+          expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        })
+        .execute();
+    }
+
+    await repo.mergePersons({
+      tenant_id: seed.tenantId,
+      target_id: target.id,
+      source_id: source.id,
+      user_id: seed.userId,
+    });
+
+    const links = await db
+      .selectFrom('donor_portal_links')
+      .select(['person_id'])
+      .where('tenant_id', '=', seed.tenantId)
+      .execute();
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(String(link.person_id)).toBe(String(target.id));
+    }
   });
 
   it('moves workflow run history and street claims, which no foreign key would have protected', async () => {

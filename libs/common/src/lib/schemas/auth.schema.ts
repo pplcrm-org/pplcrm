@@ -35,6 +35,11 @@ export const NotificationPreferencesObj = z.object({
   /** Year-end giving statement batch finished (email + bell) — sent to the admin who ran it. */
   statements_ready: z.boolean().default(true),
   statements_ready_in_app: z.boolean().default(true),
+  /** A donor cancelled their monthly pledge (from their giving portal, or via Stripe). Sent to
+   *  every active admin/owner — no staff user triggers a donor's cancel, so there is no "the
+   *  user who started it" to notify instead. */
+  donor_pledge_cancelled: z.boolean().default(true),
+  donor_pledge_cancelled_in_app: z.boolean().default(true),
   // No `import_summary_in_app` twin: imports have never produced an in-app notification, only
   // the email (see import.handlers.ts). A toggle governing nothing is worse than no toggle.
   import_summary: z.boolean().default(true),

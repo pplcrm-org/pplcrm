@@ -538,8 +538,13 @@ export class WebhookEventWorker {
               // stripe_subscription_id (donation_pledges_stripe_subscription_id_key UNIQUE);
               // eventRecord.tenant_id is null when the connected-account row is missing, so a
               // tenant filter would silently drop legitimate updates.
+              //
+              // The cancelled mapping only touches rows not ALREADY cancelled and returns what it
+              // changed, so the admin notification fires exactly once per real transition — a
+              // portal-initiated cancel marks the row first, and the later Stripe event then
+              // matches zero rows here.
               // eslint-disable-next-line local/no-unscoped-db-query
-              await this.db
+              const transitioned = await this.db
                 .updateTable('donation_pledges')
                 .set({
                   status: mappedStatus,
@@ -548,18 +553,27 @@ export class WebhookEventWorker {
                   updated_at: new Date(),
                 })
                 .where('stripe_subscription_id', '=', subscriptionId)
+                .$if(mappedStatus === 'cancelled', (qb) => qb.where('status', '!=', 'cancelled'))
+                .returning(['id', 'tenant_id'])
                 .execute();
+              if (mappedStatus === 'cancelled') {
+                await this.enqueuePledgeCancelledNotifications(transitioned);
+              }
             }
           } else if (isSubscriptionDeleted) {
             const subscriptionId = String(stripeObj.id);
             // NOTE: unscoped by design — same globally-unique stripe_subscription_id key as the
-            // status-sync branch above.
+            // status-sync branch above. Same not-already-cancelled guard as the status mapping:
+            // one notification per real transition, none for the echo of a portal cancel.
             // eslint-disable-next-line local/no-unscoped-db-query
-            await this.db
+            const transitioned = await this.db
               .updateTable('donation_pledges')
               .set({ status: 'cancelled', cancelled_at: new Date(), updated_at: new Date() })
               .where('stripe_subscription_id', '=', subscriptionId)
+              .where('status', '!=', 'cancelled')
+              .returning(['id', 'tenant_id'])
               .execute();
+            await this.enqueuePledgeCancelledNotifications(transitioned);
           } else if (isInvoiceFailed) {
             const subscriptionId = String(stripeObj.subscription);
             // NOTE: unscoped by design — same globally-unique stripe_subscription_id key as the
@@ -728,6 +742,37 @@ export class WebhookEventWorker {
     }
 
     return true;
+  }
+
+  /**
+   * Queue the "a donor cancelled their pledge" staff notification for each pledge row that just
+   * transitioned to cancelled. Callers pass only genuinely transitioned rows (their UPDATEs carry
+   * a status != 'cancelled' guard), so a portal cancel followed by its Stripe echo notifies once.
+   */
+  private async enqueuePledgeCancelledNotifications(rows: Array<{ id: unknown; tenant_id: unknown }>): Promise<void> {
+    for (const row of rows) {
+      if (!row?.tenant_id || !row?.id) continue;
+      try {
+        await this.db
+          .insertInto('background_jobs')
+          .values({
+            tenant_id: String(row.tenant_id),
+            queue: 'default',
+            status: 'pending',
+            payload: JSON.stringify({
+              type: 'notify-donor-pledge-cancelled',
+              tenant_id: String(row.tenant_id),
+              pledge_id: String(row.id),
+              source: 'stripe',
+            }),
+            run_at: new Date(),
+            max_attempts: 3,
+          })
+          .execute();
+      } catch (err) {
+        logger.error({ err, pledgeId: row.id }, 'Failed to enqueue pledge-cancelled notification');
+      }
+    }
   }
 
   /**

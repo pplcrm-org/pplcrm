@@ -228,11 +228,32 @@ export async function renderAndDeliverReceipt(
   const orgName = issuer.org_legal_name || 'the organization';
   const { subject, intro } = donorMailCopy(current, orgName);
 
+  // Every donor document email carries a fresh giving-portal link (all three kinds flow through
+  // here, so this one seam covers acknowledgements, tax receipts, and statements). Best-effort:
+  // a link that cannot be minted must never block the receipt itself.
+  let portalText = '';
+  let portalHtml = '';
+  if (current.person_id) {
+    try {
+      const { DonorPortalController } = await import('../../../modules/donor-portal/controller');
+      const { donorPortalUrl } = await import('../../../modules/donor-portal/portal-url');
+      const tenantRow = await db.selectFrom('tenants').select('slug').where('id', '=', tenantId).executeTakeFirst();
+      if (tenantRow?.slug) {
+        const minted = await new DonorPortalController().mintLink(tenantId, String(current.person_id), null);
+        const url = donorPortalUrl(String(tenantRow.slug), minted.token);
+        portalText = `\n\nManage your giving — download receipts, update your card, change or cancel a monthly gift, or update your details:\n${url}`;
+        portalHtml = `<p>Manage your giving — download receipts, update your card, change or cancel a monthly gift, or update your details: <a href="${url}">your giving page</a>.</p>`;
+      }
+    } catch (err) {
+      logger.warn({ err, tenantId, receiptId }, 'Could not add a giving-portal link to the receipt email');
+    }
+  }
+
   await mailService.sendMail({
     to: current.donor_email,
     subject,
-    text: `${intro}\n\nThe document is attached as a PDF.`,
-    html: `<p>${intro}</p><p>The document is attached as a PDF.</p>`,
+    text: `${intro}\n\nThe document is attached as a PDF.${portalText}`,
+    html: `<p>${intro}</p><p>The document is attached as a PDF.</p>${portalHtml}`,
     tenant_id: tenantId,
     audience: 'contact',
     attachments: [attachment],

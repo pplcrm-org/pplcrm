@@ -1132,6 +1132,14 @@ export class PersonsRepo extends BaseRepository<'persons'> {
         .where('tenant_id', '=', input.tenant_id)
         .where('person_id', '=', input.source_id)
         .execute();
+      // Giving-portal links follow the surviving person — without this the composite person FK
+      // would either reject the source delete or (via CASCADE) silently kill the donor's links.
+      await trx
+        .updateTable('donor_portal_links')
+        .set({ person_id: input.target_id })
+        .where('tenant_id', '=', input.tenant_id)
+        .where('person_id', '=', input.source_id)
+        .execute();
       await trx
         .updateTable('delivery_requests')
         .set({ person_id: input.target_id })

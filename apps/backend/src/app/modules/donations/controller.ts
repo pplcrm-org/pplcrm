@@ -153,7 +153,7 @@ function regionCodeMatchesState(code: string, state: string): boolean {
  * the donor's card is not being charged, so marking the pledge cancelled is honest. Every other
  * Stripe failure means the subscription may still be live and must be surfaced to the caller.
  */
-function isAlreadyCancelledInStripe(err: unknown): boolean {
+export function isAlreadyCancelledInStripe(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const code = 'code' in err ? err.code : undefined;
   const message = err instanceof Error ? err.message : '';

@@ -43,6 +43,17 @@ export const appRoutes = [
     loadComponent: () => import('./experiences/forms/ui/public-form').then((m) => m.PublicFormComponent),
   },
   {
+    path: 'g/:token',
+    title: 'Your giving',
+    loadComponent: () => import('./experiences/donations/portal/donor-portal-page').then((m) => m.DonorPortalPage),
+  },
+  {
+    path: 'g',
+    title: 'Get your giving link',
+    loadComponent: () =>
+      import('./experiences/donations/portal/donor-link-request-page').then((m) => m.DonorLinkRequestPage),
+  },
+  {
     path: 'e/:slug',
     title: 'Event',
     data: { kind: 'event' },

@@ -24,6 +24,18 @@ describe('appRoutes', () => {
     }
   });
 
+  it('exposes the donor giving-portal routes exactly once, each with its static title', () => {
+    const expected = [
+      { path: 'g/:token', title: 'Your giving' },
+      { path: 'g', title: 'Get your giving link' },
+    ];
+    for (const { path, title } of expected) {
+      const matches = appRoutes.filter((r) => r.path === path);
+      expect(matches, `expected exactly one route for "${path}"`).toHaveLength(1);
+      expect(matches[0]).toMatchObject({ title });
+    }
+  });
+
   it('guards the dashboard shell with authGuard', () => {
     const dashboard = appRoutes.find((r) => 'loadChildren' in r);
     expect(dashboard).toBeDefined();

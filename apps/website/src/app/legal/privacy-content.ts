@@ -11,7 +11,7 @@ export const PRIVACY_DOC: LegalDoc = {
   title: 'Privacy policy',
   intro:
     'What we collect, why, where it lives, and the things we will never do with it. Written to be read, not skimmed past.',
-  updated: 'August 14, 2026',
+  updated: 'August 22, 2026',
   blocks: [
     {
       kind: 'h2',
@@ -83,11 +83,15 @@ export const PRIVACY_DOC: LegalDoc = {
     {
       kind: 'h2',
       id: 'public-pages',
-      text: 'Public forms, donations, events and volunteer links',
+      text: 'Public forms, donations, events, volunteer links and giving pages',
     },
     {
       kind: 'p',
       text: 'Organizations can publish signup forms, donation pages, event pages and volunteer links. Anything you submit on those pages goes into that organization’s workspace, and the organization is responsible for how it is used. Donation payments are processed by Stripe (see the subprocessor list below); we receive the donation record, never your full card details. Volunteers using a companion link verify with a one-time code sent to the email or mobile number the organization has on file; codes and device sessions are stored hashed and expire automatically. An organization can also publish a join code (usually as a QR code at an event). If you scan one and give your name and a contact, we create or match a record for you in that organization\u2019s workspace and send you a one-time code; a person at the organization must still approve you before you can see anything, and they can revoke that at any time.',
+    },
+    {
+      kind: 'p',
+      text: 'Donors can be sent a personal giving-page link. That page shows only that donor’s own information — their gifts, receipts, monthly pledge, mailing address and email preferences — and lets them manage it themselves. The link token is stored hashed, expires automatically, and can be revoked by the organization at any time; card changes happen on Stripe’s own pages, never ours. The page sets no cookies. A donor can also request their link by email; that request page answers the same way whether or not the address matches anyone on file, so it cannot be used to learn who has donated to an organization.',
     },
     {
       kind: 'h2',
@@ -173,6 +177,7 @@ export const PRIVACY_DOC: LegalDoc = {
         '**Export files** are downloadable for 30 days, then removed. **Import source files** are kept for 90 days so you can audit an import, then removed.',
         '**Donation receipts and giving statements** (the PDF documents) are kept for as long as the workspace exists — receipt rules require even cancelled receipts to be retained — and count toward the workspace storage quota. They are permanently deleted with the workspace.',
         '**Sessions** expire after 24 hours, or 30 days if you chose “remember me”. Volunteer device sessions expire after 30 days.',
+        '**Donor giving-page links** expire 365 days after they are sent and are stored hashed. An organization can revoke a donor’s links at any time; expired and revoked link records are purged 90 days later.',
         '**Suppression records** (unsubscribes, bounces, complaints) are kept while a workspace is active, because keeping them is what honors the opt-out.',
         '**Billing records** are kept as long as tax and accounting law requires.',
       ],
