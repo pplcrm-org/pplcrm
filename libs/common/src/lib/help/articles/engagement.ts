@@ -83,7 +83,7 @@ export const ENGAGEMENT_ARTICLES: HelpArticle[] = [
       },
       {
         kind: 'p',
-        text: 'The link travels three ways. Every receipt and acknowledgement email now carries it automatically. You can send one by hand from the **Giving portal** panel on the Donations tab of the person’s record under [People](/people) — the panel also offers **Copy link**, which is the way in when the donor has no email on file or your workspace still holds demo data (demo workspaces never email real contacts). And donors themselves can request one: the public request page asks only for an email address and answers the same way whether or not it matches anyone, so nobody can use it to learn who has donated.',
+        text: 'The link travels three ways. Every receipt and acknowledgement email now carries it automatically. You can send one by hand from the **Giving** band on the person’s record under [People](/people) — the band appears for anyone with recorded giving and also shows their totals at a glance; for a person with no giving yet, the same panel sits on their Donations tab instead. The panel also offers **Copy link**, which is the way in when the donor has no email on file or your workspace still holds demo data (demo workspaces never email real contacts). And donors themselves can request one: the public request page asks only for an email address and answers the same way whether or not it matches anyone, so nobody can use it to learn who has donated.',
       },
       {
         kind: 'p',

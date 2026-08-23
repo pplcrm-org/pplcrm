@@ -116,8 +116,29 @@ export class PersonView {
   protected readonly tags = signal<string[]>([]);
   protected readonly issues = signal<string[]>([]);
 
-  // True when the person has at least one active monthly pledge — powers the "Monthly donor" status chip.
-  protected readonly hasActivePledge = signal(false);
+  // The person's pledges, as loaded — the "Monthly donor" chip and the Giving band both read them.
+  protected readonly personPledges = signal<any[]>([]);
+  protected readonly hasActivePledge = computed(() =>
+    this.personPledges().some((p) => String(p.status).toLowerCase() === 'active'),
+  );
+
+  // Giving band on the overview (renders only for donors). Derived from the SAME section data the
+  // Donations tab renders, so the band and the tab can never disagree. Money = succeeded gifts
+  // only, matching the ledger's "money actually received" rule.
+  protected readonly succeededDonations = computed(() =>
+    this.donationHistory().filter((d) => String(d.status) === 'succeeded'),
+  );
+  protected readonly isDonor = computed(
+    () => !this.sectionsLoading() && (this.donationHistory().length > 0 || this.personPledges().length > 0),
+  );
+  protected readonly givingTotalCents = computed(() =>
+    this.succeededDonations().reduce((sum, d) => sum + Number(d.amount || 0), 0),
+  );
+  protected readonly lastGift = computed(() => this.succeededDonations()[0] ?? null);
+  protected readonly activePledgeMonthlyCents = computed(() => {
+    const active = this.personPledges().find((p) => String(p.status).toLowerCase() === 'active');
+    return active ? Number(active.monthly_amount || 0) : null;
+  });
 
   // Donations are truncated to the first 6 rows until the user expands (§3 "Show all N").
   protected readonly DONATION_PREVIEW_COUNT = 6;
@@ -396,11 +417,11 @@ export class PersonView {
           (v) => this.donationHistory.set(v || []),
           isCurrent,
         ),
-        // Powers the "Monthly donor" chip.
+        // Powers the "Monthly donor" chip and the Giving band.
         this.section(
           'pledges',
           () => this.donationsSvc.getPersonPledges(id),
-          (v) => this.hasActivePledge.set((v || []).some((p: any) => String(p.status).toLowerCase() === 'active')),
+          (v) => this.personPledges.set(v || []),
           isCurrent,
         ),
         this.section(
@@ -499,7 +520,7 @@ export class PersonView {
     this.volunteerHistory.set([]);
     this.donationStats.set(null);
     this.donationHistory.set([]);
-    this.hasActivePledge.set(false);
+    this.personPledges.set([]);
     this.showAllDonations.set(false);
     this.eventHistory.set([]);
     this.connectionCount.set(0);

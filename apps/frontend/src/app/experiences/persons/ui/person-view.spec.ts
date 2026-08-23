@@ -240,16 +240,40 @@ describe('PersonView', () => {
     expect(component['statusChip']()).toBe('Staff');
   });
 
-  it('embeds the giving-portal panel in the Donations tab', async () => {
+  it('shows the Giving band with the portal panel on the overview for a donor', async () => {
+    // Default fixture has one donation, so the person IS a donor: the band renders on the
+    // overview (no tab click needed) and the portal panel lives there — exactly once.
     await fixture.whenStable();
+    fixture.detectChanges();
+    await new Promise((r) => setTimeout(r, 10));
+    fixture.detectChanges();
+
+    const host = fixture.nativeElement as HTMLElement;
+    expect(host.textContent, 'expected the Giving band heading on the overview').toContain('Giving');
+    expect(host.textContent, 'expected the total-given stat').toContain('Total given');
+    const panels = host.querySelectorAll('pc-donor-portal-panel');
+    expect(panels.length, 'expected the donor-portal panel exactly once (in the band)').toBe(1);
+    expect(mockDonationsSvc.getPortalLinkStatus).toHaveBeenCalledWith('p1');
+  });
+
+  it('keeps the portal panel in the Donations tab for a person with no giving', async () => {
+    mockDonationsSvc.getHistory.mockResolvedValue([]);
+    mockDonationsSvc.getPersonPledges.mockResolvedValue([]);
+    fixture = TestBed.createComponent(PersonView);
+    component = fixture.componentInstance;
+    fixture.componentRef.setInput('id', 'p1');
+    fixture.detectChanges();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(component['isDonor']()).toBe(false);
     component['activeTab'].set('donations');
     fixture.detectChanges();
     await new Promise((r) => setTimeout(r, 10));
     fixture.detectChanges();
 
-    const panel = (fixture.nativeElement as HTMLElement).querySelector('pc-donor-portal-panel');
-    expect(panel, 'expected the donor-portal panel inside the Donations tab').toBeTruthy();
-    expect(mockDonationsSvc.getPortalLinkStatus).toHaveBeenCalledWith('p1');
+    const host = fixture.nativeElement as HTMLElement;
+    const panels = host.querySelectorAll('pc-donor-portal-panel');
+    expect(panels.length, 'expected the panel exactly once (in the tab, no band)').toBe(1);
   });
 
   it('maps the preferred contact channel to a human label', () => {
