@@ -44,139 +44,137 @@
     (logged)="onInteractionLogged()"
   ></pc-log-interaction>
   } @if (person()) {
-  <!-- Summary band: three fact cards in a row, then the full-width tabs workspace below -->
+  <!-- Summary band: Contact + Tags side by side with the Giving band beneath them (left 2/3),
+       the taller Campaign-standing card on the right — so Giving fills the space the tall card
+       leaves instead of pushing everything down as a full-width row. Tabs workspace below. -->
   <div class="flex flex-col gap-6">
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-      <!-- Contact card -->
-      <pc-card>
-        <h3 class="mb-3 block pc-eyebrow">Contact</h3>
+      <div class="flex flex-col gap-6 lg:col-span-2">
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <!-- Contact card -->
+          <pc-card>
+            <h3 class="mb-3 block pc-eyebrow">Contact</h3>
 
-        <div class="flex w-full flex-col text-xs">
-          <pc-detail-item
-            label="Primary Email"
-            [value]="person().email"
-            icon="envelope"
-            [copyable]="true"
-          ></pc-detail-item>
-          @if (person().email2) {
-          <pc-detail-item
-            label="Secondary Email"
-            [value]="person().email2"
-            icon="envelope"
-            [copyable]="true"
-          ></pc-detail-item>
-          }
-          <pc-detail-item
-            label="Mobile Phone"
-            [value]="person().mobile"
-            icon="phone"
-            [copyable]="true"
-          ></pc-detail-item>
-          @if (person().home_phone) {
-          <pc-detail-item
-            label="Home Phone"
-            [value]="person().home_phone"
-            icon="home"
-            [copyable]="true"
-          ></pc-detail-item>
-          }
-          <pc-detail-item
-            label="Address"
-            [value]="addressDisplay()"
-            icon="map-pin"
-            [link]="!!householdId() && !isPlaceholderHousehold()"
-            (linkClicked)="navigateToHousehold()"
-          ></pc-detail-item>
-          <!-- Whether this person's address is in the campaign's own territory. Comes from their
+            <div class="flex w-full flex-col text-xs">
+              <pc-detail-item
+                label="Primary Email"
+                [value]="person().email"
+                icon="envelope"
+                [copyable]="true"
+              ></pc-detail-item>
+              @if (person().email2) {
+              <pc-detail-item
+                label="Secondary Email"
+                [value]="person().email2"
+                icon="envelope"
+                [copyable]="true"
+              ></pc-detail-item>
+              }
+              <pc-detail-item
+                label="Mobile Phone"
+                [value]="person().mobile"
+                icon="phone"
+                [copyable]="true"
+              ></pc-detail-item>
+              @if (person().home_phone) {
+              <pc-detail-item
+                label="Home Phone"
+                [value]="person().home_phone"
+                icon="home"
+                [copyable]="true"
+              ></pc-detail-item>
+              }
+              <pc-detail-item
+                label="Address"
+                [value]="addressDisplay()"
+                icon="map-pin"
+                [link]="!!householdId() && !isPlaceholderHousehold()"
+                (linkClicked)="navigateToHousehold()"
+              ></pc-detail-item>
+              <!-- Whether this person's address is in the campaign's own territory. Comes from their
                household, and is absent for an office elected at large, which has no single area. -->
-          @if (seatStatusLabel(); as status) {
-          <div class="flex items-center gap-2">
-            <pc-detail-item label="Territory" [value]="status" icon="map"></pc-detail-item>
-            @if (inSeatTerritory()) {
-            <span class="badge badge-sm badge-success font-semibold">Yours</span>
+              @if (seatStatusLabel(); as status) {
+              <div class="flex items-center gap-2">
+                <pc-detail-item label="Territory" [value]="status" icon="map"></pc-detail-item>
+                @if (inSeatTerritory()) {
+                <span class="badge badge-sm badge-success font-semibold">Yours</span>
+                }
+              </div>
+              } @if (preferredContactLabel()) {
+              <pc-detail-item
+                label="Preferred Contact"
+                [value]="preferredContactLabel()"
+                icon="chat-bubble-bottom-center-text"
+              ></pc-detail-item>
+              }
+            </div>
+          </pc-card>
+
+          <!-- Tags, issues, notes & record metadata -->
+          <pc-card>
+            <div class="flex w-full flex-col gap-3">
+              <div>
+                <span class="mb-1.5 block pc-eyebrow">Tags</span>
+                @if (tags().length > 0) {
+                <pc-tags [tags]="tags()" type="tag" [readonly]="true" [canDelete]="false" [compact]="true"></pc-tags>
+                } @else {
+                <button
+                  type="button"
+                  class="text-left text-xs text-primary hover:underline"
+                  (click)="editPerson()"
+                  i18n="PersonView|Tags empty-state guided link@@person.tags.emptyLink"
+                >
+                  No tags yet. Add one to group them
+                </button>
+                }
+              </div>
+              <div>
+                <span class="mb-1.5 block pc-eyebrow">Issues of Interest</span>
+                @if (issues().length > 0) {
+                <pc-tags
+                  [tags]="issues()"
+                  type="issue"
+                  [readonly]="true"
+                  [canDelete]="false"
+                  [compact]="true"
+                ></pc-tags>
+                } @else {
+                <button
+                  type="button"
+                  class="text-left text-xs text-primary hover:underline"
+                  (click)="editPerson()"
+                  i18n="PersonView|Issues empty-state guided link@@person.issues.emptyLink"
+                >
+                  No issues yet. Add what they care about
+                </button>
+                }
+              </div>
+            </div>
+
+            @if (person().notes) {
+            <div class="mt-2 border-t border-base-200 pt-4">
+              <h3 class="mb-2 block pc-eyebrow">Internal notes</h3>
+              <p class="whitespace-pre-line text-xs leading-relaxed text-base-content/80">{{ person().notes }}</p>
+            </div>
             }
-          </div>
-          } @if (preferredContactLabel()) {
-          <pc-detail-item
-            label="Preferred Contact"
-            [value]="preferredContactLabel()"
-            icon="chat-bubble-bottom-center-text"
-          ></pc-detail-item>
-          }
-        </div>
-      </pc-card>
 
-      <!-- Tags, issues, notes & record metadata -->
-      <pc-card>
-        <div class="flex w-full flex-col gap-3">
-          <div>
-            <span class="mb-1.5 block pc-eyebrow">Tags</span>
-            @if (tags().length > 0) {
-            <pc-tags [tags]="tags()" type="tag" [readonly]="true" [canDelete]="false" [compact]="true"></pc-tags>
-            } @else {
-            <button
-              type="button"
-              class="text-left text-xs text-primary hover:underline"
-              (click)="editPerson()"
-              i18n="PersonView|Tags empty-state guided link@@person.tags.emptyLink"
-            >
-              No tags yet. Add one to group them
-            </button>
-            }
-          </div>
-          <div>
-            <span class="mb-1.5 block pc-eyebrow">Issues of Interest</span>
-            @if (issues().length > 0) {
-            <pc-tags [tags]="issues()" type="issue" [readonly]="true" [canDelete]="false" [compact]="true"></pc-tags>
-            } @else {
-            <button
-              type="button"
-              class="text-left text-xs text-primary hover:underline"
-              (click)="editPerson()"
-              i18n="PersonView|Issues empty-state guided link@@person.issues.emptyLink"
-            >
-              No issues yet. Add what they care about
-            </button>
-            }
-          </div>
+            <!-- System Metadata -->
+            <pc-system-metadata
+              [createdAt]="person().created_at"
+              [createdBy]="getUserName(person().createdby_id)"
+              [updatedAt]="person().updated_at"
+              [updatedBy]="getUserName(person().updatedby_id)"
+            ></pc-system-metadata>
+          </pc-card>
         </div>
 
-        @if (person().notes) {
-        <div class="mt-2 border-t border-base-200 pt-4">
-          <h3 class="mb-2 block pc-eyebrow">Internal notes</h3>
-          <p class="whitespace-pre-line text-xs leading-relaxed text-base-content/80">{{ person().notes }}</p>
-        </div>
-        }
-
-        <!-- System Metadata -->
-        <pc-system-metadata
-          [createdAt]="person().created_at"
-          [createdBy]="getUserName(person().createdby_id)"
-          [updatedAt]="person().updated_at"
-          [updatedBy]="getUserName(person().updatedby_id)"
-        ></pc-system-metadata>
-      </pc-card>
-
-      <!-- Campaign standing: support level + voting status + yard sign per context, DNC override (§15) -->
-      <pc-person-campaign-facts
-        [personId]="id()"
-        [dncFlag]="!!person().do_not_contact"
-        [volunteerStatus]="person().volunteer_status ?? null"
-        [staffStatus]="person().staff_status ?? null"
-        [deceasedAt]="person().deceased_at ?? null"
-        [senior]="person().senior ?? null"
-        [householdId]="isPlaceholderHousehold() ? null : householdId()"
-      ></pc-person-campaign-facts>
-    </div>
-
-    <!-- Giving band: the overview answer to "have they given?", shown only for donors so the
-         fact is visible without opening a tab. Reads the SAME section data the Donations tab
-         renders, so band and tab can never disagree. The giving-portal link actions live here
-         for donors; the tab keeps them only for people with no giving yet. -->
-    @if (isDonor()) {
-    <pc-card>
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div class="flex-1">
+        <!-- Giving band: the overview answer to "have they given?", shown only for donors so
+             the fact is visible without opening a tab. Reads the SAME section data the
+             Donations tab renders, so band and tab can never disagree. The giving-portal
+             link actions live here for donors; the tab keeps them only for people with no
+             giving yet. -->
+        @if (isDonor()) {
+        <pc-card>
           <h3 class="mb-3 block pc-eyebrow">Giving</h3>
           <div class="flex flex-wrap gap-x-10 gap-y-3">
             <div>
@@ -212,13 +210,24 @@
           >
             View full giving history ({{ donationHistory().length }})
           </button>
-        </div>
-        <div class="w-full shrink-0 lg:w-96">
-          <pc-donor-portal-panel [personId]="id()"></pc-donor-portal-panel>
-        </div>
+          <div class="mt-4 border-t border-base-200 pt-4">
+            <pc-donor-portal-panel [personId]="id()"></pc-donor-portal-panel>
+          </div>
+        </pc-card>
+        }
       </div>
-    </pc-card>
-    }
+
+      <!-- Campaign standing: support level + voting status + yard sign per context, DNC override (§15) -->
+      <pc-person-campaign-facts
+        [personId]="id()"
+        [dncFlag]="!!person().do_not_contact"
+        [volunteerStatus]="person().volunteer_status ?? null"
+        [staffStatus]="person().staff_status ?? null"
+        [deceasedAt]="person().deceased_at ?? null"
+        [senior]="person().senior ?? null"
+        [householdId]="isPlaceholderHousehold() ? null : householdId()"
+      ></pc-person-campaign-facts>
+    </div>
 
     <!-- Canvassing today (Live). Renders only for admin/owner, and only while there is an
          open shift or walked work today — silent for everyone else. -->
