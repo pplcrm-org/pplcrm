@@ -21,10 +21,156 @@ import {
   type ElectoralExportColumn,
 } from '../../../modules/exports/export-tables';
 import { isPrivilegedRole } from '../../../../../../../libs/common/src';
+import { FULL_SCAN_BATCH_SIZE } from '../../paging';
+import { PersonsRepo } from '../../../modules/persons/repositories/persons.repo';
+import { HouseholdRepo } from '../../../modules/households/repositories/households.repo';
+import { CompaniesRepo } from '../../../modules/companies/repositories/companies.repo';
+import { TagsRepo } from '../../../modules/tags/repositories/tags.repo';
+import { TasksRepo } from '../../../modules/tasks/repositories/tasks.repo';
+import { ListsRepo } from '../../../modules/lists/repositories/lists.repo';
+import { NewslettersRepo } from '../../../modules/newsletters/repositories/newsletters.repo';
+import { TeamsRepo } from '../../../modules/teams/repositories/teams.repo';
+import { AuthUsersRepo } from '../../../modules/auth/repositories/authusers.repo';
+import { VolunteerEventsRepo } from '../../../modules/volunteer-events/repositories/volunteer-events.repo';
+import { WebFormsRepo } from '../../../modules/web-forms/repositories/web-forms.repo';
+import { WorkflowsRepo } from '../../../modules/workflows/repositories/workflows.repo';
 
 const storageService = new StorageService();
 const mailService = new TransactionalEmailService({ defaultAudience: 'staff' });
 const userActivityRepo = new UserActivityRepo();
+const personsRepo = new PersonsRepo();
+const householdsRepo = new HouseholdRepo();
+
+type ExportJobOptions = JobPayloadOf<'export_csv'>['options'];
+
+/**
+ * True when the queued options carry any server-side filter the grid was applying when the user
+ * clicked export. The whole-table streaming path applies none of them, so a filtered export MUST
+ * route its row selection through the entity's own grid query instead — the export dialog
+ * promises "all matching rows", and a file containing the whole tenant table is both wrong data
+ * and a data-egress surprise.
+ */
+function hasGridFilters(opts: ExportJobOptions): boolean {
+  const filterModelKeys = opts.filterModel ? Object.keys(opts.filterModel).length : 0;
+  return Boolean(
+    opts.searchStr?.trim() ||
+    opts.tags?.length ||
+    opts.issues?.length ||
+    filterModelKeys > 0 ||
+    opts.advancedFilterModel != null ||
+    opts.listId ||
+    opts.volunteerStatus?.length ||
+    opts.staffStatus?.length ||
+    opts.includeArchived,
+  );
+}
+
+/**
+ * One page of matching rows from each simple entity's grid query — the same `getAllWithCounts`
+ * its tRPC `getAll` calls, so a filtered export can never disagree with the grid about which rows
+ * match. The `as never` on options mirrors the deliveries controller: these repos each declare
+ * their own `QueryParams<...>` union for the options bag, and the validated payload options are a
+ * plain superset of every one of them.
+ */
+const FILTERED_PAGE_FETCHERS: Record<
+  string,
+  (tenantId: string, options: Record<string, unknown>) => Promise<{ rows: Record<string, unknown>[] }>
+> = {
+  companies: (tenant_id, options) => new CompaniesRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  tags: (tenant_id, options) => new TagsRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  tasks: (tenant_id, options) => new TasksRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  lists: (tenant_id, options) => new ListsRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  newsletters: (tenant_id, options) => new NewslettersRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  teams: (tenant_id, options) => new TeamsRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  authusers: (tenant_id, options) => new AuthUsersRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  volunteer_events: (tenant_id, options) =>
+    new VolunteerEventsRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  web_forms: (tenant_id, options) => new WebFormsRepo().getAllWithCounts({ tenant_id, options: options as never }),
+  workflows: (tenant_id, options) => new WorkflowsRepo().getAllWithCounts({ tenant_id, options: options as never }),
+};
+
+/**
+ * Yield the ids of every row the grid's own query matches, in batches.
+ *
+ * `persons` and `households` walk by primary key through the repositories' backend-only
+ * `fullScan` argument — the same mechanism smart-list membership uses — so batches can neither
+ * repeat nor skip rows regardless of the saved sort. The other tables page their
+ * `getAllWithCounts` by offset windows; their row counts sit far below one batch in practice,
+ * and a multi-window scan tolerates the small order-tie risk at window boundaries rather than
+ * adding keyset support to ten repositories.
+ */
+async function* matchingIdBatches(
+  table: string,
+  entity: string | null | undefined,
+  tenantId: string,
+  opts: ExportJobOptions,
+): AsyncGenerator<string[]> {
+  if (table === 'persons' || table === 'households') {
+    const { tags, ...queryParams } = opts;
+    let afterId: string | null = null;
+    for (;;) {
+      const batch =
+        table === 'persons'
+          ? await personsRepo.getAllWithAddress({
+              tenant_id: tenantId,
+              options: queryParams as never,
+              tags,
+              fullScan: { afterId },
+            })
+          : await householdsRepo.getAllWithPeopleCount({
+              tenant_id: tenantId,
+              options: queryParams as never,
+              tags,
+              fullScan: { afterId },
+            });
+      // `ids` is annotated to break a type-inference cycle: the narrowed type of `afterId` at the
+      // repo call would otherwise depend on lastId → ids → batch → afterId (TS7022).
+      const ids: string[] = batch.rows.map((row) => String(row['id'] ?? '')).filter((id) => id.length > 0);
+      if (ids.length > 0) yield ids;
+      if (batch.rows.length < FULL_SCAN_BATCH_SIZE) return;
+      const lastId: string = ids[ids.length - 1] ?? '';
+      // Termination guarantee, same as scanMatchingPersonIds in the lists controller: the scan
+      // orders by id and asks for ids strictly greater than the cursor, so it always advances.
+      if (lastId === '' || lastId === afterId) return;
+      afterId = lastId;
+    }
+  }
+
+  const fetchPage = FILTERED_PAGE_FETCHERS[table];
+  if (!fetchPage) throw new Error(`No grid query for filtered export of: ${table}`);
+  // Issues live in the tags table discriminated by `type`; the tags repo reads it from options.
+  const baseOptions: Record<string, unknown> = entity === 'issues' ? { ...opts, type: 'issue' } : { ...opts };
+  for (let startRow = 0; ; startRow += FULL_SCAN_BATCH_SIZE) {
+    const page = await fetchPage(tenantId, { ...baseOptions, startRow, endRow: startRow + FULL_SCAN_BATCH_SIZE });
+    const ids = page.rows.map((row) => String(row['id'] ?? '')).filter((id) => id.length > 0);
+    if (ids.length > 0) yield ids;
+    if (page.rows.length < FULL_SCAN_BATCH_SIZE) return;
+  }
+}
+
+/**
+ * The rows of a FILTERED export, in bounded batches: the entity's grid query picks WHICH ids
+ * match (exactly the filters the grid showed), and the export's allow-listed column query then
+ * reads those rows by id. Peak memory is one batch of rows, never the table. Row order follows
+ * the id batches, so a filtered file is ordered by the entity query's scan order rather than the
+ * saved grid sort — correct rows over cosmetic order.
+ */
+async function* rowsMatchingGridFilters(
+  columnQuery: AnyQB,
+  table: string,
+  entity: string | null | undefined,
+  tenantId: string,
+  opts: ExportJobOptions,
+): AsyncGenerator<Record<string, unknown>> {
+  for await (const ids of matchingIdBatches(table, entity, tenantId, opts)) {
+    const rows: Record<string, unknown>[] = await columnQuery.where('id', 'in', ids).execute();
+    const byId = new Map(rows.map((row) => [String(row['id']), row]));
+    for (const id of ids) {
+      const row = byId.get(id);
+      if (row) yield row;
+    }
+  }
+}
 
 /**
  * Export tables whose rows belong to exactly one campaign context (Campaigns §15). Mirrors the
@@ -231,22 +377,11 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
         query = query.where('type', '=', 'issue');
       }
 
-      // Apply search string if provided
-      if (opts.searchStr) {
-        const like = `%${opts.searchStr}%`;
-        // Best-effort: try name, first_name/last_name depending on table
-        if (table === 'persons') {
-          query = query.where((eb: ExpressionBuilder<Models, 'persons'>) =>
-            eb.or([eb('first_name', 'ilike', like), eb('last_name', 'ilike', like), eb('email', 'ilike', like)]),
-          );
-        } else if (table === 'households') {
-          query = query.where((eb: ExpressionBuilder<Models, 'households'>) =>
-            eb.or([eb('street1', 'ilike', like), eb('city', 'ilike', like)]),
-          );
-        } else {
-          query = query.where('name', 'ilike', like);
-        }
-      }
+      // No searchStr handling here: search — like every other grid filter — is applied by
+      // routing row selection through the entity's own grid query below (hasGridFilters). The
+      // old best-effort ilike over 2-3 hard-coded columns both missed columns the real search
+      // covers and was the ONLY filter this job applied, so a tag/column/list-filtered export
+      // silently contained the whole table.
     }
 
     // Apply sort
@@ -263,12 +398,23 @@ export async function handleExportCsv(payload: JobPayloadOf<'export_csv'>, db: K
 
     const storageKey = `exports/${tenantId}/${exportId}.csv`;
 
-    // Stream the query results using query.stream(). The column list is always non-empty, so
-    // csv-stream never falls back to deriving the header from the first row's keys.
-    const dbStream = Readable.from(query.stream());
+    // Two row sources, one CSV pipeline. Unfiltered exports stream the whole table with a
+    // pg-cursor as before. Filtered exports delegate row selection to the entity's own grid
+    // query in bounded batches (see rowsMatchingGridFilters) so the file contains exactly the
+    // rows the grid was showing. The column list is always non-empty, so csv-stream never falls
+    // back to deriving the header from the first row's keys.
+    const useGridFilters = table !== 'user_activity' && hasGridFilters(opts);
+    if (useGridFilters && !csvColumns.includes('id')) {
+      // The filtered path matches column rows back to their id batch; select the id even when
+      // the CSV omits it (CsvTransformStream writes only the header's columns).
+      query = query.select('id');
+    }
+    const rowSource = useGridFilters
+      ? Readable.from(rowsMatchingGridFilters(query, table, payload.entity, tenantId, opts))
+      : Readable.from(query.stream());
     const csvStream = new CsvTransformStream(csvColumns);
 
-    await storageService.uploadStream(storageKey, dbStream.pipe(csvStream), 'text/csv');
+    await storageService.uploadStream(storageKey, rowSource.pipe(csvStream), 'text/csv');
 
     const count = csvStream.rowCount;
 

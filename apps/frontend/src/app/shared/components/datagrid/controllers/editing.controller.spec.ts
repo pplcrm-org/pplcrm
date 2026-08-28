@@ -120,26 +120,29 @@ describe('EditingController', () => {
       expect(mockAlerts.showSuccess).toHaveBeenCalledWith('Row updated');
     });
 
-    it('undoes, reverts the row, and toasts when the update fails server-side', async () => {
+    it('reverts the row locally and toasts when the update fails server-side — WITHOUT touching the undo stack', async () => {
       mockApi.update.mockRejectedValue(new Error('boom'));
       const row: Record<string, unknown> = { id: '1', name: 'Alice' };
 
       await expect(controller.commitSingleCell(row, nameCol, 'Bob')).resolves.toBe(false);
 
       expect(row['name']).toBe('Alice'); // optimistic write rolled back
-      expect(fakeGrid.undoMgr.undo).toHaveBeenCalledTimes(1);
+      // Regression guard: the failed edit pushed no undo snapshot (snapshots are pushed after a
+      // successful save), so calling undo() here would pop the PREVIOUS successful edit's
+      // snapshot and send a server update reverting that unrelated change — silent data loss.
+      expect(fakeGrid.undoMgr.undo).not.toHaveBeenCalled();
       expect(mockAlerts.showError).toHaveBeenCalledWith('Update failed');
       expect(fakeGrid.updateEditedRowInCaches).not.toHaveBeenCalled();
       expect(mockAlerts.showSuccess).not.toHaveBeenCalled();
     });
 
-    it('blocks renaming a non-deletable row before any API call', async () => {
+    it('blocks renaming a non-deletable row before any API call, without touching the undo stack', async () => {
       const row: Record<string, unknown> = { id: '1', name: 'System tag', deletable: false };
 
       await expect(controller.commitSingleCell(row, nameCol, 'Renamed')).resolves.toBe(false);
 
       expect(row['name']).toBe('System tag');
-      expect(fakeGrid.undoMgr.undo).toHaveBeenCalledTimes(1);
+      expect(fakeGrid.undoMgr.undo).not.toHaveBeenCalled(); // same regression guard as above
       expect(mockAlerts.showError).toHaveBeenCalledWith('Editing this field is blocked');
       expect(mockApi.update).not.toHaveBeenCalled();
     });

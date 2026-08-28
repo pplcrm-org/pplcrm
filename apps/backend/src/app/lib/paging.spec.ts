@@ -89,4 +89,37 @@ describe('resolvePageWindow', () => {
     expect(resolvePageWindow({ startRow: -10, endRow: 25 }, 100)).toEqual({ offset: 0, limit: 25 });
     expect(resolvePageWindow({ startRow: 10.9, endRow: 35.9 }, 100)).toEqual({ offset: 10, limit: 25 });
   });
+
+  // The regression this guards: pickers sending `{ limit: 1000 }` used to be silently served the
+  // repo default (often 100), so the 101st tag/list/team was unselectable everywhere.
+  it('honours an explicit limit instead of the default', () => {
+    expect(resolvePageWindow({ limit: 1000 }, 100)).toEqual({ offset: 0, limit: 1000 });
+    expect(resolvePageWindow({ limit: 25, startRow: 0 }, 100)).toEqual({ offset: 0, limit: 25 });
+  });
+
+  it('clamps an explicit limit to MAX_PAGE_SIZE', () => {
+    expect(resolvePageWindow({ limit: MAX_PAGE_SIZE }, 100)).toEqual({ offset: 0, limit: MAX_PAGE_SIZE });
+    // getAllOptions refuses limits above MAX_PAGE_SIZE, but this layer must not trust that.
+    expect(resolvePageWindow({ limit: 10_000_000 } as { limit: number }, 100)).toEqual({
+      offset: 0,
+      limit: MAX_PAGE_SIZE,
+    });
+  });
+
+  it('honours an explicit offset alongside limit', () => {
+    expect(resolvePageWindow({ limit: 50, offset: 200 }, 100)).toEqual({ offset: 200, limit: 50 });
+  });
+
+  it('lets a usable endRow win over a limit sent alongside it (the grid contract is primary)', () => {
+    expect(resolvePageWindow({ startRow: 50, endRow: 75, limit: 1000 }, 100)).toEqual({ offset: 50, limit: 25 });
+  });
+
+  it('honours limit 0 as a count-only request, mirroring endRow === startRow', () => {
+    expect(resolvePageWindow({ limit: 0 }, 100)).toEqual({ offset: 0, limit: 0 });
+  });
+
+  it('falls back to the default when limit is malformed', () => {
+    expect(resolvePageWindow({ limit: -5 }, 100)).toEqual({ offset: 0, limit: 100 });
+    expect(resolvePageWindow({ limit: Number.NaN }, 100)).toEqual({ offset: 0, limit: 100 });
+  });
 });

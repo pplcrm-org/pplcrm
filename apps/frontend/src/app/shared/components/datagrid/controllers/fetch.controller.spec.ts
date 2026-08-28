@@ -25,6 +25,7 @@ describe('FetchController', () => {
   let fakeGrid: any;
   let mockAlerts: { showSuccess: ReturnType<typeof vi.fn>; showError: ReturnType<typeof vi.fn> };
   let mockApi: { getAll: ReturnType<typeof vi.fn>; getAllArchived: ReturnType<typeof vi.fn> };
+  let mockDataSvc: { buildGetAllOptions: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     rows = signal<any[]>([]);
@@ -43,6 +44,8 @@ describe('FetchController', () => {
       externalAdvancedFilterModel: () => null,
       advFilter: { buildModel: () => null },
       activeListId: () => null,
+      toId: (r: any) => String(r?.id ?? ''),
+      rowCanSelect: () => null,
       updateTableWindow: vi.fn(),
       startIndex: () => 0,
       endIndex: () => 25,
@@ -52,6 +55,7 @@ describe('FetchController', () => {
 
     mockAlerts = { showSuccess: vi.fn(), showError: vi.fn() };
     mockApi = { getAll: vi.fn(), getAllArchived: vi.fn() };
+    mockDataSvc = { buildGetAllOptions: vi.fn((o: unknown) => o) };
 
     TestBed.configureTestingModule({
       providers: [
@@ -60,7 +64,7 @@ describe('FetchController', () => {
           provide: GridStoreService,
           useValue: { grid: fakeGrid, rows, pageIndex, pageSize: () => 25, sorting: () => [] },
         },
-        { provide: DataGridDataService, useValue: { buildGetAllOptions: vi.fn((o: unknown) => o) } },
+        { provide: DataGridDataService, useValue: mockDataSvc },
         { provide: AlertService, useValue: mockAlerts },
         { provide: AbstractAPIService, useValue: mockApi },
       ],
@@ -122,5 +126,45 @@ describe('FetchController', () => {
     await controller.loadPage(0);
 
     expect(mockAlerts.showError).toHaveBeenCalledWith('Load failed');
+  });
+
+  describe('selectAllMatching', () => {
+    it('sends the SAME filter set as a page load — column filter model included', async () => {
+      // Regression guard: this call once omitted filterModel, so "select all matching" (and the
+      // record-navigation context it feeds) acted on rows the user had filtered out.
+      fakeGrid.searchTerm = () => 'smith';
+      fakeGrid.selectedTags = () => ['donor'];
+      fakeGrid.buildFilterModel = () => ({ status: { filter: 'active' } });
+      mockApi.getAll.mockResolvedValue({ rows: [{ id: '1' }], count: 1 });
+
+      await controller.selectAllMatching();
+
+      expect(mockDataSvc.buildGetAllOptions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          searchStr: 'smith',
+          tags: ['donor'],
+          filterModel: { status: { filter: 'active' } },
+        }),
+      );
+    });
+
+    it('sends no page window (the backend default limit is this feature`s documented cap)', async () => {
+      mockApi.getAll.mockResolvedValue({ rows: [], count: 0 });
+
+      await controller.selectAllMatching();
+
+      const sent = mockApi.getAll.mock.calls[0][0];
+      expect(sent.startRow).toBeUndefined();
+      expect(sent.endRow).toBeUndefined();
+      expect(sent.limit).toBeUndefined();
+    });
+
+    it('maps returned rows to ids, honouring rowCanSelect', async () => {
+      fakeGrid.toId = (r: any) => String(r.id);
+      fakeGrid.rowCanSelect = () => (r: any) => r.id !== '2';
+      mockApi.getAll.mockResolvedValue({ rows: [{ id: '1' }, { id: '2' }, { id: '3' }], count: 3 });
+
+      await expect(controller.selectAllMatching()).resolves.toEqual({ ids: ['1', '3'], count: 2 });
+    });
   });
 });

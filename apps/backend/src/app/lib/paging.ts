@@ -46,23 +46,43 @@ export function clampPageLimit(value: unknown, max: number = MAX_PAGE_SIZE): num
 }
 
 /**
- * Resolve the AG-Grid-style `startRow`/`endRow` pair into a bounded `{ offset, limit }`.
+ * Resolve the caller's paging fields into a bounded `{ offset, limit }`.
  *
- * `endRow` is exclusive, so the requested span is `endRow - startRow`. An `endRow` that is
- * missing, unusable, or below `startRow` falls back to `defaultLimit` — which is what a caller
- * that sends no paging at all gets, and is the reason such a caller can no longer read a whole
- * table. An `endRow` equal to `startRow` is honoured as a genuine "count only, no rows" request;
- * the list member-count path relies on that.
+ * Two spellings are honoured, because `getAllOptions` legally carries both and callers use both:
+ *
+ * 1. The AG-Grid-style `startRow`/`endRow` pair (the grid contract). `endRow` is exclusive, so
+ *    the requested span is `endRow - startRow`. When a usable `endRow` is present it wins over
+ *    a `limit` sent alongside it. An `endRow` equal to `startRow` is honoured as a genuine
+ *    "count only, no rows" request; the list member-count path relies on that.
+ * 2. An explicit `limit` (with optional `offset`) — what non-grid callers (pickers, dropdowns,
+ *    vocabularies) send. Ignoring this field was a real bug class: a picker asking for
+ *    `{ limit: 1000 }` silently got this function's 100-row default instead, and the 101st tag
+ *    or list became unselectable. `limit: 0` is honoured as count-only, mirroring the pair form.
+ *
+ * A caller that sends no usable paging at all falls back to `defaultLimit` — the reason such a
+ * caller can no longer read a whole table. Every path is clamped to `MAX_PAGE_SIZE`.
  */
 export function resolvePageWindow(
-  options: { startRow?: number | null; endRow?: number | null } | undefined,
+  options:
+    | { startRow?: number | null; endRow?: number | null; limit?: number | null; offset?: number | null }
+    | undefined,
   defaultLimit: number = MAX_PAGE_SIZE,
 ): PageWindow {
-  const offset = clampRowOffset(options?.startRow);
+  const startOffset = clampRowOffset(options?.startRow);
   const endRow = options?.endRow;
-  const requested =
-    typeof endRow === 'number' && Number.isFinite(endRow) && endRow >= offset ? endRow - offset : defaultLimit;
-  return { offset, limit: clampPageLimit(requested) };
+  if (typeof endRow === 'number' && Number.isFinite(endRow) && endRow >= startOffset) {
+    return { offset: startOffset, limit: clampPageLimit(endRow - startOffset) };
+  }
+  const limit = options?.limit;
+  const explicitOffset = options?.offset;
+  const offset =
+    typeof explicitOffset === 'number' && Number.isFinite(explicitOffset) && explicitOffset > 0
+      ? clampRowOffset(explicitOffset)
+      : startOffset;
+  if (typeof limit === 'number' && Number.isFinite(limit) && limit >= 0) {
+    return { offset, limit: clampPageLimit(limit) };
+  }
+  return { offset, limit: clampPageLimit(defaultLimit) };
 }
 
 /**

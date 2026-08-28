@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { getAllOptions } from '../../../../../../libs/common/src';
 import type { ZapierEventType } from '../../modules/zapier/zapier.service';
 
 /**
@@ -21,7 +22,21 @@ const exportSortSchema = z.object({
   sort: z.string().nullish(),
 });
 
+/**
+ * The full validated grid-options shape (`getAllOptions`), not a hand-picked subset. The queue
+ * mutation stores the whole options object the grid sent, and the export handler applies the
+ * grid's filters to decide which rows the file contains. The previous subset here silently
+ * STRIPPED `filterModel`/`tags`/`issues`/`advancedFilterModel`/`listId` at the dispatcher's
+ * safeParse — which is how a filtered grid export came back containing the whole table.
+ *
+ * Built from the base schema's `.shape` rather than `.extend()`: the five overrides loosen
+ * existing keys to `nullish` for historical payloads that carried nulls, which Zod's
+ * extend/safeExtend refuse (the base carries a refinement, and loosening types the key `never`).
+ * The dropped page-span refinement is enforced at the tRPC queue boundary and again by
+ * `resolvePageWindow`'s clamps, so nothing is lost at this third layer.
+ */
 const exportOptionsSchema = z.object({
+  ...getAllOptions.unwrap().shape,
   userId: idSchema.nullish(),
   entity: z.string().nullish(),
   activity: z.string().nullish(),

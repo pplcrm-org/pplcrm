@@ -71,13 +71,23 @@ export class FetchController {
   }
 
   async selectAllMatching(): Promise<{ ids: string[]; count: number }> {
-    const options: getAllOptionsType = {
+    // Same filter/sort set as loadPage — built by the same helper so the two can never drift
+    // again (this method once omitted filterModel, so "select all matching" and record
+    // navigation acted on rows the user had filtered out). Only the page window is omitted:
+    // the backend then serves its default limit (MAX_PAGE_SIZE), which is this feature's
+    // documented cap. Sort is included so the record-navigation order matches the grid.
+    const options: getAllOptionsType = this.dataSvc.buildGetAllOptions({
       searchStr: this.grid.searchTerm(),
       tags: this.grid.selectedTags(),
       issues: this.grid.selectedIssues(),
+      filterModel: this.grid.buildFilterModel(),
+      sortState: this.store.sorting() as unknown as Array<{ id: string; desc?: boolean }>,
+      sortCol: this.grid.sortCol(),
+      sortDir: this.grid.sortDir(),
+      includeArchived: this.grid.archiveMode(),
       advancedFilterModel: this.grid.externalAdvancedFilterModel() || this.grid.advFilter.buildModel(),
       listId: this.grid.activeListId() ?? undefined,
-    };
+    });
     const { rows } = this.grid.archiveMode()
       ? await this.gridSvc.getAllArchived(options)
       : await this.gridSvc.getAll(options);

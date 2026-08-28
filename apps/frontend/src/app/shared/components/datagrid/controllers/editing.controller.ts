@@ -64,8 +64,11 @@ export class EditingController {
     }
     if (!changed) return true;
     try {
+      // On failure, only the local Object.assign revert below may run. The undo snapshot for
+      // this edit is pushed AFTER a successful save (updateEditedRowInCaches), so a failed edit
+      // has no snapshot of its own — calling undoMgr.undo() here pops the PREVIOUS successful
+      // edit's snapshot and issues a server update reverting that unrelated change.
       if (this.shouldBlockEdit(row, key)) {
-        void this.grid.undoMgr.undo();
         this.alertSvc.showError('Editing this field is blocked');
         Object.assign(row, { [key]: before[key] });
         return false;
@@ -76,7 +79,6 @@ export class EditingController {
         .then(() => true)
         .catch(() => false);
       if (!edited) {
-        void this.grid.undoMgr.undo();
         Object.assign(row, { [key]: before[key] });
         this.alertSvc.showError('Update failed');
         return false;

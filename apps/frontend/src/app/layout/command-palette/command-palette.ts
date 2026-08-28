@@ -44,10 +44,10 @@ const PEOPLE_LIMIT = 4;
 const HOUSEHOLDS_LIMIT = 4;
 
 /**
- * The list endpoints page by `startRow`/`endRow` — a bare `limit` field is IGNORED by
- * `resolvePageWindow`, which then defaults to MAX_PAGE_SIZE, so each keystroke's search was
- * returning up to 5,000 full grid rows to be sliced to 4 client-side (REVIEW7 D1). Always send
- * the window.
+ * Always send an explicit window. Historically a bare `limit` field was IGNORED by
+ * `resolvePageWindow` (fixed since — it now honours `limit`), so each keystroke's search was
+ * returning up to 5,000 full grid rows to be sliced to 4 client-side (REVIEW7 D1). The
+ * `startRow`/`endRow` pair remains the primary paging contract.
  */
 const SEARCH_WINDOW = { startRow: 0, endRow: PEOPLE_LIMIT } as const;
 
