@@ -91,16 +91,21 @@ export class DataGridActionsService {
       }
       parts.push(messages.exportMessage);
       parts.push(messages.exportNavigateWarning);
-      const wantsAll = await deps.dialogs.confirm({
+      // choose(), not confirm(): confirm() collapses its cancel button and a dismissal (Esc /
+      // the X) into the same `false`, so closing the dialog still downloaded the displayed
+      // rows. choose() returns null on dismissal — dismissing now downloads nothing.
+      const choice = await deps.dialogs.choose<'all' | 'displayed'>({
         title: messages.exportTitle,
         message: parts.filter(Boolean).join('\n\n'),
         variant: 'info',
         icon: messages.exportIcon,
-        confirmText: messages.exportConfirmText,
-        cancelText: messages.exportCancelText,
-        allowBackdropClose: false,
+        choices: [
+          { label: messages.exportConfirmText, value: 'all' },
+          { label: messages.exportCancelText, value: 'displayed' },
+        ],
       });
-      exportAllData = wantsAll === true;
+      if (choice === null) return;
+      exportAllData = choice === 'all';
     }
 
     // --- "All rows" path: queue background job, return immediately ---

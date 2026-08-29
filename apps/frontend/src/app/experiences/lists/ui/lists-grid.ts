@@ -7,7 +7,7 @@ import { provideDataGridConfig } from '@frontend/shared/components/datagrid/data
 import type { CellParams, ColumnDef as ColDef } from '@frontend/shared/components/datagrid/grid-defaults';
 import { Icon } from '@icons/icon';
 import { GridHeaderComponent } from '@uxcommon/components/grid-header/grid-header';
-import { UpdateListType } from '../../../../../../../libs/common/src';
+import { MAX_PAGE_SIZE, UpdateListType } from '../../../../../../../libs/common/src';
 import { AbstractAPIService } from '../../../services/api/abstract-api.service';
 import { CampaignContextService } from '../../../services/campaign-context.service';
 
@@ -122,13 +122,18 @@ export class ListsGridComponent implements OnInit {
 
   private async loadCounts(): Promise<void> {
     try {
-      const result = await this.listsSvc.getAll();
+      // A full page window, and the total from the response's `count` — a bare getAll() gets the
+      // repo's 100-row default, and counting rows.length made the header say "100 lists" for a
+      // workspace with 300. The smart/static split still derives from the returned rows, which
+      // covers every real workspace (the window is the server's page ceiling).
+      const result = await this.listsSvc.getAll({ startRow: 0, endRow: MAX_PAGE_SIZE });
       const rows = isRecord(result) && Array.isArray(result['rows']) ? result['rows'] : [];
+      const total = isRecord(result) && typeof result['count'] === 'number' ? result['count'] : rows.length;
       let smart = 0;
       for (const r of rows) {
         if (isRecord(r) && r['is_dynamic'] === true) smart += 1;
       }
-      this.counts.set({ total: rows.length, smart, static: rows.length - smart });
+      this.counts.set({ total, smart, static: total - smart });
     } catch {
       // The grid itself surfaces load errors; the sentence just stays put.
     }

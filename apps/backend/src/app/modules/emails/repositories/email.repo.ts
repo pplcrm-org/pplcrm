@@ -6,6 +6,7 @@ import type { UpdateResult } from 'kysely';
 import { sql } from 'kysely';
 
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import { EmailAttachmentsRepo } from './email-attachments.repo';
 import { EmailHeadersRepo } from './email-headers.repo';
 import { EmailRecipientsRepo } from './email-recipients.repo';
@@ -54,16 +55,8 @@ export class EmailRepo extends BaseRepository<'emails'> {
     return this.emailAttachmentsRepo.getByEmailId(tenant_id, email_id);
   }
 
-  public async getByFolder(user_id: string, tenant_id: string, folder_id: string) {
-    const whereForFolder = this.buildFolderPredicate(folder_id, user_id);
-
-    const query = this.getSelect()
-      .selectAll()
-      .where('tenant_id', '=', tenant_id)
-      .where((eb) => whereForFolder(eb));
-
-    return query.execute();
-  }
+  // getByFolder was removed: it was a fully unbounded selectAll() of a folder with no callers —
+  // exactly the kind of latent whole-mailbox read the paging backstop exists to prevent.
 
   public async getByFolderWithAttachmentFlag(
     user_id: string,
@@ -75,11 +68,7 @@ export class EmailRepo extends BaseRepository<'emails'> {
   ): Promise<any[]> {
     const whereForFolder = this.buildFolderPredicate(folder_id, user_id);
 
-    // Subquery: SELECT email_id, COUNT(*)::int AS att_count FROM email_attachments ... GROUP BY email_id
-    const ea = this.emailAttachmentsRepo.getSelectForCountByEmails(tenant_id); // should be aliased as 'ea'
-
     let q = this.getSelect()
-      .leftJoin(ea, 'ea.email_id', 'emails.id')
       .leftJoin('email_headers as eh', 'eh.email_id', 'emails.id')
       .leftJoin('email_read_states as ers', (join) =>
         join
@@ -107,8 +96,14 @@ export class EmailRepo extends BaseRepository<'emails'> {
       .selectAll('emails')
       .select(sql<string | null>`coalesce(p_sender.first_name, p_sender2.first_name)`.as('sender_first_name'))
       .select(sql<string | null>`coalesce(p_sender.last_name, p_sender2.last_name)`.as('sender_last_name'))
-      // numeric count (coalesced to 0)
-      .select(sql<number>`COALESCE(ea.att_count, 0)`.as('attachment_count'))
+      // Attachment count as a CORRELATED scalar subselect, probed per visible row. This was a
+      // joined `GROUP BY email_id` aggregate over the tenant's ENTIRE email_attachments table —
+      // Postgres cannot push the page's email ids through a grouped derived table, so every
+      // 25-row page load re-aggregated every attachment the tenant has ever synced.
+      .select(
+        sql<number>`(SELECT COUNT(*)::int FROM email_attachments ac
+          WHERE ac.tenant_id = emails.tenant_id AND ac.email_id = emails.id)`.as('attachment_count'),
+      )
       // boolean has_attachment via EXISTS (fast)
       .select((eb) =>
         eb
@@ -134,8 +129,11 @@ export class EmailRepo extends BaseRepository<'emails'> {
       // repeat or skip rows. `emails.id` makes the order total and stable.
       .orderBy('emails.id', 'desc');
 
-    if (typeof limit === 'number') q = q.limit(limit);
-    if (typeof offset === 'number') q = q.offset(offset);
+    // The paging backstop, like every other list read: an omitted limit used to mean NO limit —
+    // the whole folder through six joins. The shipped client always sends one; this guards the
+    // contract. resolvePageWindow honours explicit limit/offset and defaults otherwise.
+    const page = resolvePageWindow({ limit, offset }, 100);
+    q = q.limit(page.limit).offset(page.offset);
 
     return q.execute();
   }

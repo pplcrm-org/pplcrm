@@ -325,13 +325,17 @@ export class BaseController<T extends keyof Models, R extends BaseRepository<T>>
               to: user.email,
               subject: `Your export is ready: ${response.fileName}`,
               notificationSettingsLink: true,
-              text: `Hi ${auth.name},\n\nYour export of ${response.rowCount} records from the ${String(this.repo.getTableName())} table is ready.\n\nFile name: ${response.fileName}\nDownload it here: ${env.appUrl}/downloads/${response.fileName}`,
+              // No download link: the inline export streamed straight to the requester's
+              // browser and stores NO file server-side — the old `${appUrl}/downloads/<name>`
+              // button pointed at a route that does not exist. The Exports page lists the
+              // record (non-redownloadable, like other instant exports).
+              text: `Hi ${auth.name},\n\nYour export of ${response.rowCount} records from the ${String(this.repo.getTableName())} table was downloaded to your browser as ${response.fileName}.\n\nIt is listed with your other exports here: ${env.appUrl}/exports`,
               html: `<h2>Your export is ready</h2>
 <p>Hi ${auth.name},</p>
-<p>Your export of <strong>${response.rowCount}</strong> records from the <strong>${String(this.repo.getTableName())}</strong> table is ready.</p>
+<p>Your export of <strong>${response.rowCount}</strong> records from the <strong>${String(this.repo.getTableName())}</strong> table was downloaded to your browser.</p>
 <div class="panel"><p><strong>File name:</strong> ${response.fileName}</p></div>
 <div class="btn-container">
-  <a href="${env.appUrl}/downloads/${response.fileName}" class="btn">Download CSV</a>
+  <a href="${env.appUrl}/exports" class="btn">View your exports</a>
 </div>`,
             });
           }

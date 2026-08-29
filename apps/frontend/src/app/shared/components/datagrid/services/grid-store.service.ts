@@ -1,4 +1,5 @@
 import { Injectable, computed, effect, signal, untracked, linkedSignal } from '@angular/core';
+import { MAX_PAGE_SIZE } from '../../../../../../../../libs/common/src';
 import type { Table } from '@tanstack/table-core';
 import type { GridHost, GridRow, GridSnapshot } from '../types';
 
@@ -269,7 +270,12 @@ export class GridStoreService {
       if (visibility) this.colVisibility.set({ ...untracked(() => this.colVisibility()), ...visibility });
       if (filters) this.filterValues.set(filters);
       if (typeof data.selectionWidth === 'number') this.selectionStickyWidth.set(data.selectionWidth);
-      if (typeof data.pageSize === 'number' && data.pageSize > 0) this.pageSize.set(data.pageSize);
+      // Clamp the restored page size: a persisted value above the server's page cap made every
+      // fetch fail input validation, so the grid showed "Could not load the data" until the
+      // user cleared localStorage by hand.
+      if (typeof data.pageSize === 'number' && data.pageSize > 0) {
+        this.pageSize.set(Math.min(Math.floor(data.pageSize), MAX_PAGE_SIZE));
+      }
       const sizing = data.sizing || {};
       queueMicrotask(() => {
         if (this._table) {

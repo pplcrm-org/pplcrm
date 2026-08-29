@@ -29,14 +29,9 @@ export class EmailAttachmentsRepo extends BaseRepository<'email_attachments'> {
       .execute();
   }
 
-  public getSelectForCountByEmails(tenant_id: string) {
-    return this.getSelect()
-      .select(['email_id'])
-      .select(({ fn }) => fn.count('id').as('att_count'))
-      .where('tenant_id', '=', tenant_id)
-      .groupBy('email_id')
-      .as('ea');
-  }
+  // getSelectForCountByEmails was removed: joining that grouped derived table forced Postgres to
+  // aggregate the tenant's WHOLE attachments table per inbox page; the inbox list now reads the
+  // count with a correlated per-row subselect instead (email.repo.ts).
 
   public async hasAttachment(tenant_id: string, email_id: string): Promise<boolean> {
     const row = await this.getSelect()
