@@ -354,6 +354,131 @@ describe('ImportsController Delete Import logic', () => {
     expect(subtaskInDb).toBeUndefined();
   });
 
+  it('deletes only the import`s own people and mappings — other records and their mappings survive', async () => {
+    // The undo used to materialize every imported id into JS and bind it into IN (…) lists,
+    // which failed outright past 65,535 rows. It now deletes by `file_id` predicates and
+    // IN (SELECT …) semi-joins; this test pins the SCOPE of those predicates: a person from the
+    // import goes (with their tag/list mappings), a person outside the import stays untouched.
+    const rand = () => String(Math.floor(Math.random() * 100000000) + 10000000);
+    const importId = rand();
+    await db
+      .insertInto('data_imports')
+      .values({
+        id: importId,
+        tenant_id: tenantId,
+        file_name: 'test.csv',
+        source: 'people',
+        row_count: 1,
+        inserted_count: 1,
+        error_count: 0,
+        skipped_count: 0,
+        households_created: 0,
+        status: 'completed',
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+
+    const importedPersonId = rand();
+    const keptPersonId = rand();
+    for (const [id, name, fileId] of [
+      [importedPersonId, 'Imported Person', importId],
+      [keptPersonId, 'Kept Person', null],
+    ] as const) {
+      await db
+        .insertInto('persons')
+        .values({
+          id,
+          tenant_id: tenantId,
+          campaign_id: campaignId,
+          household_id: householdId,
+          first_name: name,
+          file_id: fileId,
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+    }
+
+    const tagId = rand();
+    await db
+      .insertInto('tags')
+      .values({
+        id: tagId,
+        tenant_id: tenantId,
+        name: `undo-scope-${tagId}`,
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    for (const personId of [importedPersonId, keptPersonId]) {
+      await db
+        .insertInto('map_peoples_tags')
+        .values({ tenant_id: tenantId, person_id: personId, tag_id: tagId, createdby_id: userId, updatedby_id: userId })
+        .execute();
+    }
+
+    const listId = rand();
+    await db
+      .insertInto('lists')
+      .values({
+        id: listId,
+        tenant_id: tenantId,
+        campaign_id: campaignId,
+        name: `Undo Scope List ${listId}`,
+        object: 'people',
+        is_dynamic: false,
+        definition: JSON.stringify({}),
+        createdby_id: userId,
+        updatedby_id: userId,
+      })
+      .execute();
+    for (const personId of [importedPersonId, keptPersonId]) {
+      await db
+        .insertInto('map_lists_persons')
+        .values({
+          tenant_id: tenantId,
+          list_id: listId,
+          person_id: personId,
+          createdby_id: userId,
+          updatedby_id: userId,
+        })
+        .execute();
+    }
+
+    await controller.deleteImport({ id: importId, deletePeople: true }, auth);
+
+    const remainingPersons = await db
+      .selectFrom('persons')
+      .select('id')
+      .where('tenant_id', '=', tenantId)
+      .where('id', 'in', [importedPersonId, keptPersonId])
+      .execute();
+    expect(remainingPersons.map((r: { id: unknown }) => String(r.id))).toEqual([keptPersonId]);
+
+    const remainingTagMaps = await db
+      .selectFrom('map_peoples_tags')
+      .select('person_id')
+      .where('tenant_id', '=', tenantId)
+      .where('tag_id', '=', tagId)
+      .execute();
+    expect(remainingTagMaps.map((r: { person_id: unknown }) => String(r.person_id))).toEqual([keptPersonId]);
+
+    const remainingListMaps = await db
+      .selectFrom('map_lists_persons')
+      .select('person_id')
+      .where('tenant_id', '=', tenantId)
+      .where('list_id', '=', listId)
+      .execute();
+    expect(remainingListMaps.map((r: { person_id: unknown }) => String(r.person_id))).toEqual([keptPersonId]);
+
+    // Local cleanup for rows this test added beyond cleanTenant's coverage.
+    await db.deleteFrom('map_lists_persons').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('lists').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('map_peoples_tags').where('tenant_id', '=', tenantId).execute();
+    await db.deleteFrom('tags').where('tenant_id', '=', tenantId).execute();
+  });
+
   it('should only clear file_id when deleting import without checkboxes checked', async () => {
     const importId = String(Math.floor(Math.random() * 100000000) + 10000000);
     await db

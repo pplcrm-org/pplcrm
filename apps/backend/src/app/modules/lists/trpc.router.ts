@@ -42,9 +42,10 @@ export const ListsRouter = router({
 
   getMemberCount: authProcedure.input(idSchema).query(({ input, ctx }) => lists.getMemberCount(ctx.auth, input)),
 
-  // Live membership (smart = re-run rules, static = saved snapshot). Reused by
-  // turf cutting (§13), automations (§16) and CSV import (§17).
-  getCurrentMembers: authProcedure.input(idSchema).query(({ input, ctx }) => lists.getCurrentMembers(ctx.auth, input)),
+  // NOTE: getCurrentMembers is deliberately NOT exposed here. It returns the full membership id
+  // array (up to 100k ids) and its consumers — turf cutting (§13), automations (§16), CSV
+  // import (§17) — are all backend-internal and call the CONTROLLER method directly. Exposing it
+  // let any signed-in user pull whole-membership arrays on demand; no client ever called it.
 
   // Consumers (newsletters/forms/turfs) — for LAST USED IN and delete confirms.
   getConsumers: authProcedure.input(idSchema).query(({ input, ctx }) => lists.getConsumers(ctx.auth, input)),

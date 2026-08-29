@@ -3,6 +3,7 @@ import { sql } from 'kysely';
 
 import type { QueryParams } from '../../../lib/base.repo';
 import { BaseRepository } from '../../../lib/base.repo';
+import { resolvePageWindow } from '../../../lib/paging';
 import type { DeliveryRoutes } from '../../../../../../../libs/common/src/lib/kysely.models';
 import type { Models } from '../../../../../../../libs/common/src/lib/kysely.models';
 
@@ -31,6 +32,9 @@ export class DeliveryRoutesRepo extends BaseRepository<'delivery_routes'> {
   ): Promise<{ rows: DeliveryRouteGridRow[]; count: number }> {
     const tenantId = input.tenant_id;
     const db = trx ?? this.db;
+    // This was the one list query in the codebase with no LIMIT at all — every routes-page view
+    // read every route the workspace ever created. Same backstop as the sibling requests repo.
+    const page = resolvePageWindow(input.options);
 
     const rows = await db
       .selectFrom('delivery_routes as rt')
@@ -56,6 +60,9 @@ export class DeliveryRoutesRepo extends BaseRepository<'delivery_routes'> {
         sql<number>`COUNT(CASE WHEN s.status = 'delivered' THEN 1 END)`.as('stops_delivered'),
       ])
       .orderBy('rt.created_at', 'desc')
+      .orderBy('rt.id', 'desc')
+      .limit(page.limit)
+      .offset(page.offset)
       .execute();
 
     const countRow = await db

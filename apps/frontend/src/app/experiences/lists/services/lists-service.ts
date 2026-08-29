@@ -90,10 +90,8 @@ export class ListsService extends AbstractAPIService<'lists', UpdateListType> {
     return this.api.lists.getMemberCount.query(id);
   }
 
-  /** Live membership (smart = re-run rules, static = saved snapshot). */
-  public getCurrentMembers(id: string) {
-    return this.api.lists.getCurrentMembers.query(id);
-  }
+  // getCurrentMembers was removed with its tRPC procedure: it returned the full membership id
+  // array, nothing in the frontend ever called it, and the backend consumers use the controller.
 
   /** Newsletters / forms / turfs that reference this list. */
   public getConsumers(id: string) {

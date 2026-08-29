@@ -9,10 +9,7 @@ import { assertUploadAllowed } from '../../lib/upload-content-types';
 import { logger } from '../../logger';
 import crypto from 'crypto';
 import { sql } from 'kysely';
-import { MapListsPersonsRepo } from '../lists/repositories/map-lists-persons.repo';
 import { HouseholdRepo } from '../households/repositories/households.repo';
-import { MapHouseholdsTagsRepo } from '../households/repositories/map-households-tags.repo';
-import { MapPersonsTagRepo } from '../persons/repositories/map-persons-tags.repo';
 import { PersonsRepo } from '../persons/repositories/persons.repo';
 import { CompaniesRepo } from '../companies/repositories/companies.repo';
 import { TasksRepo } from '../tasks/repositories/tasks.repo';
@@ -70,10 +67,7 @@ const EMPTY_DEPENDENT_COUNTS: PeopleDependentCounts = {
 
 export class ImportsController extends BaseController<'data_imports', ImportsRepo> {
   private readonly personsRepo = new PersonsRepo();
-  private readonly mapPersonsTagRepo = new MapPersonsTagRepo();
-  private readonly mapListsPersonsRepo = new MapListsPersonsRepo();
   private readonly householdsRepo = new HouseholdRepo();
-  private readonly mapHouseholdsTagsRepo = new MapHouseholdsTagsRepo();
   private readonly companiesRepo = new CompaniesRepo();
   private readonly tasksRepo = new TasksRepo();
 
@@ -217,17 +211,36 @@ export class ImportsController extends BaseController<'data_imports', ImportsRep
     await this.getRepo()
       .transaction()
       .execute(async (trx) => {
+        // Every id in this transaction is derivable from `file_id`, so dependent tables are
+        // cleared with `IN (SELECT id … WHERE file_id = …)` semi-joins and the rows themselves
+        // deleted by the file_id predicate — no id array ever leaves the database. The previous
+        // shape materialized every imported id into JS and bound it into `IN (…)` lists: multi-
+        // megabyte statements, and a hard failure past 65,535 rows (Postgres caps bind
+        // parameters per statement at 65,535) — the paid-plan import cap is 100k, so "undo
+        // import" failed on exactly the largest imports.
+
         // 1. Delete people
         if (wantsPeopleDeletion) {
-          const personIds = await this.personsRepo.getIdsByFileId(
-            { tenant_id: auth.tenant_id, file_id: stats.id },
-            trx,
-          );
-          if (personIds.length > 0) {
-            await this.mapPersonsTagRepo.deleteByPersonIds({ tenant_id: auth.tenant_id, person_ids: personIds }, trx);
-            await this.mapListsPersonsRepo.deleteByPersonIds({ tenant_id: auth.tenant_id, person_ids: personIds }, trx);
-            await this.personsRepo.deleteMany({ tenant_id: auth.tenant_id, ids: personIds }, trx);
-          }
+          const importedPersonIds = trx
+            .selectFrom('persons')
+            .select('persons.id')
+            .where('persons.tenant_id', '=', auth.tenant_id)
+            .where('persons.file_id', '=', stats.id);
+          await trx
+            .deleteFrom('map_peoples_tags')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('person_id', 'in', importedPersonIds)
+            .execute();
+          await trx
+            .deleteFrom('map_lists_persons')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('person_id', 'in', importedPersonIds)
+            .execute();
+          await trx
+            .deleteFrom('persons')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('file_id', '=', stats.id)
+            .execute();
         } else {
           await this.personsRepo.clearFileIdForImport(
             { tenant_id: auth.tenant_id, import_id: stats.id, user_id: auth.user_id },
@@ -237,23 +250,27 @@ export class ImportsController extends BaseController<'data_imports', ImportsRep
 
         // 2. Delete households
         if (wantsHouseholdDeletion) {
-          const householdIds = await this.householdsRepo.getIdsByFileId(
-            { tenant_id: auth.tenant_id, file_id: stats.id },
-            trx,
-          );
-          if (householdIds.length > 0) {
-            await this.mapHouseholdsTagsRepo.deleteByHouseholdIds(
-              { tenant_id: auth.tenant_id, household_ids: householdIds },
-              trx,
-            );
-            // Also clean up list associations before household deletion
-            await trx
-              .deleteFrom('map_lists_households')
-              .where('tenant_id', '=', auth.tenant_id)
-              .where('household_id', 'in', householdIds)
-              .execute();
-            await this.householdsRepo.deleteMany({ tenant_id: auth.tenant_id, ids: householdIds }, trx);
-          }
+          const importedHouseholdIds = trx
+            .selectFrom('households')
+            .select('households.id')
+            .where('households.tenant_id', '=', auth.tenant_id)
+            .where('households.file_id', '=', stats.id);
+          await trx
+            .deleteFrom('map_households_tags')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('household_id', 'in', importedHouseholdIds)
+            .execute();
+          // Also clean up list associations before household deletion
+          await trx
+            .deleteFrom('map_lists_households')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('household_id', 'in', importedHouseholdIds)
+            .execute();
+          await trx
+            .deleteFrom('households')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('file_id', '=', stats.id)
+            .execute();
         } else {
           await this.householdsRepo.clearFileIdForImport(
             { tenant_id: auth.tenant_id, import_id: stats.id, user_id: auth.user_id },
@@ -263,19 +280,22 @@ export class ImportsController extends BaseController<'data_imports', ImportsRep
 
         // 3. Delete companies
         if (wantsCompanyDeletion) {
-          const companyIds = await this.companiesRepo.getIdsByFileId(
-            { tenant_id: auth.tenant_id, file_id: stats.id },
-            trx,
-          );
-          if (companyIds.length > 0) {
-            await trx
-              .updateTable('persons')
-              .set({ company_id: null, updated_at: sql`now()`, updatedby_id: auth.user_id })
-              .where('tenant_id', '=', auth.tenant_id)
-              .where('company_id', 'in', companyIds)
-              .execute();
-            await this.companiesRepo.deleteMany({ tenant_id: auth.tenant_id, ids: companyIds }, trx);
-          }
+          const importedCompanyIds = trx
+            .selectFrom('companies')
+            .select('companies.id')
+            .where('companies.tenant_id', '=', auth.tenant_id)
+            .where('companies.file_id', '=', stats.id);
+          await trx
+            .updateTable('persons')
+            .set({ company_id: null, updated_at: sql`now()`, updatedby_id: auth.user_id })
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('company_id', 'in', importedCompanyIds)
+            .execute();
+          await trx
+            .deleteFrom('companies')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('file_id', '=', stats.id)
+            .execute();
         } else {
           await this.companiesRepo.clearFileIdForImport(
             { tenant_id: auth.tenant_id, import_id: stats.id, user_id: auth.user_id },
@@ -285,25 +305,31 @@ export class ImportsController extends BaseController<'data_imports', ImportsRep
 
         // 4. Delete tasks
         if (wantsTaskDeletion) {
-          const taskIds = await this.tasksRepo.getIdsByFileId({ tenant_id: auth.tenant_id, file_id: stats.id }, trx);
-          if (taskIds.length > 0) {
-            await trx
-              .deleteFrom('task_subtasks')
-              .where('tenant_id', '=', auth.tenant_id)
-              .where('task_id', 'in', taskIds)
-              .execute();
-            await trx
-              .deleteFrom('task_comments')
-              .where('tenant_id', '=', auth.tenant_id)
-              .where('task_id', 'in', taskIds)
-              .execute();
-            await trx
-              .deleteFrom('task_attachments')
-              .where('tenant_id', '=', auth.tenant_id)
-              .where('task_id', 'in', taskIds)
-              .execute();
-            await this.tasksRepo.deleteMany({ tenant_id: auth.tenant_id, ids: taskIds }, trx);
-          }
+          const importedTaskIds = trx
+            .selectFrom('tasks')
+            .select('tasks.id')
+            .where('tasks.tenant_id', '=', auth.tenant_id)
+            .where('tasks.file_id', '=', stats.id);
+          await trx
+            .deleteFrom('task_subtasks')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('task_id', 'in', importedTaskIds)
+            .execute();
+          await trx
+            .deleteFrom('task_comments')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('task_id', 'in', importedTaskIds)
+            .execute();
+          await trx
+            .deleteFrom('task_attachments')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('task_id', 'in', importedTaskIds)
+            .execute();
+          await trx
+            .deleteFrom('tasks')
+            .where('tenant_id', '=', auth.tenant_id)
+            .where('file_id', '=', stats.id)
+            .execute();
         } else {
           await this.tasksRepo.clearFileIdForImport(
             { tenant_id: auth.tenant_id, import_id: stats.id, user_id: auth.user_id },

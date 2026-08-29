@@ -223,6 +223,10 @@ export class ListsRepo extends BaseRepository<'lists'> {
       .executeTakeFirst();
     const total = countResult?.total;
 
+    // Bounded by the standard page window (finding: this endpoint returned every member with no
+    // LIMIT — a 100k-person list serialized tens of MB into one tRPC response). No caller pages
+    // today, so the default window applies; `count` already carries the true total.
+    const page = resolvePageWindow(undefined);
     const rows = await qb
       .select([
         'households.id',
@@ -240,6 +244,8 @@ export class ListsRepo extends BaseRepository<'lists'> {
         'households.state',
         'households.zip',
       ])
+      .orderBy('households.id')
+      .limit(page.limit)
       .execute();
 
     return { rows, count: Number(total || 0) };
@@ -261,6 +267,8 @@ export class ListsRepo extends BaseRepository<'lists'> {
       .executeTakeFirst();
     const total = countResult2?.total;
 
+    // Same bound as getHouseholdsByListId above — never the whole membership in one response.
+    const page = resolvePageWindow(undefined);
     const rows = await qb
       .select([
         'persons.id',
@@ -288,6 +296,8 @@ export class ListsRepo extends BaseRepository<'lists'> {
         'households.street_num',
         'households.zip',
       ])
+      .orderBy('persons.id')
+      .limit(page.limit)
       .execute();
 
     return { rows, count: Number(total || 0) };

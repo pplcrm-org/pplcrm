@@ -509,74 +509,76 @@ export class TagsRepo extends BaseRepository<'tags'> {
       }
 
       // Re-point people/households that only have the source tag; the ones that already carry
-      // the target tag just drop the now-redundant source row. Fetch-diff-insert-delete (not a
-      // correlated subquery) to match the `mergePersons` shape in persons.repo.ts.
-      const targetPeopleIds = new Set(
-        (
-          await trx
-            .selectFrom('map_peoples_tags')
-            .select('person_id')
-            .where('tenant_id', '=', input.tenant_id)
-            .where('tag_id', '=', input.target_id)
-            .execute()
-        ).map((r) => String(r.person_id)),
-      );
-      const sourcePeople = await trx
-        .selectFrom('map_peoples_tags')
-        .select('person_id')
-        .where('tenant_id', '=', input.tenant_id)
-        .where('tag_id', '=', input.source_id)
+      // the target tag just drop the now-redundant source row. Set-based (INSERT … SELECT with a
+      // NOT EXISTS guard, then one DELETE), NOT the fetch-diff-insert-loop shape `mergePersons`
+      // uses: a person merge touches one record's few associations, but a tag can sit on tens of
+      // thousands of people, and the loop shape executed one INSERT round-trip per person inside
+      // this transaction — minutes of lock-holding on the mapping table while the request timed
+      // out. Here no ids ever leave the database.
+      await trx
+        .insertInto('map_peoples_tags')
+        .columns(['tenant_id', 'person_id', 'tag_id', 'createdby_id', 'updatedby_id'])
+        .expression(
+          trx
+            .selectFrom('map_peoples_tags as src')
+            .select((eb) => [
+              eb.val(input.tenant_id).as('tenant_id'),
+              eb.ref('src.person_id').as('person_id'),
+              eb.val(input.target_id).as('tag_id'),
+              eb.val(input.user_id).as('createdby_id'),
+              eb.val(input.user_id).as('updatedby_id'),
+            ])
+            .where('src.tenant_id', '=', input.tenant_id)
+            .where('src.tag_id', '=', input.source_id)
+            .where((eb) =>
+              eb.not(
+                eb.exists(
+                  eb
+                    .selectFrom('map_peoples_tags as tgt')
+                    .select('tgt.tag_id')
+                    .where('tgt.tenant_id', '=', input.tenant_id)
+                    .whereRef('tgt.person_id', '=', 'src.person_id')
+                    .where('tgt.tag_id', '=', input.target_id),
+                ),
+              ),
+            ),
+        )
         .execute();
-      for (const row of sourcePeople) {
-        if (!targetPeopleIds.has(String(row.person_id))) {
-          await trx
-            .insertInto('map_peoples_tags')
-            .values({
-              tenant_id: input.tenant_id,
-              person_id: row.person_id,
-              tag_id: input.target_id,
-              createdby_id: input.user_id,
-              updatedby_id: input.user_id,
-            })
-            .execute();
-        }
-      }
       await trx
         .deleteFrom('map_peoples_tags')
         .where('tenant_id', '=', input.tenant_id)
         .where('tag_id', '=', input.source_id)
         .execute();
 
-      const targetHouseholdIds = new Set(
-        (
-          await trx
-            .selectFrom('map_households_tags')
-            .select('household_id')
-            .where('tenant_id', '=', input.tenant_id)
-            .where('tag_id', '=', input.target_id)
-            .execute()
-        ).map((r) => String(r.household_id)),
-      );
-      const sourceHouseholds = await trx
-        .selectFrom('map_households_tags')
-        .select('household_id')
-        .where('tenant_id', '=', input.tenant_id)
-        .where('tag_id', '=', input.source_id)
+      await trx
+        .insertInto('map_households_tags')
+        .columns(['tenant_id', 'household_id', 'tag_id', 'createdby_id', 'updatedby_id'])
+        .expression(
+          trx
+            .selectFrom('map_households_tags as src')
+            .select((eb) => [
+              eb.val(input.tenant_id).as('tenant_id'),
+              eb.ref('src.household_id').as('household_id'),
+              eb.val(input.target_id).as('tag_id'),
+              eb.val(input.user_id).as('createdby_id'),
+              eb.val(input.user_id).as('updatedby_id'),
+            ])
+            .where('src.tenant_id', '=', input.tenant_id)
+            .where('src.tag_id', '=', input.source_id)
+            .where((eb) =>
+              eb.not(
+                eb.exists(
+                  eb
+                    .selectFrom('map_households_tags as tgt')
+                    .select('tgt.tag_id')
+                    .where('tgt.tenant_id', '=', input.tenant_id)
+                    .whereRef('tgt.household_id', '=', 'src.household_id')
+                    .where('tgt.tag_id', '=', input.target_id),
+                ),
+              ),
+            ),
+        )
         .execute();
-      for (const row of sourceHouseholds) {
-        if (!targetHouseholdIds.has(String(row.household_id))) {
-          await trx
-            .insertInto('map_households_tags')
-            .values({
-              tenant_id: input.tenant_id,
-              household_id: row.household_id,
-              tag_id: input.target_id,
-              createdby_id: input.user_id,
-              updatedby_id: input.user_id,
-            })
-            .execute();
-        }
-      }
       await trx
         .deleteFrom('map_households_tags')
         .where('tenant_id', '=', input.tenant_id)
